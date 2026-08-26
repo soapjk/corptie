@@ -14,6 +14,8 @@ export class ForkingWorkspaceTransitionManager {
       ?? (async () => []);
     this.globalInstructionSources = options.globalInstructionSources
       ?? (async () => []);
+    this.sourceTimelineItems = options.sourceTimelineItems
+      ?? (async () => []);
     this.onRouteCommitted = options.onRouteCommitted ?? null;
   }
 
@@ -23,11 +25,12 @@ export class ForkingWorkspaceTransitionManager {
       throw new Error(`Logical session ${input.logicalSessionId} has no active route.`);
     }
     const target = this.requireAvailableTarget(input.targetWorktreeId);
-    const strategy = logical.repositoryId && target.repositoryId !== logical.repositoryId
+    let strategy = logical.repositoryId && target.repositoryId !== logical.repositoryId
       ? "handoff"
       : "fork";
     const activeTurnId = input.activeTurnId || null;
-    const lastCompletedTurnId = input.lastCompletedTurnId || null;
+    const lastCompletedTurnId = input.lastCompletedTurnId
+      || (!activeTurnId ? `corptie-empty:${logical.activeBinding.bindingId}` : null);
     const transitionId = input.transitionId || `workspace-transition:${randomUUID()}`;
     if (!activeTurnId && !lastCompletedTurnId) {
       throw new Error("A completed source turn is required before forking a workspace.");
@@ -62,7 +65,8 @@ export class ForkingWorkspaceTransitionManager {
       throw new Error(`Logical session ${input.logicalSessionId} has no active route.`);
     }
     const activeTurnId = input.activeTurnId || null;
-    const lastCompletedTurnId = input.lastCompletedTurnId || null;
+    const lastCompletedTurnId = input.lastCompletedTurnId
+      || (!activeTurnId ? `corptie-empty:${logical.activeBinding.bindingId}` : null);
     const transitionId = input.transitionId || `session-restart:${randomUUID()}`;
     if (!activeTurnId && !lastCompletedTurnId) {
       throw new Error("A completed source turn is required before restarting a session.");
@@ -197,10 +201,14 @@ export class ForkingWorkspaceTransitionManager {
         });
       }
       if (strategy === "handoff") {
-        const sourceResponse = await this.providerPort.readThread(transition.sourceThreadId, {
-          includeTurns: true
+        const sourceItems = await this.sourceTimelineItems({
+          logicalSessionId: logical.logicalSessionId,
+          sessionId: logical.legacySessionId,
+          bindingId: logical.activeBinding.bindingId,
+          lastCompletedTurnId,
+          sourceThreadId: transition.sourceThreadId
         });
-        const handoff = workspaceHandoffPrompt(sourceResponse.thread ?? sourceResponse, {
+        const handoff = workspaceHandoffPrompt(sourceItems, {
           sourceCwd: logical.activeBinding.boundCwd,
           targetCwd,
           lastCompletedTurnId,
@@ -217,12 +225,18 @@ export class ForkingWorkspaceTransitionManager {
           sandbox: input.sandbox
             ?? coarseSandboxMode(input.sandboxPolicy ?? permission.sandboxPolicy)
             ?? "workspace-write",
-          permissions: input.permissions
+          permissions: input.permissions,
+          idempotencyKey: `workspace-handoff:${transitionId}`
         });
         handoffTurnId = started?.turn?.id ?? null;
         if (!handoffTurnId) {
           throw new Error("Codex turn/start returned no handoff turn id.");
         }
+        this.store.updateWorkspaceTransition(transitionId, {
+          phase: "validatingInstructions",
+          newThreadId,
+          handoffTurnId
+        });
       }
       this.store.updateWorkspaceTransition(transitionId, {
         phase: "committingRoute",
@@ -310,17 +324,15 @@ export class ForkingWorkspaceTransitionManager {
       return { status: "failed", transition };
     }
     if (["waitingForTurn", "preflighting"].includes(transition.phase)) {
-      const source = await this.providerPort.readThread(transition.sourceThreadId, {
-        includeTurns: true
-      });
-      const thread = source.thread ?? source;
-      const latestTurn = (thread.turns ?? []).at(-1);
-      if (["inProgress", "in_progress", "running"].includes(latestTurn?.status)) {
+      const logical = this.store.getLogicalSession(transition.logicalSessionId);
+      const sessionId = logical?.legacySessionId;
+      const unsettled = sessionId ? this.store.listUnsettledSessionTurns(sessionId) : [];
+      if (unsettled.length > 0) {
         return { status: "waitingForTurn", transition };
       }
-      const lastCompletedTurnId = (thread.turns ?? []).slice().reverse().find((turn) => {
-        return ["completed", "complete"].includes(turn?.status);
-      })?.id ?? transition.lastCompletedTurnId;
+      const lastCompletedTurnId = (sessionId
+        ? this.store.latestCompletedSessionTurn(sessionId, logical?.activeBinding?.bindingId)?.turn_id
+        : null) ?? transition.lastCompletedTurnId;
       return this.continueWorkspaceTransition(transitionId, {
         ...input,
         lastCompletedTurnId
@@ -373,16 +385,16 @@ export class ForkingWorkspaceTransitionManager {
         throw new Error("The recovered Codex thread loaded invalid workspace instruction sources.");
       }
       if (transition.strategy === "handoff") {
-        const targetThreadResponse = await this.providerPort.readThread(transition.newThreadId, {
-          includeTurns: true
-        });
-        const targetThread = targetThreadResponse.thread ?? targetThreadResponse;
-        handoffTurnId = (targetThread.turns ?? []).at(-1)?.id ?? null;
+        handoffTurnId = transition.handoffTurnId ?? null;
         if (!handoffTurnId) {
-          const sourceResponse = await this.providerPort.readThread(transition.sourceThreadId, {
-            includeTurns: true
+          const sourceItems = await this.sourceTimelineItems({
+            logicalSessionId: logical.logicalSessionId,
+            sessionId: logical.legacySessionId,
+            bindingId: logical.activeBinding.bindingId,
+            lastCompletedTurnId: transition.lastCompletedTurnId,
+            sourceThreadId: transition.sourceThreadId
           });
-          const handoff = workspaceHandoffPrompt(sourceResponse.thread ?? sourceResponse, {
+          const handoff = workspaceHandoffPrompt(sourceItems, {
             sourceCwd: logical.activeBinding.boundCwd,
             targetCwd,
             lastCompletedTurnId: transition.lastCompletedTurnId,
@@ -397,12 +409,18 @@ export class ForkingWorkspaceTransitionManager {
             approvalPolicy: response.approvalPolicy
               ?? permission.approvalPolicy
               ?? "on-request",
-            sandbox: coarseSandboxMode(permission.sandboxPolicy) ?? "workspace-write"
+            sandbox: coarseSandboxMode(permission.sandboxPolicy) ?? "workspace-write",
+            idempotencyKey: `workspace-handoff:${transitionId}`
           });
           handoffTurnId = started?.turn?.id ?? null;
           if (!handoffTurnId) {
             throw new Error("Codex turn/start returned no recovered handoff turn id.");
           }
+          this.store.updateWorkspaceTransition(transitionId, {
+            phase: "validatingInstructions",
+            newThreadId: transition.newThreadId,
+            handoffTurnId
+          });
         }
       }
       this.store.updateWorkspaceTransition(transitionId, {
@@ -631,18 +649,16 @@ export function isForkUnsupported(error) {
     .test(String(error?.message ?? ""));
 }
 
-export function workspaceHandoffPrompt(thread, context) {
+export function workspaceHandoffPrompt(items, context) {
   const messages = [];
-  for (const turn of thread?.turns ?? []) {
-    for (const item of turn?.items ?? []) {
-      const role = item?.type === "userMessage"
-        ? "User"
-        : (item?.type === "agentMessage" ? "Assistant" : null);
-      if (!role) continue;
-      const text = handoffItemText(item).trim();
-      if (text) messages.push(`${role}: ${text.slice(0, 4000)}`);
-    }
-    if (turn?.id === context.lastCompletedTurnId) break;
+  for (const item of items ?? []) {
+    const role = item?.type === "userMessage"
+      ? "User"
+      : (item?.type === "agentMessage" ? "Assistant" : null);
+    if (!role) continue;
+    const text = String(item?.presentationText ?? item?.text ?? "").trim();
+    if (text) messages.push(`${role}: ${text.slice(0, 4000)}`);
+    if (item?.turnId === context.lastCompletedTurnId && item?.presentationRole === "final_answer") break;
   }
   const recent = messages.slice(-8).join("\n\n").slice(-20000);
   return [
@@ -659,13 +675,6 @@ export function workspaceHandoffPrompt(thread, context) {
     recent ? `<recent_conversation>\n${recent}\n</recent_conversation>` : "",
     "</corptie_workspace_handoff>"
   ].filter(Boolean).join("\n");
-}
-
-function handoffItemText(item) {
-  if (item.type === "agentMessage") return String(item.text ?? "");
-  return (item.content ?? []).map((content) => {
-    return content?.type === "text" ? String(content.text ?? "") : `[${content?.type ?? "content"}]`;
-  }).join("\n");
 }
 
 export function rewriteWorkspacePath(value, sourceCwd, targetCwd) {

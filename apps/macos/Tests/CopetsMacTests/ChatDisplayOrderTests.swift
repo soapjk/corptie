@@ -206,6 +206,20 @@ final class ChatDisplayOrderTests: XCTestCase {
         )
     }
 
+    func testUnclassifiedAssistantMessagesRemainVisibleInsteadOfBeingFoldedIntoExecution() {
+        var first = item(id: "assistant-unknown-1", type: "agentMessage", turnId: "turn")
+        var second = item(id: "assistant-unknown-2", type: "agentMessage", turnId: "turn")
+        first.presentationRole = nil
+        second.presentationRole = nil
+
+        let entries = makeChatDisplayEntriesForTurn([first, second])
+
+        XCTAssertEqual(entries.map(\.id), [
+            "message:assistant-unknown-1",
+            "message:assistant-unknown-2"
+        ])
+    }
+
     private func item(
         id: String,
         type: String,

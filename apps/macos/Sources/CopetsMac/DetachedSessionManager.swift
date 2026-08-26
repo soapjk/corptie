@@ -301,7 +301,7 @@ private final class DetachedAccessoryWindowController {
     }
 
     private func accessorySize(for session: TaskSession?) -> NSSize {
-        if session?.pendingCollaborationConfirmation != nil {
+        if let session, client.pendingCollaborationConfirmation(for: session.id) != nil {
             return NSSize(width: previewTotalWidth, height: collaborationConfirmationTotalHeight)
         }
         let hasPreview = state.isVisible && !state.text.isEmpty
@@ -510,6 +510,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
             }
             .store(in: &cancellables)
 
+        client.$pendingCollaborationConfirmationsBySessionID
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.updateAccessory(for: self.currentSession)
+            }
+            .store(in: &cancellables)
+
 
 
     }
@@ -635,14 +643,14 @@ private final class DetachedSessionWindowController: NSObject, NSWindowDelegate 
 
         let fallbackSummary = session.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         if previewState.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           session.status != .running,
+           session.executionTaskStatus != .running,
            !fallbackSummary.isEmpty {
             showReplyPreview(fallbackSummary, for: session, force: true)
         }
         fetchLatestReplyPreview(
             for: session,
             fallbackSummary: fallbackSummary,
-            allowFallback: session.status != .running,
+            allowFallback: session.executionTaskStatus != .running,
             includeActiveTurn: true,
             force: true
         )
@@ -883,7 +891,7 @@ private struct DetachedSessionAccessoryView: View {
     @ViewBuilder
     private func floatingAccessory(session: TaskSession) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let confirmation = session.pendingCollaborationConfirmation {
+            if let confirmation = client.pendingCollaborationConfirmation(for: session.id) {
                 DetachedCollaborationConfirmationCard(
                     confirmation: confirmation,
                     isSending: client.isSendingMessage,
@@ -1027,7 +1035,7 @@ private struct DetachedSessionAccessoryView: View {
     }
 
     private var accessoryHeight: CGFloat {
-        if session?.pendingCollaborationConfirmation != nil {
+        if let session, client.pendingCollaborationConfirmation(for: session.id) != nil {
             return collaborationConfirmationTotalHeight
         }
         if suggestedPromptText != nil {

@@ -139,10 +139,7 @@ test("clients at different revisions receive independent catch-up ranges", () =>
   assert.deepEqual(newlyConnectedClient.upserts.sessions, []);
 });
 
-test("upsert missing from provider-memory snapshot is skipped, not deleted", () => {
-  // operation='upsert' means the row still exists in the database (INSERT/UPDATE
-  // trigger). A missing snapshot projection (e.g. an OpenClacky session whose
-  // in-memory cache briefly dropped it) must not be misreported as a delete.
+test("entity absent from the authoritative projection removes a stale client copy", () => {
   const service = fixture({
     revision: 3,
     oldest: 2,
@@ -151,11 +148,11 @@ test("upsert missing from provider-memory snapshot is skipped, not deleted", () 
   });
   const changes = service.changesAfter(2);
   assert.equal(changes.snapshotRequired, false);
-  assert.deepEqual(changes.deletes.sessions, []);
+  assert.deepEqual(changes.deletes.sessions, ["s-missing"]);
   assert.deepEqual(changes.upserts.sessions, []);
 });
 
-test("optimized state sync builds one shared snapshot per revision", () => {
+test("state sync builds one shared snapshot per revision", () => {
   let revision = 9;
   let projections = 0;
   let changeQueries = 0;
@@ -188,26 +185,6 @@ test("optimized state sync builds one shared snapshot per revision", () => {
   service.changesAfter(9);
   assert.equal(projections, 2, "all clients targeting revision 10 reuse one projection");
   assert.equal(service.diagnostics().snapshotBuilds, 2);
-});
-
-test("state sync compatibility switch retains the uncached projection path", () => {
-  let projections = 0;
-  const service = new StateSyncService({
-    store: {
-      stateRevision: () => 2,
-      oldestStateChangeRevision: () => 2,
-      stateChangesAfter: () => []
-    },
-    snapshot: () => {
-      projections += 1;
-      return {};
-    },
-    optimized: false
-  });
-  service.snapshot();
-  service.snapshot();
-  assert.equal(projections, 2);
-  assert.equal(service.diagnostics().optimized, false);
 });
 
 test("SSE delivery cursor acknowledges the serialized frame instead of a newer Store revision", () => {

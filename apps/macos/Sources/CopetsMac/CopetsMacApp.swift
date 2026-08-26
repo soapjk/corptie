@@ -686,12 +686,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Two synchronous phases ensure every native timeline samples its
-        // final semantic anchor before presentation stores encode the rollback
-        // copy. SQLite writes are already committed continuously in WAL mode.
+        // Capture the final semantic anchor and flush the sole SQLite viewport
+        // authority. There is no UserDefaults rollback copy.
         NotificationCenter.default.post(name: .captureSessionTimelinePositions, object: nil)
-        NotificationCenter.default.post(name: .persistSessionTimelinePositions, object: nil)
-        CorptieAppEnvironment.userDefaults.synchronize()
+        _ = SessionViewportController.shared.persistSynchronouslyForTermination()
         agentOrbManager?.closeAll()
         completionSoundManager?.stop()
         resetNotificationManager?.stop()
@@ -1081,7 +1079,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func isUnfinishedSession(_ session: TaskSession) -> Bool {
-        switch session.status {
+        switch session.executionTaskStatus {
         case .running:
             return true
         case .blocked:
@@ -1724,7 +1722,7 @@ struct SettingsView: View {
                             HStack(spacing: 7) {
                                 Text(session.agent)
                                 Text("·")
-                                Text(session.status.label)
+                                Text(session.executionTaskStatus.label)
                                 if !session.summary.isEmpty {
                                     Text("·")
                                     Text(session.summary)

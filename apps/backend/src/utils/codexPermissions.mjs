@@ -108,23 +108,3 @@ export function codexPermissionsFromThread(thread) {
     approvalPolicy: normalizeCodexApprovalPolicy(approvalPolicy)
   };
 }
-
-export function readInitialCodexPermissionsFromRollout(text) {
-  for (const line of String(text ?? "").split("\n")) {
-    if (!line.includes('"turn_context"')) continue;
-    try {
-      const entry = JSON.parse(line);
-      if (entry.type !== "turn_context") continue;
-      const sandbox = entry.payload?.sandbox_policy?.type;
-      const approvalPolicy = entry.payload?.approval_policy;
-      if (!sandbox && !approvalPolicy) continue;
-      return {
-        sandbox: normalizeCodexSandbox(sandbox),
-        approvalPolicy: normalizeCodexApprovalPolicy(approvalPolicy)
-      };
-    } catch {
-      // Ignore a partially written rollout line and continue to the first valid context.
-    }
-  }
-  return null;
-}

@@ -13,8 +13,7 @@ test("stored detail remains readable when its Provider is offline", () => {
     },
     storedDetail: {
       items: [{ id: "local-1", type: "agentMessage", text: "Stored locally" }]
-    },
-    eventItems: [{ id: "legacy-1", type: "userMessage", text: "Legacy event" }]
+    }
   });
 
   assert.equal(detail.connectionStatus, "disconnected");
@@ -24,14 +23,13 @@ test("stored detail remains readable when its Provider is offline", () => {
   assert.deepEqual(detail.items.map((item) => item.id), ["local-1"]);
 });
 
-test("legacy event projection is used before detail snapshots exist", () => {
+test("an empty materialized Timeline remains empty without event-log reconstruction", () => {
   const detail = storedSessionDetail({
-    summary: { id: "openclacky:legacy", external: { provider: "openclacky" } },
-    storedDetail: { items: [] },
-    eventItems: [{ id: "legacy-1", type: "userMessage", text: "Recovered" }]
+    summary: { id: "openclacky:empty", external: { provider: "openclacky" } },
+    storedDetail: { items: [] }
   });
 
-  assert.deepEqual(detail.items.map((item) => item.id), ["legacy-1"]);
+  assert.deepEqual(detail.items, []);
 });
 
 test("only stable non-empty timeline items are persisted", () => {

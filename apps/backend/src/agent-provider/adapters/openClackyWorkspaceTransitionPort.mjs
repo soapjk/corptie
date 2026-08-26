@@ -45,20 +45,8 @@ export class OpenClackyWorkspaceTransitionPort {
 
   async resumeThread(routeId, options = {}) {
     const providerSessionId = this.providerSessionIdForRoute(routeId);
-    const session = await this.manager.read(providerSessionId);
+    const session = await this.manager.resume(providerSessionId);
     return this.response(routeId, providerSessionId, session, options.cwd);
-  }
-
-  async readThread(routeId) {
-    const providerSessionId = this.providerSessionIdForRoute(routeId);
-    const session = await this.manager.read(providerSessionId);
-    return {
-      thread: {
-        id: routeId,
-        cwd: session?.external?.cwd,
-        turns: []
-      }
-    };
   }
 
   async startTurn(routeId, prompt) {

@@ -289,20 +289,6 @@ test("an unsupported fork falls back to a new thread with a bounded local handof
           sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
         };
       },
-      async readThread() {
-        return {
-          thread: {
-            turns: [{
-              id: "turn-7",
-              status: "completed",
-              items: [
-                { type: "userMessage", content: [{ type: "text", text: "Finish the workspace migration." }] },
-                { type: "agentMessage", text: "The registry is complete." }
-              ]
-            }]
-          }
-        };
-      },
       async startTurn(threadId, prompt, options) {
         calls.push({ method: "startTurn", threadId, prompt, options });
         return { turn: { id: "turn-handoff" } };
@@ -311,6 +297,10 @@ test("an unsupported fork falls back to a new thread with a bounded local handof
     requiredInstructionSources: async () => [
       fixture.rootInstructions,
       fixture.featureInstructions
+    ],
+    sourceTimelineItems: async () => [
+      { type: "userMessage", presentationText: "Finish the workspace migration.", turnId: "turn-7" },
+      { type: "agentMessage", presentationText: "The registry is complete.", turnId: "turn-7", presentationRole: "final_answer" }
     ]
   });
 
@@ -372,9 +362,6 @@ test("a cross-repository switch uses handoff without attempting a fork", async (
           sandbox: { type: "workspaceWrite", writableRoots: [other] }
         };
       },
-      async readThread() {
-        return { thread: { turns: [{ id: "turn-7", status: "completed", items: [] }] } };
-      },
       async startTurn() {
         return { turn: { id: "turn-other-handoff" } };
       }
@@ -402,12 +389,9 @@ test("fork fallback detection and handoff prompt are conservative", () => {
   assert.equal(isForkUnsupported(Object.assign(new Error("missing"), { code: -32601 })), true);
   assert.equal(isForkUnsupported(new Error("thread/fork unsupported by server")), true);
   assert.equal(isForkUnsupported(new Error("thread/fork timed out")), false);
-  const prompt = workspaceHandoffPrompt({
-    turns: [{
-      id: "turn-1",
-      items: [{ type: "userMessage", content: [{ type: "text", text: "Keep going" }] }]
-    }]
-  }, {
+  const prompt = workspaceHandoffPrompt([
+    { type: "userMessage", presentationText: "Keep going", turnId: "turn-1" }
+  ], {
     sourceCwd: "/old",
     targetCwd: "/new",
     lastCompletedTurnId: "turn-1"
@@ -496,6 +480,15 @@ test("workspace path rewriting changes only the moved workspace prefix", () => {
 
 test("restart recovery defers Provider-native goal continuation to Corptie's durable queue", async () => {
   const fixture = await createFixture("recover-waiting-goal");
+  const bindingId = fixture.store.getLogicalSession("logical:one").activeBinding.bindingId;
+  fixture.store.upsertSessionTurn({
+    sessionId: "session:one",
+    bindingId,
+    routingVersion: 1,
+    turnId: "turn-7",
+    executionStatus: "completed",
+    endedAt: "2026-07-28T00:01:00.000Z"
+  });
   fixture.store.beginWorkspaceTransition({
     transitionId: "transition:recover-waiting-goal",
     logicalSessionId: "logical:one",
@@ -508,14 +501,6 @@ test("restart recovery defers Provider-native goal continuation to Corptie's dur
   const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
     providerPort: {
-      async readThread() {
-        return {
-          thread: {
-            id: "thread-source",
-            turns: [{ id: "turn-7", status: "completed" }]
-          }
-        };
-      },
       async forkThread(threadId, options) {
         assert.equal(threadId, "thread-source");
         assert.equal(options.lastTurnId, "turn-7");
@@ -621,21 +606,6 @@ test("restart recovery starts a missing handoff turn before committing its route
           sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
         };
       },
-      async readThread(threadId) {
-        if (threadId === "thread-handoff-recovered") {
-          return { thread: { id: threadId, turns: [] } };
-        }
-        return {
-          thread: {
-            id: threadId,
-            turns: [{
-              id: "turn-7",
-              status: "completed",
-              items: [{ type: "userMessage", content: [{ type: "text", text: "Resume me" }] }]
-            }]
-          }
-        };
-      },
       async startTurn(threadId, prompt) {
         startedTurns.push({ threadId, prompt });
         return { turn: { id: "turn-recovered-handoff" } };
@@ -644,6 +614,9 @@ test("restart recovery starts a missing handoff turn before committing its route
     requiredInstructionSources: async () => [
       fixture.rootInstructions,
       fixture.featureInstructions
+    ],
+    sourceTimelineItems: async () => [
+      { type: "userMessage", presentationText: "Resume me", turnId: "turn-7" }
     ]
   });
 
@@ -705,6 +678,13 @@ async function createFixture(label) {
     configPath: join(directory, "config.json")
   });
   await store.initialize();
+  store.upsertSession({
+    id: "session:one",
+    title: "Fixture session",
+    agent: "Agent",
+    provider: "codex-app-server",
+    status: "idle"
+  });
   store.upsertGitWorkspaceSnapshot({
     repository: {
       id: "repository:one",
@@ -727,6 +707,7 @@ async function createFixture(label) {
   });
   store.createLogicalSessionRoute({
     logicalSessionId: "logical:one",
+    legacySessionId: "session:one",
     providerThreadId: "thread-source",
     repositoryId: "repository:one",
     worktreeId: "worktree:main",

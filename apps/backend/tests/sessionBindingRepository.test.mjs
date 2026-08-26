@@ -41,8 +41,7 @@ function fixture() {
     ] : []
   };
   return new SessionBindingRepository({
-    store,
-    findSession: (id) => sessions.get(id) ?? null
+    store
   });
 }
 
@@ -81,7 +80,6 @@ test("binding repository delegates legacy Provider aliases to the Registry resol
       getLogicalSessionByLegacySessionId: () => null,
       getSession: () => session
     },
-    findSession: () => session,
     resolveProviderId: (identity) => identity === "clacky" ? "openclacky" : null
   });
 

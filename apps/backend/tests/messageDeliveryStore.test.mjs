@@ -118,3 +118,45 @@ test("Delivery state updates increment only the message row Timeline and preserv
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("the first Provider Turn event durably claims the single dispatching Delivery", async () => {
+  const { directory, store } = await fixture();
+  try {
+    store.createUserMessageDelivery({
+      deliveryId: "delivery:one",
+      messageId: "message:one",
+      sessionId: "session:one",
+      binding,
+      agentId: "agent:one",
+      text: "run once"
+    });
+    store.updateMessageDelivery("delivery:one", {
+      status: "dispatching",
+      attemptCount: 1,
+      lastAttemptAt: "2026-08-26T10:00:01.000Z"
+    });
+
+    const claimed = store.claimDispatchingMessageDeliveryForProviderTurn(
+      "session:one",
+      binding.bindingId,
+      "provider-turn:one",
+      "2026-08-26T10:00:01.010Z"
+    );
+
+    assert.equal(claimed.messageId, "message:one");
+    assert.equal(claimed.providerTurnId, "provider-turn:one");
+    assert.equal(claimed.status, "processing");
+    assert.equal(store.getSessionItem("session:one", "message:one").turnId, "provider-turn:one");
+    assert.equal(
+      store.claimDispatchingMessageDeliveryForProviderTurn(
+        "session:one",
+        binding.bindingId,
+        "provider-turn:one"
+      ).deliveryId,
+      "delivery:one"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

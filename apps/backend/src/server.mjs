@@ -2,21 +2,14 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { copyFile, mkdtemp, readdir, readFile, realpath, stat, mkdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, realpath, stat, mkdir, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { deflateRawSync } from "node:zlib";
 import os from "node:os";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
-import {
-  mapCodexThreadToDetail,
-  mapCodexThreadToSession,
-  parseCodexRolloutConversation,
-  parseCodexRolloutTimeline,
-  readCodexRolloutDetail,
-  readCodexRolloutTokenUsage
-} from "./adapters/codexAppServer.mjs";
+import { mapCodexThreadToSession } from "./adapters/codexAppServer.mjs";
 import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
@@ -29,7 +22,6 @@ import {
 } from "./application/projectWorktreeIntegrationService.mjs";
 import { WorktreeIntegrationJobService } from "./application/worktreeIntegrationJobService.mjs";
 import {
-  applyPersistedSessionOrder,
   storedSessionIdForListSession
 } from "./application/sessionListOrder.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
@@ -38,11 +30,9 @@ import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
 import {
+  activeStoredSessionProjections,
   canonicalSessionIdFromEventPayload,
-  ensureProviderSessionProjection,
-  isBoundPhysicalProviderSession,
   persistProviderSessionProjection,
-  resolveRoutedProviderSessionProjection,
   visibleStoredSessionProjections
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
@@ -127,21 +117,16 @@ import {
   broadcastDshMuxFrame,
   broadcastDshHostFrame,
 } from "./dsh-adapter/dshWebSocket.mjs";
-import { mapEvent as mapDshEvent, mapFallbackEvent as mapDshFallbackEvent } from "./dsh-adapter/dshEventMapper.mjs";
-import { projectStoredSessionTimeline } from "./application/storedSessionTimeline.mjs";
+import { mapEvent as mapDshEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
-import { SessionTimelineProjection } from "./application/sessionTimelineProjection.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
 import {
+  mapClaudeProviderEvent,
   mapClaudeTurnSettled,
   mapCodexProviderNotification,
   mapOpenClackyProviderChange
 } from "./application/providerEventEnvelope.mjs";
-import { providerLifecycleMetadataDecision } from "./application/providerLifecycleOrdering.mjs";
-import {
-  composeLogicalSessionTimeline
-} from "./application/logicalSessionTimeline.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
 import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
@@ -152,7 +137,6 @@ import {
   mergeStoredSessionPresentation,
   preferredSessionCwd,
   preferredSessionTitle,
-  reconcileAuthoritativeRunState,
   sessionHasActiveRun,
   workspaceContinuationKeepsSessionActive
 } from "./utils/sessionPresentation.mjs";
@@ -179,12 +163,10 @@ import {
   hasCodexSessionPermissions,
   normalizeCodexApprovalPolicy,
   normalizeCodexSandbox,
-  readInitialCodexPermissionsFromRollout,
   withCodexSessionPermissions
 } from "./utils/codexPermissions.mjs";
 import {
   hasCodexSessionRuntimeConfig,
-  readLatestCodexRuntimeConfigFromRollout,
   withCodexSessionRuntimeConfig
 } from "./utils/codexRuntimeConfig.mjs";
 import {
@@ -192,7 +174,6 @@ import {
   resolveNewCodexRuntimeConfig
 } from "./utils/newSessionDefaults.mjs";
 import { configureBackendLogging } from "./utils/backendLogging.mjs";
-import { mergeSupplementalTimelineItems } from "./utils/sessionItemTimeline.mjs";
 import {
   automationTimelineItems,
   collaborationEnvelopeFailure
@@ -205,7 +186,6 @@ import { collaborationDynamicTools, callCollaborationDynamicTool } from "./colla
 import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 import {
-  annotateAgentWorkDetailItems,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
   shouldReportAgentWorkQueued,
@@ -233,18 +213,6 @@ import {
   resumeWorkAfterTransition,
   workspaceTransitionBlocksWork
 } from "./runtime/workspaceTransitionBarrier.mjs";
-import {
-  initialTimelineSnapshot,
-  legacyTimelineSnapshotFrame,
-  nextTimelineEvent,
-  resumedTimelineStreamState,
-  supportsTimelineDelta
-} from "./utils/sessionTimelineDelta.mjs";
-import {
-  SessionTimelineRefreshScheduler
-} from "./utils/sessionTimelineRefreshPolicy.mjs";
-import { SessionTimelinePublishGate } from "./utils/sessionTimelinePublishGate.mjs";
-import { SingleFlight } from "./utils/singleFlight.mjs";
 import { ReplayEventLog } from "./utils/replayEventLog.mjs";
 import { deliveredStateRevision, StateSyncService } from "./application/stateSyncService.mjs";
 import { SessionTimelineChangePublisher } from "./application/sessionTimelineChangePublisher.mjs";
@@ -253,9 +221,7 @@ import {
   DEFAULT_SESSION_HISTORY_WINDOW,
   MAX_SESSION_HISTORY_PAGE,
   normalizeSessionHistoryLimit,
-  pageSessionItems,
-  windowSessionItems,
-  windowSessionItemsAroundAnchor
+  windowSessionItems
 } from "./application/sessionHistoryWindow.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -264,12 +230,6 @@ const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "de
 // 打开会话时前端只渲染尾部一屏，全量 text（千级消息约 1MB+）是切会话延迟的主因。
 const execFileAsync = promisify(execFile);
 const sessions = new Map();
-const sessionPresentationCache = new Map();
-// HTTP prefetch, the selected Session's SSE subscription, and the HTTP
-// recovery timer can converge on the same Provider snapshot. Share that
-// in-flight read so a row click never asks the Provider to reconstruct the
-// same logical timeline two or three times concurrently.
-const unifiedSessionSnapshotLoads = new SingleFlight();
 // The global product-event stream is only a wake-up/side-effect transport; the
 // revisioned state stream and durable Session event log remain authoritative.
 // Keep enough events for ordinary reconnects without retaining every event for
@@ -303,7 +263,6 @@ const reportedUnclassifiedProviderSessionIds = new Set();
 const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
-const sessionTimelineProjection = new SessionTimelineProjection({ store });
 const providerEventProjector = new ProviderEventProjector({ store });
 const providerEventIngestion = new ProviderEventIngestionService({
   store,
@@ -546,7 +505,7 @@ const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
   store,
   resolveAgent: (sessionId) => collaborationCore.getAgentForSession(sessionId)
     ?? ensureCollaborationAgentForSession(
-      listGatewaySessions().find((session) => session.id === sessionId) ?? store.getSession(sessionId)
+      store.getSession(sessionId)
     ),
   enqueueWork: (workItem) => store.enqueueAgentWorkItem(workItem),
   scheduleDrain: (sessionId) => scheduleAgentWorkDrain(sessionId),
@@ -563,6 +522,7 @@ const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
 const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   store,
   providerPort: codexRuntime,
+  sourceTimelineItems: storedTransitionTimelineItems,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
   onRouteCommitted: async (event) => {
@@ -573,6 +533,7 @@ const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
   prepareSessionInput: prepareClaudeProviderSessionInput,
+  onProviderEvent: handleClaudeProviderEventSafely,
   listModels: loadClaudeModels,
   onTurnSettled: handleClaudeTurnSettledSafely,
   prepareWorkspaceTransition: switchClaudeProviderWorkspace,
@@ -590,16 +551,11 @@ const openClackyManager = new OpenClackyManager({
   accessKey: process.env.OPENCLACKY_ACCESS_KEY,
   runtimeDirectory: corptieOpenClackyRuntimePaths.runtimeRoot,
   resolveOwnedSessionIds: () => store.listActiveProviderSessionIds("openclacky"),
-  listStoredSessions: ({ archived }) => store.listSessions({ archived })
-    .filter((session) => session.external?.provider === "openclacky"),
   featureFlags: {
     toolHostBridge: store.settings().openclackyBridge?.toolHostBridge !== false,
     workspaceTransition: store.settings().openclackyBridge?.workspaceTransition !== false
   },
   onToolCall: (input) => toolHostService.execute(input),
-  // Provider reads and local detail-cache changes are not persistence hooks.
-  // Only the real-time event callback below may mutate Corptie projections.
-  onDetailChanged: () => {},
   resolveSessionBootstrap: async (input) => {
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
     const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
@@ -640,60 +596,43 @@ const openClackyManager = new OpenClackyManager({
       const providerBinding = physicalSessionId
         ? store.getAgentSessionBindingByProviderSession("openclacky", physicalSessionId)
         : null;
-      if (providerEvent && providerBinding) {
+      if (providerEvent) {
+        const envelopeBinding = providerBinding ?? {
+          bindingId: `unresolved:openclacky:${physicalSessionId || "unknown"}`,
+          providerId: "openclacky",
+          providerSessionId: physicalSessionId || "unknown",
+          logicalSessionId: logical?.logicalSessionId ?? null,
+          routingVersion: Number(logical?.routingVersion ?? 1)
+        };
         const envelope = mapOpenClackyProviderChange({
           change,
-          binding: providerBinding,
+          binding: envelopeBinding,
           receivedAt: now()
         });
         if (envelope) {
           const ingestion = providerEventIngestion.ingest(envelope);
-          if (ingestion.status === "applied" && ingestion.projection?.session) {
-            sessionPresentationCache.set(sessionId, ingestion.projection.session);
-          }
           if (sessionId && providerEventType === "task_finished") {
             sessionStateDiagnostics.record(sessionId, "persisted", {
               status: store.getSession(sessionId)?.status ?? null,
               eventName: providerEventType
             });
           }
+          if (ingestion.status === "quarantined" && sessionId) {
+            sessionStateDiagnostics.record(sessionId, "providerEventQuarantined", {
+              eventName: providerEventType,
+              code: ingestion.code,
+              bindingId: envelope.bindingId
+            });
+          }
           return;
         }
       }
 
-      // Non-event lifecycle callbacks (for example local creation) may seed a
-      // registered current route, but historical Provider snapshots never do.
-      const activeProviderId = logical?.activeBinding?.providerId ?? "openclacky";
-      if (providerEvent || activeProviderId !== "openclacky") return;
-      const changedSessions = change.session ? [change.session] : (change.sessions ?? []);
-      for (const changedSession of changedSessions) {
-        const changedSessionId = changedSession?.id;
-        if (!changedSessionId) continue;
-        const changedLogical = store.getLogicalSessionByLegacySessionId(changedSessionId);
-        if (changedLogical?.activeBinding?.providerId && changedLogical.activeBinding.providerId !== "openclacky") {
-          continue;
-        }
-        const previous = store.getSession(changedSessionId);
-        store.upsertSession({
-          ...(previous ?? {}),
-          ...changedSession,
-          id: changedSessionId,
-          provider: "openclacky",
-          cwd: changedSession.external?.cwd ?? previous?.external?.cwd,
-          command: "openclacky",
-          agentId: previous?.agentId ?? changedSession.agentId,
-          objectiveId: previous?.objectiveId ?? changedSession.objectiveId,
-          workItemId: previous?.workItemId ?? changedSession.workItemId,
-          sessionKind: previous?.sessionKind ?? changedSession.sessionKind
-        });
-      }
-      emitEvent("ProviderSessionChanged", {
-        provider: "openclacky",
-        type: change.type,
-        eventType: providerEventType || null,
-        sessionId,
-        error: change.error?.message ?? null
-      }, { sessionId, source: { type: "openclacky" } });
+      // Creation/resume/rename/configuration callbacks are command results, not
+      // product-state events. Their application services persist the explicit
+      // command result; only real-time Provider events may project execution or
+      // Timeline state here.
+      if (!providerEvent) return;
     } catch (error) {
       console.error(`[provider-notification] isolated failure provider=openclacky session=${sessionId ?? "unknown"} event=${providerEventType || change.type || "unknown"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
       if (sessionId) {
@@ -728,14 +667,14 @@ const openClackyWorkspaceTransitionManager = new ForkingWorkspaceTransitionManag
       });
     }
   }),
+  sourceTimelineItems: storedTransitionTimelineItems,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
   onRouteCommitted: async (event) => {
     const logical = store.getLogicalSession(event.logicalSessionId);
     const sessionId = logical?.legacySessionId;
     if (!sessionId) return;
-    const previous = listGatewaySessions().find((candidate) => candidate.id === sessionId)
-      ?? store.getSession(sessionId);
+    const previous = store.getSession(sessionId);
     if (previous) {
       emitEvent("SessionWorkspaceSwitched", {
         session: sessionWithLogicalWorkspace(previous, logical),
@@ -752,6 +691,7 @@ const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
     manager: claudeProviderRuntime.manager,
     instructionSources: requiredWorkspaceInstructionSources
   }),
+  sourceTimelineItems: storedTransitionTimelineItems,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
   onRouteCommitted: async (event) => {
@@ -772,14 +712,12 @@ const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtecti
 const openClackyProvider = createOpenClackyProvider(openClackyManager, {
   attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
   prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
-  readSessionUsage: async (reference) => openClackySessionUsage(reference.providerSessionId)
+  readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null
 });
 const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   claudeProvider: claudeProviderRuntime,
   codexOperations: {
     prepareSessionInput: prepareCodexProviderSessionInput,
-    listSessions: listCodexProviderSessions,
-    readSession: readCodexProviderSession,
     createSession: createCodexProviderSession,
     resumeSession: resumeCodexProviderSession,
     prepareExecution: prepareCodexProviderExecution,
@@ -843,12 +781,11 @@ openClackyManager.onProbe = () => {
   agentProviderRegistry.refreshProvider(createOpenClackyProvider(openClackyManager, {
     attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
     prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
-    readSessionUsage: async (reference) => openClackySessionUsage(reference.providerSessionId)
+    readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null
   }));
 };
 const sessionBindingRepository = new SessionBindingRepository({
   store,
-  findSession: (sessionId) => listGatewaySessions().find((session) => session.id === sessionId),
   normalizeLegacySessionId: normalizeSessionId,
   resolveProviderId: (providerId, options = {}) => agentProviderRegistry.resolveId(providerId, options)
 });
@@ -999,9 +936,7 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   hasActiveRun: (session) => sessionHasActiveRun(session),
   resolveTargetContext: async ({ reference, logical }) => {
-    const session = reference.metadata?.session
-      ?? sessionPresentationCache.get(reference.sessionId)
-      ?? store.getSession(reference.sessionId);
+    const session = reference.metadata?.session ?? store.getSession(reference.sessionId);
     const agent = collaborationCore.getAgentForSession(reference.sessionId)
       ?? ensureCollaborationAgentForSession(session);
     return {
@@ -1026,12 +961,7 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
       sessionProjection: created
     };
   },
-  onTransitionEvent: (type, payload) => {
-    if (type === "ProviderSwitched") {
-      sessionPresentationCache.delete(payload.sessionId);
-    }
-    emitEvent(type, payload, { sessionId: payload.sessionId });
-  }
+  onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
 });
 const sessionWorktrees = new SessionWorktreeService({
   gitWorkspaces,
@@ -1496,8 +1426,6 @@ function knownSessionsForTitleValidation() {
   for (const session of visibleStoredSessionProjections(store, [
     ...store.listSessions({ archived: false }),
     ...store.listSessions({ archived: true })
-  ]).concat([
-    ...listGatewaySessions()
   ])) {
     if (session?.id) byId.set(session.id, session);
   }
@@ -1666,7 +1594,7 @@ async function commitManagedCodexWorkspaceRoute(event) {
   const legacySessionId = logical?.legacySessionId;
   if (!legacySessionId) return;
   workspaceRoutePreparationCache.invalidate(logical.logicalSessionId);
-  const previous = sessionPresentationCache.get(legacySessionId) ?? store.getSession(legacySessionId);
+  const previous = store.getSession(legacySessionId);
   if (!previous) return;
   const session = sessionWithLogicalWorkspace({
     ...previous,
@@ -1683,10 +1611,25 @@ async function commitManagedCodexWorkspaceRoute(event) {
   }, { sessionId: legacySessionId });
 }
 
-function lastCompletedCodexTurnId(thread) {
-  return (thread?.turns ?? []).slice().reverse().find((turn) => {
-    return ["completed", "complete"].includes(turn?.status);
-  })?.id ?? null;
+function sessionTransitionCheckpoint(sessionId, bindingId = null) {
+  const unsettled = store.listUnsettledSessionTurns(sessionId);
+  const active = [...unsettled].reverse().find((turn) => !bindingId || turn.binding_id === bindingId)
+    ?? unsettled.at(-1)
+    ?? null;
+  const completed = store.latestCompletedSessionTurn(sessionId, bindingId)
+    ?? store.latestCompletedSessionTurn(sessionId);
+  return {
+    activeTurnId: active?.turn_id ?? null,
+    lastCompletedTurnId: completed?.turn_id ?? null
+  };
+}
+
+async function storedTransitionTimelineItems({ sessionId, lastCompletedTurnId }) {
+  if (!sessionId) return [];
+  const items = store.getItems(sessionId, 500);
+  if (!lastCompletedTurnId) return items;
+  const lastIndex = items.findLastIndex((item) => item.turnId === lastCompletedTurnId);
+  return lastIndex >= 0 ? items.slice(0, lastIndex + 1) : items;
 }
 
 function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
@@ -1781,9 +1724,7 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       const targetCwd = worktree.canonicalPath || worktree.path;
       if (!targetCwd || logical.activeBinding?.boundCwd === targetCwd) continue;
       if (reconcilingWorkspacePaths.has(logical.logicalSessionId)) continue;
-      const session = logical.legacySessionId
-        ? sessionPresentationCache.get(logical.legacySessionId) ?? store.getSession(logical.legacySessionId)
-        : null;
+      const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
       if (sessionHasActiveRun(session)) {
         emitEvent("SessionWorkspacePathRebindDeferred", {
           sessionId: logical.legacySessionId,
@@ -1797,16 +1738,10 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
         continue;
       }
       if (options.verifyProviderIdle) {
-        try {
-          const response = await codexRuntime.readThread(logical.activeThreadId, {
-            includeTurns: true
-          });
-          const latest = (response.thread?.turns ?? response.turns ?? []).at(-1);
-          if (["inProgress", "in_progress", "running"].includes(latest?.status)) continue;
-        } catch (error) {
-          console.warn(`[workspace-route] path rebind preflight failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
-          continue;
-        }
+        const unsettled = logical.legacySessionId
+          ? store.listUnsettledSessionTurns(logical.legacySessionId)
+          : [];
+        if (unsettled.length > 0) continue;
       }
       reconcilingWorkspacePaths.add(logical.logicalSessionId);
       try {
@@ -1879,14 +1814,10 @@ function sessionTitleErrorPayload(error, extra = {}) {
   };
 }
 
-function safeTurnFileChanges(thread, turnId, cwd) {
-  const turn = (thread.turns ?? []).find((candidate) => candidate.id === turnId);
-  if (!turn) {
-    throw new Error("Codex turn not found.");
-  }
-  const changes = (turn.items ?? [])
+function safeTurnFileChanges(items, cwd) {
+  const changes = (items ?? [])
     .filter((item) => item.type === "fileChange")
-    .flatMap((item) => item.changes ?? [])
+    .flatMap((item) => item.fileChanges ?? [])
     .map((change) => ({
       path: normalizeRelativeDiffPath(change.path, cwd),
       kind: typeof change.kind === "string" ? change.kind : (change.kind?.type ?? "update"),
@@ -1912,9 +1843,11 @@ function normalizeRelativeDiffPath(value, cwd) {
   return path;
 }
 
-function turnDiffFor(threadId, turnId, changes) {
-  const liveDiff = codexRuntime.turnDiffsForThread(threadId).get(turnId);
-  return liveDiff || changes.map(unifiedDiffForChange).filter(Boolean).join("\n");
+function turnDiffFor(items, changes) {
+  const persistedDiff = [...(items ?? [])].reverse().find((item) => {
+    return typeof item?.turnDiff === "string" && item.turnDiff.trim();
+  })?.turnDiff;
+  return persistedDiff || changes.map(unifiedDiffForChange).filter(Boolean).join("\n");
 }
 
 function unifiedDiffForChange(change) {
@@ -2142,6 +2075,16 @@ function emitEvent(type, payload, options = {}) {
           payload,
           createdAt
         });
+        // Supplementary product events are projected once, at write time,
+        // into the same session_items authority as Provider messages. Reads
+        // must never reconstruct them by scanning session_events or querying
+        // automation state for every active Session.
+        for (const item of productTimelineItemsForEvent(type, payload, sessionEvent, sessionId)) {
+          store.upsertTimelineItemProjection(sessionId, {
+            ...item,
+            rawMetadataJSON: JSON.stringify(item)
+          });
+        }
       }
       outbox = store.enqueueEventOutbox({
         outboxId: `product-event:${durableEventId}`,
@@ -2199,6 +2142,19 @@ function emitEvent(type, payload, options = {}) {
     });
   }
   return event;
+}
+
+function productTimelineItemsForEvent(type, payload, sessionEvent, sessionId) {
+  const items = automationTimelineItems([sessionEvent]);
+  if (["AgentWorkQueued", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
+    const item = agentWorkTimelineItem(payload?.workItem, sessionId, payload?.queuePosition);
+    if (item) items.push(item);
+  }
+  if (["CollaborationConfirmationRequested", "CollaborationConfirmationResolved"].includes(type)) {
+    const item = collaborationConfirmationTimelineItem(payload?.confirmation, sessionId);
+    if (item) items.push(item);
+  }
+  return items;
 }
 
 function resolveProviderEventBinding(event) {
@@ -2278,15 +2234,15 @@ function publishCommittedProviderWake(providerEvent, createdAt) {
 function dshLiveEvents(sessionEvent) {
   const sourceSeq = Number(sessionEvent?.sequence ?? 0);
 
-  if (sessionEvent?.type === "SessionUserMessageCreated" || sessionEvent?.type === "user/message") {
+  if (sessionEvent?.type === "user/message") {
     if (dshLiveTurns.has(sessionEvent?.sessionId)) return [];
-    const mapped = mapDshEvent(sessionEvent) ?? mapDshFallbackEvent(sessionEvent);
+    const mapped = mapDshEvent(sessionEvent);
     if (!mapped) return [];
     return [{ ...mapped, seq: sourceSeq }];
   }
 
-  if (sessionEvent?.type === "CodexThreadCompleted" || sessionEvent?.type === "assistant/message") {
-    const mapped = mapDshEvent(sessionEvent) ?? mapDshFallbackEvent(sessionEvent);
+  if (sessionEvent?.type === "assistant/message") {
+    const mapped = mapDshEvent(sessionEvent);
     if (!mapped) return [];
     const live = dshLiveTurns.get(sessionEvent?.sessionId);
     if (live) {
@@ -2374,12 +2330,13 @@ function dshRunningStatusForEvent(type) {
 function controlPlaneSnapshot() {
   // Strictly read the durable projection. Provider callbacks own writes before
   // publishing wake events; a client snapshot/detail read is never a repair
-  // hook. In particular, listLiveGatewaySessions() can classify and persist an
-  // unknown Provider object, so it must not be reachable from this path.
-  const persisted = visibleStoredSessionProjections(store, [
-    ...store.listSessions({ archived: false }),
-    ...store.listSessions({ archived: true })
-  ]);
+  // hook. Provider transport caches must not be reachable from this path.
+  // Archived Sessions are deliberately absent from the resident global state
+  // stream. Their durable rows and Timeline remain available through the
+  // explicit archived list/detail endpoints and rejoin this projection when
+  // restored. Keeping them here made every archived row a permanent client
+  // subscription despite the active-only synchronization contract.
+  const persisted = activeStoredSessionProjections(store);
   const latestMessageTimes = store.listLatestSessionMessageTimes();
   const messageCursors = store.listSessionMessageCursors();
   const timelineRevisions = store.listSessionTimelineRevisions();
@@ -2398,7 +2355,7 @@ function controlPlaneSnapshot() {
       `openclacky=[${detail}]`);
   }
   return {
-    sessions: sortSessionsForList(withPendingCollaborationConfirmations([...sessionsById.values()])),
+    sessions: sortSessionsForList([...sessionsById.values()]),
     workItems: store.listWorkItems().map(presentWorkItemAcceptance),
     objectives: store.listObjectives(),
     agents: store.listAgents().map((agent) => ({
@@ -2453,10 +2410,6 @@ function publishStateChangesIfNeeded() {
 }
 
 function scheduleStateSyncPublish() {
-  if (process.env.CORPTIE_OPTIMIZED_STATE_SYNC === "0") {
-    setImmediate(publishStateChangesIfNeeded);
-    return;
-  }
   if (stateSyncClients.size === 0 || stateSyncPublishTimer) return;
   // Collapse a burst of Provider item/progress events into one revision-aware
   // delivery. This avoids rebuilding the control-plane projection once per
@@ -2494,103 +2447,6 @@ function sessionIdFromEventPayload(payload = {}) {
   });
 }
 
-function streamCanonicalSessionSnapshots(request, response, requestedSessionId, eventSessionId = requestedSessionId) {
-  response.writeHead(200, {
-    "content-type": "text/event-stream; charset=utf-8",
-    "cache-control": "no-cache, no-transform",
-    connection: "keep-alive"
-  });
-  response.flushHeaders?.();
-  let closed = false;
-  let streamState = null;
-  let legacySignature = null;
-  let lastSession = null;
-  let refreshScheduler = null;
-  let publishGate = null;
-  const usesTimelineDelta = supportsTimelineDelta(request.headers);
-  const usesTimelineResume = String(request.headers["x-corptie-timeline-protocol"] ?? "") === "2";
-  const resumeToken = String(request.headers["x-corptie-timeline-snapshot-token"] ?? "").slice(0, 256);
-  const requestedResumeRevision = Number(request.headers["x-corptie-timeline-revision"] ?? 0);
-
-  const readAndPublish = async ({ fullConsistency = true } = {}) => {
-    try {
-      // The unified snapshot overlays Corptie's durable Agent work queue onto
-      // the Provider transcript. Both HTTP recovery and the live event stream
-      // must read the same authority or reconnects can incorrectly erase the
-      // queued state until the next explicit snapshot request.
-      const session = await getUnifiedSessionSnapshot(requestedSessionId);
-      lastSession = session;
-      if (usesTimelineDelta) {
-        const resumedState = !streamState && usesTimelineResume
-          ? resumedTimelineStreamState(session, {
-            snapshotToken: resumeToken,
-            revision: requestedResumeRevision
-          })
-          : null;
-        if (resumedState) {
-          streamState = resumedState;
-          response.write(`id: ${requestedResumeRevision}\nevent: ready\ndata: ${JSON.stringify({
-            protocolVersion: 2,
-            revision: requestedResumeRevision,
-            resumed: true
-          })}\n\n`);
-          return;
-        }
-        const result = streamState
-          ? nextTimelineEvent(streamState, session, { fullConsistency })
-          : initialTimelineSnapshot(
-            session,
-            Math.max(1, store.lastSessionEventSequence(eventSessionId))
-          );
-        streamState = result.state;
-        if (result.event) {
-          response.write(`id: ${result.event.revision}\nevent: ${result.event.name}\ndata: ${JSON.stringify(result.event.data)}\n\n`);
-        }
-      } else {
-        const frame = legacyTimelineSnapshotFrame(session);
-        if (frame.signature !== legacySignature) {
-          legacySignature = frame.signature;
-          response.write(`event: snapshot\ndata: ${frame.payload}\n\n`);
-        }
-      }
-    } catch (error) {
-      response.write(`event: error\ndata: ${JSON.stringify({
-        error: error.message,
-        code: error.code ?? null
-      })}\n\n`);
-    }
-  };
-
-  const heartbeatTimer = setInterval(() => {
-    if (!closed) response.write(`: heartbeat ${Date.now()}\n\n`);
-  }, 15_000);
-  heartbeatTimer.unref?.();
-  refreshScheduler = new SessionTimelineRefreshScheduler({
-    sessionId: eventSessionId,
-    supportsDelta: usesTimelineDelta,
-    onRefresh: (options) => void publishGate?.request(options)
-  });
-  publishGate = new SessionTimelinePublishGate({
-    read: readAndPublish,
-    onSettled: () => refreshScheduler?.schedule(lastSession)
-  });
-  const wakeForSessionEvent = (event) => {
-    refreshScheduler?.wake(event);
-  };
-  if (usesTimelineDelta) sessionEventListeners.add(wakeForSessionEvent);
-  const close = () => {
-    if (closed) return;
-    closed = true;
-    publishGate?.close();
-    refreshScheduler?.close();
-    clearInterval(heartbeatTimer);
-    sessionEventListeners.delete(wakeForSessionEvent);
-  };
-  request.once("close", close);
-  response.once("close", close);
-  void publishGate.request();
-}
-
 function updateMockProgress() {
   for (const session of sessions.values()) {
     if (session.status !== "running") {
@@ -2614,37 +2470,6 @@ function updateMockProgress() {
       emitEvent("TaskProgressChanged", { session });
     }
   }
-}
-
-function enrichCodexDetailChoiceOptions(detail) {
-  const items = Array.isArray(detail?.items) ? detail.items : [];
-  if (detail?.status === "running") {
-    return detail;
-  }
-  const settings = store.settings();
-  const choiceParser = {
-    ...(settings.choiceParser ?? {}),
-    agentProxy: settings.agentProxy
-  };
-  const parserEnabled = choiceParser.provider && choiceParser.provider !== "disabled";
-  if (!parserEnabled) {
-    return detail;
-  }
-
-  const candidates = items
-    .filter((item) => item.type === "agentMessage" && item.text && !(Array.isArray(item.options) && item.options.length >= 2))
-    .filter((item) => choiceParserShouldUseModel(item.text))
-    .slice(-2);
-  for (const item of candidates) {
-    const cacheKey = choiceOptionsCacheKey(item.text, choiceParser);
-    const cached = codexChoiceOptionsCache.get(cacheKey);
-    if (cached) {
-      item.options = cached.map((option) => ({ ...option }));
-      continue;
-    }
-    scheduleCodexChoiceParse(detail.id, item.text, choiceParser, cacheKey, currentChoiceGeneration(`codex:${detail.id}`));
-  }
-  return detail;
 }
 
 function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey, generation = currentChoiceGeneration(sessionIdForProviderThread(threadId))) {
@@ -2733,39 +2558,9 @@ function scheduleCodexChoiceParseForText(threadId, text) {
   scheduleCodexChoiceParse(threadId, cleanText, choiceParser, cacheKey, generation);
 }
 
-function syncManagedCodexSessionFromDetail(threadId, detail) {
-  const sessionId = sessionIdForProviderThread(threadId);
-  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-  if (!session || !detail) {
-    return null;
-  }
-  const latestAgentMessage = Array.isArray(detail.items)
-    ? detail.items.slice().reverse().find((item) => item.type === "agentMessage" && item.text)
-    : null;
-  const authoritativeStatus = detail.status ?? session.status;
-  const nextSession = reconcileAuthoritativeRunState({
-    ...session,
-    status: authoritativeStatus,
-    progress: detail.status === "running" || detail.status === "blocked" ? 0.5 : 1,
-    summary: latestAgentMessage?.text ?? session.summary,
-    suggestedOptions: session.suggestedOptions ?? null,
-    activityStatus: detail.activityStatus ?? (detail.status === "running" ? session.activityStatus ?? null : null),
-    updatedAt: detail.updatedAt ?? session.updatedAt,
-    capabilities: detail.capabilities ?? session.capabilities,
-    external: {
-      ...session.external,
-      currentModel: detail.currentModel ?? session.external?.currentModel ?? null,
-      currentReasoningLevel: detail.currentReasoningLevel ?? session.external?.currentReasoningLevel ?? null,
-      rawStatus: detail.rawStatus ?? session.external?.rawStatus
-    }
-  }, authoritativeStatus);
-  upsertManagedCodexSession(nextSession);
-  return nextSession;
-}
-
 function applyCodexChoiceOptionsToManagedSession(threadId, text, options, generation = currentChoiceGeneration(sessionIdForProviderThread(threadId))) {
   const sessionId = sessionIdForProviderThread(threadId);
-  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+  const session = store.getSession(sessionId);
   if (!session) {
     return null;
   }
@@ -2791,7 +2586,6 @@ function applyCodexChoiceOptionsToManagedSession(threadId, text, options, genera
   };
   upsertManagedCodexSession(nextSession);
   store.setActiveChoicePrompt(sessionId, text, nextSession.suggestedOptions);
-  emitEvent("CodexThreadProgressChanged", { session: nextSession, threadId, method: "choice-options-updated" });
   return nextSession;
 }
 
@@ -2816,7 +2610,6 @@ function upsertManagedCodexSession(session, preferredAgentId = null) {
     cwd: managedSession.external?.cwd,
     command: managedSession.external?.source ?? "codex-app-server"
   });
-  sessionPresentationCache.set(managedSession.id, managedSession);
   ensureCollaborationAgentForSession(managedSession, preferredAgentId);
   return managedSession;
 }
@@ -2969,7 +2762,7 @@ async function claudeRuntimeOptionsForSession(providerSessionId) {
 
 async function collaborationThreadOptionsForSession(sessionId) {
   if (!sessionId) return {};
-  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+  const session = store.getSession(sessionId);
   const agent = collaborationCore.getAgentForSession(sessionId)
     ?? ensureCollaborationAgentForSession(session);
   if (!agent?.agentId) return {};
@@ -3237,40 +3030,6 @@ function withSessionMessageCursors(session, cursors = null, timelineRevision = 0
   };
 }
 
-function withPendingCollaborationConfirmations(sessions = []) {
-  return sessions.map((session) => {
-    const confirmation = collaborationCore.pendingTaskConfirmationForSession(session.id);
-    if (!confirmation) return session;
-    return {
-      ...session,
-      pendingCollaborationConfirmation: {
-        confirmationId: confirmation.confirmationId,
-        initiatorAgentId: confirmation.initiatorAgentId,
-        initiatorName: confirmation.initiatorAgentName,
-        recipientAgentId: confirmation.recipientAgentId,
-        recipientName: confirmation.recipientAgentName,
-        sourceObjectiveId: confirmation.sourceObjectiveId,
-        sourceObjectiveName: confirmation.sourceObjectiveName,
-        targetObjectiveId: confirmation.targetObjectiveId,
-        targetObjectiveName: confirmation.targetObjectiveName,
-        initiatorSessionId: confirmation.initiatorSessionId,
-        initiatorSessionTitle: confirmation.initiatorSessionTitle,
-        initiatorSessionKind: confirmation.initiatorSessionKind,
-        initiatorWorkItemId: confirmation.initiatorWorkItemId,
-        recipientSessionId: confirmation.recipientSessionId,
-        recipientSessionTitle: confirmation.recipientSessionTitle,
-        recipientSessionKind: confirmation.recipientSessionKind,
-        recipientWorkItemId: confirmation.recipientWorkItemId,
-        routeStatus: confirmation.request.routeStatus ?? "pending",
-        routingVersion: confirmation.request.routingVersion ?? null,
-        taskTitle: confirmation.request.title,
-        summary: confirmation.request.summary,
-        acceptanceCriteria: confirmation.request.acceptanceCriteria ?? []
-      }
-    };
-  });
-}
-
 function handleCodexAppServerNotificationSafely(message) {
   const method = message?.method ?? "unknown";
   const threadId = message?.params?.threadId ?? null;
@@ -3318,43 +3077,40 @@ function handleCodexAppServerNotification(message) {
   }
   const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
   const sessionId = logicalRoute?.legacySessionId ?? `codex:${threadId}`;
-  const managedSession = sessionPresentationCache.get(sessionId);
+  const managedSession = store.getSession(sessionId);
   if (method === "thread/name/updated") {
-    const title = typeof params.threadName === "string" ? params.threadName.trim() : "";
-    const current = managedSession ?? store.getSession(sessionId);
-    if (!title || !current) {
-      return;
-    }
-    try {
-      assertSessionTitleAvailable(knownSessionsForTitleValidation(), title, sessionId);
-    } catch (error) {
-      console.log(`[session-title] ignored duplicate provider rename session=${sessionId} title=${JSON.stringify(title)} conflict=${error.conflictingSessionId ?? "unknown"}`);
-      return;
-    }
-    const nextSession = { ...current, title, updatedAt: now() };
-    upsertManagedCodexSession(nextSession);
-    store.renameSession(sessionId, title);
-    emitEvent("SessionRenamed", { session: nextSession, source: { type: "codex-app-server" } });
+    // The Provider's native Thread title is execution metadata, not Corptie
+    // product state. User/API rename commands persist the Corptie title and may
+    // mirror it outward; a reverse Provider callback must never overwrite it.
     return;
   }
   // Provider-switch route commits deliberately invalidate the old Provider's
   // cached projection. The durable stable projection remains a valid base for
   // the first notification from the new active thread and must not cause that
   // notification (especially turn/completed) to be dropped.
-  const session = managedSession ?? store.getSession(sessionId);
+  const session = managedSession;
   if (!session) {
     return;
   }
 
   const providerBinding = store.getAgentSessionBindingByProviderSession("codex-app-server", threadId);
-  const providerEnvelope = providerBinding
-    ? mapCodexProviderNotification({
-        message,
-        binding: providerBinding,
-        liveItems: codexRuntime.liveItemsForThread(threadId),
-        receivedAt: now()
-      })
-    : null;
+  // Supported Provider notifications always enter the same Inbox, including
+  // notifications whose Binding cannot be resolved. The synthetic identity is
+  // intentionally unresolvable so Ingestion durably quarantines the event
+  // instead of falling back to a second Timeline/Session projection.
+  const envelopeBinding = providerBinding ?? {
+    bindingId: `unresolved:codex-app-server:${threadId}`,
+    providerId: "codex-app-server",
+    providerSessionId: threadId,
+    logicalSessionId: logicalRoute?.id ?? null,
+    routingVersion: Number(logicalRoute?.routingVersion ?? 1)
+  };
+  const providerEnvelope = mapCodexProviderNotification({
+    message,
+    binding: envelopeBinding,
+    liveItems: codexRuntime.liveItemsForThread(threadId),
+    receivedAt: now()
+  });
   if (providerEnvelope) {
     const ingestion = providerEventIngestion.ingest(providerEnvelope);
     if (ingestion.status === "applied") {
@@ -3364,225 +3120,19 @@ function handleCodexAppServerNotification(message) {
         logicalRoute,
         threadId
       });
-    }
-    return;
-  }
-
-  if (method === "thread/tokenUsage/updated") {
-    const context = codexRuntime.tokenUsageForThread(threadId);
-    if (context) {
-      emitEvent("SessionUsageUpdated", {
-        sessionId,
-        threadId,
-        turnId: params.turnId ?? session.external?.activeTurnId ?? null,
-        source: "codex-app-server",
-        isFinal: false,
-        context
-      }, { sessionId, source: { type: "codex-app-server" } });
-    }
-    return;
-  }
-
-  const liveItems = codexRuntime.liveItemsForThread(threadId);
-  const latestAgentMessage = liveItems.slice().reverse().find((item) => item.type === "agentMessage" && item.text);
-  const nowIso = now();
-
-  // Provider notifications own materialization. A client snapshot read must
-  // never be what first makes a background message durable in Corptie.
-  const timelineChanged = sessionTimelineProjection.persistChangedItem({
-    sessionId,
-    eventName: method,
-    itemId: params.item?.id,
-    liveItems
-  });
-  const lifecycleDecision = providerLifecycleMetadataDecision({
-    eventName: method,
-    eventTurnId: params.turn?.id ?? params.turnId ?? null,
-    session
-  });
-  if (!lifecycleDecision.applyMetadata
-      && ["item/started", "item/completed", "turn/completed"].includes(method)) {
-    if (timelineChanged) {
-      emitEvent("SessionTimelineChanged", {
-        sessionId,
-        threadId,
-        itemId: params.item?.id ?? null,
-        turnId: params.turn?.id ?? params.turnId ?? null,
-        reason: lifecycleDecision.reason
-      }, {
-        sessionId,
-        source: { type: "codex-app-server" }
+    } else if (ingestion.status === "quarantined") {
+      sessionStateDiagnostics.record(sessionId, "providerEventQuarantined", {
+        eventName: method,
+        code: ingestion.code,
+        bindingId: providerEnvelope.bindingId
       });
     }
-    sessionStateDiagnostics.record(sessionId, "staleProviderEvent", {
-      eventName: method,
-      turnId: params.turn?.id ?? params.turnId ?? null,
-      reason: lifecycleDecision.reason,
-      timelineChanged
-    });
-    return;
-  }
-
-  if (method === "corptie/codexApprovalRequested") {
-    const approvalItem = liveItems.slice().reverse().find((item) => item.type === "approval" && Array.isArray(item.options) && item.options.length > 0);
-    const nextSession = {
-      ...session,
-      status: "blocked",
-      progress: 0.5,
-      suggestedOptions: approvalItem?.options ?? session.suggestedOptions,
-      suggestedPrompt: approvalItem?.text ?? session.suggestedPrompt,
-      activityStatus: "Waiting for approval",
-      updatedAt: nowIso,
-      capabilities: {
-        ...(session.capabilities ?? {}),
-        canInterrupt: true
-      }
-    };
-    upsertManagedCodexSession(nextSession);
-    emitEvent("CodexThreadApprovalRequested", {
-      session: nextSession,
-      threadId,
-      requestId: params.requestId ?? null
-    });
-    return;
-  }
-
-  if (method === "turn/started") {
-    const turn = params.turn ?? {};
-    const nextSession = {
-      ...session,
-      status: "running",
-      progress: 0.5,
-      activityStatus: "Working",
-      updatedAt: nowIso,
-      capabilities: {
-        ...(session.capabilities ?? {}),
-        canInterrupt: true
-      },
-      external: {
-        ...session.external,
-        activeTurnId: turn.id ?? session.external?.activeTurnId ?? null,
-        rawStatus: turn.status ?? "running"
-      }
-    };
-    upsertManagedCodexSession(nextSession);
-    emitEvent("CodexThreadProgressChanged", { session: nextSession, threadId, method });
-    return;
-  }
-
-  if (method === "item/started" || method === "item/completed") {
-    const nextSession = {
-      ...session,
-      status: "running",
-      progress: 0.5,
-      summary: latestAgentMessage?.text ?? session.summary,
-      activityStatus: readableCodexActivity(params.item?.type ?? params.item?.title ?? method),
-      updatedAt: nowIso,
-      capabilities: {
-        ...(session.capabilities ?? {}),
-        canInterrupt: true
-      },
-      external: {
-        ...session.external,
-        activeTurnId: params.turnId ?? session.external?.activeTurnId ?? null
-      }
-    };
-    upsertManagedCodexSession(nextSession);
-    emitEvent("CodexThreadProgressChanged", { session: nextSession, threadId, method });
-    return;
-  }
-
-  if (method === "turn/completed") {
-    const turn = params.turn ?? {};
-      const failed = Boolean(turn.error) || turn.status === "failed";
-      const cancelled = turn.status === "interrupted" || turn.status === "cancelled";
-      let nextSession = {
-        ...session,
-        status: failed ? "failed" : (cancelled ? "cancelled" : "complete"),
-        progress: 1,
-        summary: latestAgentMessage?.text ?? session.summary,
-        activityStatus: null,
-        updatedAt: nowIso,
-        capabilities: {
-          ...(session.capabilities ?? {}),
-          canInterrupt: false
-        },
-        external: {
-          ...session.external,
-          activeTurnId: null,
-          lastSettledTurnId: turn.id ?? session.external?.lastSettledTurnId ?? null,
-          rawStatus: turn.status ?? (failed ? "failed" : (cancelled ? "cancelled" : "complete"))
-        }
-      };
-      nextSession = upsertManagedCodexSession(nextSession);
-      // Unclassified Provider projections are intentionally excluded from the
-      // product Session model; do not publish a terminal product event for one.
-      if (!nextSession) return;
-      if (!failed && !cancelled && latestAgentMessage?.text) {
-        scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
-      }
-      emitEvent(failed ? "CodexThreadFailed" : (cancelled ? "CodexThreadCancelled" : "CodexThreadCompleted"), {
-        session: nextSession,
-        threadId,
-        turn,
-        hasAgentMessage: Boolean(latestAgentMessage?.text)
-      }, {
-        sessionId: nextSession.id,
-        source: { type: "codex-app-server" },
-        eventId: turn.id
-          ? `codex-app-server:${nextSession.id}:${turn.id}:turn-${failed ? "failed" : (cancelled ? "cancelled" : "completed")}`
-          : null
-      });
-      const completedWork = store.getAgentWorkItemForTurn(nextSession.id, turn.id)
-        ?? store.getRunningAgentWorkItemForSession(nextSession.id);
-      if (completedWork?.status === "running") {
-        const workStatus = failed ? "failed" : (cancelled ? "cancelled" : "completed");
-        const updatedWork = store.updateAgentWorkItem(completedWork.workItemId, {
-          status: workStatus,
-          lastError: turn.error?.message ?? null
-        });
-        emitEvent("AgentWorkCompleted", { sessionId: nextSession.id, workItem: updatedWork }, {
-          sessionId: nextSession.id,
-          source: completedWork.source
-        });
-        workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
-      }
-      settleEntityWorkItemFromSession(nextSession);
-      const agent = collaborationCore.getAgentForSession(nextSession.id);
-      if (!failed && !cancelled) {
-        refreshWorkspaceInventoryAfterTurn(logicalRoute);
-        const continuation = continuePendingWorkspaceTransition(logicalRoute, turn.id);
-        const providerSwitch = continuePendingProviderSwitch(logicalRoute);
-        resumeWorkAfterTransition(continuation, () => {
-          scheduleAgentWorkDrain(nextSession.id);
-        });
-        if (providerSwitch) {
-          providerSwitch.then(() => scheduleAgentWorkDrain(nextSession.id));
-        }
-      } else if (agent) {
-        scheduleAgentWorkDrain(nextSession.id);
-      }
-      return;
-    }
-
-  if (method === "error") {
-    const nextSession = {
-      ...session,
-      status: params.willRetry ? "running" : "failed",
-      progress: params.willRetry ? 0.5 : 1,
-      summary: params.error?.message ?? session.summary,
-      activityStatus: params.willRetry ? "Reconnecting" : null,
-      updatedAt: nowIso
-    };
-    upsertManagedCodexSession(nextSession);
-    emitEvent("CodexThreadError", { session: nextSession, threadId, error: params.error });
   }
 }
 
 function handleCommittedCodexProviderEvent({ event, projection, logicalRoute, threadId }) {
   const nextSession = projection?.session;
   if (!nextSession) return;
-  sessionPresentationCache.set(nextSession.id, nextSession);
 
   const terminal = ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.type);
   if (!terminal) return;
@@ -3626,23 +3176,6 @@ function handleCommittedCodexProviderEvent({ event, projection, logicalRoute, th
   }
 }
 
-function readableCodexActivity(value = "") {
-  const text = String(value || "");
-  switch (text) {
-    case "reasoning":
-      return "Reasoning";
-    case "commandExecution":
-      return "Running command";
-    case "webSearch":
-      return "Searching";
-    case "mcpToolCall":
-    case "dynamicToolCall":
-      return "Using tool";
-    default:
-      return "Working";
-  }
-}
-
 function codexAppServerSessionCapabilities(overrides = {}) {
   return {
     canSend: true,
@@ -3655,46 +3188,7 @@ function codexAppServerSessionCapabilities(overrides = {}) {
   };
 }
 
-async function findCodexRolloutBySessionId(sessionId) {
-  if (!sessionId) {
-    return null;
-  }
-  const roots = [
-    join(corptieCodexRuntimePaths.codexHome, "sessions"),
-    join(os.homedir(), ".codex", "sessions")
-  ];
-  for (const root of [...new Set(roots)]) {
-    const files = await listRolloutFiles(root);
-    for (const path of files) {
-      if (!path.includes(sessionId)) continue;
-      const meta = await readSessionMeta(path).catch(() => null);
-      if (meta?.id === sessionId) {
-        return {
-          id: sessionId,
-          path,
-          cwd: meta.cwd,
-          timestampMs: codexTimestampMs(meta.timestamp)
-        };
-      }
-    }
-  }
-  return null;
-}
-
-/**
- * 从 codex rollout 读取某个 Corptie session 的干净逐条对话消息。
- *
- * Corptie 的 session_events 溯源里，codex provider 的 assistant 逐条回复正文从未
- * 以 assistant/message surface 事件持久化（只在 turn/completed 时把最后一个 agent
- * message 写入 session.summary，随每个进度事件重复广播）。因此 DSH session.history
- * 在 surface 事件缺失时，需要回退到 codex rollout JSONL（真正的正文持久化）读取
- * 完整对话。sessionId 形如 "codex:<threadId>"，去掉前缀即 codex thread id。
- *
- * @param {string} sessionId - Corptie session id（"codex:<threadId>" 或裸 threadId）
- * @returns {Promise<Array<{role:'user'|'assistant', text:string}>>}
- *   对话消息数组；找不到 rollout 或读取失败时返回空数组（由调用方决定降级）。
- */
-async function readCodexSessionConversation(sessionId) {
+async function readStoredSessionConversation(sessionId) {
   return store.getItems(sessionId, 500).flatMap((item) => {
     if (item.type === "userMessage") return [{ role: "user", text: item.text }];
     if (item.type === "agentMessage") return [{ role: "assistant", text: item.text }];
@@ -3702,12 +3196,7 @@ async function readCodexSessionConversation(sessionId) {
   });
 }
 
-/**
- * 读取某个 Corptie session 的完整 codex rollout 时间线（对话 + 工具调用/结果），
- * 供 DSH 轨迹视图还原工具调用轨迹。与 readCodexSessionConversation 共用 rollout
- * 定位逻辑，只是用 parseCodexRolloutTimeline 保留工具调用/结果条目。
- */
-async function readCodexSessionTimeline(sessionId) {
+async function readStoredSessionTimeline(sessionId) {
   return store.getItems(sessionId, 500);
 }
 
@@ -3717,61 +3206,20 @@ async function ensureCodexSessionPermissions(session) {
   const needsRuntimeConfig = !hasCodexSessionRuntimeConfig(session);
   if (!needsPermissions && !needsRuntimeConfig) return session;
 
-  const threadId = String(session.id ?? session.external?.threadId ?? "").replace(/^codex:/, "");
-  const rollout = await findCodexRolloutBySessionId(threadId).catch(() => null);
-  const rolloutText = rollout?.path
-    ? await readFile(rollout.path, "utf8").catch(() => "")
-    : "";
-  const recoveredPermissions = needsPermissions
-    ? readInitialCodexPermissionsFromRollout(rolloutText)
-    : null;
-  const rolloutRuntime = needsRuntimeConfig
-    ? readLatestCodexRuntimeConfigFromRollout(rolloutText)
-    : null;
-  const defaultRuntime = needsRuntimeConfig
-    ? await resolvedNewCodexRuntimeConfig().catch(() => ({}))
-    : null;
-  const recoveredRuntime = needsRuntimeConfig
-    ? {
-        model: rolloutRuntime?.model ?? defaultRuntime?.model ?? null,
-        reasoningLevel: rolloutRuntime?.reasoningLevel ?? defaultRuntime?.reasoningLevel ?? null
-      }
-    : null;
+  // Missing product configuration is completed from Corptie defaults only.
+  // Normal command dispatch must never inspect Provider-native rollout/history.
+  const defaults = normalizeNewSessionDefaults(store.settings().newSessionDefaults);
   const withPermissions = needsPermissions
-    ? withCodexSessionPermissions(session, recoveredPermissions ?? {})
+    ? withCodexSessionPermissions(session, defaults)
     : session;
   const next = needsRuntimeConfig
-    ? withCodexSessionRuntimeConfig(withPermissions, recoveredRuntime ?? {})
+    ? withCodexSessionRuntimeConfig(withPermissions, {
+        model: defaults.codexModel,
+        reasoningLevel: defaults.codexReasoningLevel
+      })
     : withPermissions;
   if (session.id) upsertManagedCodexSession(next);
   return next;
-}
-
-async function listRolloutFiles(root) {
-  const entries = await readdir(root, { recursive: true, withFileTypes: true }).catch(() => []);
-  return entries
-    .filter((entry) => entry.isFile() && entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl"))
-    .map((entry) => join(entry.parentPath ?? entry.path ?? root, entry.name));
-}
-
-async function readSessionMeta(path) {
-  const content = await readFile(path, "utf8");
-  for (const line of content.split("\n").slice(0, 20)) {
-    if (!line.includes('"session_meta"')) {
-      continue;
-    }
-    const parsed = JSON.parse(line);
-    return parsed.payload ?? null;
-  }
-  return null;
-}
-
-function codexTimestampMs(value) {
-  if (typeof value === "number") {
-    return value > 1_000_000_000_000 ? value : value * 1000;
-  }
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function delay(ms) {
@@ -3908,50 +3356,6 @@ function titleFromPrompt(prompt) {
     return "New Codex task";
   }
   return compact.length > 64 ? `${compact.slice(0, 61)}...` : compact;
-}
-
-function createManagedCodexDetail(session, items, readError) {
-  const warning = readError
-    ? [{
-        id: `${session.external.threadId}:read-warning`,
-        turnId: session.external.threadId,
-        turnStatus: "inProgress",
-        type: "warning",
-        title: "Codex thread is starting",
-        text: friendlyError(readError),
-        status: "starting"
-      }]
-    : [];
-
-  return {
-    id: session.external.threadId,
-    title: session.title,
-    status: session.status,
-    source: session.external.source,
-    connectionStatus: "app-server connected",
-    cwd: session.external.cwd,
-    createdAt: session.updatedAt,
-    updatedAt: session.updatedAt,
-    rawStatus: session.external.rawStatus,
-    activityStatus: session.activityStatus ?? null,
-    canSend: true,
-    sendUnavailableReason: null,
-    capabilities: session.capabilities ?? codexAppServerSessionCapabilities({ canInterrupt: session.status === "running" }),
-    turnCount: Math.max(1, new Set(items.map((item) => item.turnId)).size),
-    currentModel: session.external.currentModel ?? null,
-    currentReasoningLevel: session.external.currentReasoningLevel ?? null,
-    items: [...warning, ...items].slice(-60)
-  };
-}
-
-function friendlyError(error) {
-  const message = error?.message ?? String(error ?? "");
-  try {
-    const parsed = JSON.parse(message);
-    return parsed.message ?? message;
-  } catch {
-    return message;
-  }
 }
 
 function codexApprovalPolicyForCli(approvalPolicy) {
@@ -4095,7 +3499,7 @@ function buildZip(files) {
  * content-disposition 的文件名，但设置也无害。ZIP 内容为 JSON 导出（对话 + 工具轨迹），
  * 对用户有用的同时满足「可下载的合法 zip」这一前端唯一硬性要求。
  */
-function handleSessionExport({ request, response, url, readCodexSessionConversation, readCodexSessionTimeline }) {
+function handleSessionExport({ request, response, url }) {
   const sessionId = url.searchParams.get("sessionId") ?? "";
   if (!sessionId) {
     sendJson(response, 400, { error: "session.export requires sessionId" });
@@ -4103,8 +3507,8 @@ function handleSessionExport({ request, response, url, readCodexSessionConversat
   }
 
   Promise.all([
-    readCodexSessionConversation(sessionId).catch(() => []),
-    readCodexSessionTimeline(sessionId).catch(() => [])
+    readStoredSessionConversation(sessionId).catch(() => []),
+    readStoredSessionTimeline(sessionId).catch(() => [])
   ]).then(([conversation, timeline]) => {
     const payload = JSON.stringify(
       {
@@ -4192,33 +3596,11 @@ function describeGatewaySession(session) {
   };
 }
 
-function listCodexProviderSessions(options = {}) {
-  const archived = options.archived === true;
-  const storedSessions = visibleStoredSessionProjections(store, store.listSessions({ archived }));
-  const storedCodexSessions = storedSessions.filter((session) => session.external?.provider === "codex-app-server");
-  const managedById = new Map(
-    Array.from(sessionPresentationCache.values())
-      .filter((session) => Boolean(session.archived) === archived)
-      .map((session) => [session.id, session])
-  );
-  const codexSessions = [
-    ...storedCodexSessions.map((stored) => {
-      const managed = managedById.get(stored.id);
-      return managed ? mergeStoredSessionPresentation(managed, stored) : stored;
-    }),
-    ...Array.from(managedById.values()).filter((session) => !storedCodexSessions.some((stored) => stored.id === session.id))
-  ];
-  return sortSessionsForList(codexSessions);
-}
-
 function listGatewayWorkspaces() {
-  const candidates = [
-    ...listGatewaySessions(),
-    ...visibleStoredSessionProjections(store, [
-      ...store.listSessions({ archived: false }),
-      ...store.listSessions({ archived: true })
-    ])
-  ];
+  const candidates = visibleStoredSessionProjections(store, [
+    ...store.listSessions({ archived: false }),
+    ...store.listSessions({ archived: true })
+  ]);
   const workspaces = new Map();
   for (const path of store.settings().gateway?.trustedWorkspaces ?? []) {
     if (!isAbsolute(path)) continue;
@@ -4270,6 +3652,7 @@ async function createSessionThroughApplication(providerId, input = {}, context =
   const {
     defaultTitle: _defaultTitle,
     autoUniqueTitle: _autoUniqueTitle,
+    prompt: initialPromptValue,
     ...providerInput
   } = input;
   const prepared = {
@@ -4292,19 +3675,15 @@ async function createSessionThroughApplication(providerId, input = {}, context =
       provider: providerId,
       source: { type: context.source ?? "application" }
     });
-    const legacyEvent = {
-      "codex-app-server": "CodexThreadCreated",
-      "claude-sdk": "ClaudeSessionStarted"
-    }[providerId];
-    if (legacyEvent) {
-      emitEvent(legacyEvent, {
-        session,
-        threadId: session.external?.threadId ?? null,
-        source: { type: context.source ?? "application" }
+    const initialPrompt = typeof initialPromptValue === "string" ? initialPromptValue.trim() : "";
+    if (initialPrompt) {
+      await sendUnifiedSessionMessage(session.id, initialPrompt, {
+        type: "session-initialization",
+        origin: context.source ?? "application"
       });
     }
     if (providerId === "codex-app-server") scheduleProjectToolsetInitialization(cwd);
-    return session;
+    return store.getSession(session.id) ?? session;
   } finally {
     releaseTitle();
   }
@@ -4555,13 +3934,32 @@ function settleWorkItemForWorkspaceContinuation(transitionId) {
   return settleEntityWorkItemFromSession(sessionWithLogicalWorkspace(session, logical));
 }
 
-function reportWorkItemAcceptanceForAgent(agentId, input = {}) {
-  const { sessionId } = requireAgentLogicalSession(agentId);
+function reportWorkItemAcceptanceForAgent(agentId, input = {}, metadata = {}) {
+  const requestedSessionId = String(metadata.sessionId ?? "").trim();
+  if (!requestedSessionId) {
+    const error = new Error("WorkItem acceptance requires the authenticated Session scope.");
+    error.code = "SESSION_SCOPE_REQUIRED";
+    throw error;
+  }
+  const logical = store.getLogicalSession(requestedSessionId)
+    ?? store.getLogicalSessionByLegacySessionId(requestedSessionId);
+  const sessionId = logical?.legacySessionId ?? requestedSessionId;
+  const boundAgent = collaborationCore.getAgentForSession(sessionId);
+  if (boundAgent?.agentId !== agentId) {
+    const error = new Error("The authenticated Agent is not bound to the scoped Session.");
+    error.code = "SESSION_ACTOR_MISMATCH";
+    throw error;
+  }
   const session = store.getSession(sessionId);
   const workItemId = session?.workItemId;
   if (!workItemId) {
     const error = new Error("The active Agent Session is not bound to a WorkItem.");
     error.code = "WORK_ITEM_REQUIRED";
+    throw error;
+  }
+  if (metadata.workItemId && metadata.workItemId !== workItemId) {
+    const error = new Error("The authenticated WorkItem scope does not match the Session binding.");
+    error.code = "WORK_ITEM_SESSION_MISMATCH";
     throw error;
   }
   return presentWorkItemAcceptance(objectiveService.recordAcceptanceAssessment(workItemId, {
@@ -4624,18 +4022,6 @@ async function createCodexProviderSession(input = {}) {
         input.toolHost?.metadata
       ))
     });
-    const prompt = typeof input.prompt === "string" && input.prompt.trim()
-      ? input.prompt.trim()
-      : "Reply exactly: Ready";
-    const turn = await codexRuntime.startTurn(started.thread.id, prompt, {
-      cwd: input.cwd,
-      ...codexTurnPermissionOptions(
-        { external: permissions },
-        { runtimeWorkspaceRoots: input.runtimeWorkspaceRoots }
-      ),
-      model: runtime.model,
-      reasoningEffort: runtime.reasoningLevel
-    });
     const session = withCodexSessionPermissions({
       ...mapCodexThreadToSession({
         ...started.thread,
@@ -4643,23 +4029,22 @@ async function createCodexProviderSession(input = {}) {
         name: input.title,
         cwd: input.cwd,
         updatedAt: Date.now() / 1000,
-        status: "running",
+        status: "complete",
         source: "corptie",
         currentModel: runtime.model ?? started.model ?? null,
         currentReasoningLevel: runtime.reasoningLevel ?? started.reasoningEffort ?? null,
-        activeTurnId: turn.turn?.id ?? null
+        activeTurnId: null
       }),
       title: input.title,
-      status: "running",
-      progress: 0.5,
-      summary: "Initializing Codex session…",
-      activityStatus: "Starting Codex",
+      status: "complete",
+      progress: 1,
+      summary: "Codex is ready.",
+      activityStatus: null,
       capabilities: {
         ...codexAppServerSessionCapabilities(),
-        canInterrupt: true
+        canInterrupt: false
       }
     }, permissions);
-    upsertManagedCodexSession(session, collaborationAgentId);
     return session;
   } finally {
     if (activeCodexThreadCreation?.creationId === creationId) activeCodexThreadCreation = null;
@@ -4668,26 +4053,21 @@ async function createCodexProviderSession(input = {}) {
 
 async function resumeCodexProviderSession(reference, context = {}) {
   const previous = reference.metadata?.session
-    ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
-  const result = await codexRuntime.resumeThread(
+  await codexRuntime.resumeThread(
     reference.providerSessionId,
     context.toolHost?.providerAttachment ?? await collaborationThreadOptionsForSession(reference.sessionId)
   );
-  const session = mergeStoredSessionPresentation(
-    mapCodexThreadToSession(result.thread ?? result),
-    previous
-  );
-  upsertManagedCodexSession(session);
-  return session;
+  // Resume is a transport command. It must not project a Provider snapshot
+  // back into Corptie's product Session or repair list state as a side effect.
+  return previous;
 }
 
 async function prepareCodexProviderExecution(reference, context = {}) {
   const startedAt = Date.now();
   const sessionId = reference.sessionId;
   const before = reference.metadata?.session
-    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
   if (!before) throw new Error("Session not found.");
   if (sessionHasActiveRun(before)) {
@@ -4706,7 +4086,7 @@ async function prepareCodexProviderExecution(reference, context = {}) {
     : null;
   const routeDurationMs = Date.now() - routeStartedAt;
   const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
-    sessionPresentationCache.get(sessionId) ?? before,
+    store.getSession(sessionId) ?? before,
     logicalRoute
   ));
   const activeCwd = routeResolution?.route?.cwd
@@ -4751,14 +4131,13 @@ function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
 async function deleteCodexProviderSession(reference) {
   await codexRuntime.deleteThread(reference.providerSessionId);
   workspaceRoutePreparationCache.invalidate(reference.logicalSessionId);
-  const existed = sessionPresentationCache.delete(reference.sessionId);
+  const existed = Boolean(store.getSession(reference.sessionId));
   store.deleteSession(reference.sessionId);
   return existed;
 }
 
 async function renameCodexProviderSession(reference, title) {
   const previous = reference.metadata?.session
-    ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
   await codexRuntime.setThreadName(reference.providerSessionId, title);
@@ -4768,12 +4147,9 @@ async function renameCodexProviderSession(reference, title) {
 }
 
 async function getUnifiedSessionSnapshot(sessionId) {
-  return unifiedSessionSnapshotLoads.run(
-    sessionId,
-    // Snapshot reads are strictly local and read-only. Provider callbacks
-    // materialize state before publishing wake events.
-    () => getStoredSessionSnapshot(sessionId)
-  );
+  // Snapshot reads are strictly local and read-only. Provider callbacks
+  // materialize state before publishing wake events.
+  return getStoredSessionSnapshot(sessionId);
 }
 
 async function getStoredSessionSnapshot(sessionId) {
@@ -4794,8 +4170,10 @@ async function getStoredSessionSnapshot(sessionId) {
     capabilities: summary.capabilities ?? stored.capabilities,
     items: stored.items ?? []
   };
-  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, detail.items);
-  const { items, hasMoreHistory, historyItemsCount } = windowSessionItems(allItems);
+  // session_items is the materialized product Timeline. Snapshot reads never
+  // scan queues, collaboration state, automation events, or Provider state to
+  // repair it. Those domains project into session_items when they mutate.
+  const { items, hasMoreHistory, historyItemsCount } = windowSessionItems(detail.items);
   return {
     ...detail,
     sessionId: reference.sessionId,
@@ -4810,17 +4188,17 @@ async function getStoredSessionSnapshot(sessionId) {
   };
 }
 
-// 会话快照仅保留尾部窗口的完整消息；更早历史按需经补拉端点获取。
-// 裁剪只移除 items 数组头部（最旧消息），尾部窗口与 agent work queue 追加项均不受影响。
-// 按游标补拉更早的历史消息。Codex 等 provider 无法按 turn 分页历史，只能全量
-// 读 thread 后在服务层切片——补拉是低频操作（用户滚到顶才触发），响应体只含切片，
-// 传输开销远小于首屏，故可接受。切片逻辑 provider-neutral，不触碰 provider 边界。
+// Timeline history is a pure keyset read over Corptie's materialized
+// session_items authority. It never scans Provider history or reconstructs
+// supplementary cards during a GET.
 async function readSessionHistory(sessionId, beforeId, limit) {
   const reference = requireSessionReference(sessionId);
-  const detail = await readStoredSessionDetail(reference);
-  const timelineItems = await logicalSessionTimelineItems(reference, detail);
-  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
-  const page = pageSessionItems(allItems, { beforeId, limit });
+  const provider = reference.metadata?.session?.external?.provider ?? "";
+  const page = store.getSessionTimelineHistoryPage(reference.sessionId, {
+    beforeId,
+    limit,
+    provider
+  });
   return {
     sessionId: reference.sessionId,
     logicalSessionId: reference.logicalSessionId,
@@ -4845,7 +4223,7 @@ async function readSessionTimelineWindow(sessionId, options) {
   if (storedWindow) {
     return {
       protocolVersion: 2,
-      revision: store.lastSessionEventSequence(reference.sessionId),
+      revision: store.sessionTimelineRevision(reference.sessionId),
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId,
       ...storedWindow,
@@ -4859,28 +4237,20 @@ async function readSessionTimelineWindow(sessionId, options) {
         : { kind: "latest", requestedId: null, resolvedId: storedWindow.items.at(-1)?.id ?? null, status: "latest" }
     };
   }
-  const detail = await readStoredSessionDetail(reference);
-  const timelineItems = await logicalSessionTimelineItems(reference, detail);
-  const allItems = agentWorkQueueItemsForSnapshot(reference.sessionId, timelineItems);
-  const window = options.anchorId
-    ? windowSessionItemsAroundAnchor(allItems, options)
-    : (() => {
-      const latest = windowSessionItems(allItems, options.limit);
-      return {
-        ...latest,
-        hasEarlier: latest.hasMoreHistory,
-        hasLater: false,
-        anchor: {
-          kind: "latest",
-          requestedId: null,
-          resolvedId: latest.items.at(-1)?.id ?? null,
-          status: "latest"
-        }
-      };
-    })();
+  const window = {
+    items: [],
+    hasEarlier: false,
+    hasLater: false,
+    anchor: {
+      kind: options.anchorKind === "turn" ? "turn" : "item",
+      requestedId: options.anchorId ?? null,
+      resolvedId: null,
+      status: "missing"
+    }
+  };
   return {
     protocolVersion: 2,
-    revision: store.lastSessionEventSequence(reference.sessionId),
+    revision: store.sessionTimelineRevision(reference.sessionId),
     sessionId: reference.sessionId,
     logicalSessionId: reference.logicalSessionId,
     ...window
@@ -4896,27 +4266,8 @@ async function readStoredSessionDetail(reference) {
   }
   return storedSessionDetail({
     summary,
-    storedDetail: store.getDetail(reference.sessionId),
-    eventItems: storedTimelineItemsForSession(reference.sessionId)
+    storedDetail: store.getDetail(reference.sessionId)
   });
-}
-
-function persistSessionDetailSnapshot(sessionId, detail) {
-  return sessionTimelineProjection.persistDetail(sessionId, detail);
-}
-
-async function logicalSessionTimelineItems(reference, activeDetail) {
-  if (!reference.logicalSessionId) return activeDetail?.items ?? [];
-  const bindings = store.listProviderThreadBindings(reference.logicalSessionId);
-  return composeLogicalSessionTimeline({
-    bindings,
-    activeDetail,
-    readHistoricalBinding: (binding) => readStoredHistoricalSessionBinding(reference.sessionId, binding)
-  });
-}
-
-function readStoredHistoricalSessionBinding(sessionId, binding) {
-  return { items: store.getItemsForBinding(sessionId, binding.bindingId) };
 }
 
 function requireSessionReference(sessionId) {
@@ -4927,58 +4278,6 @@ function requireSessionReference(sessionId) {
   throw error;
 }
 
-async function readCodexProviderSession(reference) {
-  const sessionId = reference.sessionId;
-  const threadId = reference.providerSessionId;
-  try {
-    const result = await codexRuntime.readThread(threadId, { includeTurns: true });
-    const detail = enrichCodexDetailChoiceOptions(mapCodexThreadToDetail(
-      result.thread,
-      codexRuntime.liveItemsForThread(threadId),
-      codexRuntime.turnDiffsForThread(threadId)
-    ));
-    syncManagedCodexSessionFromDetail(threadId, detail);
-    return detail;
-  } catch (error) {
-    if (reference.metadata?.historical) throw error;
-    const managed = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
-    if (!managed) return store.getDetail(sessionId);
-    const liveItems = codexRuntime.liveItemsForThread(threadId);
-    const storedItems = storedTimelineItemsForSession(sessionId);
-    const detail = createManagedCodexDetail(
-      managed,
-      liveItems,
-      storedItems.length > 0 ? null : error
-    );
-    return storedItems.length > 0
-      ? { ...detail, items: mergeTimelineItems(storedItems, liveItems) }
-      : detail;
-  }
-}
-
-function storedTimelineItemsForSession(sessionId) {
-  if (typeof store.listStoredTimelineEvents === "function") {
-    return projectStoredSessionTimeline(store.listStoredTimelineEvents(sessionId));
-  }
-  const events = [];
-  let after = 0;
-  while (true) {
-    const page = store.listSessionEvents(sessionId, after, 1_000);
-    events.push(...page);
-    if (page.length < 1_000) break;
-    after = page.at(-1)?.sequence ?? after;
-  }
-  return projectStoredSessionTimeline(events);
-}
-
-function mergeTimelineItems(storedItems, liveItems) {
-  const result = [...storedItems];
-  const ids = new Set(result.map((item) => item.id));
-  for (const item of liveItems) {
-    if (!ids.has(item.id)) result.push(item);
-  }
-  return result;
-}
 
 async function interruptCodexProviderSession(reference, context = {}) {
   const summary = context.summary ?? reference.metadata?.session;
@@ -4989,23 +4288,15 @@ async function interruptCodexProviderSession(reference, context = {}) {
     throw error;
   }
   await codexRuntime.interruptTurn(reference.providerSessionId, activeTurnId);
-  const session = {
-    ...summary,
-    status: "cancelled",
-    progress: 1,
-    activityStatus: null,
-    updatedAt: now(),
-    capabilities: { ...(summary?.capabilities ?? {}), canInterrupt: false },
-    external: { ...summary?.external, activeTurnId: null, rawStatus: "cancelled" }
-  };
-  upsertManagedCodexSession(session);
-  return session;
+  // Command acknowledgement is not an execution-state event. The persisted
+  // turn.cancelled Provider event owns the terminal Session projection.
+  return store.getSession(reference.sessionId) ?? summary;
 }
 
 function updateCodexProviderConfiguration(reference, updates) {
   const sessionId = reference.sessionId;
   const threadId = reference.providerSessionId;
-  const previous = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+  const previous = store.getSession(sessionId);
   const timestamp = now();
   const session = previous ?? {
     id: sessionId,
@@ -5040,7 +4331,6 @@ function updateCodexProviderConfiguration(reference, updates) {
 
 function updateCodexProviderPermissions(reference, permissions) {
   const previous = reference.metadata?.session
-    ?? sessionPresentationCache.get(reference.sessionId)
     ?? store.getSession(reference.sessionId);
   if (!previous) {
     const error = new Error("Session not found.");
@@ -5063,16 +4353,9 @@ async function respondCodexProviderApproval(reference, input = {}, context = {})
     optionId: input.optionId
   });
   store.clearActiveChoicePrompt(reference.sessionId);
-  const session = {
-    ...summary,
-    status: summary?.status === "blocked" ? "running" : summary?.status,
-    suggestedOptions: null,
-    suggestedPrompt: null,
-    activityStatus: approved ? "Approval sent" : "Approval denied",
-    updatedAt: now()
-  };
-  upsertManagedCodexSession(session);
-  return session;
+  // Do not guess that the Provider resumed. approval.resolved and subsequent
+  // turn events own execution state; the command response is transport-only.
+  return store.getSession(reference.sessionId) ?? summary;
 }
 
 async function manageCodexTurnChanges(reference, turnId, action) {
@@ -5089,14 +4372,14 @@ async function manageCodexTurnChanges(reference, turnId, action) {
         allowHistorical: action === "review"
       })
     : null;
-  const result = await codexRuntime.readThread(threadId, { includeTurns: true });
   const cwd = activeRoute?.cwd
-    || result.thread.cwd
-    || sessionPresentationCache.get(`codex:${threadId}`)?.external?.cwd;
+    || reference.metadata?.session?.external?.cwd
+    || store.getSession(reference.sessionId)?.external?.cwd;
   if (!cwd) throw new Error("The task working directory is unavailable.");
 
-  const changes = safeTurnFileChanges(result.thread, turnId, cwd);
-  const diff = turnDiffFor(threadId, turnId, changes);
+  const items = store.getItemsForTurn(reference.sessionId, turnId, "codex-app-server");
+  const changes = safeTurnFileChanges(items, cwd);
+  const diff = turnDiffFor(items, changes);
   if (action === "review") {
     const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
     const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
@@ -5160,7 +4443,7 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   store.clearActiveChoicePrompt(sessionId);
   const permissionsStartedAt = Date.now();
   const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
-    sessionPresentationCache.get(sessionId) ?? before,
+    store.getSession(sessionId) ?? before,
     logicalRoute
   ));
   logSessionMessageLatency(latencyTrace, "permissions_resolved", {
@@ -5172,201 +4455,140 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
     path: activeCwd,
     worktreeId: logicalRoute?.worktreeId
   });
-  const startingSession = {
-    ...managed,
-    status: "running",
-    progress: 0.5,
-    suggestedOptions: null,
-    activityStatus: "Starting",
-    updatedAt: now(),
-    capabilities: {
-      ...(managed.capabilities ?? {}),
-      canInterrupt: true
-    }
-  };
-  upsertManagedCodexSession(startingSession);
-  emitEvent("CodexThreadProgressChanged", { session: startingSession, threadId, method: "turn/starting" });
-  try {
-    const toolContextStartedAt = Date.now();
-    logSessionMessageLatency(latencyTrace, "tool_context_started");
-    const threadOptions = await collaborationThreadOptionsForSession(sessionId);
-    logSessionMessageLatency(latencyTrace, "tool_context_completed", {
-      durationMs: Date.now() - toolContextStartedAt
-    });
-    const resumeStartedAt = Date.now();
-    logSessionMessageLatency(latencyTrace, "thread_resume_started");
-    const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
-      cwd: activeCwd,
-      runtimeWorkspaceRoots,
-      ...(conflictResolutionSession ? {
-        sandbox: "danger-full-access",
-        approvalPolicy: "never"
-      } : {}),
-      ...threadOptions
-    });
-    logSessionMessageLatency(latencyTrace, "thread_resume_completed", {
-      durationMs: Date.now() - resumeStartedAt,
-      skipped: resumeResult?.alreadyLoaded === true
-    });
-    const turnStartedAt = Date.now();
-    logSessionMessageLatency(latencyTrace, "turn_start_requested");
-    const result = await codexRuntime.startTurn(threadId, value, {
-      cwd: activeCwd,
-      model: managed?.external?.currentModel ?? options.model ?? undefined,
-      reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
-      additionalContext: context.sessionContext?.prompt ? {
-        ...(options.additionalContext ?? {}),
-        "corptie-session-context": {
-          kind: "application",
-          value: context.sessionContext.prompt
-        }
-      } : options.additionalContext,
-      ...codexTurnPermissionOptions(managed, {
-        runtimeWorkspaceRoots,
-        forceFullAccess: conflictResolutionSession
-      })
-    });
-    logSessionMessageLatency(latencyTrace, "turn_start_accepted", {
-      durationMs: Date.now() - turnStartedAt,
-      turnId: result.turn?.id ?? null
-    });
-    upsertManagedCodexSession({
-      ...startingSession,
-      activityStatus: "Working",
-      updatedAt: now(),
-      external: {
-        ...managed.external,
-        activeTurnId: result.turn?.id ?? managed.external?.activeTurnId ?? null
+  const toolContextStartedAt = Date.now();
+  logSessionMessageLatency(latencyTrace, "tool_context_started");
+  const threadOptions = await collaborationThreadOptionsForSession(sessionId);
+  logSessionMessageLatency(latencyTrace, "tool_context_completed", {
+    durationMs: Date.now() - toolContextStartedAt
+  });
+  const resumeStartedAt = Date.now();
+  logSessionMessageLatency(latencyTrace, "thread_resume_started");
+  const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
+    cwd: activeCwd,
+    runtimeWorkspaceRoots,
+    ...(conflictResolutionSession ? {
+      sandbox: "danger-full-access",
+      approvalPolicy: "never"
+    } : {}),
+    ...threadOptions
+  });
+  logSessionMessageLatency(latencyTrace, "thread_resume_completed", {
+    durationMs: Date.now() - resumeStartedAt,
+    skipped: resumeResult?.alreadyLoaded === true
+  });
+  const turnStartedAt = Date.now();
+  logSessionMessageLatency(latencyTrace, "turn_start_requested");
+  const result = await codexRuntime.startTurn(threadId, value, {
+    cwd: activeCwd,
+    model: managed?.external?.currentModel ?? options.model ?? undefined,
+    reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
+    additionalContext: context.sessionContext?.prompt ? {
+      ...(options.additionalContext ?? {}),
+      "corptie-session-context": {
+        kind: "application",
+        value: context.sessionContext.prompt
       }
-    });
-    return result;
-  } catch (error) {
-    upsertManagedCodexSession(managed);
-    emitEvent("CodexThreadProgressChanged", { session: managed, threadId, method: "turn/start-failed" });
-    throw error;
-  }
+    } : options.additionalContext,
+    ...codexTurnPermissionOptions(managed, {
+      runtimeWorkspaceRoots,
+      forceFullAccess: conflictResolutionSession
+    })
+  });
+  logSessionMessageLatency(latencyTrace, "turn_start_accepted", {
+    durationMs: Date.now() - turnStartedAt,
+    turnId: result.turn?.id ?? null
+  });
+  return result;
 }
 
-function agentWorkQueueItemsForSnapshot(sessionId, detailItems) {
-  const workItems = store.listAgentWorkItemsForSession(sessionId);
-  const annotated = annotateAgentWorkDetailItems(detailItems, workItems).map((item) => {
-    const work = item.workItemId ? workItems.find((candidate) => candidate.workItemId === item.workItemId) : null;
-    if (!work) return item;
-    const presentation = item.type === "userMessage"
-      ? collaborationPresentationForWorkItem(work, sessionId)
-      : {};
-    return {
-      ...item,
-      title: presentation.presentationRole === "collaboration"
-        ? "Agent Collaboration"
-        : presentation.presentationRole === "system_event" ? "System Event" : item.title,
-      collaborationTaskId: work.source?.taskId ?? null,
-      ...presentation
-    };
-  });
-  const matchedWorkItemIds = new Set(annotated.map((item) => item.workItemId).filter(Boolean));
-  const queuePositionByWorkItemId = new Map();
-  store.listQueuedAgentWorkItemsForSession(sessionId, 1_000).forEach((item, index) => {
-    queuePositionByWorkItemId.set(item.workItemId, index + 1);
-  });
-  const pending = workItems
-    .filter((item) => !matchedWorkItemIds.has(item.workItemId))
-    .filter((item) => item.status === "queued"
-      || item.status === "running"
-      || (["failed", "cancelled"].includes(item.status) && !item.targetTurnId))
-    .sort((left, right) => {
-      const leftPosition = queuePositionByWorkItemId.get(left.workItemId);
-      const rightPosition = queuePositionByWorkItemId.get(right.workItemId);
-      if (leftPosition != null && rightPosition != null) return leftPosition - rightPosition;
-      if (leftPosition != null) return 1;
-      if (rightPosition != null) return -1;
-      return String(left.createdAt).localeCompare(String(right.createdAt));
-    })
-    .map((item) => {
-      const presentation = collaborationPresentationForWorkItem(item, sessionId);
-      const userMessageStatus = userMessageStatusForAgentWork(item.status);
-      return {
-        id: `work:${item.workItemId}`,
-        turnId: `work:${item.workItemId}`,
-        turnStatus: userMessageStatus,
-        type: "userMessage",
-        title: presentation.presentationRole === "collaboration"
-          ? "Agent Collaboration"
-          : presentation.presentationRole === "system_event"
-            ? "System Event"
-            : (item.source?.type === "feishu" ? "Feishu" : "User"),
-        text: item.text,
-        status: item.status,
-        userMessageStatus,
-        queuePosition: queuePositionByWorkItemId.get(item.workItemId) ?? null,
-        processingError: item.lastError ?? null,
-        createdAt: item.createdAt,
-        sourceType: presentation.presentationRole === "system_event" ? "system" : item.kind,
-        localVisibility: item.localVisibility,
-        workItemId: item.workItemId,
-        collaborationTaskId: item.source?.taskId ?? null,
-        ...presentation
-      };
-    });
-  const confirmations = collaborationCore.listTaskConfirmationsForSession(sessionId).map((confirmation) => {
-    const recipientLogical = confirmation.recipientSessionId
-      ? (store.getLogicalSession(confirmation.recipientSessionId)
-        ?? store.getLogicalSessionByLegacySessionId(confirmation.recipientSessionId))
-      : null;
-    const recipientProviderSessionId = recipientLogical?.legacySessionId ?? null;
-    const recipientSession = recipientProviderSessionId
-      ? sessionPresentationCache.get(recipientProviderSessionId) ?? store.getSession(recipientProviderSessionId)
-      : null;
-    const initiatorLogical = confirmation.initiatorSessionId
-      ? (store.getLogicalSession(confirmation.initiatorSessionId)
-        ?? store.getLogicalSessionByLegacySessionId(confirmation.initiatorSessionId))
-      : null;
-    const confirmationWorkItem = confirmation.request.workItemId
-      ? store.getWorkItem(confirmation.request.workItemId)
-      : null;
-    return {
-      id: `collaboration-confirmation:${confirmation.confirmationId}`,
-      turnId: confirmation.sourceTurnId ?? `collaboration-confirmation:${confirmation.confirmationId}`,
-      turnStatus: confirmation.status === "pending" ? "waiting_approval" : "completed",
-      type: "collaborationConfirmation",
-      title: "Confirm Agent Collaboration",
-      text: "",
-      status: confirmation.status,
-      createdAt: confirmation.createdAt,
-      sourceType: "collaboration_confirmation",
-      presentationRole: "collaboration_confirmation",
-      presentationText: confirmation.request.summary,
-      collaborationConfirmationId: confirmation.confirmationId,
-      collaborationSenderAgentId: confirmation.initiatorAgentId,
-      collaborationSenderName: confirmation.initiatorAgentName,
-      collaborationRecipientAgentId: confirmation.recipientAgentId,
-      collaborationRecipientName: confirmation.recipientAgentName,
-      collaborationInitiatorSessionId: confirmation.initiatorSessionId,
-      collaborationInitiatorSessionTitle: confirmation.initiatorSessionTitle ?? initiatorLogical?.sessionName ?? null,
-      collaborationInitiatorSessionKind: confirmation.initiatorSessionKind,
-      collaborationRecipientSessionId: confirmation.recipientSessionId,
-      collaborationRecipientSessionTitle: confirmation.recipientSessionTitle ?? recipientSession?.title ?? null,
-      collaborationRecipientSessionKind: confirmation.recipientSessionKind,
-      collaborationSourceObjectiveId: confirmation.sourceObjectiveId,
-      collaborationSourceObjectiveName: confirmation.sourceObjectiveName,
-      collaborationTargetObjectiveId: confirmation.targetObjectiveId,
-      collaborationTargetObjectiveName: confirmation.targetObjectiveName,
-      collaborationSourceWorkItemId: confirmation.initiatorWorkItemId ?? confirmation.request.sourceWorkItemId ?? null,
-      collaborationTargetWorkItemId: confirmation.recipientWorkItemId ?? confirmation.request.workItemId ?? null,
-      collaborationRelation: confirmationWorkItem?.collaboration_relation ?? null,
-      collaborationRouteStatus: confirmation.request.routeStatus ?? "pending",
-      collaborationRoutingVersion: confirmation.request.routingVersion ?? null,
-      collaborationTaskTitle: confirmation.request.title,
-      collaborationMessageKind: confirmation.request.type,
-      collaborationAcceptanceCriteria: confirmation.request.acceptanceCriteria ?? [],
-      collaborationConfirmationStatus: confirmation.status,
-      collaborationTaskId: confirmation.taskId
-    };
-  });
-  const automationEvents = automationTimelineItems(store.listSessionAutomationEvents(sessionId), {
-    resolveAutomation: (automationId) => store.getScheduledSessionTask(automationId)
-  });
-  return [...mergeSupplementalTimelineItems(annotated, [...confirmations, ...automationEvents]), ...pending];
+function agentWorkTimelineItem(workItem, sessionId, queuePosition = null) {
+  if (!workItem?.workItemId) return null;
+  const presentation = collaborationPresentationForWorkItem(workItem, sessionId);
+  const userMessageStatus = userMessageStatusForAgentWork(workItem.status);
+  const canonicalId = workItem.kind === "user"
+    ? (workItem.source?.messageId ?? workItem.workItemId)
+    : `work:${workItem.workItemId}`;
+  return {
+    id: canonicalId,
+    turnId: workItem.targetTurnId ?? `work:${workItem.workItemId}`,
+    turnStatus: userMessageStatus,
+    type: "userMessage",
+    title: presentation.presentationRole === "collaboration"
+      ? "Agent Collaboration"
+      : presentation.presentationRole === "system_event"
+        ? "System Event"
+        : (workItem.source?.type === "feishu" ? "Feishu" : "User"),
+    text: workItem.text,
+    status: workItem.status,
+    userMessageStatus,
+    queuePosition: Number(queuePosition) > 0 ? Number(queuePosition) : null,
+    processingError: workItem.lastError ?? null,
+    createdAt: workItem.createdAt,
+    sourceType: presentation.presentationRole === "system_event" ? "system" : workItem.kind,
+    sourceChannel: workItem.source?.type ?? null,
+    localVisibility: workItem.localVisibility,
+    feishuVisibility: workItem.source?.type === "feishu" ? "hidden" : null,
+    workItemId: workItem.workItemId,
+    collaborationTaskId: workItem.source?.taskId ?? null,
+    ...presentation
+  };
+}
+
+function collaborationConfirmationTimelineItem(confirmation, sessionId) {
+  if (!confirmation?.confirmationId) return null;
+  const request = confirmation.request ?? {};
+  const recipientLogical = confirmation.recipientSessionId
+    ? (store.getLogicalSession(confirmation.recipientSessionId)
+      ?? store.getLogicalSessionByLegacySessionId(confirmation.recipientSessionId))
+    : null;
+  const recipientProviderSessionId = recipientLogical?.legacySessionId ?? null;
+  const recipientSession = recipientProviderSessionId
+    ? store.getSession(recipientProviderSessionId)
+    : null;
+  const initiatorLogical = confirmation.initiatorSessionId
+    ? (store.getLogicalSession(confirmation.initiatorSessionId)
+      ?? store.getLogicalSessionByLegacySessionId(confirmation.initiatorSessionId))
+    : null;
+  const confirmationWorkItem = request.workItemId ? store.getWorkItem(request.workItemId) : null;
+  return {
+    id: `collaboration-confirmation:${confirmation.confirmationId}`,
+    turnId: confirmation.sourceTurnId ?? `collaboration-confirmation:${confirmation.confirmationId}`,
+    turnStatus: confirmation.status === "pending" ? "waiting_approval" : "completed",
+    type: "collaborationConfirmation",
+    title: "Confirm Agent Collaboration",
+    text: "",
+    status: confirmation.status,
+    createdAt: confirmation.createdAt,
+    sourceType: "collaboration_confirmation",
+    presentationRole: "collaboration_confirmation",
+    presentationText: request.summary,
+    collaborationConfirmationId: confirmation.confirmationId,
+    collaborationSenderAgentId: confirmation.initiatorAgentId,
+    collaborationSenderName: confirmation.initiatorAgentName,
+    collaborationRecipientAgentId: confirmation.recipientAgentId,
+    collaborationRecipientName: confirmation.recipientAgentName,
+    collaborationInitiatorSessionId: confirmation.initiatorSessionId,
+    collaborationInitiatorSessionTitle: confirmation.initiatorSessionTitle ?? initiatorLogical?.sessionName ?? null,
+    collaborationInitiatorSessionKind: confirmation.initiatorSessionKind,
+    collaborationRecipientSessionId: confirmation.recipientSessionId,
+    collaborationRecipientSessionTitle: confirmation.recipientSessionTitle ?? recipientSession?.title ?? null,
+    collaborationRecipientSessionKind: confirmation.recipientSessionKind,
+    collaborationSourceObjectiveId: confirmation.sourceObjectiveId,
+    collaborationSourceObjectiveName: confirmation.sourceObjectiveName,
+    collaborationTargetObjectiveId: confirmation.targetObjectiveId,
+    collaborationTargetObjectiveName: confirmation.targetObjectiveName,
+    collaborationSourceWorkItemId: confirmation.initiatorWorkItemId ?? request.sourceWorkItemId ?? null,
+    collaborationTargetWorkItemId: confirmation.recipientWorkItemId ?? request.workItemId ?? null,
+    collaborationRelation: confirmationWorkItem?.collaboration_relation ?? null,
+    collaborationRouteStatus: request.routeStatus ?? "pending",
+    collaborationRoutingVersion: request.routingVersion ?? null,
+    collaborationTaskTitle: request.title,
+    collaborationMessageKind: request.type,
+    collaborationAcceptanceCriteria: request.acceptanceCriteria ?? [],
+    collaborationConfirmationStatus: confirmation.status,
+    collaborationTaskId: confirmation.taskId,
+    productSessionId: sessionId
+  };
 }
 
 function collaborationPresentationForWorkItem(workItem, sessionId = workItem.sessionId) {
@@ -5434,7 +4656,7 @@ function collaborationSessionPresentation(sessionId) {
   if (!sessionId) return null;
   const logical = store.getLogicalSession(sessionId) ?? store.getLogicalSessionByLegacySessionId(sessionId);
   const providerSessionId = logical?.legacySessionId ?? sessionId;
-  const session = sessionPresentationCache.get(providerSessionId) ?? store.getSession(providerSessionId);
+  const session = store.getSession(providerSessionId);
   if (!logical && !session) return null;
   return {
     title: logical?.sessionName ?? session?.title ?? null,
@@ -5468,9 +4690,7 @@ async function readCodexProviderSessionUsage(reference) {
   const threadId = reference?.providerSessionId;
   if (!threadId) return null;
   const live = codexRuntime.tokenUsageForThread(threadId);
-  if (live) return live;
-  const rollout = await findCodexRolloutBySessionId(threadId);
-  return readCodexRolloutTokenUsage(rollout?.path);
+  return live ?? null;
 }
 
 async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desktop" }, options = {}) {
@@ -5506,6 +4726,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   if (isClearCommand(value)) {
     const result = await sessionApplicationService.clearConversation(sessionId, { before, source });
     if (result?.cleared === true) return result;
+    store.clearItems(routedSessionId);
     const session = {
       ...result,
       id: routedSessionId
@@ -5684,7 +4905,6 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
       activeTurnId: null
     }
   }, permissions);
-  sessionPresentationCache.delete(sessionId);
   store.deleteSession(sessionId);
   const logicalRoute = await ensureLogicalRouteForCodexSession(replacement, started);
   replacement = sessionWithLogicalWorkspace(replacement, logicalRoute);
@@ -5972,7 +5192,7 @@ async function drainAgentWorkSession(sessionId) {
     workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     return;
   }
-  const session = listGatewaySessions().find((item) => item.id === sessionId);
+  const session = store.getSession(sessionId);
   if (!session) return;
   if (sessionHasActiveRun(session)) {
     // Persisted activeTurnId values can outlive an interrupted turn when the
@@ -6264,7 +5484,7 @@ async function sessionDeletionPlan(sessionId) {
 }
 
 async function sessionWorkspaceRecoveryStatus(sessionId) {
-  const session = sessionPresentationCache.get(sessionId) ?? store.getSession(sessionId);
+  const session = store.getSession(sessionId);
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
   if (!session || !logical?.activeBinding || !logical.repositoryId) {
     const error = new Error("Session workspace route not found.");
@@ -6317,20 +5537,18 @@ async function sessionWorkspaceRecoveryStatus(sessionId) {
 async function switchCodexProviderWorkspace(reference, input = {}) {
   const sessionId = reference.sessionId;
   const session = reference.metadata?.session
-    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
   if (!session) throw new Error("Session not found.");
   const logical = (reference.logicalSessionId
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? await ensureLogicalRouteForCodexSession(session);
-  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
-  const activeTurnId = session.external?.activeTurnId ?? null;
+  const checkpoint = sessionTransitionCheckpoint(sessionId, logical.activeBinding?.bindingId);
   const result = await workspaceTransitionManager.switchWorkspace({
     transitionId: input.transitionId,
     logicalSessionId: logical.logicalSessionId,
     targetWorktreeId: input.targetWorkspaceId,
-    activeTurnId,
-    lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
+    activeTurnId: checkpoint.activeTurnId,
+    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
     continuationPrompt: input.continuationPrompt,
     ...await collaborationThreadOptionsForSession(sessionId)
   });
@@ -6349,18 +5567,13 @@ async function switchClaudeProviderWorkspace(reference, input = {}) {
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
   if (!logical?.activeBinding) throw new Error("Claude Session has no active workspace route.");
-  const runtime = claudeProviderRuntime.manager.get(reference.providerSessionId)
-    ?? await claudeProviderRuntime.manager.sessionForOperation(reference.providerSessionId);
-  const activeTurnId = runtime.turnState === "idle" ? null : runtime.currentTurnId;
-  const lastCompletedTurnId = activeTurnId
-    ? runtime.currentTurnId
-    : (runtime.currentTurnId ?? `claude-checkpoint:${randomUUID()}`);
+  const checkpoint = sessionTransitionCheckpoint(reference.sessionId, logical.activeBinding.bindingId);
   const result = await claudeWorkspaceTransitionManager.switchWorkspace({
     transitionId: input.transitionId,
     logicalSessionId: logical.logicalSessionId,
     targetWorktreeId: input.targetWorkspaceId,
-    activeTurnId,
-    lastCompletedTurnId,
+    activeTurnId: checkpoint.activeTurnId,
+    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
     continuationPrompt: input.continuationPrompt
   });
   emitEvent(
@@ -6378,19 +5591,13 @@ async function switchOpenClackyProviderWorkspace(reference, input = {}) {
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? store.getLogicalSessionByLegacySessionId(reference.sessionId);
   if (!logical?.activeBinding) throw new Error("OpenClacky Session has no active workspace route.");
-  const summary = await openClackyManager.read(reference.providerSessionId);
-  const activeTurnId = summary?.status === "running" || summary?.status === "blocked"
-    ? `openclacky-turn:${randomUUID()}`
-    : null;
-  const lastCompletedTurnId = activeTurnId
-    ? activeTurnId
-    : `openclacky-checkpoint:${randomUUID()}`;
+  const checkpoint = sessionTransitionCheckpoint(reference.sessionId, logical.activeBinding.bindingId);
   const result = await openClackyWorkspaceTransitionManager.switchWorkspace({
     transitionId: input.transitionId,
     logicalSessionId: logical.logicalSessionId,
     targetWorktreeId: input.targetWorkspaceId,
-    activeTurnId,
-    lastCompletedTurnId,
+    activeTurnId: checkpoint.activeTurnId,
+    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
     continuationPrompt: input.continuationPrompt
   });
   emitEvent(
@@ -6403,40 +5610,52 @@ async function switchOpenClackyProviderWorkspace(reference, input = {}) {
   return result;
 }
 
-async function openClackySessionUsage(providerSessionId) {
-  const { events } = await openClackyManager.readHistory(providerSessionId);
-  return aggregateOpenClackyUsage(events);
-}
-
-function aggregateOpenClackyUsage(events = []) {
-  const usage = {
-    inputTokens: 0,
-    outputTokens: 0,
-    totalTokens: 0,
-    cacheReadInputTokens: 0
-  };
-  for (const event of events) {
-    if (event?.type !== "token_usage" || !event.usage) continue;
-    const incoming = event.usage;
-    usage.inputTokens += Number(incoming.input_tokens ?? incoming.prompt_tokens ?? 0);
-    usage.outputTokens += Number(incoming.output_tokens ?? incoming.completion_tokens ?? 0);
-    usage.cacheReadInputTokens += Number(incoming.cache_read_input_tokens ?? 0);
-  }
-  usage.totalTokens = usage.inputTokens + usage.outputTokens;
-  return usage;
-}
-
 async function commitManagedClaudeWorkspaceRoute(event) {
   const logical = store.getLogicalSession(event.logicalSessionId);
   const session = logical?.legacySessionId
-    ? (listGatewaySessions().find((candidate) => candidate.id === logical.legacySessionId)
-      ?? store.getSession(logical.legacySessionId))
+    ? store.getSession(logical.legacySessionId)
     : null;
   if (!session) return;
   emitEvent("SessionWorkspaceSwitched", {
     session: sessionWithLogicalWorkspace(session, logical),
     ...event
   }, { sessionId: logical.legacySessionId });
+}
+
+function handleClaudeProviderEventSafely(event) {
+  const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
+  const sessionId = logical?.legacySessionId ?? null;
+  try {
+    const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
+    const envelopeBinding = binding ?? {
+      bindingId: `unresolved:claude-sdk:${event.providerSessionId}`,
+      providerId: "claude-sdk",
+      providerSessionId: event.providerSessionId,
+      logicalSessionId: logical?.logicalSessionId ?? null,
+      routingVersion: Number(logical?.routingVersion ?? 1)
+    };
+    const envelope = mapClaudeProviderEvent({ event, binding: envelopeBinding, receivedAt: now() });
+    if (!envelope) return;
+    const ingestion = providerEventIngestion.ingest(envelope);
+    if (ingestion.status === "quarantined" && sessionId) {
+      sessionStateDiagnostics.record(sessionId, "providerEventQuarantined", {
+        eventName: event.type,
+        code: ingestion.code,
+        bindingId: envelope.bindingId
+      });
+    }
+  } catch (error) {
+    console.error(`[provider-notification] isolated failure provider=claude-sdk session=${sessionId ?? "unknown"} event=${event?.type ?? "unknown"} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
+    if (sessionId) {
+      sessionStateDiagnostics.record(sessionId, "providerError", {
+        eventName: event?.type ?? "unknown",
+        code: error?.code ?? null,
+        error: error?.message ?? String(error)
+      });
+      const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
+      if (binding) store.markProviderBindingCursorDegraded(binding, now());
+    }
+  }
 }
 
 async function handleClaudeTurnSettledSafely(event) {
@@ -6473,16 +5692,18 @@ async function handleClaudeTurnSettledSafely(event) {
 
 async function handleClaudeTurnSettled(event) {
   const logical = store.getLogicalSessionByProviderSessionId("claude-sdk", event.providerSessionId);
-  if (!logical) return;
-  const sessionId = logical.legacySessionId;
+  const sessionId = logical?.legacySessionId ?? null;
   const binding = store.getAgentSessionBindingByProviderSession("claude-sdk", event.providerSessionId);
-  if (!binding) return;
-  const envelope = mapClaudeTurnSettled({ event, binding, receivedAt: now() });
+  const envelopeBinding = binding ?? {
+    bindingId: `unresolved:claude-sdk:${event.providerSessionId}`,
+    providerId: "claude-sdk",
+    providerSessionId: event.providerSessionId,
+    logicalSessionId: logical?.logicalSessionId ?? null,
+    routingVersion: Number(logical?.routingVersion ?? 1)
+  };
+  const envelope = mapClaudeTurnSettled({ event, binding: envelopeBinding, receivedAt: now() });
   const ingestion = providerEventIngestion.ingest(envelope);
   if (ingestion.status !== "applied") return;
-  if (ingestion.projection?.session) {
-    sessionPresentationCache.set(sessionId, ingestion.projection.session);
-  }
   const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
   if (runningWork) {
     const updatedWork = store.updateAgentWorkItem(runningWork.workItemId, {
@@ -6523,18 +5744,17 @@ async function handleClaudeTurnSettled(event) {
 async function restartCodexProviderSession(reference) {
   const sessionId = reference.sessionId;
   const session = reference.metadata?.session
-    ?? sessionPresentationCache.get(sessionId)
     ?? store.getSession(sessionId);
   if (!session) throw new Error("Session not found.");
   const logical = (reference.logicalSessionId
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? await ensureLogicalRouteForCodexSession(session);
-  const thread = await codexRuntime.readThread(logical.activeThreadId, { includeTurns: true });
+  const checkpoint = sessionTransitionCheckpoint(sessionId, logical.activeBinding?.bindingId);
   const result = await workspaceTransitionManager.restartSession({
     transitionId: `session-restart:${randomUUID()}`,
     logicalSessionId: logical.logicalSessionId,
-    activeTurnId: session.external?.activeTurnId ?? null,
-    lastCompletedTurnId: lastCompletedCodexTurnId(thread.thread ?? thread),
+    activeTurnId: checkpoint.activeTurnId,
+    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
     ...await collaborationThreadOptionsForSession(sessionId)
   });
   emitEvent(
@@ -7183,7 +6403,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   }
   for (const binding of source.sessions) {
     const session = binding.sessionId
-      ? sessionPresentationCache.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+      ? store.getSession(binding.sessionId)
       : null;
     if (sessionHasActiveRun(session)) {
       const error = new Error(`Session ${session.title || binding.sessionId} is busy. Wait for it before completing the worktree.`);
@@ -7213,7 +6433,6 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
   const deletedSessionIds = [];
   for (const binding of source.sessions) {
     if (!binding.sessionId) continue;
-    sessionPresentationCache.delete(binding.sessionId);
     collaborationCore.detachSession(binding.sessionId);
     store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
     store.deleteSession(binding.sessionId);
@@ -7267,7 +6486,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   if (operations.deleteSessions) {
     for (const binding of source.sessions) {
       const session = binding.sessionId
-        ? sessionPresentationCache.get(binding.sessionId) ?? store.getSession(binding.sessionId)
+        ? store.getSession(binding.sessionId)
         : null;
       if (sessionHasActiveRun(session)) {
         const error = new Error(`Session ${session?.title || binding.sessionId} is busy. Wait for it before deleting associated Sessions.`);
@@ -7321,7 +6540,6 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   if (operations.deleteSessions) {
     for (const binding of source.sessions) {
       if (!binding.sessionId) continue;
-      sessionPresentationCache.delete(binding.sessionId);
       collaborationCore.detachSession(binding.sessionId);
       store.deleteLogicalSessionByLegacySessionId(binding.sessionId);
       store.deleteSession(binding.sessionId);
@@ -7497,7 +6715,7 @@ function route(request, response) {
   // dispatch switch（未实现）而 404。文件名约定由前端 sessionLogZipFilename 决定，
   // 后端只负责返回有效 ZIP 字节。
   if (url.pathname === "/api/session.export") {
-    handleSessionExport({ request, response, url, readCodexSessionConversation, readCodexSessionTimeline });
+    handleSessionExport({ request, response, url });
     return;
   }
 
@@ -7519,14 +6737,13 @@ function route(request, response) {
       url,
       sessionApplicationService,
       store,
+      listStoredSessions: listGatewaySessions,
       sendJson,
       readJson,
-      readCodexSessionConversation,
-      readCodexSessionTimeline,
-      createSession: (input) => createSessionThroughApplication(
+      createSession: (input, dshContext = {}) => createSessionThroughApplication(
         "codex-app-server",
         input,
-        { source: "dsh" }
+        { source: "dsh", ...dshContext }
       ),
       sendSessionMessage: async (sessionId, text) => {
         publishDshPromptStart(sessionId, text);
@@ -7770,15 +6987,6 @@ function route(request, response) {
     return;
   }
 
-  const sessionSnapshotMatch = url.pathname.match(/^\/sessions\/([^/]+)\/snapshot$/);
-  if (request.method === "GET" && sessionSnapshotMatch) {
-    const sessionId = decodeURIComponent(sessionSnapshotMatch[1]);
-    getUnifiedSessionSnapshot(sessionId)
-      .then((snapshot) => sendJson(response, 200, { session: snapshot }))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
-    return;
-  }
-
   if (request.method === "GET" && url.pathname === "/session-timelines/revisions") {
     sendJson(response, 200, {
       sessions: [...store.listSessionTimelineRevisions()].map(([sessionId, revision]) => ({
@@ -7824,7 +7032,7 @@ function route(request, response) {
   const sessionUsageMatch = url.pathname.match(/^\/sessions\/([^/]+)\/usage$/);
   if (request.method === "GET" && sessionUsageMatch) {
     const sessionId = decodeURIComponent(sessionUsageMatch[1]);
-    const session = listGatewaySessions().find((item) => item.id === sessionId);
+    const session = store.getSession(sessionId);
     if (!session) {
       sendJson(response, 404, { error: "Session not found." });
       return;
@@ -7848,14 +7056,8 @@ function route(request, response) {
   const sessionEventsMatch = url.pathname.match(/^\/sessions\/([^/]+)\/events$/);
   if (request.method === "GET" && sessionEventsMatch) {
     const sessionId = decodeURIComponent(sessionEventsMatch[1]);
-    const acceptsStream = String(request.headers.accept ?? "").includes("text/event-stream")
-      || url.searchParams.get("stream") === "true";
     sessionApplicationService.referenceFor(sessionId)
       .then((reference) => {
-        if (acceptsStream) {
-          streamCanonicalSessionSnapshots(request, response, sessionId, reference.sessionId);
-          return;
-        }
         const hasAfter = url.searchParams.has("after");
         const after = Number(url.searchParams.get("after") || 0);
         const beforeSequence = url.searchParams.get("beforeSequence");
@@ -7956,7 +7158,7 @@ function route(request, response) {
         return sendUnifiedSessionMessage(
           sessionId,
           typeof input.content === "string" ? input.content : input.text,
-          input.source && typeof input.source === "object" ? input.source : { type: "desktop" },
+          userMessageCommandSource(input),
           { ...input, latencyTrace }
         );
       })
@@ -8366,10 +7568,10 @@ function route(request, response) {
       return counts;
     }, {});
     sendJson(response, 200, {
-      sessions: sortSessionsForList(withPendingCollaborationConfirmations([
+      sessions: sortSessionsForList([
         ...providerSessions,
         ...(archived ? [] : mockSessions)
-      ])),
+      ]),
       sources: Object.fromEntries(agentProviderRegistry.descriptors().map((provider) => [
         provider.id,
         { ok: true, count: providerCounts[provider.id] ?? 0 }
@@ -8404,7 +7606,7 @@ function route(request, response) {
         const rawId = decodeURIComponent(sessionArchiveMatch[1]);
         const archived = input.archived !== false;
         if (rawId.startsWith("codex:")) {
-          const session = sessionPresentationCache.get(rawId) ?? store.getSession(rawId);
+          const session = store.getSession(rawId);
           if (!session) {
             sendJson(response, 404, { error: "Session not found" });
             return;
@@ -8415,7 +7617,6 @@ function route(request, response) {
             updatedAt: new Date().toISOString()
           };
           if (archived) {
-            sessionPresentationCache.delete(rawId);
             store.archiveSession(rawId, true);
           } else {
             upsertManagedCodexSession(nextSession);
@@ -8449,14 +7650,6 @@ function route(request, response) {
           sendJson(response, 404, { error: "Session not found" });
           return;
         }
-        if (sessionPresentationCache.has(id)) {
-          const managed = sessionPresentationCache.get(id);
-          sessionPresentationCache.set(id, {
-            ...managed,
-            pinned,
-            sortOrder: session.sortOrder ?? managed.sortOrder
-          });
-        }
         emitEvent(pinned ? "SessionPinned" : "SessionUnpinned", { session });
         sendJson(response, 200, { session });
       });
@@ -8469,16 +7662,6 @@ function route(request, response) {
         const sessionIds = Array.isArray(input.sessionIds) ? input.sessionIds.map((id) => String(id)) : [];
         const storedSessionIds = sessionIds.map(storedSessionIdForListSession);
         store.reorderSessions(storedSessionIds);
-        sessionIds.forEach((id, index) => {
-          const cacheIds = [id, storedSessionIdForListSession(id)];
-          cacheIds.forEach((cacheId) => {
-            if (!sessionPresentationCache.has(cacheId)) return;
-            sessionPresentationCache.set(cacheId, {
-              ...sessionPresentationCache.get(cacheId),
-              sortOrder: index
-            });
-          });
-        });
         emitEvent("SessionsReordered", { sessionIds });
         sendJson(response, 200, {
           sessions: sortSessionsForList(listGatewaySessions({ archived: false }))
@@ -8774,8 +7957,7 @@ function route(request, response) {
       const summary = store.getSession(reference.sessionId);
       const session = storedSessionDetail({
         summary,
-        storedDetail: null,
-        eventItems: store.getItemsForBinding(reference.sessionId, bindingId)
+        storedDetail: { items: store.getItemsForBinding(reference.sessionId, bindingId) }
       });
       sendJson(response, 200, { session });
     } catch (error) {
@@ -9037,47 +8219,12 @@ function route(request, response) {
   if (request.method === "POST" && cancelMatch) {
     const taskId = decodeURIComponent(cancelMatch[1]);
     if (taskId.startsWith("codex:")) {
-      const previous = sessionPresentationCache.get(taskId) ?? store.getSession(taskId);
-      if (!previous) {
-        sendJson(response, 404, { error: "Codex session not found" });
-        return;
-      }
-      const threadId = store.getLogicalSessionByLegacySessionId(taskId)?.activeThreadId
-        ?? previous.external?.threadId
-        ?? taskId.slice("codex:".length);
-      const activeTurnId = previous.external?.activeTurnId ?? previous.rawStatus?.activeTurnId ?? null;
-      if (!activeTurnId) {
-        sendJson(response, 409, { error: "Codex session does not have an active turn to interrupt" });
-        return;
-      }
-      codexRuntime
-        .interruptTurn(threadId, activeTurnId)
-        .then(() => {
-          const session = {
-            ...previous,
-            status: "cancelled",
-            progress: 1,
-            activityStatus: null,
-            summary: previous.summary || "Interrupted by user.",
-            updatedAt: now(),
-            capabilities: {
-              ...(previous.capabilities ?? {}),
-              canInterrupt: false
-            },
-            external: {
-              ...previous.external,
-              activeTurnId: null,
-              rawStatus: "cancelled"
-            }
-          };
-          upsertManagedCodexSession(session);
-          emitEvent("CodexThreadCancelled", { session, threadId, turnId: activeTurnId });
-          sendJson(response, 200, { session });
-        })
-        .catch((error) => {
-          console.log(`[codex] interrupt failed thread=${threadId} turn=${activeTurnId} error=${JSON.stringify(error.message)}`);
-          sendJson(response, 502, { error: error.message, adapter: "codex-app-server" });
-        });
+      interruptUnifiedSession(taskId, { type: "legacy-task-api" })
+        .then((session) => sendJson(response, 200, { session }))
+        .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+          error: error.message,
+          code: error.code ?? null
+        }));
       return;
     }
 
@@ -9096,6 +8243,43 @@ function route(request, response) {
   }
 
   sendJson(response, 404, { error: "Not found" });
+}
+
+function userMessageCommandSource(input = {}) {
+  const source = input.source && typeof input.source === "object" && !Array.isArray(input.source)
+    ? { ...input.source }
+    : { type: "desktop" };
+  const messageId = validatedOptionalMessageCommandId(input.messageId, "messageId");
+  const deliveryId = validatedOptionalMessageCommandId(input.deliveryId, "deliveryId");
+  if (messageId && source.messageId && source.messageId !== messageId) {
+    const error = new Error("messageId conflicts with source.messageId.");
+    error.code = "MESSAGE_ID_CONFLICT";
+    throw error;
+  }
+  if (deliveryId && source.deliveryId && source.deliveryId !== deliveryId) {
+    const error = new Error("deliveryId conflicts with source.deliveryId.");
+    error.code = "DELIVERY_ID_CONFLICT";
+    throw error;
+  }
+  if (messageId) source.messageId = messageId;
+  if (deliveryId) source.deliveryId = deliveryId;
+  return source;
+}
+
+function validatedOptionalMessageCommandId(value, field) {
+  if (value == null) return null;
+  if (typeof value !== "string") {
+    const error = new Error(`${field} must be a string.`);
+    error.code = "INVALID_MESSAGE_IDENTITY";
+    throw error;
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 200) {
+    const error = new Error(`${field} must contain 1 to 200 characters.`);
+    error.code = "INVALID_MESSAGE_IDENTITY";
+    throw error;
+  }
+  return normalized;
 }
 
 const server = http.createServer(route);
@@ -9185,27 +8369,20 @@ const corptieCodexRuntime = await ensureCorptieCodexRuntime({
   bundledMemoryPath: bundledAgentMemoryPath,
   bundledSkillPath: bundledCollaborationSkillPath,
   bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
-  collaborationMcpServerPath,
-  legacyThreadIds: storedSessionsAtStartup
-    .map((session) => session.id)
-    .filter((sessionId) => String(sessionId).startsWith("codex:"))
+  collaborationMcpServerPath
 });
 const corptieClaudeRuntime = await ensureCorptieClaudeRuntime({
   environmentName,
   bundledMemoryPath: bundledAgentMemoryPath,
   bundledSkillPath: bundledCollaborationSkillPath,
-  bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
-  legacySessionIds: storedSessionsAtStartup
-    .filter((session) => session.external?.provider === "claude-sdk")
-    .map((session) => session.external?.agentSessionId)
-    .filter(Boolean)
+  bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath
 });
 // Scope the dedicated Codex home to Corptie's process tree. A Codex process
 // launched independently from Terminal continues to use the user's native
 // ~/.codex home.
 process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
 // Claude's SDK helpers and subprocesses use this directory for native
-// CLAUDE.md discovery, credentials, and Corptie-owned session transcripts.
+// CLAUDE.md discovery and credentials. Product history remains in Corptie.
 process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir;
 console.log(`[agent-memory] ready shared=${corptieCodexRuntime.sharedMemoryPath}`);
 console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
@@ -9219,18 +8396,8 @@ for (const agent of store.listAgents()) {
     console.warn(`[agent-workdir] failed to ensure work dir for ${agent.agentId}: ${error?.message ?? error}`);
   }
 }
-if (corptieCodexRuntime.threadMigration.rolloutCount > 0) {
-  const rebuilt = await codexRuntime.listThreads({
-    limit: Math.max(100, corptieCodexRuntime.threadMigration.rolloutCount + 20),
-    useStateDbOnly: false,
-    requestTimeoutMs: 30000
-  });
-  const rebuiltCount = Array.isArray(rebuilt?.data) ? rebuilt.data.length : 0;
-  console.log(`[codex-runtime] migrated rollouts=${corptieCodexRuntime.threadMigration.rolloutCount} indexed=${rebuiltCount}`);
-}
 for (const storedSession of storedSessionsAtStartup) {
   ensureCollaborationAgentForSession(storedSession);
-  if (!storedSession.archived) sessionPresentationCache.set(storedSession.id, storedSession);
 }
 // Re-delivery consumes only Corptie's committed Outbox. Startup never repairs
 // product state by reading Provider history or a Provider Session snapshot.

@@ -48,7 +48,7 @@ async function fixture({ project, onCommitted } = {}) {
         endedAt: event.type === "turn.completed" ? event.occurredAt : null,
         updatedAt: event.receivedAt
       });
-      transactionalStore.upsertItemSnapshot(binding.sessionId, {
+      transactionalStore.upsertTimelineItemProjection(binding.sessionId, {
         id: event.itemId,
         turnId: event.turnId,
         turnStatus: event.type === "turn.completed" ? "completed" : "inProgress",
@@ -94,6 +94,33 @@ test("Provider event normalization generates a deterministic ID independent of r
   const replay = normalizeProviderEvent({ ...providerEvent(), providerEventId: null, receivedAt: "2026-08-26T10:01:00.000Z" });
   assert.equal(first.providerEventId, replay.providerEventId);
   assert.equal(first.providerEventId, deterministicProviderEventId(first));
+});
+
+test("generated IDs distinguish native lifecycle phases that share one product event type", () => {
+  const started = normalizeProviderEvent({
+    ...providerEvent({
+      providerEventId: null,
+      providerSequence: null,
+      type: "user.message.accepted",
+      payload: { nativeMethod: "item/started" }
+    })
+  });
+  const completed = normalizeProviderEvent({
+    ...providerEvent({
+      providerEventId: null,
+      providerSequence: null,
+      type: "user.message.accepted",
+      payload: { nativeMethod: "item/completed" }
+    })
+  });
+  const replay = normalizeProviderEvent({
+    ...started,
+    providerEventId: null,
+    receivedAt: "2026-08-26T10:10:00.000Z"
+  });
+
+  assert.notEqual(started.providerEventId, completed.providerEventId);
+  assert.equal(started.providerEventId, replay.providerEventId);
 });
 
 test("Provider event ingestion atomically commits Inbox, event, turn, item, cursor, and Outbox before notification", async () => {
@@ -232,7 +259,7 @@ test("projection failure rolls back all UI-visible writes and emits no dirty or 
   let committed = 0;
   const { directory, store, service } = await fixture({
     project: ({ event, store: transactionalStore }) => {
-      transactionalStore.upsertItemSnapshot(binding.sessionId, {
+      transactionalStore.upsertTimelineItemProjection(binding.sessionId, {
         id: event.itemId,
         type: "agentMessage",
         text: "must roll back"

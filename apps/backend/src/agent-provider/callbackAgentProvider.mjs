@@ -12,14 +12,6 @@ export class CallbackAgentProvider {
     }
   }
 
-  listSessions(options = {}) {
-    return this.requireOperation("listSessions")(options);
-  }
-
-  readSession(reference) {
-    return this.requireOperation("readSession")(reference);
-  }
-
   requireOperation(name) {
     const operation = this.operations[name];
     if (typeof operation !== "function") {

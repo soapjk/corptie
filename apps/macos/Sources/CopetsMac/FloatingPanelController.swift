@@ -146,17 +146,17 @@ final class FloatingPanelController: NSObject {
             }
             .store(in: &cancellables)
 
-        client.$selectedSession
+        client.sessionSelectionController.$selectedSessionID
             .receive(on: RunLoop.main)
-            .sink { [weak self] selectedSession in
+            .sink { [weak self] selectedSessionID in
                 guard let self else { return }
                 let previousSessionId = self.currentDisplayedSessionId
-                let nextSessionId = selectedSession?.id
+                let nextSessionId = selectedSessionID
                 guard previousSessionId != nextSessionId else {
                     return
                 }
                 self.currentDisplayedSessionId = nextSessionId
-                if selectedSession == nil {
+                if selectedSessionID == nil {
                     self.pendingDetailTransitionUnlock?.cancel()
                     self.isDetailTransitionLocked = false
                     self.beginListTransition()

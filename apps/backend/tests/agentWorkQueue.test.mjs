@@ -10,7 +10,6 @@ import {
   sessionHasActiveRun
 } from "../src/utils/sessionPresentation.mjs";
 import {
-  annotateAgentWorkDetailItems,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
   shouldReportAgentWorkQueued,
@@ -129,25 +128,6 @@ test("workspace continuation is locked to the committed Provider binding and rou
   );
 });
 
-test("a Feishu work item hides its matching session user message during turn startup", () => {
-  const [item] = annotateAgentWorkDetailItems([
-    { id: "input-a", turnId: "turn-a", type: "userMessage", text: "开始处理" }
-  ], [{
-    workItemId: "message-a",
-    kind: "user",
-    status: "running",
-    targetTurnId: null,
-    text: "开始处理",
-    source: { type: "feishu" },
-    localVisibility: "normal"
-  }]);
-
-  assert.equal(item.workItemId, "message-a");
-  assert.equal(item.sourceChannel, "feishu");
-  assert.equal(item.feishuVisibility, "hidden");
-  assert.equal(item.userMessageStatus, "processing");
-});
-
 test("durable work lifecycle maps to provider-neutral user message status", () => {
   assert.equal(userMessageStatusForAgentWork("queued"), "queued");
   assert.equal(userMessageStatusForAgentWork("running"), "processing");
@@ -156,39 +136,6 @@ test("durable work lifecycle maps to provider-neutral user message status", () =
   assert.equal(userMessageStatusForAgentWork("cancelled"), "cancelled");
   assert.equal(userMessageStatusForAgentWork("future-state"), null);
 
-  const [consumed] = annotateAgentWorkDetailItems([
-    { id: "input-complete", turnId: "turn-complete", type: "userMessage", text: "done" }
-  ], [{
-    workItemId: "message-complete",
-    kind: "user",
-    status: "completed",
-    targetTurnId: "turn-complete",
-    text: "done",
-    source: { type: "desktop" },
-    localVisibility: "normal"
-  }]);
-  assert.equal(consumed.userMessageStatus, "consumed");
-});
-
-test("collaboration provenance stays on the authored input instead of leaking across its Provider turn", () => {
-  const items = annotateAgentWorkDetailItems([
-    { id: "input", turnId: "turn-collaboration", type: "userMessage", text: "peer envelope" },
-    { id: "automation", turnId: "turn-collaboration", type: "mcpToolCall", text: "create automation" },
-    { id: "answer", turnId: "turn-collaboration", type: "agentMessage", text: "done", presentationRole: "final_answer" }
-  ], [{
-    workItemId: "delivery:one",
-    kind: "collaboration",
-    status: "completed",
-    targetTurnId: "turn-collaboration",
-    text: "peer envelope",
-    source: { type: "collaboration", taskId: "task:one" },
-    localVisibility: "status_only"
-  }]);
-
-  assert.equal(items[0].sourceType, "collaboration");
-  assert.equal(items[1].sourceType, undefined);
-  assert.equal(items[2].sourceType, undefined);
-  assert.equal(items[1].sourceChannel, "collaboration");
 });
 
 test("user instructions are selected before older collaboration work", async () => {

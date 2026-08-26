@@ -122,50 +122,6 @@ test("authentication bootstrap never restores native credentials after a Corptie
   });
 });
 
-test("first startup migrates only Corptie-owned legacy rollouts and support files", async () => {
-  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
-    const legacyCodexHome = join(directory, "legacy-codex");
-    const wantedThread = "019f-wanted-thread";
-    const unrelatedThread = "019f-unrelated-thread";
-    await mkdir(join(legacyCodexHome, "sessions", "2026", "07", "18"), { recursive: true });
-    await mkdir(join(legacyCodexHome, "shell_snapshots"), { recursive: true });
-    await writeFile(join(legacyCodexHome, "sessions", "2026", "07", "18", `rollout-${wantedThread}.jsonl`), "wanted\n");
-    await writeFile(join(legacyCodexHome, "sessions", "2026", "07", "18", `rollout-${unrelatedThread}.jsonl`), "unrelated\n");
-    await writeFile(join(legacyCodexHome, "shell_snapshots", `${wantedThread}.sh`), "snapshot\n");
-
-    const result = await ensureCorptieCodexRuntime({
-      corptieHome: join(directory, ".corptie"),
-      sourceAuthPath,
-      legacyCodexHome,
-      legacyThreadIds: [`codex:${wantedThread}`],
-      bundledAgentsPath,
-      bundledSkillPath,
-      collaborationMcpServerPath
-    });
-
-    assert.deepEqual(result.threadMigration, { performed: true, rolloutCount: 1, supportFileCount: 1 });
-    assert.equal(
-      await readFile(join(result.codexHome, "sessions", "2026", "07", "18", `rollout-${wantedThread}.jsonl`), "utf8"),
-      "wanted\n"
-    );
-    await assert.rejects(
-      readFile(join(result.codexHome, "sessions", "2026", "07", "18", `rollout-${unrelatedThread}.jsonl`), "utf8"),
-      /ENOENT/
-    );
-
-    const second = await ensureCorptieCodexRuntime({
-      corptieHome: join(directory, ".corptie"),
-      sourceAuthPath,
-      legacyCodexHome,
-      legacyThreadIds: [`codex:${wantedThread}`],
-      bundledAgentsPath,
-      bundledSkillPath,
-      collaborationMcpServerPath
-    });
-    assert.deepEqual(second.threadMigration, { performed: false, rolloutCount: 0, supportFileCount: 0 });
-  });
-});
-
 test("initialization fails closed when the built-in AGENTS.md is absent", async () => {
   await assert.rejects(
     ensureCorptieCodexRuntime({

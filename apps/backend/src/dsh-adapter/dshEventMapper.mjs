@@ -4,7 +4,7 @@
 // （envelope: type / seq / time / data）。序列号直接复用 Corptie 的 sequence，
 // 时间戳从 ISO 8601 字符串转 epoch 毫秒。
 //
-// Corptie 事件类型（见 corptieStore.mjs 的 SURFACE_EVENT_TYPES / itemTypeToEventType）：
+// Corptie 事件类型（见 corptieStore.mjs 的 SURFACE_EVENT_TYPES）：
 //   user/message, assistant/message, assistant/chunk, memory/inject, tool/call, approval/request
 //
 // DSH 事件类型（见 dsh-session/known-event-types.ts），其中与 Corptie 直接对应的：
@@ -13,8 +13,6 @@
 // ContentBlock 归一化：Corptie 的 session_events.payload 目前是 { text, itemType, title, status }，
 // 映射成 DSH 的单个 text block { type:'text', text }。这是唯一需要「翻译」的地方，
 // 后续若 Corptie payload 丰富化（多 block、图片、工具调用），在此处扩展。
-
-import { randomUUID } from "node:crypto";
 
 /** ISO 8601 → epoch 毫秒；解析失败回退 0（DSH time 要求 number）。 */
 function toEpochMs(iso) {
@@ -54,7 +52,7 @@ export function mapEvent(row) {
         time,
         surfaceOp: "append",
         data: {
-          id: randomUUID(),
+          id: payload.itemId ?? row.eventId,
           role: "user",
           content: textBlocks(text),
           source: { kind: "user" },
@@ -74,10 +72,14 @@ export function mapEvent(row) {
           turn: 0,
           step: 0,
           message: {
-            id: randomUUID(),
+            id: payload.itemId ?? row.eventId,
             role: "assistant",
             content: textBlocks(text),
-            source: { kind: "model", provider: "codex", model: "codex" },
+            source: {
+              kind: "model",
+              provider: row.source?.providerId ?? row.producer ?? "provider",
+              model: payload.model ?? "provider"
+            },
           },
         },
       };
@@ -133,116 +135,12 @@ export function mapEvent(row) {
         time,
         surfaceOp: "append",
         data: {
-          id: randomUUID(),
+          id: payload.itemId ?? row.eventId,
           role: "user",
           content: textBlocks(text),
           source: { kind: "inject", note: "memory" },
         },
       };
-
-    default:
-      return null;
-  }
-}
-
-/**
- * 把一批 Corptie 行映射成 DSH HistoryEntry 数组。
- *
- * 方案 C：优先 surface 事件（user/message、assistant/message 等），
- * 若该批次没有任何可映射的 surface 事件，则回退到底层事件兜底
- * （SessionUserMessageCreated → user/message，Task 与 CodexThread 事件的 summary → assistant/message）。
- *
- * 这是为了兼容 Corptie 的「会话日志事件溯源」重构尚未落地的中间态：
- * 真实数据库中 surface===true 的事件目前为 0，会话正文只存在于底层事件流的
- * SessionUserMessageCreated.message.text（用户消息）与 summary（agent 状态摘要）。
- * agent 的逐条回复正文在 Corptie 侧并不持久化（只存在于 provider 私有存储），
- * 故兜底只能渲染用户消息 + agent 状态摘要。
- */
-export function mapHistory(rows) {
-  const surfaceEntries = [];
-  for (const row of rows) {
-    const event = mapEvent(row);
-    if (event) surfaceEntries.push({ event });
-  }
-
-  if (surfaceEntries.length > 0) return surfaceEntries;
-
-  // 回退：底层事件兜底。
-  const fallbackEntries = [];
-  for (const row of rows) {
-    const event = mapFallbackEvent(row);
-    if (event) fallbackEntries.push({ event });
-  }
-  return fallbackEntries;
-}
-
-/**
- * 底层事件兜底映射（surface 事件缺失时使用）。
- * 只兜底两类可渲染内容：用户消息正文、agent 状态摘要。
- */
-export function mapFallbackEvent(row) {
-  const type = row?.type;
-  const payload = (row?.payload && typeof row.payload === "object") ? row.payload : {};
-  const seq = Number(row?.sequence ?? 0);
-  const time = toEpochMs(row?.createdAt);
-
-  switch (type) {
-    // 用户消息正文（真实数据里唯一可靠存在的正文）。
-    case "SessionUserMessageCreated": {
-      const text = payload?.message?.text ?? "";
-      if (!text) return null;
-      return {
-        type: "user/message",
-        seq,
-        time,
-        surfaceOp: "append",
-        data: {
-          id: randomUUID(),
-          role: "user",
-          content: textBlocks(text),
-          source: { kind: "user" },
-        },
-      };
-    }
-
-    // agent 状态摘要（summary 字段，非逐条回复正文）。
-    case "TaskCreated":
-    case "TaskProgressChanged":
-    case "TaskBlocked":
-    case "TaskCompleted":
-    case "CodexThreadCompleted":
-    case "CodexThreadProgressChanged": {
-      const summary = payload?.session?.summary ?? "";
-      if (!summary) return null;
-      return {
-        type: "assistant/message",
-        seq,
-        time,
-        surfaceOp: "append",
-        data: {
-          turn: 0,
-          step: 0,
-          message: {
-            id: randomUUID(),
-            role: "assistant",
-            content: textBlocks(summary),
-            source: { kind: "model", provider: "codex", model: "codex" },
-          },
-        },
-      };
-    }
-
-    // 审批请求摘要。
-    case "CodexThreadApprovalRequested": {
-      const summary = payload?.session?.summary ?? "";
-      if (!summary) return null;
-      return {
-        type: "approval/asked",
-        seq,
-        time,
-        data: { turn: 0, text: summary },
-      };
-    }
 
     default:
       return null;

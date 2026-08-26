@@ -21,20 +21,19 @@ const ENTITY_ID = Object.freeze({
 export const STATE_COLLECTIONS = Object.freeze(Object.values(ENTITY_COLLECTION));
 
 export class StateSyncService {
-  constructor({ store, snapshot, optimized = process.env.CORPTIE_OPTIMIZED_STATE_SYNC !== "0" }) {
+  constructor({ store, snapshot }) {
     if (!store || typeof snapshot !== "function") {
       throw new Error("StateSyncService requires store and snapshot.");
     }
     this.store = store;
     this.snapshotProvider = snapshot;
-    this.optimized = optimized;
     this.cachedSnapshot = null;
     this.snapshotBuilds = 0;
   }
 
   snapshot() {
     const requestedRevision = this.store.stateRevision();
-    if (this.optimized && this.cachedSnapshot?.revision === requestedRevision) {
+    if (this.cachedSnapshot?.revision === requestedRevision) {
       return this.cachedSnapshot;
     }
     // A revision names one immutable wire payload. Never stamp a projection
@@ -72,11 +71,11 @@ export class StateSyncService {
     if (rows.length === 0 || rows.at(-1).revision !== currentRevision) {
       return { snapshotRequired: true, currentRevision };
     }
-    const projected = this.optimized ? this.snapshot() : null;
-    if (projected && projected.revision !== currentRevision) {
+    const projected = this.snapshot();
+    if (projected.revision !== currentRevision) {
       return { snapshotRequired: true, currentRevision: projected.revision };
     }
-    const state = projected?.state ?? normalizeSnapshot(this.snapshotProvider());
+    const state = projected.state;
     const latestByEntity = new Map();
     for (const row of rows) {
       latestByEntity.set(`${row.entityType}\0${row.entityId}`, row);
@@ -95,12 +94,12 @@ export class StateSyncService {
       } else if (entity) {
         upserts[collection].push(entity);
       } else {
-        // The entity was upserted in the database but is absent from the
-        // provider-memory projection (e.g. an OpenClacky session whose in-memory
-        // cache briefly dropped it). This is not a deletion; skip it so the
-        // client keeps its last known state until the next full snapshot.
+        // Changes describe the product collection, not physical storage rows.
+        // If the durable projection no longer exposes an entity, remove any
+        // stale client copy. Silently skipping here prevents convergence.
+        deletes[collection].push(row.entityId);
         if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
-          console.log(`[state-sync] SKIP ${collection} ${row.entityId} (upsert missing from snapshot) rev=${currentRevision}`);
+          console.log(`[state-sync] DELETE ${collection} ${row.entityId} (absent from projection) rev=${currentRevision}`);
         }
       }
     }
@@ -121,7 +120,6 @@ export class StateSyncService {
 
   diagnostics() {
     return {
-      optimized: this.optimized,
       cachedRevision: this.cachedSnapshot?.revision ?? null,
       snapshotBuilds: this.snapshotBuilds
     };
@@ -129,7 +127,7 @@ export class StateSyncService {
 
   cacheSnapshot(snapshot) {
     this.snapshotBuilds += 1;
-    if (this.optimized) this.cachedSnapshot = snapshot;
+    this.cachedSnapshot = snapshot;
     return snapshot;
   }
 }

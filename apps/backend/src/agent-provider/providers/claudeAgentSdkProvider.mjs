@@ -44,8 +44,6 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     ...(typeof options.prepareSessionInput === "function"
       ? { prepareSessionInput: options.prepareSessionInput }
       : {}),
-    listSessions: (options) => manager.list(options),
-    readSession: (reference) => manager.read(reference.providerSessionId),
     createSession: (input) => manager.start(input),
     resumeSession: (reference, context = {}) => manager.reconnect(reference.providerSessionId, {
       runtimeOptions: context.toolHost?.providerAttachment
