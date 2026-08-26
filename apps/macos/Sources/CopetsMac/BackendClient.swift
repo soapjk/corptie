@@ -430,37 +430,24 @@ final class BackendClient: ObservableObject {
                     } else {
                         await self.loadAutomations()
                     }
-                    var eventName = ""
-                    var dataLines: [String] = []
-                    var eventID: Int?
-                    for try await line in bytes.lines {
+                    for try await event in ServerSentEventStream.events(from: bytes) {
                         if Task.isCancelled {
                             return
                         }
-                        if line.isEmpty {
-                            await self.handleGlobalEvent(eventName, data: dataLines.joined(separator: "\n"))
-                            if eventName == "EventReplayRequired",
-                               let payload = dataLines.joined(separator: "\n").data(using: .utf8),
-                               let replay = try? JSONDecoder().decode(
-                                   GlobalEventReplayRequiredEnvelope.self,
-                                   from: payload
-                               ) {
-                                self.globalEventCursor = max(0, replay.latestCursor)
-                            } else if let eventID {
-                                // Advance only after the event handler returns. A
-                                // disconnect during handling therefore replays the
-                                // event instead of silently acknowledging it.
-                                self.globalEventCursor = max(self.globalEventCursor, eventID)
-                            }
-                            eventName = ""
-                            dataLines.removeAll(keepingCapacity: true)
-                            eventID = nil
-                        } else if line.hasPrefix("event:") {
-                            eventName = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                        } else if line.hasPrefix("data:") {
-                            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-                        } else if line.hasPrefix("id:") {
-                            eventID = Int(String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces))
+                        if event.isComment { continue }
+                        await self.handleGlobalEvent(event.name, data: event.data)
+                        if event.name == "EventReplayRequired",
+                           let payload = event.data.data(using: .utf8),
+                           let replay = try? JSONDecoder().decode(
+                               GlobalEventReplayRequiredEnvelope.self,
+                               from: payload
+                           ) {
+                            self.globalEventCursor = max(0, replay.latestCursor)
+                        } else if let eventID = event.id.flatMap(Int.init) {
+                            // Advance only after the event handler returns. A
+                            // disconnect during handling therefore replays the
+                            // event instead of silently acknowledging it.
+                            self.globalEventCursor = max(self.globalEventCursor, eventID)
                         }
                     }
                 } catch {
