@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexAppServerClient, mapCodexThreadToDetail, mapCodexThreadToSession } from "../src/adapters/codexAppServer.mjs";
+import { CodexAppServerClient, mapCodexThreadToSession } from "../src/adapters/codexAppServer.mjs";
 
 test("setThreadName uses the Codex app-server thread naming method", async () => {
   const calls = [];
@@ -433,27 +433,6 @@ test("thread mapping retains permission fields returned by Codex", () => {
   assert.equal(session.external.approvalPolicy, "never");
 });
 
-test("a not-loaded thread preserves an interrupted latest turn", () => {
-  const thread = {
-    id: "thread-a",
-    status: { type: "notLoaded" },
-    turns: [{ id: "turn-a", status: "interrupted", items: [] }]
-  };
-
-  assert.equal(mapCodexThreadToSession(thread).status, "cancelled");
-  assert.equal(mapCodexThreadToDetail(thread).status, "cancelled");
-});
-
-test("a not-loaded thread remains complete when its latest turn completed", () => {
-  const session = mapCodexThreadToSession({
-    id: "thread-a",
-    status: { type: "notLoaded" },
-    turns: [{ id: "turn-a", status: "completed", items: [] }]
-  });
-
-  assert.equal(session.status, "complete");
-});
-
 test("a completed item does not prematurely complete its active turn", () => {
   const client = new CodexAppServerClient();
   client.captureLiveItem({
@@ -515,50 +494,4 @@ test("turn completion settles every live item in that turn without touching anot
   assert.equal(byId.get("answer-a").turnStatus, "completed");
   assert.equal(byId.get("answer-a").presentationRole, "final_answer");
   assert.equal(byId.get("commentary-b").turnStatus, "inProgress");
-});
-
-test("thread detail preserves the Codex message phase for presentation", () => {
-  const detail = mapCodexThreadToDetail({
-    id: "thread-a",
-    status: { type: "active" },
-    turns: [{
-      id: "turn-a",
-      status: "inProgress",
-      items: [{
-        id: "message-a",
-        type: "agentMessage",
-        text: "Final response",
-        phase: "final_answer"
-      }]
-    }]
-  });
-
-  assert.equal(detail.items[0].turnStatus, "inProgress");
-  assert.equal(detail.items[0].presentationRole, "final_answer");
-  const raw = JSON.parse(detail.items[0].rawMetadataJSON);
-  assert.equal(raw.source, "provider_item");
-  assert.equal(raw.payload.id, "message-a");
-  assert.equal(raw.payload.phase, "final_answer");
-});
-
-test("thread detail collapses a replayed user prompt whose Provider id changed", () => {
-  const text = "Only sent once";
-  const detail = mapCodexThreadToDetail({
-    id: "thread-a",
-    status: { type: "idle" },
-    turns: [{
-      id: "turn-a",
-      status: "completed",
-      items: [
-        { id: "item-47", type: "userMessage", content: [{ type: "text", text }] },
-        { id: "provider-native-id", type: "userMessage", content: [{ type: "text", text }] },
-        { id: "answer", type: "agentMessage", text: "Done" }
-      ]
-    }]
-  });
-
-  assert.deepEqual(
-    detail.items.filter((item) => item.type === "userMessage").map((item) => item.id),
-    ["item-47"]
-  );
 });

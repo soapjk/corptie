@@ -6,6 +6,7 @@ export function createClaudeProviderRuntime(options = {}) {
   const manager = new ClaudeAgentManager({
     store: options.store,
     onTurnSettled: options.onTurnSettled,
+    onProviderEvent: options.onProviderEvent,
     resolveRuntimeOptions: options.resolveRuntimeOptions
   });
   const provider = createClaudeAgentSdkProvider(manager, {

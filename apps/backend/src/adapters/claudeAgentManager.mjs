@@ -1,20 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { forkSession, getSessionMessages, query } from "@anthropic-ai/claude-agent-sdk";
+import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
-import { providerMessageWithSessionContext, userMessageWithoutSessionContext } from "../utils/sessionContextMessage.mjs";
+import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
 
 export class ClaudeAgentManager {
   constructor(options = {}) {
     this.sessions = new Map();
     this.store = options.store ?? null;
     this.maxItems = options.maxItems ?? 2_000;
-    this.transcriptPageSize = options.transcriptPageSize ?? 500;
-    this.maxTranscriptMessages = options.maxTranscriptMessages ?? 20_000;
-    this.detailSubscribers = new Map();
-    this.detailEmitTimers = new Map();
     this.onTurnSettled = options.onTurnSettled ?? null;
+    this.onProviderEvent = options.onProviderEvent ?? null;
     this.resolveRuntimeOptions = options.resolveRuntimeOptions ?? null;
     this.queryFactory = options.query ?? query;
   }
@@ -77,22 +74,10 @@ export class ClaudeAgentManager {
     });
     this.sessions.set(id, session);
     console.log(`[claude-sdk] session created id=${id} cwd=${session.cwd}`);
-    this.persistSession(session);
     if (hasInitialPrompt) {
       void this.send(id, input.prompt.trim());
     }
     return this.toSessionSummary(session);
-  }
-
-  list(options = {}) {
-    const archived = options.archived === true;
-    const runningSessions = Array.from(this.sessions.values())
-      .filter((session) => Boolean(session.archived) === archived)
-      .map((session) => this.toSessionSummary(session));
-    const runningIds = new Set(runningSessions.map((session) => session.id));
-    const storedSessions = this.store?.listSessions({ archived })
-      .filter((session) => session.external?.provider === "claude-sdk" && !runningIds.has(session.id)) ?? [];
-    return [...runningSessions, ...storedSessions].sort(compareSessionOrder);
   }
 
   get(id) {
@@ -109,7 +94,6 @@ export class ClaudeAgentManager {
     if (session) {
       session.title = nextTitle;
       session.updatedAt = new Date().toISOString();
-      this.persistSession(session);
       return this.toSessionSummary(session);
     }
     const stored = this.store?.getSession(id) ?? null;
@@ -163,34 +147,6 @@ export class ClaudeAgentManager {
     }
   }
 
-  subscribeDetail(id, response) {
-    const session = this.get(id);
-    if (!session) {
-      return false;
-    }
-    response.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "x-accel-buffering": "no"
-    });
-    response.write("retry: 1000\n\n");
-    let subscribers = this.detailSubscribers.get(id);
-    if (!subscribers) {
-      subscribers = new Set();
-      this.detailSubscribers.set(id, subscribers);
-    }
-    subscribers.add(response);
-    this.writeDetailEvent(response, session);
-    response.on("close", () => {
-      subscribers.delete(response);
-      if (subscribers.size === 0) {
-        this.detailSubscribers.delete(id);
-      }
-    });
-    return true;
-  }
-
   async send(id, text, options = {}) {
     const session = this.get(id);
     if (!session) {
@@ -227,7 +183,11 @@ export class ClaudeAgentManager {
         status: "sent"
       });
     }
-    this.persistSession(session);
+    this.emitProviderEvent(session, {
+      type: "turn.started",
+      turnId: session.currentTurnId,
+      occurredAt: session.updatedAt
+    });
     console.log(`[claude-sdk] send queued id=${id} chars=${value.length}`);
     const providerValue = providerMessageWithSessionContext(value, options.contextPrompt);
     this.enqueueInput(session, makeUserMessage(providerValue));
@@ -250,7 +210,6 @@ export class ClaudeAgentManager {
     session.updatedAt = new Date().toISOString();
     session.phase = "ready";
     session.status = "complete";
-    this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
@@ -273,7 +232,6 @@ export class ClaudeAgentManager {
       title: "Claude Code",
       text: `Switched Claude model to ${nextModel}.`
     });
-    this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
@@ -304,7 +262,6 @@ export class ClaudeAgentManager {
     session.approvalPolicy = approvalPolicy;
     session.permissionMode = permissionMode;
     session.updatedAt = new Date().toISOString();
-    this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
@@ -364,7 +321,11 @@ export class ClaudeAgentManager {
       title: "Claude Code",
       text: "Interrupted current Claude Code turn."
     });
-    this.persistSession(session);
+    this.notifyTurnSettled(session, {
+      turnId: session.currentTurnId,
+      status: "cancelled",
+      error: null
+    });
     return this.toSessionSummary(session);
   }
 
@@ -402,8 +363,6 @@ export class ClaudeAgentManager {
     session.lastInputAt = null;
     session.lastOutputAt = null;
     session.updatedAt = clearedAt;
-    this.store?.clearItems?.(session.id);
-    this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
@@ -471,7 +430,6 @@ export class ClaudeAgentManager {
       title: "Claude Code",
       text: "Closed Claude Code session."
     });
-    this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
@@ -484,7 +442,6 @@ export class ClaudeAgentManager {
       session.query = null;
       this.sessions.delete(id);
     }
-    this.store?.deleteSession(id);
   }
 
   async reconnect(id, options = {}) {
@@ -548,32 +505,16 @@ export class ClaudeAgentManager {
       ? normalizeClaudeRuntimeOptions(options.runtimeOptions)
       : null;
     const storedItems = this.store?.getItems(id, this.maxItems, "claude-sdk") ?? [];
-    const transcriptItems = agentSessionId ? await this.loadTranscriptItems(session) : [];
-    session.items = mergeClaudeTranscriptItems(transcriptItems, storedItems)
-      .slice(-this.maxItems);
+    // Product history is Corptie-owned. Reconnect restores only the durable
+    // Corptie Timeline and never imports the Provider-native transcript.
+    session.items = storedItems.slice(-this.maxItems);
     session.nextItemSeq = Math.max(session.nextItemSeq, nextSeqFromItems(session.items));
     session.nextTurnSeq = Math.max(session.nextTurnSeq, nextTurnSeqFromItems(session.id, session.items));
     this.sessions.set(id, session);
     const startQuery = options.startQuery !== false;
     console.log(`[claude-sdk] reconnecting id=${id} resume=${agentSessionId ?? "fresh"} startQuery=${startQuery}`);
     if (agentSessionId && startQuery) void this.ensureQueryStarted(session);
-    this.persistSession(session);
     return this.toSessionSummary(session);
-  }
-
-  async loadTranscriptItems(session) {
-    try {
-      const messages = await loadClaudeTranscriptMessages(session.agentSessionId, {
-        dir: session.cwd,
-        includeSystemMessages: false,
-        pageSize: this.transcriptPageSize,
-        maxMessages: this.maxTranscriptMessages
-      });
-      return claudeTranscriptItems(session, messages ?? []);
-    } catch (error) {
-      console.error(`[claude-sdk] transcript load failed id=${session.id}: ${error?.message || String(error)}`);
-      return [];
-    }
   }
 
   respondToChoice(id, input = {}) {
@@ -611,7 +552,6 @@ export class ClaudeAgentManager {
     session.phase = hasPendingChoices(session) ? "waiting_approval" : "working";
     session.updatedAt = new Date().toISOString();
     this.markPendingChoiceItemsSelected(session, option.id, pendingDecision.choice.id);
-    this.persistSession(session);
     return this.toSessionSummary(session);
   }
 
@@ -637,7 +577,6 @@ export class ClaudeAgentManager {
         }
       });
       session.queryTask = this.consumeQuery(session);
-      this.persistSession(session);
       return session.query;
     })();
     session.queryStartTask = startTask;
@@ -669,7 +608,6 @@ export class ClaudeAgentManager {
         session.turnState = "idle";
         session.phase = session.status === "failed" ? "failed" : "ready";
         session.updatedAt = new Date().toISOString();
-        this.persistSession(session);
       }
     } catch (error) {
       console.error(`[claude-sdk] query failed id=${session.id}: ${error?.message || String(error)}`);
@@ -694,7 +632,6 @@ export class ClaudeAgentManager {
           status: "failed"
         });
       }
-      this.persistSession(session);
       this.notifyTurnSettled(session, {
         turnId: session.currentTurnId,
         status: wasInterrupted ? "cancelled" : "failed",
@@ -757,7 +694,6 @@ export class ClaudeAgentManager {
       status: "pending",
       options: choice.options
     });
-    this.persistSession(session);
 
     return await new Promise((resolve) => {
       const pendingDecision = { resolve, choice };
@@ -777,7 +713,6 @@ export class ClaudeAgentManager {
       session.agentSessionId = message.session_id ?? session.agentSessionId;
       session.currentModel = message.model ?? session.currentModel;
       session.phase = "ready";
-      this.persistSession(session);
       return;
     }
 
@@ -795,7 +730,6 @@ export class ClaudeAgentManager {
         session.lastOutputAt = session.updatedAt;
         for (const item of items) this.appendItem(session, item);
       }
-      this.persistSession(session);
       return;
     }
 
@@ -832,7 +766,6 @@ export class ClaudeAgentManager {
         session.turnState = "running";
         session.status = "running";
         session.phase = "working";
-        this.persistSession(session);
       } else {
         this.settleClaudeResult(session, result);
       }
@@ -844,14 +777,12 @@ export class ClaudeAgentManager {
       if (message.status === "requesting" || message.status === "compacting") {
         session.turnState = "running";
       }
-      this.persistSession(session);
       return;
     }
 
     if (message?.type === "session_state_changed") {
       session.turnState = message.state || session.turnState;
       session.phase = message.state || session.phase;
-      this.persistSession(session);
       return;
     }
 
@@ -884,7 +815,6 @@ export class ClaudeAgentManager {
       if (terminal && session.activeTaskIds.size === 0 && session.deferredResult) {
         this.settleClaudeResult(session, session.deferredResult);
       } else {
-        this.persistSession(session);
       }
       return;
     }
@@ -898,11 +828,8 @@ export class ClaudeAgentManager {
           text: String(text)
         });
       }
-      this.persistSession(session);
       return;
     }
-
-    this.persistSession(session);
   }
 
   settleClaudeResult(session, result) {
@@ -915,7 +842,6 @@ export class ClaudeAgentManager {
       result.turnId,
       result.succeeded ? "complete" : "failed"
     );
-    this.persistSession(session);
     if (!result.notified) {
       result.notified = true;
       this.notifyTurnSettled(session, {
@@ -1046,42 +972,6 @@ export class ClaudeAgentManager {
     };
   }
 
-  persistSession(session) {
-    this.store?.upsertSession({
-      ...session,
-      capabilities: this.toDetail(session).capabilities,
-      toSessionSummary: (value) => this.toSessionSummary(value)
-    });
-    this.scheduleDetailEmit(session);
-  }
-
-  scheduleDetailEmit(session) {
-    if (!this.detailSubscribers.has(session.id) || this.detailEmitTimers.has(session.id)) {
-      return;
-    }
-    const timer = setTimeout(() => {
-      this.detailEmitTimers.delete(session.id);
-      this.emitDetail(session);
-    }, 80);
-    timer.unref?.();
-    this.detailEmitTimers.set(session.id, timer);
-  }
-
-  emitDetail(session) {
-    const subscribers = this.detailSubscribers.get(session.id);
-    if (!subscribers?.size) {
-      return;
-    }
-    for (const response of subscribers) {
-      this.writeDetailEvent(response, session);
-    }
-  }
-
-  writeDetailEvent(response, session) {
-    response.write("event: detail\n");
-    response.write(`data: ${JSON.stringify({ thread: this.toDetail(session) })}\n\n`);
-  }
-
   appendItem(session, item) {
     const createdAt = createdAtFromOrNow(item);
     const appendedItem = {
@@ -1103,11 +993,18 @@ export class ClaudeAgentManager {
       )
     };
     session.items.push(appendedItem);
-    this.store?.appendItem?.(session.id, appendedItem);
     session.nextItemSeq += 1;
     if (session.items.length > this.maxItems) {
       session.items = session.items.slice(-this.maxItems);
     }
+    this.emitProviderEvent(session, {
+      type: claudeItemProviderEventType(appendedItem),
+      turnId: appendedItem.turnId,
+      itemId: appendedItem.id,
+      item: appendedItem,
+      occurredAt: appendedItem.createdAt
+    });
+    return appendedItem;
   }
 
   markPendingChoiceItemsSelected(session, optionId, choiceId = null) {
@@ -1129,7 +1026,13 @@ export class ClaudeAgentManager {
     });
     for (const item of session.items) {
       if (item.type === "choice" && item.status === "selected" && (!choiceId || item.id === choiceId)) {
-        this.store?.appendItem?.(session.id, item);
+        this.emitProviderEvent(session, {
+          type: "approval.resolved",
+          turnId: item.turnId,
+          itemId: item.id,
+          item,
+          occurredAt: session.updatedAt
+        });
       }
     }
   }
@@ -1158,40 +1061,37 @@ export class ClaudeAgentManager {
     queueMicrotask(() => Promise.resolve(this.onTurnSettled({
       providerSessionId: session.id,
       session: this.toSessionSummary(session),
+      items: session.items.filter((item) => item.turnId === event.turnId),
       hasAgentMessage,
       ...event
     })).catch((error) => {
       console.error(`[claude-sdk] turn-settled callback failed id=${session.id}: ${error.message}`);
     }));
   }
+
+  emitProviderEvent(session, event) {
+    if (typeof this.onProviderEvent !== "function" || !event?.type) return;
+    queueMicrotask(() => Promise.resolve(this.onProviderEvent({
+      providerSessionId: session.id,
+      providerEventId: event.providerEventId ?? null,
+      turnId: event.turnId ?? session.currentTurnId ?? null,
+      itemId: event.itemId ?? event.item?.id ?? null,
+      occurredAt: event.occurredAt ?? session.updatedAt,
+      ...event
+    })).catch((error) => {
+      console.error(`[claude-sdk] Provider event callback failed id=${session.id} type=${event.type}: ${error.message}`);
+    }));
+  }
 }
 
-export async function loadClaudeTranscriptMessages(
-  sessionId,
-  options = {},
-  loadPage = getSessionMessages
-) {
-  const pageSize = Math.max(1, Number(options.pageSize ?? 500));
-  const maxMessages = Math.max(pageSize, Number(options.maxMessages ?? 20_000));
-  const requestOptions = {
-    ...(options.dir ? { dir: options.dir } : {}),
-    includeSystemMessages: options.includeSystemMessages === true
-  };
-  const messages = [];
-  let offset = 0;
-  while (messages.length < maxMessages) {
-    const limit = Math.min(pageSize, maxMessages - messages.length);
-    const page = await loadPage(sessionId, {
-      ...requestOptions,
-      limit,
-      offset
-    });
-    if (!Array.isArray(page) || page.length === 0) break;
-    messages.push(...page);
-    offset += page.length;
-    if (page.length < limit) break;
+function claudeItemProviderEventType(item) {
+  if (item?.type === "agentMessage" || item?.type === "reasoning") {
+    return "assistant.message.delta";
   }
-  return messages;
+  if (item?.type === "choice") return "approval.requested";
+  if (item?.status === "failed") return "tool.failed";
+  if (item?.status === "completed") return "tool.completed";
+  return "tool.started";
 }
 
 function hasPendingChoices(session) {
@@ -1225,59 +1125,6 @@ function makeUserMessage(text) {
     },
     parent_tool_use_id: null
   };
-}
-
-export function claudeTranscriptItems(session, messages = []) {
-  const items = [];
-  let currentTurnId = null;
-  let nextItemSeq = 1;
-  let nextTurnSeq = 1;
-  const turnIds = new Set();
-
-  for (const message of messages) {
-    if (message?.type === "user") {
-      // Claude's SDK also represents tool results as user-role messages. Only
-      // an actual text message starts a new conversation turn.
-      const text = userMessageWithoutSessionContext(userMessageText(message.message));
-      if (!text) continue;
-      currentTurnId = `${session.id}:turn:${nextTurnSeq++}`;
-      turnIds.add(currentTurnId);
-      items.push(transcriptItem(
-        session,
-        nextItemSeq++,
-        currentTurnId,
-        "userMessage",
-        "User",
-        text,
-        message.timestamp,
-        "sent"
-      ));
-      continue;
-    }
-
-    if (message?.type !== "assistant") continue;
-    if (!currentTurnId) {
-      currentTurnId = `${session.id}:turn:${nextTurnSeq++}`;
-      turnIds.add(currentTurnId);
-    }
-    for (const contentItem of claudeAssistantContentItems(message.message)) {
-      items.push(transcriptItem(
-        session,
-        nextItemSeq++,
-        currentTurnId,
-        contentItem.type,
-        contentItem.title,
-        contentItem.text,
-        message.timestamp,
-        contentItem.status ?? null,
-        contentItem
-      ));
-    }
-  }
-
-  const transcript = { items };
-  for (const turnId of turnIds) finalizeClaudeTurnItems(transcript, turnId, "complete");
-  return transcript.items;
 }
 
 function claudeAssistantContentItems(message) {
@@ -1369,36 +1216,6 @@ function assistantText(message) {
     .filter(Boolean)
     .join("\n\n")
     .trim();
-}
-
-function userMessageText(message) {
-  const content = message?.content;
-  if (typeof content === "string") {
-    return content.trim();
-  }
-  const blocks = Array.isArray(content) ? content : [];
-  return blocks
-    .filter((block) => block?.type === "text" && typeof block.text === "string")
-    .map((block) => block.text.trim())
-    .filter(Boolean)
-    .join("\n\n")
-    .trim();
-}
-
-function transcriptItem(session, seq, turnId, type, title, text, timestamp, status, metadata = {}) {
-  return {
-    id: `${session.id}:transcript:${seq}`,
-    turnId,
-    turnStatus: "complete",
-    type,
-    title,
-    text,
-    options: null,
-    status,
-    createdAt: createdAtFromOrNow(timestamp),
-    presentationRole: metadata.presentationRole ?? null,
-    presentationText: metadata.presentationText ?? null
-  };
 }
 
 function nextSeqFromItems(items = []) {
@@ -1598,7 +1415,6 @@ function advanceAskUserChoice(session, pendingDecision, option, manager) {
     status: "pending",
     options: choice.options
   });
-  manager.persistSession(session);
   return true;
 }
 
@@ -1766,21 +1582,6 @@ function visibleClaudeItems(items = []) {
   return visible;
 }
 
-export function mergeClaudeTranscriptItems(transcriptItems = [], storedItems = []) {
-  if (transcriptItems.length === 0) {
-    return storedItems;
-  }
-  const retainedChoices = storedItems.filter((item) =>
-    item.type === "choice" && item.status && item.status !== "pending"
-  );
-  const merged = new Map(transcriptItems.map((item) => [item.id, item]));
-  for (const item of retainedChoices) merged.set(item.id, item);
-  return Array.from(merged.values()).sort((left, right) => {
-    const createdAtOrder = String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
-    return createdAtOrder || String(left.id ?? "").localeCompare(String(right.id ?? ""));
-  });
-}
-
 function normalizeClaudeAccountUsage(usage, model = null) {
   const windows = [];
   const addWindow = (id, label, raw, durationMinutes) => {
@@ -1834,20 +1635,6 @@ function finiteNumber(value) {
 function epochSeconds(value) {
   const timestamp = Date.parse(String(value ?? ""));
   return Number.isFinite(timestamp) ? timestamp / 1_000 : null;
-}
-
-function compareSessionOrder(left, right) {
-  const leftPinned = left.pinned === true;
-  const rightPinned = right.pinned === true;
-  if (leftPinned !== rightPinned) {
-    return leftPinned ? -1 : 1;
-  }
-  const leftOrder = Number.isFinite(left.sortOrder) ? left.sortOrder : Number.POSITIVE_INFINITY;
-  const rightOrder = Number.isFinite(right.sortOrder) ? right.sortOrder : Number.POSITIVE_INFINITY;
-  if (leftOrder !== rightOrder) {
-    return leftOrder - rightOrder;
-  }
-  return String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""));
 }
 
 function shortTitle(value) {

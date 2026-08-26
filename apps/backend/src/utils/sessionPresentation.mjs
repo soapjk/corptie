@@ -38,35 +38,6 @@ export function mergeStoredSessionPresentation(session, stored) {
   };
 }
 
-// Session lists are a durable control-plane projection. Provider objects may
-// be newer while an event is being persisted, but every runtime callback writes
-// the sessions row synchronously before state sync runs. Once that write has
-// committed, an older in-memory Provider object must never put a terminal row
-// back into running. Keep the general merge above for Provider operations such
-// as resume; use this stricter merge only at list/state-sync boundaries.
-export function mergeAuthoritativeStoredSessionPresentation(session, stored) {
-  const merged = mergeStoredSessionPresentation(session, stored);
-  if (!stored) return merged;
-  const status = stored.status ?? merged.status;
-  const active = ["running", "blocked"].includes(status);
-  return {
-    ...merged,
-    status,
-    progress: stored.progress ?? merged.progress,
-    summary: stored.summary ?? merged.summary,
-    updatedAt: stored.updatedAt ?? merged.updatedAt,
-    activityStatus: active
-      ? (stored.activityStatus ?? session.activityStatus ?? null)
-      : null,
-    capabilities: stored.capabilities ?? merged.capabilities,
-    rawStatus: stored.rawStatus ?? merged.rawStatus,
-    external: {
-      ...(merged.external ?? {}),
-      activeTurnId: stored.external?.activeTurnId ?? null
-    }
-  };
-}
-
 function providerSessionId(session) {
   return nonEmptyText(session?.external?.sessionId) || nonEmptyText(session?.external?.threadId);
 }

@@ -113,6 +113,5 @@ private func makeObjectiveSession(id: String, objectiveId: String) -> TaskSessio
         capabilities: nil,
         external: nil,
         actions: nil,
-        pendingCollaborationConfirmation: nil
     )
 }

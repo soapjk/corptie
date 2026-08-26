@@ -1,10 +1,7 @@
-/// Builds the provider-neutral, read-only detail shown when a Provider cannot
-/// currently be reached. Persisted item snapshots are preferred because they
-/// preserve the complete normalized timeline; the event projection supports
-/// databases created before detail snapshots were mirrored locally.
-export function storedSessionDetail({ summary, storedDetail, eventItems = [] }) {
+/// Builds the provider-neutral, read-only detail from Corptie's materialized
+/// Session projection. Event logs are audit input, never a read-time fallback.
+export function storedSessionDetail({ summary, storedDetail }) {
   const snapshotItems = Array.isArray(storedDetail?.items) ? storedDetail.items : [];
-  const items = snapshotItems.length > 0 ? snapshotItems : eventItems;
   const provider = summary?.external?.provider ?? summary?.provider ?? storedDetail?.source ?? null;
   return {
     ...summary,
@@ -16,7 +13,7 @@ export function storedSessionDetail({ summary, storedDetail, eventItems = [] }) 
     canSend: false,
     sendUnavailableReason: "The Provider is offline. Stored conversation history is available read-only.",
     capabilities: readOnlyCapabilities(storedDetail?.capabilities ?? summary?.capabilities),
-    items
+    items: snapshotItems
   };
 }
 

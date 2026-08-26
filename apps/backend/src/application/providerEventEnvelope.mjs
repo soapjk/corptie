@@ -16,9 +16,16 @@ export function mapCodexProviderNotification({ message, binding, liveItems = [],
     ? [...liveItems].reverse().find((candidate) => candidate?.type === "approval") ?? null
     : null;
   const itemId = params.item?.id ?? approvalItem?.id ?? null;
-  const item = approvalItem ?? (itemId
-    ? liveItems.find((candidate) => candidate?.id === itemId) ?? null
-    : null);
+  // The notification can be delivered before the Adapter's live-item cache is
+  // updated. Prefer the normalized cache, but never discard the full native
+  // item carried by item/started or item/completed; otherwise the final answer
+  // event is committed without a Timeline item and the UI can only show the
+  // execution card.
+  const item = normalizeTimelineItem(
+    approvalItem ?? (itemId
+      ? liveItems.find((candidate) => candidate?.id === itemId) ?? params.item ?? null
+      : params.item ?? null)
+  );
   const type = codexEventType(method, params.item, turn);
   if (!type) return null;
   return providerEnvelope(binding, {
@@ -33,7 +40,7 @@ export function mapCodexProviderNotification({ message, binding, liveItems = [],
     payload: compactObject({
       nativeMethod: method,
       item,
-      items: method === "turn/completed" ? liveItems : undefined,
+      items: method === "turn/completed" ? liveItems.map(normalizeTimelineItem) : undefined,
       turn,
       error: params.error ?? turn?.error,
       willRetry: params.willRetry,
@@ -60,9 +67,32 @@ export function mapClaudeTurnSettled({ event, binding, receivedAt }) {
     receivedAt,
     payload: compactObject({
       session: event?.session,
+      items: Array.isArray(event?.items) ? event.items.map(normalizeTimelineItem) : undefined,
       hasAgentMessage: event?.hasAgentMessage === true,
       error: event?.error ?? null,
       status
+    }),
+    rawPayload: event
+  });
+}
+
+export function mapClaudeProviderEvent({ event, binding, receivedAt }) {
+  if (!event?.type) return null;
+  return providerEnvelope(binding, {
+    providerEventId: optionalText(event.providerEventId),
+    providerSequence: optionalSequence(event.providerSequence),
+    resumeToken: optionalText(event.resumeToken),
+    turnId: optionalText(event.turnId),
+    itemId: optionalText(event.itemId ?? event.item?.id),
+    type: event.type,
+    occurredAt: optionalText(event.occurredAt),
+    receivedAt,
+    payload: compactObject({
+      nativeType: event.nativeType ?? event.type,
+      item: normalizeTimelineItem(event.item),
+      error: event.error ?? null,
+      willRetry: event.willRetry,
+      connectionStatus: event.connectionStatus
     }),
     rawPayload: event
   });
@@ -198,6 +228,22 @@ function projectedDetailItem(detail, event) {
   }
   const turnId = optionalText(event?.turn_id);
   return [...items].reverse().find((item) => !turnId || item?.turnId === turnId) ?? null;
+}
+
+function normalizeTimelineItem(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return item ?? null;
+  const role = normalizedPresentationRole(item.presentationRole ?? item.phase);
+  return {
+    ...item,
+    ...(role ? { presentationRole: role } : {})
+  };
+}
+
+function normalizedPresentationRole(value) {
+  const normalized = optionalText(value)?.toLowerCase().replaceAll("-", "_");
+  if (["final", "finalanswer", "final_answer"].includes(normalized)) return "final_answer";
+  if (["analysis", "commentary", "progress"].includes(normalized)) return "commentary";
+  return normalized;
 }
 
 function optionalSequence(value) {

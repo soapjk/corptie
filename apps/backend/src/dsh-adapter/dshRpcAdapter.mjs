@@ -14,14 +14,12 @@
 //
 // 合规性：本模块只依赖 SessionApplicationService + store，不接触具体 provider adapter。
 
-import { randomUUID } from "node:crypto";
 import {
   parseClientRequest,
   okResponse,
   errorResponse,
   RpcErrorCode,
 } from "./dshWireCodec.mjs";
-import { mapHistory } from "./dshEventMapper.mjs";
 import { mapSessionList } from "./dshSessionSummaryMapper.mjs";
 
 // ---- DSH 宿主设置：欢迎通知（ui-onboarding） ----
@@ -68,7 +66,9 @@ function onboardingNamespaceView(ns) {
  * @param {function} deps.readJson - (request) => Promise<object>
  */
 export async function handleDshRpcRequest(deps) {
-  const { request, response, url, sessionApplicationService, store, sendJson, readJson, readCodexSessionConversation, readCodexSessionTimeline, sendSessionMessage, createSession } = deps;
+  const { request, response, url, sessionApplicationService, store, sendJson, readJson, sendSessionMessage, createSession } = deps;
+  const listStoredSessions = deps.listStoredSessions
+    ?? ((options = {}) => store.listSessions({ archived: options.archived === true }));
 
   // 接管 /api/session.*、/api/subagent.*（subagent 暂返回不支持），以及
   // boot 握手所需的宿主级端点 host.describe / settings.describe / workspace.list。
@@ -102,7 +102,13 @@ export async function handleDshRpcRequest(deps) {
   const { rpcId, method, payload } = req;
 
   try {
-    const value = await dispatch(method, payload, { sessionApplicationService, store, readCodexSessionConversation, readCodexSessionTimeline, sendSessionMessage, createSession });
+    const value = await dispatchDshRequest(method, payload, {
+      sessionApplicationService,
+      store,
+      listStoredSessions,
+      sendSessionMessage,
+      createSession
+    });
     sendJson(response, 200, okResponse(rpcId, value));
   } catch (error) {
     const code = error?.code === "SESSION_NOT_FOUND"
@@ -119,16 +125,22 @@ export async function handleDshRpcRequest(deps) {
 }
 
 /** 按 method 分发到具体实现。 */
-async function dispatch(method, payload, { sessionApplicationService, store, readCodexSessionConversation, readCodexSessionTimeline, sendSessionMessage, createSession }) {
+export async function dispatchDshRequest(method, payload, {
+  sessionApplicationService,
+  store,
+  listStoredSessions,
+  sendSessionMessage,
+  createSession
+}) {
   switch (method) {
     case "session.list":
-      return sessionList(payload, { sessionApplicationService });
+      return sessionList(payload, { listStoredSessions, store });
 
     case "session.history":
-      return sessionHistory(payload, { store, readCodexSessionConversation, readCodexSessionTimeline });
+      return sessionHistory(payload, { store });
 
     case "session.create":
-      return sessionCreate(payload, { sessionApplicationService, createSession });
+      return sessionCreate(payload, { sessionApplicationService, createSession, store });
 
     case "session.prompt":
       return sessionPrompt(payload, { sessionApplicationService, sendSessionMessage });
@@ -147,7 +159,7 @@ async function dispatch(method, payload, { sessionApplicationService, store, rea
 
     // boot 握手宿主级端点。
     case "host.describe":
-      return hostDescribe(payload, { sessionApplicationService });
+      return hostDescribe(payload, { listStoredSessions });
 
     case "settings.describe":
       return settingsDescribe(payload);
@@ -166,12 +178,20 @@ async function dispatch(method, payload, { sessionApplicationService, store, rea
 
 // ---- 只读路径 ----
 
-async function sessionList(payload, { sessionApplicationService }) {
-  const sessions = await sessionApplicationService.listSessions({ archived: false });
-  return { items: mapSessionList(sessions) };
+async function sessionList(payload, { listStoredSessions, store }) {
+  const sessions = await listStoredSessions({ archived: false });
+  const revisions = typeof store?.listSessionTimelineRevisions === "function"
+    ? store.listSessionTimelineRevisions()
+    : new Map();
+  return {
+    items: mapSessionList(sessions.map((session) => ({
+      ...session,
+      blank: Number(revisions.get(session.id) ?? session.timelineRevision ?? 0) === 0
+    })))
+  };
 }
 
-async function sessionHistory(payload, { store, readCodexSessionConversation, readCodexSessionTimeline }) {
+async function sessionHistory(payload, { store }) {
   const sessionId = String(payload?.sessionId ?? "");
   if (!sessionId) throw notFound(sessionId);
 
@@ -180,41 +200,24 @@ async function sessionHistory(payload, { store, readCodexSessionConversation, re
   const maxMessages = Number(payload?.maxMessages ?? 200);
   const limit = Math.max(1, Math.min(1000, maxMessages));
 
-  const rows = store.listSessionEvents(sessionId, beforeSeq, limit);
-
-  // 历史正文缺失的根因：codex provider 的 assistant 逐条回复从未以 assistant/message
-  // surface 事件写入 session_events（只把最后一个 agent message 写进 session.summary，
-  // 随每个进度事件重复广播）。因此当该 session 没有任何 surface 事件时，直接从 codex
-  // rollout JSONL 读取完整对话（每条仅一次），替代会产生重复 summary 的 fallback。
-  const hasSurfaceEvents = rows.some((row) => {
-    const t = row?.type;
-    return t === "user/message" || t === "assistant/message" || t === "assistant/chunk";
-  });
-
   const lastSeq = store.lastSessionEventSequence(sessionId);
-  let events;
-  if (!hasSurfaceEvents && typeof readCodexSessionTimeline === "function" && beforeSeq === 0) {
-    // 只在首屏读取 rollout 时间线；分页请求继续走事件流（此路径下正文已一次性返回）。
-    const rolloutEvents = await historyFromCodexRollout(sessionId, readCodexSessionTimeline, lastSeq);
-    events = rolloutEvents ?? mapHistory(rows);
-  } else {
-    events = mapHistory(rows);
-  }
-
-  const usedRollout = !hasSurfaceEvents && beforeSeq === 0;
+  // DSH is another Corptie client, not a Provider-history importer. Read the
+  // same session_items projection as the macOS Timeline and translate only at
+  // the presentation boundary. Opening DSH must work with every Provider
+  // offline and must never touch Codex rollout/Claude transcript storage.
+  const items = beforeSeq > 0 ? [] : store.getItems(sessionId, limit);
+  const events = historyFromStoredTimelineItems(items, lastSeq);
 
   return {
     events,
-    // hasMore 应反映「是否还有未返回的原始事件」，而非「是否还有可映射事件」。
-    // 走 rollout 对话回退时正文已一次性完整返回，不再有更多历史。
-    hasMore: usedRollout ? false : lastSeq > beforeSeq + rows.length,
+    hasMore: false
   };
 }
 
 /**
- * 从 codex rollout 时间线生成 DSH 事件列表（session.history 的回退路径）。
+ * 从 Corptie 的持久化 Timeline 生成 DSH 事件列表。
  *
- * 消费 parseCodexRolloutTimeline 返回的有序时间线（message / tool-call / tool-output），
+ * 消费 session_items 的有序时间线（message / tool-call / tool-output），
  * 映射成完整的 DSH SessionEvent 序列。相比只映射对话，这里额外产出 tool/call 与
  * tool/result 事件，使 DSH 轨迹（trajectory）视图还原原生 DSH 的详细程度——agent 在
  * 一个 turn 内交替产生的工具调用与结果被逐一呈现，而不是压缩成单一的一问一答。
@@ -231,13 +234,37 @@ async function sessionHistory(payload, { store, readCodexSessionConversation, re
  * 映射规则：每个 user 消息开启新 turn；该 turn 内每个 assistant message 递增 step，
  * 紧随其后（step 未变）出现的 tool-call/tool-output 归属该 step。seq 用连续递增占位序号。
  *
- * 返回 null 表示 rollout 不可用，让调用方回退到 mapHistory 的 summary 兜底。
+ * 输入只接受 Corptie `session_items`，不接受 Provider 原生历史。
  */
-export async function historyFromCodexRollout(sessionId, readCodexSessionTimeline, sequenceCeiling = null) {
-  const timeline = await readCodexSessionTimeline(sessionId).catch(() => []);
-  if (!Array.isArray(timeline) || timeline.length === 0) {
+export function historyFromStoredTimelineItems(items, sequenceCeiling = null) {
+  const timeline = (Array.isArray(items) ? items : []).map((item) => {
+    if (item.type === "userMessage") {
+      return { kind: "message", role: "user", id: item.id, text: item.text, createdAt: item.createdAt };
+    }
+    if (["agentMessage", "text", "taskComplete"].includes(item.type)) {
+      return { kind: "message", role: "assistant", id: item.id, text: item.text, createdAt: item.createdAt };
+    }
+    if (["commandExecution", "mcpToolCall", "toolCall"].includes(item.type)) {
+      return {
+        kind: "tool-call",
+        callId: item.id,
+        name: item.title || item.type,
+        arguments: item.text || "",
+        createdAt: item.createdAt
+      };
+    }
+    if (["terminalOutput", "toolOutput"].includes(item.type)) {
+      return {
+        kind: "tool-output",
+        id: item.id,
+        callId: item.turnId || item.id,
+        output: item.text || "",
+        createdAt: item.createdAt
+      };
+    }
     return null;
-  }
+  }).filter(Boolean);
+  if (timeline.length === 0) return [];
 
   const events = [];
   const push = (type, data, surfaceOp, createdAt = null) => {
@@ -247,14 +274,14 @@ export async function historyFromCodexRollout(sessionId, readCodexSessionTimelin
     events.push({ event: ev });
   };
 
-  const userMessage = (text) => ({
-    id: randomUUID(),
+  const userMessage = (text, id) => ({
+    id,
     role: "user",
     content: [{ type: "text", text }],
     source: { kind: "user" },
   });
-  const assistantMessage = (text) => ({
-    id: randomUUID(),
+  const assistantMessage = (text, id) => ({
+    id,
     role: "assistant",
     content: [{ type: "text", text }],
     source: { kind: "model", provider: "codex", model: "codex" },
@@ -264,7 +291,7 @@ export async function historyFromCodexRollout(sessionId, readCodexSessionTimelin
   let step = 0;
   let turnOpen = false;
   // stepOpen：当前是否有一个已 step/start 但尚未 step/end 的 assistant step。
-  // codex rollout 里「assistant message → 工具调用 → assistant message → …」交错出现，
+  // Timeline 里「assistant message → 工具调用 → assistant message → …」交错出现，
   // 工具调用应归属触发它的那个 assistant message 所属的 step，而非下一个尚未开启的 step。
   // 因此 step/start 在 assistant message 处开启，并在紧随其后的工具调用序列结束、下一个
   // assistant message 到来时再 step/end（而非每个 assistant 立即闭合）。
@@ -298,7 +325,7 @@ export async function historyFromCodexRollout(sessionId, readCodexSessionTimelin
         turnOpen = false;
       }
       push("turn/start", { turn }, undefined, item.createdAt);
-      push("user/message", userMessage(item.text), "append", item.createdAt);
+      push("user/message", userMessage(item.text, item.id), "append", item.createdAt);
       step = 0;
       stepOpen = false;
       turnOpen = true;
@@ -309,10 +336,10 @@ export async function historyFromCodexRollout(sessionId, readCodexSessionTimelin
       closeStep(turnNo);
       push("step/start", { turn: turnNo, step }, undefined, item.createdAt);
       stepOpen = true;
-      push("assistant/message", { turn: turnNo, step, message: assistantMessage(item.text) }, "append", item.createdAt);
+      push("assistant/message", { turn: turnNo, step, message: assistantMessage(item.text, item.id) }, "append", item.createdAt);
     } else if (item.kind === "tool-call") {
       const turnNo = ensureTurn();
-      // 工具调用归属当前开启的 step；若 rollout 异常地以工具调用开头（无前置 assistant），
+      // 工具调用归属当前开启的 step；若 Timeline 以工具调用开头（无前置 assistant），
       // 为其开启一个 step 以保证轨迹仍可定位。
       if (!stepOpen) {
         push("step/start", { turn: turnNo, step }, undefined, item.createdAt);
@@ -337,7 +364,7 @@ export async function historyFromCodexRollout(sessionId, readCodexSessionTimelin
           turn: turnNo,
           step,
           message: {
-            id: randomUUID(),
+            id: item.id,
             role: "user",
             source: { kind: "tool", callId: item.callId },
             content: [
@@ -371,14 +398,38 @@ export async function historyFromCodexRollout(sessionId, readCodexSessionTimelin
 
 // ---- 写路径 ----
 
-async function sessionCreate(payload, { sessionApplicationService, createSession }) {
+async function sessionCreate(payload, { sessionApplicationService, createSession, store }) {
   // DSH create 接受 cwd 或 workspaceId；Corptie 的 createSession 需要 providerId。
   // providerId 缺省走默认 provider（与现有 /sessions 创建一致，由上层兜底）。
-  const cwd = typeof payload?.cwd === "string" ? payload.cwd : undefined;
+  const requestedWorkspaceId = typeof payload?.workspaceId === "string"
+    ? payload.workspaceId.trim()
+    : "";
+  const candidates = requestedWorkspaceId && store
+    ? (store.listSessions({ archived: false }) ?? [])
+      .filter((session) => session.objectiveId === requestedWorkspaceId && session.agentId)
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
+    : [];
+  const inheritedSession = candidates[0] ?? null;
+  const cwd = typeof payload?.cwd === "string"
+    ? payload.cwd
+    : inheritedSession?.external?.cwd;
+  const actorId = inheritedSession?.agentId ?? null;
   if (typeof createSession !== "function") {
     throw new Error("session.create is unavailable without the unified Session factory");
   }
-  const session = await createSession(cwd ? { cwd } : {});
+  if (!actorId) {
+    const error = new Error("session.create requires an existing Agent in the selected Corptie Objective");
+    error.code = "AGENT_REQUIRED";
+    throw error;
+  }
+  const session = await createSession({
+    ...(cwd ? { cwd } : {}),
+    ...(inheritedSession?.sessionKind ? { sessionKind: inheritedSession.sessionKind } : {})
+  }, {
+    actorId,
+    objectiveId: requestedWorkspaceId || inheritedSession?.objectiveId || null,
+    sessionKind: inheritedSession?.sessionKind ?? null
+  });
   const sessionId = session?.publicSessionId ?? session?.sessionId ?? session?.id;
   if (!sessionId) throw new Error("session.create returned no session id");
   return { sessionId };
@@ -504,11 +555,11 @@ function mapDshModel(model) {
  * 进入 connected 态。version 取任意非空字符串；cwd 取最近一个 session 的
  * cwd（无则回退 process.cwd()）；attachedSessions 用当前未归档 session 数。
  */
-async function hostDescribe(_payload, { sessionApplicationService }) {
+async function hostDescribe(_payload, { listStoredSessions }) {
   let cwd = process.cwd();
   let attachedSessions = 0;
   try {
-    const sessions = await sessionApplicationService.listSessions({ archived: false });
+    const sessions = await listStoredSessions({ archived: false });
     attachedSessions = Array.isArray(sessions) ? sessions.length : 0;
     // 取最近更新的 session 的 cwd（外部工作目录）作为 host cwd。
     if (Array.isArray(sessions) && sessions.length > 0) {

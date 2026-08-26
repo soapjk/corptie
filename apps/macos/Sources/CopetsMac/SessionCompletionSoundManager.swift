@@ -175,10 +175,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     }
 
     private func handleSessionsUpdate(_ sessions: [TaskSession]) {
-        let activeSnapshots = SessionNotificationScope.activeSnapshots(
-            from: sessions,
-            workItems: AppStateStore.shared.workItems
-        )
+        let activeSnapshots = SessionNotificationScope.activeSnapshots(from: sessions)
         for sessionID in soundTransitionTracker.completedSessionIDs(for: activeSnapshots) {
             guard let soundId = Self.enabledSoundId(for: sessionID, defaults: defaults) else {
                 continue

@@ -6,47 +6,32 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         XCTAssertTrue(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
             previousServerRevision: 7,
             desiredServerRevision: 8,
-            localRevision: 7,
-            isSelected: false,
-            hasResidentDetail: false,
-            isUnread: false
+            localRevision: 7
         ))
         XCTAssertFalse(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
             previousServerRevision: 8,
             desiredServerRevision: 8,
-            localRevision: 7,
-            isSelected: false,
-            hasResidentDetail: false,
-            isUnread: false
+            localRevision: 7
         ))
     }
 
     func testReconnectWarmsEveryActiveTimelineWhenStale() {
-        for flags in [(true, false, false), (false, true, false), (false, false, true)] {
+        for _ in 0..<3 {
             XCTAssertTrue(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
                 previousServerRevision: nil,
                 desiredServerRevision: 12,
-                localRevision: 9,
-                isSelected: flags.0,
-                hasResidentDetail: flags.1,
-                isUnread: flags.2
+                localRevision: 9
             ))
         }
         XCTAssertTrue(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
             previousServerRevision: nil,
             desiredServerRevision: 12,
-            localRevision: 9,
-            isSelected: false,
-            hasResidentDetail: false,
-            isUnread: false
+            localRevision: 9
         ))
         XCTAssertFalse(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
             previousServerRevision: nil,
             desiredServerRevision: 12,
-            localRevision: 12,
-            isSelected: true,
-            hasResidentDetail: true,
-            isUnread: true
+            localRevision: 12
         ))
     }
 
@@ -86,6 +71,29 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         XCTAssertEqual(merged.items.first?.text, "newest")
     }
 
+    func testDeltaProcessorOwnsDecodeAndMergeOutsideTheMainActor() async throws {
+        let processor = SessionTimelineDeltaProcessor()
+        let data = Data("""
+        {"snapshotRequired": false, "baseRevision": 8, "revision": 9,
+         "currentRevision": 9, "changes": [
+           {"revision": 9, "itemId": "final", "operation": "upsert", "item": {
+             "id": "final", "turnId": "turn-final", "turnStatus": "complete",
+             "type": "agentMessage", "title": "Agent", "text": "Done"
+           }}
+         ]}
+        """.utf8)
+
+        let envelope = try await processor.decode(data)
+        guard case .applied(let merged, let revision) = await processor.merge(
+            envelope,
+            into: detail(items: []),
+            localRevision: 8
+        ) else { return XCTFail("Expected background delta projection") }
+
+        XCTAssertEqual(revision, 9)
+        XCTAssertEqual(merged.items.map(\.id), ["final"])
+    }
+
     func testDuplicatePageIsIdempotent() throws {
         let envelope = try decodeEnvelope("""
         {"snapshotRequired": false, "baseRevision": 1, "revision": 2,
@@ -100,12 +108,11 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         )
     }
 
-    func testProviderUserMessageAliasesCollapseAcrossSnapshotAndIncrementalMerge() throws {
-        let duplicateItems = [
+    func testDistinctStableMessageIDsRemainDistinctWithoutContentBasedCorrection() throws {
+        let messages = [
             item("item-47", turnID: "turn-a", type: "userMessage", text: "Sent only once"),
             item("provider-native-id", turnID: "turn-a", type: "userMessage", text: "Sent   only once")
         ]
-        XCTAssertEqual(canonicalSessionTimelineItems(duplicateItems).map(\.id), ["item-47"])
 
         let envelope = try decodeEnvelope("""
         {"snapshotRequired": false, "baseRevision": 3, "revision": 4,
@@ -118,10 +125,10 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
         """)
         guard case .applied(let merged, _) = SessionTimelineChangeMerger.merge(
             envelope,
-            into: detail(items: [duplicateItems[0]]),
+            into: detail(items: [messages[0]]),
             localRevision: 3
         ) else { return XCTFail("Expected alias delta to apply") }
-        XCTAssertEqual(merged.items.map(\.id), ["item-47"])
+        XCTAssertEqual(Set(merged.items.map(\.id)), Set(["item-47", "provider-native-id"]))
     }
 
     func testGapOutOfOrderAndMissingPayloadRequireSnapshot() throws {

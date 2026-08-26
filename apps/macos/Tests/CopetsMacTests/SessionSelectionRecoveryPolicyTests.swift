@@ -11,27 +11,30 @@ struct SessionSelectionRecoveryPolicyTests {
 
     @Test func recoversTheMostRecentStillAccessibleSession() {
         let completedWorkItem = makeRecoveryWorkItem(id: "work-item:completed", status: "done")
-        let current = makeRecoverySession(id: "session:current", workItemID: completedWorkItem.id)
-        let inaccessibleRecent = makeRecoverySession(id: "session:completed", workItemID: completedWorkItem.id)
+        let current = makeRecoverySession(id: "session:current", workItemID: completedWorkItem.id, archived: true)
+        let inaccessibleRecent = makeRecoverySession(id: "session:completed", workItemID: completedWorkItem.id, archived: true)
         let accessibleOlder = makeRecoverySession(id: "session:accessible", workItemID: nil, kind: .assistantChat)
 
         #expect(SessionSelectionRecoveryPolicy.recoverySessionID(
             recentSessionIDs: [current.id, inaccessibleRecent.id, accessibleOlder.id],
             sessions: [current, inaccessibleRecent, accessibleOlder],
-            workItems: [completedWorkItem],
             excluding: current.id
         ) == accessibleOlder.id)
     }
 
-    @Test func completedWorkerSessionCannotBecomeARecoveryTarget() {
+    @Test func completedWorkerSessionRemainsAccessibleUntilExplicitlyArchived() {
         let workItem = makeRecoveryWorkItem(id: "work-item:one", status: "completed")
         let session = makeRecoverySession(id: "session:one", workItemID: workItem.id)
 
-        #expect(!SessionSelectionRecoveryPolicy.isAccessible(
+        #expect(SessionSelectionRecoveryPolicy.isAccessible(
             session,
-            sessions: [session],
-            workItems: [workItem]
+            sessions: [session]
         ))
+    }
+
+    @Test func explicitlyArchivedWorkerSessionCannotBecomeARecoveryTarget() {
+        let session = makeRecoverySession(id: "session:archived", workItemID: "work-item:one", archived: true)
+        #expect(!SessionSelectionRecoveryPolicy.isAccessible(session, sessions: [session]))
     }
 
     @Test func fallsBackToTheFirstAccessibleSessionWhenHistoryIsStale() {
@@ -41,7 +44,6 @@ struct SessionSelectionRecoveryPolicyTests {
         #expect(SessionSelectionRecoveryPolicy.recoverySessionID(
             recentSessionIDs: ["session:deleted"],
             sessions: [first, second],
-            workItems: [],
             excluding: "session:reclaimed"
         ) == first.id)
     }
@@ -70,7 +72,8 @@ private func makeRecoveryWorkItem(id: String, status: String) -> WorkItem {
 private func makeRecoverySession(
     id: String,
     workItemID: String?,
-    kind: SessionKind = .worker
+    kind: SessionKind = .worker,
+    archived: Bool = false
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -88,12 +91,11 @@ private func makeRecoverySession(
         activityStatus: nil,
         updatedAt: "2026-08-22T00:00:00Z",
         accent: .cyan,
-        archived: false,
+        archived: archived,
         pinned: false,
         sortOrder: nil,
         capabilities: nil,
         external: nil,
         actions: nil,
-        pendingCollaborationConfirmation: nil
     )
 }

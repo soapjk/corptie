@@ -97,23 +97,6 @@ struct BackendConnectionStateTests {
         #expect(client.projectWorktreeActionError == "Merge conflict in server.mjs")
     }
 
-    @Test func terminalLifecycleEventsRequireAuthoritativeListRefresh() {
-        for eventName in [
-            "AgentTurnCompleted",
-            "CodexThreadCompleted",
-            "CodexThreadFailed",
-            "CodexThreadCancelled",
-            "SessionRunInterrupted",
-            "TaskCompleted",
-            "TaskCancelled",
-            "AgentWorkCompleted"
-        ] {
-            #expect(SessionStateRefreshPolicy.requiresAuthoritativeRefresh(eventName: eventName))
-        }
-        #expect(!SessionStateRefreshPolicy.requiresAuthoritativeRefresh(eventName: "SessionUsageUpdated"))
-        #expect(!SessionStateRefreshPolicy.requiresAuthoritativeRefresh(eventName: "CodexThreadProgressChanged"))
-    }
-
     @Test func stateStreamHeartbeatExpiryUsesAConservativeWindow() {
         let start = Date(timeIntervalSince1970: 1_000)
         #expect(!StateStreamLivenessPolicy.hasExpired(
@@ -124,5 +107,19 @@ struct BackendConnectionStateTests {
             lastActivityAt: start,
             now: start.addingTimeInterval(45)
         ))
+    }
+
+    @Test func equalRevisionStreamReconnectRestoresReachabilityWithoutAStateFrame() {
+        let store = AppStateStore()
+        _ = store.apply(snapshot: snapshot(revision: 7))
+        store.reportSyncError("connection lost")
+        #expect(store.isReachable == false)
+
+        // `/state/events?after=7` intentionally sends no duplicate payload.
+        // The successful HTTP/SSE handshake itself must recover online state.
+        store.reportStateStreamConnected()
+        #expect(store.isReachable == true)
+        #expect(store.syncError == nil)
+        #expect(store.revision == 7)
     }
 }

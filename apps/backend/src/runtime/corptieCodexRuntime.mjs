@@ -1,5 +1,5 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -42,9 +42,7 @@ export function resolveCorptieRuntimePaths(options = {}) {
       "project-tools-set.md"
     ),
     sourceAuthPath: resolve(options.sourceAuthPath ?? join(home, ".codex", "auth.json")),
-    legacyCodexHome: resolve(options.legacyCodexHome ?? join(home, ".codex")),
-    authBootstrapMarkerPath: join(codexHome, ".corptie-auth-bootstrap-v1.json"),
-    migrationMarkerPath: join(codexHome, ".corptie-migration-v1.json")
+    authBootstrapMarkerPath: join(codexHome, ".corptie-auth-bootstrap-v1.json")
   };
 }
 
@@ -91,8 +89,6 @@ export async function ensureCorptieCodexRuntime(options = {}) {
         0o600
       )
     : false;
-  const threadMigration = await migrateLegacyThreads(paths, options.legacyThreadIds ?? []);
-
   return {
     ...paths,
     bundledMemoryPath,
@@ -105,73 +101,11 @@ export async function ensureCorptieCodexRuntime(options = {}) {
     agentMemory,
     skillChanged,
     projectToolsReferenceChanged,
-    threadMigration,
     authAvailable: await isFile(paths.authPath),
     agentsAvailable: await isFile(paths.agentsPath),
     skillAvailable: await isFile(paths.collaborationSkillPath),
     mcpAvailable: true
   };
-}
-
-async function migrateLegacyThreads(paths, legacyThreadIds) {
-  if (await isFile(paths.migrationMarkerPath)) {
-    return { performed: false, rolloutCount: 0, supportFileCount: 0 };
-  }
-
-  const threadIds = new Set(legacyThreadIds
-    .map((value) => String(value ?? "").replace(/^codex:/, "").trim())
-    .filter(Boolean));
-  let rolloutCount = 0;
-  let supportFileCount = 0;
-
-  if (threadIds.size > 0 && paths.legacyCodexHome !== paths.codexHome) {
-    for (const directory of ["sessions", "archived_sessions"]) {
-      rolloutCount += await copyMatchingFiles(
-        join(paths.legacyCodexHome, directory),
-        join(paths.codexHome, directory),
-        (name) => name.endsWith(".jsonl") && includesThreadId(name, threadIds)
-      );
-    }
-    supportFileCount += await copyMatchingFiles(
-      join(paths.legacyCodexHome, "shell_snapshots"),
-      join(paths.codexHome, "shell_snapshots"),
-      (name) => includesThreadId(name, threadIds)
-    );
-  }
-
-  const marker = {
-    version: 1,
-    migratedAt: new Date().toISOString(),
-    requestedThreadCount: threadIds.size,
-    rolloutCount,
-    supportFileCount
-  };
-  await atomicWrite(paths.migrationMarkerPath, `${JSON.stringify(marker, null, 2)}\n`, 0o600);
-  return { performed: true, rolloutCount, supportFileCount };
-}
-
-async function copyMatchingFiles(sourceRoot, destinationRoot, matches) {
-  if (!await isDirectory(sourceRoot)) return 0;
-  let count = 0;
-  for (const entry of await readdir(sourceRoot, { withFileTypes: true, recursive: true })) {
-    if (!entry.isFile() || !matches(entry.name)) continue;
-    const parentPath = entry.parentPath ?? entry.path ?? sourceRoot;
-    const source = join(parentPath, entry.name);
-    const relative = source.slice(sourceRoot.length + 1);
-    const destination = join(destinationRoot, relative);
-    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
-    await copyFile(source, destination);
-    await chmod(destination, 0o600);
-    count += 1;
-  }
-  return count;
-}
-
-function includesThreadId(name, threadIds) {
-  for (const threadId of threadIds) {
-    if (name.includes(threadId)) return true;
-  }
-  return false;
 }
 
 async function ensureRuntimeConfig(path) {

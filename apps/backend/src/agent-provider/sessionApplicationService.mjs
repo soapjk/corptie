@@ -25,10 +25,6 @@ export class SessionApplicationService {
     }
   }
 
-  listSessions(options = {}) {
-    return this.registry.listSessions(options);
-  }
-
   listModels(providerId, context = {}) {
     try {
       return this.registry.invoke(

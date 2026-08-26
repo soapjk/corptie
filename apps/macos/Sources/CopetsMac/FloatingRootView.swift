@@ -916,7 +916,7 @@ struct DetailSessionRailRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("\(session.title)\n\(session.status.label)")
+        .help("\(session.title)\n\(session.executionTaskStatus.label)")
     }
 }
 
@@ -1084,6 +1084,7 @@ func sessionProviderIdentityLabel(
 
 private struct SessionContextMenuContent: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
 
     let session: TaskSession
     @Binding var isRenaming: Bool
@@ -1883,6 +1884,7 @@ private struct FloatingActionOrb: View {
 
 private struct NewPtyAgentTaskSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @AppStorage("newTask.defaultSandboxMode", store: CorptieAppEnvironment.userDefaults) private var defaultSandboxMode = "workspace-write"
     @AppStorage("newTask.defaultApprovalPolicy", store: CorptieAppEnvironment.userDefaults) private var defaultApprovalPolicy = "on-request"
     @AppStorage("newTask.defaultCodexModel", store: CorptieAppEnvironment.userDefaults) private var defaultCodexModel = ""
@@ -2706,6 +2708,7 @@ private struct SheetPanelBackground: View {
 
 struct TaskCardView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @State private var quickReply = ""
     @State private var lastQuickReplyInteractionAt = Date.distantPast
     @State private var isRenaming = false
@@ -2752,12 +2755,12 @@ struct TaskCardView: View {
                         .help(L10n("Pinned"))
                 }
 
-                Text(session.status.label)
+                Text(session.executionTaskStatus.label)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(session.status.color)
+                    .foregroundStyle(session.executionTaskStatus.color)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(session.status.color.opacity(0.14), in: Capsule())
+                    .background(session.executionTaskStatus.color.opacity(0.14), in: Capsule())
             }
 
             Text(session.summary)
@@ -2781,7 +2784,7 @@ struct TaskCardView: View {
                         .layoutPriority(-1)
                 } else if let activityStatus = session.activityStatus,
                           !activityStatus.isEmpty,
-                          session.status == .running {
+                          session.executionTaskStatus == .running {
                     ActivityStatusText(text: activityStatus, isActive: true, fontSize: 11)
                         .frame(height: 14)
                         .layoutPriority(-1)
@@ -2792,7 +2795,7 @@ struct TaskCardView: View {
                     .foregroundStyle(CorptiePalette.mutedText)
                     .lineLimit(1)
 
-                if session.status == .running {
+                if session.executionTaskStatus == .running {
                     Spacer()
 
                     if session.canInterruptNow {
@@ -3222,7 +3225,7 @@ struct SessionAvatarView: View {
 
     var body: some View {
         ZStack {
-            StatusHalo(status: session.status)
+            StatusHalo(status: session.executionTaskStatus)
                 .frame(width: 72, height: 72)
                 .scaleEffect(scale)
 
@@ -3324,6 +3327,7 @@ func sessionDetailContentPhase(
 
 struct DetailView: View {
     private let backendClient: BackendClient
+    @ObservedObject private var selectionController: SessionSelectionController
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @MainActor
     static var initialVisibleMessageLimit: Int {
@@ -3373,17 +3377,14 @@ struct DetailView: View {
         self.presentationCache = presentationCache
         self.composerDraftRepository = composerDraftRepository
         self.backendClient = backendClient
+        _selectionController = ObservedObject(
+            wrappedValue: backendClient.sessionSelectionController
+        )
         self.initialTimelinePosition = initialTimelinePosition
         self.onTimelinePositionChange = onTimelinePositionChange
         let presentationState = presentationCache.state(for: sessionId)
         _presentationState = ObservedObject(wrappedValue: presentationState)
         let timelineState = SessionTimelineRepository.shared.state(for: sessionId)
-        if timelineState.detail == nil,
-           backendClient.selectedSession?.id == sessionId,
-           let selectedDetail = backendClient.selectedDetail,
-           !selectedDetail.id.isEmpty {
-            SessionTimelineRepository.shared.publish(selectedDetail, for: sessionId)
-        }
         _timelineState = ObservedObject(wrappedValue: timelineState)
         let initialCache = presentationState.cache
         let initialPosition = initialTimelinePosition
@@ -3424,6 +3425,11 @@ struct DetailView: View {
         timelineState.detail
     }
 
+    private var selectedSession: TaskSession? {
+        guard selectionController.selectedSessionID == sessionId else { return nil }
+        return backendClient.selectedSession
+    }
+
     private var contentPhase: SessionDetailContentPhase {
         sessionDetailContentPhase(
             hasLiveDetail: displayedDetail != nil,
@@ -3447,10 +3453,18 @@ struct DetailView: View {
             case .live:
                 if let detail = displayedDetail {
                     ThreadMetaView(
-                        status: detail.status,
-                        isConnecting: detail.isConnecting,
-                        connectionColor: detail.connectionColor,
-                        activityStatus: detail.activityStatus
+                        status: selectedSession != nil
+                            ? selectedSession?.executionTaskStatus ?? detail.status
+                            : detail.status,
+                        isConnecting: selectedSession != nil
+                            ? selectedSession?.isConnecting ?? detail.isConnecting
+                            : detail.isConnecting,
+                        connectionColor: selectedSession != nil
+                            ? selectedSession?.connectionColor ?? detail.connectionColor
+                            : detail.connectionColor,
+                        activityStatus: selectedSession != nil
+                            ? selectedSession?.activityStatus
+                            : detail.activityStatus
                     )
 
                     Group {
@@ -3468,10 +3482,9 @@ struct DetailView: View {
                 // The presentation cache is a valid stale-while-revalidate
                 // first frame. Do not hide already rendered messages behind
                 // the transport loading state while SSE reconnects.
-                if let session = backendClient.selectedSession,
-                   session.id == sessionId {
+                if let session = selectedSession {
                     ThreadMetaView(
-                        status: session.status,
+                        status: session.executionTaskStatus,
                         isConnecting: session.isConnecting,
                         connectionColor: session.connectionColor,
                         activityStatus: session.activityStatus
@@ -3502,16 +3515,11 @@ struct DetailView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            if let sendStatusMessage = backendClient.sendStatusMessage,
-               sendStatusMessage.hasPrefix("Send failed") || sendStatusMessage.contains("read-only") {
-                Text(sendStatusMessage)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-            }
+            SessionSendFailureView()
 
-            if displayedDetail?.canSend == false
-                && displayedDetail?.canInterruptNow != true {
+            if backendClient.selectedSession?.id == sessionId
+                && !backendClient.selectedCanSendNow
+                && !backendClient.selectedCanInterruptNow {
                 ReadOnlyComposer(reason: displayedDetail?.sendUnavailableReason)
             } else {
                 MessageComposer(
@@ -3567,8 +3575,8 @@ struct DetailView: View {
             }
             restoreMissingHistoryAnchorIfNeeded()
         }
-        .onReceive(backendClient.$selectedSession) { session in
-            guard session?.id == sessionId else {
+        .onReceive(backendClient.sessionSelectionController.$selectedSessionID) { selectedSessionID in
+            guard selectedSessionID == sessionId else {
                 historyAnchorRestoreTask?.cancel()
                 historyAnchorRestoreTask = nil
                 return
@@ -4451,6 +4459,7 @@ struct DetailView: View {
 
 private struct OrphanedWorkspaceRecoveryView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let status: WorkspaceRecoveryStatus
 
     var body: some View {
@@ -5070,7 +5079,17 @@ func makeChatDisplayEntriesForTurn(
         $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
-    let progressAgentMessages = agentMessages.filter { $0.id != presentedAgentMessage?.id }
+    // An unclassified Assistant item is not execution progress. Keep it as a
+    // visible message so an Adapter contract defect cannot hide the model's
+    // response inside the process disclosure. New Provider events are expected
+    // to carry commentary/final_answer explicitly.
+    let unclassifiedAgentMessages = agentMessages.filter {
+        $0.presentationRole?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
+    }
+    let separatelyPresentedAgentIDs = Set(
+        unclassifiedAgentMessages.map(\.id) + [presentedAgentMessage?.id].compactMap { $0 }
+    )
+    let progressAgentMessages = agentMessages.filter { !separatelyPresentedAgentIDs.contains($0.id) }
     let progressAgentMessageIds = Set(progressAgentMessages.map(\.id))
     var processItems = items.filter { item in
         isDetailProcessItem(item) || progressAgentMessageIds.contains(item.id)
@@ -5097,7 +5116,9 @@ func makeChatDisplayEntriesForTurn(
             items: processItems
         )))
     }
-    if let presentedAgentMessage {
+    entries.append(contentsOf: unclassifiedAgentMessages.map { ChatDisplayEntry(kind: .message($0)) })
+    if let presentedAgentMessage,
+       !unclassifiedAgentMessages.contains(where: { $0.id == presentedAgentMessage.id }) {
         entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
     }
     entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
@@ -5105,21 +5126,9 @@ func makeChatDisplayEntriesForTurn(
 }
 
 private func preferredPresentedAgentMessage(from messages: [CodexThreadItem]) -> CodexThreadItem? {
-    if let finalAnswer = messages.last(where: {
+    messages.last(where: {
         $0.presentationRole?.lowercased() == "final_answer"
-    }) {
-        return finalAnswer
-    }
-
-    // Commentary and other explicitly phased messages are execution progress,
-    // even after a turn ends. Only use the historical fallback for old items
-    // that predate Codex's phase field, and never while their turn is active.
-    guard let legacyMessage = messages.last,
-          legacyMessage.presentationRole?.isEmpty != false,
-          isTerminalTurnStatus(legacyMessage.turnStatus) else {
-        return nil
-    }
-    return legacyMessage
+    })
 }
 
 private func isTerminalTurnStatus(_ status: String) -> Bool {
@@ -5531,6 +5540,8 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 
 struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     @State private var didCopySessionTitle = false
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
@@ -5658,7 +5669,7 @@ struct DetailHeaderView: View {
                     }
             }
 
-            if let status = backendClient.selectedProjectWorktreeStatus {
+            if let status = supplementaryData.selectedProjectWorktreeStatus {
                 ProjectServiceStatusDot(status: status.service)
                     .help(projectServiceStatusHelp(status))
             }
@@ -5689,7 +5700,7 @@ struct DetailHeaderView: View {
 
     private var selectedSessionWorktree: ProjectWorktreeStatus? {
         guard let sessionId = backendClient.selectedSession?.id,
-              let status = backendClient.selectedProjectWorktreeStatus else { return nil }
+              let status = supplementaryData.selectedProjectWorktreeStatus else { return nil }
         if let bound = status.project.worktrees.first(where: { worktree in
             worktree.sessions.contains(where: { $0.sessionId == sessionId })
         }) {
@@ -5734,7 +5745,7 @@ struct DetailHeaderView: View {
     }
 
     private var shouldSuggestWorktreeManagement: Bool {
-        guard let project = backendClient.selectedProjectWorktreeStatus?.project else { return false }
+        guard let project = supplementaryData.selectedProjectWorktreeStatus?.project else { return false }
         return project.pendingWorktreeCount > 0 || project.worktrees.contains { worktree in
             worktree.availability != "available"
                 || worktree.dirty == true
@@ -5788,7 +5799,7 @@ struct DetailHeaderView: View {
                 .help(gitHubPushButtonHelp(worktree))
             }
         case .manageWorktrees:
-            if let status = backendClient.selectedProjectWorktreeStatus {
+            if let status = supplementaryData.selectedProjectWorktreeStatus {
                 Button {
                     openWorktreeManagement()
                 } label: {
@@ -5835,7 +5846,7 @@ struct DetailHeaderView: View {
         } label: {
             Label(L10n("Manage project worktrees and service"), systemImage: "arrow.triangle.branch")
         }
-        .disabled(backendClient.selectedProjectWorktreeStatus == nil)
+        .disabled(supplementaryData.selectedProjectWorktreeStatus == nil)
 
         Divider()
 
@@ -5860,7 +5871,7 @@ struct DetailHeaderView: View {
 
     private func openWorktreeManagement() {
         AppDelegate.shared?.openWorktreeManagement(
-            repositoryId: backendClient.selectedProjectWorktreeStatus?.project.repositoryId,
+            repositoryId: supplementaryData.selectedProjectWorktreeStatus?.project.repositoryId,
             worktreeId: selectedSessionWorktree?.worktreeId
                 ?? backendClient.selectedSession?.external?.workspace?.id,
             worktreePath: workspacePath
@@ -5875,7 +5886,7 @@ struct DetailHeaderView: View {
     private var selectedGitHubPushStatus: GitHubPushStatus? {
         ProjectGitHubPushSelection.status(
             for: selectedSessionWorktree,
-            fallback: backendClient.selectedProjectWorktreeStatus?.gitHubPush
+            fallback: supplementaryData.selectedProjectWorktreeStatus?.gitHubPush
         )
     }
 
@@ -5928,11 +5939,6 @@ struct DetailHeaderView: View {
         if let routedPath, !routedPath.isEmpty {
             return routedPath
         }
-        let detailPath = backendClient.selectedDetail?.cwd?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let detailPath, !detailPath.isEmpty {
-            return detailPath
-        }
         let sessionPath = backendClient.selectedSession?.external?.cwd?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return sessionPath?.isEmpty == false ? sessionPath : nil
@@ -5969,8 +5975,7 @@ struct DetailHeaderView: View {
     }
 
     private var canInterruptCurrentRun: Bool {
-        backendClient.selectedDetail?.status == .running
-            && backendClient.selectedDetail?.canInterruptNow == true
+        backendClient.selectedCanInterruptNow
     }
 
     private func copyWorkspacePath() {
@@ -6198,6 +6203,7 @@ private struct GitHubPushProgressIcon: View {
 
 private struct GitHubPushConfirmationView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let preparation: GitHubPushPreparation
     @State private var privateFilesDecision = "include"
     @State private var neverRemindPrivateFiles = false
@@ -6680,6 +6686,8 @@ enum ProjectGitHubPushSelection {
 
 private struct ProjectWorktreeManagerView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @StateObject private var newSessionPanel = NewSessionPanelController()
     @State private var pendingOperation: ProjectWorktreeStatus?
     @State private var pendingSynchronization: ProjectWorktreeStatus?
@@ -6704,7 +6712,7 @@ private struct ProjectWorktreeManagerView: View {
                 }
                 Spacer()
                 if let status {
-                    if let integrationStatus = backendClient.selectedProjectIntegrationStatus {
+                    if let integrationStatus = supplementaryData.selectedProjectIntegrationStatus {
                         let integrationEntryState = ProjectWorktreeIntegrationEntryState(
                             eligibleCount: integrationStatus.eligibleWorktrees.count,
                             conflictCount: integrationStatus.latestRun?.counts.conflicts ?? 0,
@@ -6770,7 +6778,7 @@ private struct ProjectWorktreeManagerView: View {
             }
 
             if let status {
-                if let integrationStatus = backendClient.selectedProjectIntegrationStatus,
+                if let integrationStatus = supplementaryData.selectedProjectIntegrationStatus,
                    let run = integrationStatus.latestRun {
                     integrationResultCard(run, status: integrationStatus)
                 }
@@ -6784,7 +6792,7 @@ private struct ProjectWorktreeManagerView: View {
                     }
                     .padding(.vertical, 2)
                 }
-            } else if let loadError = backendClient.projectWorktreeLoadError {
+            } else if let loadError = supplementaryData.projectWorktreeLoadError {
                 VStack(spacing: 12) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 24, weight: .semibold))
@@ -6925,7 +6933,7 @@ private struct ProjectWorktreeManagerView: View {
             )
         }
         .sheet(item: $pendingConflictRun) { run in
-            if let integrationStatus = backendClient.selectedProjectIntegrationStatus {
+            if let integrationStatus = supplementaryData.selectedProjectIntegrationStatus {
                 ProjectIntegrationConflictWorkItemConfirmationView(
                     run: run,
                     status: integrationStatus,
@@ -6955,7 +6963,7 @@ private struct ProjectWorktreeManagerView: View {
                 showingIntegrationConfirmation = false
             }
         } message: {
-            if let integrationStatus = backendClient.selectedProjectIntegrationStatus {
+            if let integrationStatus = supplementaryData.selectedProjectIntegrationStatus {
                 Text(L10nFormat(
                     "Corptie will merge these completed Worktrees into main one at a time. Conflicts will be recorded and the remaining Worktrees will continue. No remote push is performed.\n\n%@",
                     integrationStatus.eligibleWorktrees.map {
@@ -7013,7 +7021,7 @@ private struct ProjectWorktreeManagerView: View {
     }
 
     private var status: ProjectWorktreeStatusResponse? {
-        backendClient.selectedProjectWorktreeStatus
+        supplementaryData.selectedProjectWorktreeStatus
     }
 
     @ViewBuilder
@@ -7246,7 +7254,7 @@ private struct ProjectWorktreeManagerView: View {
                     Button(L10n("Update Corptie Scripts Tools Set")) {
                         backendClient.initializeProjectToolset(update: true)
                     }
-                    .disabled(backendClient.isLoadingProjectWorktrees)
+                    .disabled(supplementaryData.isLoadingProjectWorktrees)
                 }
             } else {
                 HStack {
@@ -7257,7 +7265,7 @@ private struct ProjectWorktreeManagerView: View {
                     Button(L10n("Initialize Toolset")) {
                         backendClient.initializeProjectToolset()
                     }
-                    .disabled(backendClient.isLoadingProjectWorktrees)
+                    .disabled(supplementaryData.isLoadingProjectWorktrees)
                 }
             }
         }
@@ -7772,6 +7780,7 @@ private struct ForceDeleteWorktreeConfirmationView: View {
 
 private struct WorktreeCommitReviewView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let prompt: WorktreeCommitReviewPrompt
     @State private var decision = "include"
     @State private var neverRemind = false
@@ -8077,6 +8086,8 @@ private struct DetailMessagesPlaceholder: View {
 
 struct ThreadMetaView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let status: TaskStatus
     let isConnecting: Bool
     let connectionColor: Color
@@ -8113,7 +8124,7 @@ struct ThreadMetaView: View {
 
             Spacer(minLength: 8)
 
-            ChatUsageBar(usage: backendClient.selectedSessionUsage)
+            ChatUsageBar(usage: supplementaryData.selectedSessionUsage)
         }
         .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(CorptiePalette.secondaryText)
@@ -8416,6 +8427,7 @@ struct ThreadItemView: View {
     @State private var isConfirmingUndo = false
     @State private var isDiffActionRunning = false
     @State private var diffActionError: String?
+    @State private var isTurnUndone = false
     let item: CodexThreadItem
     @Binding private var isCollaborationExpanded: Bool
     @Binding private var isCollaborationConfirmationExpanded: Bool
@@ -9124,12 +9136,8 @@ struct ThreadItemView: View {
         }
     }
 
-    private var isTurnUndone: Bool {
-        backendClient.undoneCodexTurnIds.contains(item.turnId)
-    }
-
     private func reviewChanges() {
-        guard let sessionId = backendClient.selectedDetail?.id else { return }
+        guard let sessionId = backendClient.selectedSession?.id else { return }
         isDiffActionRunning = true
         Task {
             defer { isDiffActionRunning = false }
@@ -9140,11 +9148,14 @@ struct ThreadItemView: View {
     }
 
     private func undoChanges() {
-        guard let sessionId = backendClient.selectedDetail?.id else { return }
+        guard let sessionId = backendClient.selectedSession?.id else { return }
         isDiffActionRunning = true
         Task {
             defer { isDiffActionRunning = false }
-            if case .failure(let error) = await backendClient.undoTurnChanges(sessionId: sessionId, turnId: item.turnId) {
+            switch await backendClient.undoTurnChanges(sessionId: sessionId, turnId: item.turnId) {
+            case .success:
+                isTurnUndone = true
+            case .failure(let error):
                 diffActionError = error.localizedDescription
             }
         }
@@ -9420,7 +9431,7 @@ struct ThreadItemView: View {
     private func messageTextView(text: String, allowsSelection: Bool, fillWidth: Bool = true) -> some View {
         MarkdownMessageView(
             text: text,
-            baseDirectory: backendClient.selectedDetail?.cwd,
+            baseDirectory: backendClient.selectedContentDirectory,
             allowsSelection: allowsSelection,
             fillWidth: fillWidth,
             maxContentWidth: fillWidth ? nil : (messageBubbleMaxWidth - 20)
@@ -9567,6 +9578,7 @@ struct AgentMessageParts {
 
 struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     let sessionId: String
     let draftRepository: ComposerDraftRepository
@@ -9706,7 +9718,7 @@ struct MessageComposer: View {
         .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
             composerWidth = width
         }
-        .opacity(backendClient.selectedDetail?.canSend == false && !isRunningTurn ? 0.55 : 1)
+        .opacity(!backendClient.selectedCanSendNow && !isRunningTurn ? 0.55 : 1)
         .task {
             let provider = backendClient.selectedSession?.external?.provider ?? "codex-pty"
             if backendClient.codexModels.isEmpty || backendClient.loadedModelProvider != provider {
@@ -9742,7 +9754,7 @@ struct MessageComposer: View {
     }
 
     private func send(_ submission: ComposerDraftBuffer.Submission) {
-        guard backendClient.selectedDetail?.canSend != false,
+        guard backendClient.selectedCanSendNow,
               !backendClient.isSendingMessage else {
             return
         }
@@ -9761,20 +9773,17 @@ struct MessageComposer: View {
     }
 
     private var isRunningTurn: Bool {
-        backendClient.selectedDetail?.status == .running
-            && backendClient.selectedDetail?.canInterruptNow == true
+        backendClient.selectedCanInterruptNow
     }
 
     private var isSendDisabled: Bool {
         return !hasSendableText
             || backendClient.isSendingMessage
-            || backendClient.selectedDetail?.canSend == false
+            || !backendClient.selectedCanSendNow
     }
 
     private var canSwitchModel: Bool {
-        backendClient.selectedDetail?.actions?.switchModel.available
-            ?? backendClient.selectedSession?.actions?.switchModel.available
-            ?? backendClient.selectedDetail?.capabilities?.canSwitchModel
+        backendClient.selectedSession?.actions?.switchModel.available
             ?? backendClient.selectedSession?.capabilities?.canSwitchModel
             ?? (backendClient.selectedSession?.agent == "Codex" ? true : false)
     }
@@ -9842,6 +9851,7 @@ private struct ComposerWidthPreferenceKey: PreferenceKey {
 
 private struct CodexModelMenu: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let maxWidth: CGFloat
 
     var body: some View {
@@ -9935,13 +9945,12 @@ private struct CodexModelMenu: View {
             )
         }
         .menuStyle(.borderlessButton)
-        .disabled(backendClient.selectedDetail?.canSend == false || backendClient.isSwitchingModel || backendClient.isSwitchingReasoning)
+        .disabled(!backendClient.selectedCanSendNow || backendClient.isSwitchingModel || backendClient.isSwitchingReasoning)
         .help(currentModelHelp)
     }
 
     private var currentModelId: String {
-        backendClient.selectedDetail?.currentModel
-            ?? backendClient.selectedSession?.external?.currentModel
+        backendClient.selectedCurrentModel
             ?? backendClient.codexDefaultModel
             ?? ""
     }
@@ -9966,8 +9975,7 @@ private struct CodexModelMenu: View {
     }
 
     private var currentReasoningLevel: String {
-        backendClient.selectedDetail?.currentReasoningLevel
-            ?? backendClient.selectedSession?.external?.currentReasoningLevel
+        backendClient.selectedCurrentReasoningLevel
             ?? backendClient.codexDefaultReasoningLevel
             ?? currentModel?.defaultReasoningLevel
             ?? "medium"
@@ -9981,9 +9989,7 @@ private struct CodexModelMenu: View {
     }
 
     private var supportsReasoningSwitch: Bool {
-        backendClient.selectedDetail?.actions?.switchReasoning.available
-            ?? backendClient.selectedSession?.actions?.switchReasoning.available
-            ?? backendClient.selectedDetail?.capabilities?.canSwitchReasoning
+        backendClient.selectedSession?.actions?.switchReasoning.available
             ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
             ?? false
     }
@@ -10456,6 +10462,23 @@ private struct QuickReplyField: View {
             return
         }
         send()
+    }
+}
+
+/// Command feedback is intentionally observed outside `DetailView`. A send
+/// transition can repaint this small label without invalidating the Timeline
+/// projection or reconstructing the AppKit scroll surface.
+private struct SessionSendFailureView: View {
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
+
+    var body: some View {
+        if let message = commandState.sendStatusMessage,
+           message.hasPrefix("Send failed") || message.contains("read-only") {
+            Text(message)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.red)
+                .lineLimit(2)
+        }
     }
 }
 

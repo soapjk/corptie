@@ -19,11 +19,13 @@ enum ScheduledSessionAccessibilityID {
 
 struct ScheduledSessionStrip: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     let session: TaskSession
     @State private var isExpanded = false
 
     private var activeTasks: [ScheduledSessionTask] {
-        backendClient.selectedScheduledTasks.filter { $0.status == .active }
+        supplementaryData.selectedScheduledTasks.filter { $0.status == .active }
     }
 
     private var visibleTasks: [ScheduledSessionTask] {
@@ -32,7 +34,7 @@ struct ScheduledSessionStrip: View {
     }
 
     var body: some View {
-        if backendClient.isLoadingScheduledTasks && backendClient.selectedScheduledTasks.isEmpty {
+        if supplementaryData.isLoadingScheduledTasks && supplementaryData.selectedScheduledTasks.isEmpty {
             HStack(spacing: 7) {
                 ProgressView().controlSize(.mini)
                 Text(L10n("正在加载定时任务…"))
@@ -149,6 +151,7 @@ private struct ScheduledSessionCompactCard: View {
 
 struct ScheduledTaskEditorSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @Environment(\.dismiss) private var dismiss
     let session: TaskSession
     let existingTask: ScheduledSessionTask?

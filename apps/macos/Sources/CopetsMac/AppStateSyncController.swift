@@ -1,27 +1,5 @@
 import Foundation
 
-enum SessionStateRefreshPolicy {
-    private static let terminalEventNames: Set<String> = [
-        "AgentTurnCompleted",
-        "CodexThreadCompleted",
-        "CodexThreadFailed",
-        "CodexThreadCancelled",
-        "CodexThreadError",
-        "SessionRunInterrupted",
-        "TaskCompleted",
-        "TaskBlocked",
-        "TaskCancelled",
-        "PtySessionTerminated",
-        "PtySessionInterrupted",
-        "AgentWorkCompleted",
-        "AgentWorkFailed"
-    ]
-
-    static func requiresAuthoritativeRefresh(eventName: String) -> Bool {
-        terminalEventNames.contains(eventName)
-    }
-}
-
 enum StateStreamLivenessPolicy {
     static let inactivityTimeout: TimeInterval = 45
 
@@ -169,6 +147,7 @@ final class AppStateSyncController {
             let (bytes, response) = try await URLSession.shared.bytes(for: request)
             try Self.requireSuccess(response)
             guard generation == streamGeneration else { return }
+            store.reportStateStreamConnected()
             streamLastActivityAt = Date()
             var eventName = ""
             var dataLines: [String] = []

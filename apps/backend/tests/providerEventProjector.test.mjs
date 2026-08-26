@@ -10,6 +10,7 @@ async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-projector-"));
   const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
+  store.createAgent({ id: "agent:one", name: "Agent", role: "independentContributor" });
   store.upsertSession({
     id: "session:one",
     title: "Projection",
@@ -20,6 +21,106 @@ async function fixture() {
   });
   return { directory, store, projector: new ProviderEventProjector({ store }) };
 }
+
+test("a Provider user item arriving before send returns updates the durable product message instead of inserting an alias", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    store.createUserMessageDelivery({
+      deliveryId: "delivery:one",
+      messageId: "message:one",
+      sessionId: binding.sessionId,
+      binding,
+      agentId: "agent:one",
+      text: "sent once"
+    });
+    store.updateMessageDelivery("delivery:one", {
+      status: "dispatching",
+      attemptCount: 1,
+      lastAttemptAt: "2026-08-26T10:00:00.000Z"
+    });
+
+    projector.project({ event: event("turn.started"), binding });
+    projector.project({
+      event: event("user.message.accepted", {
+        itemId: "provider-item:one",
+        payload: { item: {
+          id: "provider-item:one",
+          turnId: "turn:one",
+          turnStatus: "inProgress",
+          type: "userMessage",
+          title: "User",
+          text: "sent once",
+          status: "inProgress"
+        } }
+      }),
+      binding
+    });
+
+    const userItems = store.getItems(binding.sessionId).filter((item) => item.type === "userMessage");
+    assert.deepEqual(userItems.map((item) => item.id), ["message:one"]);
+    assert.equal(userItems[0].turnId, "turn:one");
+    assert.equal(store.getMessageDelivery("delivery:one").providerTurnId, "turn:one");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a collaboration prompt is claimed by its Provider turn and remains one canonical Timeline item", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const { workItem } = store.enqueueAgentWorkItemWithResult({
+      workItemId: "agent-work:one",
+      agentId: "agent:one",
+      sessionId: binding.sessionId,
+      kind: "collaboration",
+      priority: 100,
+      text: "Handle this collaboration once",
+      source: { type: "collaboration", taskId: "task:one" },
+      localVisibility: "status_only"
+    });
+    const running = store.claimAgentWorkItem(workItem.workItemId);
+    store.upsertTimelineItemProjection(binding.sessionId, {
+      id: `work:${workItem.workItemId}`,
+      turnId: `work:${workItem.workItemId}`,
+      type: "userMessage",
+      title: "Agent Collaboration",
+      text: workItem.text,
+      status: "running",
+      presentationRole: "collaboration",
+      rawMetadataJSON: JSON.stringify({ workItemId: workItem.workItemId, presentationRole: "collaboration" })
+    });
+
+    projector.project({ event: event("turn.started"), binding });
+    projector.project({
+      event: event("user.message.accepted", {
+        itemId: "provider-item:collaboration",
+        payload: { item: {
+          id: "provider-item:collaboration",
+          turnId: "turn:one",
+          turnStatus: "inProgress",
+          type: "userMessage",
+          title: "User",
+          text: running.text,
+          status: "inProgress",
+          rawMetadataJSON: JSON.stringify({ providerEvent: true })
+        } }
+      }),
+      binding
+    });
+
+    const userItems = store.getItems(binding.sessionId).filter((item) => item.type === "userMessage");
+    assert.deepEqual(userItems.map((item) => item.id), [`work:${workItem.workItemId}`]);
+    assert.equal(userItems[0].turnId, "turn:one");
+    assert.equal(userItems[0].title, "Agent Collaboration");
+    assert.equal(userItems[0].presentationRole, "collaboration");
+    assert.equal(userItems[0].workItemId, workItem.workItemId);
+    assert.equal(store.getAgentWorkItem(workItem.workItemId).targetTurnId, "turn:one");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 const binding = {
   sessionId: "session:one",

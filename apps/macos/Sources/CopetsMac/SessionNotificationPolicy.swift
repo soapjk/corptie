@@ -56,7 +56,7 @@ struct SessionNotificationSnapshot: Equatable {
         id = session.id
         title = session.title
         agent = session.agent
-        status = session.status
+        status = session.executionTaskStatus
         summary = session.summary
         updatedAt = session.updatedAt
         lastAgentMessageSequence = session.lastAgentMessageSequence ?? 0
@@ -73,24 +73,11 @@ struct SessionNotificationSnapshot: Equatable {
 }
 
 enum SessionNotificationScope {
-    static func activeSnapshots(
-        from sessions: [TaskSession],
-        workItems: [WorkItem] = []
-    ) -> [SessionNotificationSnapshot] {
+    static func activeSnapshots(from sessions: [TaskSession]) -> [SessionNotificationSnapshot] {
         sessions
-            .filter { isSessionInActiveBusinessScope($0, workItems: workItems) }
+            .filter { $0.archived != true }
             .map(SessionNotificationSnapshot.init(session:))
     }
-}
-
-func isSessionInActiveBusinessScope(_ session: TaskSession, workItems: [WorkItem]) -> Bool {
-    guard session.archived != true else { return false }
-    guard session.resolvedSessionKind == .worker,
-          let workItemID = session.workItemId,
-          let workItem = workItems.first(where: { $0.id == workItemID }) else {
-        return true
-    }
-    return WorkItemColumn.column(for: workItem.status) != .done
 }
 
 struct SessionNotificationCounts: Equatable {
