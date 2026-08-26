@@ -184,10 +184,27 @@ test("turn completion settles only its run and preserves the final reply as a se
       }] } }),
       binding
     });
+    projector.project({
+      event: event("tool.completed", {
+        itemId: "item:late-tool",
+        receivedAt: "2026-08-26T10:06:00.000Z",
+        payload: { item: {
+          id: "item:late-tool",
+          turnId: "turn:one",
+          turnStatus: "inProgress",
+          type: "toolCall",
+          title: "Late tool update",
+          text: "arrived after turn completion",
+          status: "completed"
+        } }
+      }),
+      binding
+    });
 
     const item = store.getSessionItem("session:one", "item:final");
     assert.equal(item.presentationRole, "final_answer");
     assert.equal(item.turnStatus, "completed");
+    assert.equal(store.getSessionItem("session:one", "item:late-tool").status, "completed");
     assert.equal(store.getSessionTurn("session:one", binding.bindingId, "turn:one").execution_status, "completed");
     assert.equal(store.getSession("session:one").status, "complete");
     assert.equal(store.getSession("session:one").executionStatus, "completed");
