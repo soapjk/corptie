@@ -6660,7 +6660,12 @@ export class CorptieStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id, binding_id, turn_id) DO UPDATE SET
         routing_version=excluded.routing_version,
-        execution_status=excluded.execution_status,
+        execution_status=CASE
+          WHEN session_turns.execution_status IN ('completed', 'failed', 'cancelled')
+            AND excluded.execution_status NOT IN ('completed', 'failed', 'cancelled')
+          THEN session_turns.execution_status
+          ELSE excluded.execution_status
+        END,
         final_item_id=COALESCE(excluded.final_item_id, session_turns.final_item_id),
         started_at=COALESCE(session_turns.started_at, excluded.started_at),
         ended_at=COALESCE(excluded.ended_at, session_turns.ended_at),
