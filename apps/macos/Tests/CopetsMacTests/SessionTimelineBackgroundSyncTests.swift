@@ -8,7 +8,7 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
             desiredServerRevision: 8,
             localRevision: 7
         ))
-        XCTAssertFalse(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
+        XCTAssertTrue(SessionTimelineBackgroundSyncPolicy.shouldSchedule(
             previousServerRevision: 8,
             desiredServerRevision: 8,
             localRevision: 7
@@ -158,11 +158,11 @@ final class SessionTimelineBackgroundSyncTests: XCTestCase {
     func testRepositoryRevisionNeverRegressesAndCachedDetailIsImmediatelyResident() {
         let repository = SessionTimelineRepository()
         repository.publish(detail(items: [item("new")]), for: "session", timelineRevision: 9)
-        repository.publish(detail(items: [item("same-revision-stale")]), for: "session", timelineRevision: 9)
+        repository.publish(detail(items: [item("same-revision-authority")]), for: "session", timelineRevision: 9)
         repository.publish(detail(items: [item("stale")]), for: "session", timelineRevision: 8)
 
         XCTAssertEqual(repository.timelineRevision(for: "session"), 9)
-        XCTAssertEqual(repository.state(for: "session").detail?.items.map(\.id), ["new"])
+        XCTAssertEqual(repository.state(for: "session").detail?.items.map(\.id), ["same-revision-authority"])
     }
 
     func testNetworkPermitPoolCapsConcurrentTimelineRequests() async {
