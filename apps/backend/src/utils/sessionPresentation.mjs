@@ -140,13 +140,23 @@ export function composeStoredSessionList({
     ...(archived ? [] : mockSessions)
   ];
   return candidates
-    .filter((session) => Boolean(session?.archived) === archived)
-    .map((session) => ({
-      ...session,
-      sessionKind: session.sessionKind ?? "legacy"
-    }));
+    .filter((session) => resolveSessionArchiveState(session, {
+      workItemStatus: session?.workItemStatus
+    }).archived === archived)
+    .map((session) => {
+      const archiveState = resolveSessionArchiveState(session, {
+        workItemStatus: session?.workItemStatus
+      });
+      return {
+        ...session,
+        sessionKind: session.sessionKind ?? "legacy",
+        archived: archiveState.archived,
+        archiveReason: archiveState.reason
+      };
+    });
 }
 
 function nonEmptyText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
+import { resolveSessionArchiveState } from "../domain/sessionArchivePolicy.mjs";

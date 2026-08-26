@@ -27,6 +27,10 @@ import {
   validateObjectiveInput,
   validateWorkItemInput
 } from "../domain/objectiveWorkItemValidation.mjs";
+import {
+  assertManualSessionArchiveAllowed,
+  resolveSessionArchiveState
+} from "../domain/sessionArchivePolicy.mjs";
 import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -2146,6 +2150,7 @@ export class CorptieStore {
     this.ensureColumn("collaborator_registry", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
     this.ensureColumn("hub_intent_cache", "agent_id", "TEXT");
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("sessions", "archive_dependency_version", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "sort_order", "REAL");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
@@ -2519,7 +2524,7 @@ export class CorptieStore {
         "id", "title", "agent", "provider", "command", "args_json", "cwd", "status",
         "progress", "summary", "accent", "created_at", "updated_at", "archived", "pinned",
         "sort_order", "active_choice_json", "raw_json", "objective_id", "work_item_id",
-        "session_kind", "agent_id"
+        "session_kind", "agent_id", "archive_dependency_version"
       ],
       agents: [
         "agent_id", "name", "description", "status", "capabilities_json", "current_session_id",
@@ -2557,6 +2562,22 @@ export class CorptieStore {
         `);
       }
     }
+    // Worker archive membership is derived from its WorkItem lifecycle. Touch a
+    // projection-only dependency counter whenever the WorkItem crosses the
+    // completed boundary so the ordinary Session trigger publishes membership
+    // changes without rewriting conversation ordering metadata.
+    this.db.run("DROP TRIGGER IF EXISTS state_sync_worker_archive_dependency_update");
+    this.db.run(`
+      CREATE TRIGGER state_sync_worker_archive_dependency_update
+      AFTER UPDATE OF status ON work_items
+      WHEN (LOWER(TRIM(OLD.status)) IN ('done', 'complete', 'completed'))
+        IS NOT (LOWER(TRIM(NEW.status)) IN ('done', 'complete', 'completed'))
+      BEGIN
+        UPDATE sessions
+        SET archive_dependency_version = archive_dependency_version + 1
+        WHERE session_kind = 'worker' AND work_item_id = NEW.id;
+      END
+    `);
     // Read-receipt mutations change the client-visible Session projection but
     // must never rewrite sessions.updated_at (which drives conversation order).
     for (const operation of ["INSERT", "UPDATE"]) {
@@ -6034,7 +6055,7 @@ export class CorptieStore {
     const archived = options.archived === true ? 1 : 0;
     const rows = this.selectAll(
       `${sessionProjectionSelectSQL()}
-       WHERE sessions.archived = ?
+       WHERE ${effectiveSessionArchivedSQL()} = ?
        ORDER BY sessions.pinned DESC, sessions.sort_order ASC, sessions.updated_at DESC`,
       [archived]
     );
@@ -6051,7 +6072,7 @@ export class CorptieStore {
 
   listSessionsByWorkItem(workItemId) {
     const rows = this.selectAll(
-      "SELECT * FROM sessions WHERE work_item_id = ? ORDER BY created_at ASC",
+      `${sessionProjectionSelectSQL()} WHERE sessions.work_item_id = ? ORDER BY sessions.created_at ASC`,
       [workItemId]
     );
     return rows.map((row) => this.rowToSession(row));
@@ -6059,7 +6080,7 @@ export class CorptieStore {
 
   listSessionsByObjective(objectiveId) {
     const rows = this.selectAll(
-      "SELECT * FROM sessions WHERE objective_id = ? ORDER BY created_at ASC",
+      `${sessionProjectionSelectSQL()} WHERE sessions.objective_id = ? ORDER BY sessions.created_at ASC`,
       [objectiveId]
     );
     return rows.map((row) => this.rowToSession(row));
@@ -6449,6 +6470,9 @@ export class CorptieStore {
   }
 
   archiveSession(id, archived = true) {
+    const session = this.getSession(id);
+    if (!session) return null;
+    assertManualSessionArchiveAllowed(session);
     const updatedAt = new Date().toISOString();
     this.db.run(
       "UPDATE sessions SET archived = ?, sort_order = ?, updated_at = ? WHERE id = ?",
@@ -9734,6 +9758,16 @@ export class CorptieStore {
          WHERE bindings.session_id = ? AND bindings.unbound_at IS NULL LIMIT 1`,
         [row.id]
       );
+    const sessionKind = inferSessionKind({
+      sessionKind: row.session_kind,
+      objectiveId: row.objective_id,
+      workItemId: row.work_item_id,
+      agentRole: agentIdentity?.role
+    });
+    const archiveState = resolveSessionArchiveState(
+      { sessionKind, archived: Boolean(row.archived) },
+      { workItemStatus: row.projection_work_item_status }
+    );
     return {
       id: publicId,
       title: logicalIdentity?.session_name || row.title,
@@ -9741,12 +9775,7 @@ export class CorptieStore {
       logicalSessionId: logicalIdentity?.logical_session_id ?? null,
       agent: row.agent,
       agentId: row.agent_id ?? agentIdentity?.agent_id ?? null,
-      sessionKind: inferSessionKind({
-        sessionKind: row.session_kind,
-        objectiveId: row.objective_id,
-        workItemId: row.work_item_id,
-        agentRole: agentIdentity?.role
-      }),
+      sessionKind,
       status: displayStatus,
       executionStatus,
       deliveryStatus,
@@ -9759,7 +9788,8 @@ export class CorptieStore {
       updatedAt: row.updated_at,
       createdAt: row.created_at,
       accent: row.accent,
-      archived: Boolean(row.archived),
+      archived: archiveState.archived,
+      archiveReason: archiveState.reason,
       pinned: Boolean(row.pinned),
       sortOrder: Number(row.sort_order ?? 0),
       objectiveId: row.objective_id ?? null,
@@ -10007,6 +10037,9 @@ function sessionProjectionSelectSQL() {
        ON cursors.binding_id = bindings.binding_id
      WHERE logical.legacy_session_id = sessions.id
      LIMIT 1) AS projection_provider_connection_status,
+    (SELECT work_items.status FROM work_items
+     WHERE work_items.id = sessions.work_item_id
+     LIMIT 1) AS projection_work_item_status,
     (SELECT cursors.sync_health
      FROM logical_sessions logical
      JOIN provider_thread_bindings bindings
@@ -10016,6 +10049,18 @@ function sessionProjectionSelectSQL() {
      WHERE logical.legacy_session_id = sessions.id
      LIMIT 1) AS projection_sync_health
     FROM sessions`;
+}
+
+function effectiveSessionArchivedSQL() {
+  return `CASE
+    WHEN sessions.archived = 1 THEN 1
+    WHEN sessions.session_kind = 'worker' AND EXISTS (
+      SELECT 1 FROM work_items archive_work_item
+      WHERE archive_work_item.id = sessions.work_item_id
+        AND LOWER(TRIM(archive_work_item.status)) IN ('done', 'complete', 'completed')
+    ) THEN 1
+    ELSE 0
+  END`;
 }
 
 function normalizedExecutionStatus(value) {
