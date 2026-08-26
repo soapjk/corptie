@@ -5,7 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
-import { ObjectiveChatContextService } from "../src/application/objectiveChatContextService.mjs";
+import {
+  OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE,
+  ObjectiveChatContextService
+} from "../src/application/objectiveChatContextService.mjs";
 import { ObjectiveChatOperationService, objectiveChatDynamicTools } from "../src/application/objectiveChatDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { assertExplicitSessionKind, inferSessionKind, normalizeSessionKind } from "../src/utils/sessionKinds.mjs";
@@ -110,9 +113,9 @@ test("Objective Chat context is bounded and includes traceable Objective state",
       name: "Ship feature", description: "Discuss and decompose", idealState: "Delivery remains reliable across every path"
     });
     objectiveService.createWorkItem({ objectiveId: objective.id, title: "Backend" });
-    const context = new ObjectiveChatContextService({ store, characterBudget: 2_000 }).build(objective.id);
+    const context = new ObjectiveChatContextService({ store, characterBudget: 3_000 }).build(objective.id);
     assert.equal(context.objectiveId, objective.id);
-    assert.ok(context.characters <= 2_100);
+    assert.ok(context.characters <= 3_100);
     assert.match(context.prompt, /Delivery remains reliable across every path/);
     assert.match(context.prompt, /Backend/);
     assert.ok(context.generatedAt);
@@ -120,6 +123,36 @@ test("Objective Chat context is bounded and includes traceable Objective state",
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("Objective Chat context delegates every code or repository mutation to a new WorkItem", async () => {
+  const { directory, store, objectiveService } = await fixture();
+  try {
+    const objective = objectiveService.createObjective({ name: "Delegated implementation" });
+    const context = new ObjectiveChatContextService({ store }).build(objective.id);
+
+    assert.ok(context.prompt.includes(OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE));
+    assert.match(context.prompt, /requires any code change or repository-content mutation/);
+    assert.match(context.prompt, /Do not switch or create a worktree/);
+    assert.match(context.prompt, /do not edit, create, delete, rename, stage, commit/);
+    assert.match(context.prompt, /First create a new WorkItem in this Objective/);
+    assert.match(context.prompt, /title, description, and acceptance criteria must record the concrete/);
+    assert.match(context.prompt, /assign and start that WorkItem so its Worker Session performs the actual changes and verification/);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Objective Chat repository delegation rule preserves non-mutating discussion scope", () => {
+  assert.match(
+    OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE,
+    /applies only when code or repository content must change/
+  );
+  assert.match(
+    OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE,
+    /Continue handling discussion, planning, status review, and other non-mutating Objective work normally/
+  );
 });
 
 test("Objective Chat tools enforce the bound Objective and contributor scope", async () => {
