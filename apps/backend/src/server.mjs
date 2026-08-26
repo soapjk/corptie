@@ -54,6 +54,10 @@ import {
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
 import { WorkItemStartService } from "./application/workItemStartService.mjs";
+import {
+  evaluateWorkItemSessionRepair,
+  historicalProviderSessionUnavailable
+} from "./application/workItemSessionRepairPolicy.mjs";
 import { WorkItemDeletionService } from "./application/workItemDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
@@ -1075,9 +1079,18 @@ workItemStartService = new WorkItemStartService({
     providerId,
     title,
     workingDirectory: workspace.path,
-    autoUniqueTitle: true
+    autoUniqueTitle: true,
+    deferInitialPromptUntilBound: true
   }),
   finalizeStart: (input) => store.finalizeWorkItemStart(input),
+  activateSession: ({ session, workItem }) => {
+    sendUnifiedSessionMessage(session.id, workItemExecutionPrompt(workItem), {
+      type: "session-initialization",
+      origin: "work-item-start"
+    }).catch((error) => {
+      console.error(`[work-item-start] initial prompt enqueue failed session=${session.id}: ${error.message}`);
+    });
+  },
   onChanged: (type, payload) => emitEvent(type, payload),
   onAudit: (record, { failed } = {}) => {
     const line = `[work-item-start] ${JSON.stringify(record)}`;
@@ -3732,6 +3745,7 @@ async function launchWorkItemSession({
   sandbox = null,
   approvalPolicy = null,
   runtimeWorkspaceRoots = null,
+  deferInitialPromptUntilBound = false,
   observePerformance = () => {}
 }) {
   if (agent.role !== "independentContributor") {
@@ -3772,7 +3786,7 @@ async function launchWorkItemSession({
       cwd,
       title,
       defaultTitle: defaultSessionTitleForWorkItem(workItem.title, agent.name),
-      prompt,
+      prompt: deferInitialPromptUntilBound ? "" : prompt,
       agent: agent.name,
       sessionKind: "worker",
       autoUniqueTitle,
@@ -3890,6 +3904,9 @@ function settleEntityWorkItemFromSession(session) {
   if (!session?.id) return null;
   const workItem = store.getWorkItemBySessionId(session.id);
   if (!workItem) return null;
+  // Replaced Worker Sessions remain queryable for audit, but only the current
+  // binding may project lifecycle state back onto the WorkItem.
+  if (workItem.current_session_id !== session.id) return workItem;
   scheduleWorkItemMemoryExtraction(session, workItem);
   const patch = workItemExecutionPatch(workItem, session.status);
   if (!patch) return workItem;
@@ -4835,6 +4852,7 @@ function providerDeliveryFailureStatus(error) {
     "INVALID_MESSAGE",
     "SESSION_NOT_FOUND",
     "SESSION_BINDING_NOT_FOUND",
+    "PROVIDER_SESSION_UNAVAILABLE",
     "PROVIDER_CAPABILITY_UNSUPPORTED",
     "PROVIDER_NOT_FOUND"
   ].includes(error?.code)) return "failed";
@@ -5112,6 +5130,100 @@ async function drainAgentWork(sessionId) {
   }
 }
 
+const workItemSessionRepairs = new Map();
+
+function incompleteWorkItemCanSelfRepair(workItem) {
+  const status = String(workItem?.status ?? "").trim().toLowerCase();
+  return Boolean(workItem?.id)
+    && !["done", "complete", "completed", "canceled", "cancelled"].includes(status);
+}
+
+function workItemSessionRepairProof(sessionId, failedWork, error) {
+  const session = store.getSession(sessionId);
+  const workItem = session?.workItemId ? store.getWorkItem(session.workItemId) : null;
+  if (!session || !workItem) return null;
+  const turnCount = Number(store.selectOne(
+    "SELECT COUNT(*) AS count FROM session_turns WHERE session_id=?",
+    [session.id]
+  )?.count ?? 0);
+  const uncertainDeliveries = store.selectAll(
+    `SELECT status, last_error FROM message_deliveries
+     WHERE session_id=? AND status IN ('dispatching', 'processing', 'accepted', 'completed', 'delivery_unknown')`,
+    [session.id]
+  );
+  const repairCount = Number(store.selectOne(
+    "SELECT COUNT(*) AS count FROM work_item_start_operations WHERE work_item_id=? AND source='self-repair'",
+    [workItem.id]
+  )?.count ?? 0);
+  const logical = store.getLogicalSessionByLegacySessionId(session.id);
+  const agent = store.getAgent(workItem.main_agent_id ?? session.agentId);
+  const policy = evaluateWorkItemSessionRepair({
+    workItem,
+    session,
+    failedWork,
+    error,
+    turnCount,
+    uncertainDeliveries,
+    repairCount,
+    providerId: logical?.activeBinding?.providerId ?? null,
+    agent
+  });
+  if (!policy.eligible) return null;
+  return { workItem, session, logical, agent, repairCount };
+}
+
+async function selfRepairWorkItemSession(sessionId, failedWork, error) {
+  const proof = workItemSessionRepairProof(sessionId, failedWork, error);
+  if (!proof) return null;
+  const existing = workItemSessionRepairs.get(proof.workItem.id);
+  if (existing) return existing;
+  const repair = (async () => {
+    const result = await workItemStartService.start({
+      workItemId: proof.workItem.id,
+      agentId: proof.agent.agentId,
+      providerId: proof.logical.activeBinding.providerId,
+      title: proof.session.title,
+      idempotencyKey: `self-repair:${proof.workItem.id}:${proof.session.id}`,
+      replacingSessionId: proof.session.id,
+      source: "self-repair",
+      actorId: proof.agent.agentId
+    });
+    for (const queued of store.listAgentWorkItemsForSession(proof.session.id, { statuses: ["queued"] })) {
+      store.updateAgentWorkItem(queued.workItemId, {
+        status: "cancelled",
+        lastError: `Superseded by self-repaired Session ${result.session.id}.`
+      });
+    }
+    emitEvent("WorkItemSessionRepaired", {
+      workItemId: proof.workItem.id,
+      previousSessionId: proof.session.id,
+      sessionId: result.session.id,
+      repairAttempt: proof.repairCount + 1,
+      reason: "provider-session-unavailable"
+    }, { sessionId: result.session.id, source: { type: "self-repair" } });
+    console.warn(`[work-item-self-repair] workItem=${proof.workItem.id} previousSession=${proof.session.id} session=${result.session.id} attempt=${proof.repairCount + 1}`);
+    return result;
+  })().finally(() => workItemSessionRepairs.delete(proof.workItem.id));
+  workItemSessionRepairs.set(proof.workItem.id, repair);
+  return repair;
+}
+
+async function repairBrokenWorkItemSessionsAtStartup() {
+  let repaired = 0;
+  for (const workItem of store.listWorkItems()) {
+    if (!incompleteWorkItemCanSelfRepair(workItem) || !workItem.current_session_id) continue;
+    const failures = store.listAgentWorkItemsForSession(workItem.current_session_id, { statuses: ["failed"] });
+    const failedWork = failures.find((item) => historicalProviderSessionUnavailable(item.lastError));
+    if (!failedWork) continue;
+    const error = Object.assign(new Error(failedWork.lastError), {
+      code: "PROVIDER_SESSION_UNAVAILABLE",
+      safeToRetry: true
+    });
+    if (await selfRepairWorkItemSession(workItem.current_session_id, failedWork, error)) repaired += 1;
+  }
+  return repaired;
+}
+
 async function drainAgentWorkSession(sessionId) {
   const boundAgent = collaborationCore.getAgentForSession(sessionId);
   if (!boundAgent) return;
@@ -5254,7 +5366,10 @@ async function drainAgentWorkSession(sessionId) {
       });
       workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     }
-    if (error.code !== "SESSION_BUSY") throw error;
+    if (error.code !== "SESSION_BUSY") {
+      const repaired = await selfRepairWorkItemSession(claimed.sessionId, failedWork, error);
+      if (!repaired) throw error;
+    }
   }
 }
 
@@ -8407,6 +8522,10 @@ for (const agent of store.listAgents()) {
 }
 for (const storedSession of storedSessionsAtStartup) {
   ensureCollaborationAgentForSession(storedSession);
+}
+const selfRepairedWorkItemSessions = await repairBrokenWorkItemSessionsAtStartup();
+if (selfRepairedWorkItemSessions > 0) {
+  console.warn(`[work-item-self-repair] startup repaired ${selfRepairedWorkItemSessions} WorkItem Session(s)`);
 }
 // Re-delivery consumes only Corptie's committed Outbox. Startup never repairs
 // product state by reading Provider history or a Provider Session snapshot.

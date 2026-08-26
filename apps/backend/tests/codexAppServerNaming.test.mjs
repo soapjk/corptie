@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexAppServerClient, mapCodexThreadToSession } from "../src/adapters/codexAppServer.mjs";
+import {
+  CodexAppServerClient,
+  codexResponseError,
+  mapCodexThreadToSession
+} from "../src/adapters/codexAppServer.mjs";
+
+test("missing Codex rollout is normalized as a safely replaceable Provider Session", () => {
+  const error = codexResponseError({
+    code: -32600,
+    message: "no rollout found for thread id thread-a"
+  });
+  assert.equal(error.code, "PROVIDER_SESSION_UNAVAILABLE");
+  assert.equal(error.safeToRetry, true);
+
+  const ambiguous = codexResponseError({ code: -32603, message: "transport closed" });
+  assert.equal(ambiguous.code, undefined);
+  assert.equal(ambiguous.safeToRetry, undefined);
+});
 
 test("setThreadName uses the Codex app-server thread naming method", async () => {
   const calls = [];
