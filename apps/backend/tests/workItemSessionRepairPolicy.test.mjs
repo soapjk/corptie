@@ -38,6 +38,24 @@ test("self-repair fails closed after any observed or ambiguous Provider executio
       last_error: '{"message":"no rollout found for thread id legacy-thread"}'
     }]
   })).eligible, true, "legacy releases misclassified this explicit pre-execution failure");
+  assert.equal(evaluateWorkItemSessionRepair(input({
+    uncertainDeliveries: [{
+      status: "delivery_unknown",
+      last_error: "WorkItem work_item:one points to no Session, not active Worker Session session:old."
+    }, {
+      status: "delivery_unknown",
+      last_error: '{"message":"no rollout found for thread id legacy-thread"}'
+    }]
+  })).eligible, true, "the legacy binding race and missing rollout both happened before Provider execution");
+  assert.equal(evaluateWorkItemSessionRepair(input({
+    uncertainDeliveries: [{
+      status: "delivery_unknown",
+      last_error: "WorkItem work_item:one points to no Session, not active Worker Session session:old."
+    }, {
+      status: "delivery_unknown",
+      last_error: "connection reset after dispatch"
+    }]
+  })).reason, "DELIVERY_OUTCOME_AMBIGUOUS", "an unrelated ambiguous delivery must still fail closed");
 });
 
 test("terminal, stale, and repeatedly failing WorkItems cannot be replaced", () => {
