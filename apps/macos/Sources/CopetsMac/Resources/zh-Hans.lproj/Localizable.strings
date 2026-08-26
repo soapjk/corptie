@@ -121,7 +121,7 @@
 "Service ID" = "服务 ID";
 "Session ID" = "会话 ID";
 "Session Management" = "会话管理";
-"Sessions you archive will appear here and can be restored at any time." = "归档的会话会显示在这里，并可随时恢复。";
+"Sessions you archive will appear here and can be restored at any time." = "手动归档的助手会话会显示在这里，并可随时恢复。";
 "Set as Future Default" = "设为今后的默认值";
 "Set Avatar" = "设置头像";
 "Storage" = "存储";

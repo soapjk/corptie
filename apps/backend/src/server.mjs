@@ -43,6 +43,7 @@ import {
   callObjectiveChatDynamicTool
 } from "./application/objectiveChatDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { assertManualSessionArchiveAllowed } from "./domain/sessionArchivePolicy.mjs";
 import { resolveConflictResolutionAgentContext } from "./application/conflictResolutionAgentContext.mjs";
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
@@ -7605,12 +7606,14 @@ function route(request, response) {
       .then((input) => {
         const rawId = decodeURIComponent(sessionArchiveMatch[1]);
         const archived = input.archived !== false;
+        const storedSession = store.getSession(rawId);
+        if (!storedSession) {
+          sendJson(response, 404, { error: "Session not found" });
+          return;
+        }
+        assertManualSessionArchiveAllowed(storedSession);
         if (rawId.startsWith("codex:")) {
-          const session = store.getSession(rawId);
-          if (!session) {
-            sendJson(response, 404, { error: "Session not found" });
-            return;
-          }
+          const session = storedSession;
           const nextSession = {
             ...session,
             archived,
@@ -7634,6 +7637,12 @@ function route(request, response) {
         }
         emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session });
         sendJson(response, 200, { session });
+      })
+      .catch((error) => {
+        sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
+          error: error.message,
+          code: error.code ?? "SESSION_ARCHIVE_FAILED"
+        });
       });
     return;
   }
