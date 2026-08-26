@@ -1700,7 +1700,7 @@ struct SettingsView: View {
                 .disabled(backendClient.isLoadingArchivedSessions)
             }
 
-            if backendClient.archivedSessions.isEmpty {
+            if manuallyArchivedSessions.isEmpty {
                 ContentUnavailableView(
                     L10n("No archived sessions"),
                     systemImage: "archivebox",
@@ -1708,7 +1708,7 @@ struct SettingsView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(backendClient.archivedSessions) { session in
+                List(manuallyArchivedSessions) { session in
                     HStack(spacing: 12) {
                         Image(systemName: "archivebox.fill")
                             .font(.system(size: 18, weight: .semibold))
@@ -1751,6 +1751,10 @@ struct SettingsView: View {
             }
         }
         .padding(.top, 8)
+    }
+
+    private var manuallyArchivedSessions: [TaskSession] {
+        backendClient.archivedSessions.filter(\.allowsManualArchive)
     }
 
     private var proxySettingsTab: some View {

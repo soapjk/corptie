@@ -84,6 +84,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var timelineRevision: Int? = nil
     let accent: Accent
     let archived: Bool?
+    var archiveReason: String? = nil
     let pinned: Bool?
     let sortOrder: Double?
     let capabilities: SessionCapabilities?
@@ -116,6 +117,10 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
 
     var hasValidProductClassification: Bool {
         resolvedSessionKind != .legacy
+    }
+
+    var allowsManualArchive: Bool {
+        resolvedSessionKind == .assistantChat
     }
 
     var isConnecting: Bool {
