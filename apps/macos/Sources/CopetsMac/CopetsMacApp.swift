@@ -124,35 +124,33 @@ struct LiveResizeLayoutStatistics: Equatable {
 
 @MainActor
 struct MainWindowChromeSurfaces {
-    let leading: NSView
     let center: NSView
     let trailing: NSView
 }
 
-/// Title-bar chrome already has an explicit frame relative to the window safe
-/// area. Propagating that safe area into the hosting root applies the inset a
-/// second time; mixed SwiftUI/AppKit controls can then retain their visual frame
-/// while nearly all of the host's mouse hit region is clipped away.
+/// Hosts the leading controls in AppKit's actual title-bar hierarchy. A content
+/// view drawn beneath a full-size transparent title bar is still subject to the
+/// window's drag-region event routing, even when its SwiftUI controls are
+/// visible. A native accessory receives mouse events before that routing.
 @MainActor
-final class MainWindowChromeHostingView<Content: View>: NSHostingView<Content> {
-    override var safeAreaInsets: NSEdgeInsets {
-        NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+final class MainWindowLeadingChromeAccessoryController: NSTitlebarAccessoryViewController {
+    let hostingView: NSHostingView<MainWindowFixedChromeView>
+
+    init(rootView: MainWindowFixedChromeView = MainWindowFixedChromeView()) {
+        hostingView = NSHostingView(rootView: rootView)
+        super.init(nibName: nil, bundle: nil)
+
+        layoutAttribute = .left
+        hostingView.sizingOptions = []
+        hostingView.frame = NSRect(x: 0, y: 0, width: 88, height: 22)
+        hostingView.autoresizingMask = []
+        hostingView.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        view = hostingView
     }
 
-    override var mouseDownCanMoveWindow: Bool { false }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard !isHidden, alphaValue > 0, bounds.contains(point) else { return nil }
-        // NSHostingView can discard points in a full-size title bar before it
-        // asks representable descendants. Walk the native children explicitly;
-        // SwiftUI-only buttons continue to receive events through the host.
-        for subview in subviews.reversed() {
-            let localPoint = subview.convert(point, from: self)
-            if let hit = subview.hitTest(localPoint) {
-                return hit
-            }
-        }
-        return super.hitTest(point) ?? self
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
     }
 }
 
@@ -195,9 +193,10 @@ final class MainWindowResizeState: ObservableObject {
     @Published fileprivate(set) var isLiveResize = false
 }
 
-/// AppKit-owned main-window surface hierarchy. The three title-bar surfaces keep
-/// fixed intrinsic sizes and move with native window geometry, independently of
-/// the coalesced SwiftUI content surface. A display-link consumes only the latest
+/// AppKit-owned main-window content hierarchy. Its center and trailing chrome
+/// surfaces keep fixed intrinsic sizes and move with native window geometry;
+/// the leading controls live in a native title-bar accessory. A display-link
+/// consumes only the latest
 /// pending content size; completion always restores exact geometry. The content
 /// surface is never scaled: fixed-width columns therefore cannot stretch past
 /// their target and snap backward at the next real layout commit.
@@ -265,21 +264,13 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
         contentContainer.addSubview(hostingView)
 
         if let chromeSurfaces {
-            for surface in [chromeSurfaces.leading, chromeSurfaces.center, chromeSurfaces.trailing] {
+            for surface in [chromeSurfaces.center, chromeSurfaces.trailing] {
                 surface.translatesAutoresizingMaskIntoConstraints = false
                 surface.setContentHuggingPriority(.required, for: .horizontal)
                 surface.setContentHuggingPriority(.required, for: .vertical)
                 addSubview(surface)
             }
             NSLayoutConstraint.activate([
-                chromeSurfaces.leading.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 76),
-                chromeSurfaces.leading.topAnchor.constraint(
-                    equalTo: safeAreaLayoutGuide.topAnchor,
-                    constant: -28
-                ),
-                chromeSurfaces.leading.widthAnchor.constraint(equalToConstant: 88),
-                chromeSurfaces.leading.heightAnchor.constraint(equalToConstant: 22),
-
                 chromeSurfaces.center.centerXAnchor.constraint(equalTo: centerXAnchor),
                 chromeSurfaces.center.topAnchor.constraint(
                     equalTo: safeAreaLayoutGuide.topAnchor,
@@ -367,22 +358,6 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         endResize(for: .liveResize)
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        if let chromeSurfaces {
-            // Full-size window content and title-bar chrome overlap by design.
-            // Route the fixed controls first so the resident page host cannot
-            // claim their visual bounds as draggable or page content.
-            for surface in [chromeSurfaces.trailing, chromeSurfaces.center, chromeSurfaces.leading] {
-                let localPoint = surface.convert(point, from: self)
-                guard surface.bounds.contains(localPoint) else { continue }
-                if let hit = surface.hitTest(localPoint) {
-                    return hit
-                }
-            }
-        }
-        return super.hitTest(point)
     }
 
     override func layout() {
@@ -994,20 +969,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.center()
         window.isReleasedWhenClosed = false
         let resizeState = MainWindowResizeState()
-        let leadingChrome = MainWindowChromeHostingView(rootView: MainWindowFixedChromeView())
+        let leadingChrome = MainWindowLeadingChromeAccessoryController()
         let centerChrome = NSHostingView(rootView: MainWindowTabBarSurfaceView())
         let trailingChrome = NSHostingView(rootView: MainWindowTaskSurfaceView())
-        leadingChrome.sizingOptions = []
         centerChrome.sizingOptions = []
         trailingChrome.sizingOptions = []
-        for surface in [leadingChrome, centerChrome, trailingChrome] {
+        for surface in [centerChrome, trailingChrome] {
             surface.layerContentsRedrawPolicy = .onSetNeedsDisplay
         }
         let hostingView = MainWindowSurfaceContainer(
             rootView: MainWindowContentView().environmentObject(resizeState),
             resizeState: resizeState,
             chromeSurfaces: MainWindowChromeSurfaces(
-                leading: leadingChrome,
                 center: centerChrome,
                 trailing: trailingChrome
             )
@@ -1023,6 +996,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.contentMinSize = NSSize(width: 980, height: 620)
         window.preservesContentDuringLiveResize = true
         window.contentView = hostingView
+        window.addTitlebarAccessoryViewController(leadingChrome)
         applyMainWindowLevel(to: window)
         window.makeKeyAndOrderFront(nil)
         warRoomWindow = window
