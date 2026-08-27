@@ -57,6 +57,11 @@
 "Create as “%@”" = "Create as “%@”";
 "Create the new session with the available name “%@”?" = "Create the new session with the available name “%@”?";
 "Log Directory" = "Log Directory";
+"Data Root" = "Data Root";
+"Choose a data root" = "Choose a data root";
+"Choose data root" = "Choose data root";
+"Data root is required." = "Data root is required.";
+"Database, configuration, logs, Artifacts, runtime state, and backups are stored in managed subdirectories. Changing this location migrates and verifies all data before switching." = "Database, configuration, logs, Artifacts, runtime state, and backups are stored in managed subdirectories. Changing this location migrates and verifies all data before switching.";
 "Choose a log directory" = "Choose a log directory";
 "Choose log directory" = "Choose log directory";
 "Backend logs rotate automatically at 20 MB and keep five backups." = "Backend logs rotate automatically at 20 MB and keep five backups.";

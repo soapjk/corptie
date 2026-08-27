@@ -1263,8 +1263,7 @@ struct SettingsView: View {
     var onClose: () -> Void = {}
     @State private var selectedTab = SettingsTab.general
     @State private var archivedSessionPendingDeletion: TaskSession?
-    @State private var dataDir = ""
-    @State private var logDir = ""
+    @State private var dataRoot = ""
     @State private var choiceParser = ChoiceParserSettings.defaults
     @State private var savedChoiceParser = ChoiceParserSettings.defaults
     @State private var codexBackend = CodexBackendSettings.defaults
@@ -1307,8 +1306,7 @@ struct SettingsView: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(
                         backendClient.isUpdatingSettings
-                        || dataDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || logDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || dataRoot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     )
                 }
             }
@@ -1324,10 +1322,9 @@ struct SettingsView: View {
             await backendClient.loadFeishuProfiles()
             selectDefaultFeishuProfileIfNeeded()
             await backendClient.loadModels(for: "codex-pty")
-            if dataDir.isEmpty {
-                dataDir = backendClient.settings?.dataDir ?? defaultDataDirectory
+            if dataRoot.isEmpty {
+                dataRoot = backendClient.settings?.dataRoot ?? defaultDataRoot
             }
-            logDir = backendClient.settings?.logDir ?? defaultLogDirectory
             choiceParser = backendClient.settings?.choiceParser ?? .defaults
             savedChoiceParser = choiceParser
             codexBackend = backendClient.settings?.codexBackend ?? .defaults
@@ -1341,8 +1338,7 @@ struct SettingsView: View {
         }
         .onChange(of: backendClient.settings) { _, settings in
             if let settings {
-                dataDir = settings.dataDir
-                logDir = settings.logDir ?? defaultLogDirectory
+                dataRoot = settings.dataRoot
                 choiceParser = settings.choiceParser ?? .defaults
                 savedChoiceParser = choiceParser
                 codexBackend = settings.codexBackend ?? .defaults
@@ -1454,67 +1450,24 @@ struct SettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Data Directory"))
+                Text(L10n("Data Root"))
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(CorptiePalette.secondaryText)
                 HStack(spacing: 8) {
-                    TextField(L10n("Choose a data directory"), text: $dataDir)
+                    TextField(L10n("Choose a data root"), text: $dataRoot)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
 
                     Button {
-                        chooseDataDirectory()
+                        chooseDataRoot()
                     } label: {
                         Image(systemName: "folder")
                     }
-                    .help(L10n("Choose data directory"))
+                    .help(L10n("Choose data root"))
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text(L10n("Log Directory"))
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                HStack(spacing: 8) {
-                    TextField(L10n("Choose a log directory"), text: $logDir)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-
-                    Button {
-                        chooseLogDirectory()
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .help(L10n("Choose log directory"))
-                }
-                Text(L10n("Backend logs rotate automatically at 20 MB and keep five backups."))
+                Text(L10n("Database, configuration, logs, Artifacts, runtime state, and backups are stored in managed subdirectories. Changing this location migrates and verifies all data before switching."))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
-            }
-
-            if let settings = backendClient.settings {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(L10n("Database"))
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                    Text(settings.dbPath)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                }
-                if let configPath = settings.configPath {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(L10n("Config"))
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(CorptiePalette.secondaryText)
-                        Text(configPath)
-                            .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(CorptiePalette.secondaryText)
-                            .textSelection(.enabled)
-                            .lineLimit(2)
-                    }
-                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -2171,8 +2124,7 @@ struct SettingsView: View {
 
     private func saveAllSettings() async {
         if await backendClient.updateSettings(
-            dataDir: dataDir,
-            logDir: logDir,
+            dataRoot: dataRoot,
             choiceParser: choiceParser,
             codexBackend: codexBackend,
             codeDiff: codeDiff,
@@ -2191,7 +2143,7 @@ struct SettingsView: View {
 
     private func confirmChoiceParser() async {
         choiceParserStatus = .idle
-        if await backendClient.updateSettings(dataDir: dataDir, logDir: logDir, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway) {
+        if await backendClient.updateSettings(dataRoot: dataRoot, choiceParser: choiceParser, codexBackend: codexBackend, codeDiff: codeDiff, agentProxy: agentProxy, gateway: gateway) {
             savedChoiceParser = choiceParser
             savedCodexBackend = codexBackend
             savedCodeDiff = codeDiff
@@ -2216,41 +2168,23 @@ struct SettingsView: View {
         }
     }
 
-    private func chooseDataDirectory() {
+    private func chooseDataRoot() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.canCreateDirectories = true
-        panel.directoryURL = URL(fileURLWithPath: dataDir.isEmpty ? defaultDataDirectory : dataDir)
+        panel.directoryURL = URL(fileURLWithPath: dataRoot.isEmpty ? defaultDataRoot : dataRoot)
 
         if panel.runModal() == .OK, let url = panel.url {
-            dataDir = url.path
+            dataRoot = url.path
         }
     }
 
-    private func chooseLogDirectory() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.canCreateDirectories = true
-        panel.directoryURL = URL(fileURLWithPath: logDir.isEmpty ? defaultLogDirectory : logDir)
-
-        if panel.runModal() == .OK, let url = panel.url {
-            logDir = url.path
-        }
-    }
-
-    private var defaultDataDirectory: String {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        return support?.appendingPathComponent(CorptieAppEnvironment.appSupportFolderName, isDirectory: true).path ?? NSHomeDirectory()
-    }
-
-    private var defaultLogDirectory: String {
-        let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("Logs", isDirectory: true)
-        return logs?.appendingPathComponent(CorptieAppEnvironment.appSupportFolderName, isDirectory: true).path ?? NSHomeDirectory()
+    private var defaultDataRoot: String {
+        URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
+            .appendingPathComponent(".corptie", isDirectory: true)
+            .path
     }
 }
 

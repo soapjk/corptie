@@ -285,6 +285,15 @@ const objectiveService = new ObjectiveApplicationService({
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
 const artifactService = new ArtifactService({ store });
+store.setDataRootDidChangeListener(async ({ current, receipt, rollback = false }) => {
+  const artifactVerification = await artifactService.useDataRoot(current);
+  configureBackendLogging(current.logsDirectory, {
+    mirrorToOriginalConsole: environmentName === "development"
+  });
+  if (!rollback) {
+    console.log(`[data-root] migration completed ${JSON.stringify({ ...receipt, ...artifactVerification })}`);
+  }
+});
 const objectiveChatContextService = new ObjectiveChatContextService({ store, artifactService });
 const objectiveChatOperationService = new ObjectiveChatOperationService({
   store,
@@ -6808,6 +6817,15 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
+  if (store.migrationInProgress
+    && !(request.method === "GET" && (url.pathname === "/health" || url.pathname === "/settings"))) {
+    sendJson(response, 503, {
+      error: "Persistent writes are paused while the data root is being migrated.",
+      code: "DATA_ROOT_MIGRATION_IN_PROGRESS"
+    });
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/internal/objective-chat/tool") {
     readJson(request)
       .then(async (input) => {
@@ -7055,12 +7073,6 @@ function route(request, response) {
       .then(async (input) => {
         const before = store.settings();
         const settings = await store.updateSettings(input);
-        if (settings.logDir !== before.logDir) {
-          configureBackendLogging(settings.logDir, {
-            mirrorToOriginalConsole: environmentName === "development"
-          });
-          console.log(`[backend-logging] directory changed to ${settings.logDir}`);
-        }
         const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
         const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
         if (codexBackendChanged || codexProxyChanged) {
@@ -8774,20 +8786,9 @@ process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
 
 function activateStoredBackendLogging() {
-  const configuredDirectory = store.settings().logDir;
+  const configuredDirectory = store.logDirectory();
   const options = { mirrorToOriginalConsole: environmentName === "development" };
-  try {
-    configureBackendLogging(configuredDirectory, options);
-  } catch (error) {
-    const fallbackDirectory = join(
-      os.homedir(),
-      "Library",
-      "Logs",
-      environmentName === "development" ? "Corptie Development" : "Corptie"
-    );
-    configureBackendLogging(fallbackDirectory, options);
-    console.error(`[backend-logging] configured directory unavailable (${configuredDirectory}); using ${fallbackDirectory}: ${error.message}`);
-  }
+  configureBackendLogging(configuredDirectory, options);
 }
 
 function normalizeEnvironment(value = "") {
