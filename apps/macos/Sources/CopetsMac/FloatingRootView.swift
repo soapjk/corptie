@@ -9903,6 +9903,7 @@ private struct CodexModelMenu: View {
                         }
                     }
                     .help(model.description ?? model.id)
+                    .disabled(!supportsModelSwitch)
                 }
 
                 Divider()
@@ -9969,7 +9970,12 @@ private struct CodexModelMenu: View {
             )
         }
         .menuStyle(.borderlessButton)
-        .disabled(!backendClient.selectedCanSendNow || backendClient.isSwitchingModel || backendClient.isSwitchingReasoning)
+        .disabled(!SessionConfigurationMenuAvailability.isEnabled(
+            canSwitchModel: supportsModelSwitch,
+            canSwitchReasoning: supportsReasoningSwitch,
+            isSwitchingModel: backendClient.isSwitchingModel,
+            isSwitchingReasoning: backendClient.isSwitchingReasoning
+        ))
         .help(currentModelHelp)
     }
 
@@ -10017,6 +10023,12 @@ private struct CodexModelMenu: View {
     private var supportsReasoningSwitch: Bool {
         backendClient.selectedSession?.actions?.switchReasoning.available
             ?? backendClient.selectedSession?.capabilities?.canSwitchReasoning
+            ?? false
+    }
+
+    private var supportsModelSwitch: Bool {
+        backendClient.selectedSession?.actions?.switchModel.available
+            ?? backendClient.selectedSession?.capabilities?.canSwitchModel
             ?? false
     }
 
@@ -10071,6 +10083,19 @@ enum SessionReasoningSelection {
         model: CodexModel?
     ) -> String {
         sessionLevel ?? providerDefaultLevel ?? model?.defaultReasoningLevel ?? "medium"
+    }
+}
+
+enum SessionConfigurationMenuAvailability {
+    static func isEnabled(
+        canSwitchModel: Bool,
+        canSwitchReasoning: Bool,
+        isSwitchingModel: Bool,
+        isSwitchingReasoning: Bool
+    ) -> Bool {
+        (canSwitchModel || canSwitchReasoning)
+            && !isSwitchingModel
+            && !isSwitchingReasoning
     }
 }
 

@@ -83,4 +83,25 @@ final class NewSessionModelSelectionTests: XCTestCase {
             supportsSwitch: false
         ).isEmpty)
     }
+
+    func testComposerConfigurationMenuDoesNotDependOnMessageSendAvailability() {
+        XCTAssertTrue(SessionConfigurationMenuAvailability.isEnabled(
+            canSwitchModel: false,
+            canSwitchReasoning: true,
+            isSwitchingModel: false,
+            isSwitchingReasoning: false
+        ))
+        XCTAssertFalse(SessionConfigurationMenuAvailability.isEnabled(
+            canSwitchModel: false,
+            canSwitchReasoning: false,
+            isSwitchingModel: false,
+            isSwitchingReasoning: false
+        ))
+        XCTAssertFalse(SessionConfigurationMenuAvailability.isEnabled(
+            canSwitchModel: true,
+            canSwitchReasoning: true,
+            isSwitchingModel: false,
+            isSwitchingReasoning: true
+        ))
+    }
 }

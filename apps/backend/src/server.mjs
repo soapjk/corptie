@@ -3195,7 +3195,7 @@ function codexAppServerSessionCapabilities(overrides = {}) {
   return {
     canSend: true,
     canSwitchModel: true,
-    canSwitchReasoning: false,
+    canSwitchReasoning: true,
     canInterrupt: true,
     canReconnect: false,
     canPrepareExecution: true,
