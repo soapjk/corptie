@@ -23,6 +23,7 @@ async function fixture() {
     authorize: ({ actor }) => actor?.type === "user" && actor.id === "user:local-macos",
     inspectWorktree: async () => ({ status: "none", worktree: null, blocker: null }),
     removeWorktree: async () => assert.fail("metadata-only deletion must not clean a Worktree"),
+    deleteSession: async (sessionId) => store.deleteSession(sessionId),
     onChanged: (type, payload) => changed.push({ type, payload })
   });
   return { directory, dbPath, configPath, store, deletion, changed };
@@ -73,6 +74,44 @@ test("a retained Artifact produces an actionable blocker and leaves all records 
     assert.ok(f.store.getArtifact("artifact:blocker"));
     assert.equal(f.store.getWorkItem("work_item:delete").deletion_status, null);
     assert.deepEqual(f.changed, []);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("deletion removes associated Worker Session history instead of detaching it", async () => {
+  const f = await fixture();
+  try {
+    const agent = f.store.createAgent({ id: "agent:delete", name: "Delete", role: "independentContributor" });
+    f.store.updateObjective("objective:delete", { contributorAgentIds: [agent.agentId] });
+    f.store.upsertSession({
+      id: "session:delete",
+      title: "Delete history",
+      agent: "Delete",
+      agentId: agent.agentId,
+      provider: "codex-app-server",
+      status: "complete",
+      sessionKind: "worker",
+      objectiveId: "objective:delete",
+      workItemId: "work_item:delete"
+    });
+    f.store.upsertTimelineItemProjection("session:delete", {
+      id: "message:delete",
+      type: "userMessage",
+      text: "private history",
+      createdAt: "2026-08-27T00:00:00.000Z"
+    });
+
+    const plan = await f.deletion.inspect("work_item:delete", localUser);
+    assert.equal(plan.associatedSessionCount, 1);
+    const result = await f.deletion.delete("work_item:delete", { mode: "safe" }, localUser);
+
+    assert.deepEqual(result.resources.deletedSessionIds, ["session:delete"]);
+    assert.equal(f.store.getSession("session:delete"), null);
+    assert.equal(f.store.selectOne("SELECT id FROM session_items WHERE session_id=?", ["session:delete"]), null);
+    assert.equal(f.store.getWorkItem("work_item:delete"), null);
+    assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"), []);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

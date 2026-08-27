@@ -7,6 +7,7 @@ function fixture(options = {}) {
   const calls = [];
   const store = {
     getWorkItem: () => item,
+    listSessionsByWorkItem: () => options.sessions ?? [],
     selectOne: () => options.activeStart ? { operation_id: "start:one" } : null,
     listWorkItemDeletionBlockingAssociations: () => options.associations ?? { artifacts: [] },
     markWorkItemDeletion: (...args) => calls.push(["mark", ...args]),
@@ -30,7 +31,8 @@ function fixture(options = {}) {
       calls.push(["remove", input]);
       if (options.removeError) throw options.removeError;
       return { removed: true };
-    }
+    },
+    deleteSession: async (sessionId) => calls.push(["deleteSession", sessionId])
   });
   return { service, calls, getItem: () => item };
 }
@@ -129,17 +131,55 @@ test("WorkItem without a Worktree deletes metadata without unnecessary Git clean
   assert.deepEqual(calls.map(([name]) => name), ["mark", "finalize"]);
 });
 
+test("deletion permanently removes every associated Session before Worktree and metadata cleanup", async () => {
+  const { service, calls } = fixture({
+    sessions: [{ id: "session:one" }, { id: "session:two" }],
+    inspection: {
+      status: "available", blocker: null,
+      worktree: {
+        worktreeId: "worktree:one", path: "/repo-one", branchName: "workitem/one",
+        dirty: false, mergedIntoMain: true, aheadOfMain: 0, statusSummary: ""
+      }
+    }
+  });
+
+  const plan = await service.inspect("work_item:one");
+  assert.equal(plan.associatedSessionCount, 2);
+  const result = await service.delete("work_item:one", { mode: "safe" });
+
+  assert.deepEqual(calls.map(([name]) => name), [
+    "mark", "deleteSession", "deleteSession", "remove", "removed", "finalize"
+  ]);
+  assert.deepEqual(result.resources.deletedSessionIds, ["session:one", "session:two"]);
+});
+
+test("Session deletion failure stops before Worktree cleanup and remains retryable", async () => {
+  const { service, calls, getItem } = fixture({ sessions: [{ id: "session:one" }] });
+  service.deleteSession = async () => {
+    throw Object.assign(new Error("provider unavailable"), { code: "PROVIDER_UNAVAILABLE" });
+  };
+
+  await assert.rejects(
+    service.delete("work_item:one", { mode: "safe" }),
+    (error) => error.code === "PROVIDER_UNAVAILABLE" && /可安全重试/.test(error.message)
+  );
+  assert.equal(getItem().deletion_worktree_removed_at, null);
+  assert.deepEqual(calls.map(([name]) => name), ["mark", "mark"]);
+});
+
 test("missing and unauthorized WorkItems return explicit errors before inspection or mutation", async () => {
   // Simulate a missing record with the same Store contract used in production.
   const missingService = new WorkItemDeletionService({
     store: {
       getWorkItem: () => null,
+      listSessionsByWorkItem: () => [],
       listWorkItemDeletionBlockingAssociations: () => ({ artifacts: [] }),
       finalizeWorkItemDeletion: () => {}
     },
     authorize: async () => true,
     inspectWorktree: async () => assert.fail("missing WorkItem must not inspect a Worktree"),
-    removeWorktree: async () => assert.fail("missing WorkItem must not remove a Worktree")
+    removeWorktree: async () => assert.fail("missing WorkItem must not remove a Worktree"),
+    deleteSession: async () => assert.fail("missing WorkItem must not delete a Session")
   });
   await assert.rejects(missingService.inspect("work_item:missing"), (error) =>
     error.code === "WORK_ITEM_NOT_FOUND" && error.statusCode === 404

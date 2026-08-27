@@ -5,16 +5,18 @@ export class WorkItemDeletionService {
     this.store = options.store;
     this.inspectWorktree = options.inspectWorktree;
     this.removeWorktree = options.removeWorktree;
+    this.deleteSession = options.deleteSession;
     this.authorize = options.authorize;
     this.onChanged = options.onChanged ?? (() => {});
     if (!this.store || typeof this.store.finalizeWorkItemDeletion !== "function"
-      || typeof this.store.listWorkItemDeletionBlockingAssociations !== "function") {
+      || typeof this.store.listWorkItemDeletionBlockingAssociations !== "function"
+      || typeof this.store.listSessionsByWorkItem !== "function") {
       throw new TypeError("WorkItemDeletionService requires a Store with deletion support.");
     }
     if (typeof this.authorize !== "function") {
       throw new TypeError("WorkItemDeletionService requires authorize().");
     }
-    for (const method of ["inspectWorktree", "removeWorktree"]) {
+    for (const method of ["inspectWorktree", "removeWorktree", "deleteSession"]) {
       if (typeof this[method] !== "function") throw new TypeError(`WorkItemDeletionService requires ${method}().`);
     }
   }
@@ -28,23 +30,24 @@ export class WorkItemDeletionService {
     const associationBlockers = blockingAssociations(
       this.store.listWorkItemDeletionBlockingAssociations(workItemId)
     );
+    const associatedSessionCount = this.store.listSessionsByWorkItem(workItemId).length;
     if (associationBlockers.length > 0) {
-      return deletionPlan(item, null, [], associationBlockers);
+      return deletionPlan(item, null, [], associationBlockers, associatedSessionCount);
     }
     if (item.deletion_worktree_removed_at) {
-      return deletionPlan(item, { status: "removed", worktree: null }, [], []);
+      return deletionPlan(item, { status: "removed", worktree: null }, [], [], associatedSessionCount);
     }
     const activeStart = this.store.selectOne(
       "SELECT operation_id FROM work_item_start_operations WHERE work_item_id=? AND status='in_progress' LIMIT 1",
       [workItemId]
     );
     if (activeStart) {
-      return deletionPlan(item, null, [], [{ code: "START_IN_PROGRESS", message: "WorkItem 正在启动。请等待启动完成或先安全取消启动。" }]);
+      return deletionPlan(item, null, [], [{ code: "START_IN_PROGRESS", message: "WorkItem 正在启动。请等待启动完成或先安全取消启动。" }], associatedSessionCount);
     }
     const inspection = await this.inspectWorktree(workItemId);
     const risks = contentRisks(inspection?.worktree);
     const blockers = hardBlockers(inspection);
-    return deletionPlan(item, inspection, risks, blockers);
+    return deletionPlan(item, inspection, risks, blockers, associatedSessionCount);
   }
 
   async delete(workItemId, input = {}, actor = null) {
@@ -65,7 +68,15 @@ export class WorkItemDeletionService {
 
     this.store.markWorkItemDeletion(workItemId, "deleting", null);
     let cleanup = null;
+    const deletedSessionIds = [];
     try {
+      for (const session of this.store.listSessionsByWorkItem(workItemId)) {
+        await this.deleteSession(session.id, {
+          source: "work-item-deletion",
+          workItemId
+        });
+        deletedSessionIds.push(session.id);
+      }
       if (plan.worktree) {
         cleanup = await this.removeWorktree({
           workItemId,
@@ -75,7 +86,10 @@ export class WorkItemDeletionService {
         });
         this.store.markWorkItemWorktreeRemoved(workItemId);
       }
-      const resources = this.store.finalizeWorkItemDeletion(workItemId);
+      const resources = {
+        ...this.store.finalizeWorkItemDeletion(workItemId),
+        deletedSessionIds
+      };
       this.onChanged("WorkItemChanged", { action: "deleted", entity: { id: workItemId } });
       return { ok: true, workItemId, cleanup, resources };
     } catch (error) {
@@ -106,11 +120,12 @@ export class WorkItemDeletionService {
   }
 }
 
-function deletionPlan(item, inspection, risks, blockers) {
+function deletionPlan(item, inspection, risks, blockers, associatedSessionCount) {
   return {
     workItemId: item.id,
     status: blockers.length > 0 ? "blocked" : (risks.length > 0 ? "risky" : "safe"),
     retryable: true,
+    associatedSessionCount,
     inspection,
     worktree: inspection?.worktree ? {
       worktreeId: inspection.worktree.worktreeId,
