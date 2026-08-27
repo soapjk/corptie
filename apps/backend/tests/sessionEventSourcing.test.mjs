@@ -262,6 +262,102 @@ test("Session 未读游标：迁移完成后新消息没有隐式已读回执", 
   }
 });
 
+test("canonical completion migration repairs history as read and future receipts use one high-water mark", async () => {
+  const { store, directory } = await createStore();
+  const dbPath = join(directory, "corptie.sqlite");
+  let reopened = null;
+  try {
+    store.upsertSession({ id: "s1", title: "t", agent: "a", provider: "codex-app-server", status: "complete" });
+    const historical = [];
+    for (let index = 1; index <= 10; index += 1) {
+      historical.push(store.appendSessionEvent({
+        eventId: `canonical-history-${index}`,
+        sessionId: "s1",
+        type: "turn.completed",
+        payload: {
+          turnId: `turn:${index}`,
+          items: [{
+            id: `answer:${index}`,
+            turnId: `turn:${index}`,
+            type: "agentMessage",
+            presentationRole: "final_answer",
+            text: `answer ${index}`
+          }]
+        }
+      }));
+    }
+    assert.equal(store.lastAgentMessageSequence("s1"), 0);
+    store.insertProviderInboxEvent({
+      providerId: "codex-app-server",
+      providerSessionId: "provider:s1",
+      providerEventId: "provider:completion",
+      bindingId: "binding:s1",
+      logicalSessionId: "logical:s1",
+      routingVersion: 1,
+      providerSequence: 10,
+      turnId: "turn:10",
+      itemId: null,
+      type: "turn.completed",
+      occurredAt: "2026-08-26T10:00:00.000Z",
+      receivedAt: "2026-08-26T10:00:00.010Z",
+      payload: {},
+      rawPayload: {}
+    }, "s1");
+    store.db.run(
+      "DELETE FROM data_migrations WHERE migration_id = ?",
+      ["session-events-canonical-agent-message-v2"]
+    );
+    await store.close();
+
+    reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+    await reopened.initialize();
+    const historicalCursor = historical.at(-1).sequence;
+    assert.ok(reopened.canonicalUnreadMigrationBackupPath);
+    await access(reopened.canonicalUnreadMigrationBackupPath);
+    assert.deepEqual(reopened.canonicalUnreadMigrationAudit, {
+      scannedEvents: 10,
+      repairedEvents: 10,
+      affectedSessions: 1,
+      adjustedReceipts: 1
+    });
+    const backupReader = new DatabaseSync(reopened.canonicalUnreadMigrationBackupPath, { readOnly: true });
+    assert.equal(backupReader.prepare("PRAGMA quick_check").get().quick_check, "ok");
+    assert.equal(backupReader.prepare(
+      "SELECT SUM(has_agent_message) AS count FROM session_events WHERE type = 'turn.completed'"
+    ).get().count, 0);
+    backupReader.close();
+    assert.deepEqual(reopened.listSessionMessageCursors().get("s1"), {
+      lastAgentMessageSequence: historicalCursor,
+      lastReadMessageSequence: historicalCursor
+    });
+    assert.equal(reopened.selectOne(
+      "SELECT COUNT(*) AS count FROM session_events WHERE type = 'turn.completed' AND has_agent_message = 1"
+    ).count, 10);
+
+    const future = [];
+    for (let index = 1; index <= 10; index += 1) {
+      future.push(reopened.appendSessionEvent({
+        eventId: `canonical-future-${index}`,
+        sessionId: "s1",
+        type: "turn.completed",
+        payload: { hasAgentMessage: true, turnId: `turn:future:${index}` }
+      }));
+    }
+    const latestFutureCursor = future.at(-1).sequence;
+    assert.deepEqual(reopened.listSessionMessageCursors().get("s1"), {
+      lastAgentMessageSequence: latestFutureCursor,
+      lastReadMessageSequence: historicalCursor
+    });
+    assert.deepEqual(reopened.markSessionMessagesRead("s1", latestFutureCursor), {
+      lastAgentMessageSequence: latestFutureCursor,
+      lastReadMessageSequence: latestFutureCursor
+    });
+  } finally {
+    if (reopened) await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session_logs：创建 session 即建立 1:1 log，事件指向该 log", async () => {
   const { store, directory } = await createStore();
   try {
