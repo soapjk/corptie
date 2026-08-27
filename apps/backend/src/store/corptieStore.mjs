@@ -8895,6 +8895,24 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
+  listWorkItemDeletionBlockingAssociations(id) {
+    return {
+      // Artifact content and its audit history are retained user data. The
+      // RESTRICT foreign key deliberately prevents WorkItem deletion until the
+      // user explicitly re-scopes the Artifact instead of silently losing it.
+      artifacts: this.selectAll(
+        `SELECT artifact_id, title, visibility, status
+         FROM artifacts WHERE bound_work_item_id=? ORDER BY created_at, artifact_id`,
+        [id]
+      ).map((row) => ({
+        artifactId: row.artifact_id,
+        title: row.title,
+        visibility: row.visibility,
+        status: row.status
+      }))
+    };
+  }
+
   finalizeWorkItemDeletion(id) {
     const item = this.getWorkItem(id);
     if (!item) return { alreadyDeleted: true };

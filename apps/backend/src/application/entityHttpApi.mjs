@@ -642,14 +642,16 @@ export function handleEntityHttpRequest({
         }
         if (request.method === "DELETE") {
           if (typeof deleteWorkItemSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe WorkItem deletion is unavailable.", 503);
-          return sendJson(response, 200, await deleteWorkItemSafely(id, await readJson(request)));
+          return sendJson(response, 200, await deleteWorkItemSafely(id, await readJson(request), localMacUserActor()));
         }
       }
 
       const workItemDeletionMatch = path.match(/^\/work-items\/([^/]+)\/deletion$/);
       if (request.method === "GET" && workItemDeletionMatch) {
         if (typeof inspectWorkItemDeletion !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem deletion inspection is unavailable.", 503);
-        return sendJson(response, 200, await inspectWorkItemDeletion(decodeURIComponent(workItemDeletionMatch[1])));
+        return sendJson(response, 200, await inspectWorkItemDeletion(
+          decodeURIComponent(workItemDeletionMatch[1]), localMacUserActor()
+        ));
       }
 
       const deleteWorkItemMatch = path.match(/^\/work-items\/([^/]+)\/actions\/delete$/);
@@ -657,7 +659,9 @@ export function handleEntityHttpRequest({
         if (typeof deleteWorkItemSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe WorkItem deletion is unavailable.", 503);
         const input = await readJson(request);
         rejectUnknownFields(input, new Set(["mode", "acknowledgeDataLoss", "confirmedBranchName"]));
-        return sendJson(response, 200, await deleteWorkItemSafely(decodeURIComponent(deleteWorkItemMatch[1]), input));
+        return sendJson(response, 200, await deleteWorkItemSafely(
+          decodeURIComponent(deleteWorkItemMatch[1]), input, localMacUserActor()
+        ));
       }
 
       const acceptanceAssessmentMatch = path.match(/^\/work-items\/([^/]+)\/acceptance-assessment$/);
@@ -1157,6 +1161,10 @@ function apiError(code, message, statusCode) {
   error.code = code;
   error.statusCode = statusCode;
   return error;
+}
+
+function localMacUserActor() {
+  return { type: "user", id: "user:local-macos" };
 }
 
 function headerText(request, name) {

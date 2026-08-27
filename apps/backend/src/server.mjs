@@ -1013,6 +1013,7 @@ const workItemDeletionService = new WorkItemDeletionService({
   store,
   inspectWorktree: (workItemId) => inspectWorkItemWorktree(workItemId),
   removeWorktree: (input) => removeWorkItemDeletionWorktree(input),
+  authorize: ({ actor }) => actor?.type === "user" && actor.id === "user:local-macos",
   onChanged: (type, payload) => emitEvent(type, payload)
 });
 workItemExecutionOrchestrator = new WorkItemExecutionOrchestrator({
@@ -6902,8 +6903,8 @@ function route(request, response) {
     skillRegistryService,
     inspectWorkItemWorktree,
     reclaimWorkItemWorktree,
-    inspectWorkItemDeletion: (workItemId) => workItemDeletionService.inspect(workItemId),
-    deleteWorkItemSafely: (workItemId, input) => workItemDeletionService.delete(workItemId, input),
+    inspectWorkItemDeletion: (workItemId, actor) => workItemDeletionService.inspect(workItemId, actor),
+    deleteWorkItemSafely: (workItemId, input, actor) => workItemDeletionService.delete(workItemId, input, actor),
     restoreWorkItemExecution: (workItemId) => workItemExecutionOrchestrator.restore(workItemId),
     resolveAgentAvailability: (agent) => {
       return { status: "available", reason: null };

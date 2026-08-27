@@ -31,6 +31,20 @@ struct WorkItemDeletionInteractionTests {
         #expect(functionBody.contains("phase: .deleting"))
         #expect(functionBody.contains("phase: .failure"))
         #expect(functionBody.contains("retryItem: workItem"))
+        #expect(functionBody.contains("if deleted"))
+        #expect(functionBody.contains("workItems.removeAll { $0.id == workItem.id }"))
+    }
+
+    @Test
+    func deletionFailureEnvelopeKeepsTheBackendReasonForPresentation() throws {
+        let data = Data(#"{"error":"WorkItem 仍绑定不可随之删除的 Artifact：验收证据。","code":"WORK_ITEM_DELETE_BLOCKED"}"#.utf8)
+        let envelope = try JSONDecoder().decode(EntityErrorEnvelope.self, from: data)
+        #expect(envelope.code == "WORK_ITEM_DELETE_BLOCKED")
+        #expect(envelope.displayMessage == "WorkItem 仍绑定不可随之删除的 Artifact：验收证据。")
+
+        let clientSource = try entityAPIClientSource()
+        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to inspect WorkItem deletion.\")"))
+        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to delete WorkItem.\")"))
     }
 
     private func warRoomSource() throws -> String {
@@ -39,6 +53,15 @@ struct WorkItemDeletionInteractionTests {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/WarRoomView.swift")
+        return try String(contentsOf: source, encoding: .utf8)
+    }
+
+    private func entityAPIClientSource() throws -> String {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/EntityAPIClient.swift")
         return try String(contentsOf: source, encoding: .utf8)
     }
 }

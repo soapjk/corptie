@@ -682,6 +682,13 @@ export class ArtifactService {
     if (boundWorkItemId) {
       const workItem = this.store.getWorkItem(boundWorkItemId);
       if (!workItem || workItem.objective_id !== objectiveId) throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Bound WorkItem must belong to the current Objective.", 403);
+      if (workItem.deletion_status === "deleting") {
+        throw artifactError(
+          "WORK_ITEM_DELETION_IN_PROGRESS",
+          "Cannot bind an Artifact while the WorkItem is being deleted.",
+          409
+        );
+      }
     }
     if (boundSessionId) {
       const session = this.store.getSession(boundSessionId);
