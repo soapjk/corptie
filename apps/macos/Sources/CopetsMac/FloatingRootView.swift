@@ -4852,10 +4852,22 @@ private func makeDetailSourceSignature(
     visibleMessageLimit: Int,
     restorationAnchorRowID: String? = nil
 ) -> String {
-    let signatureItemLimit = 2
-    let items = detail.items.suffix(signatureItemLimit)
+    // The final assistant message is often followed by multiple execution
+    // items in the same turn. Signing only the last two raw items can therefore
+    // miss the final text/status mutation and leave the rendered reply stale.
+    // Bound the work to the current tail turn: this covers the whole active
+    // response without hashing historical messages on every stream update.
+    let tailTurnID = detail.items.last?.turnId
+    let items: [CodexThreadItem] = tailTurnID.map { turnID in
+        Array(detail.items.reversed().prefix { $0.turnId == turnID }.reversed())
+    } ?? []
     let itemSignatures = items.map { item in
-        [
+        let textCount = String(item.text.count)
+        let textSuffix = String(item.text.suffix(96))
+        let presentationText = item.presentationText ?? ""
+        let presentationTextCount = String(presentationText.count)
+        let presentationTextSuffix = String(presentationText.suffix(96))
+        return [
             item.id,
             item.type,
             item.status ?? "",
@@ -4883,8 +4895,10 @@ private func makeDetailSourceSignature(
             item.automationRunId ?? "",
             item.systemEventKind ?? "",
             item.systemEventReason ?? "",
-            "\(item.text.count)",
-            "\(item.presentationText?.count ?? 0)",
+            textCount,
+            textSuffix,
+            presentationTextCount,
+            presentationTextSuffix,
             fileChangesSignature(item)
         ].joined(separator: ":")
     }.joined(separator: "|")
@@ -9978,17 +9992,19 @@ private struct CodexModelMenu: View {
     }
 
     private var currentReasoningLevel: String {
-        backendClient.selectedCurrentReasoningLevel
-            ?? backendClient.codexDefaultReasoningLevel
-            ?? currentModel?.defaultReasoningLevel
-            ?? "medium"
+        SessionReasoningSelection.currentLevel(
+            sessionLevel: backendClient.selectedCurrentReasoningLevel,
+            providerDefaultLevel: backendClient.codexDefaultReasoningLevel,
+            model: currentModel
+        )
     }
 
     private var currentReasoningLevels: [String] {
-        guard supportsReasoningSwitch else {
-            return []
-        }
-        return currentModel?.reasoningLevels ?? []
+        SessionReasoningSelection.availableLevels(
+            modelID: currentModelId,
+            models: backendClient.codexModels,
+            supportsSwitch: supportsReasoningSwitch
+        )
     }
 
     private var supportsReasoningSwitch: Bool {
@@ -10029,6 +10045,25 @@ private struct CodexModelMenu: View {
         case "xhigh": L10n("Extra high reasoning depth")
         default: value
         }
+    }
+}
+
+enum SessionReasoningSelection {
+    static func availableLevels(
+        modelID: String,
+        models: [CodexModel],
+        supportsSwitch: Bool
+    ) -> [String] {
+        guard supportsSwitch else { return [] }
+        return models.first(where: { $0.id == modelID })?.reasoningLevels ?? []
+    }
+
+    static func currentLevel(
+        sessionLevel: String?,
+        providerDefaultLevel: String?,
+        model: CodexModel?
+    ) -> String {
+        sessionLevel ?? providerDefaultLevel ?? model?.defaultReasoningLevel ?? "medium"
     }
 }
 

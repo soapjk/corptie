@@ -1276,7 +1276,13 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             // 离开顶部后复位，允许再次触发。
             let visibleMinY = scrollView.contentView.bounds.minY
             let nearTop = visibleMinY <= 8
-            if nearTop && !nearTopTriggered && !suppressesNearTopTrigger {
+            // Only an active wheel/trackpad gesture may request history. Row
+            // reflow, document-height synchronization, and anchor restoration
+            // also emit bounds changes; treating those as user intent was able
+            // to prepend history after a tiny wheel delta and visibly jump the
+            // reader toward the oldest message.
+            if nearTop && isProcessingUserScrollEvent
+                && !nearTopTriggered && !suppressesNearTopTrigger {
                 nearTopTriggered = true
                 onNearTop()
             } else if !nearTop {

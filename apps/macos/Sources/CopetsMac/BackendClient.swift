@@ -3569,6 +3569,13 @@ final class BackendClient: ObservableObject {
                     let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(text)
                 }
+                let command = try JSONDecoder().decode(SessionConfigurationCommandResponse.self, from: data)
+                guard appState.acceptSessionConfiguration(
+                    command.session,
+                    requestedSessionID: selectedSession.id
+                ) else {
+                    throw BackendError.message(L10n("The model response did not match the current session."))
+                }
                 sendStatusMessage = L10nFormat("Switching model to %@", model.name)
             } catch {
                 lastError = error.localizedDescription
@@ -3582,8 +3589,18 @@ final class BackendClient: ObservableObject {
         guard !trimmedReasoningLevel.isEmpty else {
             return
         }
-        guard let selectedSession else {
+        guard let selectedSession,
+              selectedSession.canSwitchReasoningNow else {
             sendStatusMessage = L10n("Reasoning switching is not available for this session.")
+            return
+        }
+        if let currentModelID = selectedCurrentModel,
+           let currentModel = codexModels.first(where: { $0.id == currentModelID }),
+           let supportedLevels = currentModel.reasoningLevels,
+           !supportedLevels.contains(where: {
+               $0.caseInsensitiveCompare(trimmedReasoningLevel) == .orderedSame
+           }) {
+            sendStatusMessage = L10n("This reasoning strength is not supported by the current model.")
             return
         }
 
@@ -3603,6 +3620,13 @@ final class BackendClient: ObservableObject {
                 if !(200..<300).contains(httpResponse.statusCode) {
                     let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                     throw BackendError.message(text)
+                }
+                let command = try JSONDecoder().decode(SessionConfigurationCommandResponse.self, from: data)
+                guard appState.acceptSessionConfiguration(
+                    command.session,
+                    requestedSessionID: selectedSession.id
+                ) else {
+                    throw BackendError.message(L10n("The reasoning response did not match the current session."))
                 }
                 sendStatusMessage = L10nFormat("Switching Codex reasoning to %@", reasoningLabel(trimmedReasoningLevel))
             } catch {
