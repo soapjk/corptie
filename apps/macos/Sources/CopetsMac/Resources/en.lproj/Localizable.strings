@@ -863,3 +863,4 @@
 "Affected Worktree ID: %@" = "Affected Worktree ID: %@";
 "Conflict files: %@" = "Conflict files: %@";
 "The backend did not identify an affected Worktree for this risk." = "The backend did not identify an affected Worktree for this risk.";
+"删除此 WorkItem 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。" = "Deleting this WorkItem permanently deletes all of its exclusive data, including %d associated sessions and their complete conversation history. This cannot be undone.";

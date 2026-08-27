@@ -8978,17 +8978,16 @@ export class CorptieStore {
     const item = this.getWorkItem(id);
     if (!item) return { alreadyDeleted: true };
     const sessions = this.selectAll("SELECT id FROM sessions WHERE work_item_id=?", [id]);
+    if (sessions.length > 0) {
+      const error = new Error(`Delete the ${sessions.length} associated Session(s) before deleting WorkItem ${id}.`);
+      error.code = "WORK_ITEM_SESSIONS_REMAIN";
+      throw error;
+    }
     const collaborationTasks = this.selectAll(
       "SELECT task_id FROM collaboration_tasks WHERE source_work_item_id=? OR work_item_id=?",
       [id, id]
     );
     this.runInTransaction(() => {
-      // Session history is user data, not a disposable WorkItem resource. Keep it
-      // archived and detach only the exclusive WorkItem ownership reference.
-      this.db.run(
-        `UPDATE sessions SET work_item_id=NULL, archived=1, updated_at=? WHERE work_item_id=?`,
-        [createdAtFromOrNow(), id]
-      );
       // Collaboration records and integration history are shared audit data.
       // Preserve them while removing their live ownership references.
       this.db.run(
@@ -9002,7 +9001,6 @@ export class CorptieStore {
     });
     this.scheduleSave();
     return {
-      archivedSessionIds: sessions.map((row) => row.id),
       preservedCollaborationTaskIds: collaborationTasks.map((row) => row.task_id)
     };
   }

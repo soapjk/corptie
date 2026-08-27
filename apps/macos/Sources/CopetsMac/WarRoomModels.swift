@@ -172,6 +172,7 @@ struct WorkItemDeletionPlan: Codable, Equatable {
     let workItemId: String
     let status: String
     let retryable: Bool
+    let associatedSessionCount: Int
     let worktree: WorkItemDeletionWorktree?
     let risks: [WorkItemDeletionRisk]
     let blockers: [WorkItemDeletionRisk]

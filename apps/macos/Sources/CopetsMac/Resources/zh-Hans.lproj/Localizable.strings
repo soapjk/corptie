@@ -1241,3 +1241,4 @@
 "Affected Worktree ID: %@" = "受影响的 Worktree ID：%@";
 "Conflict files: %@" = "冲突文件：%@";
 "The backend did not identify an affected Worktree for this risk." = "后端未标明此风险对应的 Worktree。";
+"删除此 WorkItem 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。" = "删除此 WorkItem 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。";

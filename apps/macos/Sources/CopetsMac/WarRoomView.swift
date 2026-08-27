@@ -1766,6 +1766,13 @@ private struct WorkItemDeletionConfirmationView: View {
 
             Text(workItem.title).font(.headline)
 
+            Text(L10nFormat(
+                "删除此 WorkItem 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。",
+                plan.associatedSessionCount
+            ))
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.red)
+
             if let worktree = plan.worktree {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L10n("关联的专属 Worktree")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
