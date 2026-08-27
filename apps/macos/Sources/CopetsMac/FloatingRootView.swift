@@ -3630,6 +3630,7 @@ struct DetailView: View {
                 sessionID: sessionId,
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
+                baseDirectory: displayedDetail?.cwd,
                 followsLatest: $isFollowingLatest,
                 onToggleExpansion: toggleNativeProcessExpansion,
                 onAction: performNativeTimelineAction,

@@ -24,6 +24,17 @@ final class NativeMarkdownAttributedTextTests: XCTestCase {
         XCTAssertNotNil(link)
     }
 
+    func testPreservesSchemeLessLocalMarkdownDestinationForClickResolver() throws {
+        let value = NativeMarkdownAttributedText.make(
+            text: "[Source](/tmp/Source.swift:42:7)",
+            style: .agent
+        )
+        let link = try XCTUnwrap(value.attribute(.link, at: 0, effectiveRange: nil) as? URL)
+
+        XCTAssertNil(link.scheme)
+        XCTAssertEqual(link.path, "/tmp/Source.swift:42:7")
+    }
+
     func testPreservesBlockMarkdownStructure() {
         let source = """
         # Heading

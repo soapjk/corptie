@@ -129,6 +129,44 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(NSPasteboard.general.string(forType: .string), source)
     }
 
+    func testNativeTextViewRoutesLocalLinkThroughInjectedClickHandler() throws {
+        let textView = NativeTimelineTextView()
+        textView.linkBaseDirectory = "/tmp/session workspace"
+        var capturedURL: URL?
+        var capturedBaseDirectory: String?
+        textView.linkHandler = { url, baseDirectory in
+            capturedURL = url
+            capturedBaseDirectory = baseDirectory
+            return true
+        }
+        let link = try XCTUnwrap(URL(string: "/tmp/session%20workspace/File.swift:12"))
+
+        let handled = textView.textView(textView, clickedOnLink: link, at: 0)
+
+        XCTAssertTrue(handled)
+        XCTAssertEqual(capturedURL, link)
+        XCTAssertEqual(capturedBaseDirectory, "/tmp/session workspace")
+    }
+
+    func testUpdatingLinkWorkspaceDoesNotReconfigureCachedRowContent() throws {
+        let harness = makeHarness(followsLatest: true)
+        harness.coordinator.apply(rows: [row(id: "link", text: "[file](/tmp/file.swift)")])
+        let cell = try XCTUnwrap(
+            harness.coordinator.tableView(
+                harness.tableView,
+                viewFor: harness.tableView.tableColumns[0],
+                row: 0
+            ) as? AppKitChatNativeTextCell
+        )
+        let body = try XCTUnwrap(textView(in: cell, identifier: "chat.timeline.body"))
+        let configurationsBeforeUpdate = cell.contentConfigurationCount
+
+        harness.coordinator.updateBaseDirectory(" /tmp/new-workspace ")
+
+        XCTAssertEqual(body.linkBaseDirectory, "/tmp/new-workspace")
+        XCTAssertEqual(cell.contentConfigurationCount, configurationsBeforeUpdate)
+    }
+
     func testNativeCardUsesCommunityStyleCompactExecutionSummary() throws {
         let harness = makeHarness(followsLatest: true)
         let message = row(id: "message", text: "Ready")
