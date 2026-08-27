@@ -171,6 +171,7 @@ import {
   withCodexSessionPermissions
 } from "./utils/codexPermissions.mjs";
 import {
+  codexTurnRuntimeConfig,
   hasCodexSessionRuntimeConfig,
   withCodexSessionRuntimeConfig
 } from "./utils/codexRuntimeConfig.mjs";
@@ -4496,10 +4497,11 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   });
   const turnStartedAt = Date.now();
   logSessionMessageLatency(latencyTrace, "turn_start_requested");
+  const turnRuntime = codexTurnRuntimeConfig(managed, options);
   const result = await codexRuntime.startTurn(threadId, value, {
     cwd: activeCwd,
-    model: managed?.external?.currentModel ?? options.model ?? undefined,
-    reasoningEffort: managed?.external?.currentReasoningLevel ?? undefined,
+    model: turnRuntime.model,
+    reasoningEffort: turnRuntime.reasoningEffort,
     additionalContext: context.sessionContext?.prompt ? {
       ...(options.additionalContext ?? {}),
       "corptie-session-context": {
@@ -5459,7 +5461,7 @@ async function resolveCollaborationConfirmation(confirmationId, approved, source
 
 function unifiedErrorStatus(error) {
   if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND", "AGENT_PROVIDER_NOT_FOUND"].includes(error.code)) return 404;
-  if (["INVALID_PROJECT_ACTION", "INVALID_READ_SEQUENCE"].includes(error.code)) return 400;
+  if (["INVALID_PROJECT_ACTION", "INVALID_READ_SEQUENCE", "UNSUPPORTED_REASONING_LEVEL"].includes(error.code)) return 400;
   if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;

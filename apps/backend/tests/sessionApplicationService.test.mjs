@@ -3,7 +3,11 @@ import test from "node:test";
 import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
 import { CallbackAgentProvider } from "../src/agent-provider/callbackAgentProvider.mjs";
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderCapabilityError } from "../src/agent-provider/contracts.mjs";
-import { SessionApplicationService, SessionNotFoundError } from "../src/agent-provider/sessionApplicationService.mjs";
+import {
+  SessionApplicationService,
+  SessionNotFoundError,
+  validateReasoningLevelForModel
+} from "../src/agent-provider/sessionApplicationService.mjs";
 
 function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
@@ -437,6 +441,19 @@ test("Session application service exposes the same operations for every Provider
     "review",
     { source: "desktop" }
   ]);
+});
+
+test("reasoning selection rejects values outside the current model catalog", () => {
+  assert.equal(validateReasoningLevelForModel({
+    modelId: "fake-model",
+    reasoningLevel: "high",
+    models: [{ id: "fake-model", reasoningLevels: ["low", "high"] }]
+  }), "high");
+  assert.throws(() => validateReasoningLevelForModel({
+    modelId: "fake-model",
+    reasoningLevel: "max",
+    models: [{ id: "fake-model", reasoningLevels: ["low", "high"] }]
+  }), (error) => error.code === "UNSUPPORTED_REASONING_LEVEL");
 });
 
 test("Session application service preserves structured unsupported-capability errors", async () => {
