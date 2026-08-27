@@ -275,6 +275,13 @@ final class CodexResetSystemNotificationManager {
 }
 
 enum SessionUsagePresentation {
+    static func remainingRateLimitPercent(_ window: CodexRateLimitWindow) -> Double? {
+        guard let usedPercent = window.usedPercent,
+              usedPercent.isFinite,
+              usedPercent >= 0 else { return nil }
+        return max(0, min(100, 100 - usedPercent))
+    }
+
     static func preferredRateLimitWindow(_ account: CodexAccountUsage) -> CodexRateLimitWindow? {
         let snapshots: [CodexRateLimitSnapshot]
         if account.provider == "codex" {
@@ -301,7 +308,7 @@ enum SessionUsagePresentation {
         }
         return snapshots
             .flatMap { [$0.primary, $0.secondary].compactMap { $0 } }
-            .filter { $0.usedPercent != nil }
+            .filter { remainingRateLimitPercent($0) != nil }
             .max { left, right in
                 let leftDuration = left.windowDurationMins ?? -1
                 let rightDuration = right.windowDurationMins ?? -1
