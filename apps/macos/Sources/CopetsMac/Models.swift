@@ -1447,25 +1447,61 @@ struct CreatePtySessionResponse: Decodable {
     let suggestedTitle: String?
 }
 
-struct BackendSettings: Codable, Equatable {
+struct BackendSettings: Decodable, Equatable {
     let environment: String?
-    let configPath: String?
-    let dataDir: String
-    let dbPath: String
-    let logDir: String?
-    let logPaths: BackendLogPaths?
-    let legacyDbPath: String?
+    let dataRoot: String
     let choiceParser: ChoiceParserSettings?
     let codexBackend: CodexBackendSettings?
     let codeDiff: CodeDiffSettings?
     let agentProxy: AgentProxySettings?
     let newSessionDefaults: NewSessionDefaults?
     let gateway: GatewaySettings?
+    let migration: DataRootMigrationReceipt?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case environment, dataRoot, choiceParser, codexBackend, codeDiff, agentProxy
+        case newSessionDefaults, gateway, migration
+    }
+
+    init(from decoder: Decoder) throws {
+        let dynamic = try decoder.container(keyedBy: BackendSettingsCodingKey.self)
+        let allowed = Set(CodingKeys.allCases.map(\.rawValue))
+        let unknown = dynamic.allKeys.map(\.stringValue).filter { !allowed.contains($0) }.sorted()
+        if !unknown.isEmpty {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Unknown backend settings fields: \(unknown.joined(separator: ", "))"
+            ))
+        }
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        environment = try container.decodeIfPresent(String.self, forKey: .environment)
+        dataRoot = try container.decode(String.self, forKey: .dataRoot)
+        choiceParser = try container.decodeIfPresent(ChoiceParserSettings.self, forKey: .choiceParser)
+        codexBackend = try container.decodeIfPresent(CodexBackendSettings.self, forKey: .codexBackend)
+        codeDiff = try container.decodeIfPresent(CodeDiffSettings.self, forKey: .codeDiff)
+        agentProxy = try container.decodeIfPresent(AgentProxySettings.self, forKey: .agentProxy)
+        newSessionDefaults = try container.decodeIfPresent(NewSessionDefaults.self, forKey: .newSessionDefaults)
+        gateway = try container.decodeIfPresent(GatewaySettings.self, forKey: .gateway)
+        migration = try container.decodeIfPresent(DataRootMigrationReceipt.self, forKey: .migration)
+    }
 }
 
-struct BackendLogPaths: Codable, Equatable {
-    let stdout: String
-    let stderr: String
+private struct BackendSettingsCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+struct DataRootMigrationReceipt: Decodable, Equatable {
+    let databaseIntegrity: String
+    let keyRecordCounts: [String: Int]
+    let artifactCount: Int
+    let artifactBytes: Int
+    let verifiedFileCount: Int
+    let verifiedFileBytes: Int
+    let sourceDataRoot: String
+    let dataRoot: String
 }
 
 struct GatewaySettings: Codable, Equatable {
