@@ -1071,6 +1071,13 @@
 "消息" = "消息";
 "目标 WorkItem" = "目标 WorkItem";
 "确认后在目标 Objective 下新建" = "确认后在目标 Objective 下新建";
+"跨会话协作" = "跨会话协作";
+"发送到现有会话" = "发送到现有会话";
+"将创建新的 WorkItem" = "将创建新的 WorkItem";
+"目标" = "目标";
+"当前会话" = "当前会话";
+"目标会话" = "目标会话";
+"会话" = "会话";
 "Delete Skill?" = "删除 Skill？";
 "Delete Skill" = "删除 Skill";
 "Unable to delete Skill" = "无法删除 Skill";

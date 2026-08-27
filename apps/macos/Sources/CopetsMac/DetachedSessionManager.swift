@@ -1140,25 +1140,35 @@ private struct DetachedCollaborationConfirmationCard: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if let sourceSessionId = confirmation.initiatorSessionId {
-                        confirmationField("来源 Session", value: sessionParty(
-                            confirmation.initiatorSessionTitle, sourceSessionId, confirmation.initiatorSessionKind,
-                            confirmation.initiatorWorkItemId
+                    if confirmation.initiatorSessionId != nil {
+                        confirmationField("来源 Session", value: readableName(
+                            confirmation.initiatorSessionTitle,
+                            id: confirmation.initiatorSessionId,
+                            fallback: L10n("当前会话")
                         ))
                     }
-                    if let targetSessionId = confirmation.recipientSessionId {
-                        confirmationField("目标 Session", value: sessionParty(
-                            confirmation.recipientSessionTitle, targetSessionId, confirmation.recipientSessionKind,
-                            confirmation.recipientWorkItemId
+                    if confirmation.recipientSessionId != nil {
+                        confirmationField("目标 Session", value: readableName(
+                            confirmation.recipientSessionTitle,
+                            id: confirmation.recipientSessionId,
+                            fallback: L10n("目标会话")
                         ))
                     } else {
                         confirmationField("目标 WorkItem", value: pendingTargetWorkItem)
                     }
-                    if let sourceObjectiveId = confirmation.sourceObjectiveId {
-                        confirmationField("来源 Objective", value: party(confirmation.sourceObjectiveName, sourceObjectiveId))
+                    if confirmation.sourceObjectiveId != nil {
+                        confirmationField("来源 Objective", value: readableName(
+                            confirmation.sourceObjectiveName,
+                            id: confirmation.sourceObjectiveId,
+                            fallback: L10n("来源 Objective")
+                        ))
                     }
-                    if let targetObjectiveId = confirmation.targetObjectiveId {
-                        confirmationField("目标 Objective", value: party(confirmation.targetObjectiveName, targetObjectiveId))
+                    if confirmation.targetObjectiveId != nil {
+                        confirmationField("目标 Objective", value: readableName(
+                            confirmation.targetObjectiveName,
+                            id: confirmation.targetObjectiveId,
+                            fallback: L10n("目标 Objective")
+                        ))
                     }
                     confirmationField("消息", value: confirmation.summary)
                     if !confirmation.acceptanceCriteria.isEmpty {
@@ -1211,26 +1221,27 @@ private struct DetachedCollaborationConfirmationCard: View {
         }
     }
 
-    private func party(_ name: String?, _ id: String?) -> String {
-        [name, id].compactMap { value in
-            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return value
-        }.joined(separator: " · ")
-    }
-
-    private func sessionParty(_ title: String?, _ id: String, _ kind: String?, _ workItemId: String?) -> String {
-        let identity = party(title, id)
-        let scope = [kind, workItemId].compactMap { value in
-            guard let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
-            return value
-        }.joined(separator: " · ")
-        return scope.isEmpty ? identity : "\(identity) [\(scope)]"
+    private func readableName(_ value: String?, id: String? = nil, fallback: String) -> String {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return fallback
+        }
+        let normalizedID = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = value.lowercased()
+        guard value != normalizedID,
+              !lowercased.hasPrefix("session:"),
+              !lowercased.hasPrefix("objective:"),
+              !lowercased.hasPrefix("work_item:") else { return fallback }
+        return value
     }
 
     private var pendingTargetWorkItem: String {
-        let identity = party(confirmation.taskTitle, confirmation.recipientWorkItemId)
-        guard confirmation.recipientWorkItemId == nil else { return identity }
-        return "\(identity) · \(L10n("确认后在目标 Objective 下新建"))"
+        let title = readableName(
+            confirmation.taskTitle,
+            id: confirmation.recipientWorkItemId,
+            fallback: L10n("未命名协作任务")
+        )
+        guard confirmation.recipientWorkItemId == nil else { return title }
+        return "\(title) · \(L10n("确认后在目标 Objective 下新建"))"
     }
 }
 

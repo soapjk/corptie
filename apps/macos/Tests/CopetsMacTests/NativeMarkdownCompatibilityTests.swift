@@ -174,26 +174,32 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             currentSessionTitle: "Fallback Session"
         ))
 
-        XCTAssertTrue(presentation.title.contains(L10n("Agent 协作")))
+        XCTAssertTrue(presentation.title.contains(L10n("跨会话协作")))
         XCTAssertTrue(presentation.title.contains(L10n("修改请求")))
         XCTAssertTrue(presentation.metadata.contains(L10n("处理中")))
-        XCTAssertFalse(presentation.bodyMarkdown.contains("Platform Agent"))
-        XCTAssertFalse(presentation.bodyMarkdown.contains("macOS Agent"))
-        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:platform"))
-        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:macos"))
-        let sourceSessionRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Platform Objective Chat · session:platform"))
-        let targetSessionRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Sessions UI · session:ui"))
-        let sourceObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Platform · objective:platform"))
-        let targetObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "macOS · objective:macos"))
-        let messageRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Please review the API contract."))
-        XCTAssertLessThan(sourceSessionRange.lowerBound, targetSessionRange.lowerBound)
-        XCTAssertLessThan(targetSessionRange.lowerBound, sourceObjectiveRange.lowerBound)
-        XCTAssertLessThan(sourceObjectiveRange.lowerBound, targetObjectiveRange.lowerBound)
-        XCTAssertLessThan(targetObjectiveRange.lowerBound, messageRange.lowerBound)
-        XCTAssertTrue(presentation.bodyMarkdown.contains("worker · work\\_item:ui"))
-        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("目标 WorkItem")))
-        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("确认后在目标 Objective 下新建")))
-        XCTAssertFalse(presentation.bodyMarkdown.contains("Review collaboration card"))
+        XCTAssertEqual(presentation.route.destinationKind, .existingSession)
+        XCTAssertEqual(presentation.route.routeLabel, L10n("发送到现有会话"))
+        XCTAssertEqual(presentation.route.sourceSession, "Session · Platform Objective Chat")
+        XCTAssertEqual(presentation.route.sourceObjective, "Objective · Platform")
+        XCTAssertEqual(presentation.route.targetName, "Session · Sessions UI")
+        XCTAssertEqual(presentation.route.targetObjective, "Objective · macOS")
+        let visibleContent = [
+            presentation.bodyMarkdown,
+            presentation.route.sourceSession,
+            presentation.route.sourceObjective,
+            presentation.route.targetName,
+            presentation.route.targetObjective
+        ].joined(separator: "\n")
+        XCTAssertFalse(visibleContent.contains("Platform Agent"))
+        XCTAssertFalse(visibleContent.contains("macOS Agent"))
+        XCTAssertFalse(visibleContent.contains("agent:platform"))
+        XCTAssertFalse(visibleContent.contains("agent:macos"))
+        XCTAssertFalse(visibleContent.contains("session:platform"))
+        XCTAssertFalse(visibleContent.contains("session:ui"))
+        XCTAssertFalse(visibleContent.contains("objective:platform"))
+        XCTAssertFalse(visibleContent.contains("objective:macos"))
+        XCTAssertFalse(visibleContent.contains("work_item:ui"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Please review the API contract."))
         XCTAssertEqual(presentation.messageText, "Please review the API contract.")
     }
 
@@ -220,18 +226,23 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             currentSessionTitle: "Source Worker"
         ))
 
-        let sourceSessionRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Source Worker · session:source"))
-        let targetWorkItemRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Repair delivery · \(L10n("确认后在目标 Objective 下新建"))"))
-        let sourceObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Platform · objective:platform"))
-        let targetObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "macOS · objective:macos"))
-        let messageRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Investigate the delivery failure."))
-        XCTAssertLessThan(sourceSessionRange.lowerBound, targetWorkItemRange.lowerBound)
-        XCTAssertLessThan(targetWorkItemRange.lowerBound, sourceObjectiveRange.lowerBound)
-        XCTAssertLessThan(sourceObjectiveRange.lowerBound, targetObjectiveRange.lowerBound)
-        XCTAssertLessThan(targetObjectiveRange.lowerBound, messageRange.lowerBound)
-        XCTAssertTrue(presentation.bodyMarkdown.contains(L10n("目标 WorkItem")))
-        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("目标 Session")))
-        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("未知 Session")))
+        XCTAssertEqual(presentation.route.destinationKind, .newWorkItem)
+        XCTAssertEqual(presentation.route.routeLabel, L10n("将创建新的 WorkItem"))
+        XCTAssertEqual(presentation.route.sourceSession, "Session · Source Worker")
+        XCTAssertEqual(presentation.route.sourceObjective, "Objective · Platform")
+        XCTAssertEqual(presentation.route.targetName, "WorkItem · Repair delivery")
+        XCTAssertEqual(presentation.route.targetObjective, "Objective · macOS")
+        let visibleContent = [
+            presentation.bodyMarkdown,
+            presentation.route.sourceSession,
+            presentation.route.sourceObjective,
+            presentation.route.targetName,
+            presentation.route.targetObjective
+        ].joined(separator: "\n")
+        XCTAssertFalse(visibleContent.contains("session:source"))
+        XCTAssertFalse(visibleContent.contains("objective:platform"))
+        XCTAssertFalse(visibleContent.contains("objective:macos"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Investigate the delivery failure."))
     }
 
     @MainActor
@@ -251,7 +262,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testTaskC4471174CardUsesStableIDsAndDistinctHistoricalSessionSnapshots() throws {
+    func testTaskC4471174CardUsesDistinctHistoricalNamesWithoutExposingStableIDs() throws {
         var collaboration = item(
             id: "c4471174-177e-4fe9-ab1d-cd10e070da35",
             type: "userMessage",
@@ -275,12 +286,21 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             currentSessionTitle: "Recipient Worker Session"
         ))
 
-        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:initiator"))
-        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:recipient"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("objective:source"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("objective:target"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Historical Initiator Session · session:historical-initiator"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Recipient Worker Session · session:recipient-current"))
+        XCTAssertEqual(presentation.route.sourceSession, "Session · Historical Initiator Session")
+        XCTAssertEqual(presentation.route.targetName, "Session · Recipient Worker Session")
+        let visibleContent = [
+            presentation.bodyMarkdown,
+            presentation.route.sourceSession,
+            presentation.route.sourceObjective,
+            presentation.route.targetName,
+            presentation.route.targetObjective
+        ].joined(separator: "\n")
+        XCTAssertFalse(visibleContent.contains("agent:initiator"))
+        XCTAssertFalse(visibleContent.contains("agent:recipient"))
+        XCTAssertFalse(visibleContent.contains("objective:source"))
+        XCTAssertFalse(visibleContent.contains("objective:target"))
+        XCTAssertFalse(visibleContent.contains("session:historical-initiator"))
+        XCTAssertFalse(visibleContent.contains("session:recipient-current"))
     }
 
     @MainActor

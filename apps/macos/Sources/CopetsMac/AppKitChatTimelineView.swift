@@ -330,6 +330,7 @@ final class NativeTimelineLayoutCache {
         let title: String
         let metadata: String
         let isCollaboration: Bool
+        let collaborationRoute: NativeCollaborationRoutePresentation?
         let processCount: Int?
         let processDuration: String?
         let processState: AppKitChatTimelineRow.ProcessState
@@ -355,6 +356,7 @@ final class NativeTimelineLayoutCache {
             title: row.title,
             metadata: row.metadata,
             isCollaboration: row.isCollaboration,
+            collaborationRoute: row.collaborationRoute,
             processCount: row.processCount,
             processDuration: row.processDuration,
             processState: row.processState,
@@ -404,7 +406,10 @@ final class NativeTimelineLayoutCache {
                 let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
                 let messageActionBarHeight: CGFloat = row.showsMessageActionBar ? 27 : 0
-                let verticalChrome: CGFloat = row.showsHeader ? 39 : 20
+                // Replaces the ordinary 6pt title-to-body gap with
+                // 8pt + 92pt summary + 10pt, for a net 104pt addition.
+                let collaborationRouteHeight: CGFloat = row.collaborationRoute == nil ? 0 : 104
+                let verticalChrome: CGFloat = (row.showsHeader ? 39 : 20) + collaborationRouteHeight
                 rowHeight = max(
                     row.showsHeader ? 54 : 30,
                     textHeight + verticalChrome + footerHeight + actionHeight + messageActionBarHeight
@@ -497,6 +502,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let title: String
     let metadata: String
     let isCollaboration: Bool
+    let collaborationRoute: NativeCollaborationRoutePresentation?
     let expandableTurnId: String?
     let isExpanded: Bool
     let processCount: Int?
@@ -522,6 +528,7 @@ struct AppKitChatTimelineRow: Identifiable {
         title: String,
         metadata: String,
         isCollaboration: Bool = false,
+        collaborationRoute: NativeCollaborationRoutePresentation? = nil,
         expandableTurnId: String?,
         isExpanded: Bool,
         processCount: Int? = nil,
@@ -540,6 +547,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.title = title
         self.metadata = metadata
         self.isCollaboration = isCollaboration
+        self.collaborationRoute = collaborationRoute
         self.expandableTurnId = expandableTurnId
         self.isExpanded = isExpanded
         self.processCount = processCount
@@ -655,6 +663,9 @@ enum ChatBubbleWidthPolicy {
             ]).width)
             return min(fullAvailableWidth, max(collapsedProcessWidth, summaryWidth + 58))
         }
+        if row.collaborationRoute != nil {
+            return min(fullAvailableWidth, maximumWidth)
+        }
         return preferredWidth(
             text: row.nativeText,
             style: row.nativeStyle,
@@ -664,6 +675,22 @@ enum ChatBubbleWidthPolicy {
             availableWidth: fullAvailableWidth
         )
     }
+}
+
+struct NativeCollaborationRoutePresentation: Hashable {
+    enum DestinationKind: Hashable {
+        case existingSession
+        case newWorkItem
+    }
+
+    let destinationKind: DestinationKind
+    let routeLabel: String
+    let sourceLabel: String
+    let sourceSession: String
+    let sourceObjective: String
+    let targetLabel: String
+    let targetName: String
+    let targetObjective: String
 }
 
 struct AppKitChatTimelinePosition: Codable, Equatable, Sendable {
@@ -1687,6 +1714,124 @@ final class NativeTimelineTextView: NSTextView {
 }
 
 @MainActor
+final class NativeCollaborationRouteSummaryView: NSView {
+    static let height: CGFloat = 92
+    private var presentation: NativeCollaborationRoutePresentation?
+
+    override var isFlipped: Bool { true }
+    override var isOpaque: Bool { false }
+
+    func configure(_ presentation: NativeCollaborationRoutePresentation) {
+        guard self.presentation != presentation else { return }
+        self.presentation = presentation
+        setAccessibilityElement(true)
+        setAccessibilityLabel(
+            "\(presentation.routeLabel)。\(presentation.sourceLabel)：\(presentation.sourceSession)，\(presentation.sourceObjective)。\(presentation.targetLabel)：\(presentation.targetName)，\(presentation.targetObjective)"
+        )
+        needsDisplay = true
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard let presentation, bounds.width > 80 else { return }
+
+        let accent: NSColor = presentation.destinationKind == .existingSession
+            ? .systemBlue
+            : .systemOrange
+        let badgeFont = NSFont.systemFont(ofSize: 9, weight: .bold)
+        let badgeText = presentation.routeLabel as NSString
+        let badgeWidth = min(bounds.width, ceil(badgeText.size(withAttributes: [.font: badgeFont]).width) + 22)
+        let badgeRect = NSRect(x: 0, y: 0, width: badgeWidth, height: 20)
+        accent.withAlphaComponent(0.12).setFill()
+        NSBezierPath(roundedRect: badgeRect, xRadius: 10, yRadius: 10).fill()
+        badgeText.draw(
+            in: badgeRect.insetBy(dx: 11, dy: 4),
+            withAttributes: [.font: badgeFont, .foregroundColor: accent]
+        )
+
+        let panelY: CGFloat = 28
+        let panelHeight: CGFloat = 64
+        let arrowLane: CGFloat = 30
+        let panelWidth = max(20, (bounds.width - arrowLane) / 2)
+        let sourceRect = NSRect(x: 0, y: panelY, width: panelWidth, height: panelHeight)
+        let targetRect = NSRect(x: panelWidth + arrowLane, y: panelY, width: panelWidth, height: panelHeight)
+        drawPanel(
+            sourceRect,
+            caption: presentation.sourceLabel,
+            primary: presentation.sourceSession,
+            secondary: presentation.sourceObjective,
+            accent: .systemBlue
+        )
+        drawPanel(
+            targetRect,
+            caption: presentation.targetLabel,
+            primary: presentation.targetName,
+            secondary: presentation.targetObjective,
+            accent: accent
+        )
+
+        if let arrow = NSImage(systemSymbolName: "arrow.right", accessibilityDescription: nil) {
+            let arrowRect = NSRect(
+                x: panelWidth + 7,
+                y: panelY + (panelHeight - 16) / 2,
+                width: 16,
+                height: 16
+            )
+            arrow.draw(in: arrowRect)
+        }
+    }
+
+    private func drawPanel(
+        _ rect: NSRect,
+        caption: String,
+        primary: String,
+        secondary: String,
+        accent: NSColor
+    ) {
+        NSColor.labelColor.withAlphaComponent(0.045).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: 9, yRadius: 9).fill()
+
+        let content = rect.insetBy(dx: 9, dy: 7)
+        drawTruncated(
+            caption,
+            in: NSRect(x: content.minX, y: content.minY, width: content.width, height: 12),
+            font: .systemFont(ofSize: 8.5, weight: .bold),
+            color: accent
+        )
+        drawTruncated(
+            primary,
+            in: NSRect(x: content.minX, y: content.minY + 17, width: content.width, height: 16),
+            font: .systemFont(ofSize: 11, weight: .semibold),
+            color: .labelColor
+        )
+        drawTruncated(
+            secondary,
+            in: NSRect(x: content.minX, y: content.minY + 36, width: content.width, height: 14),
+            font: .systemFont(ofSize: 9.5, weight: .medium),
+            color: .secondaryLabelColor
+        )
+    }
+
+    private func drawTruncated(_ text: String, in rect: NSRect, font: NSFont, color: NSColor) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        (text as NSString).draw(
+            in: rect,
+            withAttributes: [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: paragraph
+            ]
+        )
+    }
+}
+
+@MainActor
 final class AppKitChatNativeTextCell: NSTableCellView {
     private let cardView = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
@@ -1723,6 +1868,10 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var rawStatusTopConstraint: NSLayoutConstraint!
     private var rawStatusBottomConstraint: NSLayoutConstraint!
     private var rawStatusHeightConstraint: NSLayoutConstraint!
+    private var collaborationSummaryView: NativeCollaborationRouteSummaryView?
+    private var collaborationSummaryTopToTitleConstraint: NSLayoutConstraint?
+    private var collaborationSummaryTopToCardConstraint: NSLayoutConstraint?
+    private var labelTopToCollaborationSummaryConstraint: NSLayoutConstraint?
     private var expandableTurnId: String?
     private var onToggleExpansion: ((String) -> Void)?
     private var timelineActions: [AppKitChatTimelineRow.Action] = []
@@ -1978,6 +2127,22 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             processButtonTopConstraint,
             processButtonBottomConstraint
         ])
+        collaborationSummaryTopToTitleConstraint?.isActive = false
+        collaborationSummaryTopToCardConstraint?.isActive = false
+        labelTopToCollaborationSummaryConstraint?.isActive = false
+        if let route = row.collaborationRoute {
+            let summary = ensureCollaborationSummaryView()
+            summary.configure(route)
+            summary.isHidden = false
+            if showsHeader {
+                collaborationSummaryTopToTitleConstraint?.isActive = true
+            } else {
+                collaborationSummaryTopToCardConstraint?.isActive = true
+            }
+            labelTopToCollaborationSummaryConstraint?.isActive = true
+        } else {
+            collaborationSummaryView?.isHidden = true
+        }
         if isStandaloneProcess {
             NSLayoutConstraint.deactivate([labelBottomToProcessConstraint, labelBottomToActionsConstraint])
             processButtonTopConstraint.isActive = true
@@ -1991,7 +2156,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
                 }
             }
         } else {
-            (showsHeader ? labelTopToTitleConstraint : labelTopToCardConstraint).isActive = true
+            if row.collaborationRoute == nil {
+                (showsHeader ? labelTopToTitleConstraint : labelTopToCardConstraint).isActive = true
+            }
             processButtonBottomConstraint.isActive = true
         }
         hoverTimestampLabel.stringValue = row.hoverTimestamp
@@ -2050,6 +2217,33 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         if row.nativeStyle != .process { cardView.layer?.cornerRadius = 14 }
         processSeparator.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.045).cgColor
         needsLayout = true
+    }
+
+    private func ensureCollaborationSummaryView() -> NativeCollaborationRouteSummaryView {
+        if let collaborationSummaryView { return collaborationSummaryView }
+        let summary = NativeCollaborationRouteSummaryView()
+        summary.translatesAutoresizingMaskIntoConstraints = false
+        summary.identifier = NSUserInterfaceItemIdentifier("chat.timeline.collaboration-route")
+        cardView.addSubview(summary)
+        collaborationSummaryTopToTitleConstraint = summary.topAnchor.constraint(
+            equalTo: titleLabel.bottomAnchor,
+            constant: 8
+        )
+        collaborationSummaryTopToCardConstraint = summary.topAnchor.constraint(
+            equalTo: cardView.topAnchor,
+            constant: 10
+        )
+        labelTopToCollaborationSummaryConstraint = label.topAnchor.constraint(
+            equalTo: summary.bottomAnchor,
+            constant: 10
+        )
+        NSLayoutConstraint.activate([
+            summary.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
+            summary.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
+            summary.heightAnchor.constraint(equalToConstant: NativeCollaborationRouteSummaryView.height)
+        ])
+        collaborationSummaryView = summary
+        return summary
     }
 
     /// Width-only resize updates keep the existing attributed content, action
