@@ -88,6 +88,9 @@ export class ProviderEventIngestionService {
         },
         payload: {
           ...event.payload,
+          ...(event.type === "turn.completed"
+            ? { hasAgentMessage: projection.hasAgentMessage === true }
+            : {}),
           providerEventId: event.providerEventId,
           providerSequence: event.providerSequence ?? null,
           turnId: event.turnId ?? null,
