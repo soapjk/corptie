@@ -94,6 +94,19 @@ test("Phase 1 migration creates every collaboration table", async () => {
   });
 });
 
+test("a collaboration Task is resolved from its explicit WorkItem relationship", async () => {
+  await withFixture(async ({ core }) => {
+    seedAgentsAndService(core);
+    const task = newTask(core, { contextId: "context:trusted" });
+
+    const resolved = core.getTaskForWorkItem(task.workItemId);
+
+    assert.equal(resolved.taskId, task.taskId);
+    assert.equal(resolved.contextId, "context:trusted");
+    assert.equal(core.getTaskForWorkItem("work_item:missing"), null);
+  });
+});
+
 test("legacy collaboration with multiple candidate Sessions remains explicitly unresolved", async () => {
   await withFixture(async ({ core, store, directory }) => {
     seedAgentsAndService(core);

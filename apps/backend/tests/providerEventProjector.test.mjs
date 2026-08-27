@@ -215,6 +215,93 @@ test("turn completion settles only its run and preserves the final reply as a se
   }
 });
 
+test("a completed Provider turn with a failed tool and no non-empty final reply is projected as failed", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    store.createUserMessageDelivery({
+      deliveryId: "delivery:failed-tool",
+      messageId: "message:failed-tool",
+      sessionId: binding.sessionId,
+      binding,
+      agentId: "agent:one",
+      text: "Perform the instruction"
+    });
+    store.updateMessageDelivery("delivery:failed-tool", {
+      status: "dispatching",
+      attemptCount: 1,
+      lastAttemptAt: "2026-08-26T10:00:00.000Z",
+      providerTurnId: "turn:one"
+    });
+    projector.project({ event: event("turn.started"), binding });
+    projector.project({
+      event: event("tool.failed", { payload: { item: {
+        id: "tool:failed",
+        turnId: "turn:one",
+        type: "dynamicToolCall",
+        title: "Collaboration request",
+        text: "{}",
+        status: "failed"
+      } } }),
+      binding
+    });
+
+    const projected = projector.project({
+      event: event("turn.completed", { payload: { items: [{
+        id: "agent:empty-final",
+        turnId: "turn:one",
+        type: "agentMessage",
+        title: "Agent",
+        text: "  ",
+        presentationRole: "final_answer",
+        status: "completed"
+      }] } }),
+      binding
+    });
+
+    const turn = store.getSessionTurn("session:one", binding.bindingId, "turn:one");
+    const delivery = store.getMessageDelivery("delivery:failed-tool");
+    assert.equal(projected.terminalStatus, "failed");
+    assert.equal(projected.terminalFailure.code, "PROVIDER_TOOL_FAILED_WITHOUT_FINAL_RESPONSE");
+    assert.equal(turn.execution_status, "failed");
+    assert.equal(turn.final_item_id, null);
+    assert.equal(delivery.status, "failed");
+    assert.match(delivery.lastError, /Collaboration request failed/);
+    assert.equal(projected.session.status, "failed");
+    assert.equal(projected.surface, false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a definitive unavailable-Provider interruption settles the persisted run as cancelled", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ event: event("turn.started"), binding });
+    const projected = projector.project({
+      event: event("turn.cancelled", {
+        providerEventId: "corptie:interrupt-unavailable:turn:one",
+        payload: {
+          error: {
+            code: "PROVIDER_SESSION_UNAVAILABLE",
+            message: "Provider Session no longer exists."
+          }
+        }
+      }),
+      binding
+    });
+
+    assert.equal(store.getSessionTurn("session:one", binding.bindingId, "turn:one").execution_status, "cancelled");
+    assert.equal(projected.session.status, "cancelled");
+    assert.equal(projected.session.external.activeTurnId, null);
+    assert.equal(projected.session.capabilities.canInterrupt, false);
+    assert.deepEqual(store.listUnsettledSessionTurns("session:one"), []);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a superseded Binding completion cannot terminate the current Binding run", async () => {
   const { directory, store, projector } = await fixture();
   const oldBinding = {

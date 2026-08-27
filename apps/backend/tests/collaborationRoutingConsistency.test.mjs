@@ -222,6 +222,25 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     ), true);
     assert.equal(core.listInbox(marketCow.agentId).some((item) => item.taskId === task.taskId), true);
     assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure + 1);
+
+    const recipientRuntime = new CollaborationHttpClient({
+      baseUrl,
+      agentId: marketCow.agentId,
+      sessionScope: {
+        sessionId: `provider:${task.workItemId}`,
+        objectiveId: marketCowObjective.id,
+        workItemId: task.workItemId
+      }
+    });
+    const child = await recipientRuntime.post("/internal/collaboration/task-confirmations", {
+      recipientSessionName: "session:authoritative",
+      targetObjectiveId: sourceObjective.id,
+      type: "question",
+      title: "Follow up through the trusted parent relationship",
+      summary: "The backend should derive the parent Task and Context from this WorkItem."
+    });
+    assert.equal(child.confirmation.request.parentTaskId, task.taskId);
+    assert.equal(child.confirmation.request.contextId, task.contextId);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     await store.close();

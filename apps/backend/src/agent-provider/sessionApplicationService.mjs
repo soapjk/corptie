@@ -149,22 +149,45 @@ export class SessionApplicationService {
   }
 
   async deleteSession(sessionId, context = {}) {
+    return this.#deleteSession(sessionId, context, false);
+  }
+
+  // Replacement is allowed only after the caller has proved that the old
+  // Provider Session never began execution. In that narrow case, a missing or
+  // already-deleted Provider thread must not leave a duplicate local Session
+  // behind after its replacement is running.
+  async deleteUnusableSession(sessionId, context = {}) {
+    return this.#deleteSession(sessionId, context, true);
+  }
+
+  async #deleteSession(sessionId, context, removeLocalBindingOnProviderFailure) {
     const reference = await this.referenceFor(sessionId);
-    const providerResult = await this.registry.invoke(
-      reference.providerId,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
-      reference,
-      context
-    );
+    let providerResult = false;
+    let providerError = null;
+    try {
+      providerResult = await this.registry.invoke(
+        reference.providerId,
+        AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+        reference,
+        context
+      );
+    } catch (error) {
+      if (!removeLocalBindingOnProviderFailure) throw error;
+      providerError = error;
+    }
     if (this.removeSessionBinding) {
-      await this.removeSessionBinding({ reference, providerResult, context });
+      await this.removeSessionBinding({ reference, providerResult, providerError, context });
     }
     return {
       ok: true,
-      deleted: providerResult !== false,
+      deleted: providerError !== null || providerResult !== false,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId,
-      providerId: reference.providerId
+      providerId: reference.providerId,
+      ...(removeLocalBindingOnProviderFailure ? {
+        providerDeleted: providerError === null && providerResult !== false,
+        providerErrorCode: providerError?.code ?? null
+      } : {})
     };
   }
 

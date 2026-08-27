@@ -882,7 +882,7 @@ const sessionApplicationService = new SessionApplicationService({
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId,
       provider: reference.providerId
-    });
+    }, { detachedSession: true });
   }
 });
 platformOperationService = new PlatformOperationService({
@@ -2069,7 +2069,12 @@ function emitEvent(type, payload, options = {}) {
   // Provider terminal notifications may be replayed after reconnect. A stable
   // event id makes the entire product event idempotent, including global SSE,
   // the durable timeline, unread cursors, and downstream work orchestration.
-  const sessionId = options.sessionId || sessionIdFromEventPayload(payload);
+  // Deletion notifications must survive after the Session row is gone. Keep
+  // their identity in the payload without attaching the durable outbox row to
+  // the deleted Session's foreign key.
+  const sessionId = options.detachedSession === true
+    ? null
+    : options.sessionId || sessionIdFromEventPayload(payload);
   const createdAt = now();
   const durableEventId = options.eventId || randomUUID();
   if (options.eventId && store.db && store.hasSessionEvent(options.eventId)) return null;
@@ -2124,13 +2129,7 @@ function emitEvent(type, payload, options = {}) {
   scheduleStateSyncPublish();
 
   if (sessionEvent) {
-    for (const listener of sessionEventListeners) {
-      try {
-        listener(sessionEvent);
-      } catch (error) {
-        console.warn(`[session-events] listener failed type=${type} session=${sessionId}: ${error.message}`);
-      }
-    }
+    notifySessionEventListeners(sessionEvent);
     for (const dshEvent of dshLiveEvents(sessionEvent)) {
       broadcastDshMuxFrame({ type: "session/event", sessionId, event: dshEvent });
     }
@@ -2195,10 +2194,22 @@ function publishProviderEventOutbox(rows = []) {
         scheduleAgentWorkDrain(envelope.sessionId);
       } else if (row.topic === "provider-events") {
         publishCommittedProviderWake(envelope?.event ?? null, row.created_at);
+        notifySessionEventListeners(envelope?.sessionEvent ?? null);
       }
       store.markEventOutboxPublished(row.outbox_id, now());
     } catch (error) {
       console.warn(`[provider-outbox] publish deferred id=${row.outbox_id} error=${error.message}`);
+    }
+  }
+}
+
+function notifySessionEventListeners(sessionEvent) {
+  if (!sessionEvent) return;
+  for (const listener of sessionEventListeners) {
+    try {
+      listener(sessionEvent);
+    } catch (error) {
+      console.warn(`[session-events] listener failed type=${sessionEvent.type ?? "unknown"} session=${sessionEvent.sessionId ?? "unknown"}: ${error.message}`);
     }
   }
 }
@@ -3162,12 +3173,25 @@ function handleCommittedCodexProviderEvent({ event, projection, logicalRoute, th
     scheduleCodexChoiceParseForText(threadId, latestAgentMessage.text);
   }
 
+  handleCommittedProviderTerminalLifecycle({ event, projection, logicalRoute });
+}
+
+function handleCommittedProviderTerminalLifecycle({ event, projection, logicalRoute }) {
+  const nextSession = projection?.session;
+  if (!nextSession) return;
+  const terminal = ["turn.completed", "turn.failed", "turn.cancelled"].includes(event.type);
+  if (!terminal) return;
+  const terminalStatus = projection?.terminalStatus
+    ?? (event.type === "turn.failed" ? "failed" : (event.type === "turn.cancelled" ? "cancelled" : "completed"));
+  const failed = terminalStatus === "failed";
+  const cancelled = terminalStatus === "cancelled";
+
   const completedWork = store.getAgentWorkItemForTurn(nextSession.id, event.turnId)
     ?? store.getRunningAgentWorkItemForSession(nextSession.id);
   if (completedWork?.status === "running") {
     const updatedWork = store.updateAgentWorkItem(completedWork.workItemId, {
       status: failed ? "failed" : (cancelled ? "cancelled" : "completed"),
-      lastError: event.payload?.error?.message ?? null
+      lastError: projection?.terminalFailure?.message ?? event.payload?.error?.message ?? null
     });
     emitEvent("AgentWorkCompleted", { sessionId: nextSession.id, workItem: updatedWork }, {
       sessionId: nextSession.id,
@@ -5194,6 +5218,14 @@ async function selfRepairWorkItemSession(sessionId, failedWork, error) {
         lastError: `Superseded by self-repaired Session ${result.session.id}.`
       });
     }
+    const deletion = await sessionApplicationService.deleteUnusableSession(proof.session.id, {
+      source: "work-item-self-repair",
+      actorId: proof.agent.agentId,
+      replacementSessionId: result.session.id
+    });
+    if (!deletion.providerDeleted) {
+      console.warn(`[work-item-self-repair] removed unusable local Session after Provider deletion failed previousSession=${proof.session.id} code=${deletion.providerErrorCode ?? "unknown"}`);
+    }
     emitEvent("WorkItemSessionRepaired", {
       workItemId: proof.workItem.id,
       previousSessionId: proof.session.id,
@@ -5222,6 +5254,20 @@ async function repairBrokenWorkItemSessionsAtStartup() {
     if (await selfRepairWorkItemSession(workItem.current_session_id, failedWork, error)) repaired += 1;
   }
   return repaired;
+}
+
+async function deleteHistoricalUnusableWorkItemSessionsAtStartup() {
+  let deleted = 0;
+  for (const sessionId of store.listUnusableReplacedWorkItemSessionIds()) {
+    const result = await sessionApplicationService.deleteUnusableSession(sessionId, {
+      source: "work-item-self-repair-startup-cleanup"
+    });
+    if (result.deleted) deleted += 1;
+    if (!result.providerDeleted) {
+      console.warn(`[work-item-self-repair] startup removed unusable local Session after Provider deletion failed previousSession=${sessionId} code=${result.providerErrorCode ?? "unknown"}`);
+    }
+  }
+  return deleted;
 }
 
 async function drainAgentWorkSession(sessionId) {
@@ -5413,7 +5459,17 @@ async function startCollaborationTurn(sessionId, text, metadata = {}) {
 async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {
   const reference = requireSessionReference(sessionId);
   const summary = reference.metadata.session;
-  const session = await sessionApplicationService.interrupt(sessionId, { summary, source });
+  const activeTurnId = summary?.external?.activeTurnId
+    ?? summary?.rawStatus?.activeTurnId
+    ?? store.listUnsettledSessionTurns(reference.sessionId).at(-1)?.turn_id
+    ?? null;
+  let session;
+  try {
+    session = await sessionApplicationService.interrupt(sessionId, { summary, source });
+  } catch (error) {
+    if (error?.code !== "PROVIDER_SESSION_UNAVAILABLE" || !activeTurnId) throw error;
+    session = settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source);
+  }
   emitEvent("SessionRunInterrupted", {
     sessionId: reference.sessionId,
     logicalSessionId: reference.logicalSessionId,
@@ -5421,6 +5477,50 @@ async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) 
     source
   }, { sessionId: reference.sessionId, source });
   return session;
+}
+
+function settleUnavailableProviderSessionInterrupt(reference, activeTurnId, source) {
+  const timestamp = now();
+  const ingestion = providerEventIngestion.ingest({
+    schemaVersion: 1,
+    providerId: reference.providerId,
+    providerSessionId: reference.providerSessionId,
+    bindingId: reference.bindingId,
+    logicalSessionId: reference.logicalSessionId,
+    routingVersion: reference.routingVersion,
+    providerEventId: `corptie:interrupt-unavailable:${activeTurnId}`,
+    providerSequence: null,
+    turnId: activeTurnId,
+    type: "turn.cancelled",
+    occurredAt: timestamp,
+    receivedAt: timestamp,
+    payload: {
+      nativeType: "corptie.interrupt.provider_session_unavailable",
+      status: "cancelled",
+      error: {
+        code: "PROVIDER_SESSION_UNAVAILABLE",
+        message: "The Provider Session no longer exists; Corptie settled its persisted run as interrupted."
+      },
+      source
+    },
+    rawPayload: { source }
+  });
+  if (ingestion.status === "applied") {
+    const logicalRoute = reference.logicalSessionId
+      ? store.getLogicalSession(reference.logicalSessionId)
+      : null;
+    handleCommittedProviderTerminalLifecycle({
+      event: ingestion.event,
+      projection: ingestion.projection,
+      logicalRoute
+    });
+    console.warn(`[session-interrupt] settled unavailable Provider Session locally session=${reference.sessionId} turn=${activeTurnId}`);
+    return ingestion.projection?.session ?? store.getSession(reference.sessionId);
+  }
+  if (ingestion.status === "duplicate") return store.getSession(reference.sessionId);
+  const error = new Error("The unavailable Provider Session could not be settled locally.");
+  error.code = ingestion.code ?? "SESSION_INTERRUPT_RECONCILIATION_FAILED";
+  throw error;
 }
 
 async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
@@ -6557,7 +6657,7 @@ async function completeProjectWorktree(sessionId, sourceWorktreeId, input = {}) 
       sessionId: binding.sessionId,
       provider: "codex-app-server",
       reason: "worktreeCompleted"
-    });
+    }, { detachedSession: true });
   }
   let restart = null;
   if (input.restartService !== false) {
@@ -6664,7 +6764,7 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
         sessionId: binding.sessionId,
         provider: "codex-app-server",
         reason: "worktreeOperation"
-      });
+      }, { detachedSession: true });
     }
   }
 
@@ -8526,6 +8626,10 @@ for (const storedSession of storedSessionsAtStartup) {
 const selfRepairedWorkItemSessions = await repairBrokenWorkItemSessionsAtStartup();
 if (selfRepairedWorkItemSessions > 0) {
   console.warn(`[work-item-self-repair] startup repaired ${selfRepairedWorkItemSessions} WorkItem Session(s)`);
+}
+const deletedReplacedWorkItemSessions = await deleteHistoricalUnusableWorkItemSessionsAtStartup();
+if (deletedReplacedWorkItemSessions > 0) {
+  console.warn(`[work-item-self-repair] startup deleted ${deletedReplacedWorkItemSessions} replaced unusable Session(s)`);
 }
 // Re-delivery consumes only Corptie's committed Outbox. Startup never repairs
 // product state by reading Provider history or a Provider Session snapshot.

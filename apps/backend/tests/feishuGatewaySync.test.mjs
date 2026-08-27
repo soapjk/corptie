@@ -797,3 +797,94 @@ test("a sync requested while sending runs again after the active sync", async ()
 
   assert.deepEqual(sent, ["First", "Second"]);
 });
+
+test("an empty started assistant item is deferred until the same item id contains the completed reply", async () => {
+  const botId = "bot-a";
+  const sent = [];
+  let items = [{
+    id: "assistant-stable-id",
+    type: "agentMessage",
+    status: "inProgress",
+    text: ""
+  }];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId, sessionId: "session-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return { title: "Session A", status: "running", items };
+    }
+  });
+  manager.botRuntime.set(botId, { lastStatus: "running", seenItems: new Set() });
+  manager.sendText = async (_botId, _chatId, text) => {
+    sent.push(text);
+    return [];
+  };
+
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, []);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-stable-id"), false);
+
+  items = [{
+    id: "assistant-stable-id",
+    type: "agentMessage",
+    status: "completed",
+    presentationRole: "final_answer",
+    text: "The completed reply"
+  }];
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, ["The completed reply"]);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-stable-id"), true);
+});
+
+test("runtime recovery does not seed an in-progress assistant id into the seen set", async () => {
+  const botId = "bot-a";
+  const sent = [];
+  let items = [{
+    id: "assistant-recovered-id",
+    type: "agentMessage",
+    status: "inProgress",
+    text: "Partial reply"
+  }];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId, sessionId: "session-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return { title: "Session A", status: "running", items };
+    }
+  });
+  manager.sendText = async (_botId, _chatId, text) => {
+    sent.push(text);
+    return [];
+  };
+
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, ["当前会话：Session A\n状态：正在处理"]);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-recovered-id"), false);
+
+  items = [{
+    id: "assistant-recovered-id",
+    type: "agentMessage",
+    status: "completed",
+    presentationRole: "final_answer",
+    text: "Recovered completed reply"
+  }];
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, ["当前会话：Session A\n状态：正在处理", "Recovered completed reply"]);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-recovered-id"), true);
+});

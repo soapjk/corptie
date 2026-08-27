@@ -14,6 +14,13 @@ test("missing Codex rollout is normalized as a safely replaceable Provider Sessi
   assert.equal(error.code, "PROVIDER_SESSION_UNAVAILABLE");
   assert.equal(error.safeToRetry, true);
 
+  const missingThread = codexResponseError({
+    code: -32600,
+    message: "thread not found: thread-a"
+  });
+  assert.equal(missingThread.code, "PROVIDER_SESSION_UNAVAILABLE");
+  assert.equal(missingThread.safeToRetry, true);
+
   const ambiguous = codexResponseError({ code: -32603, message: "transport closed" });
   assert.equal(ambiguous.code, undefined);
   assert.equal(ambiguous.safeToRetry, undefined);
