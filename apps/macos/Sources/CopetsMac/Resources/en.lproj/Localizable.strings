@@ -691,6 +691,8 @@
 "发送至 Agent" = "To Agent";
 "目标 Session" = "Target Session";
 "消息" = "Message";
+"目标 WorkItem" = "Target WorkItem";
+"确认后在目标 Objective 下新建" = "Create under the target Objective after confirmation";
 "Delete Skill?" = "Delete Skill?";
 "Delete Skill" = "Delete Skill";
 "Unable to delete Skill" = "Unable to delete Skill";
