@@ -31,7 +31,7 @@ export class CollaborationDeliveryRouteResolver {
         "Collaboration delivery requires an explicit logical recipient Session route."
       );
     }
-    if (!logical.activeBinding) {
+    if (!logical.activeBinding || logical.activeBinding.state !== "active") {
       throw routeError("STALE_RECIPIENT_ROUTE", `Recipient Session ${task.recipientSessionId} has no active Provider binding.`);
     }
     const providerSessionId = logical.legacySessionId;
@@ -43,7 +43,7 @@ export class CollaborationDeliveryRouteResolver {
     if (!bound || bound.agentId !== task.recipientAgentId) {
       throw routeError(
         "RECIPIENT_SESSION_AGENT_MISMATCH",
-        `Resolved Session ${stableSessionId} is not bound to recipient Agent ${task.recipientAgentId}.`
+        `Resolved Session ${stableSessionId} is not bound to the expected Agent resource ${task.recipientAgentId}.`
       );
     }
     return {
@@ -80,6 +80,7 @@ export class CollaborationDeliveryRouteResolver {
       ? this.core.getAgentForSession(logical.legacySessionId)
       : null;
     if (!logical?.activeBinding
+        || logical.activeBinding.state !== "active"
         || logical.logicalSessionId !== route.sessionId
         || logical.legacySessionId !== route.providerSessionId
         || Number(logical.routingVersion ?? 0) !== Number(route.routingVersion ?? 0)

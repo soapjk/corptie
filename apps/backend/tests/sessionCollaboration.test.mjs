@@ -135,7 +135,7 @@ test("same-Agent Sessions are separately discoverable and can collaborate withou
   }
 });
 
-test("accept fail-closes when authoritative recipient route metadata is missing", async () => {
+test("protocol v3 persistence rejects missing authoritative recipient Session metadata", async () => {
   const f = await fixture();
   try {
     const source = f.store.createAgent({ id: "agent:route-source", name: "Route Source", role: "independentContributor" });
@@ -190,19 +190,18 @@ test("accept fail-closes when authoritative recipient route metadata is missing"
     assert.equal(envelope.task.recipientSessionId, "session:route-recipient");
     assert.equal(envelope.task.initiatorNameAtSend, "Historical Initiator Session");
     assert.equal(envelope.task.recipientNameAtSend, "Recipient Worker Session");
-    assert.equal(envelope.message.envelope.objective.sourceId, objective.id);
-    assert.equal(envelope.message.envelope.objective.targetId, objective.id);
+    assert.equal(envelope.message.envelope.resources.sourceObjectiveId, objective.id);
+    assert.equal(envelope.message.envelope.resources.targetObjectiveId, objective.id);
     assert.notEqual(f.core.getAgent(source.agentId).currentSessionId, envelope.task.initiatorSessionId);
-    f.store.db.run(
-      "UPDATE collaboration_tasks SET recipient_session_id=NULL, routing_version=NULL WHERE task_id=?",
-      [task.taskId]
-    );
-
     assert.throws(
-      () => f.core.accept(task.taskId, recipient.agentId, "session:route-recipient"),
-      { code: "RECIPIENT_ROUTE_METADATA_REQUIRED" }
+      () => f.store.db.run(
+        "UPDATE collaboration_tasks SET recipient_session_id=NULL, routing_version=NULL WHERE task_id=?",
+        [task.taskId]
+      ),
+      /COLLABORATION_V3_DISTINCT_SESSIONS_REQUIRED/
     );
     assert.equal(f.core.getTask(task.taskId).status, "proposed");
+    assert.equal(f.core.getTask(task.taskId).recipientSessionId, "session:route-recipient");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -299,13 +298,6 @@ test("peer Objective discovery exposes context without allowing Objective Chat a
     assert.equal(confirmation.targetObjectiveId, peerObjective.id);
     assert.equal(confirmation.targetObjectiveName, "MarketCow");
     assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 1);
-    const confirmed = f.core.confirmTaskConfirmation(confirmation.confirmationId);
-    const task = f.core.getTask(confirmed.taskId);
-    assert.equal(task.recipientSessionId, null);
-    assert.equal(task.targetObjectiveId, peerObjective.id);
-    assert.equal(f.store.getWorkItem(task.workItemId).objective_id, peerObjective.id);
-    assert.equal(f.store.getWorkItem(task.workItemId).main_workspace_id, repositoryId);
-    assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 2);
     f.service.launchWorkItem = async ({ workItem, agent, autoUniqueTitle }) => {
       assert.equal(autoUniqueTitle, true);
       session(f.store, f.core, {
@@ -315,11 +307,17 @@ test("peer Objective discovery exposes context without allowing Objective Chat a
       });
       return { id: "provider:marketcow-collaboration" };
     };
-    const route = await f.service.ensureTaskRecipientSession(task, { reason: "confirmation_approved" });
-    assert.equal(route.sessionId, "session:marketcow-collaboration");
-    assert.equal(route.created, true);
-    assert.equal(f.store.getSession(route.providerSessionId).sessionKind, "worker");
-    assert.equal(f.store.getSession(route.providerSessionId).workItemId, task.workItemId);
+    const prepared = await f.service.prepareTaskConfirmationTarget(confirmation);
+    assert.equal(f.store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    const confirmed = f.core.confirmTaskConfirmation(confirmation.confirmationId, prepared);
+    const task = f.core.getTask(confirmed.taskId);
+    assert.equal(task.recipientSessionId, "session:marketcow-collaboration");
+    assert.equal(task.targetObjectiveId, peerObjective.id);
+    assert.equal(f.store.getWorkItem(task.workItemId).objective_id, peerObjective.id);
+    assert.equal(f.store.getWorkItem(task.workItemId).main_workspace_id, repositoryId);
+    assert.equal(f.store.listWorkItemsByObjective(peerObjective.id).length, 2);
+    assert.equal(f.store.getSession("provider:marketcow-collaboration").sessionKind, "worker");
+    assert.equal(f.store.getSession("provider:marketcow-collaboration").workItemId, task.workItemId);
     assert.throws(() => f.service.getWorkItem(metadata, sourceAgent.agentId, peerWorkItem.id), { code: "WORK_ITEM_OUTSIDE_SCOPE" });
     assert.throws(() => f.service.createWorkItem(metadata, sourceAgent.agentId, {
       title: "Illegal target write", agentId: peerAgent.agentId, idempotencyKey: "illegal:target"
@@ -424,7 +422,7 @@ test("closed and invalid Sessions are filtered while an active suitable Session 
   }
 });
 
-test("no suitable active Session creates the collaboration WorkItem Session and records routing evidence", async () => {
+test("an unrouted confirmation creates its WorkItem and target Session before the formal task", async () => {
   const f = await fixture();
   try {
     const routingEvents = [];
@@ -437,14 +435,13 @@ test("no suitable active Session creates the collaboration WorkItem Session and 
     session(f.store, f.core, { providerSessionId: "provider:peer-closed", logicalSessionId: "session:peer-closed-create", agentId: peerAgent.agentId, kind: "objectiveChat", objectiveId: peerObjective.id, cwd: f.directory });
     f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:peer-closed'");
     f.store.db.run("UPDATE logical_sessions SET archived=1 WHERE logical_session_id='session:peer-closed-create'");
-    const task = f.core.createTask({
+    const confirmation = f.core.proposeTask({
       initiatorAgentId: sourceAgent.agentId,
       recipientAgentId: peerAgent.agentId,
       initiatorSessionId: "session:source-create",
-      recipientSessionId: "session:peer-closed-create",
       sourceObjectiveId: sourceObjective.id,
       targetObjectiveId: peerObjective.id,
-      routingIntent: "best_available",
+      sessionAgentId: peerAgent.agentId,
       title: "Create a safe route",
       summary: "No closed Session may receive this message."
     });
@@ -457,25 +454,22 @@ test("no suitable active Session creates the collaboration WorkItem Session and 
       return { id: "provider:peer-created" };
     };
 
-    const route = await f.service.ensureTaskRecipientSession(task, { reason: "test_no_active_candidate" });
-    assert.equal(route.created, true);
-    assert.equal(route.sessionId, "session:peer-created");
-    assert.equal(f.core.getTask(task.taskId).recipientSessionId, "session:peer-created");
+    const prepared = await f.service.prepareTaskConfirmationTarget(confirmation);
+    assert.equal(prepared.created, true);
+    assert.equal(prepared.recipientSessionId, "session:peer-created");
+    assert.equal(f.store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    const confirmed = f.core.confirmTaskConfirmation(confirmation.confirmationId, prepared);
+    const task = f.core.getTask(confirmed.taskId);
+    assert.equal(task.recipientSessionId, "session:peer-created");
     assert.equal(f.store.getWorkItem(task.workItemId).current_session_id, "provider:peer-created");
-    assert.equal(f.core.getTask(task.taskId).messages[0].recipientSessionId, "session:peer-created");
-    assert.ok(f.core.getTask(task.taskId).events.some((event) => event.type === "recipient_route_reselected"
-      && event.payload.createdWorkItemSession === true));
-    assert.ok(routingEvents.some((entry) => entry.event === "candidates_filtered"
-      && entry.details.candidates.some((candidate) => candidate.rejectionReasons.includes("session_archived"))
-      && entry.details.candidates.some((candidate) => candidate.rejectionReasons.includes("session_not_worker"))));
-    assert.ok(routingEvents.some((entry) => entry.event === "work_item_session_created"));
+    assert.equal(task.messages[0].recipientSessionId, "session:peer-created");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
   }
 });
 
-test("recipient closing between selection and delivery preflight is rerouted without losing the pending delivery", async () => {
+test("a formal task never changes its target Session during delivery preflight", async () => {
   const f = await fixture();
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source-race", name: "Source", role: "independentContributor" });
@@ -502,19 +496,13 @@ test("recipient closing between selection and delivery preflight is rerouted wit
     assert.equal(first.created, false);
     f.store.db.run("UPDATE sessions SET archived=1 WHERE id='provider:peer-race-old'");
     f.store.db.run("UPDATE logical_sessions SET archived=1 WHERE logical_session_id='session:peer-race-old'");
-    f.service.launchWorkItem = async ({ workItem, agent }) => {
-      session(f.store, f.core, {
-        providerSessionId: "provider:peer-race-new", logicalSessionId: "session:peer-race-new",
-        agentId: agent.agentId, kind: "worker", objectiveId: workItem.objective_id,
-        workItemId: workItem.id, cwd: f.directory
-      });
-      return { id: "provider:peer-race-new" };
-    };
-    const recovered = await f.service.ensureTaskRecipientSession(f.core.getTask(task.taskId), { reason: "delivery_preflight" });
+    await assert.rejects(
+      f.service.ensureTaskRecipientSession(f.core.getTask(task.taskId), { reason: "delivery_preflight" }),
+      { code: "RECIPIENT_SESSION_UNAVAILABLE" }
+    );
     const delivery = f.core.listPendingDeliveries()[0];
-    assert.equal(recovered.sessionId, "session:peer-race-new");
     assert.equal(delivery.status, "pending");
-    assert.equal(f.core.getDeliveryEnvelope(delivery.deliveryId).task.recipientSessionId, "session:peer-race-new");
+    assert.equal(f.core.getDeliveryEnvelope(delivery.deliveryId).task.recipientSessionId, "session:peer-race-old");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

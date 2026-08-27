@@ -13,6 +13,8 @@ function envelope(overrides = {}) {
     messageType: "change_request",
     senderAgentId: "agent:a",
     recipientAgentId: "agent:b",
+    senderSessionId: "session:a",
+    recipientSessionId: "session:b",
     sourceObjectiveId: "objective:a",
     targetObjectiveId: "objective:b",
     sourceWorkItemId: "work_item:source",
@@ -24,12 +26,19 @@ function envelope(overrides = {}) {
   });
 }
 
-test("protocol v2 envelope contains every routable and auditable field", () => {
+test("protocol v3 makes Sessions the actors and keeps other entities as resource context", () => {
   const value = envelope();
   assert.equal(value.version, COLLABORATION_PROTOCOL_VERSION);
-  assert.deepEqual(value.sender, { agentId: "agent:a", sessionId: null, objectiveId: "objective:a" });
-  assert.deepEqual(value.recipient, { agentId: "agent:b", sessionId: null, objectiveId: "objective:b" });
-  assert.deepEqual(value.workItem, { id: "work_item:target", sourceId: "work_item:source" });
+  assert.deepEqual(value.sender, { sessionId: "session:a" });
+  assert.deepEqual(value.recipient, { sessionId: "session:b" });
+  assert.deepEqual(value.resources, {
+    sourceAgentId: "agent:a",
+    targetAgentId: "agent:b",
+    sourceObjectiveId: "objective:a",
+    targetObjectiveId: "objective:b",
+    sourceWorkItemId: "work_item:source",
+    targetWorkItemId: "work_item:target"
+  });
   assert.equal(value.error, null);
 });
 
@@ -48,13 +57,13 @@ test("protocol validation rejects unknown fields, invalid timestamps, and malfor
   );
 });
 
-test("protocol validation prevents Objective and party identity divergence", () => {
+test("protocol validation requires distinct Session actors", () => {
   const value = envelope();
   assert.throws(
     () => validateCollaborationEnvelope({
       ...value,
-      objective: { ...value.objective, targetId: "objective:other" }
+      recipient: { sessionId: value.sender.sessionId }
     }),
-    (error) => error.code === "OBJECTIVE_PARTY_MISMATCH"
+    (error) => error.code === "INVALID_PARTICIPANTS"
   );
 });

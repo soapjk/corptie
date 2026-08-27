@@ -40,10 +40,38 @@ function seedAgentsAndService(core) {
   });
 }
 
+function ensureFixtureSessions(core) {
+  const store = core.store;
+  const sourceObjective = store.getObjective("objective:research-fixture") ?? store.createObjective({
+    id: "objective:research-fixture", name: "Research", contributorAgentIds: ["research-agent"]
+  });
+  const targetObjective = store.getObjective("objective:journal-fixture") ?? store.createObjective({
+    id: "objective:journal-fixture", name: "Journal", contributorAgentIds: ["journal-agent"]
+  });
+  for (const [agentId, providerId, logicalId, objective, workItemId, title] of [
+    ["research-agent", "provider:research-fixture", "session:research-fixture", sourceObjective, "work_item:research-fixture", "Research Session"],
+    ["journal-agent", "provider:journal-fixture", "session:journal-fixture", targetObjective, "work_item:journal-fixture", "Journal Session"]
+  ]) {
+    if (!store.getWorkItem(workItemId)) store.createWorkItem({ id: workItemId, objectiveId: objective.id, title, mainAgentId: agentId });
+    if (!store.getSession(providerId)) store.createSession({
+      id: providerId, title, agentId, sessionKind: "worker", objectiveId: objective.id,
+      workItemId, cwd: process.cwd()
+    });
+    if (!store.getLogicalSession(logicalId)) store.createLogicalSessionRoute({
+      logicalSessionId: logicalId, legacySessionId: providerId, providerThreadId: providerId,
+      providerSessionId: providerId, providerId: "test-provider", boundCwd: process.cwd(), sessionName: title
+    });
+    core.bindSession({ agentId, sessionId: providerId });
+  }
+}
+
 function newTask(core, overrides = {}) {
+  ensureFixtureSessions(core);
   return core.createTask({
     initiatorAgentId: "research-agent",
     recipientAgentId: "journal-agent",
+    initiatorSessionId: "session:research-fixture",
+    recipientSessionId: "session:journal-fixture",
     serviceId: "investment-journal",
     type: "change_request",
     title: "Completion notification is stale",
@@ -110,6 +138,7 @@ test("a collaboration Task is resolved from its explicit WorkItem relationship",
 test("legacy collaboration with multiple candidate Sessions remains explicitly unresolved", async () => {
   await withFixture(async ({ core, store, directory }) => {
     seedAgentsAndService(core);
+    ensureFixtureSessions(core);
     const task = newTask(core);
     for (const suffix of ["one", "two"]) {
       store.upsertSession({
@@ -131,7 +160,7 @@ test("legacy collaboration with multiple candidate Sessions remains explicitly u
       core.bindSession({ agentId: "journal-agent", sessionId: `provider:journal:${suffix}` });
     }
     store.db.run(
-      "UPDATE collaboration_tasks SET recipient_session_id=NULL, route_status='active' WHERE task_id=?",
+      "UPDATE collaboration_tasks SET protocol_version='1.0', recipient_session_id=NULL, route_status='active' WHERE task_id=?",
       [task.taskId]
     );
     store.migrateCollaborationSessionIdentities();
@@ -144,10 +173,13 @@ test("legacy collaboration with multiple candidate Sessions remains explicitly u
 test("a staged request creates no task until deterministic user confirmation", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
-    core.bindSession({ agentId: "research-agent", sessionId: "codex:research" });
+    ensureFixtureSessions(core);
     const confirmation = core.proposeTask({
       initiatorAgentId: "research-agent",
       recipientAgentId: "journal-agent",
+      initiatorSessionId: "session:research-fixture",
+      recipientSessionId: "session:journal-fixture",
+      sourceSessionId: "provider:research-fixture",
       sourceTurnId: "turn-1",
       serviceId: "investment-journal",
       type: "change_request",
@@ -158,7 +190,7 @@ test("a staged request creates no task until deterministic user confirmation", a
 
     assert.equal(confirmation.status, "pending");
     assert.equal(confirmation.recipientAgentName, "Journal Agent");
-    assert.equal(confirmation.sourceSessionId, "codex:research");
+    assert.equal(confirmation.sourceSessionId, "provider:research-fixture");
     assert.equal(confirmation.sourceTurnId, "turn-1");
     assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
     assert.equal(store.selectAll("SELECT * FROM collaboration_deliveries").length, 0);
@@ -205,6 +237,8 @@ test("Session names resolve to stable Session ids and collaboration snapshots su
     const confirmation = core.proposeTask({
       initiatorAgentId: "sender-agent",
       recipientAgentId: recipient.agentId,
+      initiatorSessionId: "logical:sender",
+      recipientSessionId: "logical:recipient",
       type: "question",
       title: "Confirm stable routing",
       summary: "Which Session receives this task?"
@@ -287,9 +321,12 @@ test("confirmation snapshots keep registry Agent identity separate from exact Se
 test("rejecting a staged request never creates a task or delivery", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
+    ensureFixtureSessions(core);
     const confirmation = core.proposeTask({
       initiatorAgentId: "research-agent",
       recipientAgentId: "journal-agent",
+      initiatorSessionId: "session:research-fixture",
+      recipientSessionId: "session:journal-fixture",
       type: "question",
       title: "Ask status",
       summary: "Reply with current status."
@@ -379,7 +416,7 @@ test("deleting a Session detaches it without changing Agent lifecycle status", a
     store.deleteSession("codex:temporary-thread");
 
     assert.equal(detached.status, "available");
-    assert.equal(detached.currentSessionId, null);
+    assert.equal(detached.currentSessionId, "provider:research-fixture");
     assert.equal(core.getTask(task.taskId).initiatorAgentId, "research-agent");
     const binding = store.selectOne(
       "SELECT unbound_at FROM agent_sessions WHERE agent_id = ? AND session_id = ?",
@@ -410,6 +447,7 @@ test("startup reconciliation detaches missing Sessions without deactivating Agen
 test("service requests must target the owner and ownership cannot be silently transferred", async () => {
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
+    ensureFixtureSessions(core);
     assert.throws(
       () => core.registerService({
         serviceId: "investment-journal",
@@ -422,6 +460,8 @@ test("service requests must target the owner and ownership cannot be silently tr
       () => core.createTask({
         initiatorAgentId: "journal-agent",
         recipientAgentId: "research-agent",
+        initiatorSessionId: "session:journal-fixture",
+        recipientSessionId: "session:research-fixture",
         serviceId: "investment-journal",
         title: "Wrong owner",
         summary: "This must be rejected."
@@ -453,6 +493,14 @@ test("task creation is idempotent and atomically creates message, delivery, part
     assert.equal(first.events.length, 1);
     assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM collaboration_deliveries").count, 1);
     assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM collaboration_participants").count, 2);
+    assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM collaboration_session_participants").count, 2);
+    assert.throws(
+      () => store.db.run(
+        "UPDATE collaboration_tasks SET recipient_session_id=NULL WHERE task_id=?",
+        [first.taskId]
+      ),
+      /COLLABORATION_V3_DISTINCT_SESSIONS_REQUIRED/
+    );
 
     const [delivery] = core.listPendingDeliveries();
     const delivered = core.updateDelivery(delivery.deliveryId, {
@@ -469,57 +517,45 @@ test("task creation is idempotent and atomically creates message, delivery, part
 test("Objective-to-Objective collaboration creates and drives the target WorkItem", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
-    store.createObjective({
-      id: "objective:research",
-      name: "Research",
-      contributorAgentIds: ["research-agent"]
-    });
-    store.createObjective({
-      id: "objective:journal",
-      name: "Journal",
-      contributorAgentIds: ["journal-agent"]
-    });
-    store.createWorkItem({
-      id: "work_item:research-origin",
-      objectiveId: "objective:research",
-      title: "Find stale notification cause",
-      mainAgentId: "research-agent"
-    });
+    ensureFixtureSessions(core);
 
     let task = core.createTask({
       initiatorAgentId: "research-agent",
       recipientAgentId: "journal-agent",
-      sourceObjectiveId: "objective:research",
-      targetObjectiveId: "objective:journal",
-      sourceWorkItemId: "work_item:research-origin",
+      initiatorSessionId: "session:research-fixture",
+      recipientSessionId: "session:journal-fixture",
+      sourceObjectiveId: "objective:research-fixture",
+      targetObjectiveId: "objective:journal-fixture",
+      sourceWorkItemId: "work_item:research-fixture",
       type: "change_request",
       title: "Fix stale completion state",
       summary: "Update the journal completion projection.",
       acceptanceCriteria: ["Completed runs render completed"]
     });
 
-    assert.equal(task.protocolVersion, "2.0");
-    assert.equal(task.sourceObjectiveId, "objective:research");
-    assert.equal(task.targetObjectiveId, "objective:journal");
-    assert.equal(task.sourceWorkItemId, "work_item:research-origin");
-    assert.equal(task.workItemId, `work_item:collaboration:${task.taskId}`);
+    assert.equal(task.protocolVersion, "3.0");
+    assert.equal(task.sourceObjectiveId, "objective:research-fixture");
+    assert.equal(task.targetObjectiveId, "objective:journal-fixture");
+    assert.equal(task.sourceWorkItemId, "work_item:research-fixture");
+    assert.equal(task.workItemId, "work_item:journal-fixture");
     assert.equal(store.getWorkItem(task.workItemId).status, "todo");
     assert.equal(store.getWorkItem(task.workItemId).main_agent_id, "journal-agent");
-    assert.equal(task.messages[0].envelope.objective.sourceId, "objective:research");
+    assert.equal(task.messages[0].envelope.resources.sourceObjectiveId, "objective:research-fixture");
     assert.equal(task.messages[0].envelope.error, null);
 
-    task = core.accept(task.taskId, "journal-agent");
-    task = core.startWorking(task.taskId, "journal-agent");
+    task = core.accept(task.taskId, "journal-agent", "session:journal-fixture");
+    task = core.startWorking(task.taskId, "journal-agent", "session:journal-fixture");
     assert.equal(store.getWorkItem(task.workItemId).execution_status, "running");
     task = core.submitResult(task.taskId, "journal-agent", {
+      actorSessionId: "session:journal-fixture",
       body: "Projection fixed.",
       artifact: { type: "patch", name: "projection patch", uri: "local-artifact://projection.patch" }
     });
     assert.equal(store.getWorkItem(task.workItemId).execution_status, "awaiting_acceptance");
-    assert.equal(task.messages.at(-1).envelope.objective.sourceId, "objective:journal");
-    assert.equal(task.messages.at(-1).envelope.objective.targetId, "objective:research");
-    task = core.beginVerification(task.taskId, "research-agent");
-    task = core.complete(task.taskId, "research-agent", "Verified.");
+    assert.equal(task.messages.at(-1).envelope.resources.sourceObjectiveId, "objective:journal-fixture");
+    assert.equal(task.messages.at(-1).envelope.resources.targetObjectiveId, "objective:research-fixture");
+    task = core.beginVerification(task.taskId, "research-agent", "session:research-fixture");
+    task = core.complete(task.taskId, "research-agent", "Verified.", { actorSessionId: "session:research-fixture" });
     assert.equal(store.getWorkItem(task.workItemId).status, "done");
     assert.equal(JSON.parse(store.getWorkItem(task.workItemId).acceptance_assessment_json).collaborationTaskId, task.taskId);
   });
@@ -528,12 +564,14 @@ test("Objective-to-Objective collaboration creates and drives the target WorkIte
 test("task input rejects unknown fields and mismatched Objective or WorkItem references", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
+    ensureFixtureSessions(core);
     store.createObjective({ id: "objective:a", name: "A", contributorAgentIds: ["research-agent"] });
     store.createObjective({ id: "objective:b", name: "B", contributorAgentIds: ["journal-agent"] });
     store.createWorkItem({ id: "work_item:a", objectiveId: "objective:a", title: "A", mainAgentId: "research-agent" });
     assert.throws(
       () => core.createTask({
         initiatorAgentId: "research-agent", recipientAgentId: "journal-agent",
+        initiatorSessionId: "session:research-fixture", recipientSessionId: "session:journal-fixture",
         title: "Unknown", summary: "Unknown", unexpected: true
       }),
       (error) => error.code === "UNKNOWN_FIELD"
@@ -541,7 +579,8 @@ test("task input rejects unknown fields and mismatched Objective or WorkItem ref
     assert.throws(
       () => core.createTask({
         initiatorAgentId: "research-agent", recipientAgentId: "journal-agent",
-        sourceObjectiveId: "objective:a", targetObjectiveId: "objective:b",
+        initiatorSessionId: "session:research-fixture", recipientSessionId: "session:journal-fixture",
+        sourceObjectiveId: "objective:research-fixture", targetObjectiveId: "objective:journal-fixture",
         workItemId: "work_item:a", title: "Mismatch", summary: "Mismatch"
       }),
       (error) => error.code === "WORK_ITEM_OBJECTIVE_MISMATCH"
@@ -580,7 +619,7 @@ test("legacy point-to-point tasks migrate to compatibility Objectives and a targ
     assert.match(task.targetObjectiveId, /^objective:collaboration:/);
     assert.equal(task.workItemId, "work_item:collaboration:legacy-task");
     assert.equal(store.getWorkItem(task.workItemId).status, "in_progress");
-    assert.equal(task.messages[0].envelope.version, "2.0");
+    assert.equal(task.messages[0].envelope, null);
   });
 });
 
@@ -625,7 +664,7 @@ test("deferred collaboration migration runs after the Store becomes ready", asyn
     assert.equal(task.protocolVersion, "2.0");
     assert.match(task.sourceObjectiveId, /^objective:collaboration:/);
     assert.match(task.targetObjectiveId, /^objective:collaboration:/);
-    assert.equal(task.messages[0].envelope.sender.objectiveId, task.sourceObjectiveId);
+    assert.equal(task.messages[0].envelope, null);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -677,7 +716,7 @@ test("legacy collaboration migration preserves platform Assistant boundaries wit
     assert.equal(task.protocolVersion, "2.0");
     assert.deepEqual(compatibilityObjective.contributorAgentIds, []);
     assert.equal(workItem.main_agent_id, null);
-    assert.equal(task.messages[0].envelope.recipient.objectiveId, task.targetObjectiveId);
+    assert.equal(task.messages[0].envelope, null);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -688,18 +727,20 @@ test("clarification and delivery follow role-based state transitions", async () 
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
     let task = newTask(core);
-    task = core.askForInformation(task.taskId, "journal-agent", "Please attach a trace.");
+    task = core.askForInformation(task.taskId, "journal-agent", "Please attach a trace.", { actorSessionId: "session:journal-fixture" });
     assert.equal(task.status, "needs_information");
     assert.equal(task.messages.at(-1).messageType, "needs_information");
     task = core.replyWithInformation(task.taskId, "research-agent", "Trace attached.", {
+      actorSessionId: "session:research-fixture",
       evidence: [{ type: "log", uri: "local-artifact://trace.txt" }]
     });
     assert.equal(task.status, "proposed");
-    task = core.accept(task.taskId, "journal-agent");
-    task = core.startWorking(task.taskId, "journal-agent");
+    task = core.accept(task.taskId, "journal-agent", "session:journal-fixture");
+    task = core.startWorking(task.taskId, "journal-agent", "session:journal-fixture");
 
     assert.throws(
       () => core.submitResult(task.taskId, "research-agent", {
+        actorSessionId: "session:research-fixture",
         body: "Unauthorized release",
         artifact: { type: "service_release", name: "bad", uri: "local://bad" }
       }),
@@ -707,6 +748,7 @@ test("clarification and delivery follow role-based state transitions", async () 
     );
 
     task = core.submitResult(task.taskId, "journal-agent", {
+      actorSessionId: "session:journal-fixture",
       body: "Version 1.3.1 is ready.",
       artifact: {
         artifactId: "release-1.3.1",
@@ -718,8 +760,8 @@ test("clarification and delivery follow role-based state transitions", async () 
     });
     assert.equal(task.status, "delivered");
     assert.equal(task.artifacts.length, 1);
-    task = core.beginVerification(task.taskId, "research-agent");
-    task = core.complete(task.taskId, "research-agent", "All acceptance criteria passed.");
+    task = core.beginVerification(task.taskId, "research-agent", "session:research-fixture");
+    task = core.complete(task.taskId, "research-agent", "All acceptance criteria passed.", { actorSessionId: "session:research-fixture" });
     assert.equal(task.status, "completed");
     assert.ok(task.completedAt);
     assert.deepEqual(task.events.map((event) => event.sequence), task.events.map((_, index) => index + 1));
@@ -730,11 +772,12 @@ test("a third failed verification escalates instead of starting an unbounded fou
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
     let task = newTask(core, { maxIterations: 3 });
-    task = core.accept(task.taskId, "journal-agent");
+    task = core.accept(task.taskId, "journal-agent", "session:journal-fixture");
 
     for (let iteration = 1; iteration <= 3; iteration += 1) {
-      task = core.startWorking(task.taskId, "journal-agent");
+      task = core.startWorking(task.taskId, "journal-agent", "session:journal-fixture");
       task = core.submitResult(task.taskId, "journal-agent", {
+        actorSessionId: "session:journal-fixture",
         body: `Iteration ${iteration} is ready.`,
         artifact: {
           artifactId: `release-${iteration}`,
@@ -744,15 +787,15 @@ test("a third failed verification escalates instead of starting an unbounded fou
           metadata: { version: `1.3.${iteration}` }
         }
       });
-      task = core.beginVerification(task.taskId, "research-agent");
-      task = core.requestRevision(task.taskId, "research-agent", `Iteration ${iteration} failed verification.`);
+      task = core.beginVerification(task.taskId, "research-agent", "session:research-fixture");
+      task = core.requestRevision(task.taskId, "research-agent", `Iteration ${iteration} failed verification.`, { actorSessionId: "session:research-fixture" });
     }
 
     assert.equal(task.status, "escalated");
     assert.equal(task.iteration, 3);
     assert.equal(task.events.at(-1).type, "iteration_limit_reached");
     assert.throws(
-      () => core.startWorking(task.taskId, "journal-agent"),
+      () => core.startWorking(task.taskId, "journal-agent", "session:journal-fixture"),
       (error) => error.code === "INVALID_TASK_TRANSITION"
     );
   });
@@ -761,29 +804,32 @@ test("a third failed verification escalates instead of starting an unbounded fou
 test("a question answer completes the task and initiators cannot reuse it for a new question", async () => {
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
+    ensureFixtureSessions(core);
     let task = core.createTask({
       initiatorAgentId: "research-agent",
       recipientAgentId: "journal-agent",
+      initiatorSessionId: "session:research-fixture",
+      recipientSessionId: "session:journal-fixture",
       type: "question",
       title: "Return ready",
       summary: "Reply with exactly ready.",
       acceptanceCriteria: ["The reply is exactly ready"]
     });
-    task = core.accept(task.taskId, "journal-agent");
-    task = core.startWorking(task.taskId, "journal-agent");
+    task = core.accept(task.taskId, "journal-agent", "session:journal-fixture");
+    task = core.startWorking(task.taskId, "journal-agent", "session:journal-fixture");
 
     assert.throws(
-      () => core.reply(task.taskId, "research-agent", "Reply with OK instead."),
+      () => core.reply(task.taskId, "research-agent", "Reply with OK instead.", { actorSessionId: "session:research-fixture" }),
       (error) => error.code === "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK"
     );
 
-    task = core.reply(task.taskId, "journal-agent", "ready");
+    task = core.reply(task.taskId, "journal-agent", "ready", { actorSessionId: "session:journal-fixture" });
     assert.equal(task.status, "completed");
     assert.ok(task.completedAt);
     assert.equal(task.messages.at(-1).body, "ready");
     assert.equal(task.events.at(-1).type, "question_answered");
     assert.throws(
-      () => core.reply(task.taskId, "research-agent", "Another question"),
+      () => core.reply(task.taskId, "research-agent", "Another question", { actorSessionId: "session:research-fixture" }),
       (error) => error.code === "TASK_TERMINAL"
     );
   });

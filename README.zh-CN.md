@@ -38,7 +38,7 @@ Corptie 提倡更少占用注意力的 Agent 交互方式，让所有 Agent 成�
 | --- | --- |
 | 🧭 **多 Agent 桌面驾驶舱** | 同时运行和监督 Codex、Claude Code 等多个任务，只在需要输入、审批或处理异常时打断你 |
 | 📱 **飞书远程 Agent 网关** | 将可信飞书用户与本机会话安全配对，可在飞书中创建或接管会话、收发消息、中断任务并处理审批 |
-| 🤝 **Agent 间结构化协作** | 基于稳定身份、服务归属、验收条件和交付物让独立 Agent 协作，内置用户确认、可持久投递、验证/修订和升级流程 |
+| 🤝 **Session 间结构化协作** | 让独立 Session 通过明确路由、验收条件和交付物协作，内置用户确认、可持久投递、验证/修订和升级流程 |
 | 🔎 **单轮代码改动审阅与撤销** | 按 Codex 回复查看文件改动，可在外部 Diff 工具中审阅，并以冲突安全的方式只撤销该轮补丁 |
 | 🧠 **LLM 增强交互** | 用本地 Agent 或 OpenAI 兼容接口将终端中的文本选项转换为可直接点击的结构化操作 |
 | 🛡️ **本地优先与环境隔离** | Agent、会话、队列和 SQLite 数据默认留在本机；正式版与开发版可并行运行且数据完全分离 |
@@ -99,7 +99,7 @@ apps/backend
   HTTP API、SSE 详情流、Agent 适配器、统一工作队列、SQLite 存储
 
 apps/backend/src/collaboration
-  Agent/服务注册、协作任务状态机、可持久投递与验收流程
+  Session 间协作状态机、资源注册、可持久投递与验收流程
 
 apps/backend/src/feishu
   飞书机器人、用户配对、会话绑定、互动卡片与审批同步
@@ -108,7 +108,7 @@ scripts
   开发启动、生产后端辅助脚本、macOS 打包
 ```
 
-Codex 会话默认通过 App Server 的结构化事件驱动，并保留 PTY 兼容模式；两种模式都支持会话恢复、中断、模型切换和 approval。Agent 输入统一进入可持久工作队列，避免用户、飞书和 Agent 协作消息在会话忙碌时丢失。
+Codex 会话默认通过 App Server 的结构化事件驱动，并保留 PTY 兼容模式；两种模式都支持会话恢复、中断、模型切换和 approval。Session 输入统一进入可持久工作队列，避免用户、飞书和跨 Session 协作消息在会话忙碌时丢失。
 
 ## 📱 飞书网关
 
@@ -120,13 +120,15 @@ Codex 会话默认通过 App Server 的结构化事件驱动，并保留 PTY 兼
 
 App Secret 会交给 `lark-cli` 的加密存储，不保存在 Corptie 数据库中。卡片操作会校验已配对的用户和会话，未授权操作不会转发给 Agent。
 
-## 🤝 Agent 协作
+## 🤝 跨 Session 协作
 
-Corptie 以 Objective 为协作责任边界、以 WorkItem 为执行和验收载体，并为受管会话提供稳定 Agent 身份和本地 MCP 协作工具。Agent 可发现其他 Agent 与服务，用明确的任务、验收条件和交付物发起跨 Objective 协作。
+Session 是唯一执行者和消息收发主体；Agent、Objective、WorkItem、Workspace、Provider 和 Service 都是资源。来源 Session 可以选择明确的目标 Session；若目标 Session 不存在，则在用户确认后先于目标 Objective 下创建 WorkItem，再以指定 Agent 资源配置创建 Worker Session。只有两端 Session 都存在后才创建正式 Task、Message 与 Delivery。
 
 新协作请求会先向用户展示确认卡片；确认后才会投递。协作窗口可查看收件箱、待验证、已升级任务、Agent/服务注册信息与完整时间线，并支持取消任务和重试失败投递。
 
 协议、状态流转、兼容迁移和开发使用说明见 [Agent 协作机制](docs/agent-collaboration.md)。
+
+统一技术定义及能力边界见 [Corptie 领域模型与能力边界](docs/domain-model-and-capability-boundaries.md)，该文档是相关概念的单一事实源。
 
 ## 🚦 环境隔离
 

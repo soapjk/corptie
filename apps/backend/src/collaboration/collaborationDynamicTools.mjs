@@ -1,7 +1,6 @@
 import {
   agentIdSchema,
   COLLABORATION_RELATION_TYPES,
-  COLLABORATION_ROUTING_INTENTS,
   repositoryIdSchema,
   sessionIdSchema,
   objectiveIdSchema,
@@ -28,7 +27,7 @@ const taskStatuses = [
 ];
 const messageProperties = {
   task_id: { type: "string", minLength: 1, description: "Collaboration task id." },
-  body: { type: "string", minLength: 1, description: "Concise message body for the other Agent." },
+  body: { type: "string", minLength: 1, description: "Concise message body for the peer Session." },
   evidence: evidenceSchema,
   resource_version: { type: "string", minLength: 1 },
   idempotency_key: { type: "string", minLength: 1 }
@@ -50,7 +49,7 @@ function tool(name, description, properties = {}, required = []) {
 }
 
 export const collaborationDynamicTools = Object.freeze([
-  tool("corptie_collaboration_capabilities", "Read collaboration actions authorized for this exact authenticated Session. Agent is the identity/authorization principal; Session is the context and routing principal."),
+  tool("corptie_collaboration_capabilities", "Read collaboration actions authorized for this exact authenticated Session. Session is the only actor and routing principal; Agent, Objective, and WorkItem are resources bound to it."),
   tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions. Without peer filters, results stay in the authenticated Objective; explicit agent_id/objective_id filters may return minimal peer-Objective routing descriptors with Workspace and Provider details redacted.", {
     agent_id: agentIdSchema,
     objective_id: objectiveIdSchema,
@@ -106,11 +105,10 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_services_describe", "Describe a service, its owner, endpoint, version, metadata, and consumers.", {
     service_id: { type: "string", minLength: 1 }
   }, ["service_id"]),
-  tool("corptie_collaboration_request", "Stage an Objective-to-Objective WorkItem question or change request for deterministic user confirmation. Resolve the recipient first, then call this tool immediately with the final fields; Corptie renders and handles confirmation without another Agent turn.", {
+  tool("corptie_collaboration_request", "Stage a Session-to-Session question or change request for deterministic user confirmation. Supply an existing recipient Session, or the Objective and Agent resources Corptie must use to create a WorkItem and target Session before the task exists.", {
     recipient_session_name: { type: "string", minLength: 1 },
     recipient_session_id: sessionIdSchema,
-    recipient_agent_id: { type: "string", minLength: 1 },
-    routing_intent: { type: "string", enum: [...COLLABORATION_ROUTING_INTENTS], description: "Required when recipient_session_id is omitted. Choose from task context. A final collaboration target is always the target WorkItem's active Worker Session; Objective Chat only orchestrates creation. Reuse requires work_item_id, otherwise Corptie creates the WorkItem Session." },
+    session_agent_id: { ...agentIdSchema, description: "Agent resource used to configure a newly created target Worker Session. This is never the message recipient." },
     service_id: { type: "string", minLength: 1 },
     target_objective_id: { type: "string", minLength: 1, description: "Target Objective. Defaults to the recipient's current Objective or compatibility Objective." },
     work_item_id: { type: "string", minLength: 1, description: "Existing target-Objective WorkItem to use instead of creating one." },
@@ -149,7 +147,7 @@ export const collaborationDynamicTools = Object.freeze([
   }, ["task_id", "body", "artifact"]),
   tool("corptie_collaboration_request_revision", "Report failed verification and request another iteration; Corptie escalates after iteration three.", messageProperties, ["task_id", "body"]),
   tool("corptie_collaboration_complete", "Confirm that the delivered result meets the acceptance criteria and complete the task.", messageProperties, ["task_id", "body"]),
-  tool("corptie_collaboration_cancel", "Cancel a non-terminal task initiated by the authenticated Agent.", {
+  tool("corptie_collaboration_cancel", "Cancel a non-terminal task initiated by this exact authenticated Session.", {
     task_id: { type: "string", minLength: 1 },
     reason: { type: "string", minLength: 1 }
   }, ["task_id", "reason"]),
@@ -157,7 +155,7 @@ export const collaborationDynamicTools = Object.freeze([
     task_id: { type: "string", minLength: 1 },
     include_history: { type: "boolean", description: "Include every message, Artifact, and event. Defaults to false." }
   }, ["task_id"]),
-  tool("corptie_collaboration_list_inbox", "List collaboration tasks addressed to the authenticated Agent.", {
+  tool("corptie_collaboration_list_inbox", "List collaboration tasks addressed to this exact authenticated Session.", {
     status: { type: "array", items: { type: "string", enum: taskStatuses } },
     limit: { type: "integer", minimum: 1, maximum: 500 }
   })
@@ -204,10 +202,9 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     }),
     corptie_services_describe: () => client.get(`/internal/collaboration/services/${encodeURIComponent(input.service_id)}`),
     corptie_collaboration_request: () => client.post("/internal/collaboration/task-confirmations", compact({
-      recipientAgentId: input.recipient_agent_id,
+      sessionAgentId: input.session_agent_id,
       recipientSessionName: input.recipient_session_name,
       recipientSessionId: input.recipient_session_id,
-      routingIntent: input.routing_intent,
       serviceId: input.service_id,
       targetObjectiveId: input.target_objective_id,
       workItemId: input.work_item_id,

@@ -502,7 +502,7 @@ test("pending collaboration confirmations are delivered exactly once on the firs
   assert.equal(cards[0].header.subtitle.content, "Corptie · 确认发送协作任务");
 });
 
-test("collaboration requests and the receiving Agent's follow-up are both projected to Feishu", async () => {
+test("collaboration requests and the receiving Session's follow-up are both projected to Feishu", async () => {
   const cards = [];
   const manager = new FeishuGatewayManager({
     store: {
@@ -522,7 +522,14 @@ test("collaboration requests and the receiving Agent's follow-up are both projec
           type: "userMessage",
           sourceType: "collaboration",
           localVisibility: "status_only",
-          collaborationSenderName: "Peer Agent",
+          collaborationInitiatorSessionId: "session:peer",
+          collaborationInitiatorSessionTitle: "Peer Session",
+          collaborationRecipientSessionId: "session:thread-a",
+          collaborationRecipientSessionTitle: "Session A",
+          collaborationSourceObjectiveId: "objective:peer",
+          collaborationSourceObjectiveName: "Peer Objective",
+          collaborationTargetObjectiveId: "objective:current",
+          collaborationTargetObjectiveName: "Current Objective",
           collaborationTaskTitle: "Review API",
           presentationText: "Please review the API.",
           text: "<peer_content>trusted envelope</peer_content>"
@@ -542,7 +549,7 @@ test("collaboration requests and the receiving Agent's follow-up are both projec
   await manager.syncBot("bot-a");
 
   assert.equal(cards.length, 2);
-  assert.equal(cards[0].header.subtitle.content, "Corptie · 来自 Peer Agent");
+  assert.equal(cards[0].header.subtitle.content, "Corptie · 来自 Peer Session");
   assert.doesNotMatch(cards[0].body.elements.at(-1).content, /trusted envelope/);
   assert.equal(cards[1].body.elements[0].content, "Internal handling detail");
 });

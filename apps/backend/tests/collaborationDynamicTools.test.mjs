@@ -36,7 +36,7 @@ test("dynamic request maps tool input to the authenticated collaboration HTTP co
   };
 
   const result = await callCollaborationDynamicTool(client, "corptie_collaboration_request", {
-    recipient_agent_id: "agent-b",
+    session_agent_id: "agent-b",
     type: "change_request",
     title: "Update API",
     summary: "Add the endpoint",
@@ -47,7 +47,7 @@ test("dynamic request maps tool input to the authenticated collaboration HTTP co
   assert.deepEqual(calls, [{
     path: "/internal/collaboration/task-confirmations",
     body: {
-      recipientAgentId: "agent-b",
+      sessionAgentId: "agent-b",
       type: "change_request",
       title: "Update API",
       summary: "Add the endpoint",
@@ -62,7 +62,7 @@ test("dynamic request maps tool input to the authenticated collaboration HTTP co
 test("dynamic request rejects an empty success response instead of reporting coordination success", async () => {
   await assert.rejects(
     callCollaborationDynamicTool({ post: async () => ({}) }, "corptie_collaboration_request", {
-      recipient_agent_id: "agent-b",
+      session_agent_id: "agent-b",
       type: "change_request",
       title: "Update API",
       summary: "Add the endpoint"
