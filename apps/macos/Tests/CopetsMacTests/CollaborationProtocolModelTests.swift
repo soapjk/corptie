@@ -21,6 +21,7 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "recipientNameAtSend": "Recipient Worker Session",
           "routingVersion": 7,
           "routeStatus": "active",
+          "routingIntent": "existing_work_item_session",
           "artifactStatus": "pending",
           "acceptanceStatus": "pending",
           "initiatorBindingId": "binding:historical",
@@ -33,6 +34,7 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "title": "Repair collaboration identity",
           "summary": "Preserve historical routing snapshots.",
           "acceptanceCriteria": [],
+          "idempotencyKey": "request:repair-identity",
           "createdAt": "2026-08-23T00:00:00.000Z",
           "updatedAt": "2026-08-23T00:00:00.000Z",
           "completedAt": null,
@@ -52,6 +54,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
         XCTAssertEqual(task.initiatorNameAtSend, "Historical Initiator Session")
         XCTAssertEqual(task.recipientNameAtSend, "Recipient Worker Session")
         XCTAssertEqual(task.routingVersion, 7)
+        XCTAssertEqual(task.routingIntent, "existing_work_item_session")
+        XCTAssertEqual(task.idempotencyKey, "request:repair-identity")
     }
 
     func testPendingConfirmationDecodesExplicitAgentSessionAndObjectiveRoute() throws {
@@ -98,9 +102,13 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "taskId": "task:1",
           "senderAgentId": "agent:a",
           "recipientAgentId": "agent:b",
+          "senderSessionId": "session:a",
+          "recipientSessionId": "session:b",
           "messageType": "change_request",
           "body": "Implement it",
+          "evidence": [{ "type": "test", "passed": true }],
           "resourceVersion": "v1",
+          "idempotencyKey": "message:implement-it",
           "createdAt": "2026-08-20T00:00:00.000Z",
           "envelope": {
             "version": "2.0",
@@ -124,6 +132,10 @@ final class CollaborationProtocolModelTests: XCTestCase {
 
         let message = try JSONDecoder().decode(CollaborationMessage.self, from: data)
         XCTAssertEqual(message.envelope?.version, "2.0")
+        XCTAssertEqual(message.senderSessionId, "session:a")
+        XCTAssertEqual(message.recipientSessionId, "session:b")
+        XCTAssertEqual(message.evidence?.count, 1)
+        XCTAssertEqual(message.idempotencyKey, "message:implement-it")
         XCTAssertEqual(message.envelope?.objective.sourceId, "objective:a")
         XCTAssertEqual(message.envelope?.objective.targetId, "objective:b")
         XCTAssertEqual(message.envelope?.workItem.sourceId, "work_item:source")

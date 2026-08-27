@@ -2149,6 +2149,17 @@ function emitEvent(type, payload, options = {}) {
       console.error(`[scheduled-session] work event reconciliation failed type=${type}: ${error.message}`);
     }
   }
+  if (type === "AgentWorkCompleted" && payload?.workItem?.kind === "collaboration") {
+    try {
+      collaborationCore.reconcileCompletedAgentWork(payload.workItem);
+    } catch (error) {
+      console.error(
+        `[collaboration] completed work reconciliation failed work=${payload.workItem.workItemId}`
+        + ` delivery=${payload.workItem.deliveryId ?? "unknown"} code=${error.code ?? "unknown"}`
+        + ` error=${error.message}`
+      );
+    }
+  }
   if (type === "AgentWorkCompleted" && sessionId) {
     setImmediate(() => {
       try {
