@@ -4581,8 +4581,8 @@ private struct ChatUsageBar: View {
                         numericValue: used
                     )
                 }
-                if let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account) {
-                    let remainingPercent = max(0, 100 - (window.usedPercent ?? 0))
+                if let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account),
+                   let remainingPercent = SessionUsagePresentation.remainingRateLimitPercent(window) {
                     if usage.account.provider == "codex" {
                         Button {
                             isResetNoticePresented.toggle()
