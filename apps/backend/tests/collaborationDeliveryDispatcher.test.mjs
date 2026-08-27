@@ -770,3 +770,41 @@ test("the Agent work queue startup owner recovers interrupted deliveries", async
     await cleanup(value);
   }
 });
+
+test("a completed Provider turn reconciles an interrupted delivery without resending it", async () => {
+  const value = await fixture();
+  try {
+    createRequest(value.core);
+    const delivery = value.core.listPendingDeliveries()[0];
+    const workItem = value.store.enqueueAgentWorkItem({
+      workItemId: `delivery:${delivery.deliveryId}`,
+      agentId: delivery.recipientAgentId,
+      sessionId: "codex:thread-b",
+      kind: "collaboration",
+      priority: 50,
+      text: "trusted collaboration event",
+      source: { type: "collaboration", deliveryId: delivery.deliveryId },
+      localVisibility: "status_only",
+      deliveryId: delivery.deliveryId,
+      createdAt: delivery.createdAt
+    });
+    value.store.claimAgentWorkItem(workItem.workItemId);
+    value.core.claimDelivery(delivery.deliveryId);
+    assert.equal(value.core.recoverInterruptedDeliveries(), 1);
+
+    const completed = value.store.updateAgentWorkItem(workItem.workItemId, {
+      status: "completed",
+      targetTurnId: "turn:accepted-before-restart"
+    });
+    const reconciled = value.core.reconcileCompletedAgentWork(completed);
+
+    assert.equal(reconciled.status, "delivered");
+    assert.equal(reconciled.targetTurnId, "turn:accepted-before-restart");
+    assert.equal(reconciled.lastError, null);
+    assert.equal(value.core.listPendingDeliveries().length, 0);
+    assert.equal(value.core.getTask(value.core.getDeliveryEnvelope(delivery.deliveryId).task.taskId)
+      .events.at(-1).type, "delivery_reconciled");
+  } finally {
+    await cleanup(value);
+  }
+});
