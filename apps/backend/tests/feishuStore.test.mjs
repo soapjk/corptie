@@ -153,16 +153,13 @@ test("gateway trusted workspaces are normalized and persisted", async () => {
   });
 });
 
-test("log directory is created, persisted, and exposed with concrete log paths", async () => {
+test("deprecated independent log directory is rejected instead of silently ignored", async () => {
   await withStore(async (store, directory) => {
     const logDir = join(directory, "external-logs");
-    await store.updateSettings({ logDir });
-
-    assert.equal(store.settings().logDir, logDir);
-    assert.deepEqual(store.settings().logPaths, {
-      stdout: join(logDir, "backend.out.log"),
-      stderr: join(logDir, "backend.err.log")
-    });
-    assert.equal(JSON.parse(await readFile(join(directory, "config.json"), "utf8")).logDir, logDir);
+    await assert.rejects(
+      () => store.updateSettings({ logDir }),
+      { code: "DEPRECATED_SETTINGS_PATH_FIELD" }
+    );
+    assert.equal(store.logDirectory(), join(store.layout.environmentRoot, "logs"));
   });
 });

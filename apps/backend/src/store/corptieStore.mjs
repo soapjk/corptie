@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { access, copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
@@ -8,6 +9,13 @@ import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
 import { createdAtFrom, createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { resolveAgentWorkDir } from "../runtime/agentWorkDir.mjs";
+import {
+  atomicWriteJson,
+  defaultCorptieDataRoot,
+  ensureDataRootLayout,
+  migrateDataRoot,
+  resolveDataRootLayout
+} from "../runtime/dataRootLayout.mjs";
 import {
   assertExplicitSessionKind,
   inferSessionKind,
@@ -39,15 +47,29 @@ const legacyAppSupportName = environmentName === "development" ? "Copets Develop
 const appSupportDir = join(os.homedir(), "Library", "Application Support", appSupportName);
 const legacyAppSupportDir = join(os.homedir(), "Library", "Application Support", legacyAppSupportName);
 const legacyDbPath = join(legacyAppSupportDir, "copets.sqlite");
-const configPath = join(appSupportDir, "config.json");
+const legacyCurrentConfigPath = join(appSupportDir, "config.json");
 const legacyConfigPath = join(legacyAppSupportDir, "config.json");
-const fallbackDataDir = appSupportDir;
 const fallbackLogDir = join(os.homedir(), "Library", "Logs", appSupportName);
-const dbFileName = "corptie.sqlite";
+const rootSelectionPath = join(appSupportDir, "data-root.json");
+const SETTINGS_FIELDS = new Set([
+  "dataRoot", "choiceParser", "codexBackend", "codeDiff", "agentProxy", "newSessionDefaults", "gateway"
+]);
+const DEPRECATED_PATH_FIELDS = new Set([
+  "dataDir", "logDir", "dbPath", "configPath", "artifactDir", "runtimeDir", "backupDir"
+]);
 
 export class CorptieStore {
   constructor(options = {}) {
-    this.configPath = options.configPath || process.env.CORPTIE_CONFIG_PATH || configPath;
+    this.explicitPaths = Boolean(options.dbPath || options.configPath);
+    this.dataRootExplicit = Boolean(options.dataRoot || process.env.CORPTIE_DATA_ROOT);
+    this.rootSelectionPath = options.rootSelectionPath || rootSelectionPath;
+    this.configPath = options.configPath || null;
+    this.dataRoot = options.dataRoot
+      || process.env.CORPTIE_DATA_ROOT
+      || readConfiguredDataRootSync(this.rootSelectionPath)
+      || defaultCorptieDataRoot();
+    if (!this.explicitPaths) process.env.CORPTIE_HOME = resolve(this.dataRoot);
+    this.layout = null;
     this.dataDir = null;
     this.dbPath = options.dbPath || process.env.CORPTIE_DB_PATH || null;
     this.db = null;
@@ -58,6 +80,8 @@ export class CorptieStore {
     this.pendingStateDirty = false;
     this.pendingTimelineDirty = new Set();
     this.performanceMigrationBackupPath = null;
+    this.migrationInProgress = false;
+    this.dataRootDidChangeListener = null;
   }
 
   async initialize() {
@@ -78,30 +102,38 @@ export class CorptieStore {
   }
 
   async resolveDataPath() {
-    if (this.dbPath) {
+    if (this.explicitPaths && this.dbPath) {
       this.dataDir = dirname(this.dbPath);
+      this.dataRoot = this.dataDir;
+      this.layout = resolveDataRootLayout(this.dataRoot, environmentName);
+      this.configPath ||= join(this.dataDir, "config.json");
       return;
     }
 
-    const configured = await this.readConfiguredDataDir();
-    this.dataDir = configured || await defaultDataDir();
-    this.dbPath = join(this.dataDir, dbFileName);
-    const legacyDataDbPath = join(this.dataDir, "copets.sqlite");
-
-    if (this.dbPath !== legacyDataDbPath && await exists(legacyDataDbPath) && !await exists(this.dbPath)) {
-      await mkdir(this.dataDir, { recursive: true });
-      await copyFile(legacyDataDbPath, this.dbPath);
-      if (!configured) {
-        await this.writeConfig();
-      }
-      return;
+    const legacy = await this.readRootSelectionAndLegacyConfig();
+    this.dataRoot = resolve(
+      this.dataRoot
+        || legacy.selection?.dataRoot
+        || legacy.config?.dataRoot
+        || legacy.config?.dataDir
+        || defaultCorptieDataRoot()
+    );
+    this.layout = resolveDataRootLayout(this.dataRoot, environmentName);
+    this.dataDir = this.layout.environmentRoot;
+    this.dbPath = this.layout.databasePath;
+    this.configPath = this.layout.configPath;
+    process.env.CORPTIE_HOME = this.dataRoot;
+    await ensureDataRootLayout(this.layout);
+    await this.migrateLegacyPaths(legacy.config ?? {});
+    try {
+      this.config = JSON.parse(await readFile(this.configPath, "utf8"));
+    } catch {
+      this.config = legacy.config ?? {};
     }
-
-    if (!configured && this.dbPath !== legacyDbPath && await exists(legacyDbPath) && !await exists(this.dbPath)) {
-      await mkdir(this.dataDir, { recursive: true });
-      await copyFile(legacyDbPath, this.dbPath);
-      await this.writeConfig();
-    }
+    for (const field of DEPRECATED_PATH_FIELDS) delete this.config[field];
+    this.config.dataRoot = this.dataRoot;
+    await this.writeConfig();
+    await this.writeRootSelection();
   }
 
   async ensurePerformanceMigrationBackup() {
@@ -134,38 +166,56 @@ export class CorptieStore {
     this.performanceMigrationBackupPath = backupPath;
   }
 
-  async readConfiguredDataDir() {
-    try {
-      this.config = JSON.parse(await readFile(this.configPath, "utf8"));
-      return typeof this.config.dataDir === "string" && this.config.dataDir.trim() ? this.config.dataDir.trim() : null;
-    } catch {
-      try {
-        this.config = JSON.parse(await readFile(legacyConfigPath, "utf8"));
-        return typeof this.config.dataDir === "string" && this.config.dataDir.trim() ? this.config.dataDir.trim() : null;
-      } catch {
-        this.config = {};
-        return null;
-      }
+  async readRootSelectionAndLegacyConfig() {
+    const selection = await readJsonFile(this.rootSelectionPath);
+    const config = await readJsonFile(legacyCurrentConfigPath) ?? await readJsonFile(legacyConfigPath) ?? {};
+    return { selection, config };
+  }
+
+  async migrateLegacyPaths(config) {
+    if (await exists(this.dbPath)) return;
+    if (this.dataRootExplicit) return;
+    const configuredDataDir = typeof config.dataDir === "string" && config.dataDir.trim()
+      ? resolve(config.dataDir.trim())
+      : null;
+    const databaseCandidates = [
+      configuredDataDir ? join(configuredDataDir, "corptie.sqlite") : null,
+      configuredDataDir ? join(configuredDataDir, "copets.sqlite") : null,
+      join(appSupportDir, "corptie.sqlite"),
+      join(appSupportDir, "copets.sqlite"),
+      legacyDbPath
+    ].filter(Boolean);
+    const sourceDatabase = await firstExisting(databaseCandidates);
+    if (sourceDatabase && resolve(sourceDatabase) !== resolve(this.dbPath)) {
+      await copyFile(sourceDatabase, this.dbPath);
+    }
+
+    const configuredLogDir = typeof config.logDir === "string" && config.logDir.trim()
+      ? resolve(config.logDir.trim())
+      : fallbackLogDir;
+    if (resolve(configuredLogDir) !== resolve(this.layout.logsDirectory)
+      && await exists(configuredLogDir)
+      && (await readdir(this.layout.logsDirectory)).length === 0) {
+      await cp(configuredLogDir, this.layout.logsDirectory, { recursive: true, force: false });
     }
   }
 
   async writeConfig() {
-    await mkdir(dirname(this.configPath), { recursive: true });
-    await writeFile(this.configPath, JSON.stringify({
+    await atomicWriteJson(this.configPath, {
       ...this.config,
-      dataDir: this.dataDir
-    }, null, 2));
+      dataRoot: this.dataRoot
+    });
+  }
+
+  async writeRootSelection() {
+    if (this.explicitPaths) return;
+    await atomicWriteJson(this.rootSelectionPath, { dataRoot: this.dataRoot });
   }
 
   settings() {
     return {
       environment: environmentName,
-      configPath: this.configPath,
-      dataDir: this.dataDir,
-      dbPath: this.dbPath,
-      logDir: this.logDirectory(),
-      logPaths: this.logPaths(),
-      legacyDbPath,
+      dataRoot: this.dataRoot,
       choiceParser: this.choiceParserSettings(),
       codexBackend: this.codexBackendSettings(),
       codeDiff: this.codeDiffSettings(),
@@ -202,9 +252,7 @@ export class CorptieStore {
   }
 
   logDirectory() {
-    return typeof this.config.logDir === "string" && this.config.logDir.trim()
-      ? this.config.logDir.trim()
-      : fallbackLogDir;
+    return this.layout?.logsDirectory ?? join(this.dataDir, "logs");
   }
 
   logPaths() {
@@ -216,11 +264,10 @@ export class CorptieStore {
   }
 
   async updateSettings(input = {}) {
-    if (typeof input.dataDir === "string" && input.dataDir.trim()) {
-      await this.setDataDirectory(input.dataDir);
-    }
-    if (typeof input.logDir === "string" && input.logDir.trim()) {
-      await this.setLogDirectory(input.logDir);
+    assertSettingsFields(input);
+    let migration = null;
+    if (Object.hasOwn(input, "dataRoot")) {
+      migration = (await this.setDataRoot(input.dataRoot)).migration ?? null;
     }
     if (input.choiceParser && typeof input.choiceParser === "object") {
       this.config.choiceParser = normalizeChoiceParserSettings(input.choiceParser);
@@ -249,39 +296,98 @@ export class CorptieStore {
       this.config.gateway = normalizeGatewaySettings(input.gateway);
       await this.writeConfig();
     }
-    return this.settings();
+    return migration ? { ...this.settings(), migration } : this.settings();
   }
 
-  async setDataDirectory(dataDir) {
-    const nextDir = dataDir.trim();
-    if (!nextDir) {
-      throw new Error("Data directory is required.");
+  async setDataRoot(dataRoot) {
+    if (typeof dataRoot !== "string" || !dataRoot.trim()) throw new TypeError("Data root is required.");
+    const nextLayout = resolveDataRootLayout(dataRoot.trim(), environmentName);
+    if (nextLayout.dataRoot === this.dataRoot) return this.settings();
+    if (this.explicitPaths) throw new Error("An explicitly configured test Store cannot migrate its data root.");
+    if (this.migrationInProgress) {
+      const error = new Error("A data root migration is already in progress.");
+      error.code = "DATA_ROOT_MIGRATION_IN_PROGRESS";
+      throw error;
+    }
+    const activeTurns = this.selectOne(
+      "SELECT COUNT(*) AS count FROM session_turns WHERE execution_status IN ('running', 'blocked')"
+    );
+    if (Number(activeTurns?.count ?? 0) > 0) {
+      const error = new Error("Data root migration requires all active Agent turns to settle first.");
+      error.code = "DATA_ROOT_MIGRATION_BUSY";
+      error.statusCode = 409;
+      throw error;
     }
 
-    await mkdir(nextDir, { recursive: true });
-    const nextDbPath = join(nextDir, dbFileName);
-    if (nextDbPath === this.dbPath) return this.settings();
-
-    await backup(this.db.database, nextDbPath);
-    this.db.close();
-    this.dataDir = nextDir;
-    this.dbPath = nextDbPath;
-    this.db = new NativeDatabase(this.dbPath);
-    this.db.run("PRAGMA journal_mode = WAL");
-    this.db.run("PRAGMA synchronous = FULL");
-    this.db.run("PRAGMA busy_timeout = 5000");
-    this.db.run("PRAGMA foreign_keys = ON");
-    await this.writeConfig();
-    return this.settings();
+    const previous = {
+      layout: this.layout,
+      dataRoot: this.dataRoot,
+      dataDir: this.dataDir,
+      dbPath: this.dbPath,
+      configPath: this.configPath,
+      config: this.config
+    };
+    this.migrationInProgress = true;
+    this.db.setWriteBlocked(true);
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+    let switched = false;
+    try {
+      const receipt = await migrateDataRoot({
+        sourceLayout: this.layout,
+        targetLayout: nextLayout,
+        sourceDatabase: this.db.database
+      });
+      this.db.close();
+      this.layout = nextLayout;
+      this.dataRoot = nextLayout.dataRoot;
+      this.dataDir = nextLayout.environmentRoot;
+      this.dbPath = nextLayout.databasePath;
+      this.configPath = nextLayout.configPath;
+      this.db = this.openDatabase(this.dbPath);
+      switched = true;
+      this.config = JSON.parse(await readFile(this.configPath, "utf8"));
+      this.config.dataRoot = this.dataRoot;
+      await this.writeConfig();
+      process.env.CORPTIE_HOME = this.dataRoot;
+      await this.dataRootDidChangeListener?.({ previous: previous.layout, current: this.layout, receipt });
+      await this.writeRootSelection();
+      return { ...this.settings(), migration: receipt };
+    } catch (error) {
+      if (switched) this.db?.close();
+      this.layout = previous.layout;
+      this.dataRoot = previous.dataRoot;
+      this.dataDir = previous.dataDir;
+      this.dbPath = previous.dbPath;
+      this.configPath = previous.configPath;
+      this.config = previous.config;
+      if (switched) this.db = this.openDatabase(this.dbPath);
+      process.env.CORPTIE_HOME = this.dataRoot;
+      if (switched) {
+        await this.dataRootDidChangeListener?.({
+          previous: nextLayout,
+          current: previous.layout,
+          receipt: null,
+          rollback: true
+        }).catch(() => {});
+      }
+      throw error;
+    } finally {
+      this.db.setWriteBlocked(false);
+      this.migrationInProgress = false;
+    }
   }
 
-  async setLogDirectory(logDir) {
-    const nextDir = logDir.trim();
-    if (!nextDir) throw new Error("Log directory is required.");
-    await mkdir(nextDir, { recursive: true });
-    this.config.logDir = nextDir;
-    await this.writeConfig();
-    return this.settings();
+  setDataRootDidChangeListener(listener) {
+    this.dataRootDidChangeListener = typeof listener === "function" ? listener : null;
+  }
+
+  openDatabase(path) {
+    const database = new NativeDatabase(path);
+    database.run("PRAGMA journal_mode = WAL");
+    database.run("PRAGMA synchronous = FULL");
+    database.run("PRAGMA busy_timeout = 5000");
+    database.run("PRAGMA foreign_keys = ON");
+    return database;
   }
 
   // 事件溯源层（session_logs/session_events）的 session_id 是独立游标键，
@@ -9936,9 +10042,16 @@ class NativeDatabase {
     this.database = new DatabaseSync(path);
     this.rowsModified = 0;
     this.observability = new SqliteQueryObservability();
+    this.writeBlocked = false;
   }
 
   run(sql, params = []) {
+    if (this.writeBlocked && isMutatingSQL(sql)) {
+      const error = new Error("Persistent writes are paused while the data root is being migrated.");
+      error.code = "DATA_ROOT_MIGRATION_IN_PROGRESS";
+      error.statusCode = 503;
+      throw error;
+    }
     return this.observability.measure(sql, queryCallerSource(), "run", () => {
       const bindings = normalizeSqliteBindings(params);
       if (bindings.length > 0) {
@@ -9951,6 +10064,10 @@ class NativeDatabase {
       const result = this.database.prepare("SELECT changes() AS changes").get();
       this.rowsModified = Number(result?.changes ?? 0);
     });
+  }
+
+  setWriteBlocked(blocked) {
+    this.writeBlocked = blocked === true;
   }
 
   all(sql, params = [], source = "unknown") {
@@ -10966,10 +11083,6 @@ function normalizeStoredText(text = "", provider = "") {
   return text;
 }
 
-async function defaultDataDir() {
-  return process.env.CORPTIE_DEFAULT_DATA_DIR || fallbackDataDir;
-}
-
 function normalizeEnvironment(value = "") {
   const normalized = String(value || "").toLowerCase();
   return normalized === "dev" || normalized === "development" ? "development" : "production";
@@ -10982,6 +11095,66 @@ async function exists(path) {
   } catch {
     return false;
   }
+}
+
+async function readJsonFile(path) {
+  try {
+    const value = JSON.parse(await readFile(path, "utf8"));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function readConfiguredDataRootSync(path) {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    return typeof value?.dataRoot === "string" && value.dataRoot.trim() ? value.dataRoot.trim() : null;
+  } catch {
+    for (const configPath of [legacyCurrentConfigPath, legacyConfigPath]) {
+      try {
+        const legacy = JSON.parse(readFileSync(configPath, "utf8"));
+        const value = legacy?.dataRoot ?? legacy?.dataDir;
+        if (typeof value !== "string" || !value.trim()) continue;
+        const configured = resolve(value.trim());
+        if (configured === resolve(appSupportDir) || configured === resolve(legacyAppSupportDir)) {
+          return defaultCorptieDataRoot();
+        }
+        return configured;
+      } catch {}
+    }
+    return null;
+  }
+}
+
+async function firstExisting(paths) {
+  for (const path of paths) {
+    if (await exists(path)) return path;
+  }
+  return null;
+}
+
+function assertSettingsFields(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("Settings patch must be an object.");
+  }
+  for (const field of Object.keys(input)) {
+    if (DEPRECATED_PATH_FIELDS.has(field)) {
+      const error = new TypeError(`Settings field '${field}' is no longer supported; use 'dataRoot'.`);
+      error.code = "DEPRECATED_SETTINGS_PATH_FIELD";
+      throw error;
+    }
+    if (!SETTINGS_FIELDS.has(field)) {
+      const error = new TypeError(`Unknown settings field: ${field}`);
+      error.code = "UNKNOWN_SETTINGS_FIELD";
+      throw error;
+    }
+  }
+}
+
+function isMutatingSQL(sql) {
+  const normalized = String(sql ?? "").trim().replace(/^(?:--[^\n]*\n|\/\*[\s\S]*?\*\/\s*)*/g, "").toUpperCase();
+  return !/^(?:SELECT|PRAGMA\s+(?:TABLE_INFO|INDEX_LIST|INDEX_INFO|QUICK_CHECK|INTEGRITY_CHECK|FOREIGN_KEY_CHECK)|EXPLAIN)\b/.test(normalized);
 }
 
 // 会话日志事件溯源（10）：按事件类型推导 surface（是否投影为用户可见消息）。
