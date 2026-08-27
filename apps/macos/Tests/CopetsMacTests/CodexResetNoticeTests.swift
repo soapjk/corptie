@@ -68,6 +68,34 @@ struct CodexResetNoticeTests {
         #expect(SessionUsagePresentation.preferredRateLimitWindow(account)?.resetsAt == 200)
     }
 
+    @Test(arguments: [
+        (used: 0.0, remaining: 100.0),
+        (used: 100.0, remaining: 0.0),
+        (used: 12.345, remaining: 87.655),
+        (used: 125.0, remaining: 0.0)
+    ])
+    func planQuotaCalculatesFiniteRemainingPercentage(
+        used: Double,
+        remaining: Double
+    ) {
+        let window = CodexRateLimitWindow(
+            usedPercent: used,
+            windowDurationMins: 10_080,
+            resetsAt: nil
+        )
+        #expect(SessionUsagePresentation.remainingRateLimitPercent(window) == remaining)
+    }
+
+    @Test(arguments: [nil, -.infinity, .infinity, .nan, -0.1] as [Double?])
+    func planQuotaRejectsMissingOrInvalidPercentage(used: Double?) {
+        let window = CodexRateLimitWindow(
+            usedPercent: used,
+            windowDurationMins: 10_080,
+            resetsAt: nil
+        )
+        #expect(SessionUsagePresentation.remainingRateLimitPercent(window) == nil)
+    }
+
     @Test
     func planQuotaDoesNotUseAnotherModelsZeroUsageBucket() {
         let canonical = CodexRateLimitSnapshot(

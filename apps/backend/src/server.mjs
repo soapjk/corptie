@@ -46,6 +46,7 @@ import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoord
 import { assertManualSessionArchiveAllowed } from "./domain/sessionArchivePolicy.mjs";
 import { resolveConflictResolutionAgentContext } from "./application/conflictResolutionAgentContext.mjs";
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
+import { loadSessionUsageSnapshot } from "./application/sessionUsageSnapshot.mjs";
 import { SessionWorktreeService } from "./application/sessionWorktreeService.mjs";
 import { SessionWorkspaceOperationService } from "./application/sessionWorkspaceOperationService.mjs";
 import {
@@ -7276,15 +7277,26 @@ function route(request, response) {
       ? "codex"
       : session.external?.provider ?? "unknown";
     const storedUsage = store.getSessionUsageSnapshot(sessionId);
-    sendJson(response, 200, {
-      account: storedUsage?.account ?? {
+    loadSessionUsageSnapshot({
+      loadAccount: () => sessionApplicationService.readAccountUsage(sessionId),
+      loadContext: async () => storedUsage?.context ?? null,
+      fallbackAccount: storedUsage?.account ?? {
         available: false,
         provider,
         model: storedUsage?.model ?? session.external?.currentModel ?? null
       },
-      context: storedUsage?.context ?? null,
-      resetForecast: null
-    });
+      persistAccount: (account) => store.upsertSessionUsageSnapshot({
+        sessionId,
+        providerId: session.external?.provider ?? provider,
+        model: account.model ?? storedUsage?.model ?? session.external?.currentModel ?? null,
+        account
+      }),
+      resetForecast: session.external?.provider === "codex-app-server"
+        ? codexResetForecastMonitor?.snapshot() ?? null
+        : null
+    })
+      .then((usage) => sendJson(response, 200, usage))
+      .catch((error) => sendJson(response, 503, { error: error.message }));
     return;
   }
 
