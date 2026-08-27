@@ -140,7 +140,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testCollaborationCardPresentsRouteSessionTaskStatusAndMessage() throws {
+    func testCollaborationCardPrioritizesSessionObjectiveAndMessageWithoutAgentNames() throws {
         var collaboration = item(
             id: "collaboration",
             type: "userMessage",
@@ -177,14 +177,21 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertTrue(presentation.title.contains(L10n("Agent 协作")))
         XCTAssertTrue(presentation.title.contains(L10n("修改请求")))
         XCTAssertTrue(presentation.metadata.contains(L10n("处理中")))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Platform Agent · agent:platform"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("macOS Agent · agent:macos"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Sessions UI · session:ui"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("Platform Agent"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("macOS Agent"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:platform"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:macos"))
+        let sourceSessionRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Platform Objective Chat · session:platform"))
+        let targetSessionRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Sessions UI · session:ui"))
+        let sourceObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Platform · objective:platform"))
+        let targetObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "macOS · objective:macos"))
+        let messageRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Please review the API contract."))
+        XCTAssertLessThan(sourceSessionRange.lowerBound, targetSessionRange.lowerBound)
+        XCTAssertLessThan(targetSessionRange.lowerBound, sourceObjectiveRange.lowerBound)
+        XCTAssertLessThan(sourceObjectiveRange.lowerBound, targetObjectiveRange.lowerBound)
+        XCTAssertLessThan(targetObjectiveRange.lowerBound, messageRange.lowerBound)
         XCTAssertTrue(presentation.bodyMarkdown.contains("worker · work\\_item:ui"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Platform · objective:platform"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("macOS · objective:macos"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Review collaboration card"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Please review the API contract."))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("Review collaboration card"))
         XCTAssertEqual(presentation.messageText, "Please review the API contract.")
     }
 
@@ -229,9 +236,8 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             currentSessionTitle: "Recipient Worker Session"
         ))
 
-        XCTAssertTrue(presentation.bodyMarkdown.contains("agent:initiator"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("agent:recipient"))
-        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("未知 Agent")))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:initiator"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("agent:recipient"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("objective:source"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("objective:target"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Historical Initiator Session · session:historical-initiator"))

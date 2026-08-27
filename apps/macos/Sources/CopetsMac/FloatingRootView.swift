@@ -5298,16 +5298,6 @@ func nativeCollaborationCardPresentation(
     case "rejected", "cancelled", "canceled": L10n("已取消")
     default: isConfirmation ? L10n("等待确认") : L10n("等待处理")
     }
-    let sender = party(
-        name: item.collaborationSenderName,
-        id: item.collaborationSenderAgentId,
-        fallback: L10n("未知 Agent")
-    )
-    let recipient = party(
-        name: item.collaborationRecipientName,
-        id: item.collaborationRecipientAgentId,
-        fallback: L10n("当前 Agent")
-    )
     let targetSessionFallback = isMessage
         ? nonEmpty(currentSessionTitle) ?? L10n("当前 Session")
         : L10n("未知 Session")
@@ -5335,18 +5325,14 @@ func nativeCollaborationCardPresentation(
         id: item.collaborationTargetObjectiveId,
         fallback: L10n("未知 Objective")
     )
-    let task = nonEmpty(item.collaborationTaskTitle) ?? L10n("未命名协作任务")
     let message = nonEmpty(item.presentationText)
         ?? nonEmpty(item.text)
         ?? L10n("协作消息正文不可用")
     var lines = [
-        "**\(L10n("来自 Agent"))**  \(markdownEscaped(sender))",
-        "**\(L10n("发送至 Agent"))**  \(markdownEscaped(recipient))",
-        "**\(L10n("来源 Objective"))**  \(markdownEscaped(sourceObjective))",
-        "**\(L10n("目标 Objective"))**  \(markdownEscaped(targetObjective))",
         "**\(L10n("来源 Session"))**  \(markdownEscaped(sourceSession))",
         "**\(L10n("目标 Session"))**  \(markdownEscaped(targetSession))",
-        "**\(L10n("协作任务"))**  \(markdownEscaped(task))",
+        "**\(L10n("来源 Objective"))**  \(markdownEscaped(sourceObjective))",
+        "**\(L10n("目标 Objective"))**  \(markdownEscaped(targetObjective))",
         "",
         "**\(L10n("消息"))**",
         message
