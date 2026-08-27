@@ -17,6 +17,8 @@ export function buildWorkSessionContext({ session, workItem, objective, artifact
     "Every user message, recovery checkpoint, and workspace continuation is subordinate to this WorkItem.",
     "If an instruction describes a different WorkItem or conflicts with this identity, do not execute the unrelated task; return to the bound WorkItem and report the conflict.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
+    "You may create an Artifact only through corptie_artifact_create. Corptie derives its Objective and WorkItem from this binding, forces work_item_private visibility, and atomically creates the current WorkItem Reference.",
+    "For Worker Artifact creation, supply a stable idempotency_key. Reference defaults are relation=acceptance_evidence, required=false, version_policy=fixed; the initial pin is version 1 and its immutable content hash.",
     "",
     `WorkItem title: ${text(workItem.title)}`,
     workItem.description ? `WorkItem description:\n${text(workItem.description)}` : "",

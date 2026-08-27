@@ -1914,6 +1914,28 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_artifact_references_work_item
       ON artifact_references(work_item_id, revoked_at, required, relation);
 
+      CREATE TABLE IF NOT EXISTS artifact_worker_create_operations (
+        session_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        reference_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, idempotency_key),
+        UNIQUE (artifact_id),
+        UNIQUE (reference_id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
+        FOREIGN KEY (reference_id) REFERENCES artifact_references(reference_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_worker_create_scope
+      ON artifact_worker_create_operations(objective_id, work_item_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS artifact_audit_events (
         audit_id TEXT PRIMARY KEY,
         artifact_id TEXT,
@@ -8669,6 +8691,27 @@ export class CorptieStore {
       ]
     );
     return this.getArtifactReference(input.referenceId);
+  }
+
+  getArtifactWorkerCreateOperation(sessionId, idempotencyKey) {
+    return this.selectOne(
+      `SELECT * FROM artifact_worker_create_operations WHERE session_id = ? AND idempotency_key = ?`,
+      [sessionId, idempotencyKey]
+    );
+  }
+
+  createArtifactWorkerCreateOperation(input) {
+    this.db.run(
+      `INSERT INTO artifact_worker_create_operations (
+         session_id, objective_id, work_item_id, idempotency_key, request_fingerprint,
+         artifact_id, reference_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.sessionId, input.objectiveId, input.workItemId, input.idempotencyKey,
+        input.requestFingerprint, input.artifactId, input.referenceId, input.createdAt
+      ]
+    );
+    return this.getArtifactWorkerCreateOperation(input.sessionId, input.idempotencyKey);
   }
 
   getArtifactReference(referenceId) {
