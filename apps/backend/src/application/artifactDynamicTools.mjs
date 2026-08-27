@@ -19,13 +19,17 @@ export const artifactDynamicTools = Object.freeze([
   tool("corptie_artifact_search", "Search metadata and bounded local private content across only Artifacts authorized for the authenticated Session.", {
     query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 }
   }, ["query"]),
-  tool("corptie_artifact_create", "Objective Chat only. Create an Objective-private Artifact in Corptie's private application data, never in a Repository or chat history.", {
+  tool("corptie_artifact_create", "Create an Objective Artifact in Corptie's private application data. Objective Chat retains full creation controls. A Worker Session is server-scoped to one work_item_private Artifact plus one Reference for its authoritative current WorkItem; idempotency_key is required for Workers. Worker defaults are relation=acceptance_evidence, required=false, version_policy=fixed, with pinned_version=1 and pinned_hash equal to the immutable initial content hash.", {
     title: { type: "string", minLength: 1 }, summary: { type: "string" }, content: { type: "string" },
     visibility: { type: "string", enum: ["objective_private", "work_item_private", "session_private", "repository_tracked"] },
     bound_work_item_id: { type: "string" }, bound_session_id: { type: "string" },
     repository_locator: { type: "string" }, confirmed_repository_tracked: { type: "boolean" },
-    mime_type: { type: "string" }, approval_status: { type: "string", enum: ["draft", "approved"] }
-  }, ["title", "visibility"]),
+    mime_type: { type: "string" }, approval_status: { type: "string", enum: ["draft", "approved"] },
+    relation: { type: "string", enum: ["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"], description: "Worker Reference relation. Defaults to acceptance_evidence." },
+    required: { type: "boolean", description: "Whether the Worker Reference is required. Defaults to false." },
+    version_policy: { type: "string", enum: ["fixed", "latest_approved"], description: "Worker Reference version policy. Defaults to fixed; its initial pin is always version 1 and the initial content hash." },
+    idempotency_key: { type: "string", minLength: 1, maxLength: 200, description: "Required for Worker creation. Stable within the authenticated Session; retry the same input with the same key." }
+  }, ["title"]),
   tool("corptie_artifact_publish_version", "Objective Chat only. Publish a new immutable private version. Started WorkItems keep their pinned version and receive an audited pending-impact notice.", {
     artifact_id: artifactId, content: { type: "string" }, summary: { type: "string" },
     mime_type: { type: "string" }, approval_status: { type: "string", enum: ["draft", "approved"] }
@@ -56,7 +60,9 @@ export async function callArtifactDynamicTool(service, input = {}) {
       title: args.title, summary: args.summary, content: args.content, visibility: args.visibility,
       boundWorkItemId: args.bound_work_item_id, boundSessionId: args.bound_session_id,
       repositoryLocator: args.repository_locator, confirmedRepositoryTracked: args.confirmed_repository_tracked,
-      mimeType: args.mime_type, approvalStatus: args.approval_status
+      mimeType: args.mime_type, approvalStatus: args.approval_status,
+      relation: args.relation, required: args.required, versionPolicy: args.version_policy,
+      idempotencyKey: args.idempotency_key
     });
     case "corptie_artifact_publish_version": return service.publishVersion(context, args.artifact_id, {
       content: args.content, summary: args.summary, mimeType: args.mime_type, approvalStatus: args.approval_status
@@ -72,4 +78,12 @@ export async function callArtifactDynamicTool(service, input = {}) {
       throw error;
     }
   }
+}
+
+export function authorizeArtifactDynamicTool({ tool, metadata } = {}) {
+  const scoped = ["objectiveChat", "worker"].includes(metadata?.sessionKind)
+    && Boolean(metadata?.objectiveId && metadata?.sessionId);
+  if (!scoped) return false;
+  if (["corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search", "corptie_artifact_create"].includes(tool)) return true;
+  return metadata.sessionKind === "objectiveChat";
 }

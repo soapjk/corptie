@@ -13,7 +13,7 @@ import {
 } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
-import { artifactDynamicTools } from "../src/application/artifactDynamicTools.mjs";
+import { artifactDynamicTools, authorizeArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
 
 function provider(id, capabilities, operations = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
@@ -57,19 +57,54 @@ test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact c
   )));
   const service = new ToolHostService({
     registry,
-    catalog: new HostToolCatalog([{ id: "artifacts", tools: artifactDynamicTools, execute: () => ({}) }])
+    catalog: new HostToolCatalog([{
+      id: "artifacts", tools: artifactDynamicTools,
+      authorize: authorizeArtifactDynamicTool, execute: () => ({})
+    }])
   });
   for (const id of providerIds) await service.prepareSession(id, {
     actorId: "agent:artifact", sessionId: "session:artifact",
     objectiveId: "objective:artifact", sessionKind: "worker"
   });
-  const expected = artifactDynamicTools.map((tool) => tool.name);
+  const expected = [
+    "corptie_artifact_list", "corptie_artifact_get",
+    "corptie_artifact_search", "corptie_artifact_create"
+  ];
   for (const id of providerIds) {
     assert.deepEqual(attachments.get(id).tools.map((tool) => tool.name), expected);
-    assert.deepEqual(attachments.get(id).tools.slice(0, 3).map((tool) => tool.name), [
-      "corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search"
-    ]);
+    assert.equal(attachments.get(id).tools.find((tool) => tool.name === "corptie_artifact_create")
+      .inputSchema.properties.idempotency_key.maxLength, 200);
   }
+});
+
+test("Artifact Host Tool authorization gives Workers create/read but no Objective management operations", async () => {
+  const catalog = new HostToolCatalog([{
+    id: "artifacts", tools: artifactDynamicTools,
+    authorize: authorizeArtifactDynamicTool, execute: () => ({ ok: true })
+  }]);
+  const worker = {
+    actorId: "agent:worker",
+    metadata: {
+      sessionKind: "worker", sessionId: "session:worker",
+      objectiveId: "objective:one", workItemId: "work_item:one"
+    }
+  };
+  assert.deepEqual(catalog.definitions(worker).map((tool) => tool.name), [
+    "corptie_artifact_list", "corptie_artifact_get",
+    "corptie_artifact_search", "corptie_artifact_create"
+  ]);
+  assert.deepEqual(await catalog.execute({
+    ...worker, tool: "corptie_artifact_create", arguments: { title: "Evidence" }
+  }), { ok: true });
+  for (const tool of ["corptie_artifact_publish_version", "corptie_artifact_reference", "corptie_artifact_revoke_reference"]) {
+    await assert.rejects(() => catalog.execute({ ...worker, tool }), {
+      code: "AGENT_TOOL_FORBIDDEN"
+    });
+  }
+  assert.deepEqual(catalog.definitions({
+    actorId: "agent:manager",
+    metadata: { sessionKind: "objectiveChat", sessionId: "session:manager", objectiveId: "objective:one" }
+  }).map((tool) => tool.name), artifactDynamicTools.map((tool) => tool.name));
 });
 
 test("Tool Host carries immutable Session scope metadata into authorization and Provider attachment", async () => {
