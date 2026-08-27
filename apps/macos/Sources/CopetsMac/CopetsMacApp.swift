@@ -129,6 +129,33 @@ struct MainWindowChromeSurfaces {
     let trailing: NSView
 }
 
+/// Title-bar chrome already has an explicit frame relative to the window safe
+/// area. Propagating that safe area into the hosting root applies the inset a
+/// second time; mixed SwiftUI/AppKit controls can then retain their visual frame
+/// while nearly all of the host's mouse hit region is clipped away.
+@MainActor
+final class MainWindowChromeHostingView<Content: View>: NSHostingView<Content> {
+    override var safeAreaInsets: NSEdgeInsets {
+        NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+    }
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, alphaValue > 0, bounds.contains(point) else { return nil }
+        // NSHostingView can discard points in a full-size title bar before it
+        // asks representable descendants. Walk the native children explicitly;
+        // SwiftUI-only buttons continue to receive events through the host.
+        for subview in subviews.reversed() {
+            let localPoint = subview.convert(point, from: self)
+            if let hit = subview.hitTest(localPoint) {
+                return hit
+            }
+        }
+        return super.hitTest(point) ?? self
+    }
+}
+
 enum MainWindowResizeTrace {
     private static let log = OSLog(
         subsystem: "com.corptie.mac",
@@ -340,6 +367,22 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
     override func viewDidEndLiveResize() {
         super.viewDidEndLiveResize()
         endResize(for: .liveResize)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let chromeSurfaces {
+            // Full-size window content and title-bar chrome overlap by design.
+            // Route the fixed controls first so the resident page host cannot
+            // claim their visual bounds as draggable or page content.
+            for surface in [chromeSurfaces.trailing, chromeSurfaces.center, chromeSurfaces.leading] {
+                let localPoint = surface.convert(point, from: self)
+                guard surface.bounds.contains(localPoint) else { continue }
+                if let hit = surface.hitTest(localPoint) {
+                    return hit
+                }
+            }
+        }
+        return super.hitTest(point)
     }
 
     override func layout() {
@@ -951,7 +994,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.center()
         window.isReleasedWhenClosed = false
         let resizeState = MainWindowResizeState()
-        let leadingChrome = NSHostingView(rootView: MainWindowFixedChromeView())
+        let leadingChrome = MainWindowChromeHostingView(rootView: MainWindowFixedChromeView())
         let centerChrome = NSHostingView(rootView: MainWindowTabBarSurfaceView())
         let trailingChrome = NSHostingView(rootView: MainWindowTaskSurfaceView())
         leadingChrome.sizingOptions = []
