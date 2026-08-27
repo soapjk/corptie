@@ -732,6 +732,12 @@ struct CollaborationAgent: Identifiable, Decodable, Equatable {
     let description: String
     let status: String
     let capabilities: [String]
+    let sessionName: String?
+    let sessionId: String?
+    let providerSessionId: String?
+    let role: String?
+    let agentKind: String?
+    let systemPrompt: String?
     let currentSessionId: String?
     let currentObjectiveId: String?
     let currentWorkItemId: String?
@@ -750,6 +756,7 @@ struct CollaborationService: Identifiable, Decodable, Equatable {
     let status: String
     let endpoint: String?
     let repositoryRoot: String?
+    let metadata: [String: JSONValue]?
     let createdAt: String
     let updatedAt: String
 }
@@ -772,6 +779,7 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let recipientNameAtSend: String?
     let routingVersion: Int?
     let routeStatus: String?
+    let routingIntent: String?
     let artifactStatus: String?
     let acceptanceStatus: String?
     let initiatorBindingId: String?
@@ -784,6 +792,7 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let title: String
     let summary: String
     let acceptanceCriteria: [String]
+    let idempotencyKey: String?
     let createdAt: String
     let updatedAt: String
     let completedAt: String?
@@ -798,9 +807,13 @@ struct CollaborationMessage: Identifiable, Decodable, Equatable {
     let taskId: String
     let senderAgentId: String
     let recipientAgentId: String
+    let senderSessionId: String?
+    let recipientSessionId: String?
     let messageType: String
     let body: String
+    let evidence: [JSONValue]?
     let resourceVersion: String?
+    let idempotencyKey: String?
     let createdAt: String
     let envelope: CollaborationMessageEnvelope?
 }
@@ -874,6 +887,7 @@ struct CollaborationArtifact: Identifiable, Decodable, Equatable {
     let type: String
     let name: String
     let uri: String
+    let metadata: [String: JSONValue]?
     let createdAt: String
 }
 
@@ -884,6 +898,7 @@ struct CollaborationEvent: Identifiable, Decodable, Equatable {
     let sequence: Int
     let type: String
     let actorAgentId: String?
+    let payload: [String: JSONValue]?
     let createdAt: String
 }
 

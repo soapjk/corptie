@@ -1119,6 +1119,45 @@ export class CollaborationCore {
     return recovered;
   }
 
+  reconcileCompletedAgentWork(workItem) {
+    if (workItem?.kind !== "collaboration" || workItem?.status !== "completed" || !workItem.deliveryId) {
+      return null;
+    }
+    const delivery = this.getDelivery(workItem.deliveryId);
+    if (!delivery) {
+      throw domainError("DELIVERY_NOT_FOUND", `Delivery ${workItem.deliveryId} was not found.`);
+    }
+    if (delivery.status === "delivered") return delivery;
+    if (delivery.recipientAgentId !== workItem.agentId) {
+      throw domainError(
+        "DELIVERY_RECIPIENT_MISMATCH",
+        `Completed work ${workItem.workItemId} does not belong to delivery recipient ${delivery.recipientAgentId}.`
+      );
+    }
+    const logical = this.store.getLogicalSessionByLegacySessionId(workItem.sessionId)
+      ?? this.store.getLogicalSession(workItem.sessionId);
+    if (!logical?.logicalSessionId || !workItem.targetTurnId) {
+      throw domainError(
+        "DELIVERY_COMPLETION_PROOF_INCOMPLETE",
+        `Completed work ${workItem.workItemId} has no durable Session and turn proof.`
+      );
+    }
+    const reconciled = this.updateDelivery(delivery.deliveryId, {
+      status: "delivered",
+      deliveredAt: this.clock(),
+      targetTurnId: workItem.targetTurnId,
+      targetSessionId: logical.logicalSessionId,
+      nextAttemptAt: null,
+      lastError: null
+    });
+    this.recordDeliveryEvent(delivery.deliveryId, "delivery_reconciled", {
+      sessionId: logical.logicalSessionId,
+      targetTurnId: workItem.targetTurnId,
+      reason: "provider_turn_completed_after_dispatch_interruption"
+    });
+    return reconciled;
+  }
+
   updateDelivery(deliveryId, patch) {
     const delivery = this.getDelivery(deliveryId);
     if (!delivery) throw domainError("DELIVERY_NOT_FOUND", `Delivery ${deliveryId} was not found.`);
