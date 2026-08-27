@@ -1135,7 +1135,7 @@ export class CorptieStore {
         task_id TEXT PRIMARY KEY,
         context_id TEXT NOT NULL,
         parent_task_id TEXT,
-        protocol_version TEXT NOT NULL DEFAULT '2.0',
+        protocol_version TEXT NOT NULL DEFAULT '3.0',
         source_objective_id TEXT,
         target_objective_id TEXT,
         source_work_item_id TEXT,
@@ -1206,7 +1206,7 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS collaboration_messages (
         message_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
-        protocol_version TEXT NOT NULL DEFAULT '2.0',
+        protocol_version TEXT NOT NULL DEFAULT '3.0',
         source_objective_id TEXT,
         target_objective_id TEXT,
         source_work_item_id TEXT,
@@ -2185,6 +2185,24 @@ export class CorptieStore {
     this.ensureColumn("collaboration_messages", "error_json", "TEXT");
     this.ensureColumn("collaboration_messages", "sender_session_id", "TEXT");
     this.ensureColumn("collaboration_messages", "recipient_session_id", "TEXT");
+    this.ensureColumn("collaboration_deliveries", "recipient_session_id", "TEXT");
+    this.ensureColumn("collaboration_artifacts", "producer_session_id", "TEXT");
+    this.ensureColumn("collaboration_events", "actor_session_id", "TEXT");
+    this.db.run(`CREATE TABLE IF NOT EXISTS collaboration_session_participants (
+      task_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('initiator', 'recipient')),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, session_id),
+      UNIQUE (task_id, role),
+      FOREIGN KEY (task_id) REFERENCES collaboration_tasks(task_id) ON DELETE CASCADE
+    )`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_session_inbox
+      ON collaboration_tasks(recipient_session_id, status, updated_at DESC)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_session_outbox
+      ON collaboration_tasks(initiator_session_id, status, updated_at DESC)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_deliveries_session
+      ON collaboration_deliveries(recipient_session_id, status, next_attempt_at, created_at ASC)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_tasks_objective_work_item
       ON collaboration_tasks(source_objective_id, target_objective_id, work_item_id, updated_at DESC)`);
     this.ensureColumn("collaboration_request_confirmations", "initiator_session_id", "TEXT");
@@ -2193,6 +2211,47 @@ export class CorptieStore {
     this.ensureColumn("collaboration_request_confirmations", "recipient_name_at_send", "TEXT");
     this.migrateCanonicalSessionNames();
     this.migrateCollaborationSessionIdentities();
+    this.db.run(`UPDATE collaboration_deliveries
+      SET recipient_session_id = (
+        SELECT messages.recipient_session_id FROM collaboration_messages messages
+        WHERE messages.message_id = collaboration_deliveries.message_id
+      )
+      WHERE recipient_session_id IS NULL`);
+    this.db.run(`INSERT OR IGNORE INTO collaboration_session_participants (task_id, session_id, role, created_at)
+      SELECT task_id, initiator_session_id, 'initiator', created_at
+      FROM collaboration_tasks WHERE initiator_session_id IS NOT NULL`);
+    this.db.run(`INSERT OR IGNORE INTO collaboration_session_participants (task_id, session_id, role, created_at)
+      SELECT task_id, recipient_session_id, 'recipient', created_at
+      FROM collaboration_tasks WHERE recipient_session_id IS NOT NULL
+        AND recipient_session_id IS NOT initiator_session_id`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS collaboration_v3_task_sessions_required
+      BEFORE INSERT ON collaboration_tasks
+      WHEN NEW.protocol_version = '3.0'
+        AND (NEW.initiator_session_id IS NULL OR TRIM(NEW.initiator_session_id) = ''
+          OR NEW.recipient_session_id IS NULL OR TRIM(NEW.recipient_session_id) = ''
+          OR NEW.initiator_session_id = NEW.recipient_session_id)
+      BEGIN SELECT RAISE(ABORT, 'COLLABORATION_V3_DISTINCT_SESSIONS_REQUIRED'); END`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS collaboration_v3_task_session_updates_required
+      BEFORE UPDATE OF protocol_version, initiator_session_id, recipient_session_id ON collaboration_tasks
+      WHEN NEW.protocol_version = '3.0'
+        AND (NEW.initiator_session_id IS NULL OR TRIM(NEW.initiator_session_id) = ''
+          OR NEW.recipient_session_id IS NULL OR TRIM(NEW.recipient_session_id) = ''
+          OR NEW.initiator_session_id = NEW.recipient_session_id)
+      BEGIN SELECT RAISE(ABORT, 'COLLABORATION_V3_DISTINCT_SESSIONS_REQUIRED'); END`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS collaboration_v3_message_sessions_required
+      BEFORE INSERT ON collaboration_messages
+      WHEN NEW.protocol_version = '3.0'
+        AND (NEW.sender_session_id IS NULL OR TRIM(NEW.sender_session_id) = ''
+          OR NEW.recipient_session_id IS NULL OR TRIM(NEW.recipient_session_id) = ''
+          OR NEW.sender_session_id = NEW.recipient_session_id)
+      BEGIN SELECT RAISE(ABORT, 'COLLABORATION_V3_DISTINCT_MESSAGE_SESSIONS_REQUIRED'); END`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS collaboration_v3_message_session_updates_required
+      BEFORE UPDATE OF protocol_version, sender_session_id, recipient_session_id ON collaboration_messages
+      WHEN NEW.protocol_version = '3.0'
+        AND (NEW.sender_session_id IS NULL OR TRIM(NEW.sender_session_id) = ''
+          OR NEW.recipient_session_id IS NULL OR TRIM(NEW.recipient_session_id) = ''
+          OR NEW.sender_session_id = NEW.recipient_session_id)
+      BEGIN SELECT RAISE(ABORT, 'COLLABORATION_V3_DISTINCT_MESSAGE_SESSIONS_REQUIRED'); END`);
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_logical_sessions_session_name
       ON logical_sessions(session_name_key) WHERE session_name_key IS NOT NULL`);
     this.ensureColumn("provider_thread_bindings", "routing_version", "INTEGER NOT NULL DEFAULT 1");

@@ -5287,8 +5287,8 @@ func nativeCollaborationCardPresentation(
 
     if isMessage {
         guard nonEmpty(item.collaborationTaskId) != nil,
-              nonEmpty(item.collaborationSenderAgentId) != nil,
-              nonEmpty(item.collaborationRecipientAgentId) != nil,
+              nonEmpty(item.collaborationInitiatorSessionId) != nil,
+              nonEmpty(item.collaborationRecipientSessionId) != nil,
               nonEmpty(item.collaborationSourceObjectiveId) != nil,
               nonEmpty(item.collaborationTargetObjectiveId) != nil,
               nonEmpty(item.presentationText) != nil else {
@@ -8706,10 +8706,10 @@ struct ThreadItemView: View {
                         .frame(width: 10)
                         .foregroundStyle(CorptiePalette.secondaryText)
                         .rotationEffect(.degrees(isCollaborationExpanded ? 90 : 0))
-                    Image(systemName: "person.2.wave.2.fill")
+                    Image(systemName: "rectangle.2.swap")
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.softBlue)
-                    Text(L10n("Agent 协作"))
+                    Text(L10n("跨会话协作"))
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.primaryText)
                     Text(collaborationKindLabel)
@@ -8718,7 +8718,7 @@ struct ThreadItemView: View {
                         .padding(.horizontal, 5)
                         .frame(height: 16)
                         .background(Color.white.opacity(0.24), in: Capsule())
-                    Text("· \(collaborationSenderName)")
+                    Text("· \(collaborationSourceSessionName) → \(collaborationTargetSessionName)")
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                         .lineLimit(1)
@@ -8736,7 +8736,7 @@ struct ThreadItemView: View {
             .buttonStyle(.plain)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
-            .help(isCollaborationExpanded ? "收起协作消息" : "展开来自 \(collaborationSenderName) 的协作消息")
+            .help(isCollaborationExpanded ? "收起协作消息" : "展开跨会话协作消息")
 
             if isCollaborationExpanded {
                 Divider()
@@ -8744,19 +8744,26 @@ struct ThreadItemView: View {
 
                 ZStack(alignment: .bottomTrailing) {
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack(alignment: .top, spacing: 7) {
-                            collaborationAvatar(name: collaborationSenderName)
-                            VStack(alignment: .leading, spacing: 3) {
-                                collaborationPartyRow(label: "来自", name: collaborationSenderName)
-                                collaborationPartyRow(label: "发送至", name: collaborationRecipientName)
-                            }
-                            Spacer(minLength: 0)
-                            if let itemTimeLabel {
-                                Text(itemTimeLabel)
-                                    .font(.system(size: 9.5, weight: .medium))
-                                    .foregroundStyle(CorptiePalette.secondaryText)
-                            }
-                        }
+                        collaborationConfirmationField(
+                            icon: "arrow.up.right",
+                            label: "来源 Session",
+                            value: collaborationSourceSessionName
+                        )
+                        collaborationConfirmationField(
+                            icon: "arrow.down.left",
+                            label: "目标 Session",
+                            value: collaborationTargetSessionName
+                        )
+                        collaborationConfirmationField(
+                            icon: "arrow.up.right.square",
+                            label: "来源 Objective",
+                            value: collaborationSourceObjectiveName
+                        )
+                        collaborationConfirmationField(
+                            icon: "arrow.down.left.square",
+                            label: "目标 Objective",
+                            value: collaborationTargetObjectiveName
+                        )
 
                         if let taskTitle = nonEmpty(item.collaborationTaskTitle) {
                             Label(taskTitle, systemImage: "checklist")
@@ -8767,26 +8774,6 @@ struct ThreadItemView: View {
 
                         messageTextView(text: collaborationPresentationText, allowsSelection: true)
 
-                        if hasCollaborationTechnicalDetails {
-                            DisclosureGroup(isExpanded: $isCollaborationDetailsExpanded) {
-                                VStack(alignment: .leading, spacing: 5) {
-                                    collaborationDetailRow(label: "Task ID", value: item.collaborationTaskId)
-                                    collaborationDetailRow(label: "Sender ID", value: item.collaborationSenderAgentId)
-                                    collaborationDetailRow(label: "Recipient ID", value: item.collaborationRecipientAgentId)
-                                    collaborationDetailRow(label: "Source Session", value: item.collaborationInitiatorSessionId)
-                                    collaborationDetailRow(label: "Target Session", value: item.collaborationRecipientSessionId)
-                                    collaborationDetailRow(label: "Source WorkItem", value: item.collaborationSourceWorkItemId)
-                                    collaborationDetailRow(label: "Target WorkItem", value: item.collaborationTargetWorkItemId)
-                                    collaborationDetailRow(label: "Relationship", value: item.collaborationRelation)
-                                    collaborationDetailRow(label: "Route", value: item.collaborationRouteStatus.map { "\($0) · v\(item.collaborationRoutingVersion ?? 0)" })
-                                }
-                                .padding(.top, 5)
-                            } label: {
-                                Text(L10n("任务详情"))
-                                    .font(.system(size: 9.5, weight: .semibold))
-                                    .foregroundStyle(CorptiePalette.secondaryText)
-                            }
-                        }
                     }
 
                     CopyTextButton(
@@ -8818,7 +8805,7 @@ struct ThreadItemView: View {
         .onHover { isHovering = $0 }
         .animation(.spring(response: 0.30, dampingFraction: 0.86, blendDuration: 0.08), value: isCollaborationExpanded)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(L10nFormat("Agent collaboration message from %@", collaborationSenderName))
+        .accessibilityLabel(L10nFormat("Cross-session collaboration message from %@", collaborationSourceSessionName))
     }
 
     private func collaborationPartyRow(label: String, name: String) -> some View {
@@ -8873,14 +8860,38 @@ struct ThreadItemView: View {
         nonEmpty(item.presentationText) ?? "协作消息正文不可用"
     }
 
-    private var collaborationSenderName: String {
-        nonEmpty(item.collaborationSenderName) ?? "其他 Agent"
+    private var collaborationSourceSessionName: String {
+        collaborationSessionIdentity(
+            title: item.collaborationInitiatorSessionTitle,
+            id: item.collaborationInitiatorSessionId ?? "",
+            kind: item.collaborationInitiatorSessionKind,
+            workItemId: item.collaborationSourceWorkItemId
+        )
     }
 
-    private var collaborationRecipientName: String {
-        nonEmpty(item.collaborationRecipientName)
-            ?? nonEmpty(backendClient.selectedSession?.title)
-            ?? "当前 Agent"
+    private var collaborationTargetSessionName: String {
+        collaborationSessionIdentity(
+            title: item.collaborationRecipientSessionTitle ?? backendClient.selectedSession?.title,
+            id: item.collaborationRecipientSessionId ?? "",
+            kind: item.collaborationRecipientSessionKind,
+            workItemId: item.collaborationTargetWorkItemId
+        )
+    }
+
+    private var collaborationSourceObjectiveName: String {
+        collaborationObjective(
+            name: item.collaborationSourceObjectiveName,
+            id: item.collaborationSourceObjectiveId,
+            fallback: L10n("来源 Objective")
+        ) ?? L10n("来源 Objective")
+    }
+
+    private var collaborationTargetObjectiveName: String {
+        collaborationObjective(
+            name: item.collaborationTargetObjectiveName,
+            id: item.collaborationTargetObjectiveId,
+            fallback: L10n("目标 Objective")
+        ) ?? L10n("目标 Objective")
     }
 
     private var collaborationKindLabel: String {
@@ -8925,14 +8936,6 @@ struct ThreadItemView: View {
         case "failed", "cancelled", "canceled": .red
         default: CorptiePalette.amber
         }
-    }
-
-    private var hasCollaborationTechnicalDetails: Bool {
-        [item.collaborationTaskId, item.collaborationSenderAgentId, item.collaborationRecipientAgentId,
-         item.collaborationInitiatorSessionId, item.collaborationRecipientSessionId,
-         item.collaborationSourceWorkItemId, item.collaborationTargetWorkItemId, item.collaborationRelation,
-         item.collaborationRouteStatus]
-            .contains { nonEmpty($0) != nil }
     }
 
     private var fullItemView: some View {

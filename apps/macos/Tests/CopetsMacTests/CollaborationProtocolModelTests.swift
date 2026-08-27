@@ -111,13 +111,19 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "idempotencyKey": "message:implement-it",
           "createdAt": "2026-08-20T00:00:00.000Z",
           "envelope": {
-            "version": "2.0",
+            "version": "3.0",
             "messageId": "message:1",
             "messageType": "change_request",
-            "sender": { "agentId": "agent:a", "objectiveId": "objective:a" },
-            "recipient": { "agentId": "agent:b", "objectiveId": "objective:b" },
-            "objective": { "sourceId": "objective:a", "targetId": "objective:b" },
-            "workItem": { "sourceId": "work_item:source", "id": "work_item:target" },
+            "sender": { "sessionId": "session:a" },
+            "recipient": { "sessionId": "session:b" },
+            "resources": {
+              "sourceAgentId": "agent:a",
+              "targetAgentId": "agent:b",
+              "sourceObjectiveId": "objective:a",
+              "targetObjectiveId": "objective:b",
+              "sourceWorkItemId": "work_item:source",
+              "targetWorkItemId": "work_item:target"
+            },
             "taskId": "task:1",
             "payload": {
               "body": "Implement it",
@@ -131,15 +137,17 @@ final class CollaborationProtocolModelTests: XCTestCase {
         """#.utf8)
 
         let message = try JSONDecoder().decode(CollaborationMessage.self, from: data)
-        XCTAssertEqual(message.envelope?.version, "2.0")
+        XCTAssertEqual(message.envelope?.version, "3.0")
         XCTAssertEqual(message.senderSessionId, "session:a")
         XCTAssertEqual(message.recipientSessionId, "session:b")
         XCTAssertEqual(message.evidence?.count, 1)
         XCTAssertEqual(message.idempotencyKey, "message:implement-it")
-        XCTAssertEqual(message.envelope?.objective.sourceId, "objective:a")
-        XCTAssertEqual(message.envelope?.objective.targetId, "objective:b")
-        XCTAssertEqual(message.envelope?.workItem.sourceId, "work_item:source")
-        XCTAssertEqual(message.envelope?.workItem.id, "work_item:target")
+        XCTAssertEqual(message.envelope?.sender.sessionId, "session:a")
+        XCTAssertEqual(message.envelope?.recipient.sessionId, "session:b")
+        XCTAssertEqual(message.envelope?.resources.sourceObjectiveId, "objective:a")
+        XCTAssertEqual(message.envelope?.resources.targetObjectiveId, "objective:b")
+        XCTAssertEqual(message.envelope?.resources.sourceWorkItemId, "work_item:source")
+        XCTAssertEqual(message.envelope?.resources.targetWorkItemId, "work_item:target")
         XCTAssertEqual(message.envelope?.payload.evidence?.count, 1)
         XCTAssertNil(message.envelope?.error)
     }

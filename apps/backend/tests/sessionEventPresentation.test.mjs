@@ -59,7 +59,15 @@ test("collaboration cards require a queryable task and complete envelope", () =>
   const task = { taskId: "task:valid" };
   const envelope = {
     task: { taskId: "task:valid", sourceObjectiveId: "objective:source", targetObjectiveId: "objective:target" },
-    message: { senderAgentId: "agent:source", recipientAgentId: "agent:target", body: "Review this." }
+    message: {
+      senderSessionId: "session:source",
+      recipientSessionId: "session:target",
+      body: "Review this.",
+      envelope: {
+        sender: { sessionId: "session:source" },
+        recipient: { sessionId: "session:target" }
+      }
+    }
   };
   assert.equal(collaborationEnvelopeFailure({ workItem, task, envelope }), null);
   assert.equal(collaborationEnvelopeFailure({ workItem, task: null, envelope }), "task_not_found");

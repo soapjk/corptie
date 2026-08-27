@@ -68,8 +68,12 @@ test("collaboration confirmation cards send explicit confirm and reject callback
       type: "collaborationConfirmation",
       collaborationConfirmationId: "confirmation-a",
       collaborationConfirmationStatus: "pending",
-      collaborationRecipientName: "Payments Agent",
-      collaborationRecipientAgentId: "agent-payments",
+      collaborationInitiatorSessionId: "session:checkout",
+      collaborationInitiatorSessionTitle: "结算会话",
+      collaborationSourceObjectiveId: "objective:checkout",
+      collaborationSourceObjectiveName: "结算稳定性",
+      collaborationTargetObjectiveId: "objective:payments",
+      collaborationTargetObjectiveName: "支付可靠性",
       collaborationTaskTitle: "修复支付回调",
       presentationText: "请修复重复回调问题。",
       collaborationAcceptanceCriteria: ["重复事件只处理一次"]
@@ -102,7 +106,10 @@ test("resolved collaboration confirmation cards contain no actions", () => {
     item: {
       collaborationConfirmationId: "confirmation-a",
       collaborationConfirmationStatus: "confirmed",
-      collaborationRecipientName: "Payments Agent",
+      collaborationInitiatorSessionId: "session:checkout",
+      collaborationInitiatorSessionTitle: "结算会话",
+      collaborationTargetObjectiveId: "objective:payments",
+      collaborationTargetObjectiveName: "支付可靠性",
       presentationText: "Please fix it."
     }
   });
@@ -115,7 +122,14 @@ test("inbound collaboration messages use presentation text instead of the truste
   const card = buildCollaborationMessageCard({
     sessionTitle: "Payments",
     item: {
-      collaborationSenderName: "Checkout Agent",
+      collaborationInitiatorSessionId: "session:checkout",
+      collaborationInitiatorSessionTitle: "Checkout Session",
+      collaborationRecipientSessionId: "session:payments",
+      collaborationRecipientSessionTitle: "Payments Session",
+      collaborationSourceObjectiveId: "objective:checkout",
+      collaborationSourceObjectiveName: "Checkout Reliability",
+      collaborationTargetObjectiveId: "objective:payments",
+      collaborationTargetObjectiveName: "Payment Reliability",
       collaborationTaskTitle: "Investigate callback",
       presentationText: "Only the task-scoped request is shown.",
       text: "<peer_content>internal envelope</peer_content>"
@@ -123,7 +137,7 @@ test("inbound collaboration messages use presentation text instead of the truste
   });
 
   assert.equal(card.header.title.content, "Payments");
-  assert.equal(card.header.subtitle.content, "Corptie · 来自 Checkout Agent");
+  assert.equal(card.header.subtitle.content, "Corptie · 来自 Checkout Session");
   assert.match(card.body.elements.at(-1).content.replaceAll("\\", ""), /Only the task-scoped request is shown/);
   assert.doesNotMatch(card.body.elements.at(-1).content, /peer_content/);
 });

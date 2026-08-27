@@ -68,11 +68,13 @@ corptie是一个以多项目并行协作为核心的Agent Harness app。基于�
 5. Agent 完成验证后提交逐条验收证据。只有可复现证据充分时，WorkItem 才应被判定通过。
 6. 在 **Worktrees** 检查修改、提交和本地集成计划。该界面不会自动执行远程 push、删除、reset 或 force-clean。
 
-### Agent 协作
+### 跨 Session 协作
 
-受管 Session 可通过 Corptie Tool Host 发现其他 Agent 和服务，并发起带验收标准的点对点任务。新的协作请求先在发起者 Session 中显示确认卡片；用户确认后才投递。接收者可以交付 Artifact，发起者负责验证、请求修订或完成任务。
+Session 是唯一执行者和消息收发主体。受管 Session 可通过 Corptie Tool Host 选择明确的目标 Session，或指定目标 Objective 与用于创建 Worker Session 的 Agent 资源。新的协作请求先显示确认卡片；若目标 Session 尚不存在，确认后会先在目标 Objective 下创建 WorkItem 和 Worker Session，再建立正式的 Session→Session Task、Message 与 Delivery。目标 Session 可以交付 Artifact，来源 Session 负责验证、请求修订或完成任务。
 
 协议、状态流转、兼容迁移和开发使用说明见 [Agent 协作机制](docs/agent-collaboration.md)。
+
+Agent、Session、Objective、WorkItem、Workspace 和 Provider 的统一技术定义及能力边界见 [Corptie 领域模型与能力边界](docs/domain-model-and-capability-boundaries.md)。该文档是相关概念的单一事实源。
 
 
 ## 设计与项目结构
@@ -93,7 +95,7 @@ macOS App → 本地后端 → Provider（Codex / Claude Code / OpenClacky）
 | `apps/macos/` | macOS 客户端、界面状态、后端 Client 与客户端测试。 |
 | `apps/backend/src/agent-provider/` | Provider 合约、能力声明、会话生命周期和适配器。 |
 | `apps/backend/src/application/`、`domain/`、`store/` | 业务用例、输入校验、SQLite 数据与迁移。 |
-| `apps/backend/src/runtime/`、`collaboration/`、`feishu/` | 运行时隔离、Worktree 路由、Agent 协作和飞书网关。 |
+| `apps/backend/src/runtime/`、`collaboration/`、`feishu/` | 运行时隔离、Worktree 路由、跨 Session 协作和飞书网关。 |
 | `apps/backend/tests/`、`apps/macos/Tests/` | 后端与客户端自动化测试。 |
 | `scripts/`、`docs/`、`resources/` | 开发与打包脚本、专项文档和项目资源。 |
 

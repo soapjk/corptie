@@ -222,7 +222,7 @@ export function handleCollaborationHttpRequest({
       if (request.method === "GET" && url.pathname === "/internal/collaboration/inbox") {
         const status = url.searchParams.getAll("status");
         return sendJson(response, 200, {
-          tasks: core.listInbox(actorAgentId, {
+          tasks: core.listInbox(sessionMetadata.sessionId, {
             status: status.length ? status : undefined,
             limit: url.searchParams.get("limit")
           })
@@ -263,28 +263,22 @@ export function handleCollaborationHttpRequest({
               { ...input, recipientSessionId: namedSessionId }
             );
           }
-        } else if (input.recipientAgentId) {
-          const intent = String(input.routingIntent ?? "").trim();
-          if (!intent) throw apiError("ROUTING_INTENT_REQUIRED", "routingIntent is required when only recipientAgentId is supplied.", 400);
-          recipientSessionDescriptor = resolveRecipientSession(
-            sessionCollaborationService,
-            sessionMetadata,
-            actorAgentId,
-            input
-          );
         }
         const recipientSession = recipientSessionDescriptor?.sessionId ?? null;
         const recipient = recipientSession
           ? core.getAgentForSession(recipientSession)
-          : (input.recipientAgentId ? core.getAgent(input.recipientAgentId) : null);
+          : (input.sessionAgentId ? core.getAgent(input.sessionAgentId) : null);
         if (!recipient) {
           throw apiError(
-            "AGENT_NOT_FOUND",
+            recipientSession ? "SESSION_RESOURCE_OWNER_NOT_FOUND" : "SESSION_CREATION_RESOURCES_REQUIRED",
             input.recipientSessionName
               ? `No active Session is named ${input.recipientSessionName}.`
-              : "A visible recipientSessionId, recipientSessionName, or explicit Agent routing intent is required.",
+              : "Supply an exact recipientSessionId, or targetObjectiveId plus sessionAgentId so Corptie can create the target WorkItem and Session before creating the task.",
             404
           );
+        }
+        if (!recipientSession && !String(input.targetObjectiveId ?? "").trim()) {
+          throw apiError("TARGET_OBJECTIVE_REQUIRED", "targetObjectiveId is required when Corptie must create a target WorkItem and Session.", 400);
         }
         const actor = core.getAgent(actorAgentId);
         const sourceLogical = core.store.getLogicalSession(sessionMetadata.sessionId);
@@ -302,6 +296,7 @@ export function handleCollaborationHttpRequest({
           sourceObjectiveId: sourceCapabilities.objectiveId ?? undefined,
           sourceWorkItemId: sourceCapabilities.workItemId ?? undefined,
           workItemId: input.workItemId ?? recipientSessionDescriptor?.workItemId ?? undefined,
+          sessionAgentId: input.sessionAgentId ?? undefined,
           recipientAgentId: recipient.agentId,
           recipientSessionId: recipientSession,
           initiatorAgentId: actorAgentId,
@@ -411,11 +406,16 @@ async function handleProductRequest({ request, response, url, core, onConfirmati
   if (request.method === "POST" && confirmationMatch) {
     const confirmationId = decodeURIComponent(confirmationMatch[1]);
     const action = confirmationMatch[2];
+    if (action === "confirm" && !onConfirmationResolved) {
+      throw apiError(
+        "COLLABORATION_TARGET_PREPARATION_UNAVAILABLE",
+        "Collaboration confirmation requires the Session target preparation service.",
+        503
+      );
+    }
     const confirmation = onConfirmationResolved
       ? await onConfirmationResolved(confirmationId, action === "confirm", { type: "desktop" })
-      : action === "confirm"
-        ? core.confirmTaskConfirmation(confirmationId)
-        : core.rejectTaskConfirmation(confirmationId);
+      : core.rejectTaskConfirmation(confirmationId);
     return sendJson(response, 200, { confirmation });
   }
 
@@ -504,16 +504,15 @@ function requiredActor(request, core) {
 function requireParticipant(core, taskId, actorAgentId, actorSessionId = null) {
   const task = core.getTask(taskId);
   if (!task) throw apiError("TASK_NOT_FOUND", `Task ${taskId} was not found.`, 404);
-  if (![task.initiatorAgentId, task.recipientAgentId].includes(actorAgentId)) {
-    throw apiError("ACTOR_NOT_AUTHORIZED", "Only task participants may view or modify this task.", 403);
-  }
-  if (task.initiatorAgentId === task.recipientAgentId) {
-    const logical = core.store.getLogicalSession(actorSessionId)
-      ?? core.store.getLogicalSessionByLegacySessionId(actorSessionId);
-    const stable = logical?.logicalSessionId ?? actorSessionId;
-    if (![task.initiatorSessionId, task.recipientSessionId].includes(stable)) {
-      throw apiError("SESSION_ACTOR_MISMATCH", "Only the two task Sessions may view or modify this same-Agent task.", 403);
-    }
+  const logical = core.store.getLogicalSession(actorSessionId)
+    ?? core.store.getLogicalSessionByLegacySessionId(actorSessionId);
+  const stable = logical?.logicalSessionId ?? actorSessionId;
+  const role = stable === task.initiatorSessionId ? "initiator"
+    : stable === task.recipientSessionId ? "recipient" : null;
+  const expectedAgentResourceId = role === "initiator" ? task.initiatorAgentId
+    : role === "recipient" ? task.recipientAgentId : null;
+  if (!role || actorAgentId !== expectedAgentResourceId) {
+    throw apiError("SESSION_ACTOR_MISMATCH", "Only the exact source or target Session may view or modify this task.", 403);
   }
   return task;
 }
@@ -527,17 +526,14 @@ function messageOptions(input) {
 }
 
 function compactTaskForActor(task, actorAgentId, actorSessionId = null, core = null) {
-  const sameAgent = task.initiatorAgentId === task.recipientAgentId;
   const actorLogical = core?.store.getLogicalSession(actorSessionId)
     ?? core?.store.getLogicalSessionByLegacySessionId(actorSessionId);
   const stableActorSessionId = actorLogical?.logicalSessionId ?? actorSessionId;
-  const role = sameAgent && stableActorSessionId === task.recipientSessionId
-    ? "recipient"
-    : actorAgentId === task.initiatorAgentId ? "initiator" : "recipient";
+  const role = stableActorSessionId === task.initiatorSessionId ? "initiator" : "recipient";
   const peerAgentId = role === "initiator" ? task.recipientAgentId : task.initiatorAgentId;
   const currentMessage = [...(task.messages ?? [])]
     .reverse()
-    .find((message) => message.recipientAgentId === actorAgentId)
+    .find((message) => message.recipientSessionId === stableActorSessionId)
     ?? task.messages?.at(-1)
     ?? null;
   const latestArtifact = task.artifacts?.at(-1) ?? null;

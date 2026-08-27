@@ -1,4 +1,4 @@
-export const COLLABORATION_PROTOCOL_VERSION = "2.0";
+export const COLLABORATION_PROTOCOL_VERSION = "3.0";
 
 export const COLLABORATION_MESSAGE_TYPES = Object.freeze([
   "question",
@@ -10,8 +10,8 @@ export const COLLABORATION_MESSAGE_TYPES = Object.freeze([
 
 const MESSAGE_TYPE_SET = new Set(COLLABORATION_MESSAGE_TYPES);
 const ENVELOPE_FIELDS = new Set([
-  "version", "messageId", "messageType", "sender", "recipient", "objective",
-  "workItem", "taskId", "payload", "timestamp", "error"
+  "version", "messageId", "messageType", "sender", "recipient", "resources",
+  "taskId", "payload", "timestamp", "error"
 ]);
 
 export class CollaborationProtocolError extends TypeError {
@@ -28,10 +28,16 @@ export function createCollaborationEnvelope(input) {
     version: COLLABORATION_PROTOCOL_VERSION,
     messageId: input.messageId,
     messageType: input.messageType,
-    sender: { agentId: input.senderAgentId, sessionId: input.senderSessionId ?? null, objectiveId: input.sourceObjectiveId },
-    recipient: { agentId: input.recipientAgentId, sessionId: input.recipientSessionId ?? null, objectiveId: input.targetObjectiveId },
-    objective: { sourceId: input.sourceObjectiveId, targetId: input.targetObjectiveId },
-    workItem: { id: input.workItemId, sourceId: input.sourceWorkItemId ?? null },
+    sender: { sessionId: input.senderSessionId },
+    recipient: { sessionId: input.recipientSessionId },
+    resources: {
+      sourceAgentId: input.senderAgentId,
+      targetAgentId: input.recipientAgentId,
+      sourceObjectiveId: input.sourceObjectiveId,
+      targetObjectiveId: input.targetObjectiveId,
+      sourceWorkItemId: input.sourceWorkItemId ?? null,
+      targetWorkItemId: input.workItemId
+    },
     taskId: input.taskId,
     payload: input.payload,
     timestamp: input.timestamp,
@@ -54,25 +60,22 @@ export function validateCollaborationEnvelope(input) {
   if (!MESSAGE_TYPE_SET.has(input.messageType)) {
     fail("INVALID_MESSAGE_TYPE", "messageType", `Unsupported collaboration message type: ${input.messageType}.`);
   }
-  party(input.sender, "sender");
-  party(input.recipient, "recipient");
-  if (input.sender.agentId === input.recipient.agentId) {
-    if (!input.sender.sessionId || !input.recipient.sessionId || input.sender.sessionId === input.recipient.sessionId) {
-      fail("INVALID_PARTICIPANTS", "recipient.sessionId", "Same-Agent collaboration requires distinct sender and recipient Sessions.");
-    }
+  sessionParty(input.sender, "sender");
+  sessionParty(input.recipient, "recipient");
+  if (input.sender.sessionId === input.recipient.sessionId) {
+    fail("INVALID_PARTICIPANTS", "recipient.sessionId", "Collaboration requires distinct sender and recipient Sessions.");
   }
-  record(input.objective, "objective");
-  exactFields(input.objective, "objective", ["sourceId", "targetId"]);
-  text(input.objective.sourceId, "objective.sourceId");
-  text(input.objective.targetId, "objective.targetId");
-  if (input.objective.sourceId !== input.sender.objectiveId
-    || input.objective.targetId !== input.recipient.objectiveId) {
-    fail("OBJECTIVE_PARTY_MISMATCH", "objective", "Objective identifiers must match the sender and recipient scopes.");
-  }
-  record(input.workItem, "workItem");
-  exactFields(input.workItem, "workItem", ["id", "sourceId"]);
-  text(input.workItem.id, "workItem.id");
-  nullableText(input.workItem.sourceId, "workItem.sourceId");
+  record(input.resources, "resources");
+  exactFields(input.resources, "resources", [
+    "sourceAgentId", "targetAgentId", "sourceObjectiveId", "targetObjectiveId",
+    "sourceWorkItemId", "targetWorkItemId"
+  ]);
+  text(input.resources.sourceAgentId, "resources.sourceAgentId");
+  text(input.resources.targetAgentId, "resources.targetAgentId");
+  text(input.resources.sourceObjectiveId, "resources.sourceObjectiveId");
+  text(input.resources.targetObjectiveId, "resources.targetObjectiveId");
+  nullableText(input.resources.sourceWorkItemId, "resources.sourceWorkItemId");
+  text(input.resources.targetWorkItemId, "resources.targetWorkItemId");
   record(input.payload, "payload");
   if (typeof input.payload.body !== "string" || !input.payload.body.trim()) {
     fail("INVALID_PAYLOAD", "payload.body", "Collaboration payload.body must be a non-empty string.");
@@ -96,15 +99,10 @@ export function validateCollaborationEnvelope(input) {
   return structuredClone(input);
 }
 
-function party(value, field) {
+function sessionParty(value, field) {
   record(value, field);
-  exactFields(value, field, ["agentId", "sessionId", "objectiveId"], true);
-  if (!Object.hasOwn(value, "agentId") || !Object.hasOwn(value, "objectiveId")) {
-    fail("MISSING_MESSAGE_FIELD", field, `${field}.agentId and ${field}.objectiveId are required.`);
-  }
-  text(value.agentId, `${field}.agentId`);
-  if (Object.hasOwn(value, "sessionId")) nullableText(value.sessionId, `${field}.sessionId`);
-  text(value.objectiveId, `${field}.objectiveId`);
+  exactFields(value, field, ["sessionId"]);
+  text(value.sessionId, `${field}.sessionId`);
 }
 
 function exactFields(value, field, fields, allowMissing = false) {

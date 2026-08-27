@@ -698,6 +698,9 @@
 "目标 WorkItem" = "Target WorkItem";
 "确认后在目标 Objective 下新建" = "Create under the target Objective after confirmation";
 "跨会话协作" = "Cross-session collaboration";
+"Cross-session collaboration message from %@" = "Cross-session collaboration message from %@";
+"Sessions and resources" = "Sessions and resources";
+"Session action" = "Session action";
 "发送到现有会话" = "Send to existing session";
 "将创建新的 WorkItem" = "A new WorkItem will be created";
 "目标" = "Target";
