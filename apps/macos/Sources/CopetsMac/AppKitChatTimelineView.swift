@@ -1266,11 +1266,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                eventType == .scrollWheel || eventType == .leftMouseDragged {
                 userDidBeginScrolling()
             }
-            let nearBottom = isViewportNearBottom()
-            followsLatest = nearBottom
-            if followsLatestBinding.wrappedValue != nearBottom {
-                followsLatestBinding.wrappedValue = nearBottom
-            }
+            updateFollowStateFromViewport()
 
             // 滚动到顶时触发一次历史补拉（微信/Discord 式「上滑自动加载」）。
             // 离开顶部后复位，允许再次触发。
@@ -1314,6 +1310,21 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func userScrollEventDidEnd() {
             isProcessingUserScrollEvent = false
+            // A wheel/trackpad gesture at the bottom can be fully clamped by
+            // the scroll boundary. AppKit then emits no bounds-change event,
+            // so `userDidBeginScrolling()` would otherwise leave follow mode
+            // false even though the viewport never left the latest region.
+            // Reconcile once from final geometry after every user gesture.
+            updateFollowStateFromViewport()
+        }
+
+        private func updateFollowStateFromViewport() {
+            guard !rows.isEmpty else { return }
+            let nearBottom = isViewportNearBottom()
+            followsLatest = nearBottom
+            if followsLatestBinding.wrappedValue != nearBottom {
+                followsLatestBinding.wrappedValue = nearBottom
+            }
         }
 
         @objc private func containerFrameDidChange(_ notification: Notification) {
