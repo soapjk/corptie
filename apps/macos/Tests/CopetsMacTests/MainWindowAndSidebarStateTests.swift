@@ -49,6 +49,8 @@ struct MainWindowAndSidebarStateTests {
 
         #expect(!button.isHidden)
         #expect(button.isEnabled)
+        #expect(!button.isBordered)
+        #expect(button.contentTintColor == .secondaryLabelColor)
         #expect(button.accessibilityIdentifier() == "main-window.sidebar")
         #expect(button.accessibilityValue() as? String == L10n("Expanded"))
 
@@ -57,14 +59,32 @@ struct MainWindowAndSidebarStateTests {
             #expect(!state.isVisible)
             #expect(!button.isHidden)
             #expect(button.isEnabled)
+            #expect(!button.isBordered)
+            #expect(button.contentTintColor == .secondaryLabelColor)
             #expect(button.accessibilityValue() as? String == L10n("Collapsed"))
 
             button.performClick(nil)
             #expect(state.isVisible)
             #expect(!button.isHidden)
             #expect(button.isEnabled)
+            #expect(!button.isBordered)
+            #expect(button.contentTintColor == .secondaryLabelColor)
             #expect(button.accessibilityValue() as? String == L10n("Expanded"))
         }
+    }
+
+    @Test
+    func sidebarButtonUsesQuietStateSpecificSymbols() throws {
+        let expanded = try #require(
+            MainWindowSidebarButtonAppearance.image(isVisible: true)
+        )
+        let collapsed = try #require(
+            MainWindowSidebarButtonAppearance.image(isVisible: false)
+        )
+
+        #expect(expanded.isTemplate)
+        #expect(collapsed.isTemplate)
+        #expect(expanded.tiffRepresentation != collapsed.tiffRepresentation)
     }
 
     @Test

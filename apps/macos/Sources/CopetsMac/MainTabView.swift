@@ -597,6 +597,48 @@ struct MainWindowSidebarToggleButton: NSViewRepresentable {
 }
 
 @MainActor
+enum MainWindowSidebarButtonAppearance {
+    private static let symbolConfiguration = NSImage.SymbolConfiguration(
+        pointSize: 13,
+        weight: .medium
+    )
+
+    static func image(isVisible: Bool) -> NSImage? {
+        if isVisible {
+            return NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)?
+                .withSymbolConfiguration(symbolConfiguration)
+        }
+        return collapsedImage
+    }
+
+    /// SF Symbols does not provide a `sidebar.left.slash` variant. Compose it
+    /// once so the closed state retains the familiar sidebar silhouette while
+    /// remaining a cheap image swap during tab changes and repeated toggles.
+    private static let collapsedImage: NSImage? = {
+        guard let sidebar = NSImage(
+            systemSymbolName: "sidebar.left",
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(symbolConfiguration),
+        let slash = NSImage(
+            systemSymbolName: "line.diagonal",
+            accessibilityDescription: nil
+        )?.withSymbolConfiguration(
+            NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+        ) else {
+            return nil
+        }
+
+        let image = NSImage(size: sidebar.size, flipped: false) { bounds in
+            sidebar.draw(in: bounds)
+            slash.draw(in: bounds.insetBy(dx: 1, dy: 0))
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }()
+}
+
+@MainActor
 final class MainWindowSidebarNSButton: NSButton {
     private var sidebarState: TabSidebarState
 
@@ -608,8 +650,6 @@ final class MainWindowSidebarNSButton: NSButton {
         isBordered = false
         imagePosition = .imageOnly
         focusRingType = .none
-        wantsLayer = true
-        layer?.cornerRadius = 6
         setAccessibilityIdentifier("main-window.sidebar")
         setAccessibilityLabel(L10n("Sidebar"))
         refreshAppearance()
@@ -634,20 +674,8 @@ final class MainWindowSidebarNSButton: NSButton {
 
     private func refreshAppearance() {
         let isVisible = sidebarState.isVisible
-        let configuration = NSImage.SymbolConfiguration(
-            pointSize: 13,
-            weight: isVisible ? .semibold : .medium
-        )
-        image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)?
-            .withSymbolConfiguration(configuration)
-        contentTintColor = isVisible ? .controlAccentColor : .secondaryLabelColor
-        layer?.backgroundColor = isVisible
-            ? NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
-            : NSColor.clear.cgColor
-        layer?.borderColor = isVisible
-            ? NSColor.controlAccentColor.withAlphaComponent(0.45).cgColor
-            : NSColor.clear.cgColor
-        layer?.borderWidth = isVisible ? 1 : 0
+        image = MainWindowSidebarButtonAppearance.image(isVisible: isVisible)
+        contentTintColor = .secondaryLabelColor
         toolTip = L10n(isVisible ? "Hide Sidebar" : "Show Sidebar")
         setAccessibilityValue(L10n(isVisible ? "Expanded" : "Collapsed"))
     }
