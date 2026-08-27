@@ -6457,9 +6457,11 @@ export class CorptieStore {
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       rawStatus: session.rawStatus,
-      capabilities: session.external?.provider === "claude-sdk"
-        ? capabilitiesForStoredProvider(session.external?.provider, session.status)
-        : session.rawStatus?.capabilities ?? capabilitiesForStoredProvider(session.external?.provider, session.status),
+      capabilities: normalizedStoredProviderCapabilities(
+        session.external?.provider,
+        session.status,
+        session.rawStatus?.capabilities
+      ),
       canSend: false,
       sendUnavailableReason: session.external?.provider === "claude-sdk"
           ? "This Claude Code session is no longer connected. Start a new Claude session to continue."
@@ -9831,9 +9833,11 @@ export class CorptieStore {
       sortOrder: Number(row.sort_order ?? 0),
       objectiveId: row.objective_id ?? null,
       workItemId: row.work_item_id ?? null,
-      capabilities: row.provider === "claude-sdk"
-        ? capabilitiesForStoredProvider(row.provider, displayStatus)
-        : rawStatus.capabilities ?? capabilitiesForStoredProvider(row.provider, displayStatus),
+      capabilities: normalizedStoredProviderCapabilities(
+        row.provider,
+        displayStatus,
+        rawStatus.capabilities
+      ),
       rawStatus,
       external: {
         provider: row.provider,
@@ -10735,7 +10739,7 @@ function capabilitiesForStoredProvider(provider = "", status = "") {
     return {
       canSend: status !== "failed" && status !== "cancelled",
       canSwitchModel: true,
-      canSwitchReasoning: false,
+      canSwitchReasoning: true,
       canInterrupt: status === "running",
       canReconnect: false
     };
@@ -10750,6 +10754,22 @@ function capabilitiesForStoredProvider(provider = "", status = "") {
     };
   }
   return null;
+}
+
+export function normalizedStoredProviderCapabilities(provider = "", status = "", persisted = null) {
+  const fallback = capabilitiesForStoredProvider(provider, status);
+  if (provider === "claude-sdk") return fallback;
+  if (provider === "codex-app-server") {
+    return {
+      ...fallback,
+      ...(persisted && typeof persisted === "object" ? persisted : {}),
+      // Older Codex projections persisted this as false before reasoning
+      // switching was implemented. Provider capability is authoritative; do
+      // not let that compatibility snapshot permanently lock configuration.
+      canSwitchReasoning: true
+    };
+  }
+  return persisted ?? fallback;
 }
 
 function lastMeaningfulText(items) {

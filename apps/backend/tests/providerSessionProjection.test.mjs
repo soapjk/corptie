@@ -3,7 +3,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { CorptieStore } from "../src/store/corptieStore.mjs";
+import {
+  CorptieStore,
+  normalizedStoredProviderCapabilities
+} from "../src/store/corptieStore.mjs";
 import {
   activeStoredSessionProjections,
   canonicalSessionIdFromEventPayload,
@@ -28,6 +31,27 @@ test("resident Session projection excludes archives and restored rows rejoin", (
     activeStoredSessionProjections(store).map((value) => value.id),
     ["active", "restored"]
   );
+});
+
+test("legacy Codex capability snapshots cannot hide Provider reasoning switching", () => {
+  const capabilities = normalizedStoredProviderCapabilities("codex-app-server", "running", {
+      canSend: true,
+      canSwitchModel: true,
+      canSwitchReasoning: false,
+      canInterrupt: true,
+      canReconnect: false
+    });
+  assert.deepEqual(
+    capabilities,
+    {
+      canSend: true,
+      canSwitchModel: true,
+      canSwitchReasoning: true,
+      canInterrupt: true,
+      canReconnect: false
+    }
+  );
+
 });
 
 test("a newly created Provider Session persists provider-neutral entity ownership", async () => {
