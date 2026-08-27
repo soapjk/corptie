@@ -175,6 +175,7 @@ final class BackendClient: ObservableObject {
     var suppressBackgroundPolling = false
     @Published private(set) var viewingHistoricalThreadId: String?
     @Published private(set) var isLoadingDetail = false
+    @Published private(set) var selectedTimelineLoadError: String?
     private(set) var isSendingMessage: Bool {
         get { sessionCommandController.isSendingMessage }
         set { sessionCommandController.isSendingMessage = newValue }
@@ -1626,6 +1627,7 @@ final class BackendClient: ObservableObject {
         viewingHistoricalThreadId = nil
         selectedHistoricalDetail = nil
         let generation = sessionSelectionController.select(session.id)
+        selectedTimelineLoadError = nil
         supplementaryDataController.select(session.id)
         retainResidentSessionCaches()
         selectedScheduledTasks = []
@@ -1687,6 +1689,18 @@ final class BackendClient: ObservableObject {
                 }
             }
         }
+    }
+
+    func reloadSelectedSessionMessages() async {
+        guard let session = selectedSession else { return }
+        coldTimelineLoadTask?.cancel()
+        coldTimelineLoadTask = nil
+        selectedTimelineLoadError = nil
+        isLoadingDetail = cachedDetail(for: session.id) == nil
+        let localRevision = SessionTimelineRepository.shared.detail(for: session.id) == nil
+            ? 0
+            : SessionTimelineRepository.shared.timelineRevision(for: session.id)
+        _ = await synchronizeStoredTimeline(for: session, localRevision: localRevision)
     }
 
     func loadContextReferences(for session: TaskSession? = nil) async {
@@ -2779,7 +2793,21 @@ final class BackendClient: ObservableObject {
                 break
             }
         }
-        guard let snapshot = await fetchStoredDetail(for: session) else { return false }
+        let snapshot: (detail: CodexThreadDetail, timelineRevision: Int)
+        switch await fetchStoredDetail(for: session) {
+        case .success(let loaded):
+            snapshot = loaded
+        case .failure(let error):
+            if selectedSession?.id == session.id,
+               SessionTimelineRepository.shared.detail(for: session.id) == nil {
+                selectedTimelineLoadError = L10nFormat(
+                    "Could not load session messages: %@",
+                    error.localizedDescription
+                )
+                isLoadingDetail = false
+            }
+            return false
+        }
         let reconciledDetail = detailByMergingPendingMessages(snapshot.detail)
         storeCachedDetail(
             reconciledDetail,
@@ -2787,6 +2815,9 @@ final class BackendClient: ObservableObject {
             timelineRevision: snapshot.timelineRevision
         )
         await warmPresentationCache(reconciledDetail, for: session.id)
+        if selectedSession?.id == session.id {
+            selectedTimelineLoadError = nil
+        }
         return true
     }
 
@@ -2834,22 +2865,27 @@ final class BackendClient: ObservableObject {
 
     private func fetchStoredDetail(
         for session: TaskSession
-    ) async -> (detail: CodexThreadDetail, timelineRevision: Int)? {
+    ) async -> Result<(detail: CodexThreadDetail, timelineRevision: Int), Error> {
         let threadId = session.external?.threadId ?? session.id
         do {
             let url = baseURL.appending(path: "sessions/\(session.id)/stored-snapshot")
             let (data, response) = try await URLSession.shared.data(from: url)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                return nil
+            guard let http = response as? HTTPURLResponse else {
+                throw BackendError.message(L10n("The history server returned an invalid response."))
+            }
+            guard http.statusCode == 200 else {
+                let serverMessage = Self.errorMessage(from: data)
+                    ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+                throw BackendError.message(serverMessage)
             }
             async let header = Task.detached(priority: .utility) {
                 try JSONDecoder().decode(StoredSessionTimelineSnapshotHeader.self, from: data)
             }.value
             async let detail = decodeDetail(data, for: session, threadId: threadId)
             let result = try await (detail, header.timelineRevision)
-            return result
+            return .success(result)
         } catch {
-            return nil
+            return .failure(error)
         }
     }
 
@@ -3665,8 +3701,12 @@ final class BackendClient: ObservableObject {
     }
 
     func fetchDetail(for session: TaskSession, reportsErrors: Bool = true) async -> CodexThreadDetail? {
-        guard let snapshot = await fetchStoredDetail(for: session) else {
-            if reportsErrors { lastError = L10n("Could not load session details.") }
+        let snapshot: (detail: CodexThreadDetail, timelineRevision: Int)
+        switch await fetchStoredDetail(for: session) {
+        case .success(let loaded):
+            snapshot = loaded
+        case .failure(let error):
+            if reportsErrors { lastError = error.localizedDescription }
             return nil
         }
         let detail = applyingHandledChoices(to: detailByMergingPendingMessages(snapshot.detail))

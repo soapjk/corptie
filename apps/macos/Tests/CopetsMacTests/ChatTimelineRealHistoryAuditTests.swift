@@ -86,6 +86,79 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
         XCTAssertGreaterThan(auditedProviderCount, 0, "No local provider history was available for the audit")
     }
 
+    func testPolyMarketAdjustedSessionReloadsEveryStoredHistoryPage() async throws {
+        guard ProcessInfo.processInfo.environment["CORPTIE_RUN_REAL_HISTORY_AUDIT"] == "1" else {
+            throw XCTSkip("Set CORPTIE_RUN_REAL_HISTORY_AUDIT=1 to audit the local Production history read-only.")
+        }
+        let baseURL = URL(string: "http://127.0.0.1:47321")!
+        let sessions = try JSONDecoder().decode(
+            SessionList.self,
+            from: Data(contentsOf: baseURL.appending(path: "sessions"))
+        ).sessions
+        let expectedTitle = "PolyMarket实时套利，小资金实盘跑通 1"
+        let session = try XCTUnwrap(sessions.first(where: { $0.title == expectedTitle }))
+        let logicalSessionID = try XCTUnwrap(session.external?.logicalSessionId)
+
+        let canonicalData = try Data(contentsOf: baseURL.appending(path: "sessions/\(session.id)/stored-snapshot"))
+        let logicalData = try Data(contentsOf: baseURL.appending(path: "sessions/\(logicalSessionID)/stored-snapshot"))
+        let canonical = try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: canonicalData).session
+        let logical = try JSONDecoder().decode(UnifiedSessionSnapshotResponse.self, from: logicalData).session
+        XCTAssertEqual(canonical.items.map(\.id), logical.items.map(\.id))
+        XCTAssertFalse(canonical.items.isEmpty)
+
+        var items = canonical.items
+        var hasMoreHistory = canonical.hasMoreHistory == true
+        var pageCount = 0
+        while hasMoreHistory {
+            pageCount += 1
+            XCTAssertLessThanOrEqual(pageCount, 200, "History pagination must make bounded forward progress")
+            let oldestID = try XCTUnwrap(items.first?.id)
+            var components = URLComponents(
+                url: baseURL.appending(path: "sessions/\(session.id)/history"),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = [
+                URLQueryItem(name: "before", value: oldestID),
+                URLQueryItem(name: "limit", value: "200")
+            ]
+            let page = try JSONDecoder().decode(
+                SessionHistoryResponse.self,
+                from: Data(contentsOf: try XCTUnwrap(components.url))
+            )
+            items = try XCTUnwrap(SessionHistoryPageMerger.prepend(
+                pageItems: page.items,
+                to: items,
+                requestedBeforeID: oldestID
+            ))
+            hasMoreHistory = page.hasMoreHistory == true
+        }
+
+        XCTAssertGreaterThan(pageCount, 0, "The production repro must exercise an actual earlier-message download")
+        XCTAssertGreaterThan(items.count, canonical.items.count)
+        XCTAssertEqual(Set(items.map(\.id)).count, items.count)
+        let entries = makeChatDisplayEntries(from: items)
+        let projectedIDs = Set(entries.flatMap(underlyingItems).map(\.id))
+        let requiredMessageIDs = Set(items.filter {
+            $0.type == "userMessage"
+                || ($0.type == "agentMessage"
+                    && $0.presentationRole == "final_answer"
+                    && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }.map(\.id))
+        let missingRequiredIDs = requiredMessageIDs.subtracting(projectedIDs)
+        XCTAssertTrue(
+            missingRequiredIDs.isEmpty,
+            "Downloaded user and final-answer messages must remain displayable; missing=\(missingRequiredIDs.prefix(10))"
+        )
+
+        // A second cold snapshot models a page refresh: it must decode to the
+        // same canonical latest window before earlier pages are requested again.
+        let refreshed = try JSONDecoder().decode(
+            UnifiedSessionSnapshotResponse.self,
+            from: Data(contentsOf: baseURL.appending(path: "sessions/\(session.id)/stored-snapshot"))
+        ).session
+        XCTAssertEqual(refreshed.items.map(\.id), canonical.items.map(\.id))
+    }
+
     private func underlyingItems(_ entry: ChatDisplayEntry) -> [CodexThreadItem] {
         switch entry.kind {
         case .message(let item):

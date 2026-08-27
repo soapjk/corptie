@@ -91,9 +91,9 @@ final class AppStateSyncController {
     }
 
     func hydrateSession(_ id: String) async -> TaskSession? {
-        if let session = store.session(id) { return session }
+        if let session = sessionMatchingPendingSelection(id, in: store.sessions) { return session }
         await refreshSnapshot()
-        return store.session(id)
+        return sessionMatchingPendingSelection(id, in: store.sessions)
     }
 
     private func restartStream(refreshSnapshotFirst: Bool) {

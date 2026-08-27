@@ -27,6 +27,29 @@ final class SessionPresentationCacheTests: XCTestCase {
         )
     }
 
+    func testMessageLoadFailureReplacesAnEndedLoadingStateWithoutHidingCachedHistory() {
+        XCTAssertEqual(
+            sessionDetailContentPhase(
+                hasLiveDetail: false,
+                cachedSessionID: nil,
+                selectedSessionID: "session-a",
+                isLoading: false,
+                hasError: true
+            ),
+            .failed
+        )
+        XCTAssertEqual(
+            sessionDetailContentPhase(
+                hasLiveDetail: false,
+                cachedSessionID: "session-a",
+                selectedSessionID: "session-a",
+                isLoading: false,
+                hasError: true
+            ),
+            .cached
+        )
+    }
+
     func testDefaultProjectionCacheRetainsNormalSessionBrowsingSet() {
         let store = SessionPresentationCache()
         for index in 0..<32 {

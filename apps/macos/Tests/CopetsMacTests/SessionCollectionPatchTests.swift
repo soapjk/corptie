@@ -180,6 +180,64 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
+    func workItemNavigationResolvesEveryDeclaredSessionRouteIdentifier() {
+        let routed = makeSession(
+            id: "openclacky:legacy-session",
+            external: ExternalSession(
+                provider: "codex-app-server",
+                threadId: "provider-thread-after-switch",
+                sessionId: "provider-thread-after-switch",
+                agentSessionId: nil,
+                connectionStatus: "connected",
+                currentModel: nil,
+                currentReasoningLevel: nil,
+                cwd: nil,
+                sandbox: nil,
+                approvalPolicy: nil,
+                source: "corptie",
+                logicalSessionId: "logical:stable-session",
+                workspace: nil,
+                routingVersion: 3,
+                providerSwitchInFlight: nil,
+                providerTransition: nil
+            )
+        )
+
+        #expect(sessionMatchingPendingSelection("openclacky:legacy-session", in: [routed])?.id == routed.id)
+        #expect(sessionMatchingPendingSelection(" logical:stable-session ", in: [routed])?.id == routed.id)
+        #expect(sessionMatchingPendingSelection("provider-thread-after-switch", in: [routed])?.id == routed.id)
+    }
+
+    @Test
+    func canonicalSessionIdWinsOverAnotherSessionsRouteAlias() {
+        let canonical = makeSession(id: "session:target")
+        let aliasCollision = makeSession(
+            id: "session:other",
+            external: ExternalSession(
+                provider: "test-provider",
+                threadId: "session:target",
+                sessionId: nil,
+                agentSessionId: nil,
+                connectionStatus: nil,
+                currentModel: nil,
+                currentReasoningLevel: nil,
+                cwd: nil,
+                sandbox: nil,
+                approvalPolicy: nil,
+                source: nil,
+                logicalSessionId: nil,
+                workspace: nil,
+                routingVersion: nil,
+                providerSwitchInFlight: nil,
+                providerTransition: nil
+            )
+        )
+
+        #expect(sessionMatchingPendingSelection("session:target", in: [aliasCollision, canonical])?.id == canonical.id)
+        #expect(sessionMatchingPendingSelection("provider:missing", in: [aliasCollision, canonical]) == nil)
+    }
+
+    @Test
     func sessionDetailResolvesTheBoundAgentInsteadOfTheProviderLabel() {
         let session = makeSession(id: "codex:thread", agentId: "research-agent")
         let agent = Agent(
@@ -735,7 +793,8 @@ private func makeSession(
     lastReadMessageSequence: Int? = nil,
     timelineRevision: Int? = nil,
     archived: Bool = false,
-    pinned: Bool = false
+    pinned: Bool = false,
+    external: ExternalSession? = nil
 ) -> TaskSession {
     TaskSession(
         id: id,
@@ -761,7 +820,7 @@ private func makeSession(
         pinned: pinned,
         sortOrder: nil,
         capabilities: nil,
-        external: nil,
+        external: external,
         actions: nil,
     )
 }
