@@ -209,6 +209,40 @@ test("accept fail-closes when authoritative recipient route metadata is missing"
   }
 });
 
+test("recipient routing reports missing fields and WorkItem ownership mismatches with stable codes", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(
+      f.service.ensureTaskRecipientSession({ taskId: "task:missing-work-item" }),
+      { code: "COLLABORATION_WORK_ITEM_REQUIRED" }
+    );
+
+    const recipient = f.store.createAgent({ id: "agent:routing-owner", name: "Owner", role: "independentContributor" });
+    const other = f.store.createAgent({ id: "agent:routing-other", name: "Other", role: "independentContributor" });
+    const objective = f.objectiveService.createObjective({
+      name: "Routing validation", contributorAgentIds: [recipient.agentId, other.agentId]
+    });
+    const workItem = f.objectiveService.createWorkItem({
+      objectiveId: objective.id, title: "Owned target", mainAgentId: other.agentId
+    });
+    await assert.rejects(
+      f.service.ensureTaskRecipientSession({
+        taskId: "task:wrong-owner",
+        workItemId: workItem.id,
+        targetObjectiveId: objective.id,
+        recipientAgentId: recipient.agentId
+      }),
+      (error) => error.code === "COLLABORATION_WORK_ITEM_AGENT_MISMATCH"
+        && error.message.includes(workItem.id)
+        && error.message.includes(other.agentId)
+        && error.message.includes(recipient.agentId)
+    );
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("peer Objective discovery exposes context without allowing Objective Chat as a delivery target", async () => {
   const f = await fixture();
   try {
@@ -481,6 +515,62 @@ test("recipient closing between selection and delivery preflight is rerouted wit
     assert.equal(recovered.sessionId, "session:peer-race-new");
     assert.equal(delivery.status, "pending");
     assert.equal(f.core.getDeliveryEnvelope(delivery.deliveryId).task.recipientSessionId, "session:peer-race-new");
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("a replaced broken Worker route is rejected and collaboration follows the WorkItem's current Session", async () => {
+  const f = await fixture();
+  try {
+    const sourceAgent = f.store.createAgent({ id: "agent:source-repair", name: "Source", role: "independentContributor" });
+    const peerAgent = f.store.createAgent({ id: "agent:peer-repair", name: "MarketCow", role: "independentContributor" });
+    const sourceObjective = f.objectiveService.createObjective({ name: "Source Repair", contributorAgentIds: [sourceAgent.agentId] });
+    const peerObjective = f.objectiveService.createObjective({ name: "MarketCow", contributorAgentIds: [peerAgent.agentId] });
+    session(f.store, f.core, {
+      providerSessionId: "provider:source-repair", logicalSessionId: "session:source-repair",
+      agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: f.directory
+    });
+    const workItem = f.objectiveService.createWorkItem({
+      objectiveId: peerObjective.id,
+      title: "获取 MarketCow 当前 exact 100-market scope",
+      mainAgentId: peerAgent.agentId
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:missing-rollout", logicalSessionId: "session:missing-rollout",
+      agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
+      workItemId: workItem.id, cwd: f.directory
+    });
+    const task = f.core.createTask({
+      initiatorAgentId: sourceAgent.agentId,
+      recipientAgentId: peerAgent.agentId,
+      initiatorSessionId: "session:source-repair",
+      recipientSessionId: "session:missing-rollout",
+      sourceObjectiveId: sourceObjective.id,
+      targetObjectiveId: peerObjective.id,
+      workItemId: workItem.id,
+      routingIntent: "create_dedicated_session",
+      title: workItem.title,
+      summary: "Return the exact active market scope."
+    });
+
+    session(f.store, f.core, {
+      providerSessionId: "provider:replacement", logicalSessionId: "session:replacement",
+      agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
+      workItemId: workItem.id, cwd: f.directory
+    });
+    const route = await f.service.ensureTaskRecipientSession(task, { reason: "delivery_preflight" });
+
+    assert.equal(route.created, false);
+    assert.equal(route.sessionId, "session:replacement");
+    assert.equal(route.providerSessionId, "provider:replacement");
+    assert.equal(f.core.getTask(task.taskId).recipientSessionId, "session:replacement");
+    const reroute = f.store.selectOne(
+      "SELECT payload_json FROM collaboration_events WHERE task_id=? AND type='recipient_route_reselected' ORDER BY sequence DESC LIMIT 1",
+      [task.taskId]
+    );
+    assert.match(reroute.payload_json, /work_item_session_superseded/);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
