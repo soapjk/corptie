@@ -84,6 +84,9 @@ test("Objective Chat MCP exposes context plus Session-scoped strict collaboratio
     assert.equal(names.includes("corptie_objective_work_item_start"), false);
     assert.equal(names.includes("corptie_objective_work_items_manage"), false);
     assert.ok(names.includes("corptie.collaboration.work_items.create"));
+    const requestTool = tools.tools.find((tool) => tool.name === "corptie.collaboration.request");
+    assert.equal(Object.hasOwn(requestTool.inputSchema.properties, "parent_task_id"), false);
+    assert.equal(Object.hasOwn(requestTool.inputSchema.properties, "context_id"), false);
     await client.callTool({
       name: "corptie.collaboration.work_items.create",
       arguments: { title: "Scoped item", idempotency_key: "create:scoped" }

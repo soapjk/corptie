@@ -121,9 +121,7 @@ export const collaborationDynamicTools = Object.freeze([
     evidence: evidenceSchema,
     resource_version: { type: "string", minLength: 1 },
     max_iterations: { type: "integer", minimum: 1, maximum: 3 },
-    idempotency_key: { type: "string", minLength: 1 },
-    parent_task_id: { type: "string", minLength: 1 },
-    context_id: { type: "string", minLength: 1 }
+    idempotency_key: { type: "string", minLength: 1 }
   }, ["type", "title", "summary"]),
   tool("corptie_collaboration_accept", "Accept a proposed task or resume requested revisions and begin working.", {
     task_id: { type: "string", minLength: 1 }
@@ -220,9 +218,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       evidence: input.evidence,
       resourceVersion: input.resource_version,
       maxIterations: input.max_iterations ?? 3,
-      idempotencyKey: input.idempotency_key,
-      parentTaskId: input.parent_task_id,
-      contextId: input.context_id
+      idempotencyKey: input.idempotency_key
     })),
     corptie_collaboration_accept: () => action(client, input, "accept"),
     corptie_collaboration_reject: () => action(client, input, "reject"),

@@ -292,8 +292,13 @@ export function handleCollaborationHttpRequest({
         const runningWork = sourceProviderSessionId
           ? core.store.getRunningAgentWorkItemForSession(sourceProviderSessionId)
           : null;
+        const parentTask = (runningWork?.source?.taskId
+          ? core.getTask(runningWork.source.taskId)
+          : null) ?? core.getTaskForWorkItem(sourceCapabilities.workItemId);
         const confirmation = core.proposeTask({
           ...input,
+          parentTaskId: parentTask?.taskId ?? undefined,
+          contextId: parentTask?.contextId ?? undefined,
           sourceObjectiveId: sourceCapabilities.objectiveId ?? undefined,
           sourceWorkItemId: sourceCapabilities.workItemId ?? undefined,
           workItemId: input.workItemId ?? recipientSessionDescriptor?.workItemId ?? undefined,

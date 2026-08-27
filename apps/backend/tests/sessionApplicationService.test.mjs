@@ -217,6 +217,54 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   ]);
 });
 
+test("unusable replacement cleanup removes the local Session even when the Provider thread is already missing", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "missing-session-provider",
+    displayName: "Missing Session Provider",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE]
+  }, {
+    deleteSession: async () => {
+      const error = new Error("Provider Session no longer exists");
+      error.code = "PROVIDER_SESSION_UNAVAILABLE";
+      throw error;
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "legacy-missing",
+      logicalSessionId: "logical-missing",
+      providerId: "missing-session-provider",
+      providerSessionId: "native-missing"
+    }),
+    removeSessionBinding: async ({ reference, providerError }) => {
+      calls.push(["removeSessionBinding", reference.sessionId, providerError.code]);
+    }
+  });
+
+  const deleted = await service.deleteUnusableSession("logical-missing", {
+    source: "work-item-self-repair",
+    replacementSessionId: "legacy-replacement"
+  });
+
+  assert.deepEqual(deleted, {
+    ok: true,
+    deleted: true,
+    sessionId: "legacy-missing",
+    logicalSessionId: "logical-missing",
+    providerId: "missing-session-provider",
+    providerDeleted: false,
+    providerErrorCode: "PROVIDER_SESSION_UNAVAILABLE"
+  });
+  assert.deepEqual(calls, [[
+    "removeSessionBinding",
+    "legacy-missing",
+    "PROVIDER_SESSION_UNAVAILABLE"
+  ]]);
+});
+
 test("Session recovery rebuilds and passes the Provider-neutral Tool Host attachment", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({

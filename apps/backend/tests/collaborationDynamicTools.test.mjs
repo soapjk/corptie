@@ -21,6 +21,9 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
     assert.equal(entry.inputSchema.type, "object");
     assert.equal(entry.inputSchema.additionalProperties, false);
   }
+  const request = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_request");
+  assert.equal(Object.hasOwn(request.inputSchema.properties, "parent_task_id"), false);
+  assert.equal(Object.hasOwn(request.inputSchema.properties, "context_id"), false);
 });
 
 test("dynamic request maps tool input to the authenticated collaboration HTTP contract", async () => {
@@ -36,7 +39,9 @@ test("dynamic request maps tool input to the authenticated collaboration HTTP co
     recipient_agent_id: "agent-b",
     type: "change_request",
     title: "Update API",
-    summary: "Add the endpoint"
+    summary: "Add the endpoint",
+    parent_task_id: "work_item:wrong-parent",
+    context_id: "work_item:wrong-context"
   });
 
   assert.deepEqual(calls, [{

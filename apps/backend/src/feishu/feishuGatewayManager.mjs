@@ -282,7 +282,7 @@ export class FeishuGatewayManager {
     this.botRuntime.set(botId, {
       lastStatus: snapshot.status,
       seenItems: new Set((snapshot.items ?? [])
-        .filter((item) => item.id !== latestFormalAgentReply?.id && !shouldDeliverOnInitialFeishuSync(item))
+        .filter((item) => item.id !== latestFormalAgentReply?.id && shouldSeedFeishuSeenItem(item))
         .map((item) => item.id)
         .filter(Boolean))
     });
@@ -919,7 +919,7 @@ export class FeishuGatewayManager {
     if (!existingRuntime) {
       runtime.lastStatus = snapshot.status;
       runtime.seenItems = new Set((snapshot.items ?? [])
-        .filter((item) => !shouldDeliverOnInitialFeishuSync(item))
+        .filter(shouldSeedFeishuSeenItem)
         .map((item) => item.id)
         .filter(Boolean));
       runtime.collaborationConfirmationCards = [];
@@ -963,6 +963,13 @@ export class FeishuGatewayManager {
     const unseenItems = (snapshot.items ?? []).filter((item) => item.id && !runtime.seenItems.has(item.id));
     for (const item of unseenItems) {
       const projection = feishuProjectionForSessionItem(item);
+      // Provider projections create the stable assistant item when generation
+      // starts and fill its text when the item completes. Do not consume that
+      // stable id while it is still an empty placeholder, otherwise the
+      // completed reply will be skipped forever as already seen.
+      if (projection === "deferred") {
+        continue;
+      }
       if (projection === "hidden") {
         runtime.seenItems.add(item.id);
         continue;
@@ -1964,6 +1971,11 @@ function shouldDeliverOnInitialFeishuSync(item) {
   return isPendingApprovalItem(item) || isPendingCollaborationConfirmationItem(item);
 }
 
+function shouldSeedFeishuSeenItem(item) {
+  return !shouldDeliverOnInitialFeishuSync(item)
+    && feishuProjectionForSessionItem(item) !== "deferred";
+}
+
 function findLatestFormalAgentReply(items = []) {
   return (Array.isArray(items) ? items : []).slice().reverse().find((item) => {
     if (!["agentMessage", "assistantMessage"].includes(item?.type) || !optionalText(item.text)) {
@@ -1995,8 +2007,11 @@ function feishuProjectionForSessionItem(item) {
   if (item?.type === "userMessage") {
     return item.status === "queued" || !optionalText(item.text) ? "hidden" : "user";
   }
-  if (["agentMessage", "assistantMessage"].includes(item?.type) && optionalText(item.text)) {
-    return "assistant";
+  if (["agentMessage", "assistantMessage"].includes(item?.type)) {
+    const status = optionalText(item.status).toLowerCase();
+    const isStillGenerating = ["inprogress", "in_progress", "running", "streaming", "pending", "started"]
+      .includes(status);
+    return optionalText(item.text) && !isStillGenerating ? "assistant" : "deferred";
   }
 
   // Session message cards are remote-visible by default. Types that should

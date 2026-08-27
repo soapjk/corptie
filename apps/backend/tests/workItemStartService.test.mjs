@@ -209,7 +209,7 @@ test("self-repair replaces exactly the currently bound abnormal Session", async 
     const first = await f.service.start(startInput());
     const replacement = await f.service.start({
       ...startInput(),
-      idempotencyKey: "self-repair:provider-worker-1",
+      idempotencyKey: `self-repair:${f.workItem.id}:${first.session.id}`,
       source: "self-repair",
       replacingSessionId: first.session.id
     });
@@ -217,6 +217,7 @@ test("self-repair replaces exactly the currently bound abnormal Session", async 
     assert.notEqual(replacement.session.id, first.session.id);
     assert.equal(replacement.workItem.current_session_id, replacement.session.id);
     assert.equal(f.calls.create, 2);
+    assert.deepEqual(f.store.listUnusableReplacedWorkItemSessionIds(), [first.session.id]);
 
     const staleRepair = await f.service.start({
       ...startInput(),

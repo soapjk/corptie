@@ -79,10 +79,14 @@ export class ProviderEventProjector {
         }
       }
     }
+    const projectedTurnItems = event.turnId
+      ? this.store.getItemsForTurn?.(sessionId, event.turnId, session.external?.provider) ?? []
+      : [];
+    const terminalOutcome = providerTerminalOutcome(event, projectedTurnItems);
 
-    const turnStatus = projectedTurnStatus(event);
+    const turnStatus = projectedTurnStatus(event, terminalOutcome);
     if (turnStatus && event.turnId) {
-      const finalItem = finalItemForTurn(event.payload, event.turnId);
+      const finalItem = finalItemForTurn({ items: projectedTurnItems }, event.turnId);
       this.store.upsertSessionTurn({
         sessionId,
         bindingId: event.bindingId,
@@ -93,7 +97,7 @@ export class ProviderEventProjector {
         startedAt: event.type === "turn.started" ? event.occurredAt ?? event.receivedAt : null,
         endedAt: TERMINAL_EVENT_STATUS.has(event.type) ? event.occurredAt ?? event.receivedAt : null,
         providerSequence: event.providerSequence,
-        failure: event.type === "turn.failed" ? event.payload?.error ?? {} : null,
+        failure: terminalOutcome?.status === "failed" ? terminalOutcome.failure ?? {} : null,
         updatedAt: event.receivedAt
       });
       const delivery = correlatedDelivery ?? this.store.getMessageDeliveryForProviderTurn?.(
@@ -102,19 +106,19 @@ export class ProviderEventProjector {
         event.turnId
       );
       if (delivery) {
-        const deliveryStatus = TERMINAL_EVENT_STATUS.has(event.type)
-          ? (event.type === "turn.completed" ? "completed" : (event.type === "turn.cancelled" ? "cancelled" : "failed"))
+        const deliveryStatus = terminalOutcome
+          ? terminalOutcome.status
           : "processing";
         this.store.updateMessageDelivery(delivery.deliveryId, {
           status: deliveryStatus,
-          lastError: event.type === "turn.failed"
-            ? event.payload?.error?.message ?? String(event.payload?.error ?? "Provider turn failed.")
+          lastError: terminalOutcome?.status === "failed"
+            ? terminalOutcome.failure?.message ?? "Provider turn failed."
             : null
         });
       }
     }
 
-    const updatedSession = this.projectSession(session, event, binding);
+    const updatedSession = this.projectSession(session, event, binding, terminalOutcome);
     const outbox = [];
     if (timelineChanged) {
       outbox.push({
@@ -139,10 +143,12 @@ export class ProviderEventProjector {
     return {
       surface: event.type === "user.message.accepted"
         || event.type === "assistant.message.completed"
-        || (TERMINAL_EVENT_STATUS.has(event.type) && Boolean(finalItemForTurn(event.payload, event.turnId))),
+        || (TERMINAL_EVENT_STATUS.has(event.type) && Boolean(finalItemForTurn({ items: projectedTurnItems }, event.turnId))),
       timelineChanged,
       session: updatedSession ?? session,
       usage,
+      terminalStatus: terminalOutcome?.status ?? null,
+      terminalFailure: terminalOutcome?.failure ?? null,
       outbox
     };
   }
@@ -180,9 +186,9 @@ export class ProviderEventProjector {
     return this.store.upsertTimelineItemProjection(sessionId, { ...canonicalItem, bindingId }) !== false;
   }
 
-  projectSession(session, event, binding) {
+  projectSession(session, event, binding, terminalOutcome = null) {
     const unsettled = this.store.listUnsettledSessionTurns(binding.sessionId);
-    const status = sessionStatus(event, unsettled, session.status, binding.isCurrentRoute !== false);
+    const status = sessionStatus(event, unsettled, session.status, binding.isCurrentRoute !== false, terminalOutcome);
     const latestAgentItem = latestAgentItemFromPayload(event.payload);
     const activityStatus = status === "blocked"
       ? "Waiting for approval"
@@ -269,20 +275,20 @@ function finiteUsageNumber(value) {
   return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
-function projectedTurnStatus(event) {
-  if (TERMINAL_EVENT_STATUS.has(event.type)) return TERMINAL_EVENT_STATUS.get(event.type);
+function projectedTurnStatus(event, terminalOutcome = null) {
+  if (terminalOutcome) return terminalOutcome.status;
   if (event.type === "approval.requested") return "blocked";
   if (event.type === "turn.started" || ITEM_EVENT_TYPES.has(event.type)) return "running";
   return null;
 }
 
-function sessionStatus(event, unsettled, previousStatus, isCurrentRoute) {
+function sessionStatus(event, unsettled, previousStatus, isCurrentRoute, terminalOutcome = null) {
   if (unsettled.some((turn) => turn.execution_status === "blocked")) return "blocked";
   if (unsettled.length > 0) return "running";
   if (event.type === "provider.error" && isCurrentRoute) {
     return event.payload?.willRetry ? "running" : "failed";
   }
-  const terminal = TERMINAL_EVENT_STATUS.get(event.type);
+  const terminal = terminalOutcome?.status ?? TERMINAL_EVENT_STATUS.get(event.type);
   if (!terminal || !isCurrentRoute) return previousStatus;
   return terminal === "completed" ? "complete" : terminal;
 }
@@ -292,7 +298,42 @@ function finalItemForTurn(payload, turnId) {
     item?.turnId === turnId
     && item?.type === "agentMessage"
     && item?.presentationRole === "final_answer"
+    && typeof item.text === "string"
+    && item.text.trim()
   ) ?? null;
+}
+
+function providerTerminalOutcome(event, projectedTurnItems = []) {
+  const status = TERMINAL_EVENT_STATUS.get(event.type);
+  if (!status) return null;
+  if (status !== "completed") {
+    return {
+      status,
+      failure: status === "failed" ? normalizeProviderFailure(event.payload?.error) : null
+    };
+  }
+  const items = projectedTurnItems.length > 0 ? projectedTurnItems : (event.payload?.items ?? []);
+  if (finalItemForTurn({ items }, event.turnId)) return { status, failure: null };
+  const failedItem = [...items].reverse().find((item) =>
+    (!event.turnId || item?.turnId === event.turnId)
+    && item?.status === "failed"
+    && !["userMessage", "agentMessage", "reasoning"].includes(item?.type)
+  );
+  if (!failedItem) return { status, failure: null };
+  return {
+    status: "failed",
+    failure: {
+      code: "PROVIDER_TOOL_FAILED_WITHOUT_FINAL_RESPONSE",
+      message: `${failedItem.title || "Provider tool"} failed and the Provider ended the turn without a final response.`,
+      itemId: failedItem.id ?? null
+    }
+  };
+}
+
+function normalizeProviderFailure(error) {
+  if (error && typeof error === "object" && !Array.isArray(error)) return error;
+  if (typeof error === "string" && error.trim()) return { message: error.trim() };
+  return { message: "Provider turn failed." };
 }
 
 function latestAgentItemFromPayload(payload) {

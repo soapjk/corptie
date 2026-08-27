@@ -606,6 +606,19 @@ export class CollaborationCore {
     };
   }
 
+  getTaskForWorkItem(workItemId) {
+    const id = typeof workItemId === "string" ? workItemId.trim() : "";
+    if (!id) return null;
+    const row = this.store.selectOne(
+      `SELECT task_id FROM collaboration_tasks
+       WHERE work_item_id = ?
+       ORDER BY created_at DESC, task_id DESC
+       LIMIT 1`,
+      [id]
+    );
+    return row ? this.getTask(row.task_id) : null;
+  }
+
   hasTask(taskId) {
     const id = typeof taskId === "string" ? taskId.trim() : "";
     if (!id) return false;

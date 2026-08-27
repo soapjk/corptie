@@ -321,9 +321,7 @@ export function createCollaborationMcpServer(options) {
       evidence: evidenceSchema,
       resource_version: z.string().min(1).optional(),
       max_iterations: z.number().int().min(1).max(3).default(3),
-      idempotency_key: z.string().min(1).optional(),
-      parent_task_id: z.string().min(1).optional(),
-      context_id: z.string().min(1).optional()
+      idempotency_key: z.string().min(1).optional()
     },
     afterSend: true,
     handler: async (input) => requireStagedConfirmation(
@@ -601,9 +599,7 @@ function mapRequest(input) {
     evidence: input.evidence,
     resourceVersion: input.resource_version,
     maxIterations: input.max_iterations,
-    idempotencyKey: input.idempotency_key,
-    parentTaskId: input.parent_task_id,
-    contextId: input.context_id
+    idempotencyKey: input.idempotency_key
   });
 }
 

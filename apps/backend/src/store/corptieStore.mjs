@@ -5120,6 +5120,25 @@ export class CorptieStore {
     }));
   }
 
+  listUnusableReplacedWorkItemSessionIds() {
+    return this.selectAll(
+      `SELECT DISTINCT s.id
+       FROM sessions s
+       JOIN work_items wi
+         ON wi.id=s.work_item_id AND wi.current_session_id IS NOT s.id
+       JOIN work_item_start_operations replacement
+         ON replacement.work_item_id=s.work_item_id
+        AND replacement.source='self-repair'
+        AND replacement.status='succeeded'
+        AND replacement.idempotency_key=('self-repair:' || s.work_item_id || ':' || s.id)
+       WHERE s.session_kind='worker'
+         AND NOT EXISTS (
+           SELECT 1 FROM session_turns turn WHERE turn.session_id=s.id
+         )
+       ORDER BY s.created_at ASC`
+    ).map((row) => row.id);
+  }
+
   repairOrphanedWorkSessions(options = {}) {
     const repaired = [];
     const unresolved = [];
