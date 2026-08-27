@@ -43,6 +43,52 @@ struct MainWindowAndSidebarStateTests {
     }
 
     @Test
+    func sessionSidebarNativeButtonRemainsOperableAcrossRepeatedCloseOpenCycles() {
+        let state = TabSidebarState(tab: .sessions)
+        let button = MainWindowSidebarNSButton(sidebarState: state)
+
+        #expect(!button.isHidden)
+        #expect(button.isEnabled)
+        #expect(button.accessibilityIdentifier() == "main-window.sidebar")
+        #expect(button.accessibilityValue() as? String == L10n("Expanded"))
+
+        for _ in 0..<3 {
+            button.performClick(nil)
+            #expect(!state.isVisible)
+            #expect(!button.isHidden)
+            #expect(button.isEnabled)
+            #expect(button.accessibilityValue() as? String == L10n("Collapsed"))
+
+            button.performClick(nil)
+            #expect(state.isVisible)
+            #expect(!button.isHidden)
+            #expect(button.isEnabled)
+            #expect(button.accessibilityValue() as? String == L10n("Expanded"))
+        }
+    }
+
+    @Test
+    func nativeSidebarButtonRebindsWithoutOverwritingAnotherTabsState() {
+        let sessions = TabSidebarState(tab: .sessions)
+        let console = TabSidebarState(tab: .console)
+        let button = MainWindowSidebarNSButton(sidebarState: sessions)
+
+        button.performClick(nil)
+        #expect(!sessions.isVisible)
+        #expect(console.isVisible)
+
+        button.bind(to: console)
+        button.performClick(nil)
+        #expect(!sessions.isVisible)
+        #expect(!console.isVisible)
+
+        button.bind(to: sessions)
+        button.performClick(nil)
+        #expect(sessions.isVisible)
+        #expect(!console.isVisible)
+    }
+
+    @Test
     func mainWindowLevelPolicyRestoresTheDefaultLevel() {
         #expect(MainWindowLevelPolicy.level(isPinned: true) == .floating)
         #expect(MainWindowLevelPolicy.level(isPinned: false) == .normal)
@@ -91,8 +137,8 @@ struct MainWindowAndSidebarStateTests {
         )
         #expect(mainTab.contains("systemName: windowState.isPinned ? \"pin.fill\" : \"pin\""))
         #expect(mainTab.contains("isActive: windowState.isPinned"))
-        #expect(mainTab.contains("chromeIcon(systemName: \"sidebar.left\", isActive: sidebarState.isVisible)"))
-        #expect(mainTab.contains(".accessibilityValue(L10n(sidebarState.isVisible ? \"Expanded\" : \"Collapsed\"))"))
+        #expect(mainTab.contains("MainWindowSidebarToggleButton(sidebarState: sidebarState)"))
+        #expect(mainTab.contains("setAccessibilityValue(L10n(isVisible ? \"Expanded\" : \"Collapsed\"))"))
         #expect(mainTab.contains(".environmentObject(router.sidebarState(for: tab))"))
 
         for fileName in ["WarRoomView.swift", "SessionsView.swift", "AutomationsView.swift", "WorktreeManagementView.swift"] {
