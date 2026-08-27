@@ -5312,16 +5312,15 @@ func nativeCollaborationCardPresentation(
     case "rejected", "cancelled", "canceled": L10n("已取消")
     default: isConfirmation ? L10n("等待确认") : L10n("等待处理")
     }
-    let targetSessionFallback = isMessage
-        ? nonEmpty(currentSessionTitle) ?? L10n("当前 Session")
-        : L10n("未知 Session")
-    let targetSession = sessionParty(
-        name: item.collaborationRecipientSessionTitle,
-        id: item.collaborationRecipientSessionId,
-        kind: item.collaborationRecipientSessionKind,
-        workItemId: item.collaborationTargetWorkItemId,
-        fallback: targetSessionFallback
-    )
+    let targetSession = nonEmpty(item.collaborationRecipientSessionId).map { sessionId in
+        sessionParty(
+            name: item.collaborationRecipientSessionTitle,
+            id: sessionId,
+            kind: item.collaborationRecipientSessionKind,
+            workItemId: item.collaborationTargetWorkItemId,
+            fallback: sessionId
+        )
+    }
     let sourceSession = sessionParty(
         name: item.collaborationInitiatorSessionTitle,
         id: item.collaborationInitiatorSessionId,
@@ -5342,15 +5341,27 @@ func nativeCollaborationCardPresentation(
     let message = nonEmpty(item.presentationText)
         ?? nonEmpty(item.text)
         ?? L10n("协作消息正文不可用")
-    var lines = [
-        "**\(L10n("来源 Session"))**  \(markdownEscaped(sourceSession))",
-        "**\(L10n("目标 Session"))**  \(markdownEscaped(targetSession))",
+    let targetWorkItem = party(
+        name: item.collaborationTaskTitle,
+        id: item.collaborationTargetWorkItemId,
+        fallback: L10n("未命名协作任务")
+    )
+    var lines = ["**\(L10n("来源 Session"))**  \(markdownEscaped(sourceSession))"]
+    if let targetSession {
+        lines.append("**\(L10n("目标 Session"))**  \(markdownEscaped(targetSession))")
+    } else {
+        let pendingSuffix = item.collaborationTargetWorkItemId == nil
+            ? " · \(L10n("确认后在目标 Objective 下新建"))"
+            : ""
+        lines.append("**\(L10n("目标 WorkItem"))**  \(markdownEscaped(targetWorkItem + pendingSuffix))")
+    }
+    lines.append(contentsOf: [
         "**\(L10n("来源 Objective"))**  \(markdownEscaped(sourceObjective))",
         "**\(L10n("目标 Objective"))**  \(markdownEscaped(targetObjective))",
         "",
         "**\(L10n("消息"))**",
         message
-    ]
+    ])
     if let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
         lines.append("")
         lines.append("**\(L10n("验收标准"))**")
@@ -8489,10 +8500,6 @@ struct ThreadItemView: View {
                     Text(L10n("确认发送协作任务"))
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.primaryText)
-                    Text("· \(collaborationRecipientName)")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(CorptiePalette.secondaryText)
-                        .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(collaborationConfirmationStatusLabel)
                         .font(.system(size: 9, weight: .bold))
@@ -8514,36 +8521,6 @@ struct ThreadItemView: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     VStack(alignment: .leading, spacing: 7) {
-                        collaborationConfirmationField(
-                            icon: "person.crop.circle",
-                            label: "来源 Agent",
-                            value: collaborationAgentIdentity(
-                                name: item.collaborationSenderName,
-                                id: item.collaborationSenderAgentId,
-                                fallback: "未知 Agent"
-                            )
-                        )
-                        collaborationConfirmationField(
-                            icon: "person.crop.circle.badge.checkmark",
-                            label: "目标 Agent",
-                            value: collaborationAgentIdentity(
-                                name: item.collaborationRecipientName,
-                                id: item.collaborationRecipientAgentId,
-                                fallback: "当前 Agent"
-                            )
-                        )
-                        if let sourceObjective = collaborationObjective(
-                            name: item.collaborationSourceObjectiveName,
-                            id: item.collaborationSourceObjectiveId
-                        ) {
-                            collaborationConfirmationField(icon: "arrow.up.right.square", label: "来源 Objective", value: sourceObjective)
-                        }
-                        if let targetObjective = collaborationObjective(
-                            name: item.collaborationTargetObjectiveName,
-                            id: item.collaborationTargetObjectiveId
-                        ) {
-                            collaborationConfirmationField(icon: "arrow.down.left.square", label: "目标 Objective", value: targetObjective)
-                        }
                         if let sourceSession = nonEmpty(item.collaborationInitiatorSessionId) {
                             collaborationConfirmationField(
                                 icon: "arrow.up.right",
@@ -8567,11 +8544,26 @@ struct ThreadItemView: View {
                                     workItemId: item.collaborationTargetWorkItemId
                                 )
                             )
+                        } else {
+                            collaborationConfirmationField(
+                                icon: "checklist",
+                                label: "目标 WorkItem",
+                                value: collaborationPendingTargetWorkItem
+                            )
                         }
-                        if let title = nonEmpty(item.collaborationTaskTitle) {
-                            collaborationConfirmationField(icon: "checklist", label: "任务", value: title)
+                        if let sourceObjective = collaborationObjective(
+                            name: item.collaborationSourceObjectiveName,
+                            id: item.collaborationSourceObjectiveId
+                        ) {
+                            collaborationConfirmationField(icon: "arrow.up.right.square", label: "来源 Objective", value: sourceObjective)
                         }
-                        collaborationConfirmationField(icon: "text.alignleft", label: "指令", value: collaborationPresentationText)
+                        if let targetObjective = collaborationObjective(
+                            name: item.collaborationTargetObjectiveName,
+                            id: item.collaborationTargetObjectiveId
+                        ) {
+                            collaborationConfirmationField(icon: "arrow.down.left.square", label: "目标 Objective", value: targetObjective)
+                        }
+                        collaborationConfirmationField(icon: "text.alignleft", label: "消息", value: collaborationPresentationText)
                     }
 
                     if let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
@@ -8655,12 +8647,6 @@ struct ThreadItemView: View {
         }
     }
 
-    private func collaborationAgentIdentity(name: String?, id: String?, fallback: String) -> String {
-        let resolvedName = nonEmpty(name) ?? fallback
-        guard let id = nonEmpty(id) else { return resolvedName }
-        return "\(resolvedName) · \(id)"
-    }
-
     private func collaborationObjective(name: String?, id: String?) -> String? {
         guard let id = nonEmpty(id) else { return nil }
         guard let name = nonEmpty(name), name != id else { return id }
@@ -8671,6 +8657,15 @@ struct ThreadItemView: View {
         let identity = nonEmpty(title).map { "\($0) · \(id)" } ?? id
         let scope = [nonEmpty(kind), nonEmpty(workItemId)].compactMap { $0 }.joined(separator: " · ")
         return scope.isEmpty ? identity : "\(identity) [\(scope)]"
+    }
+
+    private var collaborationPendingTargetWorkItem: String {
+        let title = nonEmpty(item.collaborationTaskTitle)
+        let workItemId = nonEmpty(item.collaborationTargetWorkItemId)
+        let identity = [title, workItemId].compactMap { $0 }.joined(separator: " · ")
+        let resolvedIdentity = identity.isEmpty ? L10n("未命名协作任务") : identity
+        guard workItemId == nil else { return resolvedIdentity }
+        return "\(resolvedIdentity) · \(L10n("确认后在目标 Objective 下新建"))"
     }
 
     private var isCollaborationConfirmationItem: Bool {

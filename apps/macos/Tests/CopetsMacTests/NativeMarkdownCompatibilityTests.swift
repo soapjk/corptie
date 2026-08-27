@@ -191,8 +191,47 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertLessThan(sourceObjectiveRange.lowerBound, targetObjectiveRange.lowerBound)
         XCTAssertLessThan(targetObjectiveRange.lowerBound, messageRange.lowerBound)
         XCTAssertTrue(presentation.bodyMarkdown.contains("worker · work\\_item:ui"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("目标 WorkItem")))
+        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("确认后在目标 Objective 下新建")))
         XCTAssertFalse(presentation.bodyMarkdown.contains("Review collaboration card"))
         XCTAssertEqual(presentation.messageText, "Please review the API contract.")
+    }
+
+    @MainActor
+    func testCollaborationConfirmationShowsPendingWorkItemInsteadOfInventingTargetSession() throws {
+        var confirmation = item(
+            id: "collaboration-confirmation",
+            type: "collaborationConfirmation",
+            text: ""
+        )
+        confirmation.presentationRole = "collaboration_confirmation"
+        confirmation.presentationText = "Investigate the delivery failure."
+        confirmation.collaborationInitiatorSessionTitle = "Source Worker"
+        confirmation.collaborationInitiatorSessionId = "session:source"
+        confirmation.collaborationSourceObjectiveName = "Platform"
+        confirmation.collaborationSourceObjectiveId = "objective:platform"
+        confirmation.collaborationTargetObjectiveName = "macOS"
+        confirmation.collaborationTargetObjectiveId = "objective:macos"
+        confirmation.collaborationTaskTitle = "Repair delivery"
+        confirmation.collaborationConfirmationStatus = "pending"
+
+        let presentation = try XCTUnwrap(nativeCollaborationCardPresentation(
+            for: confirmation,
+            currentSessionTitle: "Source Worker"
+        ))
+
+        let sourceSessionRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Source Worker · session:source"))
+        let targetWorkItemRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Repair delivery · \(L10n("确认后在目标 Objective 下新建"))"))
+        let sourceObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Platform · objective:platform"))
+        let targetObjectiveRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "macOS · objective:macos"))
+        let messageRange = try XCTUnwrap(presentation.bodyMarkdown.range(of: "Investigate the delivery failure."))
+        XCTAssertLessThan(sourceSessionRange.lowerBound, targetWorkItemRange.lowerBound)
+        XCTAssertLessThan(targetWorkItemRange.lowerBound, sourceObjectiveRange.lowerBound)
+        XCTAssertLessThan(sourceObjectiveRange.lowerBound, targetObjectiveRange.lowerBound)
+        XCTAssertLessThan(targetObjectiveRange.lowerBound, messageRange.lowerBound)
+        XCTAssertTrue(presentation.bodyMarkdown.contains(L10n("目标 WorkItem")))
+        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("目标 Session")))
+        XCTAssertFalse(presentation.bodyMarkdown.contains(L10n("未知 Session")))
     }
 
     @MainActor
