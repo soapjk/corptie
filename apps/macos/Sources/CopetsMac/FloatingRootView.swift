@@ -3438,7 +3438,7 @@ struct DetailView: View {
             cachedSessionID: hasPreparedDisplayCacheForCurrentSession ? cachedSessionId : nil,
             selectedSessionID: sessionId,
             isLoading: displaysLoadingDetail,
-            hasError: backendClient.lastError != nil
+            hasError: backendClient.selectedTimelineLoadError != nil || backendClient.lastError != nil
         )
     }
 
@@ -3507,7 +3507,14 @@ struct DetailView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .failed:
-                OfflineView(error: backendClient.lastError ?? L10n("No detail is available for this task."))
+                SessionMessageLoadFailureView(
+                    error: backendClient.selectedTimelineLoadError
+                        ?? backendClient.lastError
+                        ?? L10n("No detail is available for this task."),
+                    retry: {
+                        Task { await backendClient.reloadSelectedSessionMessages() }
+                    }
+                )
             case .empty:
                 VStack(spacing: 10) {
                     ProgressView()
@@ -10534,6 +10541,31 @@ private struct OfflineView: View {
                 .foregroundStyle(CorptiePalette.secondaryText)
                 .multilineTextAlignment(.center)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct SessionMessageLoadFailureView: View {
+    let error: String
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.bubble")
+                .font(.system(size: 34, weight: .light))
+                .foregroundStyle(.orange)
+            Text(L10n("Messages could not be loaded"))
+                .font(.system(size: 15, weight: .semibold))
+            Text(error)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .multilineTextAlignment(.center)
+                .textSelection(.enabled)
+            Button(L10n("Reload messages"), action: retry)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        }
+        .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
