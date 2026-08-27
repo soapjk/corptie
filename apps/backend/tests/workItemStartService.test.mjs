@@ -203,6 +203,25 @@ test("binding finalization preserves a Provider-created Worker Session's complet
   }
 });
 
+test("start does not report running before asynchronous activation succeeds", async () => {
+  let releaseActivation;
+  const activationGate = new Promise((resolve) => { releaseActivation = resolve; });
+  const f = await fixture({ activateSession: async () => activationGate });
+  try {
+    let settled = false;
+    const starting = f.service.start(startInput()).finally(() => { settled = true; });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false);
+    assert.equal(f.store.getWorkItem(f.workItem.id).current_session_id, "provider:worker:1");
+
+    releaseActivation();
+    const result = await starting;
+    assert.equal(result.executionStatus, "running");
+  } finally {
+    await cleanup(f);
+  }
+});
+
 test("self-repair replaces exactly the currently bound abnormal Session", async () => {
   const f = await fixture();
   try {

@@ -347,6 +347,31 @@ export class SessionCollaborationService {
 
   async ensureTaskRecipientSession(task, options = {}) {
     if (!task?.taskId) throw coded("COLLABORATION_TASK_REQUIRED", "A collaboration Task is required for recipient routing.");
+    if (!task.workItemId) {
+      throw coded("COLLABORATION_WORK_ITEM_REQUIRED", `Collaboration Task ${task.taskId} has no target WorkItem.`);
+    }
+    if (!task.targetObjectiveId) {
+      throw coded("COLLABORATION_TARGET_OBJECTIVE_REQUIRED", `Collaboration Task ${task.taskId} has no target Objective.`);
+    }
+    if (!task.recipientAgentId) {
+      throw coded("COLLABORATION_RECIPIENT_AGENT_REQUIRED", `Collaboration Task ${task.taskId} has no recipient Agent.`);
+    }
+    const targetWorkItem = this.store.getWorkItem(task.workItemId);
+    if (!targetWorkItem) {
+      throw coded("COLLABORATION_WORK_ITEM_NOT_FOUND", `Collaboration WorkItem ${task.workItemId} was not found.`);
+    }
+    if (targetWorkItem.objective_id !== task.targetObjectiveId) {
+      throw coded(
+        "COLLABORATION_WORK_ITEM_OBJECTIVE_MISMATCH",
+        `Collaboration WorkItem ${task.workItemId} belongs to ${targetWorkItem.objective_id}, not target Objective ${task.targetObjectiveId}.`
+      );
+    }
+    if (targetWorkItem.main_agent_id && targetWorkItem.main_agent_id !== task.recipientAgentId) {
+      throw coded(
+        "COLLABORATION_WORK_ITEM_AGENT_MISMATCH",
+        `Collaboration WorkItem ${task.workItemId} is assigned to ${targetWorkItem.main_agent_id}, not recipient Agent ${task.recipientAgentId}.`
+      );
+    }
     const current = collaborationTargetEligibility(this.store, task, task.recipientSessionId);
     if (current.active) {
       if (["confirmation_approved", "initial_selection"].includes(options.reason)) {
@@ -397,8 +422,7 @@ export class SessionCollaborationService {
       };
     }
 
-    let workItem = this.store.getWorkItem(task.workItemId);
-    if (!workItem) throw coded("COLLABORATION_WORK_ITEM_NOT_FOUND", `Collaboration WorkItem ${task.workItemId} was not found.`);
+    let workItem = targetWorkItem;
     if (!workItem.main_workspace_id) {
       const objective = this.store.getObjective(task.targetObjectiveId);
       const repositoryId = (objective?.workspaceIds ?? [])
@@ -585,6 +609,16 @@ function collaborationTargetEligibility(store, task, sessionOrId) {
   if (eligibility.session && eligibility.session.sessionKind !== "worker") reasons.push("session_not_worker");
   if (eligibility.session?.sessionKind === "worker" && eligibility.session.workItemId !== task.workItemId) {
     reasons.push("work_item_mismatch");
+  }
+  const workItem = task?.workItemId ? store.getWorkItem(task.workItemId) : null;
+  if (!task?.workItemId) reasons.push("work_item_missing");
+  else if (!workItem) reasons.push("work_item_not_found");
+  if (workItem && eligibility.session?.sessionKind === "worker") {
+    if (workItem.objective_id !== task.targetObjectiveId) reasons.push("work_item_objective_mismatch");
+    if (workItem.main_agent_id && workItem.main_agent_id !== task.recipientAgentId) {
+      reasons.push("work_item_agent_mismatch");
+    }
+    if (workItem.current_session_id !== eligibility.session.id) reasons.push("work_item_session_superseded");
   }
   return { ...eligibility, active: reasons.length === 0, reasons };
 }

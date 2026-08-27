@@ -1084,13 +1084,16 @@ workItemStartService = new WorkItemStartService({
     deferInitialPromptUntilBound: true
   }),
   finalizeStart: (input) => store.finalizeWorkItemStart(input),
-  activateSession: ({ session, workItem }) => {
-    sendUnifiedSessionMessage(session.id, workItemExecutionPrompt(workItem), {
-      type: "session-initialization",
-      origin: "work-item-start"
-    }).catch((error) => {
+  activateSession: async ({ session, workItem }) => {
+    try {
+      return await sendUnifiedSessionMessage(session.id, workItemExecutionPrompt(workItem), {
+        type: "session-initialization",
+        origin: "work-item-start"
+      });
+    } catch (error) {
       console.error(`[work-item-start] initial prompt enqueue failed session=${session.id}: ${error.message}`);
-    });
+      throw error;
+    }
   },
   onChanged: (type, payload) => emitEvent(type, payload),
   onAudit: (record, { failed } = {}) => {

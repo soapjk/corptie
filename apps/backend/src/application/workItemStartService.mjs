@@ -198,7 +198,7 @@ export class WorkItemStartService {
       // A Worker Session cannot execute queued work until finalizeStart has
       // atomically established its WorkItem, Agent, and logical-route ownership.
       // Activate the provider-neutral queue only after that binding exists.
-      this.activateSession({ ...operation, ...context, session, workspace, finalized });
+      await this.activateSession({ ...operation, ...context, session, workspace, finalized });
       this.#audit({
         event: "work_item_start_succeeded",
         ...this.#auditContext(operation, workspace),
