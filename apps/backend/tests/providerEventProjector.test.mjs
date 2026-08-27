@@ -171,7 +171,7 @@ test("turn completion settles only its run and preserves the final reply as a se
       }),
       binding
     });
-    projector.project({
+    const completion = projector.project({
       event: event("turn.completed", { payload: { items: [{
         id: "item:final",
         turnId: "turn:one",
@@ -184,6 +184,7 @@ test("turn completion settles only its run and preserves the final reply as a se
       }] } }),
       binding
     });
+    assert.equal(completion.hasAgentMessage, true);
     projector.project({
       event: event("tool.completed", {
         itemId: "item:late-tool",
@@ -268,6 +269,7 @@ test("a completed Provider turn with a failed tool and no non-empty final reply 
     assert.match(delivery.lastError, /Collaboration request failed/);
     assert.equal(projected.session.status, "failed");
     assert.equal(projected.surface, false);
+    assert.equal(projected.hasAgentMessage, false);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
