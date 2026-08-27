@@ -693,6 +693,13 @@
 "消息" = "Message";
 "目标 WorkItem" = "Target WorkItem";
 "确认后在目标 Objective 下新建" = "Create under the target Objective after confirmation";
+"跨会话协作" = "Cross-session collaboration";
+"发送到现有会话" = "Send to existing session";
+"将创建新的 WorkItem" = "A new WorkItem will be created";
+"目标" = "Target";
+"当前会话" = "Current session";
+"目标会话" = "Target session";
+"会话" = "Session";
 "Delete Skill?" = "Delete Skill?";
 "Delete Skill" = "Delete Skill";
 "Unable to delete Skill" = "Unable to delete Skill";

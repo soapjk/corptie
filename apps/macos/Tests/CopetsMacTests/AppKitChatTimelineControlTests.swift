@@ -177,12 +177,22 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let collaboration = AppKitChatTimelineRow(
             id: "collaboration",
             contentRevision: 1,
-            nativeText: "**From Agent**  Platform Agent\n\n**Message**\nPlease review this change.",
+            nativeText: "**Message**\nPlease review this change.",
             copyText: "Please review this change.",
             nativeStyle: .agent,
-            title: "Agent Collaboration · Change request",
+            title: "Cross-session collaboration · Change request",
             metadata: "Processing · 08/20, 14:30",
             isCollaboration: true,
+            collaborationRoute: NativeCollaborationRoutePresentation(
+                destinationKind: .newWorkItem,
+                routeLabel: "A new WorkItem will be created",
+                sourceLabel: "Source",
+                sourceSession: "Session · Platform planning",
+                sourceObjective: "Objective · Platform",
+                targetLabel: "Target",
+                targetName: "WorkItem · Review API",
+                targetObjective: "Objective · macOS"
+            ),
             expandableTurnId: nil,
             isExpanded: false,
             showsHeader: true
@@ -199,10 +209,14 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let card = try XCTUnwrap(cell.subviews.first)
 
         XCTAssertFalse(title.isHidden)
-        XCTAssertEqual(title.stringValue, "Agent Collaboration · Change request")
+        XCTAssertEqual(title.stringValue, "Cross-session collaboration · Change request")
         XCTAssertEqual(metadata.stringValue, "Processing · 08/20, 14:30")
+        let route = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.collaboration-route"))
+        XCTAssertFalse(route.isHidden)
+        XCTAssertEqual(route.frame.height, NativeCollaborationRouteSummaryView.height)
         XCTAssertNotEqual(card.layer?.backgroundColor, NSColor.white.cgColor)
-        XCTAssertLessThan(card.frame.midX, cell.bounds.midX)
+        XCTAssertLessThanOrEqual(card.frame.midX, cell.bounds.midX)
+        XCTAssertGreaterThan(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), 130)
     }
 
     func testRunningExecutionSummaryIncludesElapsedDurationWhenAvailable() throws {
