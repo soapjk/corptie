@@ -1140,20 +1140,6 @@ private struct DetachedCollaborationConfirmationCard: View {
 
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: 8) {
-                    if confirmation.initiatorName != nil || confirmation.initiatorAgentId != nil {
-                        confirmationField("来源 Agent", value: party(confirmation.initiatorName, confirmation.initiatorAgentId))
-                    }
-                    confirmationField("目标 Agent", value: party(confirmation.recipientName, confirmation.recipientAgentId))
-                    if let recipientAgentId = confirmation.recipientAgentId,
-                       !recipientAgentId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        confirmationField("Agent ID", value: recipientAgentId, monospaced: true)
-                    }
-                    if let sourceObjectiveId = confirmation.sourceObjectiveId {
-                        confirmationField("来源 Objective", value: party(confirmation.sourceObjectiveName, sourceObjectiveId))
-                    }
-                    if let targetObjectiveId = confirmation.targetObjectiveId {
-                        confirmationField("目标 Objective", value: party(confirmation.targetObjectiveName, targetObjectiveId))
-                    }
                     if let sourceSessionId = confirmation.initiatorSessionId {
                         confirmationField("来源 Session", value: sessionParty(
                             confirmation.initiatorSessionTitle, sourceSessionId, confirmation.initiatorSessionKind,
@@ -1165,9 +1151,16 @@ private struct DetachedCollaborationConfirmationCard: View {
                             confirmation.recipientSessionTitle, targetSessionId, confirmation.recipientSessionKind,
                             confirmation.recipientWorkItemId
                         ))
+                    } else {
+                        confirmationField("目标 WorkItem", value: pendingTargetWorkItem)
                     }
-                    confirmationField("任务", value: confirmation.taskTitle)
-                    confirmationField("指令", value: confirmation.summary)
+                    if let sourceObjectiveId = confirmation.sourceObjectiveId {
+                        confirmationField("来源 Objective", value: party(confirmation.sourceObjectiveName, sourceObjectiveId))
+                    }
+                    if let targetObjectiveId = confirmation.targetObjectiveId {
+                        confirmationField("目标 Objective", value: party(confirmation.targetObjectiveName, targetObjectiveId))
+                    }
+                    confirmationField("消息", value: confirmation.summary)
                     if !confirmation.acceptanceCriteria.isEmpty {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(L10n("验收标准"))
@@ -1232,6 +1225,12 @@ private struct DetachedCollaborationConfirmationCard: View {
             return value
         }.joined(separator: " · ")
         return scope.isEmpty ? identity : "\(identity) [\(scope)]"
+    }
+
+    private var pendingTargetWorkItem: String {
+        let identity = party(confirmation.taskTitle, confirmation.recipientWorkItemId)
+        guard confirmation.recipientWorkItemId == nil else { return identity }
+        return "\(identity) · \(L10n("确认后在目标 Objective 下新建"))"
     }
 }
 
