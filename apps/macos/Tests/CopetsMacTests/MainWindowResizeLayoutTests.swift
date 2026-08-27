@@ -151,6 +151,54 @@ struct MainWindowResizeLayoutTests {
 
     @MainActor
     @Test
+    func leadingChromeDoesNotApplyTheWindowSafeAreaTwice() async throws {
+        let chrome = MainWindowChromeHostingView(
+            rootView: MainWindowFixedChromeView()
+        )
+        let container = MainWindowSurfaceContainer(
+            rootView: Color.clear,
+            resizeState: MainWindowResizeState(),
+            chromeSurfaces: MainWindowChromeSurfaces(
+                leading: chrome,
+                center: NSView(),
+                trailing: NSView()
+            )
+        )
+        let window = MainWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 760),
+            styleMask: [.titled, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.contentView = container
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        container.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)
+        container.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        container.layoutSubtreeIfNeeded()
+        chrome.layoutSubtreeIfNeeded()
+
+        #expect(chrome.frame.size == NSSize(width: 88, height: 22))
+        #expect(chrome.safeAreaInsets.top == 0)
+        #expect(chrome.safeAreaInsets.left == 0)
+        #expect(chrome.safeAreaInsets.bottom == 0)
+        #expect(chrome.safeAreaInsets.right == 0)
+        #expect(!chrome.mouseDownCanMoveWindow)
+        for centerX in [CGFloat(12), 44, 76] {
+            let chromePoint = NSPoint(x: centerX, y: 11)
+            #expect(chrome.hitTest(chromePoint) != nil)
+            let containerPoint = chrome.convert(chromePoint, to: container)
+            let windowHit = container.hitTest(containerPoint)
+            #expect(windowHit != nil)
+            #expect(windowHit === chrome || windowHit?.isDescendant(of: chrome) == true)
+        }
+    }
+
+    @MainActor
+    @Test
     func inactiveTabHostsStayHiddenAndRetainStateWithoutReceivingResizeFrames() throws {
         var created: [AppTab: NSView] = [:]
         let container = MainTabPageContainer(animationDuration: 0) { tab in
