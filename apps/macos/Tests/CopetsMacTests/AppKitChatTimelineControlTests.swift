@@ -742,6 +742,52 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(historyHarness.scrollView.contentView.bounds.minY, yBefore, accuracy: 1)
     }
 
+    func testClampedWheelAtBottomKeepsFollowingForUserMessageAppend() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "send-follow-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(harness))
+
+        // At the lower boundary AppKit may clamp the entire gesture and emit
+        // no bounds-change notification between willBegin/didEnd.
+        harness.coordinator.userScrollEventWillBegin()
+        harness.coordinator.userScrollEventDidEnd()
+        XCTAssertTrue(harness.followState.value)
+
+        let appended = rows + [row(id: "send-follow-user", text: "New user message")]
+        harness.coordinator.apply(rows: appended)
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+        let visibleRows = harness.tableView.rows(in: harness.tableView.visibleRect)
+        XCTAssertTrue(visibleRows.contains(appended.count - 1))
+    }
+
+    func testCompletedWheelAwayFromBottomPreservesReaderAnchorOnAppend() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "history-follow-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 260))
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        harness.coordinator.userScrollEventWillBegin()
+        harness.coordinator.userScrollEventDidEnd()
+        let anchorBefore = visibleAnchor(in: harness.tableView, rows: rows)
+        XCTAssertFalse(harness.followState.value)
+
+        let appended = rows + [row(id: "history-follow-user", text: "New user message")]
+        harness.coordinator.apply(rows: appended)
+        await settleMainQueue()
+
+        let anchorAfter = visibleAnchor(in: harness.tableView, rows: appended)
+        XCTAssertEqual(anchorAfter.id, anchorBefore.id)
+        XCTAssertEqual(anchorAfter.offset, anchorBefore.offset, accuracy: 1)
+        XCTAssertFalse(harness.followState.value)
+    }
+
     func testGoalTailRefreshUsesViewportGeometryInsteadOfStaleFollowInput() async {
         let harness = makeHarness(followsLatest: true, height: 180)
         let rows = (0..<30).map { row(id: "goal-row-\($0)", revision: 0, text: "Goal row \($0)") }
