@@ -20,6 +20,10 @@ const expectedTools = [
   "corptie.collaboration.capabilities",
   "corptie.sessions.discover",
   "corptie.sessions.get",
+  "corptie_artifact_list",
+  "corptie_artifact_get",
+  "corptie_artifact_search",
+  "corptie_artifact_create",
   "corptie_automations_create",
   "corptie_automations_list",
   "corptie_automations_get",
@@ -76,7 +80,10 @@ test("Objective Chat MCP exposes context plus Session-scoped strict collaboratio
   const { client } = await connectMcp({
     get: async () => ({}),
     post: async (path, body) => { calls.push({ path, body }); return { ok: true }; }
-  }, { objectiveId: "objective:1", objectiveSessionId: "session:1" });
+  }, {
+    objectiveId: "objective:1", objectiveSessionId: "session:1",
+    sessionId: "session:1", sessionKind: "objectiveChat", sessionObjectiveId: "objective:1"
+  });
   try {
     const tools = await client.listTools();
     const names = tools.tools.map((tool) => tool.name);
@@ -84,6 +91,10 @@ test("Objective Chat MCP exposes context plus Session-scoped strict collaboratio
     assert.equal(names.includes("corptie_objective_work_item_start"), false);
     assert.equal(names.includes("corptie_objective_work_items_manage"), false);
     assert.ok(names.includes("corptie.collaboration.work_items.create"));
+    assert.ok(names.includes("corptie_artifact_create"));
+    assert.ok(names.includes("corptie_artifact_publish_version"));
+    assert.ok(names.includes("corptie_artifact_reference"));
+    assert.ok(names.includes("corptie_artifact_revoke_reference"));
     const requestTool = tools.tools.find((tool) => tool.name === "corptie.collaboration.request");
     assert.equal(Object.hasOwn(requestTool.inputSchema.properties, "parent_task_id"), false);
     assert.equal(Object.hasOwn(requestTool.inputSchema.properties, "context_id"), false);
@@ -109,6 +120,37 @@ test("Objective Chat MCP exposes context plus Session-scoped strict collaboratio
   } finally {
     await client.close();
   }
+});
+
+test("Worker MCP exposes executable Artifact create/read tools but no Artifact management tools", async () => {
+  const calls = [];
+  const { client } = await connectMcp({
+    get: async () => ({}),
+    post: async (path, body) => { calls.push({ path, body }); return { artifactId: "artifact:worker" }; }
+  });
+  try {
+    const tools = (await client.listTools()).tools;
+    const names = tools.map((tool) => tool.name);
+    for (const name of ["corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search", "corptie_artifact_create"]) {
+      assert.ok(names.includes(name), name);
+    }
+    for (const name of ["corptie_artifact_publish_version", "corptie_artifact_reference", "corptie_artifact_revoke_reference"]) {
+      assert.equal(names.includes(name), false, name);
+    }
+    const create = tools.find((tool) => tool.name === "corptie_artifact_create");
+    assert.ok(create.inputSchema.required.includes("idempotency_key"));
+    await client.callTool({
+      name: "corptie_artifact_create",
+      arguments: { title: "Claude evidence", content: "verified", idempotency_key: "claude-worker-1" }
+    });
+    assert.deepEqual(calls.at(-1), {
+      path: "/internal/session/tool",
+      body: {
+        tool: "corptie_artifact_create",
+        arguments: { title: "Claude evidence", content: "verified", idempotency_key: "claude-worker-1" }
+      }
+    });
+  } finally { await client.close(); }
 });
 
 test("unbound Assistant Chat does not receive WorkItem creation or collaboration request tools", async () => {

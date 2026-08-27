@@ -62,7 +62,7 @@ import { WorkItemDeletionService } from "./application/workItemDeletionService.m
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
-import { artifactDynamicTools, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
+import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
@@ -416,13 +416,7 @@ const hostToolCatalog = new HostToolCatalog([
   {
     id: "artifacts",
     tools: artifactDynamicTools,
-    authorize: ({ tool, metadata }) => {
-      const scoped = ["objectiveChat", "worker"].includes(metadata?.sessionKind)
-        && Boolean(metadata?.objectiveId && metadata?.sessionId);
-      if (!scoped) return false;
-      if (["corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search"].includes(tool)) return true;
-      return metadata.sessionKind === "objectiveChat";
-    },
+    authorize: authorizeArtifactDynamicTool,
     execute: (input) => callArtifactDynamicTool(artifactService, input)
   },
   {
@@ -6806,6 +6800,35 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
 
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
+
+  if (request.method === "POST" && url.pathname === "/internal/session/tool") {
+    readJson(request)
+      .then(async (input) => {
+        const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
+          ? request.headers["x-corptie-agent-id"].trim()
+          : "";
+        const sessionId = typeof request.headers["x-corptie-session-id"] === "string"
+          ? request.headers["x-corptie-session-id"].trim()
+          : "";
+        const session = sessionId ? store.getSession(sessionId) : null;
+        const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
+        if (!actorId || !session || !["objectiveChat", "worker"].includes(session.sessionKind)
+          || (session.agentId !== actorId && boundAgent?.agentId !== actorId)) {
+          const error = new Error("Session Tool scope is invalid or no longer active.");
+          error.code = "SESSION_TOOL_SCOPE_REQUIRED";
+          throw error;
+        }
+        const result = await toolHostService.execute({
+          actorId, tool: input.tool, arguments: input.arguments ?? {},
+          metadata: sessionToolMetadata(session)
+        });
+        sendJson(response, 200, result);
+      })
+      .catch((error) => sendJson(response, errorStatus(error, 403), {
+        error: error.message, code: error.code ?? "SESSION_TOOL_FAILED"
+      }));
+    return;
+  }
 
   if (request.method === "POST" && url.pathname === "/internal/objective-chat/tool") {
     readJson(request)

@@ -143,6 +143,7 @@ export class ArtifactService {
 
   async create(contextInput, input = {}) {
     const context = this.context(contextInput);
+    if (context.kind === "worker") return this.#createWorkerArtifact(context, input);
     this.#assertManager(context);
     const visibility = enumValue(input.visibility ?? "objective_private", VISIBILITIES, "ARTIFACT_VISIBILITY_INVALID");
     const binding = this.#validateBinding(context.objectiveId, visibility, input);
@@ -200,6 +201,142 @@ export class ArtifactService {
       await this.#rollbackPrepared(prepared, error);
       throw error;
     }
+  }
+
+  async #createWorkerArtifact(context, input) {
+    const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
+    if (idempotencyKey.length > 200) {
+      throw artifactError("ARTIFACT_IDEMPOTENCY_KEY_INVALID", "idempotencyKey must not exceed 200 characters.", 400);
+    }
+    if (input.visibility != null && input.visibility !== "work_item_private") {
+      throw artifactError("ARTIFACT_WORKER_SCOPE_FORBIDDEN", "Worker Artifact visibility is fixed to work_item_private.", 403);
+    }
+    if (input.boundWorkItemId != null && input.boundWorkItemId !== context.workItemId) {
+      throw artifactError("ARTIFACT_WORK_ITEM_FORBIDDEN", "Worker Artifact binding is fixed to the current WorkItem.", 403);
+    }
+    if (input.boundSessionId != null || input.repositoryLocator != null || input.confirmedRepositoryTracked != null) {
+      throw artifactError("ARTIFACT_WORKER_SCOPE_FORBIDDEN", "Workers cannot choose Session, Repository, or visibility scope for an Artifact.", 403);
+    }
+
+    // Revalidate the authoritative binding immediately before the write. The
+    // caller's Objective/WorkItem metadata is never used to choose these values.
+    const workItem = this.store.getWorkItem(context.workItemId);
+    if (!workItem || workItem.objective_id !== context.objectiveId
+      || workItem.current_session_id !== context.sessionId
+      || workItem.deletion_status === "deleting") {
+      throw artifactError("ARTIFACT_WORK_ITEM_FORBIDDEN", "Worker Session no longer has an active authoritative WorkItem binding.", 403);
+    }
+
+    const title = requiredText(input.title, "title");
+    const summary = optionalText(input.summary) ?? "";
+    const buffer = contentBuffer(input.content);
+    const mimeType = optionalText(input.mimeType) ?? "text/markdown";
+    const approvalStatus = input.approvalStatus == null
+      ? "approved"
+      : enumValue(input.approvalStatus, new Set(["draft", "approved"]), "ARTIFACT_APPROVAL_STATUS_INVALID");
+    const relation = enumValue(input.relation ?? "acceptance_evidence", RELATIONS, "ARTIFACT_RELATION_INVALID");
+    if (input.required != null && typeof input.required !== "boolean") {
+      throw artifactError("ARTIFACT_INVALID_INPUT", "required must be a boolean.", 400);
+    }
+    const required = input.required === true;
+    const versionPolicy = enumValue(input.versionPolicy ?? "fixed", VERSION_POLICIES, "ARTIFACT_VERSION_POLICY_INVALID");
+    const contentHash = sha256(buffer);
+    const requestFingerprint = sha256(Buffer.from(JSON.stringify({
+      title, summary, contentHash, mimeType, approvalStatus, relation, required, versionPolicy
+    }), "utf8"));
+
+    const existing = this.store.getArtifactWorkerCreateOperation(context.sessionId, idempotencyKey);
+    if (existing) return this.#workerCreateReplay(context, existing, requestFingerprint);
+
+    const artifactId = `artifact:${this.idFactory()}`;
+    const referenceId = `artifact_reference:${this.idFactory()}`;
+    const createdAt = this.clock();
+    const workerActorId = context.sessionId;
+    const workerAuditContext = { ...context, actorId: workerActorId };
+    const prepared = await this.#prepareContent(artifactId, 1, buffer);
+    try {
+      this.store.runInTransaction(() => {
+        // The WorkItem can be completed/unbound while content is prepared. Check
+        // once more under the same write transaction as every persisted record.
+        const currentWorkItem = this.store.getWorkItem(context.workItemId);
+        if (!currentWorkItem || currentWorkItem.objective_id !== context.objectiveId
+          || currentWorkItem.current_session_id !== context.sessionId
+          || currentWorkItem.deletion_status === "deleting") {
+          throw artifactError("ARTIFACT_WORK_ITEM_FORBIDDEN", "Worker Session no longer has an active authoritative WorkItem binding.", 403);
+        }
+        this.store.createArtifactMetadata({
+          artifactId, objectiveId: context.objectiveId, title, summary,
+          visibility: "work_item_private", boundWorkItemId: context.workItemId,
+          boundSessionId: null, sourceSessionId: context.sessionId,
+          sourceEventId: null, actorId: workerActorId, createdAt
+        });
+        this.store.createArtifactVersion({
+          artifactId, version: 1, contentHash: prepared.hash, byteLength: buffer.byteLength,
+          mimeType, storageKey: prepared.storageKey, sourceSessionId: context.sessionId,
+          sourceEventId: null, supersedesVersion: null, approvalStatus,
+          actorId: workerActorId, createdAt
+        });
+        this.store.updateArtifact(artifactId, {
+          currentVersion: 1, approvedVersion: approvalStatus === "approved" ? 1 : null, updatedAt: createdAt
+        });
+        this.store.createArtifactReference({
+          referenceId, artifactId, objectiveId: context.objectiveId,
+          workItemId: context.workItemId, sessionId: null, relation, required,
+          versionPolicy, pinnedVersion: 1, pinnedHash: prepared.hash,
+          actorId: workerActorId, authorizedAt: createdAt
+        });
+        this.#audit(workerAuditContext, artifactId, "artifact.created", {
+          visibility: "work_item_private", contentHash: prepared.hash, source: "worker"
+        }, null, 1);
+        this.#audit(workerAuditContext, artifactId, "artifact.reference_created", {
+          referenceId, workItemId: context.workItemId, relation, required,
+          versionPolicy, pinnedVersion: 1, pinnedHash: prepared.hash, source: "worker"
+        }, null, 1);
+        this.#audit(workerAuditContext, artifactId, "artifact.worker_created_and_referenced", {
+          referenceId, idempotencyKey, relation, required, versionPolicy,
+          pinnedVersion: 1, pinnedHash: prepared.hash
+        }, null, 1);
+        this.store.createArtifactWorkerCreateOperation({
+          sessionId: context.sessionId, objectiveId: context.objectiveId,
+          workItemId: context.workItemId, idempotencyKey, requestFingerprint,
+          artifactId, referenceId, createdAt
+        });
+      });
+      this.store.updateArtifactContentOperation(prepared.operationId, "completed");
+      return { ...this.present(this.store.getArtifact(artifactId)), idempotentReplay: false };
+    } catch (error) {
+      await this.#rollbackPrepared(prepared, error);
+      const raced = this.store.getArtifactWorkerCreateOperation(context.sessionId, idempotencyKey);
+      if (raced) return this.#workerCreateReplay(context, raced, requestFingerprint);
+      throw error;
+    }
+  }
+
+  #workerCreateReplay(context, operation, requestFingerprint) {
+    if (operation.request_fingerprint !== requestFingerprint) {
+      throw artifactError(
+        "ARTIFACT_IDEMPOTENCY_CONFLICT",
+        "idempotencyKey is already associated with different Worker Artifact input.",
+        409
+      );
+    }
+    if (operation.objective_id !== context.objectiveId || operation.work_item_id !== context.workItemId) {
+      throw artifactError("ARTIFACT_IDEMPOTENCY_SCOPE_INVALID", "Stored Worker Artifact operation does not match the current authoritative binding.", 409);
+    }
+    const artifact = this.store.getArtifact(operation.artifact_id);
+    const reference = this.store.getArtifactReference(operation.reference_id);
+    if (!artifact || !reference
+      || artifact.objectiveId !== context.objectiveId
+      || artifact.visibility !== "work_item_private"
+      || artifact.boundWorkItemId !== context.workItemId
+      || reference.artifactId !== artifact.artifactId
+      || reference.objectiveId !== context.objectiveId
+      || reference.workItemId !== context.workItemId
+      || reference.sessionId != null
+      || reference.revokedAt != null) {
+      throw artifactError("ARTIFACT_IDEMPOTENCY_STATE_INVALID", "Stored Worker Artifact operation is incomplete or outside its authoritative scope.", 409);
+    }
+    return { ...this.present(artifact), idempotentReplay: true };
   }
 
   async importLocalFile(contextInput, input = {}) {

@@ -131,6 +131,10 @@ export function createCollaborationMcpServer(options) {
     handler: ({ session_id }) => client.get(`/internal/collaboration/sessions/${encodeURIComponent(session_id)}`)
   });
 
+  if (authenticatedSessionId && ["objectiveChat", "worker"].includes(sessionKind)) {
+    registerArtifactTools(server, client, sessionKind);
+  }
+
   if (authenticatedSessionId) register(server, "corptie_automations_create", {
     description: "Create a provider-neutral Corptie Automation. A concise name and exactly one of expires_at or expires_after_seconds are required. The target defaults to this authenticated logical Session; pass logical_session_id only to target another authorized Session. Supports at, after, interval, processExit, and structured condition triggers. Actions are local-only and cannot authorize remote writes or destructive operations.",
     inputSchema: {
@@ -527,6 +531,72 @@ function registerObjectiveChatTools(server, client, objectiveId, sessionId) {
     description: "List contributor Agents eligible for work in this Objective.",
     inputSchema: {}, readOnly: true,
     handler: () => call("corptie_objective_agents_list", {})
+  });
+}
+
+function registerArtifactTools(server, client, sessionKind) {
+  const call = (tool, arguments_) => client.post("/internal/session/tool", {
+    tool, arguments: arguments_
+  });
+  register(server, "corptie_artifact_list", {
+    description: "List only Objective Artifacts authorized for this authenticated Session.",
+    inputSchema: { include_revoked: z.boolean().optional() }, readOnly: true,
+    handler: (input) => call("corptie_artifact_list", input)
+  });
+  register(server, "corptie_artifact_get", {
+    description: "Read one authorized pinned Artifact version with bounded paging and audited usage.",
+    inputSchema: {
+      artifact_id: z.string().startsWith("artifact:"),
+      version: z.number().int().min(1).optional(), offset: z.number().int().min(0).optional(),
+      limit: z.number().int().min(1).max(65_536).optional()
+    }, readOnly: true,
+    handler: (input) => call("corptie_artifact_get", input)
+  });
+  register(server, "corptie_artifact_search", {
+    description: "Search only Artifact metadata and bounded private content authorized for this authenticated Session.",
+    inputSchema: { query: z.string().min(1), limit: z.number().int().min(1).max(50).optional() }, readOnly: true,
+    handler: (input) => call("corptie_artifact_search", input)
+  });
+  register(server, "corptie_artifact_create", {
+    description: sessionKind === "worker"
+      ? "Create one work_item_private Objective Artifact and its current WorkItem Reference atomically. Scope comes only from the authenticated Session binding. idempotency_key is required. Defaults: relation=acceptance_evidence, required=false, version_policy=fixed, pinned version=1/hash=initial content hash."
+      : "Create an Objective Artifact using Objective Chat management scope.",
+    inputSchema: {
+      title: z.string().min(1), summary: z.string().optional(), content: z.string().optional(),
+      visibility: z.enum(["objective_private", "work_item_private", "session_private", "repository_tracked"]).optional(),
+      bound_work_item_id: z.string().min(1).optional(), bound_session_id: z.string().min(1).optional(),
+      repository_locator: z.string().min(1).optional(), confirmed_repository_tracked: z.boolean().optional(),
+      mime_type: z.string().min(1).optional(), approval_status: z.enum(["draft", "approved"]).optional(),
+      relation: z.enum(["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"]).optional(),
+      required: z.boolean().optional(), version_policy: z.enum(["fixed", "latest_approved"]).optional(),
+      idempotency_key: sessionKind === "worker" ? z.string().min(1).max(200) : z.string().min(1).max(200).optional()
+    },
+    handler: (input) => call("corptie_artifact_create", input)
+  });
+  if (sessionKind !== "objectiveChat") return;
+  register(server, "corptie_artifact_publish_version", {
+    description: "Publish a new immutable Artifact version as Objective Chat.",
+    inputSchema: {
+      artifact_id: z.string().startsWith("artifact:"), content: z.string(), summary: z.string().optional(),
+      mime_type: z.string().min(1).optional(), approval_status: z.enum(["draft", "approved"]).optional()
+    },
+    handler: (input) => call("corptie_artifact_publish_version", input)
+  });
+  register(server, "corptie_artifact_reference", {
+    description: "Authorize a pinned Artifact version for a same-Objective WorkItem or Session as Objective Chat.",
+    inputSchema: {
+      artifact_id: z.string().startsWith("artifact:"), work_item_id: z.string().min(1).optional(),
+      session_id: z.string().min(1).optional(),
+      relation: z.enum(["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"]),
+      required: z.boolean().optional(), version_policy: z.enum(["fixed", "latest_approved"]).optional(),
+      version: z.number().int().min(1).optional()
+    },
+    handler: (input) => call("corptie_artifact_reference", input)
+  });
+  register(server, "corptie_artifact_revoke_reference", {
+    description: "Revoke an Artifact Reference with an audit reason as Objective Chat.",
+    inputSchema: { reference_id: z.string().min(1), reason: z.string().min(1) },
+    handler: (input) => call("corptie_artifact_revoke_reference", input)
   });
 }
 
