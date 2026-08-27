@@ -53,4 +53,34 @@ final class NewSessionModelSelectionTests: XCTestCase {
             "low"
         )
     }
+
+    func testComposerMenuExposesOnlyCurrentModelsReasoningLevelsAndSelectedSessionValue() {
+        let other = CodexModel(
+            id: "other", name: "Other", description: nil,
+            defaultReasoningLevel: "medium", reasoningLevels: ["low", "medium"],
+            serviceTiers: nil
+        )
+
+        XCTAssertEqual(
+            SessionReasoningSelection.availableLevels(
+                modelID: models[0].id,
+                models: [other] + models,
+                supportsSwitch: true
+            ),
+            ["low", "medium", "high", "xhigh"]
+        )
+        XCTAssertEqual(
+            SessionReasoningSelection.currentLevel(
+                sessionLevel: "xhigh",
+                providerDefaultLevel: "medium",
+                model: models[0]
+            ),
+            "xhigh"
+        )
+        XCTAssertTrue(SessionReasoningSelection.availableLevels(
+            modelID: models[0].id,
+            models: models,
+            supportsSwitch: false
+        ).isEmpty)
+    }
 }

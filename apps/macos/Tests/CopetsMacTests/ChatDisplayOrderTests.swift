@@ -206,6 +206,33 @@ final class ChatDisplayOrderTests: XCTestCase {
         )
     }
 
+    func testDisplayProjectionChangesWhenFinalReplyBeforeExecutionTailCompletes() {
+        let initial = detail(items: [
+            item(id: "agent", type: "agentMessage", turnId: "turn", text: "Draft A"),
+            item(id: "command", type: "commandExecution", turnId: "turn"),
+            item(id: "plan", type: "plan", turnId: "turn")
+        ])
+        let completed = detail(items: [
+            item(id: "agent", type: "agentMessage", turnId: "turn", text: "Final B"),
+            item(id: "command", type: "commandExecution", turnId: "turn"),
+            item(id: "plan", type: "plan", turnId: "turn")
+        ])
+
+        let initialCache = makeDetailDisplayCache(
+            for: initial,
+            sessionId: "session",
+            visibleMessageLimit: 100
+        )
+        let completedCache = makeDetailDisplayCache(
+            for: completed,
+            sessionId: "session",
+            visibleMessageLimit: 100
+        )
+
+        XCTAssertNotEqual(completedCache.sourceSignature, initialCache.sourceSignature)
+        XCTAssertNotEqual(completedCache.signature, initialCache.signature)
+    }
+
     func testUnclassifiedAssistantMessagesRemainVisibleInsteadOfBeingFoldedIntoExecution() {
         var first = item(id: "assistant-unknown-1", type: "agentMessage", turnId: "turn")
         var second = item(id: "assistant-unknown-2", type: "agentMessage", turnId: "turn")
@@ -224,6 +251,7 @@ final class ChatDisplayOrderTests: XCTestCase {
         id: String,
         type: String,
         turnId: String,
+        text: String? = nil,
         createdAt: String? = "2026-08-17T00:00:00Z"
     ) -> CodexThreadItem {
         var result = CodexThreadItem(
@@ -232,7 +260,7 @@ final class ChatDisplayOrderTests: XCTestCase {
             turnStatus: "complete",
             type: type,
             title: type == "userMessage" ? "User" : "Agent",
-            text: id,
+            text: text ?? id,
             options: nil,
             status: type == "commandExecution" ? "complete" : nil,
             createdAt: createdAt
@@ -241,6 +269,17 @@ final class ChatDisplayOrderTests: XCTestCase {
             result.presentationRole = "final_answer"
         }
         return result
+    }
+
+    private func detail(items: [CodexThreadItem]) -> CodexThreadDetail {
+        CodexThreadDetail(
+            id: "thread", title: "Session", status: .complete, source: nil,
+            connectionStatus: nil, currentModel: "gpt-5.6-sol",
+            currentReasoningLevel: "high", activityStatus: nil, cwd: "/tmp",
+            createdAt: "2026-08-26T00:00:00Z", updatedAt: "2026-08-26T00:00:00Z",
+            canSend: true, sendUnavailableReason: nil, capabilities: nil,
+            turnCount: 1, items: items
+        )
     }
 
     private func underlyingItemIDs(in entries: [ChatDisplayEntry]) -> [String] {

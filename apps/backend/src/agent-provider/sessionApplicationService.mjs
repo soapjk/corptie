@@ -296,11 +296,21 @@ export class SessionApplicationService {
 
   async switchReasoning(sessionId, level, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const normalizedLevel = requiredText(level, "reasoning level").toLowerCase();
+    const currentModel = normalizedText(reference.metadata?.session?.external?.currentModel);
+    if (currentModel) {
+      const catalog = await this.listModels(reference.providerId, context);
+      validateReasoningLevelForModel({
+        modelId: currentModel,
+        reasoningLevel: normalizedLevel,
+        models: catalog?.models
+      });
+    }
     return this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
       reference,
-      level,
+      normalizedLevel,
       context
     );
   }
@@ -367,6 +377,19 @@ export class SessionApplicationService {
       publicSessionId: logicalSessionId ?? legacySessionId
     };
   }
+}
+
+export function validateReasoningLevelForModel({ modelId, reasoningLevel, models = [] } = {}) {
+  const model = Array.isArray(models)
+    ? models.find((candidate) => candidate?.id === modelId)
+    : null;
+  const levels = Array.isArray(model?.reasoningLevels)
+    ? model.reasoningLevels.map((level) => normalizedText(level)?.toLowerCase()).filter(Boolean)
+    : [];
+  if (levels.length === 0 || levels.includes(reasoningLevel)) return reasoningLevel;
+  const error = new RangeError(`Reasoning level ${reasoningLevel} is not supported by model ${modelId}.`);
+  error.code = "UNSUPPORTED_REASONING_LEVEL";
+  throw error;
 }
 
 function normalizedText(value) {

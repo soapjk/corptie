@@ -11,6 +11,7 @@ import {
   withCodexSessionPermissions
 } from "../src/utils/codexPermissions.mjs";
 import {
+  codexTurnRuntimeConfig,
   hasCodexSessionRuntimeConfig,
   withCodexSessionRuntimeConfig
 } from "../src/utils/codexRuntimeConfig.mjs";
@@ -84,6 +85,21 @@ test("permissions, model, and reasoning survive a SQLite persistence restart", a
     if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("later Codex turns use the reasoning selected in persisted Session configuration", () => {
+  assert.deepEqual(codexTurnRuntimeConfig({
+    external: {
+      currentModel: "gpt-5.6-sol",
+      currentReasoningLevel: "XHIGH"
+    }
+  }, {
+    model: "fallback-model",
+    reasoningEffort: "low"
+  }), {
+    model: "gpt-5.6-sol",
+    reasoningEffort: "xhigh"
+  });
 });
 
 test("turn permissions use the Codex app-server sandbox policy variants", () => {
