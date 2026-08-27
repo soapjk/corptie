@@ -546,18 +546,8 @@ private struct MainWindowChromeControls: View {
             .accessibilityValue(L10n(windowState.isPinned ? "On" : "Off"))
             .accessibilityIdentifier("main-window.pin")
 
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    sidebarState.toggle()
-                }
-            } label: {
-                chromeIcon(systemName: "sidebar.left", isActive: sidebarState.isVisible)
-            }
-            .buttonStyle(.plain)
-            .help(L10n(sidebarState.isVisible ? "Hide Sidebar" : "Show Sidebar"))
-            .accessibilityLabel(L10n("Sidebar"))
-            .accessibilityValue(L10n(sidebarState.isVisible ? "Expanded" : "Collapsed"))
-            .accessibilityIdentifier("main-window.sidebar")
+            MainWindowSidebarToggleButton(sidebarState: sidebarState)
+                .frame(width: 24, height: 22)
 
             Button(action: openSettings) {
                 chromeIcon(systemName: "gearshape", isActive: false)
@@ -585,6 +575,81 @@ private struct MainWindowChromeControls: View {
                     )
             }
             .contentShape(Rectangle())
+    }
+}
+
+/// A persistent AppKit control for the cross-host sidebar binding.
+///
+/// The title-bar chrome and each tab page live in separate hosting trees. An
+/// `NSButton` keeps the toggle's native view identity and hit target intact while
+/// a `NavigationSplitView` removes or restores its sidebar in the page tree.
+/// Rebinding the same control on tab changes preserves the per-tab state model.
+struct MainWindowSidebarToggleButton: NSViewRepresentable {
+    let sidebarState: TabSidebarState
+
+    func makeNSView(context: Context) -> MainWindowSidebarNSButton {
+        MainWindowSidebarNSButton(sidebarState: sidebarState)
+    }
+
+    func updateNSView(_ button: MainWindowSidebarNSButton, context: Context) {
+        button.bind(to: sidebarState)
+    }
+}
+
+@MainActor
+final class MainWindowSidebarNSButton: NSButton {
+    private var sidebarState: TabSidebarState
+
+    init(sidebarState: TabSidebarState) {
+        self.sidebarState = sidebarState
+        super.init(frame: NSRect(x: 0, y: 0, width: 24, height: 22))
+        target = self
+        action = #selector(toggleSidebar)
+        isBordered = false
+        imagePosition = .imageOnly
+        focusRingType = .none
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        setAccessibilityIdentifier("main-window.sidebar")
+        setAccessibilityLabel(L10n("Sidebar"))
+        refreshAppearance()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func bind(to sidebarState: TabSidebarState) {
+        self.sidebarState = sidebarState
+        refreshAppearance()
+    }
+
+    @objc private func toggleSidebar() {
+        sidebarState.toggle()
+        // Keep the control truthful in the same event turn. SwiftUI will also
+        // call updateNSView after the observable state publication.
+        refreshAppearance()
+    }
+
+    private func refreshAppearance() {
+        let isVisible = sidebarState.isVisible
+        let configuration = NSImage.SymbolConfiguration(
+            pointSize: 13,
+            weight: isVisible ? .semibold : .medium
+        )
+        image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration)
+        contentTintColor = isVisible ? .controlAccentColor : .secondaryLabelColor
+        layer?.backgroundColor = isVisible
+            ? NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
+            : NSColor.clear.cgColor
+        layer?.borderColor = isVisible
+            ? NSColor.controlAccentColor.withAlphaComponent(0.45).cgColor
+            : NSColor.clear.cgColor
+        layer?.borderWidth = isVisible ? 1 : 0
+        toolTip = L10n(isVisible ? "Hide Sidebar" : "Show Sidebar")
+        setAccessibilityValue(L10n(isVisible ? "Expanded" : "Collapsed"))
     }
 }
 
