@@ -422,9 +422,14 @@ test("task c4471174 historical Session snapshots and reversed envelope keep dire
       senderAgentId: "agent:initiator",
       recipientAgentId: "agent:recipient",
       envelope: {
-        sender: { agentId: "agent:initiator", sessionId: "session:historical-initiator", objectiveId: "objective:source" },
-        recipient: { agentId: "agent:recipient", sessionId: "session:recipient-current", objectiveId: "objective:target" },
-        objective: { sourceId: "objective:source", targetId: "objective:target" }
+        sender: { sessionId: "session:historical-initiator" },
+        recipient: { sessionId: "session:recipient-current" },
+        resources: {
+          sourceAgentId: "agent:initiator",
+          targetAgentId: "agent:recipient",
+          sourceObjectiveId: "objective:source",
+          targetObjectiveId: "objective:target"
+        }
       }
     }
   });
@@ -443,9 +448,14 @@ test("task c4471174 historical Session snapshots and reversed envelope keep dire
     task,
     message: {
       envelope: {
-        sender: { agentId: "agent:recipient", sessionId: "session:recipient-current", objectiveId: "objective:target" },
-        recipient: { agentId: "agent:initiator", sessionId: "session:historical-initiator", objectiveId: "objective:source" },
-        objective: { sourceId: "objective:target", targetId: "objective:source" }
+        sender: { sessionId: "session:recipient-current" },
+        recipient: { sessionId: "session:historical-initiator" },
+        resources: {
+          sourceAgentId: "agent:recipient",
+          targetAgentId: "agent:initiator",
+          sourceObjectiveId: "objective:target",
+          targetObjectiveId: "objective:source"
+        }
       }
     }
   });
@@ -535,7 +545,7 @@ test("running delivery queues without consuming an attempt and drains when the S
   }
 });
 
-test("delivery preflight reroutes when the selected Session closes before startTurn", async () => {
+test("delivery preflight fails closed instead of rerouting a v3 task when its target Session closes", async () => {
   const value = await fixture();
   try {
     const task = createRequest(value.core, "route-race");
@@ -575,11 +585,11 @@ test("delivery preflight reroutes when the selected Session closes before startT
     });
 
     const delivered = await dispatcher.dispatch(delivery.deliveryId);
-    assert.equal(delivered.status, "delivered");
+    assert.equal(delivered.status, "failed");
     assert.equal(preflightCalls, 1);
-    assert.equal(runtime.calls.find((call) => call.type === "startTurn").sessionId, replacementProviderId);
-    assert.equal(value.core.getTask(task.taskId).recipientSessionId, replacementLogicalId);
-    assert.ok(value.core.getTask(task.taskId).events.some((event) => event.type === "recipient_route_reselected"));
+    assert.equal(runtime.calls.some((call) => call.type === "startTurn"), false);
+    assert.equal(value.core.getTask(task.taskId).recipientSessionId, task.recipientSessionId);
+    assert.match(delivered.lastError, /cannot be rerouted|immutable target Session/i);
   } finally {
     await cleanup(value);
   }
@@ -594,28 +604,11 @@ test("an enqueue route proof fails closed when the logical binding changes befor
     const envelope = value.core.getDeliveryEnvelope(delivery.deliveryId);
     const selected = await resolver.resolve(envelope);
 
-    const replacementProviderId = "provider:route-proof-replacement";
-    const replacementLogicalId = "session:route-proof-replacement";
-    value.store.createSession({
-      id: replacementProviderId,
-      title: "Route proof replacement",
-      agentId: "agent-b",
-      sessionKind: "worker",
-      objectiveId: task.targetObjectiveId,
-      workItemId: task.workItemId,
-      cwd: value.directory
-    });
-    value.store.createLogicalSessionRoute({
-      logicalSessionId: replacementLogicalId,
-      legacySessionId: replacementProviderId,
-      providerThreadId: replacementProviderId,
-      providerSessionId: replacementProviderId,
-      providerId: "codex-app-server",
-      boundCwd: value.directory,
-      sessionName: "Route proof replacement"
-    });
-    value.core.bindSession({ agentId: "agent-b", sessionId: replacementProviderId });
-    value.core.rerouteTaskRecipient(task.taskId, replacementLogicalId, { reason: "test_race" });
+    const logical = value.store.getLogicalSession(task.recipientSessionId);
+    value.store.db.run(
+      "UPDATE provider_thread_bindings SET state='invalid' WHERE binding_id=?",
+      [logical.activeBinding.bindingId]
+    );
 
     assert.throws(
       () => resolver.assertCurrent(envelope, selected),

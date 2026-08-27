@@ -8,7 +8,7 @@
   <img src="apps/macos/Sources/CopetsMac/Resources/AppIcon.png" alt="Corptie app icon" width="180">
 </p>
 
-Corptie turns Codex, Claude Code, and other CLI- or SDK-based agents into assistive tools that fit naturally into your wider desktop workflow. Its compact native macOS floating panel and detachable orbs keep interaction focused on the conversation itself, minimize screen intrusion, and let you assign agent tasks without repeatedly interrupting everything else you are doing. Built-in agent-to-agent messaging and task collaboration allow independent agents to coordinate work directly.
+Corptie turns Codex, Claude Code, and other CLI- or SDK-based agents into assistive tools that fit naturally into your wider desktop workflow. Its compact native macOS floating panel and detachable orbs keep interaction focused on the conversation itself, minimize screen intrusion, and let you assign agent tasks without repeatedly interrupting everything else you are doing. Built-in Session-to-Session messaging and task collaboration let independent execution contexts coordinate directly.
 
 > The goal is simple: let agents work in parallel without making you babysit every window.
 
@@ -18,7 +18,7 @@ Corptie turns Codex, Claude Code, and other CLI- or SDK-based agents into assist
 | --- | --- |
 | 🧭 **Multi-agent desktop cockpit** | Run and supervise several Codex, Claude Code, or other agent tasks at once, interrupting you only for input, approval, or exceptions. |
 | 📱 **Feishu remote agent gateway** | Securely pair trusted Feishu users with local sessions to create or take over sessions, exchange messages, interrupt work, and handle approvals remotely. |
-| 🤝 **Structured agent-to-agent collaboration** | Coordinate independent agents through stable identities, service ownership, acceptance criteria, and artifacts, with confirmation, durable delivery, verification, revision, and escalation built in. |
+| 🤝 **Structured Session-to-Session collaboration** | Coordinate independent Sessions through exact routing, acceptance criteria, and artifacts, with confirmation, durable delivery, verification, revision, and escalation built in. |
 | 🔎 **Per-turn code review and undo** | Inspect the files changed by a Codex reply, open its patch in an external diff tool, and safely reverse only that turn when it does not conflict with newer edits. |
 | 🧠 **LLM-enhanced interaction** | Convert terminal-style choice prompts into clickable structured actions with either a Local Agent or an OpenAI-compatible endpoint. |
 | 🛡️ **Local-first, isolated runtime** | Keep agents, sessions, queues, and SQLite data on the Mac by default, while running production and development environments side by side with fully separate state. |
@@ -75,7 +75,7 @@ apps/backend
   HTTP API, SSE detail streams, agent adapters, unified work queue, SQLite store
 
 apps/backend/src/collaboration
-  Agent/service registry, task state machine, durable delivery, and verification workflow
+  Session collaboration state machine, resource registry, durable delivery, and verification workflow
 
 apps/backend/src/feishu
   Feishu bots, user pairing, session binding, interactive cards, and approval sync
@@ -96,13 +96,15 @@ Feishu integration is optional. It requires `lark-cli` on the Mac and a publishe
 
 App Secrets are passed to `lark-cli` encrypted storage and are not stored in the Corptie database. Card actions validate the paired user and chat before anything is forwarded to an agent.
 
-## 🤝 Agent collaboration
+## 🤝 Cross-Session collaboration
 
-Corptie uses Objectives as collaboration responsibility boundaries and WorkItems as execution and acceptance records. Managed sessions receive stable Agent identities and local MCP tools for cross-Objective requests with explicit criteria and artifacts.
+Session is the only executor and message endpoint. Agent, Objective, WorkItem, Workspace, Provider, and Service are resources. A source Session selects an exact target Session; when none exists, user confirmation first creates a WorkItem under the target Objective and then a Worker Session configured with the selected Agent resource. A formal Task, Message, and Delivery are created only after both Sessions exist.
 
 Every new collaboration request is shown to the user as a confirmation card before delivery. The Collaboration window provides inbox, verification, escalated tasks, agent/service registry, and full task timelines, with controls to cancel tasks or retry failed deliveries.
 
 See [Agent collaboration protocol and workflow](docs/agent-collaboration.md) for the state machine, message envelope, compatibility migration, and development usage.
+
+See [Corptie domain model and capability boundaries](docs/domain-model-and-capability-boundaries.md) for the canonical definitions; that document is the single source of truth.
 
 ## 🚦 Environments
 

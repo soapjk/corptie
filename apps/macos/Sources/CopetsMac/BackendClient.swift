@@ -2706,7 +2706,7 @@ final class BackendClient: ObservableObject {
             recipientWorkItemId: item.collaborationTargetWorkItemId,
             routeStatus: item.collaborationRouteStatus,
             routingVersion: item.collaborationRoutingVersion,
-            taskTitle: item.collaborationTaskTitle ?? "Agent collaboration",
+            taskTitle: item.collaborationTaskTitle ?? "Cross-session collaboration",
             summary: item.presentationText ?? item.text,
             acceptanceCriteria: item.collaborationAcceptanceCriteria ?? []
         )
