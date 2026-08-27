@@ -3,6 +3,7 @@ import Testing
 import XCTest
 @testable import CorptieMac
 
+@Suite(.serialized)
 struct MainWindowResizeLayoutTests {
     @MainActor
     @Test
@@ -97,22 +98,18 @@ struct MainWindowResizeLayoutTests {
     @Test
     func chromeSurfacesKeepSizeAndAnchorsDuringCoalescedResize() {
         let resizeState = MainWindowResizeState()
-        let leadingChrome = NSView(frame: .zero)
         let centerChrome = NSView(frame: .zero)
         let trailingChrome = NSView(frame: .zero)
         let view = LiveResizeHostingView(
             rootView: Text("Coalesced content"),
             resizeState: resizeState,
             chromeSurfaces: MainWindowChromeSurfaces(
-                leading: leadingChrome,
                 center: centerChrome,
                 trailing: trailingChrome
             )
         )
         view.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)
         view.layoutSubtreeIfNeeded()
-        let initialLeadingTopOffset = leadingChrome.frame.maxY
-            - (view.bounds.maxY - view.safeAreaInsets.top)
         let initialCenterTopOffset = centerChrome.frame.maxY
             - (view.bounds.maxY - view.safeAreaInsets.top)
         let initialTrailingTopOffset = trailingChrome.frame.maxY
@@ -121,17 +118,10 @@ struct MainWindowResizeLayoutTests {
         view.viewWillStartLiveResize()
         view.frame.size = NSSize(width: 1_420, height: 900)
         view.layoutSubtreeIfNeeded()
-        let resizedLeadingTopOffset = leadingChrome.frame.maxY
-            - (view.bounds.maxY - view.safeAreaInsets.top)
         let resizedCenterTopOffset = centerChrome.frame.maxY
             - (view.bounds.maxY - view.safeAreaInsets.top)
         let resizedTrailingTopOffset = trailingChrome.frame.maxY
             - (view.bounds.maxY - view.safeAreaInsets.top)
-
-        #expect(leadingChrome.frame.size == NSSize(width: 88, height: 22))
-        #expect(leadingChrome.frame.minX == 76)
-        #expect(abs(initialLeadingTopOffset - 28) < 0.01)
-        #expect(abs(resizedLeadingTopOffset - initialLeadingTopOffset) < 0.01)
 
         #expect(centerChrome.frame.size == NSSize(width: 252, height: 30))
         #expect(abs(centerChrome.frame.midX - view.bounds.midX) < 0.01)
@@ -143,7 +133,6 @@ struct MainWindowResizeLayoutTests {
         #expect(abs(initialTrailingTopOffset - 24) < 0.01)
         #expect(abs(resizedTrailingTopOffset - initialTrailingTopOffset) < 0.01)
 
-        #expect(leadingChrome.superview === view)
         #expect(centerChrome.superview === view)
         #expect(trailingChrome.superview === view)
         view.viewDidEndLiveResize()
@@ -151,50 +140,13 @@ struct MainWindowResizeLayoutTests {
 
     @MainActor
     @Test
-    func leadingChromeDoesNotApplyTheWindowSafeAreaTwice() async throws {
-        let chrome = MainWindowChromeHostingView(
-            rootView: MainWindowFixedChromeView()
-        )
-        let container = MainWindowSurfaceContainer(
-            rootView: Color.clear,
-            resizeState: MainWindowResizeState(),
-            chromeSurfaces: MainWindowChromeSurfaces(
-                leading: chrome,
-                center: NSView(),
-                trailing: NSView()
-            )
-        )
-        let window = MainWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_200, height: 760),
-            styleMask: [.titled, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.contentView = container
-        window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
-        container.frame = NSRect(x: 0, y: 0, width: 1_200, height: 760)
-        container.layoutSubtreeIfNeeded()
-        try await Task.sleep(for: .milliseconds(50))
-        container.layoutSubtreeIfNeeded()
-        chrome.layoutSubtreeIfNeeded()
+    func leadingChromeUsesNativeTitlebarAccessoryHierarchy() {
+        let chrome = MainWindowLeadingChromeAccessoryController()
 
-        #expect(chrome.frame.size == NSSize(width: 88, height: 22))
-        #expect(chrome.safeAreaInsets.top == 0)
-        #expect(chrome.safeAreaInsets.left == 0)
-        #expect(chrome.safeAreaInsets.bottom == 0)
-        #expect(chrome.safeAreaInsets.right == 0)
-        #expect(!chrome.mouseDownCanMoveWindow)
-        for centerX in [CGFloat(12), 44, 76] {
-            let chromePoint = NSPoint(x: centerX, y: 11)
-            #expect(chrome.hitTest(chromePoint) != nil)
-            let containerPoint = chrome.convert(chromePoint, to: container)
-            let windowHit = container.hitTest(containerPoint)
-            #expect(windowHit != nil)
-            #expect(windowHit === chrome || windowHit?.isDescendant(of: chrome) == true)
-        }
+        #expect(chrome.layoutAttribute == .left)
+        #expect(chrome.hostingView.frame.width == 88)
+        #expect(chrome.hostingView.frame.height >= 22)
+        #expect(chrome.view === chrome.hostingView)
     }
 
     @MainActor
