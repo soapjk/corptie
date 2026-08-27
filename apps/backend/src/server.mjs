@@ -1014,6 +1014,7 @@ const workItemDeletionService = new WorkItemDeletionService({
   store,
   inspectWorktree: (workItemId) => inspectWorkItemWorktree(workItemId),
   removeWorktree: (input) => removeWorkItemDeletionWorktree(input),
+  deleteSession: (sessionId, context) => sessionApplicationService.deleteSession(sessionId, context),
   authorize: ({ actor }) => actor?.type === "user" && actor.id === "user:local-macos",
   onChanged: (type, payload) => emitEvent(type, payload)
 });
