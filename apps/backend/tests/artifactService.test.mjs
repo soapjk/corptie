@@ -92,6 +92,26 @@ test("Worker permissions require an explicit same-Objective reference and reject
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+test("Artifact binding is rejected once WorkItem deletion has started", async () => {
+  const f = await fixture();
+  try {
+    f.store.markWorkItemDeletion("work_item:one", "deleting");
+    await assert.rejects(
+      () => f.service.create(managerContext(f), {
+        title: "Too late",
+        visibility: "work_item_private",
+        boundWorkItemId: "work_item:one",
+        content: "must not race deletion"
+      }),
+      { code: "WORK_ITEM_DELETION_IN_PROGRESS", statusCode: 409 }
+    );
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM artifacts").count, 0);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("started WorkItems pin latest-approved references until an explicit audited acknowledgement", async () => {
   const f = await fixture();
   try {
