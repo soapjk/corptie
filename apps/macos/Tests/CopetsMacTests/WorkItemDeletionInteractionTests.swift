@@ -47,6 +47,15 @@ struct WorkItemDeletionInteractionTests {
         #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to delete WorkItem.\")"))
     }
 
+    @Test
+    func deletionConfirmationWarnsThatSessionsAndConversationHistoryArePermanent() throws {
+        let contents = try warRoomSource()
+
+        #expect(contents.contains("plan.associatedSessionCount"))
+        #expect(contents.contains("关联会话及完整会话历史"))
+        #expect(contents.contains("此操作无法撤销"))
+    }
+
     private func warRoomSource() throws -> String {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
