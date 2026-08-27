@@ -5,18 +5,32 @@ export class WorkItemDeletionService {
     this.store = options.store;
     this.inspectWorktree = options.inspectWorktree;
     this.removeWorktree = options.removeWorktree;
+    this.authorize = options.authorize;
     this.onChanged = options.onChanged ?? (() => {});
-    if (!this.store || typeof this.store.finalizeWorkItemDeletion !== "function") {
+    if (!this.store || typeof this.store.finalizeWorkItemDeletion !== "function"
+      || typeof this.store.listWorkItemDeletionBlockingAssociations !== "function") {
       throw new TypeError("WorkItemDeletionService requires a Store with deletion support.");
+    }
+    if (typeof this.authorize !== "function") {
+      throw new TypeError("WorkItemDeletionService requires authorize().");
     }
     for (const method of ["inspectWorktree", "removeWorktree"]) {
       if (typeof this[method] !== "function") throw new TypeError(`WorkItemDeletionService requires ${method}().`);
     }
   }
 
-  async inspect(workItemId) {
+  async inspect(workItemId, actor = null) {
     const item = this.store.getWorkItem(workItemId);
     if (!item) throw coded("WORK_ITEM_NOT_FOUND", `WorkItem not found: ${workItemId}`, 404);
+    if (await this.authorize({ actor, workItem: item, operation: "delete" }) !== true) {
+      throw coded("WORK_ITEM_DELETE_FORBIDDEN", "You do not have permission to delete this WorkItem.", 403);
+    }
+    const associationBlockers = blockingAssociations(
+      this.store.listWorkItemDeletionBlockingAssociations(workItemId)
+    );
+    if (associationBlockers.length > 0) {
+      return deletionPlan(item, null, [], associationBlockers);
+    }
     if (item.deletion_worktree_removed_at) {
       return deletionPlan(item, { status: "removed", worktree: null }, [], []);
     }
@@ -33,8 +47,8 @@ export class WorkItemDeletionService {
     return deletionPlan(item, inspection, risks, blockers);
   }
 
-  async delete(workItemId, input = {}) {
-    const plan = await this.inspect(workItemId);
+  async delete(workItemId, input = {}, actor = null) {
+    const plan = await this.inspect(workItemId, actor);
     if (plan.blockers.length > 0) {
       throw coded("WORK_ITEM_DELETE_BLOCKED", plan.blockers[0].message, 409, { deletion: plan });
     }
@@ -140,6 +154,18 @@ function hardBlockers(inspection) {
     NO_WORKSPACE_ROUTE: "WorkItem 的 Workspace 路由已失效，无法确认专属资源边界。"
   };
   return [{ code, message: messages[code] ?? inspection.detail ?? "无法确认关联资源可安全删除。" }];
+}
+
+function blockingAssociations(associations = {}) {
+  const artifacts = Array.isArray(associations.artifacts) ? associations.artifacts : [];
+  if (artifacts.length === 0) return [];
+  const preview = artifacts.slice(0, 3).map((artifact) => artifact.title || artifact.artifactId).join("、");
+  const remainder = artifacts.length > 3 ? ` 等 ${artifacts.length} 个` : "";
+  return [{
+    code: "WORK_ITEM_HAS_BOUND_ARTIFACTS",
+    message: `WorkItem 仍绑定不可随之删除的 Artifact：${preview}${remainder}。请先解除这些 Artifact 的 WorkItem 绑定。`,
+    relatedIds: artifacts.map((artifact) => artifact.artifactId)
+  }];
 }
 
 function coded(code, message, statusCode, extra = {}) {

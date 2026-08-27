@@ -196,8 +196,8 @@ test("WorkItem deletion endpoints expose preflight and execute only through the 
     const inspected = await callApi({
       method: "GET",
       pathname: "/work-items/work-item%3Aone/deletion",
-      inspectWorkItemDeletion: async (workItemId) => {
-        calls.push(["inspect", workItemId]);
+      inspectWorkItemDeletion: async (workItemId, actor) => {
+        calls.push(["inspect", workItemId, actor]);
         return plan;
       },
       ...services
@@ -209,8 +209,8 @@ test("WorkItem deletion endpoints expose preflight and execute only through the 
       method: "POST",
       pathname: "/work-items/work-item%3Aone/actions/delete",
       body: { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "workitem/one" },
-      deleteWorkItemSafely: async (workItemId, input) => {
-        calls.push(["delete", workItemId, input]);
+      deleteWorkItemSafely: async (workItemId, input, actor) => {
+        calls.push(["delete", workItemId, input, actor]);
         return { ok: true, workItemId };
       },
       ...services
@@ -218,9 +218,69 @@ test("WorkItem deletion endpoints expose preflight and execute only through the 
     assert.equal(deleted.statusCode, 200);
     assert.equal(deleted.body.ok, true);
     assert.deepEqual(calls, [
-      ["inspect", "work-item:one"],
-      ["delete", "work-item:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "workitem/one" }]
+      ["inspect", "work-item:one", { type: "user", id: "user:local-macos" }],
+      ["delete", "work-item:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "workitem/one" }, { type: "user", id: "user:local-macos" }]
     ]);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("WorkItem deletion HTTP errors preserve forbidden, missing, and association blocker details", async () => {
+  const services = await createServices();
+  try {
+    const forbidden = await callApi({
+      method: "POST",
+      pathname: "/work-items/work-item%3Aforbidden/actions/delete",
+      body: { mode: "safe" },
+      deleteWorkItemSafely: async () => {
+        throw Object.assign(new Error("You do not have permission to delete this WorkItem."), {
+          code: "WORK_ITEM_DELETE_FORBIDDEN", statusCode: 403
+        });
+      },
+      ...services
+    });
+    assert.deepEqual(forbidden.body, {
+      error: "You do not have permission to delete this WorkItem.",
+      code: "WORK_ITEM_DELETE_FORBIDDEN"
+    });
+    assert.equal(forbidden.statusCode, 403);
+
+    const missing = await callApi({
+      method: "GET",
+      pathname: "/work-items/work-item%3Amissing/deletion",
+      inspectWorkItemDeletion: async () => {
+        throw Object.assign(new Error("WorkItem not found: work-item:missing"), {
+          code: "WORK_ITEM_NOT_FOUND", statusCode: 404
+        });
+      },
+      ...services
+    });
+    assert.equal(missing.statusCode, 404);
+    assert.equal(missing.body.code, "WORK_ITEM_NOT_FOUND");
+
+    const deletion = {
+      workItemId: "work-item:blocked", status: "blocked", retryable: true,
+      worktree: null, risks: [], blockers: [{
+        code: "WORK_ITEM_HAS_BOUND_ARTIFACTS",
+        message: "WorkItem remains bound to retained Artifact Required evidence."
+      }]
+    };
+    const blocked = await callApi({
+      method: "POST",
+      pathname: "/work-items/work-item%3Ablocked/actions/delete",
+      body: { mode: "safe" },
+      deleteWorkItemSafely: async () => {
+        throw Object.assign(new Error(deletion.blockers[0].message), {
+          code: "WORK_ITEM_DELETE_BLOCKED", statusCode: 409, deletion
+        });
+      },
+      ...services
+    });
+    assert.equal(blocked.statusCode, 409);
+    assert.equal(blocked.body.code, "WORK_ITEM_DELETE_BLOCKED");
+    assert.deepEqual(blocked.body.deletion, deletion);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
