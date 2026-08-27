@@ -8,6 +8,7 @@ function fixture(options = {}) {
   const store = {
     getWorkItem: () => item,
     selectOne: () => options.activeStart ? { operation_id: "start:one" } : null,
+    listWorkItemDeletionBlockingAssociations: () => options.associations ?? { artifacts: [] },
     markWorkItemDeletion: (...args) => calls.push(["mark", ...args]),
     markWorkItemWorktreeRemoved: (...args) => {
       calls.push(["removed", ...args]);
@@ -23,6 +24,7 @@ function fixture(options = {}) {
   const inspection = options.inspection ?? { status: "none", worktree: null, blocker: null };
   const service = new WorkItemDeletionService({
     store,
+    authorize: async (input) => options.authorize ? options.authorize(input) : true,
     inspectWorktree: async () => inspection,
     removeWorktree: async (input) => {
       calls.push(["remove", input]);
@@ -125,4 +127,48 @@ test("WorkItem without a Worktree deletes metadata without unnecessary Git clean
   const result = await service.delete("work_item:one", { mode: "safe" });
   assert.equal(result.ok, true);
   assert.deepEqual(calls.map(([name]) => name), ["mark", "finalize"]);
+});
+
+test("missing and unauthorized WorkItems return explicit errors before inspection or mutation", async () => {
+  // Simulate a missing record with the same Store contract used in production.
+  const missingService = new WorkItemDeletionService({
+    store: {
+      getWorkItem: () => null,
+      listWorkItemDeletionBlockingAssociations: () => ({ artifacts: [] }),
+      finalizeWorkItemDeletion: () => {}
+    },
+    authorize: async () => true,
+    inspectWorktree: async () => assert.fail("missing WorkItem must not inspect a Worktree"),
+    removeWorktree: async () => assert.fail("missing WorkItem must not remove a Worktree")
+  });
+  await assert.rejects(missingService.inspect("work_item:missing"), (error) =>
+    error.code === "WORK_ITEM_NOT_FOUND" && error.statusCode === 404
+  );
+
+  const unauthorized = fixture({ authorize: async () => false });
+  await assert.rejects(
+    unauthorized.service.delete("work_item:one", { mode: "safe" }, { type: "agent", id: "agent:other" }),
+    (error) => error.code === "WORK_ITEM_DELETE_FORBIDDEN" && error.statusCode === 403
+  );
+  assert.deepEqual(unauthorized.calls, []);
+});
+
+test("bound retained Artifacts block deletion before Worktree cleanup or metadata mutation", async () => {
+  const { service, calls } = fixture({
+    associations: {
+      artifacts: [{ artifactId: "artifact:one", title: "Acceptance evidence" }]
+    },
+    inspection: {
+      status: "available",
+      worktree: { worktreeId: "worktree:one", branchName: "workitem/one" }
+    }
+  });
+  const plan = await service.inspect("work_item:one");
+  assert.equal(plan.status, "blocked");
+  assert.equal(plan.blockers[0].code, "WORK_ITEM_HAS_BOUND_ARTIFACTS");
+  assert.match(plan.blockers[0].message, /Acceptance evidence/);
+  await assert.rejects(service.delete("work_item:one", { mode: "force" }), (error) =>
+    error.code === "WORK_ITEM_DELETE_BLOCKED" && error.deletion.blockers[0].code === "WORK_ITEM_HAS_BOUND_ARTIFACTS"
+  );
+  assert.deepEqual(calls, []);
 });

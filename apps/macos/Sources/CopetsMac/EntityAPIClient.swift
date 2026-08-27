@@ -231,7 +231,7 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                throw EntityLaunchError(message: envelope?.error ?? L10n("Unable to inspect WorkItem deletion."), code: envelope?.code)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to inspect WorkItem deletion."), code: envelope?.code)
             }
             let plan = try decoder.decode(WorkItemDeletionPlan.self, from: data)
             errorMessage = nil
@@ -260,7 +260,7 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                throw EntityLaunchError(message: envelope?.error ?? L10n("Unable to delete WorkItem."), code: envelope?.code)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to delete WorkItem."), code: envelope?.code)
             }
             let result = try decoder.decode(WorkItemDeletionResult.self, from: data)
             guard result.ok else { throw EntityLaunchError(message: L10n("WorkItem deletion did not complete."), code: "DELETE_INCOMPLETE") }
