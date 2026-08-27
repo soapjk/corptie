@@ -526,6 +526,10 @@
 "No Content" = "No Content";
 "Select an Agent" = "Select an Agent";
 "Open Session" = "Open Session";
+"Could not load session messages: %@" = "Could not load session messages: %@";
+"The history server returned an invalid response." = "The history server returned an invalid response.";
+"Messages could not be loaded" = "Messages could not be loaded";
+"Reload messages" = "Reload messages";
 "Open: %@" = "Open: %@";
 "Run" = "Run";
 "Resume" = "Resume";
