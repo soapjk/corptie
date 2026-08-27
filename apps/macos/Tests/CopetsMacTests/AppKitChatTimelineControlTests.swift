@@ -871,6 +871,60 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertFalse(harness.followState.value)
     }
 
+    func testHistoryLoadingRequiresAnActiveUserScrollEvent() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: false,
+            height: 180,
+            onNearTop: { historyRequests += 1 }
+        )
+        let rows = (0..<40).map { row(id: "history-gate-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        // A layout/restore bounds notification at y=0 is not user intent.
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        XCTAssertEqual(historyRequests, 0)
+
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 120))
+        harness.coordinator.userScrollEventWillBegin()
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        harness.coordinator.userScrollEventDidEnd()
+        XCTAssertEqual(historyRequests, 1)
+    }
+
+    func testSmallWheelMoveNearLatestCannotJumpToOldestDuringTailAppend() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: true,
+            height: 180,
+            onNearTop: { historyRequests += 1 }
+        )
+        let rows = (0..<60).map { row(id: "small-wheel-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+        let bottomY = harness.scrollView.contentView.bounds.minY
+
+        harness.coordinator.userScrollEventWillBegin()
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, bottomY - 4)))
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        harness.coordinator.userScrollEventDidEnd()
+
+        let appended = rows + [row(id: "small-wheel-60", text: "Completed reply")]
+        harness.coordinator.apply(rows: appended)
+        await settleMainQueue()
+        let after = visibleAnchor(in: harness.tableView, rows: appended)
+
+        XCTAssertTrue(
+            Set(appended.suffix(5).map(\.id)).contains(after.id),
+            "A small gesture in the latest region may resume bottom following, but must not jump into history"
+        )
+        XCTAssertNotEqual(after.id, appended.first?.id)
+        XCTAssertEqual(historyRequests, 0)
+    }
+
     func testExplicitTurnJumpCancelsQueuedInitialRestore() async {
         let harness = makeHarness(followsLatest: false, height: 180)
         let rows = (0..<40).map { index in
@@ -1166,6 +1220,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         height: CGFloat = 320,
         onToggle: @escaping (String) -> Void = { _ in },
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
+        onNearTop: @escaping () -> Void = {},
         onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
     ) -> (
         window: NSWindow,
@@ -1182,6 +1237,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             followsLatest: binding,
             onToggleExpansion: onToggle,
             onAction: onAction,
+            onNearTop: onNearTop,
             onPositionChange: onPositionChange
         )
         coordinator.followsLatest = followsLatest

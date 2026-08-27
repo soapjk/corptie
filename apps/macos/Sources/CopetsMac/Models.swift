@@ -77,7 +77,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let suggestedOptions: [CodexApprovalOption]?
     let suggestedPrompt: String?
     let activityStatus: String?
-    let updatedAt: String
+    var updatedAt: String
     var lastMessageAt: String? = nil
     var lastAgentMessageSequence: Int? = nil
     var lastReadMessageSequence: Int? = nil
@@ -88,7 +88,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let pinned: Bool?
     let sortOrder: Double?
     let capabilities: SessionCapabilities?
-    let external: ExternalSession?
+    var external: ExternalSession?
     var actions: SessionActions? = nil
 
     var isConnected: Bool {
@@ -212,8 +212,8 @@ struct ExternalSession: Codable, Equatable, Sendable {
     let sessionId: String?
     let agentSessionId: String?
     let connectionStatus: String?
-    let currentModel: String?
-    let currentReasoningLevel: String?
+    var currentModel: String?
+    var currentReasoningLevel: String?
     let cwd: String?
     let sandbox: String?
     let approvalPolicy: String?
@@ -1276,6 +1276,10 @@ struct CodexModel: Identifiable, Decodable, Equatable {
 struct CodexServiceTier: Decodable, Equatable {
     let id: String
     let name: String
+}
+
+struct SessionConfigurationCommandResponse: Decodable {
+    let session: TaskSession
 }
 
 struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {

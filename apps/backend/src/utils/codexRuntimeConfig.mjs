@@ -27,6 +27,15 @@ export function withCodexSessionRuntimeConfig(session, runtime = {}) {
   };
 }
 
+export function codexTurnRuntimeConfig(session, fallback = {}) {
+  return {
+    model: nonEmptyText(session?.external?.currentModel) ?? nonEmptyText(fallback.model) ?? undefined,
+    reasoningEffort: nonEmptyText(session?.external?.currentReasoningLevel)?.toLowerCase()
+      ?? nonEmptyText(fallback.reasoningEffort)?.toLowerCase()
+      ?? undefined
+  };
+}
+
 function nonEmptyText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }

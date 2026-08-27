@@ -184,6 +184,33 @@ final class AppStateStore: ObservableObject {
         return next.sessions[session.id] ?? session
     }
 
+    /// Model/reasoning commands return the committed Session projection. Apply
+    /// it immediately so the composer has read-your-write state while the
+    /// revisioned State stream catches up. Merge only the two configuration
+    /// fields and their server timestamp so a command response cannot regress
+    /// execution or Timeline state that arrived concurrently on the State
+    /// stream. Keeping the timestamp is also the causal watermark that rejects
+    /// a slower response from an earlier configuration command.
+    @discardableResult
+    func acceptSessionConfiguration(_ session: TaskSession, requestedSessionID: String) -> Bool {
+        guard session.id == requestedSessionID,
+              var current = state.sessions[requestedSessionID],
+              let committedExternal = session.external else { return false }
+        if current.updatedAt > session.updatedAt {
+            return current.external?.currentModel == committedExternal.currentModel
+                && current.external?.currentReasoningLevel == committedExternal.currentReasoningLevel
+        }
+        var external = current.external ?? committedExternal
+        external.currentModel = committedExternal.currentModel
+        external.currentReasoningLevel = committedExternal.currentReasoningLevel
+        current.external = external
+        current.updatedAt = session.updatedAt
+        var next = state
+        next.sessions[requestedSessionID] = current
+        state = next
+        return true
+    }
+
     /// `/clear` commits the replacement before returning it. Apply that exact
     /// command result atomically without exposing a generic Session snapshot
     /// mutation API to presentation code.

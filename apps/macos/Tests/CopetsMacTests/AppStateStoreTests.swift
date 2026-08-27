@@ -89,6 +89,36 @@ struct AppStateStoreTests {
         #expect(store.pendingCreatedSessionIDs.isEmpty)
     }
 
+    @Test func configurationResponseImmediatelyPublishesSelectedReasoningWithoutRegressingNewerState() {
+        let store = AppStateStore()
+        let medium = TaskSession.fixture(
+            id: "session:reasoning",
+            title: "Reasoning",
+            updatedAt: "2026-08-18T00:00:00Z",
+            currentReasoningLevel: "medium"
+        )
+        _ = store.apply(snapshot: .init(revision: 7, state: .fixture(sessions: [medium])))
+        let xhigh = TaskSession.fixture(
+            id: medium.id,
+            title: medium.title,
+            updatedAt: "2026-08-18T00:00:01Z",
+            currentReasoningLevel: "xhigh"
+        )
+
+        #expect(store.acceptSessionConfiguration(xhigh, requestedSessionID: medium.id))
+        #expect(store.session(medium.id)?.external?.currentReasoningLevel == "xhigh")
+        #expect(store.revision == 7)
+
+        let stale = TaskSession.fixture(
+            id: medium.id,
+            title: medium.title,
+            updatedAt: "2026-08-18T00:00:00Z",
+            currentReasoningLevel: "low"
+        )
+        #expect(!store.acceptSessionConfiguration(stale, requestedSessionID: medium.id))
+        #expect(store.session(medium.id)?.external?.currentReasoningLevel == "xhigh")
+    }
+
     @Test func sessionStatusChangeSetRefreshesAuthoritativeStatusImmediately() {
         let store = AppStateStore()
         let running = TaskSession.fixture(id: "session:status", title: "Status", status: .running)
@@ -233,13 +263,29 @@ private extension StateEntityDeletes {
 }
 
 private extension TaskSession {
-    static func fixture(id: String, title: String, status: TaskStatus = .running) -> Self {
+    static func fixture(
+        id: String,
+        title: String,
+        status: TaskStatus = .running,
+        updatedAt: String = "2026-08-18T00:00:00Z",
+        currentReasoningLevel: String? = nil
+    ) -> Self {
         .init(
             id: id, title: title, agent: "Codex", agentId: nil, sessionKind: .worker,
             objectiveId: nil, workItemId: nil, status: status, progress: 0,
             summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
-            updatedAt: "2026-08-18T00:00:00Z", accent: .cyan, archived: false,
-            pinned: false, sortOrder: 0, capabilities: nil, external: nil,
+            updatedAt: updatedAt, accent: .cyan, archived: false,
+            pinned: false, sortOrder: 0, capabilities: nil,
+            external: currentReasoningLevel.map {
+                ExternalSession(
+                    provider: "codex-app-server", threadId: "thread-a", sessionId: nil,
+                    agentSessionId: nil, connectionStatus: "connected", currentModel: "gpt-5.6-sol",
+                    currentReasoningLevel: $0, cwd: "/tmp", sandbox: "workspace-write",
+                    approvalPolicy: "on-request", source: "corptie", logicalSessionId: nil,
+                    workspace: nil, routingVersion: nil, providerSwitchInFlight: nil,
+                    providerTransition: nil
+                )
+            },
             actions: nil
         )
     }
