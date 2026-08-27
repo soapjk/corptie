@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ArtifactService } from "../src/application/artifactService.mjs";
-import { artifactDynamicTools } from "../src/application/artifactDynamicTools.mjs";
+import { artifactDynamicTools, callArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -88,7 +88,126 @@ test("Worker permissions require an explicit same-Objective reference and reject
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "work_item_private", { confirmed: true }), { code: "ARTIFACT_WORK_ITEM_REQUIRED" });
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "repository_tracked", { confirmed: true }), { code: "ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN" });
     await assert.rejects(() => f.service.get(outsiderContext(f), artifact.artifactId), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
-    await assert.rejects(() => f.service.create(workerContext(f), { title: "escape", visibility: "objective_private", content: "no" }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    await assert.rejects(() => f.service.create(workerContext(f), {
+      title: "escape", visibility: "objective_private", content: "no", idempotencyKey: "escape"
+    }), { code: "ARTIFACT_WORKER_SCOPE_FORBIDDEN" });
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Worker creates one current-WorkItem Artifact and explicit pinned Reference atomically with Session as actor", async () => {
+  const f = await fixture();
+  try {
+    const created = await callArtifactDynamicTool(f.service, {
+      tool: "corptie_artifact_create",
+      actorId: f.worker.agentId,
+      metadata: {
+        sessionId: "session:worker", objectiveId: "objective:one",
+        workItemId: "work_item:one", sessionKind: "worker"
+      },
+      arguments: {
+        title: "Worker evidence", summary: "Completed verification", content: "evidence body",
+        idempotency_key: "worker-evidence-1"
+      }
+    });
+    assert.equal(created.visibility, "work_item_private");
+    assert.equal(created.boundWorkItemId, "work_item:one");
+    assert.equal(created.boundSessionId, null);
+    assert.equal(created.sourceSessionId, "session:worker");
+    assert.equal(created.createdByActorId, "session:worker");
+    assert.equal(created.currentVersion, 1);
+    assert.equal(created.idempotentReplay, false);
+    assert.equal(created.references.length, 1);
+    const reference = created.references[0];
+    assert.equal(reference.objectiveId, "objective:one");
+    assert.equal(reference.workItemId, "work_item:one");
+    assert.equal(reference.sessionId, null);
+    assert.equal(reference.relation, "acceptance_evidence");
+    assert.equal(reference.required, false);
+    assert.equal(reference.versionPolicy, "fixed");
+    assert.equal(reference.pinnedVersion, 1);
+    assert.equal(reference.pinnedHash, created.versions[0].contentHash);
+    assert.equal(reference.authorizedByActorId, "session:worker");
+    assert.deepEqual(
+      new Set(f.store.listArtifactAudit("objective:one", created.artifactId).map((event) => event.action)),
+      new Set(["artifact.created", "artifact.reference_created", "artifact.worker_created_and_referenced"])
+    );
+    assert.ok(f.store.listArtifactAudit("objective:one", created.artifactId).every((event) =>
+      event.actorId === "session:worker" && event.sessionId === "session:worker" && event.workItemId === "work_item:one"
+    ));
+    assert.equal((await f.service.get(workerContext(f), created.artifactId)).content, "evidence body");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Worker Artifact creation is Session-scoped idempotent and rejects conflicting or model-expanded scope", async () => {
+  const f = await fixture();
+  try {
+    const input = {
+      title: "Stable output", content: "same content", idempotencyKey: "stable-key",
+      relation: "handoff", required: true, versionPolicy: "latest_approved"
+    };
+    const first = await f.service.create(workerContext(f), input);
+    const replay = await f.service.create(workerContext(f), input);
+    assert.equal(replay.artifactId, first.artifactId);
+    assert.equal(replay.references[0].referenceId, first.references[0].referenceId);
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM artifacts").count, 1);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM artifact_references").count, 1);
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM artifact_worker_create_operations").count, 1);
+    await assert.rejects(() => f.service.create(workerContext(f), { ...input, content: "changed" }), {
+      code: "ARTIFACT_IDEMPOTENCY_CONFLICT", statusCode: 409
+    });
+    await assert.rejects(() => f.service.create(workerContext(f), {
+      ...input, idempotencyKey: "cross-work-item", boundWorkItemId: "work_item:two"
+    }), { code: "ARTIFACT_WORK_ITEM_FORBIDDEN" });
+    await assert.rejects(() => f.service.create(workerContext(f), {
+      ...input, idempotencyKey: "session-scope", boundSessionId: "session:worker"
+    }), { code: "ARTIFACT_WORKER_SCOPE_FORBIDDEN" });
+    await assert.rejects(() => f.service.create({ ...workerContext(f), objectiveId: "objective:two" }, {
+      ...input, idempotencyKey: "cross-objective"
+    }), { code: "ARTIFACT_OBJECTIVE_FORBIDDEN" });
+    await assert.rejects(() => f.service.create({ ...workerContext(f), workItemId: "work_item:two" }, {
+      ...input, idempotencyKey: "claimed-work-item"
+    }), { code: "ARTIFACT_WORK_ITEM_FORBIDDEN" });
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Worker Artifact Reference failure rolls back metadata, version, audit, idempotency, and unreferenced content", async () => {
+  const f = await fixture();
+  try {
+    const original = f.store.createArtifactReference.bind(f.store);
+    f.store.createArtifactReference = () => {
+      const error = new Error("injected reference failure");
+      error.code = "INJECTED_REFERENCE_FAILURE";
+      throw error;
+    };
+    await assert.rejects(() => f.service.create(workerContext(f), {
+      title: "Atomic failure", content: "must fully roll back", idempotencyKey: "retry-after-failure"
+    }), { code: "INJECTED_REFERENCE_FAILURE" });
+    f.store.createArtifactReference = original;
+    for (const table of ["artifacts", "artifact_versions", "artifact_references", "artifact_audit_events", "artifact_worker_create_operations"]) {
+      assert.equal(f.store.selectOne(`SELECT COUNT(*) AS count FROM ${table}`).count, 0, table);
+    }
+    const objects = await readdir(join(f.directory, "data", "artifacts", "objects"), { recursive: true });
+    assert.equal(objects.filter((entry) => /^[a-f0-9]{64}$/.test(entry)).length, 0);
+    assert.equal(f.store.selectOne("SELECT status FROM artifact_content_operations").status, "rolled_back");
+    const retried = await f.service.create(workerContext(f), {
+      title: "Atomic failure", content: "must fully roll back", idempotencyKey: "retry-after-failure"
+    });
+    assert.equal(retried.references.length, 1);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Worker Artifact creation rejects missing or stale authoritative Session bindings", async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(() => f.service.create(workerContext(f), {
+      title: "No key", content: "content"
+    }), { code: "ARTIFACT_INVALID_INPUT" });
+    f.store.db.run("UPDATE work_items SET current_session_id=NULL WHERE id=?", ["work_item:one"]);
+    await assert.rejects(() => f.service.create(workerContext(f), {
+      title: "Stale", content: "content", idempotencyKey: "stale"
+    }), { code: "ARTIFACT_WORK_ITEM_FORBIDDEN" });
+    assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM artifacts").count, 0);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 

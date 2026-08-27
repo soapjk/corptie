@@ -82,6 +82,8 @@ export class CorptieStore {
     this.performanceMigrationBackupPath = null;
     this.migrationInProgress = false;
     this.dataRootDidChangeListener = null;
+    this.canonicalUnreadMigrationBackupPath = null;
+    this.canonicalUnreadMigrationAudit = null;
   }
 
   async initialize() {
@@ -93,6 +95,7 @@ export class CorptieStore {
       this.db.run("PRAGMA synchronous = FULL");
       this.db.run("PRAGMA busy_timeout = 5000");
       await this.ensurePerformanceMigrationBackup();
+      await this.ensureCanonicalUnreadMigrationBackup();
       this.migrate();
     } catch (error) {
       this.db.close();
@@ -198,6 +201,44 @@ export class CorptieStore {
       && (await readdir(this.layout.logsDirectory)).length === 0) {
       await cp(configuredLogDir, this.layout.logsDirectory, { recursive: true, force: false });
     }
+  }
+
+  async ensureCanonicalUnreadMigrationBackup() {
+    const tables = new Set(this.db.all(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('data_migrations', 'provider_event_inbox', 'session_events')",
+      [],
+      "CorptieStore.ensureCanonicalUnreadMigrationBackup"
+    ).map((row) => row.name));
+    if (!tables.has("data_migrations")
+        || !tables.has("provider_event_inbox")
+        || !tables.has("session_events")) return;
+    const applied = this.db.get(
+      "SELECT 1 AS applied FROM data_migrations WHERE migration_id = ?",
+      ["session-events-canonical-agent-message-v2"],
+      "CorptieStore.ensureCanonicalUnreadMigrationBackup"
+    );
+    if (applied) return;
+    const pending = this.db.get(
+      "SELECT 1 AS pending FROM provider_event_inbox WHERE event_type = 'turn.completed' LIMIT 1",
+      [],
+      "CorptieStore.ensureCanonicalUnreadMigrationBackup"
+    );
+    if (!pending) return;
+
+    const backupPath = `${this.dbPath}.pre-canonical-unread-v2.backup`;
+    if (!await exists(backupPath)) {
+      await backup(this.db.database, backupPath);
+    }
+    const verification = new DatabaseSync(backupPath, { readOnly: true });
+    try {
+      const result = verification.prepare("PRAGMA quick_check").get();
+      if (result?.quick_check !== "ok") {
+        throw new Error("Canonical unread migration backup failed integrity verification.");
+      }
+    } finally {
+      verification.close();
+    }
+    this.canonicalUnreadMigrationBackupPath = backupPath;
   }
 
   async writeConfig() {
@@ -1873,6 +1914,28 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_artifact_references_work_item
       ON artifact_references(work_item_id, revoked_at, required, relation);
 
+      CREATE TABLE IF NOT EXISTS artifact_worker_create_operations (
+        session_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        reference_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, idempotency_key),
+        UNIQUE (artifact_id),
+        UNIQUE (reference_id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
+        FOREIGN KEY (reference_id) REFERENCES artifact_references(reference_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_worker_create_scope
+      ON artifact_worker_create_operations(objective_id, work_item_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS artifact_audit_events (
         audit_id TEXT PRIMARY KEY,
         artifact_id TEXT,
@@ -2490,6 +2553,12 @@ export class CorptieStore {
     this.ensureColumn("session_events", "call_id", "TEXT");
     this.ensureColumn("session_events", "has_agent_message", "INTEGER NOT NULL DEFAULT 0");
     this.migrateSessionEventAgentMessageFlag();
+    this.db.run(`
+      CREATE INDEX IF NOT EXISTS idx_session_events_canonical_completion
+      ON session_events(session_id, sequence)
+      WHERE type = 'turn.completed'
+    `);
+    this.migrateCanonicalCompletionAgentMessageFlag();
     this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_producer ON session_events(session_id, producer)");
     this.db.run("CREATE INDEX IF NOT EXISTS idx_session_events_call_id ON session_events(session_id, call_id)");
     this.db.run(`
@@ -3040,6 +3109,76 @@ export class CorptieStore {
         "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
         [migrationId, createdAtFromOrNow()]
       );
+    });
+  }
+
+  migrateCanonicalCompletionAgentMessageFlag() {
+    this.runDataMigrationOnce("session-events-canonical-agent-message-v2", () => {
+      // The Provider-neutral event pipeline originally wrote turn.completed
+      // while the cursor classifier still recognized only legacy completion
+      // types. Repair those rows, but establish the repaired history as read:
+      // there is no durable evidence telling which replies were viewed during
+      // the incident, and surfacing all of them would create stale alerts.
+      const scanned = this.selectOne(`
+        SELECT COUNT(*) AS scanned_events
+        FROM session_events
+        WHERE type = 'turn.completed'
+      `);
+      const audit = this.selectOne(`
+        SELECT COUNT(*) AS repaired_events,
+               COUNT(DISTINCT session_id) AS affected_sessions
+        FROM session_events
+        WHERE type = 'turn.completed'
+          AND ${canonicalAgentMessagePayloadSQL("session_events")}
+      `);
+      const receiptAudit = this.selectOne(`
+        SELECT COUNT(*) AS adjusted_receipts
+        FROM (
+          SELECT events.session_id, MAX(events.sequence) AS repaired_sequence,
+                 COALESCE(receipts.last_read_agent_message_sequence, 0) AS previous_sequence
+          FROM session_events events
+          LEFT JOIN session_read_receipts receipts ON receipts.session_id = events.session_id
+          WHERE events.type = 'turn.completed'
+            AND ${canonicalAgentMessagePayloadSQL("events")}
+          GROUP BY events.session_id
+        )
+        WHERE repaired_sequence > previous_sequence
+      `);
+      this.db.run(`
+        INSERT INTO session_read_receipts (
+          session_id, last_read_agent_message_sequence, updated_at
+        )
+        SELECT session_id, MAX(sequence), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        FROM session_events
+        WHERE type = 'turn.completed'
+          AND ${canonicalAgentMessagePayloadSQL("session_events")}
+        GROUP BY session_id
+        ON CONFLICT(session_id) DO UPDATE SET
+          last_read_agent_message_sequence = MAX(
+            session_read_receipts.last_read_agent_message_sequence,
+            excluded.last_read_agent_message_sequence
+          ),
+          updated_at = CASE
+            WHEN excluded.last_read_agent_message_sequence
+              > session_read_receipts.last_read_agent_message_sequence
+            THEN excluded.updated_at ELSE session_read_receipts.updated_at END
+      `);
+      this.db.run(`
+        UPDATE session_events
+        SET has_agent_message = 1
+        WHERE type = 'turn.completed'
+          AND has_agent_message = 0
+          AND ${canonicalAgentMessagePayloadSQL("session_events")}
+      `);
+      this.canonicalUnreadMigrationAudit = {
+        scannedEvents: Number(scanned?.scanned_events ?? 0),
+        repairedEvents: Number(audit?.repaired_events ?? 0),
+        affectedSessions: Number(audit?.affected_sessions ?? 0),
+        adjustedReceipts: Number(receiptAudit?.adjusted_receipts ?? 0)
+      };
+      if (this.canonicalUnreadMigrationAudit.scannedEvents > 0) {
+        console.log(`[migration] session-events-canonical-agent-message-v2 ${JSON.stringify(this.canonicalUnreadMigrationAudit)}`);
+      }
     });
   }
 
@@ -8554,6 +8693,27 @@ export class CorptieStore {
     return this.getArtifactReference(input.referenceId);
   }
 
+  getArtifactWorkerCreateOperation(sessionId, idempotencyKey) {
+    return this.selectOne(
+      `SELECT * FROM artifact_worker_create_operations WHERE session_id = ? AND idempotency_key = ?`,
+      [sessionId, idempotencyKey]
+    );
+  }
+
+  createArtifactWorkerCreateOperation(input) {
+    this.db.run(
+      `INSERT INTO artifact_worker_create_operations (
+         session_id, objective_id, work_item_id, idempotency_key, request_fingerprint,
+         artifact_id, reference_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.sessionId, input.objectiveId, input.workItemId, input.idempotencyKey,
+        input.requestFingerprint, input.artifactId, input.referenceId, input.createdAt
+      ]
+    );
+    return this.getArtifactWorkerCreateOperation(input.sessionId, input.idempotencyKey);
+  }
+
   getArtifactReference(referenceId) {
     const row = this.selectOne(`SELECT * FROM artifact_references WHERE reference_id = ?`, [referenceId]);
     return row ? artifactReferenceFromRow(row) : null;
@@ -11173,7 +11333,7 @@ function surfaceForEventType(type) {
 function agentMessageEventSQL(tableAlias) {
   if (process.env.CORPTIE_OPTIMIZED_MESSAGE_CURSOR_READS === "0") {
     return `(
-      ${tableAlias}.type IN ('CodexThreadCompleted', 'AgentTurnCompleted')
+      ${tableAlias}.type IN ('CodexThreadCompleted', 'AgentTurnCompleted', 'turn.completed')
       AND COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1
     )`;
   }
@@ -11198,8 +11358,22 @@ function sessionEventFromRow(row) {
 }
 
 function eventHasAgentMessage(event) {
-  return (event.type === "CodexThreadCompleted" || event.type === "AgentTurnCompleted")
+  return ["CodexThreadCompleted", "AgentTurnCompleted", "turn.completed"].includes(event.type)
     && (event.payload?.hasAgentMessage === true || event.payload?.hasAgentMessage === 1);
+}
+
+function canonicalAgentMessagePayloadSQL(tableAlias) {
+  return `(
+    COALESCE(json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'), 0) = 1
+    OR EXISTS (
+      SELECT 1 FROM json_each(${tableAlias}.payload_json, '$.items') AS item
+      WHERE json_extract(item.value, '$.turnId')
+              = json_extract(${tableAlias}.payload_json, '$.turnId')
+        AND json_extract(item.value, '$.type') = 'agentMessage'
+        AND json_extract(item.value, '$.presentationRole') = 'final_answer'
+        AND LENGTH(TRIM(COALESCE(json_extract(item.value, '$.text'), ''))) > 0
+    )
+  )`;
 }
 
 function gitWorkspaceSnapshotPersistenceMatches(snapshot, rows) {
