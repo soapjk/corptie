@@ -52,8 +52,10 @@ export function collaborationEnvelopeFailure({ workItem, task, envelope } = {}) 
   if (!taskId) return "missing_task_id";
   if (!task || normalizedText(task.taskId) !== taskId) return "task_not_found";
   if (!envelope || normalizedText(envelope.task?.taskId) !== taskId) return "envelope_not_found";
-  if (!normalizedText(envelope.message?.senderAgentId)) return "missing_sender_agent_id";
-  if (!normalizedText(envelope.message?.recipientAgentId)) return "missing_recipient_agent_id";
+  if (!normalizedText(envelope.message?.senderSessionId)
+      && !normalizedText(envelope.message?.envelope?.sender?.sessionId)) return "missing_sender_session_id";
+  if (!normalizedText(envelope.message?.recipientSessionId)
+      && !normalizedText(envelope.message?.envelope?.recipient?.sessionId)) return "missing_recipient_session_id";
   if (!normalizedText(envelope.task?.sourceObjectiveId)) return "missing_source_objective_id";
   if (!normalizedText(envelope.task?.targetObjectiveId)) return "missing_target_objective_id";
   if (!normalizedText(envelope.message?.body)) return "missing_message_body";

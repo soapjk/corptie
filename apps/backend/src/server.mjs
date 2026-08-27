@@ -5453,14 +5453,15 @@ async function respondUnifiedSessionApproval(sessionId, input = {}, source = { t
 
 async function resolveCollaborationConfirmation(confirmationId, approved, source = { type: "desktop" }) {
   const before = collaborationCore.getTaskConfirmation(confirmationId);
+  const preparedTarget = approved
+    ? await sessionCollaborationService.prepareTaskConfirmationTarget(before)
+    : null;
   const confirmation = approved
-    ? collaborationCore.confirmTaskConfirmation(confirmationId)
+    ? collaborationCore.confirmTaskConfirmation(confirmationId, preparedTarget)
     : collaborationCore.rejectTaskConfirmation(confirmationId);
   const sessionId = confirmation.sourceSessionId ?? before?.sourceSessionId ?? null;
   emitEvent("CollaborationConfirmationResolved", { sessionId, confirmation }, { sessionId, source });
   if (approved) {
-    const task = confirmation.taskId ? collaborationCore.getTask(confirmation.taskId) : null;
-    if (task) await sessionCollaborationService.ensureTaskRecipientSession(task, { reason: "confirmation_approved" });
     await syncCollaborationDeliveriesIntoAgentWorkQueue().catch((error) => {
       console.error(`[collaboration] confirmation delivery sync failed: ${error.message}`);
     });

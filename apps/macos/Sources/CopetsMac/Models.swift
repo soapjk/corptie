@@ -768,9 +768,13 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let parentTaskId: String?
     let protocolVersion: String?
     let sourceObjectiveId: String?
+    let sourceObjectiveName: String?
     let targetObjectiveId: String?
+    let targetObjectiveName: String?
     let sourceWorkItemId: String?
+    let sourceWorkItemTitle: String?
     let workItemId: String?
+    let workItemTitle: String?
     let initiatorAgentId: String
     let recipientAgentId: String
     let initiatorSessionId: String?
@@ -824,8 +828,7 @@ struct CollaborationMessageEnvelope: Decodable, Equatable {
     let messageType: String
     let sender: CollaborationMessageParty
     let recipient: CollaborationMessageParty
-    let objective: CollaborationMessageObjectiveRoute
-    let workItem: CollaborationMessageWorkItemRoute
+    let resources: CollaborationMessageResources
     let taskId: String
     let payload: CollaborationMessagePayload
     let timestamp: String
@@ -833,19 +836,16 @@ struct CollaborationMessageEnvelope: Decodable, Equatable {
 }
 
 struct CollaborationMessageParty: Decodable, Equatable {
-    let agentId: String
-    let sessionId: String?
-    let objectiveId: String
+    let sessionId: String
 }
 
-struct CollaborationMessageObjectiveRoute: Decodable, Equatable {
-    let sourceId: String
-    let targetId: String
-}
-
-struct CollaborationMessageWorkItemRoute: Decodable, Equatable {
-    let id: String
-    let sourceId: String?
+struct CollaborationMessageResources: Decodable, Equatable {
+    let sourceAgentId: String
+    let targetAgentId: String
+    let sourceObjectiveId: String
+    let targetObjectiveId: String
+    let sourceWorkItemId: String?
+    let targetWorkItemId: String
 }
 
 struct CollaborationMessagePayload: Decodable, Equatable {
@@ -884,6 +884,7 @@ struct CollaborationArtifact: Identifiable, Decodable, Equatable {
     let artifactId: String
     let taskId: String
     let producerAgentId: String
+    let producerSessionId: String?
     let type: String
     let name: String
     let uri: String
@@ -898,6 +899,7 @@ struct CollaborationEvent: Identifiable, Decodable, Equatable {
     let sequence: Int
     let type: String
     let actorAgentId: String?
+    let actorSessionId: String?
     let payload: [String: JSONValue]?
     let createdAt: String
 }
@@ -907,6 +909,7 @@ struct CollaborationDelivery: Identifiable, Decodable, Equatable {
     let deliveryId: String
     let messageId: String
     let recipientAgentId: String
+    let recipientSessionId: String?
     let status: String
     let attemptCount: Int
     let nextAttemptAt: String?

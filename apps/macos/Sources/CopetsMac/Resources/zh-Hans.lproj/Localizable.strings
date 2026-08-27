@@ -1072,6 +1072,9 @@
 "目标 WorkItem" = "目标 WorkItem";
 "确认后在目标 Objective 下新建" = "确认后在目标 Objective 下新建";
 "跨会话协作" = "跨会话协作";
+"Cross-session collaboration message from %@" = "来自 %@ 的跨会话协作消息";
+"Sessions and resources" = "会话与资源";
+"Session action" = "会话操作";
 "发送到现有会话" = "发送到现有会话";
 "将创建新的 WorkItem" = "将创建新的 WorkItem";
 "目标" = "目标";

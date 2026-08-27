@@ -397,22 +397,20 @@ private struct CollaborationTaskDetailView: View {
                     CollaborationStatusBadge(status: task.status)
                 }
 
-                GroupBox(L10n("Participants")) {
-                    LabeledContent(L10n("Initiator"), value: agentIdentity(task.initiatorAgentId))
-                    LabeledContent(L10n("Recipient"), value: agentIdentity(task.recipientAgentId))
+                GroupBox(L10n("Sessions and resources")) {
                     LabeledContent(L10n("Source Session"), value: sessionIdentity(task.initiatorNameAtSend, task.initiatorSessionId))
                     LabeledContent(L10n("Target Session"), value: sessionIdentity(task.recipientNameAtSend, task.recipientSessionId))
-                    if let sourceObjectiveId = task.sourceObjectiveId {
-                        LabeledContent(L10n("Source Objective"), value: sourceObjectiveId)
+                    if let sourceObjective = task.sourceObjectiveName {
+                        LabeledContent(L10n("Source Objective"), value: sourceObjective)
                     }
-                    if let targetObjectiveId = task.targetObjectiveId {
-                        LabeledContent(L10n("Target Objective"), value: targetObjectiveId)
+                    if let targetObjective = task.targetObjectiveName {
+                        LabeledContent(L10n("Target Objective"), value: targetObjective)
                     }
-                    if let workItemId = task.workItemId {
-                        LabeledContent(L10n("Execution WorkItem"), value: workItemId)
+                    if let workItem = task.workItemTitle {
+                        LabeledContent(L10n("Execution WorkItem"), value: workItem)
                     }
-                    if let sourceWorkItemId = task.sourceWorkItemId {
-                        LabeledContent(L10n("Source WorkItem"), value: sourceWorkItemId)
+                    if let sourceWorkItem = task.sourceWorkItemTitle {
+                        LabeledContent(L10n("Source WorkItem"), value: sourceWorkItem)
                     }
                     if let serviceId = task.serviceId { LabeledContent(L10n("Service"), value: serviceId) }
                     LabeledContent(L10n("Route"), value: "\(task.routeStatus ?? "unresolved") · v\(task.routingVersion ?? 0)")
@@ -484,20 +482,12 @@ private struct CollaborationTaskDetailView: View {
         }
     }
 
-    private func agentIdentity(_ agentID: String) -> String {
-        guard let name = model.agents.first(where: { $0.agentId == agentID })?.name,
-              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return agentID
-        }
-        return "\(name) · \(agentID)"
-    }
-
     private func sessionIdentity(_ nameAtSend: String?, _ sessionID: String?) -> String {
         guard let sessionID, !sessionID.isEmpty else { return L10n("Unresolved legacy route") }
         guard let nameAtSend, !nameAtSend.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return sessionID
+            return L10n("Session")
         }
-        return "\(nameAtSend) · \(sessionID)"
+        return nameAtSend
     }
 
     private var timeline: [CollaborationTimelineEntry] {
@@ -505,7 +495,7 @@ private struct CollaborationTaskDetailView: View {
             CollaborationTimelineEntry(
                 id: "message:\($0.messageId)",
                 createdAt: $0.createdAt,
-                title: "\($0.senderAgentId) · \($0.messageType.replacingOccurrences(of: "_", with: " "))",
+                title: "\(sessionIdentity(nil, $0.senderSessionId)) · \($0.messageType.replacingOccurrences(of: "_", with: " "))",
                 body: $0.body,
                 isMessage: true
             )
@@ -515,7 +505,7 @@ private struct CollaborationTaskDetailView: View {
                 id: "event:\($0.eventId)",
                 createdAt: $0.createdAt,
                 title: $0.type.replacingOccurrences(of: "_", with: " "),
-                body: $0.actorAgentId.map { "Actor: \($0)" },
+                body: $0.actorSessionId == nil ? nil : L10n("Session action"),
                 isMessage: false
             )
         }

@@ -7,7 +7,7 @@ import {
 const TERMINAL_TASK_STATUSES = new Set(["completed", "rejected", "canceled", "escalated"]);
 const DELIVERY_STATUSES = new Set(["pending", "queued", "delivering", "delivered", "failed"]);
 const TASK_INPUT_FIELDS = new Set([
-  "taskId", "confirmationId", "initiatorAgentId", "recipientAgentId", "recipientSessionName",
+  "taskId", "confirmationId", "initiatorAgentId", "recipientAgentId", "sessionAgentId", "recipientSessionName",
   "serviceId", "type", "title", "summary", "acceptanceCriteria", "evidence", "resourceVersion",
   "maxIterations", "idempotencyKey", "messageIdempotencyKey", "parentTaskId", "contextId",
   "contextTitle", "contextMetadata", "messageId", "deliveryId", "sourceSessionId", "sourceTurnId",
@@ -26,9 +26,10 @@ export class CollaborationCore {
   }
 
   initialize() {
-    const result = this.#migrateLegacyCollaborationTasks();
+    const legacy = this.#migrateLegacyCollaborationTasks();
+    const result = this.#migrateSessionActorProtocol();
     if (this.store.db) this.#recordChannelSchemaMigration();
-    return result;
+    return legacy.status === "applied" ? legacy : result;
   }
 
   registerAgent(input) {
@@ -331,7 +332,9 @@ export class CollaborationCore {
     assertKnownFields(input, TASK_INPUT_FIELDS);
     const initiator = this.#requireAgent(input.initiatorAgentId);
     const recipient = this.#requireAgent(input.recipientAgentId);
-    this.#assertSessionParticipants(input, initiator, recipient);
+    this.#assertSessionParticipants(input, initiator, recipient, { requireRecipient: true });
+    const initiatorSessionId = this.#stableSessionIdentity(requiredId(input.initiatorSessionId, "initiatorSessionId"));
+    const recipientSessionId = this.#stableSessionIdentity(requiredId(input.recipientSessionId, "recipientSessionId"));
     const taskType = input.type ?? "change_request";
     if (!["question", "change_request"].includes(taskType)) {
       throw domainError("INVALID_TASK_TYPE", `Unsupported task type: ${taskType}`);
@@ -339,8 +342,8 @@ export class CollaborationCore {
     const idempotencyKey = optionalText(input.idempotencyKey);
     if (idempotencyKey) {
       const existing = this.store.selectOne(
-        "SELECT task_id FROM collaboration_tasks WHERE initiator_agent_id = ? AND idempotency_key = ?",
-        [initiator.agentId, idempotencyKey]
+        "SELECT task_id FROM collaboration_tasks WHERE initiator_session_id = ? AND idempotency_key = ?",
+        [initiatorSessionId, idempotencyKey]
       );
       if (existing) return this.getTask(existing.task_id);
     }
@@ -363,7 +366,7 @@ export class CollaborationCore {
 
     this.#transaction(() => {
       const workItem = this.#ensureCollaborationWorkItem({
-        requestedWorkItemId: input.workItemId,
+        requestedWorkItemId: input.workItemId ?? scope.targetWorkItemId,
         taskId,
         targetObjectiveId: scope.targetObjectiveId,
         recipientAgentId: recipient.agentId,
@@ -394,8 +397,8 @@ export class CollaborationCore {
           scope.sourceObjectiveId, scope.targetObjectiveId, scope.sourceWorkItemId, workItem.id,
           initiator.agentId, recipient.agentId, service?.serviceId ?? null, taskType,
           maxIterations, title, summary, JSON.stringify(acceptanceCriteria), idempotencyKey, timestamp, timestamp,
-          input.initiatorSessionId ?? initiator.sessionId,
-          this.#initialRecipientSessionId(input, recipient),
+          initiatorSessionId,
+          recipientSessionId,
           input.initiatorNameAtSend ?? initiator.sessionName,
           input.recipientNameAtSend ?? recipient.sessionName,
           scope.routingVersion,
@@ -417,6 +420,11 @@ export class CollaborationCore {
           [taskId, recipient.agentId, timestamp]
         );
       }
+      this.store.db.run(
+        `INSERT INTO collaboration_session_participants (task_id, session_id, role, created_at)
+         VALUES (?, ?, 'initiator', ?), (?, ?, 'recipient', ?)`,
+        [taskId, initiatorSessionId, timestamp, taskId, recipientSessionId, timestamp]
+      );
       this.#insertMessage({
         messageId,
         taskId,
@@ -432,8 +440,8 @@ export class CollaborationCore {
         resourceVersion: input.resourceVersion,
         idempotencyKey: optionalText(input.messageIdempotencyKey),
         deliveryId,
-        senderSessionId: input.initiatorSessionId ?? initiator.sessionId,
-        recipientSessionId: this.#initialRecipientSessionId(input, recipient),
+        senderSessionId: initiatorSessionId,
+        recipientSessionId,
         timestamp
       });
       this.#appendEvent(taskId, "task_created", initiator.agentId, {
@@ -443,7 +451,7 @@ export class CollaborationCore {
         sourceObjectiveId: scope.sourceObjectiveId,
         targetObjectiveId: scope.targetObjectiveId,
         workItemId: workItem.id
-      }, timestamp);
+      }, timestamp, initiatorSessionId);
     });
     return this.getTask(taskId);
   }
@@ -452,7 +460,7 @@ export class CollaborationCore {
     assertKnownFields(input, TASK_INPUT_FIELDS);
     const initiator = this.#requireAgent(input.initiatorAgentId);
     const recipient = this.#requireAgent(input.recipientAgentId);
-    this.#assertSessionParticipants(input, initiator, recipient);
+    this.#assertSessionParticipants(input, initiator, recipient, { requireRecipient: false });
     const taskType = input.type ?? "change_request";
     if (!["question", "change_request"].includes(taskType)) {
       throw domainError("INVALID_TASK_TYPE", `Unsupported task type: ${taskType}`);
@@ -564,13 +572,17 @@ export class CollaborationCore {
     return row ? taskConfirmationFromRow(row, this) : null;
   }
 
-  confirmTaskConfirmation(confirmationId) {
+  confirmTaskConfirmation(confirmationId, resolution = {}) {
     const confirmation = this.getTaskConfirmation(confirmationId);
     if (!confirmation) throw domainError("CONFIRMATION_NOT_FOUND", "Collaboration confirmation was not found.");
     if (confirmation.status === "confirmed") return confirmation;
     if (confirmation.status !== "pending") throw domainError("CONFIRMATION_ALREADY_RESOLVED", "Collaboration confirmation was already rejected.");
     const task = this.createTask({
       ...confirmation.request,
+      recipientAgentId: resolution.recipientAgentId ?? confirmation.request.recipientAgentId,
+      recipientSessionId: resolution.recipientSessionId ?? confirmation.request.recipientSessionId,
+      workItemId: resolution.workItemId ?? confirmation.request.workItemId,
+      recipientNameAtSend: resolution.recipientNameAtSend ?? confirmation.request.recipientNameAtSend,
       idempotencyKey: confirmation.request.idempotencyKey ?? `confirmation:${confirmation.confirmationId}`
     });
     this.store.db.run(
@@ -599,7 +611,7 @@ export class CollaborationCore {
     const row = this.store.selectOne("SELECT * FROM collaboration_tasks WHERE task_id = ?", [taskId]);
     if (!row) return null;
     return {
-      ...taskFromRow(row),
+      ...taskFromRow(row, this.store),
       messages: this.listMessages(taskId),
       artifacts: this.listArtifacts(taskId),
       events: this.listEvents(taskId)
@@ -658,6 +670,12 @@ export class CollaborationCore {
 
   rerouteTaskRecipient(taskId, recipientSessionId, details = {}) {
     const task = this.#requireTask(taskId);
+    if (task.protocolVersion === COLLABORATION_PROTOCOL_VERSION) {
+      throw domainError(
+        "IMMUTABLE_RECIPIENT_SESSION",
+        "Protocol v3 collaboration Tasks cannot be rerouted to another logical Session. Recover the original target Session instead."
+      );
+    }
     const targetAgent = this.getAgentForSession(recipientSessionId);
     if (targetAgent?.agentId !== task.recipientAgentId) {
       throw domainError("RECIPIENT_SESSION_AGENT_MISMATCH", "The replacement Session is not bound to the collaboration recipient Agent.");
@@ -690,14 +708,12 @@ export class CollaborationCore {
     return this.getTask(taskId);
   }
 
-  listInbox(agentId, options = {}) {
-    this.#requireAgent(agentId);
-    return this.#listTasks("recipient_agent_id", agentId, options);
+  listInbox(sessionId, options = {}) {
+    return this.#listTasks("recipient_session_id", this.#stableSessionIdentity(requiredId(sessionId, "sessionId")), options);
   }
 
-  listOutbox(agentId, options = {}) {
-    this.#requireAgent(agentId);
-    return this.#listTasks("initiator_agent_id", agentId, options);
+  listOutbox(sessionId, options = {}) {
+    return this.#listTasks("initiator_session_id", this.#stableSessionIdentity(requiredId(sessionId, "sessionId")), options);
   }
 
   listTasks(options = {}) {
@@ -715,7 +731,7 @@ export class CollaborationCore {
     return this.store.selectAll(
       `SELECT * FROM collaboration_tasks ${where} ORDER BY updated_at DESC LIMIT ?`,
       params
-    ).map(taskFromRow);
+    ).map((row) => taskFromRow(row, this.store));
   }
 
   accept(taskId, actorAgentId, actorSessionId = null) {
@@ -765,13 +781,10 @@ export class CollaborationCore {
 
   reply(taskId, actorAgentId, body, options = {}) {
     const task = this.#requireTask(taskId);
-    const sameAgent = task.initiatorAgentId === task.recipientAgentId;
     const initiatorSessionMatches = this.#sessionIdentityMatches(options.actorSessionId, task.initiatorSessionId);
     const recipientSessionMatches = this.#sessionIdentityMatches(options.actorSessionId, task.recipientSessionId);
-    const isInitiator = actorAgentId === task.initiatorAgentId
-      && (initiatorSessionMatches || (!sameAgent && (!options.actorSessionId || !task.initiatorSessionId)));
-    const isRecipient = actorAgentId === task.recipientAgentId
-      && (recipientSessionMatches || (!sameAgent && (!options.actorSessionId || !task.recipientSessionId)));
+    const isInitiator = actorAgentId === task.initiatorAgentId && initiatorSessionMatches;
+    const isRecipient = actorAgentId === task.recipientAgentId && recipientSessionMatches;
     if (!isInitiator && !isRecipient) {
       throw domainError("ACTOR_NOT_AUTHORIZED", "Only task participants may reply.");
     }
@@ -808,7 +821,8 @@ export class CollaborationCore {
         questionAnswered ? "question_answered" : "message_sent",
         actorAgentId,
         { messageId: message.messageId },
-        timestamp
+        timestamp,
+        options.actorSessionId
       );
       this.#updateTaskStatus(taskId, questionAnswered ? "completed" : task.status, timestamp);
     });
@@ -823,7 +837,7 @@ export class CollaborationCore {
     if (!artifact) throw domainError("ARTIFACT_REQUIRED", "A delivered result requires an artifact.");
     const timestamp = this.clock();
     this.#transaction(() => {
-      const artifactId = this.#insertArtifact(task, actorAgentId, artifact, timestamp);
+      const artifactId = this.#insertArtifact(task, actorAgentId, input.actorSessionId, artifact, timestamp);
       const message = this.#insertMessage({
         taskId,
         senderAgentId: actorAgentId,
@@ -838,7 +852,7 @@ export class CollaborationCore {
         timestamp
       });
       this.#updateTaskStatus(taskId, "delivered", timestamp);
-      this.#appendEvent(taskId, "result_delivered", actorAgentId, { messageId: message.messageId, artifactId }, timestamp);
+      this.#appendEvent(taskId, "result_delivered", actorAgentId, { messageId: message.messageId, artifactId }, timestamp, input.actorSessionId);
     });
     return this.getTask(taskId);
   }
@@ -1007,7 +1021,7 @@ export class CollaborationCore {
         evidence: parseJson(row.evidence_json, []),
         resourceVersion: row.resource_version || null,
         createdAt: row.message_created_at,
-        envelope: createCollaborationEnvelope({
+        envelope: row.sender_session_id && row.message_recipient_session_id ? createCollaborationEnvelope({
           messageId: row.message_id,
           taskId: row.task_id,
           messageType: row.message_type,
@@ -1026,7 +1040,7 @@ export class CollaborationCore {
           }),
           timestamp: row.message_created_at,
           error: parseJson(row.error_json, null)
-        })
+        }) : null
       },
       task: {
         taskId: row.task_id,
@@ -1179,8 +1193,10 @@ export class CollaborationCore {
         ]
       );
       if (status === "delivered" && delivery.status !== "delivered" && patch.targetSessionId) {
-        this.#establishChannel(deliveryId, patch.targetSessionId, timestamp);
         this.#closeChannelIfSettled(deliveryId, timestamp);
+        if (this.getChannel(this.getDeliveryEnvelope(deliveryId)?.task?.taskId)?.status !== "closed") {
+          this.#establishChannel(deliveryId, patch.targetSessionId, timestamp);
+        }
       }
     };
     if (status === "delivered" && delivery.status !== "delivered" && patch.targetSessionId) {
@@ -1207,10 +1223,6 @@ export class CollaborationCore {
   }
 
   #isReplyEnvelope(envelope) {
-    if (envelope.task.initiatorAgentId !== envelope.task.recipientAgentId) {
-      return envelope.message.senderAgentId === envelope.task.recipientAgentId
-        && envelope.delivery.recipientAgentId === envelope.task.initiatorAgentId;
-    }
     return this.#sessionIdentityMatches(
       envelope.message.envelope.sender.sessionId,
       envelope.task.recipientSessionId
@@ -1364,9 +1376,9 @@ export class CollaborationCore {
     }, timestamp);
   }
 
-  #listTasks(column, agentId, options) {
+  #listTasks(column, sessionId, options) {
     const conditions = [`${column} = ?`];
-    const params = [agentId];
+    const params = [sessionId];
     if (options.status) {
       const statuses = Array.isArray(options.status) ? options.status : [options.status];
       if (statuses.length) {
@@ -1379,14 +1391,12 @@ export class CollaborationCore {
       `SELECT * FROM collaboration_tasks WHERE ${conditions.join(" AND ")}
        ORDER BY updated_at DESC LIMIT ?`,
       params
-    ).map(taskFromRow);
+    ).map((row) => taskFromRow(row, this.store));
   }
 
   #messageTransition(task, input) {
     const timestamp = this.clock();
-    const sendsForward = task.initiatorAgentId === task.recipientAgentId
-      ? this.#sessionIdentityMatches(input.options.actorSessionId, task.initiatorSessionId)
-      : input.actorAgentId === task.initiatorAgentId;
+    const sendsForward = this.#sessionIdentityMatches(input.options.actorSessionId, task.initiatorSessionId);
     this.#transaction(() => {
       const message = this.#insertMessage({
         taskId: task.taskId,
@@ -1407,7 +1417,7 @@ export class CollaborationCore {
         to: input.nextStatus,
         iteration: input.nextIteration ?? task.iteration,
         messageId: message.messageId
-      }, timestamp);
+      }, timestamp, input.options.actorSessionId);
     });
     return this.getTask(task.taskId);
   }
@@ -1420,7 +1430,7 @@ export class CollaborationCore {
     const timestamp = this.clock();
     this.#transaction(() => {
       this.#updateTaskStatus(taskId, toStatus, timestamp);
-      this.#appendEvent(taskId, eventType, actorAgentId, { from: task.status, to: toStatus, ...payload }, timestamp);
+      this.#appendEvent(taskId, eventType, actorAgentId, { from: task.status, to: toStatus, ...payload }, timestamp, actorSessionId);
     });
     return this.getTask(taskId);
   }
@@ -1463,8 +1473,8 @@ export class CollaborationCore {
     const idempotencyKey = optionalText(input.idempotencyKey);
     if (idempotencyKey) {
       const existing = this.store.selectOne(
-        "SELECT * FROM collaboration_messages WHERE sender_agent_id = ? AND idempotency_key = ?",
-        [input.senderAgentId, idempotencyKey]
+        "SELECT * FROM collaboration_messages WHERE sender_session_id = ? AND idempotency_key = ?",
+        [this.#stableSessionIdentity(requiredId(input.senderSessionId, "senderSessionId")), idempotencyKey]
       );
       if (existing) {
         if (existing.task_id !== input.taskId) throw domainError("IDEMPOTENCY_CONFLICT", "Message idempotency key belongs to another task.");
@@ -1479,16 +1489,16 @@ export class CollaborationCore {
        FROM collaboration_tasks WHERE task_id = ?`,
       [input.taskId]
     );
-    const sameAgent = taskScope?.initiator_agent_id === taskScope?.recipient_agent_id;
-    const sendsForward = sameAgent
-      ? this.#sessionIdentityMatches(input.senderSessionId, taskScope?.initiator_session_id)
-      : input.senderAgentId === taskScope?.initiator_agent_id;
+    const sendsForward = this.#sessionIdentityMatches(input.senderSessionId, taskScope?.initiator_session_id);
     const senderSessionId = this.#stableSessionIdentity(input.senderSessionId
       ?? (sendsForward ? taskScope?.initiator_session_id : taskScope?.recipient_session_id)
       ?? null);
     const recipientSessionId = this.#stableSessionIdentity(input.recipientSessionId
       ?? (sendsForward ? taskScope?.recipient_session_id : taskScope?.initiator_session_id)
       ?? null);
+    if (!senderSessionId || !recipientSessionId || senderSessionId === recipientSessionId) {
+      throw domainError("DISTINCT_SESSIONS_REQUIRED", "Every collaboration message requires two explicit, distinct Sessions.");
+    }
     const sourceObjectiveId = input.sourceObjectiveId
       ?? (sendsForward ? taskScope?.source_objective_id : taskScope?.target_objective_id);
     const targetObjectiveId = input.targetObjectiveId
@@ -1534,15 +1544,15 @@ export class CollaborationCore {
     );
     this.store.db.run(
       `INSERT INTO collaboration_deliveries (
-        delivery_id, message_id, recipient_agent_id, status, attempt_count, next_attempt_at,
+        delivery_id, message_id, recipient_agent_id, recipient_session_id, status, attempt_count, next_attempt_at,
         delivered_at, target_turn_id, last_error, created_at, updated_at
-      ) VALUES (?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, ?, ?)`,
-      [input.deliveryId ?? this.idFactory(), messageId, input.recipientAgentId, timestamp, timestamp]
+      ) VALUES (?, ?, ?, ?, 'pending', 0, NULL, NULL, NULL, NULL, ?, ?)`,
+      [input.deliveryId ?? this.idFactory(), messageId, input.recipientAgentId, recipientSessionId, timestamp, timestamp]
     );
     return messageFromRow(this.store.selectOne("SELECT * FROM collaboration_messages WHERE message_id = ?", [messageId]));
   }
 
-  #insertArtifact(task, producerAgentId, input, timestamp) {
+  #insertArtifact(task, producerAgentId, producerSessionId, input, timestamp) {
     if (task.serviceId) {
       const service = this.#requireService(task.serviceId);
       if (service.ownerAgentId !== producerAgentId) {
@@ -1552,10 +1562,10 @@ export class CollaborationCore {
     const artifactId = optionalText(input.artifactId) ?? this.idFactory();
     this.store.db.run(
       `INSERT INTO collaboration_artifacts (
-        artifact_id, task_id, producer_agent_id, type, name, uri, metadata_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        artifact_id, task_id, producer_agent_id, producer_session_id, type, name, uri, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        artifactId, task.taskId, producerAgentId, requiredText(input.type, "artifact.type"),
+        artifactId, task.taskId, producerAgentId, this.#stableSessionIdentity(producerSessionId), requiredText(input.type, "artifact.type"),
         requiredText(input.name, "artifact.name"), requiredText(input.uri, "artifact.uri"),
         JSON.stringify(input.metadata ?? {}), timestamp
       ]
@@ -1563,7 +1573,7 @@ export class CollaborationCore {
     return artifactId;
   }
 
-  #appendEvent(taskId, type, actorAgentId, payload, timestamp) {
+  #appendEvent(taskId, type, actorAgentId, payload, timestamp, actorSessionId = null) {
     const row = this.store.selectOne(
       "SELECT COALESCE(MAX(sequence), 0) AS sequence FROM collaboration_events WHERE task_id = ?",
       [taskId]
@@ -1571,9 +1581,10 @@ export class CollaborationCore {
     const sequence = Number(row?.sequence ?? 0) + 1;
     this.store.db.run(
       `INSERT INTO collaboration_events (
-        event_id, task_id, sequence, type, actor_agent_id, payload_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [this.idFactory(), taskId, sequence, type, actorAgentId ?? null, JSON.stringify(payload ?? {}), timestamp ?? this.clock()]
+        event_id, task_id, sequence, type, actor_agent_id, actor_session_id, payload_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [this.idFactory(), taskId, sequence, type, actorAgentId ?? null,
+        this.#stableSessionIdentity(actorSessionId), JSON.stringify(payload ?? {}), timestamp ?? this.clock()]
     );
   }
 
@@ -1656,16 +1667,20 @@ export class CollaborationCore {
       routingVersion: recipientRoute?.routingVersion ?? null,
       routeStatus: recipientRoute?.routeStatus ?? "unresolved",
       initiatorBindingId: initiatorRoute?.bindingId ?? null,
-      recipientBindingId: recipientRoute?.bindingId ?? null
+      recipientBindingId: recipientRoute?.bindingId ?? null,
+      targetWorkItemId: recipientRoute?.workItemId ?? null
     };
   }
 
-  #assertSessionParticipants(input, initiator, recipient) {
+  #assertSessionParticipants(input, initiator, recipient, options = {}) {
     const initiatorSessionId = optionalText(input.initiatorSessionId);
     const recipientSessionId = optionalText(input.recipientSessionId);
-    if (initiator.agentId === recipient.agentId
-        && (!initiatorSessionId || !recipientSessionId || initiatorSessionId === recipientSessionId)) {
-      throw domainError("DISTINCT_SESSIONS_REQUIRED", "Collaboration within one Agent requires two explicit, distinct Sessions.");
+    if (!initiatorSessionId) throw domainError("INITIATOR_SESSION_REQUIRED", "Collaboration requires an explicit source Session.");
+    if (options.requireRecipient && !recipientSessionId) {
+      throw domainError("RECIPIENT_SESSION_REQUIRED", "A formal collaboration Task cannot be created before its target Session exists.");
+    }
+    if (recipientSessionId && this.#stableSessionIdentity(initiatorSessionId) === this.#stableSessionIdentity(recipientSessionId)) {
+      throw domainError("DISTINCT_SESSIONS_REQUIRED", "Collaboration requires two explicit, distinct Sessions.");
     }
     if (initiatorSessionId) {
       const sourceAgent = this.getAgentForSession(initiatorSessionId);
@@ -1683,11 +1698,7 @@ export class CollaborationCore {
 
   #initialRecipientSessionId(input, recipient) {
     const explicit = optionalText(input.recipientSessionId);
-    if (explicit) return explicit;
-    // Agent-only collaboration routing deliberately starts unresolved. Objective
-    // Chat is an orchestration surface, never a delivery target; the routing
-    // service will bind the task to its WorkItem's Worker Session after approval.
-    return optionalText(input.routingIntent) ? null : recipient.sessionId;
+    return explicit ? this.#stableSessionIdentity(explicit) : null;
   }
 
   #routeForSession(sessionId) {
@@ -1842,8 +1853,7 @@ export class CollaborationCore {
     }
     const rows = this.store.selectAll(
       `SELECT * FROM collaboration_tasks
-       WHERE protocol_version <> ? OR source_objective_id IS NULL OR target_objective_id IS NULL OR work_item_id IS NULL`,
-      [COLLABORATION_PROTOCOL_VERSION]
+       WHERE protocol_version = '1.0' OR source_objective_id IS NULL OR target_objective_id IS NULL OR work_item_id IS NULL`
     );
     this.store.db.run("BEGIN IMMEDIATE TRANSACTION");
     try {
@@ -1876,7 +1886,7 @@ export class CollaborationCore {
         this.store.db.run(
           `UPDATE collaboration_tasks SET protocol_version = ?, source_objective_id = ?,
            target_objective_id = ?, work_item_id = ? WHERE task_id = ?`,
-          [COLLABORATION_PROTOCOL_VERSION, sourceObjectiveId, targetObjectiveId, workItem.id, row.task_id]
+          ["2.0", sourceObjectiveId, targetObjectiveId, workItem.id, row.task_id]
         );
         const messages = this.store.selectAll(
           "SELECT * FROM collaboration_messages WHERE task_id = ? ORDER BY created_at, message_id",
@@ -1891,30 +1901,14 @@ export class CollaborationCore {
             evidence: parseJson(message.evidence_json, []),
             resourceVersion: message.resource_version || null
           };
-          const envelope = createCollaborationEnvelope({
-            messageId: message.message_id,
-            taskId: row.task_id,
-            messageType: message.message_type,
-            senderAgentId: message.sender_agent_id,
-            recipientAgentId: message.recipient_agent_id,
-            senderSessionId: forward ? row.initiator_session_id : row.recipient_session_id,
-            recipientSessionId: forward ? row.recipient_session_id : row.initiator_session_id,
-            sourceObjectiveId: messageSourceObjectiveId,
-            targetObjectiveId: messageTargetObjectiveId,
-            sourceWorkItemId: row.source_work_item_id || null,
-            workItemId: workItem.id,
-            payload,
-            timestamp: message.created_at,
-            error: parseJson(message.error_json, null)
-          });
           this.store.db.run(
             `UPDATE collaboration_messages SET protocol_version = ?, source_objective_id = ?,
              target_objective_id = ?, source_work_item_id = ?, work_item_id = ?, payload_json = ?, error_json = ?
              WHERE message_id = ?`,
             [
-              envelope.version, messageSourceObjectiveId, messageTargetObjectiveId,
+              "2.0", messageSourceObjectiveId, messageTargetObjectiveId,
               row.source_work_item_id || null, workItem.id, JSON.stringify(payload),
-              envelope.error ? JSON.stringify(envelope.error) : null, message.message_id
+              message.error_json, message.message_id
             ]
           );
         }
@@ -1924,6 +1918,39 @@ export class CollaborationCore {
         "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
         [migrationId, new Date().toISOString()]
       );
+      this.store.db.run("COMMIT");
+      this.store.scheduleSave();
+      return { status: "applied", migrationId, migratedTaskCount: rows.length };
+    } catch (error) {
+      this.store.db.run("ROLLBACK");
+      throw error;
+    }
+  }
+
+  #migrateSessionActorProtocol() {
+    const migrationId = "collaboration-session-actors-v3";
+    if (!this.store.db) return { status: "deferred", migrationId, migratedTaskCount: 0 };
+    if (this.store.selectOne("SELECT migration_id FROM data_migrations WHERE migration_id = ?", [migrationId])) {
+      return { status: "already-applied", migrationId, migratedTaskCount: 0 };
+    }
+    const rows = this.store.selectAll(
+      `SELECT task_id FROM collaboration_tasks
+       WHERE initiator_session_id IS NOT NULL AND TRIM(initiator_session_id) <> ''
+         AND recipient_session_id IS NOT NULL AND TRIM(recipient_session_id) <> ''
+         AND initiator_session_id <> recipient_session_id`
+    );
+    this.store.db.run("BEGIN IMMEDIATE TRANSACTION");
+    try {
+      for (const row of rows) {
+        this.store.db.run("UPDATE collaboration_tasks SET protocol_version='3.0' WHERE task_id=?", [row.task_id]);
+        this.store.db.run(
+          `UPDATE collaboration_messages SET protocol_version='3.0'
+           WHERE task_id=? AND sender_session_id IS NOT NULL AND recipient_session_id IS NOT NULL
+             AND sender_session_id <> recipient_session_id`,
+          [row.task_id]
+        );
+      }
+      this.store.db.run("INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)", [migrationId, this.clock()]);
       this.store.db.run("COMMIT");
       this.store.scheduleSave();
       return { status: "applied", migrationId, migratedTaskCount: rows.length };
@@ -1964,9 +1991,7 @@ export class CollaborationCore {
       throw domainError("ACTOR_NOT_AUTHORIZED", `Only the task ${role} (${expected}) may perform this action.`);
     }
     const expectedSessionId = role === "initiator" ? task.initiatorSessionId : task.recipientSessionId;
-    const exactSessionRequired = task.initiatorAgentId === task.recipientAgentId;
-    if ((exactSessionRequired || (actorSessionId && expectedSessionId))
-      && !this.#sessionIdentityMatches(actorSessionId, expectedSessionId)) {
+    if (!this.#sessionIdentityMatches(actorSessionId, expectedSessionId)) {
       throw domainError("SESSION_ACTOR_MISMATCH", `This action belongs to the task ${role} Session ${expectedSessionId}.`);
     }
   }
@@ -2075,16 +2100,24 @@ function serviceFromRow(row) {
   };
 }
 
-function taskFromRow(row) {
+function taskFromRow(row, store = null) {
+  const sourceObjective = store?.getObjective(row.source_objective_id);
+  const targetObjective = store?.getObjective(row.target_objective_id);
+  const sourceWorkItem = row.source_work_item_id ? store?.getWorkItem(row.source_work_item_id) : null;
+  const targetWorkItem = row.work_item_id ? store?.getWorkItem(row.work_item_id) : null;
   return {
     taskId: row.task_id,
     contextId: row.context_id,
     parentTaskId: row.parent_task_id || null,
     protocolVersion: row.protocol_version,
     sourceObjectiveId: row.source_objective_id,
+    sourceObjectiveName: sourceObjective?.name ?? null,
     targetObjectiveId: row.target_objective_id,
+    targetObjectiveName: targetObjective?.name ?? null,
     sourceWorkItemId: row.source_work_item_id || null,
+    sourceWorkItemTitle: sourceWorkItem?.title ?? null,
     workItemId: row.work_item_id,
+    workItemTitle: targetWorkItem?.title ?? null,
     initiatorAgentId: row.initiator_agent_id,
     recipientAgentId: row.recipient_agent_id,
     initiatorSessionId: row.initiator_session_id || null,
@@ -2120,7 +2153,7 @@ function messageFromRow(row) {
     resourceVersion: row.resource_version || null
   });
   const error = parseJson(row.error_json, null);
-  const envelope = createCollaborationEnvelope({
+  const envelope = row.sender_session_id && row.recipient_session_id ? createCollaborationEnvelope({
     messageId: row.message_id,
     taskId: row.task_id,
     messageType: row.message_type,
@@ -2135,7 +2168,7 @@ function messageFromRow(row) {
     payload,
     timestamp: row.created_at,
     error
-  });
+  }) : null;
   return {
     messageId: row.message_id,
     taskId: row.task_id,
@@ -2158,6 +2191,7 @@ function artifactFromRow(row) {
     artifactId: row.artifact_id,
     taskId: row.task_id,
     producerAgentId: row.producer_agent_id,
+    producerSessionId: row.producer_session_id || null,
     type: row.type,
     name: row.name,
     uri: row.uri,
@@ -2173,6 +2207,7 @@ function eventFromRow(row) {
     sequence: Number(row.sequence),
     type: row.type,
     actorAgentId: row.actor_agent_id || null,
+    actorSessionId: row.actor_session_id || null,
     payload: parseJson(row.payload_json, {}),
     createdAt: row.created_at
   };
@@ -2183,6 +2218,7 @@ function deliveryFromRow(row) {
     deliveryId: row.delivery_id,
     messageId: row.message_id,
     recipientAgentId: row.recipient_agent_id,
+    recipientSessionId: row.recipient_session_id || row.message_recipient_session_id || null,
     status: row.status,
     attemptCount: Number(row.attempt_count),
     nextAttemptAt: row.next_attempt_at || null,
@@ -2218,7 +2254,7 @@ function taskConfirmationFromRow(row, core) {
   const presentation = request.presentation ?? {};
   const initiator = core.getAgent(row.initiator_agent_id);
   const recipient = core.getAgent(row.recipient_agent_id);
-  const recipientRouteUnresolved = Boolean(request.routingIntent) && !row.recipient_session_id;
+  const recipientRouteUnresolved = Boolean(request.routingIntent || request.sessionAgentId) && !row.recipient_session_id;
   return {
     confirmationId: row.confirmation_id,
     initiatorAgentId: row.initiator_agent_id,

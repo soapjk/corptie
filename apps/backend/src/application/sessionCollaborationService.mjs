@@ -345,6 +345,88 @@ export class SessionCollaborationService {
     };
   }
 
+  async prepareTaskConfirmationTarget(confirmation) {
+    if (!confirmation?.confirmationId || confirmation.status !== "pending") {
+      throw coded("COLLABORATION_CONFIRMATION_REQUIRED", "A pending collaboration confirmation is required before preparing its target Session.");
+    }
+    const request = confirmation.request ?? {};
+    if (confirmation.recipientSessionId) {
+      const target = collaborationTargetEligibility(this.store, {
+        workItemId: request.workItemId ?? confirmation.recipientWorkItemId
+      }, confirmation.recipientSessionId);
+      if (!target.active) {
+        throw coded("RECIPIENT_SESSION_UNAVAILABLE", `The selected target Session is unavailable: ${target.reasons.join(", ")}.`, 409);
+      }
+      const owner = this.collaborationCore.getAgentForSession(target.providerSessionId);
+      return {
+        recipientSessionId: target.logicalSessionId,
+        recipientAgentId: owner?.agentId ?? request.recipientAgentId,
+        workItemId: target.session.workItemId,
+        recipientNameAtSend: target.logical?.sessionName ?? target.session.title,
+        created: false
+      };
+    }
+
+    const targetObjectiveId = required(request.targetObjectiveId, "target_objective_id");
+    const agentResourceId = required(request.sessionAgentId ?? request.recipientAgentId, "session_agent_id");
+    const agent = this.#requireContributor(targetObjectiveId, agentResourceId);
+    const objective = this.objectiveService.getObjective(targetObjectiveId);
+    const workItemId = request.workItemId ?? `work_item:collaboration:${confirmation.confirmationId}`;
+    let workItem = this.store.getWorkItem(workItemId);
+    if (!workItem) {
+      const repositoryId = (objective.workspaceIds ?? [])
+        .find((candidate) => this.store.getGitRepository(candidate)) ?? null;
+      workItem = this.objectiveService.createWorkItem({
+        id: workItemId,
+        objectiveId: targetObjectiveId,
+        title: required(request.title, "title"),
+        description: required(request.summary, "summary"),
+        acceptanceCriteria: (request.acceptanceCriteria ?? []).map((entry) => `- ${entry}`).join("\n"),
+        priority: "medium",
+        status: "todo",
+        mainWorkspaceId: repositoryId,
+        mainAgentId: agent.agentId
+      });
+      this.store.db.run(
+        `UPDATE work_items SET created_by_session_id=?, source_work_item_id=?, collaboration_relation=?,
+         idempotency_key=?, resource_version=1 WHERE id=?`,
+        [confirmation.initiatorSessionId, request.sourceWorkItemId ?? null,
+          request.sourceWorkItemId ? "delegated_subtask" : null,
+          `collaboration-confirmation:${confirmation.confirmationId}`, workItem.id]
+      );
+      if (request.sourceWorkItemId && this.store.getWorkItem(request.sourceWorkItemId)?.objective_id === targetObjectiveId) {
+        this.#relate(workItem.id, request.sourceWorkItemId, "delegated_subtask");
+      }
+    }
+    if (workItem.objective_id !== targetObjectiveId || workItem.main_agent_id !== agent.agentId) {
+      throw coded("COLLABORATION_TARGET_RESOURCE_MISMATCH", "The prepared WorkItem does not match the target Objective and Agent resource.", 409);
+    }
+    const existing = workItem.current_session_id
+      ? collaborationTargetEligibility(this.store, { workItemId: workItem.id }, workItem.current_session_id)
+      : null;
+    let target = existing?.active ? existing : null;
+    if (!target) {
+      const launched = await this.launchWorkItem({
+        workItem,
+        agent,
+        title: request.title,
+        autoUniqueTitle: true,
+        source: "collaboration_confirmation"
+      });
+      target = collaborationTargetEligibility(this.store, { workItemId: workItem.id }, launched?.id ?? launched?.sessionId);
+    }
+    if (!target?.active) {
+      throw coded("CREATED_SESSION_NOT_ACTIVE", `The target Worker Session was not created successfully: ${target?.reasons.join(", ") || "unresolved"}.`, 503);
+    }
+    return {
+      recipientSessionId: target.logicalSessionId,
+      recipientAgentId: agent.agentId,
+      workItemId: workItem.id,
+      recipientNameAtSend: target.logical?.sessionName ?? target.session.title,
+      created: true
+    };
+  }
+
   async ensureTaskRecipientSession(task, options = {}) {
     if (!task?.taskId) throw coded("COLLABORATION_TASK_REQUIRED", "A collaboration Task is required for recipient routing.");
     const current = collaborationTargetEligibility(this.store, task, task.recipientSessionId);
@@ -357,6 +439,13 @@ export class SessionCollaborationService {
         });
       }
       return { task, sessionId: current.logicalSessionId, providerSessionId: current.providerSessionId, created: false };
+    }
+    if (task.protocolVersion === "3.0") {
+      throw coded(
+        "RECIPIENT_SESSION_UNAVAILABLE",
+        `The immutable target Session for task ${task.taskId} is unavailable: ${current.reasons.join(", ") || "unresolved"}. Recover that logical Session before retrying delivery.`,
+        409
+      );
     }
 
     const sessions = this.store.listSessionsByObjective(task.targetObjectiveId)

@@ -1607,18 +1607,37 @@ export function buildCollaborationConfirmationCard({ sessionId, sessionTitle = "
   const status = collaborationConfirmationStatus(item) || "pending";
   const pending = status === "pending";
   const confirmed = status === "confirmed";
-  const recipientName = optionalText(item?.collaborationRecipientName) || "目标 Agent";
-  const recipientId = optionalText(item?.collaborationRecipientAgentId);
+  const sourceSession = readableCollaborationName(
+    item?.collaborationInitiatorSessionTitle,
+    item?.collaborationInitiatorSessionId,
+    "来源会话"
+  );
+  const targetSession = readableCollaborationName(
+    item?.collaborationRecipientSessionTitle,
+    item?.collaborationRecipientSessionId,
+    "目标会话"
+  );
+  const sourceObjective = readableCollaborationName(
+    item?.collaborationSourceObjectiveName,
+    item?.collaborationSourceObjectiveId,
+    "来源 Objective"
+  );
+  const targetObjective = readableCollaborationName(
+    item?.collaborationTargetObjectiveName,
+    item?.collaborationTargetObjectiveId,
+    "目标 Objective"
+  );
+  const hasTargetSession = Boolean(optionalText(item?.collaborationRecipientSessionId));
   const taskTitle = optionalText(item?.collaborationTaskTitle);
   const instruction = optionalText(item?.presentationText) || "等待确认发送协作任务。";
   const criteria = Array.isArray(item?.collaborationAcceptanceCriteria)
     ? item.collaborationAcceptanceCriteria.map(optionalText).filter(Boolean)
     : [];
   const elements = [
-    { tag: "markdown", content: `**目标 Agent**\n${escapeCardMarkdown(recipientName)}` },
-    ...(recipientId ? [{ tag: "markdown", content: `**Agent ID**\n${escapeCardMarkdown(recipientId)}` }] : []),
-    ...(taskTitle ? [{ tag: "markdown", content: `**任务**\n${escapeCardMarkdown(taskTitle)}` }] : []),
-    { tag: "markdown", content: `**指令**\n${escapeCardMarkdown(instruction)}` },
+    { tag: "markdown", content: `**来源会话 → 目标会话**\n${escapeCardMarkdown(sourceSession)} → ${escapeCardMarkdown(hasTargetSession ? targetSession : "确认后创建新的 WorkItem 和目标会话")}` },
+    { tag: "markdown", content: `**来源 Objective → 目标 Objective**\n${escapeCardMarkdown(sourceObjective)} → ${escapeCardMarkdown(targetObjective)}` },
+    ...(!hasTargetSession && taskTitle ? [{ tag: "markdown", content: `**将创建 WorkItem**\n${escapeCardMarkdown(taskTitle)}` }] : []),
+    { tag: "markdown", content: `**消息**\n${escapeCardMarkdown(instruction)}` },
     ...(criteria.length ? [{
       tag: "markdown",
       content: `**验收标准**\n${criteria.map((criterion) => `- ${escapeCardMarkdown(criterion)}`).join("\n")}`
@@ -1647,25 +1666,53 @@ export function buildCollaborationConfirmationCard({ sessionId, sessionTitle = "
     title: optionalText(sessionTitle) || "确认发送协作任务",
     subtitle: pending ? "Corptie · 确认发送协作任务" : (confirmed ? "Corptie · 协作任务已发送" : "Corptie · 协作任务已取消"),
     template: pending ? "orange" : (confirmed ? "green" : "grey"),
-    summary: pending ? `确认向 ${recipientName} 发送协作任务` : (confirmed ? "协作任务已确认发送" : "协作任务已取消"),
+    summary: pending ? `确认从 ${sourceSession} 向 ${hasTargetSession ? targetSession : targetObjective} 发起协作` : (confirmed ? "协作任务已确认发送" : "协作任务已取消"),
     elements
   });
 }
 
 export function buildCollaborationMessageCard({ sessionTitle = "", item }) {
-  const sender = optionalText(item?.collaborationSenderName) || "Peer Agent";
+  const sourceSession = readableCollaborationName(
+    item?.collaborationInitiatorSessionTitle,
+    item?.collaborationInitiatorSessionId,
+    "来源会话"
+  );
+  const targetSession = readableCollaborationName(
+    item?.collaborationRecipientSessionTitle,
+    item?.collaborationRecipientSessionId,
+    "目标会话"
+  );
+  const sourceObjective = readableCollaborationName(
+    item?.collaborationSourceObjectiveName,
+    item?.collaborationSourceObjectiveId,
+    "来源 Objective"
+  );
+  const targetObjective = readableCollaborationName(
+    item?.collaborationTargetObjectiveName,
+    item?.collaborationTargetObjectiveId,
+    "目标 Objective"
+  );
   const taskTitle = optionalText(item?.collaborationTaskTitle);
-  const body = optionalText(item?.presentationText) || optionalText(item?.text) || "收到一条 Agent 协作消息。";
+  const body = optionalText(item?.presentationText) || optionalText(item?.text) || "收到一条跨会话协作消息。";
   return cardShell({
-    title: optionalText(sessionTitle) || "Agent Collaboration",
-    subtitle: `Corptie · 来自 ${sender}`,
+    title: optionalText(sessionTitle) || "跨会话协作",
+    subtitle: `Corptie · 来自 ${sourceSession}`,
     template: "turquoise",
     summary: taskTitle || plainTextSummary(body),
     elements: [
+      { tag: "markdown", content: `**来源会话 → 目标会话**\n${escapeCardMarkdown(sourceSession)} → ${escapeCardMarkdown(targetSession)}` },
+      { tag: "markdown", content: `**来源 Objective → 目标 Objective**\n${escapeCardMarkdown(sourceObjective)} → ${escapeCardMarkdown(targetObjective)}` },
       ...(taskTitle ? [{ tag: "markdown", content: `**任务**\n${escapeCardMarkdown(taskTitle)}` }] : []),
-      { tag: "markdown", content: escapeCardMarkdown(body) }
+      { tag: "markdown", content: `**消息**\n${escapeCardMarkdown(body)}` }
     ]
   });
+}
+
+function readableCollaborationName(name, id, fallback) {
+  const value = optionalText(name);
+  const stableId = optionalText(id);
+  if (!value || value === stableId || /^(session|objective|work_item):/i.test(value)) return fallback;
+  return value;
 }
 
 function buildCollaborationConfirmationResultCard(message, succeeded) {

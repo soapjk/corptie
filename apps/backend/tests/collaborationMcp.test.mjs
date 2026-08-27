@@ -337,7 +337,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
     const result = await client.callTool({
       name: "corptie.collaboration.request",
       arguments: {
-        recipient_agent_id: "journal-agent",
+        session_agent_id: "journal-agent",
         service_id: "investment-journal",
         type: "change_request",
         title: "Fix stale status",
@@ -358,7 +358,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
     assert.deepEqual(calls.slice(5), [{
       path: "/internal/collaboration/task-confirmations",
       body: {
-        recipientAgentId: "journal-agent",
+        sessionAgentId: "journal-agent",
         serviceId: "investment-journal",
         type: "change_request",
         title: "Fix stale status",
@@ -437,8 +437,8 @@ test("legacy MCP request delegates to the unified endpoint and rejects an empty 
     const result = await client.callTool({
       name: "corptie.collaboration.request",
       arguments: {
-        recipient_agent_id: "agent:peer",
-        routing_intent: "best_available",
+        session_agent_id: "agent:peer",
+        target_objective_id: "objective:peer",
         type: "change_request",
         title: "Route request",
         summary: "Use the unified collaboration endpoint."
@@ -553,6 +553,22 @@ test("loopback API keeps one database writer and enforces the MCP process identi
       status: "running",
       currentVersion: "1.3.0"
     });
+    const objective = store.createObjective({
+      id: "objective:http-collaboration", name: "HTTP Collaboration",
+      contributorAgentIds: ["research-agent", "journal-agent"]
+    });
+    for (const [agentId, providerSessionId, logicalSessionId, workItemId] of [
+      ["research-agent", "provider:http-research", "session:http-research", "work_item:http-research"],
+      ["journal-agent", "provider:http-journal", "session:http-journal", "work_item:http-journal"]
+    ]) {
+      store.createWorkItem({ id: workItemId, objectiveId: objective.id, title: workItemId, mainAgentId: agentId });
+      store.createSession({ id: providerSessionId, title: logicalSessionId, agentId, sessionKind: "worker", objectiveId: objective.id, workItemId });
+      store.createLogicalSessionRoute({
+        logicalSessionId, legacySessionId: providerSessionId, providerThreadId: providerSessionId,
+        providerSessionId, providerId: "test-provider", boundCwd: directory, sessionName: logicalSessionId
+      });
+      core.bindSession({ agentId, sessionId: providerSessionId });
+    }
 
     server = http.createServer((request, response) => {
       const url = new URL(request.url, `http://${request.headers.host}`);
@@ -562,8 +578,8 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
-    const research = new CollaborationHttpClient({ baseUrl, agentId: "research-agent" });
-    const journal = new CollaborationHttpClient({ baseUrl, agentId: "journal-agent" });
+    const research = new CollaborationHttpClient({ baseUrl, agentId: "research-agent", sessionScope: { sessionId: "session:http-research" } });
+    const journal = new CollaborationHttpClient({ baseUrl, agentId: "journal-agent", sessionScope: { sessionId: "session:http-journal" } });
 
     const discovered = await research.get("/internal/collaboration/agents");
     // agents 表已升级为通用 Agent（增 role 列），平台助手（role=assistant）与协作 Agent 同表，
@@ -577,6 +593,8 @@ test("loopback API keeps one database writer and enforces the MCP process identi
 
     let { task } = await research.post("/internal/collaboration/tasks", {
       recipientAgentId: "journal-agent",
+      initiatorSessionId: "session:http-research",
+      recipientSessionId: "session:http-journal",
       serviceId: "investment-journal",
       type: "change_request",
       title: "Fix stale completion status",
@@ -598,8 +616,8 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     assert.equal(Object.hasOwn(compact.task, "recipientAgentId"), false);
     assert.equal(Object.hasOwn(compact.task, "iteration"), false);
     assert.deepEqual(Object.keys(compact.task.currentMessage), ["messageId", "messageType", "body", "createdAt", "envelope"]);
-    assert.equal(compact.task.currentMessage.envelope.version, "2.0");
-    assert.equal(compact.task.currentMessage.envelope.workItem.id, compact.task.workItemId);
+    assert.equal(compact.task.currentMessage.envelope.version, "3.0");
+    assert.equal(compact.task.currentMessage.envelope.resources.targetWorkItemId, compact.task.workItemId);
 
     const full = await journal.get(`/internal/collaboration/tasks/${task.taskId}`, { includeHistory: "true" });
     assert.equal(full.task.messages.length, 1);
@@ -638,8 +656,21 @@ test("loopback API keeps one database writer and enforces the MCP process identi
     assert.equal(detail.task.messages.length, 3);
     assert.equal(detail.deliveries.length, 3);
 
+    store.createWorkItem({ id: "work_item:http-journal-2", objectiveId: objective.id, title: "Second task", mainAgentId: "journal-agent" });
+    store.createSession({
+      id: "provider:http-journal-2", title: "Second Journal Session", agentId: "journal-agent",
+      sessionKind: "worker", objectiveId: objective.id, workItemId: "work_item:http-journal-2"
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "session:http-journal-2", legacySessionId: "provider:http-journal-2",
+      providerThreadId: "provider:http-journal-2", providerSessionId: "provider:http-journal-2",
+      providerId: "test-provider", boundCwd: directory, sessionName: "Second Journal Session"
+    });
+    core.bindSession({ agentId: "journal-agent", sessionId: "provider:http-journal-2" });
     const second = await research.post("/internal/collaboration/tasks", {
       recipientAgentId: "journal-agent",
+      initiatorSessionId: "session:http-research",
+      recipientSessionId: "session:http-journal-2",
       type: "question",
       title: "User intervention test",
       summary: "This task will be canceled from the product UI.",

@@ -92,14 +92,10 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
           staged.push(confirmation);
         },
         onConfirmationResolved: async (confirmationId, approved) => {
-          const confirmation = approved
-            ? core.confirmTaskConfirmation(confirmationId)
-            : core.rejectTaskConfirmation(confirmationId);
-          if (approved) {
-            const task = core.getTask(confirmation.taskId);
-            await collaborationService.ensureTaskRecipientSession(task, { reason: "confirmation_approved" });
-          }
-          return confirmation;
+          if (!approved) return core.rejectTaskConfirmation(confirmationId);
+          const pending = core.getTaskConfirmation(confirmationId);
+          const prepared = await collaborationService.prepareTaskConfirmationTarget(pending);
+          return core.confirmTaskConfirmation(confirmationId, prepared);
         }
       })) response.writeHead(404).end();
     });
@@ -220,7 +216,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       delivery.recipientAgentId === marketCow.agentId
       && core.getDeliveryEnvelope(delivery.deliveryId).task.taskId === task.taskId
     ), true);
-    assert.equal(core.listInbox(marketCow.agentId).some((item) => item.taskId === task.taskId), true);
+    assert.equal(core.listInbox(task.recipientSessionId).some((item) => item.taskId === task.taskId), true);
     assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure + 1);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
@@ -313,8 +309,7 @@ function bindSession(store, core, input) {
 
 function marketCowSwitchRequest(recipient, objective) {
   return {
-    recipientAgentId: recipient.agentId,
-    routingIntent: "best_available",
+    sessionAgentId: recipient.agentId,
     targetObjectiveId: objective.id,
     type: "change_request",
     title: "Switch MarketCow through the authoritative route",
