@@ -30,6 +30,9 @@ test("Worker Session context makes its bound WorkItem authoritative", () => {
   assert.match(context.prompt, /Objective ideal state/);
   assert.match(context.prompt, /Every provider path remains neutral/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
+  assert.match(context.prompt, /corptie_artifact_create/);
+  assert.match(context.prompt, /forces work_item_private visibility/);
+  assert.match(context.prompt, /relation=acceptance_evidence, required=false, version_policy=fixed/);
 });
 
 test("Worker Session context rejects a mismatched WorkItem", () => {
