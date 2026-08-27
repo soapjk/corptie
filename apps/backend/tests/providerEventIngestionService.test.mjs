@@ -152,6 +152,28 @@ test("Provider event ingestion atomically commits Inbox, event, turn, item, curs
   }
 });
 
+test("completed Provider events persist the projector's canonical Agent-message fact", async () => {
+  const { directory, store, service } = await fixture({
+    project: () => ({ surface: true, hasAgentMessage: true, outbox: [] })
+  });
+  try {
+    const result = service.ingest(providerEvent({
+      type: "turn.completed",
+      payload: { hasAgentMessage: false, items: [] }
+    }));
+
+    assert.equal(result.sessionEvent.payload.hasAgentMessage, true);
+    assert.equal(store.lastAgentMessageSequence(binding.sessionId), result.sessionEvent.sequence);
+    assert.deepEqual(store.listSessionMessageCursors().get(binding.sessionId), {
+      lastAgentMessageSequence: result.sessionEvent.sequence,
+      lastReadMessageSequence: 0
+    });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Inbox, Cursor, Timeline, and pending Outbox survive a Store restart", async () => {
   const { directory, store, service } = await fixture();
   let reopened = null;

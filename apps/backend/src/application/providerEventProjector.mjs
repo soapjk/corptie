@@ -82,6 +82,9 @@ export class ProviderEventProjector {
     const projectedTurnItems = event.turnId
       ? this.store.getItemsForTurn?.(sessionId, event.turnId, session.external?.provider) ?? []
       : [];
+    const finalAgentMessage = event.type === "turn.completed"
+      ? finalItemForTurn({ items: projectedTurnItems }, event.turnId)
+      : null;
     const terminalOutcome = providerTerminalOutcome(event, projectedTurnItems);
 
     const turnStatus = projectedTurnStatus(event, terminalOutcome);
@@ -143,7 +146,11 @@ export class ProviderEventProjector {
     return {
       surface: event.type === "user.message.accepted"
         || event.type === "assistant.message.completed"
-        || (TERMINAL_EVENT_STATUS.has(event.type) && Boolean(finalItemForTurn({ items: projectedTurnItems }, event.turnId))),
+        || (TERMINAL_EVENT_STATUS.has(event.type) && Boolean(finalAgentMessage)),
+      // Unread state is a projection fact, not a Provider-specific hint. Only
+      // a durable, non-empty final answer for this exact completed Turn may
+      // advance the Agent-message high-water mark.
+      hasAgentMessage: Boolean(finalAgentMessage),
       timelineChanged,
       session: updatedSession ?? session,
       usage,
