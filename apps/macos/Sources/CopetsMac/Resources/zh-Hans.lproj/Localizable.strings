@@ -1242,3 +1242,12 @@
 "Conflict files: %@" = "冲突文件：%@";
 "The backend did not identify an affected Worktree for this risk." = "后端未标明此风险对应的 Worktree。";
 "删除此 WorkItem 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。" = "删除此 WorkItem 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。";
+"The link target is empty." = "链接目标为空。";
+"This link type is not supported: %@" = "不支持此链接类型：%@";
+"Remote file links are not supported: %@" = "不支持远程文件链接：%@";
+"The relative file link has no workspace: %@" = "相对文件链接缺少工作区：%@";
+"The linked file does not exist: %@" = "链接指向的文件不存在：%@";
+"The link could not be opened: %@" = "无法打开链接：%@";
+"Open a file outside the current workspace?" = "要打开当前工作区之外的文件吗？";
+"Open" = "打开";
+"Unable to open link" = "无法打开链接";

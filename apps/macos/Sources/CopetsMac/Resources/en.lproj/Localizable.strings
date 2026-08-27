@@ -864,3 +864,12 @@
 "Conflict files: %@" = "Conflict files: %@";
 "The backend did not identify an affected Worktree for this risk." = "The backend did not identify an affected Worktree for this risk.";
 "删除此 WorkItem 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。" = "Deleting this WorkItem permanently deletes all of its exclusive data, including %d associated sessions and their complete conversation history. This cannot be undone.";
+"The link target is empty." = "The link target is empty.";
+"This link type is not supported: %@" = "This link type is not supported: %@";
+"Remote file links are not supported: %@" = "Remote file links are not supported: %@";
+"The relative file link has no workspace: %@" = "The relative file link has no workspace: %@";
+"The linked file does not exist: %@" = "The linked file does not exist: %@";
+"The link could not be opened: %@" = "The link could not be opened: %@";
+"Open a file outside the current workspace?" = "Open a file outside the current workspace?";
+"Open" = "Open";
+"Unable to open link" = "Unable to open link";

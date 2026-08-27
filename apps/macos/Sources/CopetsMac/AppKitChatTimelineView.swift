@@ -734,6 +734,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     let sessionID: String
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
+    var baseDirectory: String? = nil
     @Binding var followsLatest: Bool
     let onToggleExpansion: (String) -> Void
     var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
@@ -752,6 +753,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             sessionID: sessionID,
+            baseDirectory: baseDirectory,
             followsLatest: $followsLatest,
             onToggleExpansion: onToggleExpansion,
             onAction: onAction,
@@ -828,6 +830,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             to: sessionID,
             initialPosition: initialPosition
         )
+        context.coordinator.updateBaseDirectory(baseDirectory)
         context.coordinator.onToggleExpansion = onToggleExpansion
         context.coordinator.onAction = onAction
         context.coordinator.onNearTop = onNearTop
@@ -857,6 +860,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         var onNearTop: () -> Void
         var onPositionChange: (AppKitChatTimelinePosition) -> Void
         private var representedSessionID: String
+        private var baseDirectory: String?
         private weak var tableView: NSTableView?
         private weak var scrollView: NSScrollView?
         private var rows: [AppKitChatTimelineRow] = []
@@ -909,6 +913,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         init(
             sessionID: String = "test-session",
+            baseDirectory: String? = nil,
             followsLatest: Binding<Bool>,
             onToggleExpansion: @escaping (String) -> Void,
             onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
@@ -916,6 +921,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
         ) {
             self.representedSessionID = sessionID
+            self.baseDirectory = Self.normalizedBaseDirectory(baseDirectory)
             self.followsLatestBinding = followsLatest
             self.onToggleExpansion = onToggleExpansion
             self.onAction = onAction
@@ -1011,6 +1017,21 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             synchronizeTableWidth()
         }
 
+        func updateBaseDirectory(_ nextBaseDirectory: String?) {
+            let normalized = Self.normalizedBaseDirectory(nextBaseDirectory)
+            guard normalized != baseDirectory else { return }
+            baseDirectory = normalized
+            for cell in cellsByKey.values {
+                cell.updateLinkContext(baseDirectory: normalized)
+            }
+        }
+
+        private static func normalizedBaseDirectory(_ value: String?) -> String? {
+            guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { return nil }
+            return value
+        }
+
         func numberOfRows(in tableView: NSTableView) -> Int {
             rows.count
         }
@@ -1060,6 +1081,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                     onToggleExpansion: onToggleExpansion,
                     onAction: onAction
                 )
+                cachedCell.updateLinkContext(baseDirectory: baseDirectory)
                 _ = cachedCell.updateLayoutIfContentUnchanged(
                     rowModel,
                     availableWidth: availableWidth
@@ -1077,6 +1099,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             cell.setContent(
                 rowModel,
                 availableWidth: availableWidth,
+                baseDirectory: baseDirectory,
                 onToggleExpansion: onToggleExpansion,
                 onAction: onAction
             )
@@ -1674,7 +1697,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 }
 
 @MainActor
-final class NativeTimelineTextView: NSTextView {
+final class NativeTimelineTextView: NSTextView, NSTextViewDelegate {
+    var linkBaseDirectory: String?
+    var linkHandler: @MainActor (URL, String?) -> Bool = { url, baseDirectory in
+        MessageLinkOpener.handle(url, baseDirectory: baseDirectory)
+    }
+
     init() {
         let textStorage = NSTextStorage()
         let layoutManager = NSLayoutManager()
@@ -1693,6 +1721,7 @@ final class NativeTimelineTextView: NSTextView {
         isEditable = false
         isSelectable = true
         isRichText = true
+        delegate = self
         importsGraphics = false
         textContainerInset = .zero
         isHorizontallyResizable = false
@@ -1706,6 +1735,19 @@ final class NativeTimelineTextView: NSTextView {
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+        let url: URL?
+        if let value = link as? URL {
+            url = value
+        } else if let value = link as? String {
+            url = URL(string: value)
+        } else {
+            url = nil
+        }
+        guard let url else { return false }
+        return linkHandler(url, linkBaseDirectory)
     }
 
     override func layout() {
@@ -2078,6 +2120,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     func setContent(
         _ row: AppKitChatTimelineRow,
         availableWidth: CGFloat,
+        baseDirectory: String? = nil,
         onToggleExpansion: @escaping (String) -> Void,
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in }
     ) {
@@ -2085,6 +2128,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         representedRowID = row.id
         representedContentRevision = row.contentRevision
         contentConfigurationCount += 1
+        updateLinkContext(baseDirectory: baseDirectory)
         label.textStorage?.setAttributedString(layout.attributedText)
         rawStatusTextView.string = row.rawStatusText
         apply(layout: layout)
@@ -2234,6 +2278,10 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         if row.nativeStyle != .process { cardView.layer?.cornerRadius = 14 }
         processSeparator.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.045).cgColor
         needsLayout = true
+    }
+
+    func updateLinkContext(baseDirectory: String?) {
+        label.linkBaseDirectory = baseDirectory
     }
 
     private func ensureCollaborationSummaryView() -> NativeCollaborationRouteSummaryView {

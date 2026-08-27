@@ -133,55 +133,212 @@ final class MarkdownRenderCache {
     }
 }
 
-enum MessageLinkOpener {
-    @MainActor
-    static func open(_ url: URL, baseDirectory: String?) -> OpenURLAction.Result {
-        if let scheme = url.scheme?.lowercased(), !scheme.isEmpty, scheme != "file" {
-            return NSWorkspace.shared.open(url) ? .handled : .discarded
-        }
-
-        guard let fileURL = fileURL(from: url, baseDirectory: baseDirectory) else {
-            return .discarded
-        }
-        return NSWorkspace.shared.open(fileURL) ? .handled : .discarded
+struct MessageLinkTarget: Equatable {
+    enum Kind: Equatable {
+        case web
+        case file
+        case directory
+        case revealOnly
     }
 
-    static func fileURL(from url: URL, baseDirectory: String?) -> URL? {
-        if url.isFileURL {
-            return existingFileURL(url) ?? url.standardizedFileURL
+    let kind: Kind
+    let url: URL
+    let requiresOutsideWorkspaceConfirmation: Bool
+}
+
+enum MessageLinkResolutionError: Error, Equatable {
+    case emptyTarget
+    case unsupportedScheme(String)
+    case remoteFileHost(String)
+    case missingBaseDirectory(String)
+    case missingFile(String)
+
+    @MainActor
+    var localizedMessage: String {
+        switch self {
+        case .emptyTarget:
+            return L10n("The link target is empty.")
+        case .unsupportedScheme(let scheme):
+            return L10nFormat("This link type is not supported: %@", scheme)
+        case .remoteFileHost(let host):
+            return L10nFormat("Remote file links are not supported: %@", host)
+        case .missingBaseDirectory(let path):
+            return L10nFormat("The relative file link has no workspace: %@", path)
+        case .missingFile(let path):
+            return L10nFormat("The linked file does not exist: %@", path)
+        }
+    }
+}
+
+/// Resolves message links without opening them. File-system work is intentionally
+/// confined to the click path; message parsing, row layout, and scrolling never
+/// call this resolver.
+enum MessageLinkResolver {
+    private static let allowedWebSchemes: Set<String> = ["http", "https", "mailto"]
+    private static let revealOnlyExtensions: Set<String> = ["app", "command", "dmg", "pkg"]
+
+    static func resolve(
+        _ url: URL,
+        baseDirectory: String?,
+        fileManager: FileManager = .default
+    ) -> Result<MessageLinkTarget, MessageLinkResolutionError> {
+        let scheme = url.scheme?.lowercased()
+        if let scheme, !scheme.isEmpty, scheme != "file" {
+            guard allowedWebSchemes.contains(scheme) else {
+                return .failure(.unsupportedScheme(scheme))
+            }
+            return .success(MessageLinkTarget(
+                kind: .web,
+                url: url,
+                requiresOutsideWorkspaceConfirmation: false
+            ))
+        }
+
+        if scheme == "file",
+           let host = url.host,
+           !host.isEmpty,
+           host.lowercased() != "localhost" {
+            return .failure(.remoteFileHost(host))
         }
 
         var path = url.path.removingPercentEncoding ?? url.path
         if path.isEmpty {
             path = url.relativeString.removingPercentEncoding ?? url.relativeString
         }
-        guard !path.isEmpty else { return nil }
+        guard !path.isEmpty else { return .failure(.emptyTarget) }
 
         let expanded = (path as NSString).expandingTildeInPath
         let candidate: URL
         if expanded.hasPrefix("/") {
             candidate = URL(fileURLWithPath: expanded)
-        } else if let baseDirectory, !baseDirectory.isEmpty {
-            candidate = URL(fileURLWithPath: baseDirectory, isDirectory: true)
-                .appendingPathComponent(expanded)
         } else {
-            candidate = URL(fileURLWithPath: expanded)
+            guard let normalizedBaseDirectory = normalized(baseDirectory) else {
+                return .failure(.missingBaseDirectory(path))
+            }
+            candidate = URL(fileURLWithPath: normalizedBaseDirectory, isDirectory: true)
+                .appendingPathComponent(expanded)
         }
-        return existingFileURL(candidate) ?? candidate.standardizedFileURL
+
+        guard let existingURL = existingFileURL(candidate, fileManager: fileManager) else {
+            return .failure(.missingFile(candidate.standardizedFileURL.path))
+        }
+        let resolvedURL = existingURL.resolvingSymlinksInPath().standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: resolvedURL.path, isDirectory: &isDirectory) else {
+            return .failure(.missingFile(resolvedURL.path))
+        }
+
+        let kind: MessageLinkTarget.Kind
+        if isDirectory.boolValue {
+            kind = .directory
+        } else if revealOnlyExtensions.contains(resolvedURL.pathExtension.lowercased())
+                    || fileManager.isExecutableFile(atPath: resolvedURL.path) {
+            kind = .revealOnly
+        } else {
+            kind = .file
+        }
+        return .success(MessageLinkTarget(
+            kind: kind,
+            url: resolvedURL,
+            requiresOutsideWorkspaceConfirmation: isOutsideWorkspace(
+                resolvedURL,
+                baseDirectory: baseDirectory
+            )
+        ))
     }
 
-    private static func existingFileURL(_ url: URL) -> URL? {
-        let path = url.path
-        guard !FileManager.default.fileExists(atPath: path) else { return url.standardizedFileURL }
-        let withoutLocation = path.replacingOccurrences(
+    private static func normalized(_ baseDirectory: String?) -> String? {
+        guard let value = baseDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+
+    private static func existingFileURL(_ url: URL, fileManager: FileManager) -> URL? {
+        let standardized = url.standardizedFileURL
+        if fileManager.fileExists(atPath: standardized.path) { return standardized }
+        let withoutLocation = standardized.path.replacingOccurrences(
             of: #":\d+(?::\d+)?$"#,
             with: "",
             options: .regularExpression
         )
-        guard withoutLocation != path, FileManager.default.fileExists(atPath: withoutLocation) else {
-            return nil
-        }
+        guard withoutLocation != standardized.path,
+              fileManager.fileExists(atPath: withoutLocation) else { return nil }
         return URL(fileURLWithPath: withoutLocation).standardizedFileURL
+    }
+
+    private static func isOutsideWorkspace(_ url: URL, baseDirectory: String?) -> Bool {
+        guard let baseDirectory = normalized(baseDirectory) else { return true }
+        let rootPath = URL(fileURLWithPath: baseDirectory, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        let targetPath = url.resolvingSymlinksInPath().standardizedFileURL.path
+        return targetPath != rootPath && !targetPath.hasPrefix(rootPath + "/")
+    }
+}
+
+enum MessageLinkOpener {
+    @MainActor
+    static func open(_ url: URL, baseDirectory: String?) -> OpenURLAction.Result {
+        handle(url, baseDirectory: baseDirectory) ? .handled : .discarded
+    }
+
+    /// Returns `true` whenever Corptie consumed the click, including a rejected
+    /// target for which an error was shown. Returning true prevents NSTextView
+    /// from retrying the unsafe/raw destination through its default handler.
+    @MainActor
+    static func handle(_ url: URL, baseDirectory: String?) -> Bool {
+        switch MessageLinkResolver.resolve(url, baseDirectory: baseDirectory) {
+        case .failure(let error):
+            presentError(error.localizedMessage)
+            return true
+        case .success(let target):
+            guard !target.requiresOutsideWorkspaceConfirmation || confirmOutsideWorkspace(target.url) else {
+                return true
+            }
+            let didOpen: Bool
+            switch target.kind {
+            case .web, .file, .directory:
+                didOpen = NSWorkspace.shared.open(target.url)
+            case .revealOnly:
+                NSWorkspace.shared.activateFileViewerSelecting([target.url])
+                didOpen = true
+            }
+            if !didOpen {
+                presentError(L10nFormat("The link could not be opened: %@", target.url.absoluteString))
+            }
+            return true
+        }
+    }
+
+    /// Kept as a narrow compatibility helper for callers and tests that only
+    /// need local-file normalization.
+    static func fileURL(from url: URL, baseDirectory: String?) -> URL? {
+        guard case .success(let target) = MessageLinkResolver.resolve(
+            url,
+            baseDirectory: baseDirectory
+        ), target.kind != .web else { return nil }
+        return target.url
+    }
+
+    @MainActor
+    private static func confirmOutsideWorkspace(_ url: URL) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n("Open a file outside the current workspace?")
+        alert.informativeText = url.path
+        alert.addButton(withTitle: L10n("Open"))
+        alert.addButton(withTitle: L10n("Cancel"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    @MainActor
+    private static func presentError(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n("Unable to open link")
+        alert.informativeText = message
+        alert.addButton(withTitle: L10n("OK"))
+        alert.runModal()
     }
 }
 
