@@ -392,6 +392,11 @@
 "Codex quota" = "Codex 额度";
 "Claude quota" = "Claude 额度";
 "Log Directory" = "日志目录";
+"Data Root" = "数据根目录";
+"Choose a data root" = "选择数据根目录";
+"Choose data root" = "选择数据根目录";
+"Data root is required." = "数据根目录不能为空。";
+"Database, configuration, logs, Artifacts, runtime state, and backups are stored in managed subdirectories. Changing this location migrates and verifies all data before switching." = "数据库、配置、日志、Artifact、运行时状态和备份均存放在受管理的子目录中。修改此位置时，系统会先迁移并验证全部数据，再完成切换。";
 "Choose a log directory" = "选择日志目录";
 "Choose log directory" = "选择日志目录";
 "Backend logs rotate automatically at 20 MB and keep five backups." = "后端日志达到 20 MB 后会自动轮转，并保留五份备份。";

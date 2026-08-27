@@ -884,15 +884,15 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func updateDataDirectory(_ dataDir: String) async {
-        await updateSettings(dataDir: dataDir, logDir: settings?.logDir, choiceParser: settings?.choiceParser, codexBackend: settings?.codexBackend, agentProxy: settings?.agentProxy, gateway: settings?.gateway)
+    func updateDataRoot(_ dataRoot: String) async {
+        await updateSettings(dataRoot: dataRoot, choiceParser: settings?.choiceParser, codexBackend: settings?.codexBackend, agentProxy: settings?.agentProxy, gateway: settings?.gateway)
     }
 
     @discardableResult
-    func updateSettings(dataDir: String, logDir: String? = nil, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil) async -> Bool {
-        let trimmed = dataDir.trimmingCharacters(in: .whitespacesAndNewlines)
+    func updateSettings(dataRoot: String, choiceParser: ChoiceParserSettings?, codexBackend: CodexBackendSettings? = nil, codeDiff: CodeDiffSettings? = nil, agentProxy: AgentProxySettings? = nil, gateway: GatewaySettings? = nil) async -> Bool {
+        let trimmed = dataRoot.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            lastError = L10n("Data directory is required.")
+            lastError = L10n("Data root is required.")
             return false
         }
 
@@ -903,13 +903,7 @@ final class BackendClient: ObservableObject {
             var request = URLRequest(url: baseURL.appending(path: "settings"))
             request.httpMethod = "PATCH"
             request.setValue("application/json", forHTTPHeaderField: "content-type")
-            var body: [String: Any] = ["dataDir": trimmed]
-            if let logDir {
-                let trimmedLogDir = logDir.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedLogDir.isEmpty {
-                    body["logDir"] = trimmedLogDir
-                }
-            }
+            var body: [String: Any] = ["dataRoot": trimmed]
             if let choiceParser {
                 body["choiceParser"] = [
                     "provider": choiceParser.provider,

@@ -26,12 +26,35 @@ export class ArtifactService {
   }
 
   async initialize() {
-    this.contentRoot ??= join(this.store.settings().dataDir, "artifacts");
+    this.contentRoot ??= this.store.layout?.artifactsDirectory
+      ?? join(this.store.settings().dataRoot, "artifacts");
     await mkdir(join(this.contentRoot, "objects"), { recursive: true, mode: 0o700 });
     await mkdir(join(this.contentRoot, "tmp"), { recursive: true, mode: 0o700 });
     const recovered = await this.recoverContentOperations();
     const orphaned = await this.auditOrphanedContent();
     return [...recovered, ...orphaned];
+  }
+
+  async useDataRoot(layout) {
+    if (!layout?.artifactsDirectory) throw new TypeError("ArtifactService requires a data root layout.");
+    this.contentRoot = layout.artifactsDirectory;
+    await mkdir(join(this.contentRoot, "objects"), { recursive: true, mode: 0o700 });
+    await mkdir(join(this.contentRoot, "tmp"), { recursive: true, mode: 0o700 });
+    const integrity = [];
+    for (const version of this.store.selectAll(
+      "SELECT artifact_id, version, storage_key, content_hash, byte_length FROM artifact_versions WHERE storage_key IS NOT NULL"
+    )) {
+      const content = await readFile(this.#safeStoragePath(version.storage_key));
+      if (sha256(content) !== version.content_hash || content.byteLength !== Number(version.byte_length)) {
+        throw artifactError(
+          "ARTIFACT_INTEGRITY_FAILED",
+          `Artifact content failed verification after data root migration: ${version.artifact_id} v${version.version}.`,
+          409
+        );
+      }
+      integrity.push({ artifactId: version.artifact_id, version: Number(version.version) });
+    }
+    return { verifiedArtifacts: integrity.length };
   }
 
   context(input = {}) {
