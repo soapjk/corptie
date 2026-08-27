@@ -349,6 +349,10 @@
 "Git" = "Git";
 "Local" = "本地";
 "Open Session" = "打开会话";
+"Could not load session messages: %@" = "无法加载会话消息：%@";
+"The history server returned an invalid response." = "历史消息服务返回了无效响应。";
+"Messages could not be loaded" = "消息加载失败";
+"Reload messages" = "重新加载消息";
 "Close Floating Orb" = "关闭悬浮头像";
 "Participants" = "参与者";
 "Initiator" = "发起方";

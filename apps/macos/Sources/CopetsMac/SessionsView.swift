@@ -198,7 +198,7 @@ struct SessionsView: View {
                 // only. A deep link may explicitly target an archive, so fall
                 // back to the Corptie-local archive endpoint on demand.
                 await backendClient.refreshArchivedSessions()
-                resolved = backendClient.archivedSessions.first(where: { $0.id == pendingId })
+                resolved = sessionMatchingPendingSelection(pendingId, in: backendClient.archivedSessions)
             }
             if let session = resolved {
                 selectedCategory = SessionCategory(session: session)
@@ -792,8 +792,29 @@ private struct SessionsSidebarRow: View {
 }
 
 func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [TaskSession]) -> TaskSession? {
-    guard let pendingSessionId else { return nil }
-    return sessions.first { $0.id == pendingSessionId }
+    guard let pendingSessionId = normalizedSessionRouteIdentifier(pendingSessionId) else { return nil }
+    // Preserve the canonical Session id as the highest-priority match. Logical
+    // and Provider ids are accepted only as route aliases so a WorkItem created
+    // before/after a workspace or Provider transition still opens the same
+    // product Session instead of failing hydration or selecting another row.
+    if let exact = sessions.first(where: { $0.id == pendingSessionId }) {
+        return exact
+    }
+    return sessions.first { session in
+        [
+            session.external?.logicalSessionId,
+            session.external?.threadId,
+            session.external?.sessionId
+        ]
+        .compactMap(normalizedSessionRouteIdentifier)
+        .contains(pendingSessionId)
+    }
+}
+
+private func normalizedSessionRouteIdentifier(_ value: String?) -> String? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !value.isEmpty else { return nil }
+    return value
 }
 
 struct SessionGroup: Identifiable {
