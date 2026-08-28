@@ -122,6 +122,40 @@ test("preflight blockers and occupied targets preserve the original authority", 
   }
 });
 
+test("source Artifact corruption fails preflight with a stable recoverable error before copying", async () => {
+  let quiesced = 0;
+  const f = await fixture({ quiesce: async () => { quiesced += 1; } });
+  const targetRoot = join(f.directory, "target");
+  try {
+    const version = f.store.selectOne(
+      "SELECT artifact_id, version, storage_key FROM artifact_versions WHERE artifact_id = ?",
+      [f.artifact.artifactId]
+    );
+    await rm(join(f.store.layout.artifactsDirectory, version.storage_key));
+
+    await assert.rejects(() => f.coordinator.migrate(targetRoot), (error) => {
+      assert.equal(error.code, "DATA_ROOT_ARTIFACT_MISSING");
+      assert.equal(error.message, "Artifact content referenced by the active database is missing.");
+      assert.deepEqual(error.details, {
+        artifactId: version.artifact_id,
+        version: version.version,
+        storageKey: version.storage_key
+      });
+      assert.doesNotMatch(error.message, /ENOENT|\/Volumes|\/Users/);
+      return true;
+    });
+
+    assert.equal(f.coordinator.status().phase, "failed");
+    assert.equal(f.coordinator.status().error.code, "DATA_ROOT_ARTIFACT_MISSING");
+    assert.equal(quiesced, 0, "source integrity must be checked before persistent writers stop");
+    assert.equal(JSON.parse(await readFile(f.selectorPath, "utf8")).dataRoot, f.sourceRoot);
+    await assert.rejects(() => access(targetRoot), { code: "ENOENT" });
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("interrupted pre-commit operations recover as failed without activating the target", async () => {
   const f = await fixture();
   try {

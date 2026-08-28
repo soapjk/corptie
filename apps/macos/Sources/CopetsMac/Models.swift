@@ -1541,6 +1541,9 @@ struct DataRootMigrationFailure: Decodable, Equatable {
 
 struct DataRootMigrationFailureDetails: Decodable, Equatable {
     let blockers: [DataRootMigrationBlocker]?
+    let artifactId: String?
+    let version: Int?
+    let storageKey: String?
 }
 
 struct DataRootMigrationBlocker: Decodable, Equatable, Identifiable {

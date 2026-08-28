@@ -106,6 +106,30 @@ struct DataRootSettingsTests {
         #expect(operation.error?.details?.blockers?.map(\.count) == [2, 1])
     }
 
+    @Test func migrationFailureDecodesAffectedArtifactWithoutExposingAnAbsolutePath() throws {
+        let data = Data(#"""
+        {
+          "operationId":"data_root_migration:artifact",
+          "generation":3,
+          "phase":"failed",
+          "sourceDataRoot":"/old/root",
+          "targetDataRoot":"/new/root",
+          "restartRequired":false,
+          "oldDataRootRetained":true,
+          "error":{
+            "code":"DATA_ROOT_ARTIFACT_MISSING",
+            "message":"Artifact content referenced by the active database is missing.",
+            "details":{"artifactId":"artifact:one","version":2,"storageKey":"objects/aa/hash"}
+          },
+          "history":[]
+        }
+        """#.utf8)
+        let operation = try JSONDecoder().decode(DataRootMigrationOperation.self, from: data)
+        #expect(operation.error?.details?.artifactId == "artifact:one")
+        #expect(operation.error?.details?.version == 2)
+        #expect(operation.error?.message.contains("/old/root") == false)
+    }
+
     @Test func backendClientDecodesStructuredMigrationFailuresAndPollsProgress() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

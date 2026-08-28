@@ -928,3 +928,4 @@
 "Live Provider turns" = "Live Provider turns";
 "Background Memory tasks" = "Background Memory tasks";
 "Background choice tasks" = "Background choice tasks";
+"Affected Artifact: %@ v%lld" = "Affected Artifact: %@ v%lld";
