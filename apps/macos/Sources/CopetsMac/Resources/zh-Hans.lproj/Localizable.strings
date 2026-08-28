@@ -288,6 +288,8 @@
 "Started Codex CLI" = "已启动 Codex CLI";
 "Approve" = "允许";
 "Deny" = "拒绝";
+"Sending collaboration request…" = "正在发送协作请求…";
+"Cancelling collaboration request…" = "正在取消协作请求…";
 "Collaboration request sent" = "协作请求已发送";
 "Collaboration request cancelled" = "协作请求已取消";
 "Sending to terminal agent..." = "正在发送给终端 Agent…";

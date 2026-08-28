@@ -276,6 +276,76 @@ test("a completed Provider turn with a failed tool and no non-empty final reply 
   }
 });
 
+test("a pending collaboration confirmation is a successful turn handoff even after an earlier tool failure", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    store.createUserMessageDelivery({
+      deliveryId: "delivery:confirmation-handoff",
+      messageId: "message:confirmation-handoff",
+      sessionId: binding.sessionId,
+      binding,
+      agentId: "agent:one",
+      text: "Stage a collaboration request"
+    });
+    store.updateMessageDelivery("delivery:confirmation-handoff", {
+      status: "dispatching",
+      attemptCount: 1,
+      lastAttemptAt: "2026-08-26T10:00:00.000Z",
+      providerTurnId: "turn:one"
+    });
+    projector.project({ event: event("turn.started"), binding });
+    projector.project({
+      event: event("tool.failed", { payload: { item: {
+        id: "tool:artifact-failed",
+        turnId: "turn:one",
+        type: "dynamicToolCall",
+        title: "Artifact lookup",
+        text: "{}",
+        status: "failed"
+      } } }),
+      binding
+    });
+    store.upsertTimelineItemProjection(binding.sessionId, {
+      id: "collaboration-confirmation:one",
+      turnId: "turn:one",
+      turnStatus: "waiting_approval",
+      type: "collaborationConfirmation",
+      title: "Confirm Agent Collaboration",
+      text: "",
+      status: "pending",
+      presentationRole: "collaboration_confirmation"
+    });
+
+    const projected = projector.project({
+      event: event("turn.completed", { payload: { items: [{
+        id: "agent:empty-final",
+        turnId: "turn:one",
+        type: "agentMessage",
+        title: "Agent",
+        text: "",
+        presentationRole: "final_answer",
+        status: "completed"
+      }] } }),
+      binding
+    });
+
+    const turn = store.getSessionTurn("session:one", binding.bindingId, "turn:one");
+    const delivery = store.getMessageDelivery("delivery:confirmation-handoff");
+    assert.equal(projected.terminalStatus, "completed");
+    assert.equal(projected.terminalFailure, null);
+    assert.equal(turn.execution_status, "completed");
+    assert.equal(turn.failure_json, null);
+    assert.equal(delivery.status, "completed");
+    assert.equal(delivery.lastError, null);
+    assert.equal(projected.session.status, "complete");
+    assert.equal(store.getSessionItem("session:one", "tool:artifact-failed").status, "failed");
+    assert.equal(store.getSessionItem("session:one", "collaboration-confirmation:one").status, "pending");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a definitive unavailable-Provider interruption settles the persisted run as cancelled", async () => {
   const { directory, store, projector } = await fixture();
   try {

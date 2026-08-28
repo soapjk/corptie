@@ -3091,25 +3091,51 @@ final class BackendClient: ObservableObject {
     }
 
     func respondToCollaborationConfirmation(confirmationId: String, approve: Bool, in session: TaskSession? = nil) {
-        guard session != nil || selectedSession != nil else { return }
+        let sourceSessionID = session?.id
+            ?? pendingCollaborationConfirmationsBySessionID.first(where: {
+                $0.value.confirmationId == confirmationId
+            })?.key
         Task {
             isSendingMessage = true
             defer { isSendingMessage = false }
             do {
-                let action = approve ? "confirm" : "reject"
-                var request = URLRequest(url: baseURL.appending(path: "collaboration/confirmations/\(confirmationId)/\(action)"))
-                request.httpMethod = "POST"
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200..<300).contains(httpResponse.statusCode) else {
-                    let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-                    throw BackendError.message(payload?["error"] as? String ?? "Could not resolve collaboration confirmation.")
+                sendStatusMessage = approve
+                    ? L10n("Sending collaboration request…")
+                    : L10n("Cancelling collaboration request…")
+                try await Self.requestCollaborationConfirmationResolution(
+                    at: baseURL,
+                    confirmationId: confirmationId,
+                    approve: approve
+                )
+                if let sourceSessionID {
+                    pendingCollaborationConfirmationsBySessionID[sourceSessionID] = nil
                 }
                 sendStatusMessage = approve ? L10n("Collaboration request sent") : L10n("Collaboration request cancelled")
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Confirmation failed: %@", error.localizedDescription)
             }
+        }
+    }
+
+    nonisolated static func requestCollaborationConfirmationResolution(
+        at baseURL: URL,
+        confirmationId: String,
+        approve: Bool,
+        urlSession: URLSession = .shared
+    ) async throws {
+        let action = approve ? "confirm" : "reject"
+        var request = URLRequest(
+            url: baseURL.appending(path: "collaboration/confirmations/\(confirmationId)/\(action)")
+        )
+        request.httpMethod = "POST"
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            throw BackendError.message(
+                payload?["error"] as? String ?? "Could not resolve collaboration confirmation."
+            )
         }
     }
 
