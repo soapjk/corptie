@@ -15,6 +15,7 @@ export class CodexProviderRuntime {
   interruptTurn(...args) { return this.client.interruptTurn(...args); }
   liveItemsForThread(...args) { return this.client.liveItemsForThread(...args); }
   readAccountRateLimits(...args) { return this.client.readAccountRateLimits(...args); }
+  readThreadForLegacyHistoryRepair(...args) { return this.client.readThreadForLegacyHistoryRepair(...args); }
   respondToApproval(...args) { return this.client.respondToApproval(...args); }
   resumeThread(...args) { return this.client.resumeThread(...args); }
   runEphemeralPrompt(...args) { return this.client.runEphemeralPrompt(...args); }
