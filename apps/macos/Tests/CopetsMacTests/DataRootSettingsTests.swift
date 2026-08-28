@@ -56,10 +56,67 @@ struct DataRootSettingsTests {
         #expect(contents.contains("Text(L10n(\"Data Root\"))"))
         #expect(contents.contains("chooseDataRoot()"))
         #expect(contents.contains("dataRootMigrationPhaseLabel"))
+        #expect(contents.contains("DataRootMigrationDialogState"))
+        #expect(contents.contains("Migrate and Restart"))
+        #expect(contents.contains("confirmDataRootMigration"))
+        #expect(contents.contains("dataRoot = backendClient.settings?.dataRoot ?? dialog.sourceDataRoot"))
         #expect(contents.contains("never deleted automatically"))
         #expect(!contents.contains("Text(L10n(\"Log Directory\"))"))
         #expect(!contents.contains("settings.dbPath"))
         #expect(!contents.contains("settings.configPath"))
+    }
+
+    @Test func migrationProgressAdvancesAcrossControlledRestartPhases() {
+        let phases = [
+            "preflight", "quiescing", "checkpointing", "copying", "verifying",
+            "switching", "restartRequired", "reconnecting", "completed"
+        ]
+        let progress = phases.map(DataRootMigrationPresentation.progress(for:))
+        #expect(progress == progress.sorted())
+        #expect(progress.first == 0.08)
+        #expect(progress.last == 1.0)
+        #expect(DataRootMigrationPresentation.progress(for: "failed") == 0)
+        #expect(DataRootMigrationPresentation.pathsEqual("/tmp/corptie", "/tmp/example/../corptie/"))
+        #expect(!DataRootMigrationPresentation.pathsEqual("/tmp/corptie", "/tmp/other"))
+    }
+
+    @Test func migrationFailureDecodesConcretePersistentWriterBlockers() throws {
+        let data = Data(#"""
+        {
+          "operationId":"data_root_migration:busy",
+          "generation":2,
+          "phase":"failed",
+          "sourceDataRoot":"/old/root",
+          "targetDataRoot":"/new/root",
+          "restartRequired":false,
+          "oldDataRootRetained":true,
+          "error":{
+            "code":"DATA_ROOT_MIGRATION_BUSY",
+            "message":"Data Root migration is blocked by active persistent work.",
+            "details":{"blockers":[
+              {"kind":"active_session_turns","count":2},
+              {"kind":"scheduled_tasks","count":1}
+            ]}
+          },
+          "history":[]
+        }
+        """#.utf8)
+        let operation = try JSONDecoder().decode(DataRootMigrationOperation.self, from: data)
+        #expect(operation.error?.code == "DATA_ROOT_MIGRATION_BUSY")
+        #expect(operation.error?.details?.blockers?.map(\.count) == [2, 1])
+    }
+
+    @Test func backendClientDecodesStructuredMigrationFailuresAndPollsProgress() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/BackendClient.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        #expect(contents.contains("DataRootMigrationErrorEnvelope"))
+        #expect(contents.contains("data-root-migrations/current"))
+        #expect(contents.contains("refreshDataRootMigrationStatus(expectedTarget:"))
+        #expect(contents.contains("dataRootMigrationPresentationPhase = operation.phase"))
     }
 
     @Test func pendingMigrationRecoverySurvivesAnAppProcessRestart() throws {
