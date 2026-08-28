@@ -22,7 +22,7 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
   const definition = catalog.definitions({
     actorId: "agent:runtime",
     metadata: { sessionId: "session:runtime" }
-  })[0];
+  }).find((tool) => tool.name === "corptie_scheduled_tasks_manage");
   assert.equal(definition.name, "corptie_scheduled_tasks_manage");
   assert.match(definition.description, /计划任务/);
   assert.deepEqual(definition.inputSchema.properties.schedule_type.enum, [
@@ -89,6 +89,65 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
     tool: definition.name,
     arguments: { action: "list" }
   }), (error) => error.code === "AGENT_TOOL_FORBIDDEN");
+});
+
+test("provider-neutral Automation aliases dispatch with the finalized logical Session scope", async () => {
+  const calls = [];
+  const service = {
+    create(input, actor) { calls.push(["create", input, actor]); return { taskId: "task:one" }; },
+    list(input, actor) { calls.push(["list", input, actor]); return []; },
+    get(id, actor) { calls.push(["get", id, actor]); return { taskId: id }; },
+    update(id, input, actor) { calls.push(["update", id, input, actor]); return { taskId: id }; },
+    pause(id, actor) { calls.push(["pause", id, actor]); },
+    resume(id, actor) { calls.push(["resume", id, actor]); },
+    cancel(id, actor) { calls.push(["cancel", id, actor]); },
+    runNow(id, actor) { calls.push(["run", id, actor]); }
+  };
+  const names = scheduledSessionTaskDynamicTools.map((tool) => tool.name);
+  assert.deepEqual(names, [
+    "corptie_scheduled_tasks_manage",
+    "corptie_automations_create",
+    "corptie_automations_list",
+    "corptie_automations_update",
+    "corptie_automations_get",
+    "corptie_automations_pause",
+    "corptie_automations_resume",
+    "corptie_automations_cancel",
+    "corptie_automations_run_now"
+  ]);
+
+  const runtime = {
+    actorId: "agent:runtime",
+    metadata: {
+      sessionId: "session:runtime",
+      logicalSessionId: "logical:runtime"
+    }
+  };
+  await callScheduledSessionTaskDynamicTool(service, {
+    ...runtime,
+    tool: "corptie_automations_create",
+    arguments: {
+      name: "Bound task",
+      schedule_type: "after",
+      delay_seconds: 30,
+      expires_after_seconds: 60
+    }
+  });
+  await callScheduledSessionTaskDynamicTool(service, {
+    ...runtime,
+    tool: "corptie_automations_list",
+    arguments: {}
+  });
+  await callScheduledSessionTaskDynamicTool(service, {
+    ...runtime,
+    tool: "corptie_automations_run_now",
+    arguments: { automation_id: "task:one" }
+  });
+
+  assert.equal(calls[0][1].logicalSessionId, "logical:runtime");
+  assert.deepEqual(calls[0][2], { type: "agent", id: "agent:runtime" });
+  assert.deepEqual(calls[1][1], { logicalSessionId: "logical:runtime", status: undefined });
+  assert.deepEqual(calls[2], ["run", "task:one", { type: "agent", id: "agent:runtime" }]);
 });
 
 test("HTTP contract exposes create, list, detail, update, lifecycle actions, and run now", async () => {
