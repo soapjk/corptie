@@ -168,6 +168,20 @@ test("unbound Assistant Chat does not receive WorkItem creation or collaboration
   }
 });
 
+test("built-in Assistant Chat receives the same platform management contract through the Claude MCP path", async () => {
+  const calls = [];
+  const { client } = await connectMcp({
+    get: async () => ({}),
+    post: async (path, body) => { calls.push({ path, body }); return { ok: true }; }
+  }, { agentId: "assistant", sessionId: "provider:assistant", sessionKind: "assistantChat", sessionObjectiveId: "", objectiveId: "" });
+  try {
+    const names = (await client.listTools()).tools.map((tool) => tool.name);
+    for (const name of ["corptie_platform_capabilities", "corptie_platform_artifacts_manage", "corptie_platform_collaboration_manage"]) assert.ok(names.includes(name), name);
+    await client.callTool({ name: "corptie_platform_artifacts_manage", arguments: { action: "list", objective_id: "objective:target" } });
+    assert.deepEqual(calls.at(-1), { path: "/internal/session/tool", body: { tool: "corptie_platform_artifacts_manage", arguments: { action: "list", objective_id: "objective:target" } } });
+  } finally { await client.close(); }
+});
+
 test("MCP Session discovery carries an explicit peer Objective filter", async () => {
   const reads = [];
   const { client } = await connectMcp({

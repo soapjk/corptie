@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
 
 export const ARTIFACT_VISIBILITIES = Object.freeze([
   "objective_private", "work_item_private", "session_private", "repository_tracked"
@@ -58,6 +59,20 @@ export class ArtifactService {
   }
 
   context(input = {}) {
+    if (input.kind === "platform_admin") {
+      const binding = resolvePlatformAdminSession(this.store, input);
+      const objectiveId = requiredText(input.objectiveId, "objectiveId");
+      if (!this.store.getObjective(objectiveId)) {
+        throw artifactError("ARTIFACT_OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
+      }
+      return {
+        kind: "platform_admin",
+        actorId: binding.agent.agentId,
+        objectiveId,
+        sessionId: binding.actorSessionId,
+        workItemId: null
+      };
+    }
     if (input.kind === "local_user") {
       const objectiveId = requiredText(input.objectiveId, "objectiveId");
       if (!this.store.getObjective(objectiveId)) throw artifactError("ARTIFACT_OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
@@ -786,7 +801,7 @@ export class ArtifactService {
   }
 
   #assertManager(context) {
-    if (!['objectiveChat', 'local_user'].includes(context.kind)) {
+    if (!['objectiveChat', 'local_user', 'platform_admin'].includes(context.kind)) {
       throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Worker Sessions cannot manage Objective Artifacts.", 403);
     }
   }
@@ -807,7 +822,7 @@ export class ArtifactService {
 
   #canRead(context, artifact) {
     if (artifact.objectiveId !== context.objectiveId || artifact.status === "revoked") return false;
-    if (context.kind === "objectiveChat" || context.kind === "local_user") return true;
+    if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return true;
     if (context.kind !== "worker") return false;
     if (artifact.visibility === "session_private" && artifact.boundSessionId === context.sessionId) return true;
     return this.#matchingReferences(context, artifact).length > 0;
