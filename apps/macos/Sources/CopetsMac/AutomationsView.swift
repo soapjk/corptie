@@ -32,6 +32,7 @@ struct AutomationsView: View {
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @State private var category: AutomationCategory? = .all
     @State private var editingAutomation: ScheduledSessionTask?
+    @State private var focusedAutomationID: String?
 
     private var visibleAutomations: [ScheduledSessionTask] {
         switch category ?? .all {
@@ -103,22 +104,46 @@ struct AutomationsView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(visibleAutomations) { automation in
-                        AutomationCard(
-                            automation: automation,
-                            targetName: targetName(for: automation),
-                            isMutating: backendClient.scheduledTaskMutationIds.contains(automation.id),
-                            openTarget: { openTarget(automation) },
-                            edit: { edit(automation) },
-                            perform: { action in
-                                Task { await backendClient.performAutomationAction(action, task: automation) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(visibleAutomations) { automation in
+                            AutomationCard(
+                                automation: automation,
+                                targetName: targetName(for: automation),
+                                isMutating: backendClient.scheduledTaskMutationIds.contains(automation.id),
+                                openTarget: { openTarget(automation) },
+                                edit: { edit(automation) },
+                                perform: { action in
+                                    Task { await backendClient.performAutomationAction(action, task: automation) }
+                                }
+                            )
+                            .id(automation.id)
+                            .overlay {
+                                if focusedAutomationID == automation.id {
+                                    RoundedRectangle(cornerRadius: 14).stroke(.tint, lineWidth: 2)
+                                }
                             }
-                        )
+                        }
                     }
+                    .padding(18)
                 }
-                .padding(18)
+                .onChange(of: router.pendingAutomationId, initial: true) { _, automationID in
+                    guard let automationID,
+                          backendClient.automations.contains(where: { $0.id == automationID }) else { return }
+                    category = .all
+                    focusedAutomationID = automationID
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(automationID, anchor: .center) }
+                    router.consumeAutomation(automationID)
+                }
+                .onChange(of: backendClient.automations.map(\.id)) { _, automationIDs in
+                    guard let automationID = router.pendingAutomationId,
+                          automationIDs.contains(automationID) else { return }
+                    category = .all
+                    focusedAutomationID = automationID
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(automationID, anchor: .center) }
+                    router.consumeAutomation(automationID)
+                }
             }
             .overlay(alignment: .bottomLeading) {
                 if let error = backendClient.automationsError {

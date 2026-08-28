@@ -275,6 +275,7 @@ final class BackendClient: ObservableObject {
         set { sessionCommandController.scheduledTaskError = newValue }
     }
     let sessionReplacements = PassthroughSubject<SessionReplacement, Never>()
+    let automationTerminalEvents = PassthroughSubject<AutomationTerminalNotificationEvent, Never>()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     var defaultWorkspacePath: String {
@@ -304,6 +305,7 @@ final class BackendClient: ObservableObject {
     private var usageEventRefreshTask: Task<Void, Never>?
     private var usageBySessionId: [String: SessionUsageResponse] = [:]
     private var automationRefreshCoalescer = AutomationRefreshCoalescer()
+    private var automationEventRefreshTask: Task<Void, Never>?
     private var scheduledTaskLoadTasks: [String: Task<ScheduledTaskListLoadOutcome, Never>] = [:]
     private var projectStatusRefreshTask: Task<Void, Never>?
     private var projectStatusEventRefreshTask: Task<Void, Never>?
@@ -396,6 +398,8 @@ final class BackendClient: ObservableObject {
         projectStatusRefreshTask = nil
         projectStatusEventRefreshTask?.cancel()
         projectStatusEventRefreshTask = nil
+        automationEventRefreshTask?.cancel()
+        automationEventRefreshTask = nil
         activeTimelineSyncEngine.stop()
         knownTimelineRevisionBySessionID.removeAll()
     }
@@ -585,19 +589,12 @@ final class BackendClient: ObservableObject {
             return
         }
         if ScheduledSessionEventMapping.authoritativeEventNames.contains(eventName) {
-            guard let payload = data.data(using: .utf8), let selectedSession else {
-                await loadAutomations()
-                return
+            if ScheduledSessionEventMapping.terminalNotificationEventNames.contains(eventName),
+               let event = AutomationTerminalNotificationEvent.decode(eventName: eventName, data: data) {
+                automationTerminalEvents.send(event)
             }
-            let eventSessionId = ScheduledSessionEventMapping.sessionId(from: payload)
-            let selectedLogicalSessionId = selectedSession.external?.logicalSessionId ?? selectedSession.id
-            if eventSessionId == nil || eventSessionId == selectedLogicalSessionId || eventSessionId == selectedSession.id {
-                async let automationLoad: Void = loadAutomations()
-                async let scheduledTaskLoad: Void = loadScheduledTasks(for: selectedSession)
-                _ = await (automationLoad, scheduledTaskLoad)
-            } else {
-                await loadAutomations()
-            }
+            let payload = data.data(using: .utf8)
+            scheduleAutomationEventRefresh(eventSessionId: payload.flatMap(ScheduledSessionEventMapping.sessionId))
             // Timeline projection and its revision event are emitted by the
             // backend mutation; selected state never pulls detail here.
             return
@@ -649,6 +646,27 @@ final class BackendClient: ObservableObject {
                 return
             }
             return
+        }
+    }
+
+    private func scheduleAutomationEventRefresh(eventSessionId: String?) {
+        guard automationEventRefreshTask == nil else { return }
+        automationEventRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+            guard let self, !Task.isCancelled else { return }
+            defer { self.automationEventRefreshTask = nil }
+            async let automationLoad: Void = self.loadAutomations()
+            if let selectedSession = self.selectedSession {
+                let selectedLogicalSessionId = selectedSession.external?.logicalSessionId ?? selectedSession.id
+                if eventSessionId == nil
+                    || eventSessionId == selectedLogicalSessionId
+                    || eventSessionId == selectedSession.id {
+                    async let selectedLoad: Void = self.loadScheduledTasks(for: selectedSession)
+                    _ = await (automationLoad, selectedLoad)
+                    return
+                }
+            }
+            await automationLoad
         }
     }
 

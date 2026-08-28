@@ -4990,13 +4990,13 @@ private func makeDetailSourceSignature(
     let items: [CodexThreadItem] = tailTurnID.map { turnID in
         Array(detail.items.reversed().prefix { $0.turnId == turnID }.reversed())
     } ?? []
-    let itemSignatures = items.map { item in
-        let textCount = String(item.text.count)
-        let textSuffix = String(item.text.suffix(96))
-        let presentationText = item.presentationText ?? ""
-        let presentationTextCount = String(presentationText.count)
-        let presentationTextSuffix = String(presentationText.suffix(96))
-        return [
+    let itemSignatures = items.map(detailSourceItemSignature).joined(separator: "|")
+    return "\(visibleMessageLimit)|\(restorationAnchorRowID ?? "latest")|\(detail.items.count)|\(detail.updatedAt)|\(itemSignatures)"
+}
+
+private func detailSourceItemSignature(_ item: CodexThreadItem) -> String {
+    let presentationText = item.presentationText ?? ""
+    var signatureParts: [String] = [
             item.id,
             item.type,
             item.status ?? "",
@@ -5021,17 +5021,26 @@ private func makeDetailSourceSignature(
             item.automationTriggerType ?? "",
             item.automationEventType ?? "",
             item.automationEventSource ?? "",
-            item.automationRunId ?? "",
+            item.automationRunId ?? ""
+    ]
+    signatureParts.append(item.automationEventOccurredAt ?? "")
+    signatureParts.append(item.automationScheduleType ?? "")
+    signatureParts.append(item.automationRunAt ?? "")
+    signatureParts.append(item.automationNextRunAt ?? "")
+    signatureParts.append(item.automationIntervalSeconds.map { String($0) } ?? "")
+    signatureParts.append(item.automationConditionCheckIntervalSeconds.map { String($0) } ?? "")
+    signatureParts.append(item.automationProcessPollIntervalSeconds.map { String($0) } ?? "")
+    signatureParts.append(item.automationExpiresAt ?? "")
+    signatureParts.append(contentsOf: [
             item.systemEventKind ?? "",
             item.systemEventReason ?? "",
-            textCount,
-            textSuffix,
-            presentationTextCount,
-            presentationTextSuffix,
+            String(item.text.count),
+            String(item.text.suffix(96)),
+            String(presentationText.count),
+            String(presentationText.suffix(96)),
             fileChangesSignature(item)
-        ].joined(separator: ":")
-    }.joined(separator: "|")
-    return "\(visibleMessageLimit)|\(restorationAnchorRowID ?? "latest")|\(detail.items.count)|\(detail.updatedAt)|\(itemSignatures)"
+    ])
+    return signatureParts.joined(separator: ":")
 }
 
 /// Builds a bounded semantic window around a saved row identity. Keeping a
@@ -5508,31 +5517,38 @@ func nativeCollaborationCardPresentation(
 @MainActor
 func nativeAutomationCardPresentation(for item: CodexThreadItem) -> NativeSpecialEventCardPresentation? {
     guard item.type == "automationEvent", item.presentationRole == "automation",
-          let automationID = nonEmptyPresentationValue(item.automationId),
           let name = nonEmptyPresentationValue(item.automationName),
-          let trigger = nonEmptyPresentationValue(item.automationTriggerType),
-          let source = nonEmptyPresentationValue(item.automationEventSource),
-          let eventType = nonEmptyPresentationValue(item.automationEventType) else { return nil }
+          let eventType = nonEmptyPresentationValue(item.automationEventType),
+          ScheduledSessionEventMapping.timelineCardEventNames.contains(eventType) else { return nil }
     let message = nonEmptyPresentationValue(item.presentationText) ?? nonEmptyPresentationValue(item.text) ?? ""
-    var lines = [
-        "**Automation ID**  \(automationID)",
-        "**\(L10n("名称"))**  \(name)",
-        "**\(L10n("触发类型"))**  \(trigger)",
-        "**\(L10n("事件来源"))**  \(source)",
-        "**\(L10n("事件类型"))**  \(eventType)"
-    ]
-    if let runID = nonEmptyPresentationValue(item.automationRunId) {
-        lines.append("**Run ID**  \(runID)")
+    var lines = ["**\(L10n("事件类型"))**  \(automationEventLabel(eventType))"]
+    if let eventTime = AutomationTimelinePresentation.eventTime(for: item) {
+        lines.append("**\(AutomationTimelinePresentation.eventTimeLabel(for: eventType))**  \(eventTime)")
+    }
+    if let plan = AutomationTimelinePresentation.executionPlan(for: item) {
+        lines.append("**\(L10n("执行计划"))**  \(plan)")
+    }
+    if let expiresAt = AutomationTimelinePresentation.localizedDate(item.automationExpiresAt) {
+        lines.append("**\(L10n("过期时间"))**  \(expiresAt)")
     }
     if !message.isEmpty {
-        lines.append(contentsOf: ["", "**\(L10n("消息"))**", message])
+        lines.append(contentsOf: ["", "**\(L10n("触发消息"))**", automationMarkdownEscaped(message)])
     }
     return NativeSpecialEventCardPresentation(
-        title: "Automation · \(automationEventLabel(eventType))",
-        metadata: nativeEventTimestamp(item.createdAt),
+        title: name,
+        metadata: automationEventLabel(eventType),
         bodyMarkdown: lines.joined(separator: "\n"),
         messageText: message
     )
+}
+
+private func automationMarkdownEscaped(_ source: String) -> String {
+    source
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "*", with: "\\*")
+        .replacingOccurrences(of: "_", with: "\\_")
+        .replacingOccurrences(of: "`", with: "\\`")
+        .replacingOccurrences(of: "[", with: "\\[")
 }
 
 @MainActor
@@ -5572,10 +5588,7 @@ private func automationEventLabel(_ type: String) -> String {
     case "ScheduledSessionTaskCreated": L10n("已创建")
     case "ScheduledSessionTaskDue": L10n("已触发")
     case "ScheduledSessionRunQueued": L10n("已排队")
-    case "ScheduledSessionRunStarted": L10n("运行中")
-    case "ScheduledSessionRunCompleted": L10n("已完成")
-    case "ScheduledSessionRunFailed": L10n("失败")
-    default: type
+    default: L10n("计划任务事件")
     }
 }
 

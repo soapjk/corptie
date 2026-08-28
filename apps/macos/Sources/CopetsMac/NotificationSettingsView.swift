@@ -20,6 +20,12 @@ struct NotificationSettingsView: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     notificationToggle(
+                        L10n("计划任务通知"),
+                        description: L10n("计划任务完成、终态失败、取消或过期时通知；周期完成会自动覆盖，避免刷屏。"),
+                        isOn: $preferences.notifyOnAutomations
+                    )
+                    Divider()
+                    notificationToggle(
                         L10n("All sessions are waiting for interaction"),
                         description: L10n("Notify once when at least one session was running and no sessions remain running."),
                         isOn: $preferences.notifyWhenAllSessionsWaiting
