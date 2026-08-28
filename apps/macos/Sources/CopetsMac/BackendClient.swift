@@ -176,6 +176,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var viewingHistoricalThreadId: String?
     @Published private(set) var isLoadingDetail = false
     @Published private(set) var selectedTimelineLoadError: String?
+    @Published private(set) var earlierHistoryLoadStateBySessionID: [String: EarlierHistoryLoadState] = [:]
     private(set) var isSendingMessage: Bool {
         get { sessionCommandController.isSendingMessage }
         set { sessionCommandController.isSendingMessage = newValue }
@@ -297,7 +298,8 @@ final class BackendClient: ObservableObject {
     )
     private var globalEventCursor = 0
     private static let historyPageSize = 200
-    private var historyLoadSessionIDs = Set<String>()
+    private var timelineWindowLoadSessionIDs = Set<String>()
+    private var earlierHistoryLoadSessionIDs = Set<String>()
     private var usageRefreshTask: Task<Void, Never>?
     private var usageEventRefreshTask: Task<Void, Never>?
     private var usageBySessionId: [String: SessionUsageResponse] = [:]
@@ -4056,11 +4058,11 @@ final class BackendClient: ObservableObject {
                   currentSelectionGeneration: sessionSelectionController.generation
               ),
               let current = selectedDetail,
-              historyLoadSessionIDs.insert(session.id).inserted else {
+              timelineWindowLoadSessionIDs.insert(session.id).inserted else {
             return .stale
         }
         let threadID = current.id
-        defer { historyLoadSessionIDs.remove(session.id) }
+        defer { timelineWindowLoadSessionIDs.remove(session.id) }
 
         do {
             var components = URLComponents(
@@ -4126,10 +4128,47 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    func earlierHistoryLoadState(for sessionID: String) -> EarlierHistoryLoadState {
+        earlierHistoryLoadStateBySessionID[sessionID] ?? .idle
+    }
+
+    private func setEarlierHistoryLoadState(
+        _ state: EarlierHistoryLoadState,
+        for sessionID: String
+    ) {
+        var states = earlierHistoryLoadStateBySessionID
+        states[sessionID] = state
+        earlierHistoryLoadStateBySessionID = states
+    }
+
+    static func requestEarlierHistoryPage(
+        at url: URL,
+        urlSession: URLSession = .shared,
+        timeoutInterval: TimeInterval = 15
+    ) async throws -> SessionHistoryResponse {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeoutInterval
+        let (data, response) = try await urlSession.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw BackendError.message(
+                Self.errorMessage(from: data) ?? L10n("Could not load earlier messages.")
+            )
+        }
+        let page = try await Task.detached(priority: .userInitiated) {
+            try JSONDecoder().decode(SessionHistoryResponse.self, from: data)
+        }.value
+        if page.cursorStatus == "invalid" {
+            throw BackendError.message(L10n("The history cursor is no longer valid. Please retry."))
+        }
+        return page
+    }
+
+    @discardableResult
     func loadEarlierMessages(
         for session: TaskSession,
         expectedSelectionGeneration: UInt64? = nil
-    ) async {
+    ) async -> EarlierHistoryLoadState {
         let threadId = session.external?.threadId ?? session.id
         guard Self.historyPageRequestIsCurrent(
                   sessionID: session.id,
@@ -4139,12 +4178,18 @@ final class BackendClient: ObservableObject {
               ),
               let current = selectedDetail,
               current.id == threadId,
-              let oldest = current.items.first,
-              current.hasMoreHistory == true,
-              historyLoadSessionIDs.insert(session.id).inserted else {
-            return
+              let oldest = current.items.first else {
+            return earlierHistoryLoadState(for: session.id)
         }
-        defer { historyLoadSessionIDs.remove(session.id) }
+        guard current.hasMoreHistory == true else {
+            setEarlierHistoryLoadState(.exhausted, for: session.id)
+            return .exhausted
+        }
+        guard earlierHistoryLoadSessionIDs.insert(session.id).inserted else {
+            return earlierHistoryLoadState(for: session.id)
+        }
+        setEarlierHistoryLoadState(.loading, for: session.id)
+        defer { earlierHistoryLoadSessionIDs.remove(session.id) }
 
         do {
             var components = URLComponents(
@@ -4158,13 +4203,10 @@ final class BackendClient: ObservableObject {
             guard let url = components?.url else {
                 throw BackendError.message("Could not build history request.")
             }
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                throw BackendError.message("Could not load earlier messages.")
+            let page = try await Self.requestEarlierHistoryPage(at: url)
+            if page.items.isEmpty && page.hasMoreHistory == true {
+                throw BackendError.message(L10n("The history page did not advance."))
             }
-            let page = try await Task.detached(priority: .userInitiated) {
-                try JSONDecoder().decode(SessionHistoryResponse.self, from: data)
-            }.value
 
             guard Self.historyPageRequestIsCurrent(
                       sessionID: session.id,
@@ -4175,13 +4217,21 @@ final class BackendClient: ObservableObject {
                   let current = selectedDetail,
                   current.id == threadId,
                   selectedSession?.id == session.id else {
-                return
+                setEarlierHistoryLoadState(.idle, for: session.id)
+                return .idle
             }
             guard let mergedItems = SessionHistoryPageMerger.prepend(
                 pageItems: page.items,
                 to: current.items,
                 requestedBeforeID: oldest.id
-            ) else { return }
+            ) else {
+                setEarlierHistoryLoadState(.idle, for: session.id)
+                return .idle
+            }
+            if page.hasMoreHistory == true,
+               mergedItems.count == current.items.count {
+                throw BackendError.message(L10n("The history page did not advance."))
+            }
             let merged = CodexThreadDetail(
                 id: current.id,
                 title: current.title,
@@ -4205,8 +4255,16 @@ final class BackendClient: ObservableObject {
                 actions: current.actions
             )
             publishSelectedDetailIfSafe(merged)
+            let nextState: EarlierHistoryLoadState = page.hasMoreHistory == true ? .idle : .exhausted
+            setEarlierHistoryLoadState(nextState, for: session.id)
+            return nextState
+        } catch is CancellationError {
+            setEarlierHistoryLoadState(.idle, for: session.id)
+            return .idle
         } catch {
-            // 补拉失败不打断当前视图，用户可再次上滑重试。
+            let state = EarlierHistoryLoadState.failed(error.localizedDescription)
+            setEarlierHistoryLoadState(state, for: session.id)
+            return state
         }
     }
 

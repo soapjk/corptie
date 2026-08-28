@@ -173,6 +173,12 @@
 "Removed %d Worktrees; %d could not be removed:\n%@" = "Removed %d Worktrees; %d could not be removed:\n%@";
 "%d worktrees are not merged into main" = "%d worktrees are not merged into main";
 "Loading project worktrees" = "Loading project worktrees";
+"Loading earlier messages…" = "Loading earlier messages…";
+"Earlier messages could not be loaded" = "Earlier messages could not be loaded";
+"The earliest message is displayed" = "The earliest message is displayed";
+"Could not load earlier messages." = "Could not load earlier messages.";
+"The history page did not advance." = "The history page did not advance.";
+"The history cursor is no longer valid. Please retry." = "The history cursor is no longer valid. Please retry.";
 "Could not load project worktrees" = "Could not load project worktrees";
 "Complete and remove this worktree?" = "Complete and remove this worktree?";
 "Reclaim this Worktree?" = "Reclaim this Worktree?";

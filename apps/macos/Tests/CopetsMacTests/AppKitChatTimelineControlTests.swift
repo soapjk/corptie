@@ -993,6 +993,48 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(historyRequests, 1)
     }
 
+    func testDirectScrollbarDragToTopRequestsHistory() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: false,
+            height: 180,
+            onNearTop: { historyRequests += 1 }
+        )
+        let rows = (0..<40).map { row(id: "scrollbar-history-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+
+        harness.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 120))
+        harness.scrollView.contentView.scroll(to: .zero)
+        harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        XCTAssertEqual(historyRequests, 0, "Programmatic bounds changes remain suppressed")
+
+        harness.coordinator.viewportDidScroll(userInitiated: true)
+        XCTAssertEqual(historyRequests, 1, "A scrollbar drag is explicit user intent")
+    }
+
+    func testFailedHistoryRequestCanBeRearmedWhileViewportRemainsAtTop() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: false,
+            height: 180,
+            onNearTop: { historyRequests += 1 }
+        )
+        let rows = (0..<40).map { row(id: "retry-history-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+        harness.scrollView.contentView.scroll(to: .zero)
+
+        harness.coordinator.viewportDidScroll(userInitiated: true)
+        harness.coordinator.viewportDidScroll(userInitiated: true)
+        XCTAssertEqual(historyRequests, 1, "Repeated bounds notifications are coalesced")
+
+        harness.coordinator.rearmHistoryRequest()
+        harness.coordinator.userScrollEventWillBegin()
+        harness.coordinator.userScrollEventDidEnd()
+        XCTAssertEqual(historyRequests, 2, "Retry does not require leaving the clamped top edge")
+    }
+
     func testSmallWheelMoveNearLatestCannotJumpToOldestDuringTailAppend() async {
         var historyRequests = 0
         let harness = makeHarness(
