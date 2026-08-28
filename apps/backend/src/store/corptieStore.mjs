@@ -2177,6 +2177,35 @@ export class CorptieStore {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_memory_recall_session ON memory_recall_audit(session_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS platform_admin_operations (
+        operation_id TEXT PRIMARY KEY,
+        actor_session_id TEXT NOT NULL,
+        tool_name TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target_type TEXT,
+        target_id TEXT,
+        target_version TEXT,
+        idempotency_key TEXT,
+        request_digest TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (actor_session_id, idempotency_key),
+        FOREIGN KEY (actor_session_id) REFERENCES sessions(id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS idx_platform_admin_operations_session
+      ON platform_admin_operations(actor_session_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS platform_admin_confirmations (
+        confirmation_id TEXT PRIMARY KEY,
+        actor_session_id TEXT NOT NULL,
+        operation_digest TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'confirmed', 'consumed', 'rejected')),
+        created_at TEXT NOT NULL,
+        confirmed_at TEXT,
+        consumed_at TEXT,
+        FOREIGN KEY (actor_session_id) REFERENCES sessions(id) ON DELETE RESTRICT
+      );
     `);
 
     // --- 晋升技能（13.7：Agent 能力类记忆晋升为可发现技能，对接 12 hub） ---

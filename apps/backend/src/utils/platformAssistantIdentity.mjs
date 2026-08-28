@@ -24,10 +24,33 @@ const PLATFORM_ASSISTANT_USER_EDITABLE_FIELDS = new Set(["name", "avatarPath"]);
 
 export function isPlatformAssistant(agentOrId) {
   if (typeof agentOrId === "string") return agentOrId === PLATFORM_ASSISTANT_ID;
-  return agentOrId?.agentId === PLATFORM_ASSISTANT_ID
-    || agentOrId?.agent_id === PLATFORM_ASSISTANT_ID
-    || agentOrId?.agentKind === AGENT_KIND.PLATFORM_ASSISTANT
-    || agentOrId?.agent_kind === AGENT_KIND.PLATFORM_ASSISTANT;
+  const agentId = agentOrId?.agentId ?? agentOrId?.agent_id;
+  const agentKind = agentOrId?.agentKind ?? agentOrId?.agent_kind;
+  return agentId === PLATFORM_ASSISTANT_ID && agentKind === AGENT_KIND.PLATFORM_ASSISTANT;
+}
+
+export function resolvePlatformAdminSession(store, input = {}) {
+  const actorId = text(input.actorId);
+  const sessionId = text(input.sessionId);
+  const agent = actorId ? store?.getAgent(actorId) : null;
+  const session = sessionId ? store?.getSession(sessionId) : null;
+  const sessionAgentId = session?.agentId ?? session?.agent_id ?? null;
+  if (!isPlatformAssistant(agent)
+    || !session
+    || sessionAgentId !== agent.agentId
+    || (session.sessionKind ?? session.session_kind) !== "assistantChat"
+    || session.deletedAt
+    || session.deleted_at) {
+    const error = new Error("Platform administration requires the protected Corptie Assistant Agent and its authenticated Assistant Chat Session binding.");
+    error.code = "PLATFORM_ADMIN_SESSION_REQUIRED";
+    throw error;
+  }
+  return Object.freeze({ agent, session, actorSessionId: session.id });
+}
+
+function text(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized || null;
 }
 
 export function platformAssistantProtectionError(message = "The built-in Corptie Assistant is protected.") {
