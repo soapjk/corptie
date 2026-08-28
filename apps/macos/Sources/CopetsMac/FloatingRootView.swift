@@ -3357,6 +3357,10 @@ struct DetailView: View {
     @State private var pendingProjectionSourceSignature: String?
     @State private var requestedRestorationAnchorRowID: String?
     @State private var historyAnchorRestoreTask: Task<Void, Never>?
+    @State private var earlierHistoryLoadState: EarlierHistoryLoadState
+    @State private var historyRequestEpoch = 0
+    @State private var showsHistoryExhaustedFeedback = false
+    @State private var historyExhaustedFeedbackTask: Task<Void, Never>?
     @ObservedObject private var timelineState: SessionTimelineState
     @State private var displaysLoadingDetail: Bool
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
@@ -3407,6 +3411,9 @@ struct DetailView: View {
             initialValue: initialPosition?.followsLatest == false
                 ? initialPosition?.rowID
                 : nil
+        )
+        _earlierHistoryLoadState = State(
+            initialValue: backendClient.earlierHistoryLoadState(for: sessionId)
         )
         _displaysLoadingDetail = State(
             initialValue: backendClient.selectedSession?.id == sessionId && backendClient.isLoadingDetail
@@ -3558,6 +3565,11 @@ struct DetailView: View {
             pendingProjectionSourceSignature = nil
             historyAnchorRestoreTask?.cancel()
             historyAnchorRestoreTask = nil
+            historyExhaustedFeedbackTask?.cancel()
+            historyExhaustedFeedbackTask = nil
+            earlierHistoryLoadState = backendClient.earlierHistoryLoadState(for: sessionId)
+            showsHistoryExhaustedFeedback = false
+            historyRequestEpoch &+= 1
             requestedRestorationAnchorRowID = restorationTimelinePosition?.followsLatest == false
                 ? restorationTimelinePosition?.rowID
                 : nil
@@ -3577,6 +3589,8 @@ struct DetailView: View {
             displayProjectionTask = nil
             historyAnchorRestoreTask?.cancel()
             historyAnchorRestoreTask = nil
+            historyExhaustedFeedbackTask?.cancel()
+            historyExhaustedFeedbackTask = nil
         }
         .onChange(of: appKitDetailRevision) { _, _ in
             if let detail = displayedDetail {
@@ -3595,6 +3609,20 @@ struct DetailView: View {
         .onReceive(backendClient.$isLoadingDetail) { isLoading in
             guard backendClient.selectedSession?.id == sessionId else { return }
             displaysLoadingDetail = isLoading
+        }
+        .onReceive(backendClient.$earlierHistoryLoadStateBySessionID) { states in
+            let nextState = states[sessionId] ?? .idle
+            let previousState = earlierHistoryLoadState
+            earlierHistoryLoadState = nextState
+            let finishedWithoutStructuralAdvance = previousState == .loading && nextState == .idle
+            if case .failed = nextState, nextState != previousState {
+                historyRequestEpoch &+= 1
+            } else if finishedWithoutStructuralAdvance {
+                historyRequestEpoch &+= 1
+            }
+            if nextState == .exhausted, nextState != previousState {
+                showHistoryExhaustedFeedback()
+            }
         }
         .onReceive(backendClient.supplementaryDataController.$workspaceRecoveryStatus) { status in
             guard backendClient.selectedSession?.id == sessionId else { return }
@@ -3638,7 +3666,8 @@ struct DetailView: View {
                 initialPosition: effectiveInitialTimelinePosition,
                 onPositionChange: onTimelinePositionChange,
                 scrollToTurnID: scrollTargetTurnID,
-                scrollToTurnRevision: scrollTargetTurnRevision
+                scrollToTurnRevision: scrollTargetTurnRevision,
+                historyRequestEpoch: historyRequestEpoch
             )
             .onAppear {
                 if let currentDetail = displayedDetail {
@@ -3679,6 +3708,14 @@ struct DetailView: View {
                     .help(L10n("Jump to latest message"))
                     .padding(10)
                 }
+            }
+            .overlay(alignment: .top) {
+                EarlierHistoryStatusView(
+                    state: earlierHistoryLoadState,
+                    showsExhaustedFeedback: showsHistoryExhaustedFeedback,
+                    retry: loadEarlierMessagesIfNeeded
+                )
+                .padding(.top, 6)
             }
         }
     }
@@ -4044,9 +4081,26 @@ struct DetailView: View {
         } else if detail.hasMoreHistory == true {
             if let session = backendClient.selectedSession, session.id == sessionId {
                 Task { @MainActor in
-                    await backendClient.loadEarlierMessages(for: session)
+                    let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
+                    _ = await backendClient.loadEarlierMessages(
+                        for: session,
+                        expectedSelectionGeneration: selectionGeneration
+                    )
                 }
             }
+        } else {
+            showHistoryExhaustedFeedback()
+        }
+    }
+
+    private func showHistoryExhaustedFeedback() {
+        showsHistoryExhaustedFeedback = true
+        historyExhaustedFeedbackTask?.cancel()
+        historyExhaustedFeedbackTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.8))
+            guard !Task.isCancelled else { return }
+            showsHistoryExhaustedFeedback = false
+            historyExhaustedFeedbackTask = nil
         }
     }
 
@@ -4477,6 +4531,63 @@ struct DetailView: View {
         ].joined(separator: ":")
     }
 
+}
+
+private struct EarlierHistoryStatusView: View {
+    let state: EarlierHistoryLoadState
+    let showsExhaustedFeedback: Bool
+    let retry: () -> Void
+
+    @ViewBuilder
+    var body: some View {
+        switch state {
+        case .loading:
+            statusCapsule {
+                ProgressView()
+                    .controlSize(.mini)
+                Text(L10n("Loading earlier messages…"))
+            }
+            .allowsHitTesting(false)
+        case .failed(let error):
+            Button(action: retry) {
+                statusCapsule {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(L10n("Earlier messages could not be loaded"))
+                    Text(L10n("Retry"))
+                        .foregroundStyle(.tint)
+                }
+            }
+            .buttonStyle(.plain)
+            .help(error)
+        case .exhausted where showsExhaustedFeedback:
+            statusCapsule {
+                Image(systemName: "checkmark.circle")
+                Text(L10n("The earliest message is displayed"))
+            }
+            .allowsHitTesting(false)
+        case .idle, .exhausted:
+            EmptyView()
+        }
+    }
+
+    private func statusCapsule<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 6) {
+            content()
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(CorptiePalette.secondaryText)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: Capsule())
+        .overlay {
+            Capsule()
+                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
+    }
 }
 
 private struct OrphanedWorkspaceRecoveryView: View {

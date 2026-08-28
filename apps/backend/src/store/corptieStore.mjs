@@ -6635,7 +6635,7 @@ export class CorptieStore {
         [sessionId, beforeId]
       );
       if (!boundary) {
-        return { items: [], hasMoreHistory: false, historyItemsCount: 0 };
+        return { items: [], hasMoreHistory: false, historyItemsCount: 0, cursorStatus: "invalid" };
       }
     }
     const rows = this.selectAll(
@@ -6648,7 +6648,7 @@ export class CorptieStore {
         : [sessionId, pageLimit]
     ).reverse();
     if (rows.length === 0) {
-      return { items: [], hasMoreHistory: false, historyItemsCount: 0 };
+      return { items: [], hasMoreHistory: false, historyItemsCount: 0, cursorStatus: "exhausted" };
     }
     const first = rows[0];
     const count = this.selectOne(
@@ -6675,7 +6675,8 @@ export class CorptieStore {
         createdAt: row.created_at
       }, provider)),
       hasMoreHistory: historyItemsCount > 0,
-      historyItemsCount
+      historyItemsCount,
+      cursorStatus: "found"
     };
   }
 
