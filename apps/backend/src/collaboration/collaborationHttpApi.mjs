@@ -289,6 +289,8 @@ export function handleCollaborationHttpRequest({
         const parentTask = (runningWork?.source?.taskId
           ? core.getTask(runningWork.source.taskId)
           : null) ?? core.getTaskForWorkItem(sourceCapabilities.workItemId);
+        const trustedSessionRoute = Boolean(recipientSession && onConfirmationResolved)
+          && core.hasConfirmedSessionRoute(sourceCapabilities.sourceSessionId, recipientSession);
         const confirmation = core.proposeTask({
           ...input,
           parentTaskId: parentTask?.taskId ?? undefined,
@@ -304,6 +306,30 @@ export function handleCollaborationHttpRequest({
           sourceSessionId: sessionMetadata.sessionId,
           sourceTurnId: runningWork?.targetTurnId ?? null
         });
+        if (trustedSessionRoute) {
+          try {
+            const resolved = await onConfirmationResolved(confirmation.confirmationId, true, {
+              type: "trusted_session_route"
+            });
+            if (resolved?.status !== "confirmed" || !resolved.taskId) {
+              throw apiError(
+                "TRUSTED_SESSION_ROUTE_NOT_CONFIRMED",
+                "The previously authorized Session route did not create a confirmed collaboration task.",
+                500
+              );
+            }
+            return sendJson(response, 201, {
+              confirmation: resolved,
+              routeAuthorization: "trusted_session_pair"
+            });
+          } catch (error) {
+            const current = core.getTaskConfirmation(confirmation.confirmationId);
+            if (current?.status === "pending" && !current.taskId) {
+              core.discardPendingTaskConfirmation(confirmation.confirmationId);
+            }
+            throw error;
+          }
+        }
         try {
           await onConfirmationStaged?.(confirmation);
         } catch (error) {
@@ -314,8 +340,8 @@ export function handleCollaborationHttpRequest({
       }
 
       // Kept for trusted internal callers and migration compatibility. The MCP
-      // request tool uses task-confirmations so user-originated sends cannot
-      // bypass the deterministic confirmation step.
+      // request tool uses task-confirmations so user-originated sends always
+      // pass route validation and either first-use confirmation or exact-pair authorization.
       if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks") {
         const input = await readJson(request);
         const task = core.createTask({ ...input, initiatorAgentId: actorAgentId });

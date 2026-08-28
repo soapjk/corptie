@@ -466,6 +466,37 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
   }
 });
 
+test("MCP request reports a previously confirmed exact Session route as sent", async () => {
+  const { client } = await connectMcp({
+    post: async () => ({
+      confirmation: {
+        confirmationId: "confirmation-trusted",
+        status: "confirmed",
+        taskId: "task-trusted"
+      },
+      routeAuthorization: "trusted_session_pair"
+    })
+  });
+  try {
+    const result = await client.callTool({
+      name: "corptie.collaboration.request",
+      arguments: {
+        recipient_session_id: "session:target",
+        type: "question",
+        title: "Follow up",
+        summary: "Use the previously confirmed exact Session route."
+      }
+    });
+    assert.equal(result.isError, undefined);
+    assert.equal(result.structuredContent.confirmation.status, "confirmed");
+    assert.equal(result.structuredContent.routeAuthorization, "trusted_session_pair");
+    assert.equal(result.structuredContent.coordination.delivery, "push");
+    assert.equal(result.structuredContent.coordination.nextAction, "end_current_turn");
+  } finally {
+    await client.close();
+  }
+});
+
 test("MCP tool failures are returned as tool errors instead of crashing the server", async () => {
   const { client } = await connectMcp({
     get: async () => {
