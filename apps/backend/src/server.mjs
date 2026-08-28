@@ -228,6 +228,8 @@ import {
 import { ReplayEventLog } from "./utils/replayEventLog.mjs";
 import { deliveredStateRevision, StateSyncService } from "./application/stateSyncService.mjs";
 import { SessionTimelineChangePublisher } from "./application/sessionTimelineChangePublisher.mjs";
+import { TurnObservabilityService } from "./observability/turnObservability.mjs";
+import { handleTurnObservabilityHttpRequest } from "./observability/turnObservabilityHttpApi.mjs";
 import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
 import {
   DEFAULT_SESSION_HISTORY_WINDOW,
@@ -276,12 +278,18 @@ const reportedUnclassifiedProviderSessionIds = new Set();
 const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
+const turnObservability = new TurnObservabilityService({
+  store,
+  environment: environmentName,
+  tenantId: process.env.CORPTIE_TENANT_ID ?? "local"
+});
 const providerEventProjector = new ProviderEventProjector({ store });
 const providerEventIngestion = new ProviderEventIngestionService({
   store,
   resolveBinding: resolveProviderEventBinding,
   project: (context) => providerEventProjector.project(context),
-  onCommitted: publishProviderEventOutbox
+  onCommitted: publishProviderEventOutbox,
+  observe: (context) => turnObservability.ingestProviderEvent(context)
 });
 const workspaceRoutePreparationCache = new WorkspaceRoutePreparationCache({ ttlMs: 15_000 });
 let codexResetForecastMonitor = null;
@@ -7072,6 +7080,10 @@ function route(request, response) {
     return;
   }
 
+  if (handleTurnObservabilityHttpRequest({ request, response, url, service: turnObservability })) {
+    return;
+  }
+
   if (handleEntityHttpRequest({
     request,
     response,
@@ -8749,6 +8761,8 @@ server.on("upgrade", (request, socket, head) => {
 
 await store.initialize();
 await dataRootMigrationCoordinator.initialize();
+const telemetryConfiguration = turnObservability.initialize();
+console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
 const recoveredArtifactContentOperations = await artifactService.initialize();
 if (recoveredArtifactContentOperations.length > 0) {
   console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
