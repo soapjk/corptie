@@ -1544,6 +1544,15 @@ struct SettingsView: View {
                             }
                             .padding(.vertical, 2)
                         }
+                        if let details = backendClient.dataRootMigration?.error?.details,
+                           let artifactId = details.artifactId {
+                            Text(L10nFormat(
+                                "Affected Artifact: %@ v%lld",
+                                artifactId,
+                                details.version ?? 0
+                            ))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        }
                         Text(L10n("The Data Root setting was restored to the original directory. No new root was activated."))
                             .font(.system(size: 11))
                             .foregroundStyle(CorptiePalette.secondaryText)
