@@ -64,6 +64,23 @@ test("every background Session status transition is revisioned without a detail 
   }
 });
 
+test("a Session tombstone is projected as a client deletion", async () => {
+  const f = await fixture();
+  try {
+    const clientRevision = f.sync.snapshot().revision;
+
+    assert.equal(f.store.deleteSession("session:0"), true);
+
+    const changes = f.sync.changesAfter(clientRevision);
+    assert.equal(changes.snapshotRequired, false);
+    assert.deepEqual(changes.upserts.sessions, []);
+    assert.deepEqual(changes.deletes.sessions, ["session:0"]);
+    assert.deepEqual(f.sync.snapshot().state.sessions, []);
+  } finally {
+    await cleanup(f);
+  }
+});
+
 test("multiple unopened Sessions publish independent timeline cursors without dirtying control-plane state", async () => {
   const f = await fixture(24);
   try {
