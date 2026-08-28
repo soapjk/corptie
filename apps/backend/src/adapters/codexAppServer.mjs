@@ -108,6 +108,17 @@ export class CodexAppServerClient {
     return this.request("thread/name/set", { threadId, name });
   }
 
+  // Product history reads remain Store-only. This transport read is exposed
+  // solely to the explicit, audited legacy-history repair workflow so old
+  // rollouts can be materialized once without turning GET into a hidden write.
+  async readThreadForLegacyHistoryRepair(threadId) {
+    await this.initialize();
+    return this.request("thread/read", {
+      threadId,
+      includeTurns: true
+    });
+  }
+
   async deleteThread(threadId) {
     await this.initialize();
     try {
@@ -891,6 +902,29 @@ export function mapCodexThreadToSession(thread) {
       ...(permissions ?? {})
     }
   };
+}
+
+// Migration-only projection of a Provider-native thread. Live notifications
+// continue to flow through ProviderEventIngestionService; this function never
+// participates in ordinary Session reads or message dispatch.
+export function mapCodexThreadToLegacyTimelineItems(thread) {
+  if (!thread || typeof thread !== "object" || Array.isArray(thread)) {
+    throw new TypeError("Codex legacy history repair requires a thread object.");
+  }
+  const items = [];
+  for (const turn of thread.turns ?? []) {
+    if (!turn || typeof turn !== "object" || Array.isArray(turn) || !turn.id) {
+      throw new TypeError("Codex legacy history repair encountered an invalid turn.");
+    }
+    for (const item of turn.items ?? []) {
+      if (!item || typeof item !== "object" || Array.isArray(item) || !item.id) {
+        throw new TypeError("Codex legacy history repair encountered an invalid item.");
+      }
+      const mapped = mapThreadItem(turn, item);
+      if (mapped.type !== "taskComplete") items.push(mapped);
+    }
+  }
+  return items;
 }
 
 function codexAppServerCapabilities() {

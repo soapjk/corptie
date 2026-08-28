@@ -9,7 +9,10 @@ import os from "node:os";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
-import { mapCodexThreadToSession } from "./adapters/codexAppServer.mjs";
+import {
+  mapCodexThreadToLegacyTimelineItems,
+  mapCodexThreadToSession
+} from "./adapters/codexAppServer.mjs";
 import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
@@ -127,6 +130,7 @@ import { mapEvent as mapDshEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
+import { LegacySessionHistoryRepairService } from "./application/legacySessionHistoryRepairService.mjs";
 import {
   mapClaudeProviderEvent,
   mapClaudeTurnSettled,
@@ -798,6 +802,16 @@ const sessionBindingRepository = new SessionBindingRepository({
   store,
   normalizeLegacySessionId: normalizeSessionId,
   resolveProviderId: (providerId, options = {}) => agentProviderRegistry.resolveId(providerId, options)
+});
+const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService({
+  store,
+  resolveReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
+  importers: new Map([
+    ["codex-app-server", async (reference) => {
+      const result = await codexRuntime.readThreadForLegacyHistoryRepair(reference.providerSessionId);
+      return { items: mapCodexThreadToLegacyTimelineItems(result?.thread) };
+    }]
+  ])
 });
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
@@ -8781,6 +8795,28 @@ server.listen(port, "127.0.0.1", () => {
       })
       .catch((error) => {
         console.warn(`[skills] legacy Skill repair failed error=${error?.message ?? error}`);
+      });
+  });
+  // The 2026-08-26 Store-authority cutover deliberately removed Provider
+  // history reads from GET. Repair pre-cutover Sessions once, after readiness,
+  // and retain an audit row for every import, empty history, limitation or
+  // failure. Timeline revisions wake connected clients after each commit.
+  setImmediate(() => {
+    legacySessionHistoryRepairService.run()
+      .then((result) => {
+        console.log(`[legacy-history-repair] ${JSON.stringify({
+          scanned: result.scanned,
+          imported: result.imported,
+          importedItems: result.importedItems,
+          noHistory: result.noHistory,
+          skipped: result.skipped,
+          unsupported: result.unsupported,
+          unavailable: result.unavailable,
+          failed: result.failed
+        })}`);
+      })
+      .catch((error) => {
+        console.warn(`[legacy-history-repair] run failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
       });
   });
 });
