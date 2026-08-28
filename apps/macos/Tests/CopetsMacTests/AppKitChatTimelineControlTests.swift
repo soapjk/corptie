@@ -753,6 +753,51 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(harness.followState.value)
     }
 
+    func testFirstOpenOfSessionWithoutSavedPositionDefaultsToLatestMessage() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<80).map { row(id: "unseen-row-\($0)", text: "Row \($0)") }
+
+        harness.coordinator.switchSessionIfNeeded(
+            to: "never-opened-session",
+            initialPosition: nil
+        )
+        harness.coordinator.apply(rows: rows)
+        harness.window.layoutIfNeeded()
+        harness.scrollView.layoutSubtreeIfNeeded()
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+        XCTAssertGreaterThan(harness.scrollView.contentView.bounds.minY, 8)
+    }
+
+    func testLatestSavedPositionCannotRestoreItsStaleRowAnchor() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let rows = (0..<80).map { row(id: "latest-row-\($0)", text: "Row \($0)") }
+        let latestPosition = AppKitChatTimelinePosition(
+            rowID: "latest-row-5",
+            offset: 3,
+            absoluteScrollY: 0,
+            followsLatest: true
+        )
+
+        harness.coordinator.switchSessionIfNeeded(
+            to: "latest-session",
+            initialPosition: latestPosition
+        )
+        harness.coordinator.apply(rows: rows)
+        // Mirrors the position feedback that updateNSView applies after the
+        // Session switch and must not reinterpret the stale row as history.
+        harness.coordinator.restoreIfNeeded(position: latestPosition)
+        harness.window.layoutIfNeeded()
+        harness.scrollView.layoutSubtreeIfNeeded()
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+        XCTAssertGreaterThan(harness.scrollView.contentView.bounds.minY, 8)
+    }
+
     func testImmediatePositionPublishFlushesTheLastViewportBeforeSessionUnmount() async throws {
         var savedPosition: AppKitChatTimelinePosition?
         let harness = makeHarness(
@@ -1327,6 +1372,44 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let anchor = visibleAnchor(in: harness.tableView, rows: newRows)
         XCTAssertEqual(anchor.id, "new-8")
         XCTAssertEqual(anchor.offset, 5, accuracy: 4)
+    }
+
+    func testFirstWheelAfterReturningToLatestCannotCancelPendingBottomRestore() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let firstRows = (0..<40).map { row(id: "first-\($0)", text: "First \($0)") }
+        let secondRows = (0..<40).map { row(id: "second-\($0)", text: "Second \($0)") }
+        harness.coordinator.apply(rows: firstRows)
+        harness.coordinator.scrollToBottom()
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(harness))
+
+        harness.coordinator.switchSessionIfNeeded(to: "second", initialPosition: nil)
+        harness.coordinator.apply(rows: secondRows)
+        await settleMainQueue()
+
+        // Returning while the host has no usable height models the frame
+        // between Session rebinding and its first SwiftUI layout pass.
+        harness.scrollView.frame.size.height = 0
+        harness.coordinator.switchSessionIfNeeded(
+            to: "first",
+            initialPosition: .init(
+                rowID: "first-39",
+                offset: 0,
+                absoluteScrollY: 0,
+                followsLatest: true
+            )
+        )
+        harness.coordinator.apply(rows: firstRows)
+        harness.coordinator.userScrollEventWillBegin()
+        harness.coordinator.userScrollEventDidEnd()
+
+        harness.scrollView.frame.size.height = 180
+        harness.window.layoutIfNeeded()
+        harness.scrollView.layoutSubtreeIfNeeded()
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertGreaterThan(harness.scrollView.contentView.bounds.minY, 8)
     }
 
     func testSemanticPositionRestorationSucceedsAcrossOneHundredSwitches() async {
