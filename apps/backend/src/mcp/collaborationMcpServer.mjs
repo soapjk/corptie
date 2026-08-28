@@ -372,7 +372,8 @@ export function createCollaborationMcpServer(options) {
       content: z.string().min(1),
       kind: z.enum(["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"]),
       scope: z.enum(["agent", "objective", "work_item"]).optional(),
-      tags: z.array(z.string().min(1)).optional()
+      tags: z.array(z.string().min(1)).optional(),
+      idempotency_key: z.string().min(1).max(200).optional()
     },
     handler: (input) => client.post("/internal/collaboration/memory", input)
   });

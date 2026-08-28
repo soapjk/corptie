@@ -2100,6 +2100,23 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(owner_type, owner_id);
       CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
 
+      CREATE TABLE IF NOT EXISTS memory_remember_operations (
+        session_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        objective_id TEXT,
+        memory_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, idempotency_key),
+        UNIQUE (memory_id),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_memory_remember_operations_objective
+      ON memory_remember_operations(objective_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS memory_audit (
         id TEXT PRIMARY KEY,
         memory_id TEXT,
@@ -9595,6 +9612,26 @@ export class CorptieStore {
        WHERE owner_type = ? AND owner_id = ? AND source_session_id = ? AND source_event_sequence = ?`,
       [ownerType, ownerId, sourceSessionId, sourceEventSequence]
     );
+  }
+
+  getMemoryRememberOperation(sessionId, idempotencyKey) {
+    return this.selectOne(
+      `SELECT * FROM memory_remember_operations WHERE session_id = ? AND idempotency_key = ?`,
+      [sessionId, idempotencyKey]
+    );
+  }
+
+  createMemoryRememberOperation(input = {}) {
+    const createdAt = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO memory_remember_operations (
+        session_id, idempotency_key, request_fingerprint, objective_id, memory_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      [input.sessionId, input.idempotencyKey, input.requestFingerprint,
+        input.objectiveId ?? null, input.memoryId, createdAt]
+    );
+    this.scheduleSave();
+    return this.getMemoryRememberOperation(input.sessionId, input.idempotencyKey);
   }
 
   validateMemoryAssociation(input = {}) {
