@@ -95,6 +95,8 @@ test("platform operations are denied to user Agents and use product services for
   const { directory, store } = await fixture();
   try {
     const userAgent = store.createAgent({ name: "普通 Agent" });
+    store.upsertSession({ id: "session:assistant", title: "Corptie", provider: "codex-app-server", status: "running", sessionKind: "assistantChat", agentId: "assistant" });
+    store.upsertSession({ id: "session:user", title: "User", provider: "codex-app-server", status: "running", sessionKind: "assistantChat", agentId: userAgent.agentId });
     const entityEvents = [];
     const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
     const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
@@ -114,35 +116,35 @@ test("platform operations are denied to user Agents and use product services for
 
     await assert.rejects(
       service.execute({
-        actorId: userAgent.agentId,
+        actorId: userAgent.agentId, sessionId: "session:user",
         tool: "corptie_platform_agents_manage",
         arguments: { action: "list" }
       }),
-      { code: "PLATFORM_ADMIN_REQUIRED" }
+      { code: "PLATFORM_ADMIN_SESSION_REQUIRED" }
     );
 
     const created = await service.execute({
-      actorId: "assistant",
+      actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_agents_manage",
-      arguments: { action: "create", name: "研究员", provider: "codex-app-server" }
+      arguments: { action: "create", name: "研究员" }
     });
     assert.equal(created.result.name, "研究员");
     assert.equal(created.result.agentKind, "user");
 
     const objective = await service.execute({
-      actorId: "assistant",
+      actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_objectives_manage",
       arguments: { action: "create", name: "平台事件目标" }
     });
     const workItem = await service.execute({
-      actorId: "assistant",
+      actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_work_items_manage",
       arguments: { action: "create", objective_id: objective.result.id, title: "平台事件任务" }
     });
 
     await assert.rejects(
       service.execute({
-        actorId: "assistant",
+        actorId: "assistant", sessionId: "session:assistant",
         tool: "corptie_platform_objectives_manage",
         arguments: { action: "update", objective_id: objective.result.id, patch: { workspacePath: "/tmp" } }
       }),
@@ -150,7 +152,7 @@ test("platform operations are denied to user Agents and use product services for
     );
     await assert.rejects(
       service.execute({
-        actorId: "assistant",
+        actorId: "assistant", sessionId: "session:assistant",
         tool: "corptie_platform_work_items_manage",
         arguments: { action: "update", work_item_id: workItem.result.id, patch: { assigneeAgentId: "agent:missing" } }
       }),
@@ -158,7 +160,7 @@ test("platform operations are denied to user Agents and use product services for
     );
     await assert.rejects(
       service.execute({
-        actorId: "assistant",
+        actorId: "assistant", sessionId: "session:assistant",
         tool: "corptie_platform_work_items_manage",
         arguments: { action: "create", objective_id: objective.result.id, title: "Bad", patch: { acceptanceCriteria: [] } }
       }),
@@ -177,7 +179,7 @@ test("platform operations are denied to user Agents and use product services for
       status: "complete"
     });
     const storedSession = await service.execute({
-      actorId: "assistant",
+      actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_sessions_manage",
       arguments: { action: "get", session_id: "session:stored" }
     });
@@ -186,7 +188,7 @@ test("platform operations are denied to user Agents and use product services for
 
     await assert.rejects(
       service.execute({
-        actorId: "assistant",
+        actorId: "assistant", sessionId: "session:assistant",
         tool: "corptie_platform_agents_manage",
         arguments: { action: "delete", agent_id: "assistant" }
       }),

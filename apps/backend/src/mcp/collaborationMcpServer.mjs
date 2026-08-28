@@ -134,6 +134,9 @@ export function createCollaborationMcpServer(options) {
   if (authenticatedSessionId && ["objectiveChat", "worker"].includes(sessionKind)) {
     registerArtifactTools(server, client, sessionKind);
   }
+  if (authenticatedSessionId && agentId === "assistant" && sessionKind === "assistantChat") {
+    registerPlatformTools(server, client);
+  }
 
   if (authenticatedSessionId) register(server, "corptie_automations_create", {
     description: "Create a provider-neutral Corptie Automation. A concise name and exactly one of expires_at or expires_after_seconds are required. The target defaults to this authenticated logical Session; pass logical_session_id only to target another authorized Session. Supports at, after, interval, processExit, and structured condition triggers. Actions are local-only and cannot authorize remote writes or destructive operations.",
@@ -531,6 +534,48 @@ function registerObjectiveChatTools(server, client, objectiveId, sessionId) {
     description: "List contributor Agents eligible for work in this Objective.",
     inputSchema: {}, readOnly: true,
     handler: () => call("corptie_objective_agents_list", {})
+  });
+}
+
+function registerPlatformTools(server, client) {
+  const call = (tool, arguments_) => client.post("/internal/session/tool", { tool, arguments: arguments_ });
+  register(server, "corptie_platform_capabilities", {
+    description: "List provider-neutral platform management operations and explicit domain coverage.",
+    inputSchema: {}, readOnly: true,
+    handler: () => call("corptie_platform_capabilities", {})
+  });
+  register(server, "corptie_platform_artifacts_manage", {
+    description: "Manage the complete Artifact lifecycle in an explicitly selected Objective. Mutations are bound to this authenticated Assistant Chat Session.",
+    inputSchema: {
+      action: z.enum(["list", "get", "search", "create", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "verify_integrity", "export", "backup", "restore"]),
+      objective_id: z.string().min(1), artifact_id: z.string().startsWith("artifact:").optional(),
+      reference_id: z.string().min(1).optional(), title: z.string().min(1).optional(), summary: z.string().optional(),
+      content: z.string().optional(), query: z.string().min(1).optional(), limit: z.number().int().min(1).max(65_536).optional(),
+      offset: z.number().int().min(0).optional(), version: z.number().int().min(1).optional(),
+      visibility: z.enum(["objective_private", "work_item_private", "session_private", "repository_tracked"]).optional(),
+      bound_work_item_id: z.string().min(1).optional(), bound_session_id: z.string().min(1).optional(),
+      repository_locator: z.string().min(1).optional(), mime_type: z.string().min(1).optional(),
+      approval_status: z.enum(["draft", "approved"]).optional(), work_item_id: z.string().min(1).optional(),
+      session_id: z.string().min(1).optional(), relation: z.enum(["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"]).optional(),
+      required: z.boolean().optional(), version_policy: z.enum(["fixed", "latest_approved"]).optional(),
+      reason: z.string().min(1).optional(), source_path: z.string().min(1).optional(), destination_path: z.string().min(1).optional(),
+      confirmation_id: z.string().min(1).optional(), confirmed_repository_write: z.boolean().optional(),
+      confirmed_overwrite: z.boolean().optional(), include_revoked: z.boolean().optional(), idempotency_key: z.string().min(1).max(200).optional()
+    },
+    handler: (input) => call("corptie_platform_artifacts_manage", input)
+  });
+  register(server, "corptie_platform_collaboration_manage", {
+    description: "Discover exact Session actors, create target work, start Worker Sessions, and stage formal Session-to-Session collaboration for user confirmation.",
+    inputSchema: {
+      action: z.enum(["discover_sessions", "get_session", "create_work_item", "start_worker", "request"]),
+      session_id: z.string().min(1).optional(), objective_id: z.string().min(1).optional(), agent_id: z.string().min(1).optional(),
+      work_item_id: z.string().min(1).optional(), title: z.string().min(1).optional(), description: z.string().optional(),
+      acceptance_criteria: z.array(z.string().min(1)).optional(), priority: z.enum(["low", "medium", "high", "urgent"]).optional(),
+      provider_id: z.string().min(1).optional(), summary: z.string().min(1).optional(),
+      type: z.enum(["question", "change_request"]).optional(), max_iterations: z.number().int().min(1).max(3).optional(),
+      idempotency_key: z.string().min(1).max(200).optional()
+    },
+    handler: (input) => call("corptie_platform_collaboration_manage", input)
   });
 }
 

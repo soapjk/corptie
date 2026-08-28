@@ -14,6 +14,7 @@ import {
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
+import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
 
 function provider(id, capabilities, operations = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
@@ -343,6 +344,22 @@ test("Codex, Claude, and OpenClacky Provider sessions receive the same provider-
     attachments.get("claude-contract").tools.map((tool) => tool.inputSchema),
     attachments.get("codex-contract").tools.map((tool) => tool.inputSchema)
   );
+});
+
+test("Codex, Claude, and OpenClacky Tool Host attachments receive one platform-admin contract", async () => {
+  const attachments = new Map();
+  const providers = ["codex-platform", "claude-platform", "openclacky-platform"].map((id) => provider(id, [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+    attachTools(attachment) { attachments.set(id, attachment); return { attached: true }; }
+  }));
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry(providers),
+    catalog: new HostToolCatalog([{ id: "platform", tools: platformDynamicTools, authorize: ({ actorId }) => actorId === "assistant", execute: () => ({}) }])
+  });
+  for (const id of ["codex-platform", "claude-platform", "openclacky-platform"]) {
+    await service.prepareSession(id, { actorId: "assistant", sessionId: "provider:assistant", sessionKind: "assistantChat" });
+  }
+  const expected = platformDynamicTools.map((tool) => tool.name);
+  for (const id of ["codex-platform", "claude-platform", "openclacky-platform"]) assert.deepEqual(attachments.get(id).tools.map((tool) => tool.name), expected);
 });
 
 test("Session creation passes a prepared Tool Host attachment without knowing Provider mechanics", async () => {
