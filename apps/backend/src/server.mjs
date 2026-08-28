@@ -472,8 +472,18 @@ const hostToolCatalog = new HostToolCatalog([
   {
     id: "scheduled-tasks",
     tools: scheduledSessionTaskDynamicTools,
-    authorize: ({ actorId, metadata }) => Boolean(actorId && metadata?.sessionId),
-    execute: (input) => callScheduledSessionTaskDynamicTool(scheduledSessionTaskService, input)
+    // Codex cannot add dynamic tools through thread/resume. Advertise the
+    // contracts during bootstrap, then fail closed until the authoritative
+    // Session binding has refreshed this thread's Tool Host metadata.
+    authorize: ({ actorId }) => Boolean(actorId),
+    execute: (input) => {
+      if (!input.metadata?.sessionId || !input.metadata?.logicalSessionId) {
+        const error = new Error("Automation tools require an authenticated logical Session binding.");
+        error.code = "SESSION_AUTHENTICATION_REQUIRED";
+        throw error;
+      }
+      return callScheduledSessionTaskDynamicTool(scheduledSessionTaskService, input);
+    }
   },
   {
     id: "work-item-acceptance",
@@ -2716,35 +2726,39 @@ async function collaborationAgentContextInstructions(agentId, metadata = null) {
 }
 
 function collaborationProviderRuntimeOptions(agentId, metadata = null) {
-  const mcp = collaborationMcpProcessOptions(agentId, metadata);
+  const authenticatedMcpServers = metadata?.sessionId
+    ? {
+        [collaborationMcpServerName(agentId)]: {
+          ...collaborationMcpProcessOptions(agentId, metadata),
+          startup_timeout_sec: 5,
+          required: false
+        }
+      }
+    : {};
   return {
     config: {
       features: {
         multi_agent: false
       },
-      mcp_servers: {
-        [collaborationMcpServerName(agentId)]: {
-          ...mcp,
-          startup_timeout_sec: 5,
-          required: false
-        }
-      }
+      mcp_servers: authenticatedMcpServers
     },
     developerInstructions: collaborationRuntimeInstructions(agentId)
   };
 }
 
 function claudeCollaborationRuntimeOptions(agentId, metadata = null) {
-  const mcp = collaborationMcpProcessOptions(agentId, metadata);
-  return {
-    mcpServers: {
-      [collaborationMcpServerName(agentId)]: {
-        type: "stdio",
-        ...mcp,
-        timeout: 5_000,
-        alwaysLoad: true
+  const authenticatedMcpServers = metadata?.sessionId
+    ? {
+        [collaborationMcpServerName(agentId)]: {
+          type: "stdio",
+          ...collaborationMcpProcessOptions(agentId, metadata),
+          timeout: 5_000,
+          alwaysLoad: true
+        }
       }
-    },
+    : {};
+  return {
+    mcpServers: authenticatedMcpServers,
     plugins: [{
       type: "local",
       path: corptieClaudeRuntimePaths.pluginPath,
@@ -4118,10 +4132,16 @@ async function resumeCodexProviderSession(reference, context = {}) {
   const previous = reference.metadata?.session
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
-  await codexRuntime.resumeThread(
-    reference.providerSessionId,
-    context.toolHost?.providerAttachment ?? await collaborationThreadOptionsForSession(reference.sessionId)
-  );
+  const runtimeOptions = context.toolHost?.providerAttachment
+    ?? await collaborationThreadOptionsForSession(reference.sessionId);
+  if (context.purpose === "session-create-finalization") {
+    // A newly started empty Codex thread has no rollout and cannot be resumed.
+    // Its dynamic contracts were installed during thread/start; only their
+    // trusted Session scope must be rebound after Corptie persists the route.
+    codexRuntime.bindThreadToolContext(reference.providerSessionId, runtimeOptions);
+  } else {
+    await codexRuntime.resumeThread(reference.providerSessionId, runtimeOptions);
+  }
   // Resume is a transport command. It must not project a Provider snapshot
   // back into Corptie's product Session or repair list state as a side effect.
   return previous;

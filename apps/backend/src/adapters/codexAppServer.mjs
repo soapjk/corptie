@@ -177,6 +177,15 @@ export class CodexAppServerClient {
     return result;
   }
 
+  bindThreadToolContext(threadId, options = {}) {
+    if (options.dynamicToolAgentId) {
+      this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
+      this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
+    }
+    this.threadResumeFingerprints.set(threadId, threadResumeFingerprint(options));
+    return { alreadyLoaded: true, toolContextBound: true, thread: { id: threadId } };
+  }
+
   async ensureThreadResumed(threadId, options = {}) {
     await this.initialize();
     const fingerprint = threadResumeFingerprint(options);

@@ -221,6 +221,127 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   ]);
 });
 
+test("new Session finalizes Tool Host with the authoritative binding before returning", async () => {
+  const calls = [];
+  const toolHostContexts = [];
+  const provider = new CallbackAgentProvider({
+    id: "tool-host-provider",
+    displayName: "Tool Host Provider",
+    transport: "fake",
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+    ]
+  }, {
+    createSession: async (input) => {
+      calls.push(["create", input.toolHost.providerAttachment.phase]);
+      return { id: "session:new" };
+    },
+    resumeSession: async (reference, context) => {
+      calls.push(["finalize", reference.sessionId, context.toolHost.providerAttachment.phase]);
+      return { id: reference.sessionId };
+    },
+    attachTools: async () => ({})
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    toolHostService: {
+      async prepareSession(_providerId, context) {
+        toolHostContexts.push(context);
+        return {
+          actorId: context.actorId,
+          providerAttachment: {
+            phase: context.sessionId ? "authenticated" : "bootstrap"
+          }
+        };
+      }
+    },
+    resolveSessionReference: async () => null,
+    bindCreatedSession: async ({ session }) => {
+      calls.push(["bind", session.id]);
+      return {
+        sessionId: session.id,
+        logicalSessionId: "logical:new",
+        providerId: "tool-host-provider",
+        providerSessionId: "native:new"
+      };
+    }
+  });
+
+  const created = await service.createSession(
+    "tool-host-provider",
+    { sessionKind: "worker" },
+    {
+      actorId: "agent:one",
+      objectiveId: "objective:one",
+      workItemId: "work_item:one",
+      sessionKind: "worker"
+    }
+  );
+
+  assert.equal(created.logicalSessionId, "logical:new");
+  assert.deepEqual(calls, [
+    ["create", "bootstrap"],
+    ["bind", "session:new"],
+    ["finalize", "session:new", "authenticated"]
+  ]);
+  assert.equal(toolHostContexts[0].purpose, "session-bootstrap");
+  assert.equal(toolHostContexts[0].sessionId, undefined);
+  assert.deepEqual(toolHostContexts[1], {
+    actorId: "agent:one",
+    objectiveId: "objective:one",
+    workItemId: "work_item:one",
+    sessionKind: "worker",
+    purpose: "session-create-finalization",
+    sessionId: "session:new",
+    logicalSessionId: "logical:new"
+  });
+});
+
+test("new Session fails closed when authenticated Tool Host finalization fails", async () => {
+  let preparations = 0;
+  const provider = new CallbackAgentProvider({
+    id: "failing-tool-host-provider",
+    displayName: "Failing Tool Host Provider",
+    transport: "fake",
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+    ]
+  }, {
+    createSession: async () => ({ id: "session:degraded" }),
+    resumeSession: async () => ({ id: "must-not-resume" }),
+    attachTools: async () => ({})
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    toolHostService: {
+      async prepareSession(_providerId, context) {
+        preparations += 1;
+        if (context.sessionId) throw Object.assign(new Error("MCP unavailable"), { code: "MCP_LOADING_FAILED" });
+        return { actorId: context.actorId, providerAttachment: {} };
+      }
+    },
+    resolveSessionReference: async () => null,
+    bindCreatedSession: async ({ session }) => ({
+      sessionId: session.id,
+      logicalSessionId: "logical:degraded",
+      providerId: "failing-tool-host-provider",
+      providerSessionId: "native:degraded"
+    })
+  });
+
+  await assert.rejects(
+    service.createSession("failing-tool-host-provider", {}, { actorId: "agent:one", sessionKind: "worker" }),
+    (error) => error.code === "SESSION_TOOL_MATERIALIZATION_FAILED"
+      && error.stage === "tool_host_finalization"
+      && error.cause?.code === "MCP_LOADING_FAILED"
+  );
+  assert.equal(preparations, 2);
+});
+
 test("unusable replacement cleanup removes the local Session even when the Provider thread is already missing", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({

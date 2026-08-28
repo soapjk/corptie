@@ -1,5 +1,4 @@
-export const scheduledSessionTaskDynamicTools = Object.freeze([
-  Object.freeze({
+const scheduledSessionTaskManageTool = Object.freeze({
     type: "function",
     name: "corptie_scheduled_tasks_manage",
     description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. Create requires a concise name plus exactly one of expires_at or expires_after_seconds. Supports at, after, interval, processExit, and structured condition triggers plus local Session message, activation, and notification actions. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
@@ -88,11 +87,103 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
         }
       }]
     }
-  })
+  });
+
+const manageProperties = scheduledSessionTaskManageTool.inputSchema.properties;
+const automationIdProperty = { type: "string", minLength: 1 };
+const automationToolActions = Object.freeze({
+  corptie_automations_create: "create",
+  corptie_automations_list: "list",
+  corptie_automations_get: "get",
+  corptie_automations_update: "update",
+  corptie_automations_pause: "pause",
+  corptie_automations_resume: "resume",
+  corptie_automations_cancel: "cancel",
+  corptie_automations_run_now: "run"
+});
+const automationActionTools = [
+  ["corptie_automations_get", "get", "Get one authorized Automation with Run stages, action results, routing data, and audit history."],
+  ["corptie_automations_pause", "pause", "Pause an authorized Automation."],
+  ["corptie_automations_resume", "resume", "Resume an authorized Automation that is in an error state."],
+  ["corptie_automations_cancel", "cancel", "Cancel an authorized Automation while preserving its audit history."],
+  ["corptie_automations_run_now", "run", "Run an authorized Automation immediately."]
+].map(([name, action, description]) => Object.freeze({
+  type: "function",
+  name,
+  description,
+  deferLoading: false,
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: { automation_id: automationIdProperty },
+    required: ["automation_id"]
+  }
+}));
+
+export const scheduledSessionTaskDynamicTools = Object.freeze([
+  scheduledSessionTaskManageTool,
+  Object.freeze({
+    type: "function",
+    name: "corptie_automations_create",
+    description: "Create a provider-neutral Corptie Automation for this authenticated logical Session by default. Requires a concise name and exactly one expiration field.",
+    deferLoading: false,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: Object.fromEntries(Object.entries(manageProperties).filter(([name]) => ![
+        "action", "task_id", "status"
+      ].includes(name))),
+      required: ["name", "schedule_type"],
+      allOf: [{
+        oneOf: [
+          { required: ["expires_at"], not: { required: ["expires_after_seconds"] } },
+          { required: ["expires_after_seconds"], not: { required: ["expires_at"] } }
+        ]
+      }]
+    }
+  }),
+  Object.freeze({
+    type: "function",
+    name: "corptie_automations_list",
+    description: "List Automations for this authenticated logical Session by default, optionally filtering by status.",
+    deferLoading: false,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        logical_session_id: manageProperties.logical_session_id,
+        status: manageProperties.status
+      }
+    }
+  }),
+  Object.freeze({
+    type: "function",
+    name: "corptie_automations_update",
+    description: "Update mutable fields of an authorized Automation using its current resource_version.",
+    deferLoading: false,
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        automation_id: automationIdProperty,
+        ...Object.fromEntries(Object.entries(manageProperties).filter(([name]) => ![
+          "action", "task_id", "logical_session_id", "schedule_type", "delay_seconds", "status"
+        ].includes(name)))
+      },
+      required: ["automation_id", "resource_version"]
+    }
+  }),
+  ...automationActionTools
 ]);
 
 export async function callScheduledSessionTaskDynamicTool(service, input = {}) {
-  const args = input.arguments ?? {};
+  const rawArgs = input.arguments ?? {};
+  const args = {
+    ...rawArgs,
+    action: automationToolActions[input.tool] ?? rawArgs.action,
+    task_id: rawArgs.task_id ?? rawArgs.automation_id,
+    logical_session_id: rawArgs.logical_session_id ?? input.metadata?.logicalSessionId
+  };
   const actor = { type: "agent", id: input.actorId };
   switch (args.action) {
     case "create": return service.create(toTaskInput(args), actor);
@@ -125,7 +216,7 @@ function toTaskInput(args) {
     timezone: args.timezone,
     expiresAt: args.expires_at,
     expiresAfterSeconds: args.expires_after_seconds,
-    missedPolicy: args.missed_policy,
+    missedPolicy: args.misfire_policy ?? args.missed_policy,
     actions: args.actions,
     process: toProcess(args.process),
     condition: toCondition(args.condition),
@@ -150,12 +241,15 @@ function toTaskPatch(args) {
   const mappings = {
     message: "message",
     name: "name",
+    actions: "actions",
+    process: "process",
     run_at: "runAt",
     interval_seconds: "intervalSeconds",
     timezone: "timezone",
     expires_at: "expiresAt",
     expires_after_seconds: "expiresAfterSeconds",
     missed_policy: "missedPolicy",
+    misfire_policy: "missedPolicy",
     condition: "condition",
     max_retries: "maxRetries",
     max_concurrent_runs: "maxConcurrentRuns",
@@ -168,6 +262,7 @@ function toTaskPatch(args) {
     .filter(([source]) => Object.hasOwn(args, source))
     .map(([source, target]) => [target, args[source]]));
   if (Object.hasOwn(patch, "condition")) patch.condition = toCondition(patch.condition);
+  if (Object.hasOwn(patch, "process")) patch.process = toProcess(patch.process);
   return patch;
 }
 
