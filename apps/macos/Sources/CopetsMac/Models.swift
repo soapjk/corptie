@@ -1004,6 +1004,14 @@ struct SessionHistoryResponse: Decodable, Sendable {
     let items: [CodexThreadItem]
     let hasMoreHistory: Bool?
     let historyItemsCount: Int?
+    let cursorStatus: String?
+}
+
+enum EarlierHistoryLoadState: Equatable, Sendable {
+    case idle
+    case loading
+    case failed(String)
+    case exhausted
 }
 
 struct SessionTimelineAnchorResolution: Decodable, Sendable {

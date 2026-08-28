@@ -401,6 +401,7 @@ test("Timeline history uses stable keyset pages and never needs a reconstructed 
     assert.deepEqual(first.items.map((item) => item.id), ["item-06", "item-07", "item-08", "item-09"]);
     assert.equal(first.hasMoreHistory, true);
     assert.equal(first.historyItemsCount, 6);
+    assert.equal(first.cursorStatus, "found");
 
     const second = store.getSessionTimelineHistoryPage("history-keyset", {
       beforeId: first.items[0].id,
@@ -408,9 +409,14 @@ test("Timeline history uses stable keyset pages and never needs a reconstructed 
     });
     assert.deepEqual(second.items.map((item) => item.id), ["item-02", "item-03", "item-04", "item-05"]);
     assert.equal(second.historyItemsCount, 2);
+    assert.equal(second.cursorStatus, "found");
+    assert.deepEqual(
+      store.getSessionTimelineHistoryPage("history-keyset", { beforeId: "item-00", limit: 4 }),
+      { items: [], hasMoreHistory: false, historyItemsCount: 0, cursorStatus: "exhausted" }
+    );
     assert.deepEqual(
       store.getSessionTimelineHistoryPage("history-keyset", { beforeId: "missing", limit: 4 }),
-      { items: [], hasMoreHistory: false, historyItemsCount: 0 }
+      { items: [], hasMoreHistory: false, historyItemsCount: 0, cursorStatus: "invalid" }
     );
   } finally {
     await store.close();
