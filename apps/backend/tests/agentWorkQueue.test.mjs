@@ -257,6 +257,16 @@ test("clearing or deleting a Session cancels every unsettled queued message", as
     const cancelled = store.getAgentWorkItem("queued-before-clear");
     assert.equal(cancelled.status, "cancelled");
     assert.match(cancelled.lastError, /cleared or deleted/);
+    assert.equal(store.getSession("codex:thread-b"), null);
+    assert.ok(store.selectOne(
+      "SELECT deleted_at FROM sessions WHERE id = ?",
+      ["codex:thread-b"]
+    ).deleted_at);
+    assert.ok(store.selectOne(
+      `SELECT unbound_at FROM agent_sessions
+       WHERE agent_id = ? AND session_id = ?`,
+      ["agent-b", "codex:thread-b"]
+    ).unbound_at);
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
     await rm(directory, { recursive: true, force: true });

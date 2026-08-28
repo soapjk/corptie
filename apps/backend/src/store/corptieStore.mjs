@@ -2352,6 +2352,10 @@ export class CorptieStore {
     this.ensureColumn("sessions", "pinned", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "sort_order", "REAL");
     this.ensureColumn("sessions", "active_choice_json", "TEXT");
+    // Session is the durable actor identity and its event stream is retained
+    // for audit. Deletion therefore tombstones the actor instead of removing
+    // the parent row out from under historical session_events.
+    this.ensureColumn("sessions", "deleted_at", "TEXT");
     // Session identity belongs to its Agent. Remove the retired per-session
     // avatar columns without touching agents.avatar_path.
     this.dropColumnIfExists("sessions", "avatar_path");
@@ -2485,20 +2489,27 @@ export class CorptieStore {
     this.db.run(`UPDATE sessions AS duplicate
       SET objective_id = NULL, session_kind = 'assistantChat'
       WHERE duplicate.session_kind = 'objectiveChat'
+        AND duplicate.deleted_at IS NULL
         AND duplicate.objective_id IS NOT NULL
         AND TRIM(duplicate.objective_id) <> ''
         AND EXISTS (
           SELECT 1 FROM sessions AS canonical
           WHERE canonical.session_kind = 'objectiveChat'
+            AND canonical.deleted_at IS NULL
             AND canonical.objective_id = duplicate.objective_id
             AND (
               canonical.created_at < duplicate.created_at
               OR (canonical.created_at = duplicate.created_at AND canonical.id < duplicate.id)
             )
         )`);
-    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_objective_chat
-      ON sessions(objective_id)
-      WHERE session_kind = 'objectiveChat' AND objective_id IS NOT NULL`);
+    this.runDataMigrationOnce("sessions-active-objective-chat-index-v1", () => {
+      this.db.run("DROP INDEX IF EXISTS idx_sessions_objective_chat");
+      this.db.run(`CREATE UNIQUE INDEX idx_sessions_objective_chat
+        ON sessions(objective_id)
+        WHERE session_kind = 'objectiveChat'
+          AND objective_id IS NOT NULL
+          AND deleted_at IS NULL`);
+    });
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
       WHERE (session_kind IS NULL OR TRIM(session_kind) = ''
           OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))
@@ -2787,7 +2798,7 @@ export class CorptieStore {
         "id", "title", "agent", "provider", "command", "args_json", "cwd", "status",
         "progress", "summary", "accent", "created_at", "updated_at", "archived", "pinned",
         "sort_order", "active_choice_json", "raw_json", "objective_id", "work_item_id",
-        "session_kind", "agent_id", "archive_dependency_version"
+        "session_kind", "agent_id", "archive_dependency_version", "deleted_at"
       ],
       agents: [
         "agent_id", "name", "description", "status", "capabilities_json", "current_session_id",
@@ -3166,6 +3177,7 @@ export class CorptieStore {
           SELECT events.session_id, MAX(events.sequence) AS repaired_sequence,
                  COALESCE(receipts.last_read_agent_message_sequence, 0) AS previous_sequence
           FROM session_events events
+          JOIN sessions ON sessions.id = events.session_id
           LEFT JOIN session_read_receipts receipts ON receipts.session_id = events.session_id
           WHERE events.type = 'turn.completed'
             AND ${canonicalAgentMessagePayloadSQL("events")}
@@ -3177,11 +3189,12 @@ export class CorptieStore {
         INSERT INTO session_read_receipts (
           session_id, last_read_agent_message_sequence, updated_at
         )
-        SELECT session_id, MAX(sequence), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        FROM session_events
-        WHERE type = 'turn.completed'
-          AND ${canonicalAgentMessagePayloadSQL("session_events")}
-        GROUP BY session_id
+        SELECT events.session_id, MAX(events.sequence), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        FROM session_events events
+        JOIN sessions ON sessions.id = events.session_id
+        WHERE events.type = 'turn.completed'
+          AND ${canonicalAgentMessagePayloadSQL("events")}
+        GROUP BY events.session_id
         ON CONFLICT(session_id) DO UPDATE SET
           last_read_agent_message_sequence = MAX(
             session_read_receipts.last_read_agent_message_sequence,
@@ -3241,32 +3254,35 @@ export class CorptieStore {
       SELECT 'worker_session_objective_missing' AS code, s.id AS entity_id,
              s.work_item_id AS reference_id
       FROM sessions s
-      WHERE s.session_kind='worker' AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+      WHERE s.deleted_at IS NULL AND s.session_kind='worker'
+        AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
       UNION ALL
       SELECT 'worker_session_work_item_missing', s.id, s.objective_id
       FROM sessions s
-      WHERE s.session_kind='worker' AND (s.work_item_id IS NULL OR TRIM(s.work_item_id)='')
+      WHERE s.deleted_at IS NULL AND s.session_kind='worker'
+        AND (s.work_item_id IS NULL OR TRIM(s.work_item_id)='')
       UNION ALL
       SELECT 'work_item_current_session_missing', wi.id,
              wi.current_session_id AS reference_id
       FROM work_items wi
-      LEFT JOIN sessions s ON s.id = wi.current_session_id
+      LEFT JOIN sessions s ON s.id = wi.current_session_id AND s.deleted_at IS NULL
       WHERE wi.current_session_id IS NOT NULL AND s.id IS NULL
       UNION ALL
       SELECT 'work_item_session_binding_mismatch', wi.id, wi.current_session_id
       FROM work_items wi
       JOIN sessions s ON s.id = wi.current_session_id
-      WHERE s.work_item_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id
+      WHERE s.deleted_at IS NOT NULL
+        OR s.work_item_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id
       UNION ALL
       SELECT 'session_work_item_missing', s.id, s.work_item_id
       FROM sessions s
       LEFT JOIN work_items wi ON wi.id = s.work_item_id
-      WHERE s.work_item_id IS NOT NULL AND wi.id IS NULL
+      WHERE s.deleted_at IS NULL AND s.work_item_id IS NOT NULL AND wi.id IS NULL
       UNION ALL
       SELECT 'session_objective_mismatch', s.id, s.work_item_id
       FROM sessions s
       JOIN work_items wi ON wi.id = s.work_item_id
-      WHERE s.objective_id IS NOT wi.objective_id
+      WHERE s.deleted_at IS NULL AND s.objective_id IS NOT wi.objective_id
       UNION ALL
       SELECT 'memory_work_item_association_mismatch', m.id, m.work_item_id
       FROM memories m
@@ -5108,9 +5124,12 @@ export class CorptieStore {
 
   upsertSession(session) {
     const persistedAssociation = this.selectOne(
-      "SELECT objective_id, work_item_id, session_kind FROM sessions WHERE id = ?",
+      "SELECT objective_id, work_item_id, session_kind, deleted_at FROM sessions WHERE id = ?",
       [session.id]
     );
+    // Provider discovery can race with, or arrive late after, local deletion.
+    // A Provider projection must never resurrect a deliberately deleted actor.
+    if (persistedAssociation?.deleted_at) return false;
     const suppliedSessionKind = session.sessionKind == null
       ? inferSessionKind({ objectiveId: session.objectiveId, workItemId: session.workItemId })
       : assertExplicitSessionKind(session.sessionKind, { allowLegacy: true });
@@ -5405,43 +5424,49 @@ export class CorptieStore {
       SELECT 'worker_objective_missing' AS code, s.id AS session_id,
              s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s
-      WHERE s.session_kind='worker' AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+      WHERE s.deleted_at IS NULL AND s.session_kind='worker'
+        AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
       UNION ALL
       SELECT 'worker_work_item_missing', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s
-      WHERE s.session_kind='worker' AND (s.work_item_id IS NULL OR TRIM(s.work_item_id)='')
+      WHERE s.deleted_at IS NULL AND s.session_kind='worker'
+        AND (s.work_item_id IS NULL OR TRIM(s.work_item_id)='')
       UNION ALL
       SELECT 'session_objective_not_found', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s LEFT JOIN objectives o ON o.id=s.objective_id
-      WHERE s.objective_id IS NOT NULL AND TRIM(s.objective_id)<>'' AND o.id IS NULL
+      WHERE s.deleted_at IS NULL AND s.objective_id IS NOT NULL AND TRIM(s.objective_id)<>'' AND o.id IS NULL
       UNION ALL
       SELECT 'session_work_item_not_found', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s LEFT JOIN work_items wi ON wi.id=s.work_item_id
-      WHERE s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>'' AND wi.id IS NULL
+      WHERE s.deleted_at IS NULL AND s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>'' AND wi.id IS NULL
       UNION ALL
       SELECT 'session_work_item_objective_mismatch', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s JOIN work_items wi ON wi.id=s.work_item_id
-      WHERE s.objective_id IS NOT wi.objective_id
+      WHERE s.deleted_at IS NULL AND s.objective_id IS NOT wi.objective_id
       UNION ALL
       SELECT 'bound_session_kind_not_worker', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s
-      WHERE s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>'' AND s.session_kind<>'worker'
+      WHERE s.deleted_at IS NULL AND s.work_item_id IS NOT NULL
+        AND TRIM(s.work_item_id)<>'' AND s.session_kind<>'worker'
       UNION ALL
       SELECT 'objective_chat_objective_missing', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s
-      WHERE s.session_kind='objectiveChat' AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+      WHERE s.deleted_at IS NULL AND s.session_kind='objectiveChat'
+        AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
       UNION ALL
       SELECT 'objective_chat_has_work_item', s.id, s.objective_id, s.work_item_id, s.session_kind, s.title
       FROM sessions s
-      WHERE s.session_kind='objectiveChat' AND s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>''
+      WHERE s.deleted_at IS NULL AND s.session_kind='objectiveChat'
+        AND s.work_item_id IS NOT NULL AND TRIM(s.work_item_id)<>''
       UNION ALL
       SELECT 'work_item_current_session_not_found', wi.current_session_id, wi.objective_id, wi.id, NULL, wi.title
-      FROM work_items wi LEFT JOIN sessions s ON s.id=wi.current_session_id
+      FROM work_items wi LEFT JOIN sessions s ON s.id=wi.current_session_id AND s.deleted_at IS NULL
       WHERE wi.current_session_id IS NOT NULL AND TRIM(wi.current_session_id)<>'' AND s.id IS NULL
       UNION ALL
       SELECT 'work_item_current_session_binding_mismatch', wi.current_session_id, wi.objective_id, wi.id, s.session_kind, wi.title
       FROM work_items wi JOIN sessions s ON s.id=wi.current_session_id
-      WHERE s.work_item_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id OR s.session_kind<>'worker'
+      WHERE s.deleted_at IS NOT NULL OR s.work_item_id IS NOT wi.id
+        OR s.objective_id IS NOT wi.objective_id OR s.session_kind<>'worker'
       ORDER BY code, session_id
     `).map((row) => ({
       code: row.code,
@@ -5465,6 +5490,7 @@ export class CorptieStore {
         AND replacement.status='succeeded'
         AND replacement.idempotency_key=('self-repair:' || s.work_item_id || ':' || s.id)
        WHERE s.session_kind='worker'
+         AND s.deleted_at IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM session_turns turn WHERE turn.session_id=s.id
          )
@@ -5835,6 +5861,7 @@ export class CorptieStore {
     return this.selectAll(
       `SELECT sessions.* FROM sessions
        WHERE sessions.created_at < ?
+         AND sessions.deleted_at IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM session_items WHERE session_items.session_id = sessions.id
          )
@@ -6568,7 +6595,8 @@ export class CorptieStore {
     const archived = options.archived === true ? 1 : 0;
     const rows = this.selectAll(
       `${sessionProjectionSelectSQL()}
-       WHERE ${effectiveSessionArchivedSQL()} = ?
+       WHERE sessions.deleted_at IS NULL
+         AND ${effectiveSessionArchivedSQL()} = ?
        ORDER BY sessions.pinned DESC, sessions.sort_order ASC, sessions.updated_at DESC`,
       [archived]
     );
@@ -6577,7 +6605,7 @@ export class CorptieStore {
 
   getSession(id) {
     const row = this.selectOne(
-      `${sessionProjectionSelectSQL()} WHERE sessions.id = ?`,
+      `${sessionProjectionSelectSQL()} WHERE sessions.id = ? AND sessions.deleted_at IS NULL`,
       [id]
     );
     return row ? this.rowToSession(row) : null;
@@ -6585,7 +6613,7 @@ export class CorptieStore {
 
   listSessionsByWorkItem(workItemId) {
     const rows = this.selectAll(
-      `${sessionProjectionSelectSQL()} WHERE sessions.work_item_id = ? ORDER BY sessions.created_at ASC`,
+      `${sessionProjectionSelectSQL()} WHERE sessions.work_item_id = ? AND sessions.deleted_at IS NULL ORDER BY sessions.created_at ASC`,
       [workItemId]
     );
     return rows.map((row) => this.rowToSession(row));
@@ -6593,7 +6621,7 @@ export class CorptieStore {
 
   listSessionsByObjective(objectiveId) {
     const rows = this.selectAll(
-      `${sessionProjectionSelectSQL()} WHERE sessions.objective_id = ? ORDER BY sessions.created_at ASC`,
+      `${sessionProjectionSelectSQL()} WHERE sessions.objective_id = ? AND sessions.deleted_at IS NULL ORDER BY sessions.created_at ASC`,
       [objectiveId]
     );
     return rows.map((row) => this.rowToSession(row));
@@ -6602,7 +6630,7 @@ export class CorptieStore {
   getObjectiveChatSession(objectiveId) {
     const row = this.selectOne(
       `SELECT * FROM sessions
-       WHERE objective_id = ? AND session_kind = 'objectiveChat'
+       WHERE objective_id = ? AND session_kind = 'objectiveChat' AND deleted_at IS NULL
        ORDER BY created_at ASC, id ASC LIMIT 1`,
       [objectiveId]
     );
@@ -6612,10 +6640,10 @@ export class CorptieStore {
   listSessionsByAgent(agentId) {
     const rows = this.selectAll(
       `SELECT s.* FROM sessions s
-       WHERE s.agent_id = ? OR EXISTS (
+       WHERE s.deleted_at IS NULL AND (s.agent_id = ? OR EXISTS (
          SELECT 1 FROM agent_sessions bindings
          WHERE bindings.session_id = s.id AND bindings.agent_id = ?
-       )
+       ))
        ORDER BY s.created_at ASC`,
       [agentId, agentId]
     );
@@ -7098,16 +7126,37 @@ export class CorptieStore {
 
   deleteSession(id) {
     const timestamp = new Date().toISOString();
-    this.db.run(
-      `UPDATE agent_work_items
-       SET status = 'cancelled', completed_at = ?, updated_at = ?,
-           last_error = COALESCE(last_error, 'Target Session was cleared or deleted before this message was processed.')
-       WHERE session_id = ? AND status IN ('queued', 'running')`,
-      [timestamp, timestamp, id]
-    );
-    this.db.run("DELETE FROM session_items WHERE session_id = ?", [id]);
-    this.db.run("DELETE FROM sessions WHERE id = ?", [id]);
+    const existing = this.selectOne("SELECT deleted_at FROM sessions WHERE id = ?", [id]);
+    if (!existing || existing.deleted_at) return false;
+    this.runInTransaction(() => {
+      this.db.run(
+        `UPDATE agent_work_items
+         SET status = 'cancelled', completed_at = ?, updated_at = ?,
+             last_error = COALESCE(last_error, 'Target Session was cleared or deleted before this message was processed.')
+         WHERE session_id = ? AND status IN ('queued', 'running')`,
+        [timestamp, timestamp, id]
+      );
+      this.db.run(
+        `UPDATE work_items SET current_session_id = NULL, updated_at = ?
+         WHERE current_session_id = ?`,
+        [timestamp, id]
+      );
+      this.db.run(
+        `UPDATE agent_sessions SET unbound_at = COALESCE(unbound_at, ?)
+         WHERE session_id = ? AND unbound_at IS NULL`,
+        [timestamp, id]
+      );
+      this.db.run("DELETE FROM session_items WHERE session_id = ?", [id]);
+      this.db.run(
+        `UPDATE sessions
+         SET deleted_at = ?, status = 'deleted', progress = 1,
+             archived = 1, pinned = 0, active_choice_json = NULL, updated_at = ?
+         WHERE id = ? AND deleted_at IS NULL`,
+        [timestamp, timestamp, id]
+      );
+    });
     this.scheduleSave();
+    return true;
   }
 
   hasSessionEvent(eventId) {
@@ -7727,11 +7776,12 @@ export class CorptieStore {
 
   listLatestSessionMessageTimes() {
     const rows = this.selectAll(
-      `SELECT session_id, MAX(created_at) AS last_message_at
-       FROM session_events
-       WHERE surface = 1
-          OR type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
-       GROUP BY session_id`
+      `SELECT events.session_id, MAX(events.created_at) AS last_message_at
+       FROM session_events events
+       JOIN sessions ON sessions.id = events.session_id AND sessions.deleted_at IS NULL
+       WHERE events.surface = 1
+          OR events.type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
+       GROUP BY events.session_id`
     );
     return new Map(rows.map((row) => [row.session_id, row.last_message_at]));
   }
@@ -7751,6 +7801,7 @@ export class CorptieStore {
         GROUP BY session_id
       ) AS agent_messages ON agent_messages.session_id = sessions.id
       LEFT JOIN session_read_receipts ON session_read_receipts.session_id = sessions.id
+      WHERE sessions.deleted_at IS NULL
     `);
     return new Map(rows.map((row) => [row.session_id, {
       lastAgentMessageSequence: Number(row.last_agent_message_sequence ?? 0),
@@ -7765,6 +7816,7 @@ export class CorptieStore {
       FROM sessions
       LEFT JOIN session_timeline_revisions
         ON session_timeline_revisions.session_id = sessions.id
+      WHERE sessions.deleted_at IS NULL
     `);
     return new Map(rows.map((row) => [row.session_id, Number(row.revision ?? 0)]));
   }
@@ -8430,7 +8482,8 @@ export class CorptieStore {
     if (sessionIds.length > 0) {
       const placeholders = sessionIds.map(() => "?").join(",");
       const active = this.selectOne(
-        `SELECT COUNT(*) AS count FROM sessions WHERE id IN (${placeholders}) AND status = 'running'`,
+        `SELECT COUNT(*) AS count FROM sessions
+         WHERE id IN (${placeholders}) AND status = 'running' AND deleted_at IS NULL`,
         sessionIds
       );
       if (active && active.count > 0) {
@@ -9434,7 +9487,10 @@ export class CorptieStore {
   finalizeWorkItemDeletion(id) {
     const item = this.getWorkItem(id);
     if (!item) return { alreadyDeleted: true };
-    const sessions = this.selectAll("SELECT id FROM sessions WHERE work_item_id=?", [id]);
+    const sessions = this.selectAll(
+      "SELECT id FROM sessions WHERE work_item_id=? AND deleted_at IS NULL",
+      [id]
+    );
     if (sessions.length > 0) {
       const error = new Error(`Delete the ${sessions.length} associated Session(s) before deleting WorkItem ${id}.`);
       error.code = "WORK_ITEM_SESSIONS_REMAIN";
@@ -10256,7 +10312,7 @@ export class CorptieStore {
 
   initializeSortOrder() {
     const rows = this.selectAll(
-      "SELECT id FROM sessions WHERE sort_order IS NULL ORDER BY archived ASC, updated_at DESC"
+      "SELECT id FROM sessions WHERE sort_order IS NULL AND deleted_at IS NULL ORDER BY archived ASC, updated_at DESC"
     );
     rows.forEach((row, index) => {
       this.db.run("UPDATE sessions SET sort_order = ? WHERE id = ?", [index, row.id]);
@@ -10265,7 +10321,7 @@ export class CorptieStore {
 
   nextTopSortOrder(archived = false) {
     const row = this.selectOne(
-      "SELECT MIN(sort_order) AS min_order FROM sessions WHERE archived = ?",
+      "SELECT MIN(sort_order) AS min_order FROM sessions WHERE archived = ? AND deleted_at IS NULL",
       [archived ? 1 : 0]
     );
     const minOrder = Number(row?.min_order);
