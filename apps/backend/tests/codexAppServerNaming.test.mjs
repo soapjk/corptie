@@ -249,6 +249,25 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
   assert.equal(client.dynamicToolAgentsByThread.get("thread-a"), "agent-a");
 });
 
+test("bindThreadToolContext finalizes a fresh thread without an invalid resume", () => {
+  const client = new CodexAppServerClient();
+  const result = client.bindThreadToolContext("thread-fresh", {
+    dynamicToolAgentId: "agent-a",
+    dynamicToolMetadata: {
+      sessionId: "session:a",
+      logicalSessionId: "logical:a"
+    },
+    dynamicTools: [{ name: "corptie_automations_list" }]
+  });
+
+  assert.equal(result.toolContextBound, true);
+  assert.equal(client.dynamicToolAgentsByThread.get("thread-fresh"), "agent-a");
+  assert.deepEqual(client.dynamicToolMetadataByThread.get("thread-fresh"), {
+    sessionId: "session:a",
+    logicalSessionId: "logical:a"
+  });
+});
+
 test("forkThread fixes the forked thread to the target workspace and completed source turn", async () => {
   const calls = [];
   const client = new CodexAppServerClient();

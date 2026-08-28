@@ -69,7 +69,7 @@ export class SessionApplicationService {
       ? await provider.prepareSessionInput(input, context)
       : input;
     const toolHost = this.toolHostService
-      ? await this.toolHostService.prepareSession(providerId, { purpose: "session", ...context })
+      ? await this.toolHostService.prepareSession(providerId, { purpose: "session-bootstrap", ...context })
       : null;
     const session = await this.registry.invoke(
       providerId,
@@ -80,7 +80,40 @@ export class SessionApplicationService {
     const reference = this.bindCreatedSession && context.deferSessionBinding !== true
       ? await this.bindCreatedSession({ providerId, session, input: preparedInput, context })
       : null;
+    await this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference);
     return this.decorateLifecycleSession(providerId, session, reference);
+  }
+
+  async #finalizeCreatedSessionTools(providerId, input, context, reference) {
+    const actorId = normalizedText(context.actorId ?? input.toolHost?.actorId);
+    if (!reference || !this.toolHostService || !actorId) return;
+    if (!this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)) return;
+    this.registry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME);
+    const finalizationContext = {
+      ...context,
+      purpose: "session-create-finalization",
+      actorId,
+      sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId ?? null,
+      sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
+      objectiveId: context.objectiveId ?? null,
+      workItemId: context.workItemId ?? null
+    };
+    try {
+      const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
+      await this.registry.invoke(
+        providerId,
+        AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+        reference,
+        toolHost ? { ...finalizationContext, toolHost } : finalizationContext
+      );
+    } catch (cause) {
+      const error = new Error(`Session Tool Host finalization failed: ${cause?.message ?? cause}`);
+      error.code = "SESSION_TOOL_MATERIALIZATION_FAILED";
+      error.stage = "tool_host_finalization";
+      error.cause = cause;
+      throw error;
+    }
   }
 
   // A route transition creates only the target Provider thread. The coordinator
