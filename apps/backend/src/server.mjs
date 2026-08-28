@@ -31,6 +31,7 @@ import { BackgroundAgentService } from "./application/backgroundAgentService.mjs
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
+import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
 import {
   activeStoredSessionProjections,
@@ -140,7 +141,7 @@ import {
 } from "./application/providerEventEnvelope.mjs";
 import { CorptieStore } from "./store/corptieStore.mjs";
 import { resolveCodexCommand } from "./utils/codexCommand.mjs";
-import { isPlatformAssistant } from "./utils/platformAssistantIdentity.mjs";
+import { isPlatformAssistant, resolvePlatformAdminSession } from "./utils/platformAssistantIdentity.mjs";
 import { isProductSessionKind } from "./utils/sessionKinds.mjs";
 import { environmentForCommand } from "./utils/externalCommand.mjs";
 import {
@@ -429,6 +430,7 @@ const scheduledSessionTaskService = new ScheduledSessionTaskService({
   })
 });
 let platformOperationService = null;
+const platformConfirmationService = new PlatformConfirmationService({ store });
 const hostToolCatalog = new HostToolCatalog([
   {
     id: "memory",
@@ -505,7 +507,17 @@ const hostToolCatalog = new HostToolCatalog([
   {
     id: "platform",
     tools: platformDynamicTools,
-    authorize: ({ actorId }) => isPlatformAssistant(store.getAgent(actorId)),
+    authorize: ({ actorId, metadata }) => {
+      // Session creation must materialize the stable catalog before the Store
+      // has a Session id. Execution still revalidates the persisted binding.
+      if (!metadata?.sessionId) return isPlatformAssistant(store.getAgent(actorId));
+      try {
+        resolvePlatformAdminSession(store, { actorId, sessionId: metadata?.sessionId });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     execute: (input) => callPlatformDynamicTool(platformOperationService, input)
   },
   {
@@ -926,6 +938,9 @@ platformOperationService = new PlatformOperationService({
   store,
   objectiveService,
   sessionService: sessionApplicationService,
+  artifactService,
+  collaborationCore,
+  confirmationService: platformConfirmationService,
   listSessions: (input) => listGatewaySessions(input),
   createSession: async ({ agentId, providerId, workItemId, title, prompt }) => {
     const agent = store.getAgent(agentId);
@@ -6961,6 +6976,28 @@ function route(request, response) {
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/platform/confirmations") {
+    readJson(request).then((input) => sendJson(response, 201, {
+      confirmation: platformConfirmationService.issue({
+        actorId: input.actorId, sessionId: input.sessionId, tool: input.tool, arguments: input.arguments ?? {}
+      })
+    })).catch((error) => sendJson(response, errorStatus(error, 403), { error: error.message, code: error.code ?? "PLATFORM_CONFIRMATION_FAILED" }));
+    return;
+  }
+  const platformConfirmationMatch = url.pathname.match(/^\/platform\/confirmations\/([^/]+)\/(confirm|reject)$/);
+  if (request.method === "POST" && platformConfirmationMatch) {
+    try {
+      const confirmation = platformConfirmationService.resolve(
+        decodeURIComponent(platformConfirmationMatch[1]),
+        platformConfirmationMatch[2] === "confirm"
+      );
+      sendJson(response, 200, { confirmation });
+    } catch (error) {
+      sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "PLATFORM_CONFIRMATION_FAILED" });
+    }
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/internal/session/tool") {
     readJson(request)
       .then(async (input) => {
@@ -6972,8 +7009,11 @@ function route(request, response) {
           : "";
         const session = sessionId ? store.getSession(sessionId) : null;
         const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
-        if (!actorId || !session || !["objectiveChat", "worker"].includes(session.sessionKind)
-          || (session.agentId !== actorId && boundAgent?.agentId !== actorId)) {
+        const actorMatches = session && (session.agentId === actorId || boundAgent?.agentId === actorId);
+        const platformScope = session?.sessionKind === "assistantChat"
+          && isPlatformAssistant(store.getAgent(actorId));
+        if (!actorId || !session || (!platformScope && !["objectiveChat", "worker"].includes(session.sessionKind))
+          || !actorMatches) {
           const error = new Error("Session Tool scope is invalid or no longer active.");
           error.code = "SESSION_TOOL_SCOPE_REQUIRED";
           throw error;
