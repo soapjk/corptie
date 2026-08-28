@@ -722,6 +722,7 @@ final class AppTabRouter: ObservableObject {
     var selectedTab: AppTab { selectionState.selectedTab }
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
+    @Published var pendingAutomationId: String?
     @Published private(set) var pendingWorktreeTarget: WorktreeNavigationTarget?
     @Published var navigationError: String?
 
@@ -752,6 +753,16 @@ final class AppTabRouter: ObservableObject {
         navigationError = nil
         pendingSessionId = sessionId
         selectTab(.sessions)
+    }
+
+    func openAutomation(_ automationId: String) {
+        navigationError = nil
+        pendingAutomationId = automationId
+        selectTab(.automations)
+    }
+
+    func consumeAutomation(_ automationId: String) {
+        if pendingAutomationId == automationId { pendingAutomationId = nil }
     }
 
     func openWorktrees(repositoryId: String?, worktreeId: String?, worktreePath: String?) {

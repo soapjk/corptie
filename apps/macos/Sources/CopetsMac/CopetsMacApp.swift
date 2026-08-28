@@ -543,6 +543,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var panelController: FloatingPanelController?
     private var agentOrbManager: AgentOrbManager?
     private var completionSoundManager: SessionCompletionSoundManager?
+    private var automationNotificationManager: AutomationNotificationManager?
     private var resetNotificationManager: CodexResetSystemNotificationManager?
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
@@ -674,6 +675,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
         completionSoundManager = soundManager
         soundManager.start()
+        let automationNotificationManager = AutomationNotificationManager(client: backendClient)
+        self.automationNotificationManager = automationNotificationManager
+        automationNotificationManager.start()
         let resetNotificationManager = CodexResetSystemNotificationManager(client: backendClient)
         self.resetNotificationManager = resetNotificationManager
         resetNotificationManager.start()
@@ -710,6 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         _ = SessionViewportController.shared.persistSynchronouslyForTermination()
         agentOrbManager?.closeAll()
         completionSoundManager?.stop()
+        automationNotificationManager?.stop()
         resetNotificationManager?.stop()
         backendClient.stop()
     }
@@ -728,9 +733,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let sessionID = response.notification.request.content.userInfo["sessionId"] as? String
+        let automationID = response.notification.request.content.userInfo["automationId"] as? String
         completionHandler()
         Task { @MainActor in
-            if let sessionID {
+            if let automationID {
+                self.openWarRoom()
+                AppTabRouter.shared.openAutomation(automationID)
+            } else if let sessionID {
                 NotificationCenter.default.post(
                     name: .openSessionConversation,
                     object: nil,

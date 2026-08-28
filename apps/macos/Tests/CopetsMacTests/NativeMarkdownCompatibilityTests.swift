@@ -316,7 +316,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testAutomationCardShowsVerifiableIdentityTriggerAndSource() throws {
+    func testAutomationCardShowsOnlyUserFacingFieldsAndNaturalExecutionPlan() throws {
         var automation = item(id: "automation", type: "automationEvent", text: "Inspect the process")
         automation.presentationRole = "automation"
         automation.automationId = "scheduled_task:b2cb2ad1-9048-40c6-a18b-b79ec6df8b43"
@@ -324,13 +324,28 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         automation.automationTriggerType = "processExit"
         automation.automationEventType = "ScheduledSessionTaskCreated"
         automation.automationEventSource = "scheduled_session_task"
+        automation.automationRunId = "scheduled_run:secret"
+        automation.automationProcessPollIntervalSeconds = 5
+        automation.automationEventOccurredAt = "2026-08-12T03:55:44.520Z"
+        automation.automationExpiresAt = "2026-08-13T03:55:44.520Z"
 
         let presentation = try XCTUnwrap(nativeAutomationCardPresentation(for: automation))
-        XCTAssertTrue(presentation.title.contains("Automation"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("scheduled_task:b2cb2ad1-9048-40c6-a18b-b79ec6df8b43"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("Shadow exit monitor"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("processExit"))
-        XCTAssertTrue(presentation.bodyMarkdown.contains("scheduled_session_task"))
+        XCTAssertEqual(presentation.title, "Shadow exit monitor")
+        XCTAssertTrue(presentation.bodyMarkdown.contains("Inspect the process"))
+        XCTAssertTrue(presentation.bodyMarkdown.contains("5"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("scheduled_task:"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("scheduled_run:"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("ScheduledSession"))
+        XCTAssertFalse(presentation.bodyMarkdown.contains("scheduled_session_task"))
+    }
+
+    @MainActor
+    func testNonWhitelistedAutomationEventCannotRenderACard() {
+        var automation = item(id: "automation", type: "automationEvent", text: "Done")
+        automation.presentationRole = "automation"
+        automation.automationName = "Nightly review"
+        automation.automationEventType = "ScheduledSessionRunCompleted"
+        XCTAssertNil(nativeAutomationCardPresentation(for: automation))
     }
 
     @MainActor

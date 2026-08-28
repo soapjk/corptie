@@ -10,6 +10,7 @@ final class SessionNotificationPreferences: ObservableObject {
         static let blocked = "corptie.notifications.sessionBlocked"
         static let failed = "corptie.notifications.sessionFailed"
         static let allWaiting = "corptie.notifications.allSessionsWaiting"
+        static let automations = "corptie.notifications.automations"
     }
 
     private let defaults: UserDefaults
@@ -26,6 +27,9 @@ final class SessionNotificationPreferences: ObservableObject {
     @Published var notifyWhenAllSessionsWaiting: Bool {
         didSet { defaults.set(notifyWhenAllSessionsWaiting, forKey: Key.allWaiting) }
     }
+    @Published var notifyOnAutomations: Bool {
+        didSet { defaults.set(notifyOnAutomations, forKey: Key.automations) }
+    }
 
     init(defaults: UserDefaults = CorptieAppEnvironment.userDefaults) {
         self.defaults = defaults
@@ -33,6 +37,7 @@ final class SessionNotificationPreferences: ObservableObject {
         notifyOnBlocked = defaults.object(forKey: Key.blocked) as? Bool ?? false
         notifyOnFailed = defaults.object(forKey: Key.failed) as? Bool ?? false
         notifyWhenAllSessionsWaiting = defaults.object(forKey: Key.allWaiting) as? Bool ?? true
+        notifyOnAutomations = defaults.object(forKey: Key.automations) as? Bool ?? true
     }
 
     var configuration: SessionNotificationConfiguration {

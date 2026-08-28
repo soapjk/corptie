@@ -1,4 +1,9 @@
 const AUTOMATION_EVENT_PREFIXES = ["ScheduledSession", "Automation"];
+export const AUTOMATION_TIMELINE_EVENT_TYPES = new Set([
+  "ScheduledSessionTaskCreated",
+  "ScheduledSessionTaskDue",
+  "ScheduledSessionRunQueued"
+]);
 
 export function isAutomationSessionEvent(event) {
   const type = normalizedText(event?.type);
@@ -6,7 +11,7 @@ export function isAutomationSessionEvent(event) {
 }
 
 export function automationTimelineItems(events = [], options = {}) {
-  return events.filter(isAutomationSessionEvent).map((event) => {
+  return events.filter((event) => AUTOMATION_TIMELINE_EVENT_TYPES.has(normalizedText(event?.type))).map((event) => {
     const referencedAutomationId = normalizedText(
       event.payload?.task?.automationId
         ?? event.payload?.task?.taskId
@@ -21,9 +26,9 @@ export function automationTimelineItems(events = [], options = {}) {
     if (!automationId) return null;
     const trigger = task.trigger ?? task.triggerSpec ?? {};
     const triggerType = normalizedText(run?.triggerKind ?? trigger.type ?? task.scheduleType) ?? "unknown";
-    const eventSource = normalizedText(event.source?.type ?? event.producer) ?? "system";
     const eventType = normalizedText(event.type) ?? "AutomationEvent";
     const message = normalizedText(task.message?.text);
+    const eventOccurredAt = automationEventOccurredAt(eventType, event, run);
     return {
       id: `automation-event:${event.eventId ?? event.sequence}`,
       turnId: `automation-event:${event.eventId ?? event.sequence}`,
@@ -37,13 +42,35 @@ export function automationTimelineItems(events = [], options = {}) {
       presentationRole: "automation",
       presentationText: message ?? "",
       automationId,
-      automationName: normalizedText(task.name) ?? automationId,
-      automationTriggerType: triggerType,
+      automationName: normalizedText(task.name) ?? message ?? "Automation",
+      automationTriggerType: normalizedText(trigger.type ?? task.scheduleType) ?? triggerType,
       automationEventType: eventType,
-      automationEventSource: eventSource,
-      automationRunId: normalizedText(run?.runId)
+      automationEventOccurredAt: eventOccurredAt,
+      automationScheduleType: normalizedText(task.scheduleType ?? trigger.type),
+      automationRunAt: normalizedText(task.runAt ?? trigger.at),
+      automationNextRunAt: normalizedText(task.nextRunAt),
+      automationIntervalSeconds: finitePositiveNumber(task.intervalSeconds ?? trigger.intervalSeconds),
+      automationConditionCheckIntervalSeconds: finitePositiveNumber(
+        task.conditionSpec?.checkIntervalSeconds ?? trigger.condition?.checkIntervalSeconds
+      ),
+      automationProcessPollIntervalSeconds: finitePositiveNumber(
+        task.processSpec?.pollIntervalSeconds ?? trigger.process?.pollIntervalSeconds
+      ),
+      automationExpiresAt: normalizedText(task.expiresAt)
     };
   }).filter(Boolean);
+}
+
+function automationEventOccurredAt(eventType, event, run) {
+  if (eventType === "ScheduledSessionRunQueued") {
+    return normalizedText(run?.queuedAt) ?? normalizedText(event.createdAt);
+  }
+  return normalizedText(event.createdAt);
+}
+
+function finitePositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 export function collaborationEnvelopeFailure({ workItem, task, envelope } = {}) {

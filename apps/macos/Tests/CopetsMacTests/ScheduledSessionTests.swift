@@ -245,6 +245,41 @@ struct ScheduledSessionBackendClientTests {
         #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunCompleted"))
         #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunFailed"))
         #expect(ScheduledSessionEventMapping.authoritativeEventNames.contains("ScheduledSessionRunMissed"))
+        #expect(ScheduledSessionEventMapping.timelineCardEventNames == [
+            "ScheduledSessionTaskCreated", "ScheduledSessionTaskDue", "ScheduledSessionRunQueued"
+        ])
+    }
+
+    @Test @MainActor func executionPlansCoverAllTriggerKindsWithoutInventingMissingTimes() {
+        func item(trigger: String) -> CodexThreadItem {
+            var value = CodexThreadItem(
+                id: trigger, turnId: "turn", turnStatus: "completed", type: "automationEvent",
+                title: "Automation", text: "Run", options: nil, status: nil, createdAt: nil
+            )
+            value.automationTriggerType = trigger
+            return value
+        }
+
+        var at = item(trigger: "at")
+        #expect(AutomationTimelinePresentation.executionPlan(for: at) == nil)
+        at.automationRunAt = "2026-08-24T01:00:00.000Z"
+        #expect(AutomationTimelinePresentation.executionPlan(for: at) != nil)
+
+        var after = item(trigger: "after")
+        after.automationRunAt = "2026-08-24T02:00:00.000Z"
+        #expect(AutomationTimelinePresentation.executionPlan(for: after) != nil)
+
+        var interval = item(trigger: "interval")
+        interval.automationIntervalSeconds = 3_600
+        #expect(AutomationTimelinePresentation.executionPlan(for: interval)?.contains("1") == true)
+
+        var condition = item(trigger: "condition")
+        condition.automationConditionCheckIntervalSeconds = 10
+        #expect(AutomationTimelinePresentation.executionPlan(for: condition)?.contains("10") == true)
+
+        var process = item(trigger: "processExit")
+        process.automationProcessPollIntervalSeconds = 5
+        #expect(AutomationTimelinePresentation.executionPlan(for: process)?.contains("5") == true)
     }
 
     @Test func runHistoryTargetTurnLocatesTheActualTimelineRow() {

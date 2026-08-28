@@ -473,6 +473,39 @@ test("stored timeline items restore provider-neutral supplementary presentation 
   }
 });
 
+test("historical Automation card migration keeps the whitelist and authoritative events", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-automation-card-migration-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.upsertSession({ id: "automation-history", title: "History", agent: "Codex", provider: "codex-app-server", status: "complete" });
+    // Simulate data created before the whitelist migration marker was applied.
+    store.db.run("DELETE FROM data_migrations WHERE migration_id = 'automation-timeline-whitelist-v1'");
+    for (const eventType of ["ScheduledSessionTaskCreated", "ScheduledSessionRunCompleted"]) {
+      const eventId = `event:${eventType}`;
+      store.appendSessionEvent({
+        eventId, sessionId: "automation-history", type: eventType,
+        payload: { task: { taskId: "scheduled_task:history" } }, createdAt: "2026-08-24T00:00:00.000Z"
+      });
+      store.upsertTimelineItemProjection("automation-history", {
+        id: `automation-event:${eventId}`, type: "automationEvent", title: "Automation", text: "Run",
+        rawMetadataJSON: JSON.stringify({ automationEventType: eventType })
+      });
+    }
+
+    store.pruneHistoricalAutomationTimelineItems();
+
+    assert.deepEqual(
+      store.getLatestTimelineItemWindow("automation-history").items.map((item) => item.automationEventType),
+      ["ScheduledSessionTaskCreated"]
+    );
+    assert.equal(store.listSessionEvents("automation-history").length, 2);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("stored latest window preserves conversation boundaries for a process-heavy turn", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-process-boundaries-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
