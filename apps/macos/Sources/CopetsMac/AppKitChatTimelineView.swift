@@ -970,6 +970,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func restoreIfNeeded(position: AppKitChatTimelinePosition) {
             guard !userOwnsViewport else { return }
+            // `followsLatest` is a semantic bottom position. Its row ID is
+            // only the last published observation and must never become an
+            // anchor after a Session rebind; the initial-bottom path already
+            // owns that restoration. Only explicit history-reading positions
+            // are eligible for row-anchor restoration.
+            guard !position.followsLatest else { return }
             guard position != lastRequestedRestorePosition else { return }
             restore(position: position)
         }
@@ -1357,6 +1363,14 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         /// follow/restore/compensation command before AppKit applies the wheel
         /// delta, so no later layout block can reverse the gesture.
         func userDidBeginScrolling() {
+            // A rebound Session can receive a wheel event before its first
+            // non-zero layout. Its viewport is still at AppKit's default y=0,
+            // not at a user-selected position. Preserve the pending semantic
+            // restore; cancelling it here made the first wheel after returning
+            // to a latest-following Session strand the viewport at the top.
+            guard !isAwaitingSessionRows,
+                  pendingRestorePosition == nil,
+                  !pendingInitialScrollToBottom else { return }
             scrollCommandGeneration &+= 1
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = false
@@ -1366,6 +1380,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func userScrollEventWillBegin() {
+            // Complete a ready first-frame restore before granting the gesture
+            // viewport ownership. If geometry is not ready, userDidBeginScrolling
+            // leaves the restore pending for the next layout pass.
+            restoreInitialViewportSynchronouslyIfNeeded()
             isProcessingUserScrollEvent = true
             userDidBeginScrolling()
         }
