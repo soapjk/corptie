@@ -1365,6 +1365,14 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var automationEventType: String? = nil
     var automationEventSource: String? = nil
     var automationRunId: String? = nil
+    var automationEventOccurredAt: String? = nil
+    var automationScheduleType: String? = nil
+    var automationRunAt: String? = nil
+    var automationNextRunAt: String? = nil
+    var automationIntervalSeconds: Double? = nil
+    var automationConditionCheckIntervalSeconds: Double? = nil
+    var automationProcessPollIntervalSeconds: Double? = nil
+    var automationExpiresAt: String? = nil
     var systemEventKind: String? = nil
     var systemEventReason: String? = nil
     var systemEventSource: String? = nil
