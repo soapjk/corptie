@@ -30,9 +30,10 @@ export class CodexResetForecastMonitor {
     this.timer.unref?.();
   }
 
-  stop() {
+  async stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    while (this.running) await new Promise((resolve) => setTimeout(resolve, 25));
   }
 
   snapshot() {

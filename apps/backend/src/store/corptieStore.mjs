@@ -13,7 +13,6 @@ import {
   atomicWriteJson,
   defaultCorptieDataRoot,
   ensureDataRootLayout,
-  migrateDataRoot,
   resolveDataRootLayout
 } from "../runtime/dataRootLayout.mjs";
 import {
@@ -61,14 +60,21 @@ const DEPRECATED_PATH_FIELDS = new Set([
 export class CorptieStore {
   constructor(options = {}) {
     this.explicitPaths = Boolean(options.dbPath || options.configPath);
-    this.dataRootExplicit = Boolean(options.dataRoot || process.env.CORPTIE_DATA_ROOT);
-    this.rootSelectionPath = options.rootSelectionPath || rootSelectionPath;
+    this.manageProcessEnvironment = options.manageProcessEnvironment !== false;
+    this.dataRootExplicit = Boolean(
+      options.dataRoot
+      || process.env.CORPTIE_DATA_ROOT
+      || process.env.CORPTIE_DATA_ROOT_SELECTION_PATH
+    );
+    this.rootSelectionPath = options.rootSelectionPath
+      || process.env.CORPTIE_DATA_ROOT_SELECTION_PATH
+      || rootSelectionPath;
     this.configPath = options.configPath || null;
     this.dataRoot = options.dataRoot
       || process.env.CORPTIE_DATA_ROOT
       || readConfiguredDataRootSync(this.rootSelectionPath)
       || defaultCorptieDataRoot();
-    if (!this.explicitPaths) process.env.CORPTIE_HOME = resolve(this.dataRoot);
+    if (!this.explicitPaths && this.manageProcessEnvironment) process.env.CORPTIE_HOME = resolve(this.dataRoot);
     this.layout = null;
     this.dataDir = null;
     this.dbPath = options.dbPath || process.env.CORPTIE_DB_PATH || null;
@@ -81,7 +87,6 @@ export class CorptieStore {
     this.pendingTimelineDirty = new Set();
     this.performanceMigrationBackupPath = null;
     this.migrationInProgress = false;
-    this.dataRootDidChangeListener = null;
     this.canonicalUnreadMigrationBackupPath = null;
     this.canonicalUnreadMigrationAudit = null;
   }
@@ -125,7 +130,7 @@ export class CorptieStore {
     this.dataDir = this.layout.environmentRoot;
     this.dbPath = this.layout.databasePath;
     this.configPath = this.layout.configPath;
-    process.env.CORPTIE_HOME = this.dataRoot;
+    if (this.manageProcessEnvironment) process.env.CORPTIE_HOME = this.dataRoot;
     await ensureDataRootLayout(this.layout);
     await this.migrateLegacyPaths(legacy.config ?? {});
     try {
@@ -250,7 +255,8 @@ export class CorptieStore {
 
   async writeRootSelection() {
     if (this.explicitPaths) return;
-    await atomicWriteJson(this.rootSelectionPath, { dataRoot: this.dataRoot });
+    const current = await readJsonFile(this.rootSelectionPath) ?? {};
+    await atomicWriteJson(this.rootSelectionPath, { ...current, dataRoot: this.dataRoot });
   }
 
   settings() {
@@ -306,9 +312,14 @@ export class CorptieStore {
 
   async updateSettings(input = {}) {
     assertSettingsFields(input);
-    let migration = null;
     if (Object.hasOwn(input, "dataRoot")) {
-      migration = (await this.setDataRoot(input.dataRoot)).migration ?? null;
+      const requested = resolveDataRootLayout(input.dataRoot, environmentName).dataRoot;
+      if (requested !== this.dataRoot) {
+        const error = new Error("Data Root changes must be coordinated by the Backend migration service.");
+        error.code = "DATA_ROOT_MIGRATION_COORDINATOR_REQUIRED";
+        error.statusCode = 409;
+        throw error;
+      }
     }
     if (input.choiceParser && typeof input.choiceParser === "object") {
       this.config.choiceParser = normalizeChoiceParserSettings(input.choiceParser);
@@ -337,89 +348,7 @@ export class CorptieStore {
       this.config.gateway = normalizeGatewaySettings(input.gateway);
       await this.writeConfig();
     }
-    return migration ? { ...this.settings(), migration } : this.settings();
-  }
-
-  async setDataRoot(dataRoot) {
-    if (typeof dataRoot !== "string" || !dataRoot.trim()) throw new TypeError("Data root is required.");
-    const nextLayout = resolveDataRootLayout(dataRoot.trim(), environmentName);
-    if (nextLayout.dataRoot === this.dataRoot) return this.settings();
-    if (this.explicitPaths) throw new Error("An explicitly configured test Store cannot migrate its data root.");
-    if (this.migrationInProgress) {
-      const error = new Error("A data root migration is already in progress.");
-      error.code = "DATA_ROOT_MIGRATION_IN_PROGRESS";
-      throw error;
-    }
-    const activeTurns = this.selectOne(
-      "SELECT COUNT(*) AS count FROM session_turns WHERE execution_status IN ('running', 'blocked')"
-    );
-    if (Number(activeTurns?.count ?? 0) > 0) {
-      const error = new Error("Data root migration requires all active Agent turns to settle first.");
-      error.code = "DATA_ROOT_MIGRATION_BUSY";
-      error.statusCode = 409;
-      throw error;
-    }
-
-    const previous = {
-      layout: this.layout,
-      dataRoot: this.dataRoot,
-      dataDir: this.dataDir,
-      dbPath: this.dbPath,
-      configPath: this.configPath,
-      config: this.config
-    };
-    this.migrationInProgress = true;
-    this.db.setWriteBlocked(true);
-    await new Promise((resolvePromise) => setImmediate(resolvePromise));
-    let switched = false;
-    try {
-      const receipt = await migrateDataRoot({
-        sourceLayout: this.layout,
-        targetLayout: nextLayout,
-        sourceDatabase: this.db.database
-      });
-      this.db.close();
-      this.layout = nextLayout;
-      this.dataRoot = nextLayout.dataRoot;
-      this.dataDir = nextLayout.environmentRoot;
-      this.dbPath = nextLayout.databasePath;
-      this.configPath = nextLayout.configPath;
-      this.db = this.openDatabase(this.dbPath);
-      switched = true;
-      this.config = JSON.parse(await readFile(this.configPath, "utf8"));
-      this.config.dataRoot = this.dataRoot;
-      await this.writeConfig();
-      process.env.CORPTIE_HOME = this.dataRoot;
-      await this.dataRootDidChangeListener?.({ previous: previous.layout, current: this.layout, receipt });
-      await this.writeRootSelection();
-      return { ...this.settings(), migration: receipt };
-    } catch (error) {
-      if (switched) this.db?.close();
-      this.layout = previous.layout;
-      this.dataRoot = previous.dataRoot;
-      this.dataDir = previous.dataDir;
-      this.dbPath = previous.dbPath;
-      this.configPath = previous.configPath;
-      this.config = previous.config;
-      if (switched) this.db = this.openDatabase(this.dbPath);
-      process.env.CORPTIE_HOME = this.dataRoot;
-      if (switched) {
-        await this.dataRootDidChangeListener?.({
-          previous: nextLayout,
-          current: previous.layout,
-          receipt: null,
-          rollback: true
-        }).catch(() => {});
-      }
-      throw error;
-    } finally {
-      this.db.setWriteBlocked(false);
-      this.migrationInProgress = false;
-    }
-  }
-
-  setDataRootDidChangeListener(listener) {
-    this.dataRootDidChangeListener = typeof listener === "function" ? listener : null;
+    return this.settings();
   }
 
   openDatabase(path) {
@@ -4032,9 +3961,9 @@ export class CorptieStore {
     }
   }
 
-  async close() {
+  async close(options = {}) {
     if (!this.db) return;
-    await this.save();
+    if (options.checkpoint !== false) await this.save();
     this.db.close();
     this.db = null;
   }

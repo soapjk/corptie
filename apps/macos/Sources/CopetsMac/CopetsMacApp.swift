@@ -1120,6 +1120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 @MainActor
 enum CorptieBackendSupervisor {
     private static let label = "com.corptie.backend"
+    private static var developmentBackendProcess: Process?
 
     static func ensureProductionBackendStarted() {
         guard CorptieAppEnvironment.canManageProductionBackend else {
@@ -1167,6 +1168,67 @@ enum CorptieBackendSupervisor {
         try runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
     }
 
+    static func restartBackendForDataRootMigration() async throws {
+        var request = URLRequest(
+            url: CorptieAppEnvironment.backendBaseURL.appending(path: "internal/backend/data-root-restart")
+        )
+        request.httpMethod = "POST"
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 202 else {
+            throw BackendSupervisorError.restartNotAccepted
+        }
+        if CorptieAppEnvironment.canManageProductionBackend {
+            try runLaunchctl(["kickstart", "-k", "gui/\(getuid())/\(label)"])
+            return
+        }
+        guard CorptieAppEnvironment.isDevelopment else {
+            throw BackendSupervisorError.restartUnavailable
+        }
+        try await Task.sleep(for: .milliseconds(800))
+
+        try startDevelopmentBackend()
+    }
+
+    static func ensureBackendRunningForPendingDataRootMigration() async throws {
+        if CorptieAppEnvironment.canManageProductionBackend {
+            ensureProductionBackendStarted()
+            return
+        }
+        guard CorptieAppEnvironment.isDevelopment else {
+            throw BackendSupervisorError.restartUnavailable
+        }
+        try await Task.sleep(for: .milliseconds(800))
+        try startDevelopmentBackend()
+    }
+
+    private static func startDevelopmentBackend() throws {
+        let repositoryRoot = try developmentRepositoryRoot()
+        let process = Process()
+        process.executableURL = repositoryRoot.appendingPathComponent("scripts/start-backend-development.sh")
+        process.currentDirectoryURL = repositoryRoot
+        var environment = ProcessInfo.processInfo.environment
+        environment["CORPTIE_ENV"] = "development"
+        environment["CORPTIE_BACKEND_PORT"] = String(CorptieAppEnvironment.backendPort)
+        process.environment = environment
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        developmentBackendProcess = process
+    }
+
+    private static func developmentRepositoryRoot() throws -> URL {
+        var candidate = Bundle.main.executableURL?.deletingLastPathComponent()
+            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        for _ in 0..<10 {
+            let launcher = candidate.appendingPathComponent("scripts/start-backend-development.sh")
+            if FileManager.default.isExecutableFile(atPath: launcher.path) {
+                return candidate
+            }
+            candidate.deleteLastPathComponent()
+        }
+        throw BackendSupervisorError.developmentLauncherNotFound
+    }
+
     private static func isLaunchAgentLoaded() -> Bool {
         (try? runLaunchctl(["print", "gui/\(getuid())/\(label)"])) != nil
     }
@@ -1193,11 +1255,20 @@ enum CorptieBackendSupervisor {
 
     enum BackendSupervisorError: LocalizedError {
         case launchctlFailed(String, String)
+        case restartUnavailable
+        case restartNotAccepted
+        case developmentLauncherNotFound
 
         var errorDescription: String? {
             switch self {
             case let .launchctlFailed(command, output):
                 return "launchctl \(command) failed: \(output)"
+            case .restartUnavailable:
+                return "This Corptie host cannot restart the Backend."
+            case .restartNotAccepted:
+                return "The Backend did not accept the controlled restart."
+            case .developmentLauncherNotFound:
+                return "Could not locate scripts/start-backend-development.sh."
             }
         }
     }
@@ -1465,9 +1536,37 @@ struct SettingsView: View {
                     }
                     .help(L10n("Choose data root"))
                 }
-                Text(L10n("Database, configuration, logs, Artifacts, runtime state, and backups are stored in managed subdirectories. Changing this location migrates and verifies all data before switching."))
+                Text(L10n("Database, configuration, logs, Artifacts, Provider runtimes, Skills, cache, state, and backups are migrated and verified before a controlled Backend restart. The old Data Root is retained and is never deleted automatically."))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
+
+                if let migration = backendClient.dataRootMigration {
+                    let presentedPhase = backendClient.dataRootMigrationPresentationPhase ?? migration.phase
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 8) {
+                            if presentedPhase != "completed" && presentedPhase != "failed" {
+                                ProgressView().controlSize(.small)
+                            }
+                            Text(dataRootMigrationPhaseLabel(presentedPhase))
+                                .font(.system(size: 11, weight: .semibold))
+                            Spacer()
+                            Text("#\(migration.generation)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        }
+                        Text(migration.targetDataRoot)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                            .lineLimit(2)
+                        if let error = migration.error {
+                            Text("\(error.code): \(error.message)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    .padding(9)
+                    .background(CorptiePalette.secondaryText.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -2178,6 +2277,22 @@ struct SettingsView: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             dataRoot = url.path
+        }
+    }
+
+    private func dataRootMigrationPhaseLabel(_ phase: String) -> String {
+        switch phase {
+        case "preflight": return L10n("Checking Data Root")
+        case "quiescing": return L10n("Stopping persistent writers")
+        case "checkpointing": return L10n("Checkpointing database")
+        case "copying": return L10n("Copying Data Root")
+        case "verifying": return L10n("Verifying migrated data")
+        case "switching": return L10n("Committing Data Root selection")
+        case "restartRequired": return L10n("Restarting Backend")
+        case "reconnecting": return L10n("Reconnecting")
+        case "completed": return L10n("Data Root migration completed")
+        case "failed": return L10n("Data Root migration failed")
+        default: return phase
         }
     }
 

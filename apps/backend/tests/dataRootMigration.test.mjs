@@ -5,107 +5,116 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { ArtifactService } from "../src/application/artifactService.mjs";
+import { DataRootMigrationCoordinator } from "../src/runtime/dataRootMigrationCoordinator.mjs";
 import { defaultCorptieDataRoot, resolveDataRootLayout } from "../src/runtime/dataRootLayout.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-async function fixture() {
+async function fixture(options = {}) {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-data-root-"));
   const sourceRoot = join(directory, "source");
   const selectorPath = join(directory, "bootstrap", "data-root.json");
-  const store = new CorptieStore({ dataRoot: sourceRoot, rootSelectionPath: selectorPath });
+  const store = new CorptieStore({
+    dataRoot: sourceRoot,
+    rootSelectionPath: selectorPath,
+    manageProcessEnvironment: false
+  });
   await store.initialize();
   const objective = store.createObjective({ id: "objective:migration", name: "Migration" });
   store.upsertSession({
     id: "session:migration", title: "Migration", provider: "codex-app-server",
     status: "idle", sessionKind: "objectiveChat", objectiveId: objective.id
   });
-  const artifactService = new ArtifactService({ store });
-  await artifactService.initialize();
-  const artifact = await artifactService.create(
+  const artifacts = new ArtifactService({ store });
+  await artifacts.initialize();
+  const artifact = await artifacts.create(
     { kind: "local_user", actorId: "local", objectiveId: objective.id },
     { title: "Evidence", content: "content whose sha256 must survive migration" }
   );
   await Promise.all([
     writeFile(join(store.layout.logsDirectory, "backend.out.log"), "preserved log\n"),
-    writeFile(join(store.layout.runtimeDirectory, "runtime.json"), "{\"ready\":true}\n"),
-    writeFile(join(store.layout.backupsDirectory, "manifest.json"), "{\"backup\":true}\n"),
-    writeFile(join(store.layout.stateDirectory, "state.json"), "{\"state\":true}\n")
+    writeFile(join(store.layout.runtimeDirectory, "codex.json"), "{\"ready\":true}\n"),
+    writeFile(join(store.layout.runtimeDirectory, "claude.json"), "{\"ready\":true}\n"),
+    writeFile(join(store.layout.runtimeDirectory, "openclacky.json"), "{\"ready\":true}\n"),
+    writeFile(join(store.layout.stateDirectory, "skill-cache.json"), "{\"ready\":true}\n")
   ]);
-  store.setDataRootDidChangeListener(({ current }) => artifactService.useDataRoot(current));
-  return { directory, sourceRoot, selectorPath, store, artifactService, artifact };
+  const coordinator = new DataRootMigrationCoordinator({
+    store,
+    environment: "production",
+    selectionPath: selectorPath,
+    inspectBlockers: options.inspectBlockers,
+    quiesce: options.quiesce
+  });
+  await coordinator.initialize();
+  return { directory, sourceRoot, selectorPath, store, artifacts, artifact, coordinator };
 }
 
-test("default root is ~/.corptie and Development derives an isolated environment subtree", () => {
+test("default root and Development layout remain isolated", () => {
   assert.equal(defaultCorptieDataRoot({ homeDir: "/Users/example" }), "/Users/example/.corptie");
   const production = resolveDataRootLayout("/Users/example/.corptie", "production");
   const development = resolveDataRootLayout("/Users/example/.corptie", "development");
-  assert.equal(production.environmentRoot, "/Users/example/.corptie");
-  assert.equal(development.environmentRoot, "/Users/example/.corptie/development");
   assert.equal(production.databasePath, "/Users/example/.corptie/database/corptie.sqlite");
   assert.equal(development.databasePath, "/Users/example/.corptie/development/database/corptie.sqlite");
 });
 
-test("migration copies managed subtrees, verifies data, switches atomically, and survives restart", async () => {
-  const f = await fixture();
+test("migration verifies a full copy, commits only the selector, and requires restart", async () => {
+  let quiesced = 0;
+  const f = await fixture({ quiesce: async () => { quiesced += 1; } });
   const targetRoot = join(f.directory, "target");
   try {
-    const migrationPromise = f.store.updateSettings({ dataRoot: targetRoot });
-    assert.throws(
-      () => f.store.createObjective({ id: "objective:racing", name: "Racing write" }),
-      { code: "DATA_ROOT_MIGRATION_IN_PROGRESS" }
-    );
-    const settings = await migrationPromise;
-    assert.equal(settings.dataRoot, targetRoot);
-    assert.equal(settings.migration.databaseIntegrity, "ok");
-    assert.equal(settings.migration.keyRecordCounts.objectives, 1);
-    assert.equal(settings.migration.keyRecordCounts.sessions, 1);
-    assert.equal(settings.migration.artifactCount, 1);
-    assert.equal(f.store.getObjective("objective:migration").name, "Migration");
-    assert.equal(
-      (await f.artifactService.get(
-        { kind: "local_user", actorId: "local", objectiveId: "objective:migration" },
-        f.artifact.artifactId
-      )).content,
-      "content whose sha256 must survive migration"
-    );
-    for (const relative of [
-      ["logs", "backend.out.log"], ["runtimes", "runtime.json"],
-      ["backups", "manifest.json"], ["state", "state.json"], ["config", "settings.json"]
-    ]) await access(join(targetRoot, ...relative));
+    const operation = await f.coordinator.migrate(targetRoot);
+    assert.equal(operation.phase, "restartRequired");
+    assert.equal(operation.restartRequired, true);
+    assert.equal(operation.receipt.databaseIntegrity, "ok");
+    assert.equal(operation.receipt.artifactCount, 1);
+    assert.equal(quiesced, 1);
+    assert.equal(f.store.settings().dataRoot, f.sourceRoot, "old process must never hot-rebind");
+    assert.equal(f.store.db.writeBlocked, true);
+    const selection = JSON.parse(await readFile(f.selectorPath, "utf8"));
+    assert.equal(selection.dataRoot, targetRoot);
+    assert.equal(selection.operationId, operation.operationId);
+    for (const name of ["codex.json", "claude.json", "openclacky.json"]) {
+      await access(join(targetRoot, "runtimes", name));
+    }
+    await access(join(targetRoot, "state", "skill-cache.json"));
     await access(join(f.sourceRoot, "database", "corptie.sqlite"));
-    assert.equal(JSON.parse(await readFile(f.selectorPath, "utf8")).dataRoot, targetRoot);
 
+    f.store.db.setWriteBlocked(false);
     await f.store.close();
-    const restarted = new CorptieStore({ rootSelectionPath: f.selectorPath });
+    const restarted = new CorptieStore({
+      rootSelectionPath: f.selectorPath,
+      manageProcessEnvironment: false
+    });
     await restarted.initialize();
-    const restartedArtifacts = new ArtifactService({ store: restarted });
-    await restartedArtifacts.initialize();
+    const recovered = new DataRootMigrationCoordinator({ store: restarted, selectionPath: f.selectorPath });
+    const status = await recovered.initialize();
     assert.equal(restarted.settings().dataRoot, targetRoot);
+    assert.equal(status.phase, "completed");
+    assert.equal(status.operationId, operation.operationId);
     assert.equal(restarted.getObjective("objective:migration").name, "Migration");
-    assert.equal(
-      (await restartedArtifacts.get(
-        { kind: "local_user", actorId: "local", objectiveId: "objective:migration" },
-        f.artifact.artifactId
-      )).content,
-      "content whose sha256 must survive migration"
-    );
     await restarted.close();
   } finally {
+    f.store.db?.setWriteBlocked(false);
     await f.store.close().catch(() => {});
     await rm(f.directory, { recursive: true, force: true });
   }
 });
 
-test("failed migration preserves both the active root and an occupied target", async () => {
-  const f = await fixture();
-  const targetRoot = join(f.directory, "occupied-target");
+test("preflight blockers and occupied targets preserve the original authority", async () => {
+  const f = await fixture({ inspectBlockers: () => [{ kind: "active_session_turns", count: 1 }] });
   try {
-    await mkdir(targetRoot);
-    await writeFile(join(targetRoot, "user-owned.txt"), "do not overwrite");
-    await assert.rejects(() => f.store.setDataRoot(targetRoot), { code: "DATA_ROOT_TARGET_NOT_EMPTY" });
-    assert.equal(f.store.settings().dataRoot, f.sourceRoot);
-    assert.equal(f.store.getObjective("objective:migration").name, "Migration");
-    assert.equal(await readFile(join(targetRoot, "user-owned.txt"), "utf8"), "do not overwrite");
+    await assert.rejects(() => f.coordinator.migrate(join(f.directory, "target")), {
+      code: "DATA_ROOT_MIGRATION_BUSY"
+    });
+    assert.equal(JSON.parse(await readFile(f.selectorPath, "utf8")).dataRoot, f.sourceRoot);
+    assert.equal(f.store.db.writeBlocked, false);
+
+    const occupied = join(f.directory, "occupied");
+    await mkdir(occupied);
+    await writeFile(join(occupied, "owned.txt"), "preserve");
+    const cleanCoordinator = new DataRootMigrationCoordinator({ store: f.store, selectionPath: f.selectorPath });
+    await cleanCoordinator.initialize();
+    await assert.rejects(() => cleanCoordinator.migrate(occupied), { code: "DATA_ROOT_TARGET_NOT_EMPTY" });
+    assert.equal(await readFile(join(occupied, "owned.txt"), "utf8"), "preserve");
     assert.equal(JSON.parse(await readFile(f.selectorPath, "utf8")).dataRoot, f.sourceRoot);
   } finally {
     await f.store.close();
@@ -113,28 +122,124 @@ test("failed migration preserves both the active root and an occupied target", a
   }
 });
 
-test("migration refuses to race an active Provider turn", async () => {
+test("interrupted pre-commit operations recover as failed without activating the target", async () => {
   const f = await fixture();
   try {
-    f.store.db.run(
-      `INSERT INTO session_turns (
-         session_id, binding_id, routing_version, turn_id, execution_status, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?)`,
-      ["session:migration", "binding:migration", 1, "turn:migration", "running", "2026-08-27T00:00:00.000Z"]
-    );
-    await assert.rejects(() => f.store.setDataRoot(join(f.directory, "target")), {
-      code: "DATA_ROOT_MIGRATION_BUSY"
-    });
-    assert.equal(f.store.settings().dataRoot, f.sourceRoot);
+    const operationPath = `${f.selectorPath}.migration-operation.json`;
+    await writeFile(operationPath, JSON.stringify({
+      schemaVersion: 1,
+      operationId: "data_root_migration:interrupted",
+      generation: 7,
+      phase: "copying",
+      sourceDataRoot: f.sourceRoot,
+      targetDataRoot: join(f.directory, "target"),
+      history: []
+    }));
+    const recovered = new DataRootMigrationCoordinator({ store: f.store, selectionPath: f.selectorPath });
+    const status = await recovered.initialize();
+    assert.equal(status.phase, "failed");
+    assert.equal(status.error.code, "DATA_ROOT_MIGRATION_INTERRUPTED");
+    assert.equal(JSON.parse(await readFile(f.selectorPath, "utf8")).dataRoot, f.sourceRoot);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
   }
 });
 
-test("unknown and retired independent path fields are rejected", async () => {
+test("every pre-commit crash phase preserves one active root and recovery is idempotent", async () => {
+  const phases = ["preflight", "quiescing", "checkpointing", "copying", "verifying", "switching"];
+  for (const phase of phases) {
+    const f = await fixture();
+    try {
+      const operationPath = `${f.selectorPath}.migration-operation.json`;
+      await writeFile(operationPath, JSON.stringify({
+        schemaVersion: 1,
+        operationId: `data_root_migration:crash:${phase}`,
+        generation: 2,
+        phase,
+        sourceDataRoot: f.sourceRoot,
+        targetDataRoot: join(f.directory, "target"),
+        history: [{ phase, at: "2026-08-28T00:00:00.000Z" }]
+      }));
+      const first = new DataRootMigrationCoordinator({ store: f.store, selectionPath: f.selectorPath });
+      assert.equal((await first.initialize()).phase, "failed", phase);
+      const second = new DataRootMigrationCoordinator({ store: f.store, selectionPath: f.selectorPath });
+      const repeated = await second.initialize();
+      assert.equal(repeated.phase, "failed", phase);
+      assert.equal(repeated.history.length, 2, `recovery must not repeat ${phase}`);
+      assert.equal(JSON.parse(await readFile(f.selectorPath, "utf8")).dataRoot, f.sourceRoot);
+    } finally {
+      await f.store.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("restart handoff phases recover to completed exactly once after selector commit", async () => {
+  for (const phase of ["restartRequired", "reconnecting"]) {
+    const f = await fixture();
+    try {
+      const operationId = `data_root_migration:handoff:${phase}`;
+      const targetRoot = join(f.directory, "target");
+      await writeFile(f.selectorPath, JSON.stringify({
+        dataRoot: targetRoot, generation: 3, operationId
+      }));
+      await writeFile(`${f.selectorPath}.migration-operation.json`, JSON.stringify({
+        schemaVersion: 1,
+        operationId,
+        generation: 3,
+        phase,
+        sourceDataRoot: f.sourceRoot,
+        targetDataRoot: targetRoot,
+        history: [{ phase, at: "2026-08-28T00:00:00.000Z" }]
+      }));
+      const first = new DataRootMigrationCoordinator({ store: f.store, selectionPath: f.selectorPath });
+      const completed = await first.initialize();
+      assert.equal(completed.phase, "completed");
+      const second = new DataRootMigrationCoordinator({ store: f.store, selectionPath: f.selectorPath });
+      assert.equal((await second.initialize()).history.length, 2);
+    } finally {
+      await f.store.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a post-quiesce failure resumes old-root services without changing authority", async () => {
+  const f = await fixture();
+  let resumed = 0;
+  try {
+    const coordinator = new DataRootMigrationCoordinator({
+      store: f.store,
+      selectionPath: f.selectorPath,
+      quiesce: async () => {},
+      resume: async () => { resumed += 1; },
+      migrateRoot: async () => {
+        const error = new Error("injected copy failure");
+        error.code = "DATA_ROOT_COPY_FAILED";
+        throw error;
+      }
+    });
+    await coordinator.initialize();
+    await assert.rejects(() => coordinator.migrate(join(f.directory, "target")), {
+      code: "DATA_ROOT_COPY_FAILED"
+    });
+    assert.equal(resumed, 1);
+    assert.equal(f.store.migrationInProgress, false);
+    assert.equal(f.store.db.writeBlocked, false);
+    assert.equal(JSON.parse(await readFile(f.selectorPath, "utf8")).dataRoot, f.sourceRoot);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("Store refuses direct hot rebinding and rejects unknown path fields", async () => {
   const f = await fixture();
   try {
+    await assert.rejects(() => f.store.updateSettings({ dataRoot: join(f.directory, "target") }), {
+      code: "DATA_ROOT_MIGRATION_COORDINATOR_REQUIRED"
+    });
     await assert.rejects(() => f.store.updateSettings({ logDir: "/tmp/logs" }), {
       code: "DEPRECATED_SETTINGS_PATH_FIELD"
     });
