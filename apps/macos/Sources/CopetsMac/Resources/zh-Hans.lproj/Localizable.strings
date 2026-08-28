@@ -1282,3 +1282,4 @@
 "Live Provider turns" = "活跃 Provider turn";
 "Background Memory tasks" = "后台 Memory 任务";
 "Background choice tasks" = "后台选项解析任务";
+"Affected Artifact: %@ v%lld" = "受影响的 Artifact：%@ v%lld";

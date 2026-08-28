@@ -112,12 +112,22 @@ export async function migrateDataRoot({
   }
 }
 
-export async function preflightDataRootMigration({ sourceLayout, targetLayout }) {
+export async function preflightDataRootMigration({ sourceLayout, targetLayout, sourceDatabase }) {
   assertDistinctRoots(sourceLayout.dataRoot, targetLayout.dataRoot);
   await assertTargetEmpty(targetLayout.dataRoot);
   await mkdir(dirname(targetLayout.dataRoot), { recursive: true, mode: 0o700 });
-  const space = await assertAvailableSpace(sourceLayout.dataRoot, dirname(targetLayout.dataRoot));
-  return { sourceBytes: space.sourceBytes, availableBytes: space.availableBytes };
+  const [space, sourceArtifacts] = await Promise.all([
+    assertAvailableSpace(sourceLayout.dataRoot, dirname(targetLayout.dataRoot)),
+    sourceDatabase
+      ? verifySourceArtifacts(sourceDatabase, sourceLayout.artifactsDirectory)
+      : Promise.resolve({ count: 0, bytes: 0 })
+  ]);
+  return {
+    sourceBytes: space.sourceBytes,
+    availableBytes: space.availableBytes,
+    sourceArtifactCount: sourceArtifacts.count,
+    sourceArtifactBytes: sourceArtifacts.bytes
+  };
 }
 
 export async function verifyMigratedDataRoot({ sourceLayout, targetLayout, keyTables = [] }) {
@@ -235,19 +245,51 @@ async function verifyArtifacts(database, artifactsDirectory) {
   const exists = database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifact_versions'").get();
   if (!exists) return { count: 0, bytes: 0 };
   const versions = database.prepare(
-    "SELECT storage_key, content_hash, byte_length FROM artifact_versions WHERE storage_key IS NOT NULL"
+    "SELECT artifact_id, version, storage_key, content_hash, byte_length FROM artifact_versions WHERE storage_key IS NOT NULL"
   ).all();
   let bytes = 0;
   for (const version of versions) {
     const path = safeDescendant(artifactsDirectory, String(version.storage_key));
-    const content = await readFile(path);
+    let content;
+    try {
+      content = await readFile(path);
+    } catch (cause) {
+      const code = cause?.code === "ENOENT"
+        ? "DATA_ROOT_ARTIFACT_MISSING"
+        : "DATA_ROOT_ARTIFACT_UNREADABLE";
+      const message = cause?.code === "ENOENT"
+        ? "Artifact content referenced by the active database is missing."
+        : "Artifact content referenced by the active database could not be read.";
+      const error = migrationError(code, message);
+      error.details = artifactFailureDetails(version);
+      error.cause = cause;
+      throw error;
+    }
     const hash = createHash("sha256").update(content).digest("hex");
     if (hash !== version.content_hash || content.byteLength !== Number(version.byte_length)) {
-      throw migrationError("DATA_ROOT_ARTIFACT_INTEGRITY_FAILED", `Artifact content failed hash or length verification: ${version.storage_key}`);
+      const error = migrationError(
+        "DATA_ROOT_ARTIFACT_INTEGRITY_FAILED",
+        "Artifact content referenced by the active database failed hash or length verification."
+      );
+      error.details = artifactFailureDetails(version);
+      throw error;
     }
     bytes += content.byteLength;
   }
   return { count: versions.length, bytes };
+}
+
+async function verifySourceArtifacts(database, artifactsDirectory) {
+  assertDatabaseIntegrity(database, "source");
+  return verifyArtifacts(database, artifactsDirectory);
+}
+
+function artifactFailureDetails(version) {
+  return {
+    artifactId: String(version.artifact_id),
+    version: Number(version.version),
+    storageKey: String(version.storage_key)
+  };
 }
 
 async function verifyCopiedFiles(sourceLayout, targetLayout) {
