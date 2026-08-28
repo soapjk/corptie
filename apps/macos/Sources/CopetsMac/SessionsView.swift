@@ -1248,6 +1248,8 @@ struct SessionDetailPanel: View {
 
                     ScheduledSessionStrip(session: session)
 
+                    SessionTurnObservabilityView(sessionId: session.id)
+
                     if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {
                         assistantSection
                         contextReferencesSection
