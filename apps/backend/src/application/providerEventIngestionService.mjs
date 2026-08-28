@@ -21,7 +21,7 @@ export const PROVIDER_EVENT_TYPES = new Set([
 ]);
 
 export class ProviderEventIngestionService {
-  constructor({ store, resolveBinding, project, onCommitted = () => {} }) {
+  constructor({ store, resolveBinding, project, onCommitted = () => {}, observe = () => null }) {
     if (!store?.runInTransaction || !store?.insertProviderInboxEvent) {
       throw new Error("ProviderEventIngestionService requires a transactional Provider event Store.");
     }
@@ -35,9 +35,11 @@ export class ProviderEventIngestionService {
     this.resolveBinding = resolveBinding;
     this.project = project;
     this.onCommitted = onCommitted;
+    this.observe = observe;
   }
 
   ingest(input) {
+    const projectionStartedAtMs = performance.timeOrigin + performance.now();
     const event = normalizeProviderEvent(input);
     const binding = this.resolveBinding(event);
     if (!binding) {
@@ -126,7 +128,19 @@ export class ProviderEventIngestionService {
       return { status: "applied", event, sessionEvent, projection, outbox: committedOutbox };
     });
 
-    if (result.status === "applied") this.onCommitted(committedOutbox);
+    if (result.status === "applied") {
+      this.onCommitted(committedOutbox);
+      try {
+        result.observability = this.observe({
+          event,
+          binding,
+          projection: result.projection,
+          measurement: { projectionStartedAtMs, projectionEndedAtMs: performance.timeOrigin + performance.now() }
+        });
+      } catch (error) {
+        result.observabilityError = { code: error.code ?? "TURN_OBSERVABILITY_FAILED", message: error.message };
+      }
+    }
     return result;
   }
 
