@@ -3001,14 +3001,9 @@ final class BackendClient: ObservableObject {
         let resolvesCollaborationConfirmation = selectedDetail?.items.contains(where: {
             $0.type == "collaborationConfirmation" && $0.collaborationConfirmationStatus == "pending"
         }) == true && Self.isCollaborationConfirmationReply(trimmed)
-        if reloadDetail && !isClearCommand && !resolvesCollaborationConfirmation {
-            appendOptimisticUserMessage(
-                trimmed,
-                messageID: messageID,
-                deliveryID: deliveryID,
-                to: session
-            )
-        }
+        let presentsAcknowledgedUserMessage = reloadDetail
+            && !isClearCommand
+            && !resolvesCollaborationConfirmation
 
         Task {
             isSendingMessage = true
@@ -3043,6 +3038,18 @@ final class BackendClient: ObservableObject {
                     throw BackendError.message("\(message)\(hint)")
                 }
 
+                // A Timeline row is product state, not a send animation. The
+                // backend creates the MessageDelivery and its session_items
+                // projection in one transaction before returning success, so
+                // only a 2xx acknowledgement may make this local echo visible.
+                if presentsAcknowledgedUserMessage {
+                    appendAcknowledgedUserMessage(
+                        trimmed,
+                        messageID: messageID,
+                        deliveryID: deliveryID,
+                        to: session
+                    )
+                }
                 onSuccess()
                 if decoded?.cleared == true {
                     sendStatusMessage = L10n("Conversation cleared")
@@ -3091,7 +3098,7 @@ final class BackendClient: ObservableObject {
                 "取消", "拒绝", "不发送", "否", "no", "n", "reject", "cancel"].contains(normalized)
     }
 
-    private func appendOptimisticUserMessage(
+    private func appendAcknowledgedUserMessage(
         _ text: String,
         messageID: String,
         deliveryID: String,
