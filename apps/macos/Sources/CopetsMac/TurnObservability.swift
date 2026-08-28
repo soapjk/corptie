@@ -64,6 +64,7 @@ struct TurnTraceSpan: Decodable, Identifiable, Equatable {
     var id: String { spanId }
     var category: String { attributes["corptie.category"]?.stringValue ?? "other" }
     var operation: String { attributes["corptie.operation"]?.stringValue ?? "other" }
+    var activityPhase: String? { attributes["corptie.activity.phase"]?.stringValue }
     var codeLocation: String? {
         guard let path = attributes["code.file.path"]?.stringValue else { return nil }
         let line = attributes["code.line.number"]?.stringValue
@@ -199,27 +200,49 @@ final class TurnObservabilityViewModel: ObservableObject {
 struct SessionTurnObservabilityView: View {
     let sessionId: String
     @StateObject private var model = TurnObservabilityViewModel()
-    @State private var isExpanded = false
+    @State private var isAnalysisExpanded = false
+    @State private var isTraceExpanded = false
 
     private let categoryOrder = ["queue", "dispatch", "context", "model", "tool", "mcp", "persistence", "delivery", "other"]
     private let operationOrder = ["history.read", "code.search", "code.read", "code.edit", "shell", "git", "test", "build", "mcp", "model.reasoning", "persistence", "other"]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
-            Label("Turn 时间分析", systemImage: "point.3.connected.trianglepath.dotted")
+            DisclosureGroup(isExpanded: $isAnalysisExpanded) {
+                Group {
+                    if model.isLoadingSummary {
+                        ProgressView().controlSize(.small)
+                    } else if let summary = model.summary {
+                        summaryContent(summary)
+                    } else {
+                        Text("暂无已完成 Turn 的时间摘要")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                .padding(.top, 4)
+            } label: {
+                HStack(spacing: 6) {
+                    Label("Turn 时间分析", systemImage: "point.3.connected.trianglepath.dotted")
+                    Spacer(minLength: 6)
+                    if model.isLoadingSummary {
+                        ProgressView().controlSize(.mini)
+                    } else if let summary = model.summary {
+                        Text("上一次 \(durationText(summary.wallClockMs))")
+                            .fontDesign(.monospaced)
+                    } else {
+                        Text("暂无数据")
+                    }
+                }
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
-            if model.isLoadingSummary {
-                ProgressView().controlSize(.small)
-            } else if let summary = model.summary {
-                summaryContent(summary)
-            } else {
-                Text("暂无已完成 Turn 的时间摘要")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
             }
         }
-        .task(id: sessionId) { await model.loadSummary(sessionId: sessionId) }
+        .task(id: sessionId) {
+            isAnalysisExpanded = false
+            isTraceExpanded = false
+            await model.loadSummary(sessionId: sessionId)
+        }
     }
 
     @ViewBuilder
@@ -241,9 +264,9 @@ struct SessionTurnObservabilityView: View {
                 .foregroundStyle(.tertiary)
             operationRows(operations)
         }
-        DisclosureGroup(isExpanded: $isExpanded) {
+        DisclosureGroup(isExpanded: $isTraceExpanded) {
             traceContent(summary)
-                .task(id: isExpanded) { if isExpanded { await model.loadTraceIfNeeded() } }
+                .task(id: isTraceExpanded) { if isTraceExpanded { await model.loadTraceIfNeeded() } }
         } label: {
             Text("详细 Trace（按需加载）")
                 .font(.system(size: 10, weight: .medium))
@@ -305,7 +328,7 @@ struct SessionTurnObservabilityView: View {
                     .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             } else {
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(trace.spans) { span in
+                    ForEach(Array(trace.spans.enumerated()), id: \.element.id) { index, span in
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 5) {
                                 Text(operationLabel(span.operation)).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
@@ -320,6 +343,12 @@ struct SessionTurnObservabilityView: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
+                            if let explanation = reasoningExplanation(for: span, at: index, in: trace.spans) {
+                                Text(explanation)
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(explanation.hasPrefix("推断") ? Color.orange : Color.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                         .font(.system(size: 8))
                     }
@@ -330,6 +359,29 @@ struct SessionTurnObservabilityView: View {
 
     private func durationText(_ value: Double) -> String { value >= 1_000 ? String(format: "%.2fs", value / 1_000) : String(format: "%.0fms", value) }
     private func categoryLabel(_ value: String) -> String { ["queue": "排队", "dispatch": "调度", "context": "上下文", "model": "模型", "tool": "工具", "mcp": "MCP", "persistence": "持久化", "delivery": "交付", "other": "其他"][value] ?? value }
+    private func reasoningExplanation(for span: TurnTraceSpan, at index: Int, in spans: [TurnTraceSpan]) -> String? {
+        guard span.operation == "model.reasoning" else { return nil }
+        if let phase = span.activityPhase, phase != "provider-reasoning", phase != "unknown" {
+            return "模型阶段：\(activityPhaseLabel(phase))"
+        }
+        let ignored = Set(["model.reasoning", "persistence", "other"])
+        if let next = spans.suffix(from: min(index + 1, spans.count))
+            .first(where: { !ignored.contains($0.operation) }) {
+            return "推断用途：为下一步「\(operationLabel(next.operation))」进行分析"
+        }
+        if index > 0, let previous = spans[..<index]
+            .last(where: { !ignored.contains($0.operation) }) {
+            return "推断用途：处理「\(operationLabel(previous.operation))」结果并形成下一步"
+        }
+        return "用途不可判定 · Provider 未提供安全阶段标签"
+    }
+
+    private func activityPhaseLabel(_ value: String) -> String { [
+        "task-planning": "任务规划", "provider-reasoning": "Provider 推理", "progress-update": "进度整理",
+        "result-synthesis": "结果整理", "code-navigation": "代码定位", "implementation": "实现",
+        "verification": "验证", "context-loading": "上下文加载", "tool-execution": "工具执行", "unknown": "未知"
+    ][value] ?? value }
+
     private func operationLabel(_ value: String) -> String { [
         "history.read": "历史读取", "code.search": "代码定位", "code.read": "代码读取", "code.edit": "代码修改",
         "shell": "Shell", "git": "Git", "test": "测试", "build": "构建", "mcp": "MCP",

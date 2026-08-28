@@ -31,23 +31,30 @@ final class TurnObservabilityTests: XCTestCase {
         {"observabilityLevel":"native","spans":[{"traceId":"trace","spanId":"span","parentSpanId":null,
         "name":"code.search","startTimeUnixNano":"1000000","endTimeUnixNano":"3000000","status":"ok",
         "attributes":{"corptie.category":"tool","corptie.operation":"code.search",
-        "code.file.path":"apps/backend/src/server.mjs","code.line.number":6985,"code.function.name":"route"}}]}
+        "corptie.activity.phase":"code-navigation","code.file.path":"apps/backend/src/server.mjs",
+        "code.line.number":6985,"code.function.name":"route"}}]}
         """.utf8)
         let trace = try JSONDecoder().decode(TurnRawTrace.self, from: data)
         XCTAssertEqual(trace.spans[0].operation, "code.search")
+        XCTAssertEqual(trace.spans[0].activityPhase, "code-navigation")
         XCTAssertEqual(trace.spans[0].codeLocation, "apps/backend/src/server.mjs:6985 · route")
         XCTAssertEqual(trace.spans[0].durationMs, 2)
     }
 
-    func testSessionSurfaceLoadsSummaryByDefaultAndDoesNotSubscribeToLiveTelemetry() throws {
+    func testSessionSurfaceStartsCollapsedLoadsOnlySummaryAndDoesNotSubscribeToLiveTelemetry() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/TurnObservability.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        XCTAssertTrue(source.contains(".task(id: sessionId) { await model.loadSummary(sessionId: sessionId) }"))
-        XCTAssertTrue(source.contains("if isExpanded { await model.loadTraceIfNeeded() }"))
+        XCTAssertTrue(source.contains("@State private var isAnalysisExpanded = false"))
+        XCTAssertTrue(source.contains("@State private var isTraceExpanded = false"))
+        XCTAssertTrue(source.contains("Text(\"上一次 \\(durationText(summary.wallClockMs))\")"))
+        XCTAssertTrue(source.contains("await model.loadSummary(sessionId: sessionId)"))
+        XCTAssertTrue(source.contains("if isTraceExpanded { await model.loadTraceIfNeeded() }"))
+        XCTAssertTrue(source.contains("推断用途：为下一步"))
+        XCTAssertTrue(source.contains("Provider 未提供安全阶段标签"))
         XCTAssertFalse(source.contains(".onReceive("))
         XCTAssertFalse(source.contains("ServerSentEvents"))
         XCTAssertTrue(source.contains("TurnTracePresentationTier.resolve(spanCount:"))
