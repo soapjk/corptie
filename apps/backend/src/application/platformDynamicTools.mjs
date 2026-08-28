@@ -20,6 +20,8 @@ const id = (description) => ({ type: "string", minLength: 1, description });
 const openObject = { type: "object", additionalProperties: true };
 const nullableString = { type: ["string", "null"] };
 const stringArray = { type: "array", items: { type: "string" } };
+const artifactVisibility = { type: "string", enum: ["objective_private", "work_item_private", "session_private", "repository_tracked"] };
+const artifactRelation = { type: "string", enum: ["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"] };
 const objectivePatch = {
   type: "object",
   properties: {
@@ -149,6 +151,44 @@ export const platformDynamicTools = Object.freeze([
       permissions: openObject
     },
     ["action"]
+  ),
+  tool(
+    "corptie_platform_artifacts_manage",
+    "Manage the complete lifecycle of Artifacts in an explicitly selected Objective. Every mutation is attributed to the authenticated platform Assistant Session.",
+    {
+      action: { type: "string", enum: ["list", "get", "search", "create", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "verify_integrity", "export", "backup", "restore"] },
+      objective_id: id("Explicit target Objective id."),
+      artifact_id: { type: "string", pattern: "^artifact:" },
+      reference_id: { type: "string", minLength: 1 },
+      title: { type: "string", minLength: 1 }, summary: { type: "string" }, content: { type: "string" },
+      query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 65536 },
+      offset: { type: "integer", minimum: 0 }, version: { type: "integer", minimum: 1 },
+      visibility: artifactVisibility, bound_work_item_id: id("Same-Objective WorkItem id."),
+      bound_session_id: id("Same-Objective Session id."), repository_locator: { type: "string", minLength: 1 },
+      mime_type: { type: "string", minLength: 1 }, approval_status: { type: "string", enum: ["draft", "approved"] },
+      work_item_id: id("Same-Objective WorkItem reference target."), session_id: id("Same-Objective Session reference target."),
+      relation: artifactRelation, required: { type: "boolean" }, version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
+      reason: { type: "string", minLength: 1 }, source_path: { type: "string", minLength: 1 },
+      destination_path: { type: "string", minLength: 1 }, confirmation_id: id("Server-issued confirmation record id."),
+      confirmed_repository_write: { type: "boolean" }, confirmed_overwrite: { type: "boolean" },
+      include_revoked: { type: "boolean" }, idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
+    },
+    ["action", "objective_id"]
+  ),
+  tool(
+    "corptie_platform_collaboration_manage",
+    "Discover exact Session actors, create target WorkItems and Worker Sessions, and stage formal Session-to-Session collaboration for real user confirmation.",
+    {
+      action: { type: "string", enum: ["discover_sessions", "get_session", "create_work_item", "start_worker", "request"] },
+      session_id: id("Exact logical or Provider Session id."), objective_id: id("Explicit target Objective id."),
+      agent_id: id("Agent resource used to configure a Worker Session; never a message recipient."),
+      work_item_id: id("Target WorkItem id."), title: { type: "string", minLength: 1 }, description: { type: "string" },
+      acceptance_criteria: { type: "array", items: { type: "string" } }, priority: { type: "string", enum: ["low", "medium", "high", "urgent"] },
+      provider_id: id("Provider resource for Worker Session creation."), summary: { type: "string", minLength: 1 },
+      type: { type: "string", enum: ["question", "change_request"] }, max_iterations: { type: "integer", minimum: 1 },
+      idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
+    },
+    ["action"]
   )
 ]);
 
@@ -160,6 +200,7 @@ export async function callPlatformDynamicTool(platformOperationService, input = 
   }
   return platformOperationService.execute({
     actorId: input.actorId ?? input.agentId,
+    sessionId: input.metadata?.sessionId,
     tool: input.tool,
     arguments: input.arguments ?? {}
   });
