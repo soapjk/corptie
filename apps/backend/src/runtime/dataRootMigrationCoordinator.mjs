@@ -96,7 +96,11 @@ export class DataRootMigrationCoordinator {
         error.details = { blockers };
         throw error;
       }
-      const preflight = await preflightDataRootMigration({ sourceLayout, targetLayout });
+      const preflight = await preflightDataRootMigration({
+        sourceLayout,
+        targetLayout,
+        sourceDatabase: this.store.db.database
+      });
       this.operation.preflight = preflight;
 
       await this.transition("quiescing");
