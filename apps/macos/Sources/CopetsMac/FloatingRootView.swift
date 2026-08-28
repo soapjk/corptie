@@ -4080,12 +4080,25 @@ struct DetailView: View {
             updateCachedDisplayEntries(for: detail)
         } else if detail.hasMoreHistory == true {
             if let session = backendClient.selectedSession, session.id == sessionId {
+                // Reserve a presentation page before awaiting the request. A
+                // merged detail can publish while a scrollbar mouse-down is
+                // still active; the old bounded tail would otherwise keep the
+                // prepended rows hidden until a Session switch rebuilt it.
+                let previousVisibleMessageLimit = visibleMessageLimit
+                visibleMessageLimit += 100
                 Task { @MainActor in
                     let selectionGeneration = backendClient.selectionGenerationToken(for: sessionId)
-                    _ = await backendClient.loadEarlierMessages(
+                    let result = await backendClient.loadEarlierMessages(
                         for: session,
                         expectedSelectionGeneration: selectionGeneration
                     )
+                    if case .failed = result,
+                       backendClient.selectedSession?.id == sessionId {
+                        visibleMessageLimit = previousVisibleMessageLimit
+                        if let current = displayedDetail {
+                            updateCachedDisplayEntries(for: current)
+                        }
+                    }
                 }
             }
         } else {
