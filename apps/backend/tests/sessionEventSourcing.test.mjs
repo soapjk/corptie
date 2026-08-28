@@ -358,6 +358,145 @@ test("canonical completion migration repairs history as read and future receipts
   }
 });
 
+test("canonical completion migration tolerates retained events whose historical Session is absent", async () => {
+  const { store, directory } = await createStore();
+  const dbPath = join(directory, "corptie.sqlite");
+  let reopened = null;
+  try {
+    store.appendSessionEvent({
+      eventId: "orphaned-canonical-completion",
+      sessionId: "deleted-session",
+      type: "turn.completed",
+      payload: { hasAgentMessage: true, turnId: "turn:deleted" }
+    });
+    store.db.run(
+      "DELETE FROM data_migrations WHERE migration_id = ?",
+      ["session-events-canonical-agent-message-v2"]
+    );
+    await store.close();
+
+    reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
+    await reopened.initialize();
+
+    assert.deepEqual(reopened.canonicalUnreadMigrationAudit, {
+      scannedEvents: 1,
+      repairedEvents: 1,
+      affectedSessions: 1,
+      adjustedReceipts: 0
+    });
+    assert.equal(reopened.selectOne(
+      "SELECT has_agent_message FROM session_events WHERE event_id = ?",
+      ["orphaned-canonical-completion"]
+    ).has_agent_message, 1);
+    assert.equal(reopened.selectOne(
+      "SELECT 1 FROM session_read_receipts WHERE session_id = ?",
+      ["deleted-session"]
+    ), null);
+  } finally {
+    if (reopened) await reopened.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("deleting a Session retains an inert tombstone and audit events without allowing resurrection", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({
+      id: "session:deleted",
+      title: "Original title",
+      agent: "Agent",
+      provider: "provider-neutral-fixture",
+      status: "complete",
+      objectiveId: "objective:shared",
+      sessionKind: "objectiveChat"
+    });
+    store.appendSessionEvent({
+      eventId: "retained-audit-event",
+      sessionId: "session:deleted",
+      type: "turn.completed",
+      payload: { hasAgentMessage: true, turnId: "turn:1" }
+    });
+
+    assert.equal(store.deleteSession("session:deleted"), true);
+    assert.equal(store.deleteSession("session:deleted"), false);
+    assert.equal(store.getSession("session:deleted"), null);
+    assert.deepEqual(store.listSessions({ archived: false }), []);
+    assert.deepEqual(store.listSessions({ archived: true }), []);
+    assert.equal(store.listSessionEvents("session:deleted").length, 1);
+
+    const tombstone = store.selectOne(
+      "SELECT title, status, archived, pinned, deleted_at FROM sessions WHERE id = ?",
+      ["session:deleted"]
+    );
+    assert.equal(tombstone.title, "Original title");
+    assert.equal(tombstone.status, "deleted");
+    assert.equal(tombstone.archived, 1);
+    assert.equal(tombstone.pinned, 0);
+    assert.ok(tombstone.deleted_at);
+
+    assert.equal(store.upsertSession({
+      id: "session:deleted",
+      title: "Provider tried to resurrect this",
+      agent: "Agent",
+      provider: "another-provider",
+      status: "running"
+    }), false);
+    assert.equal(store.selectOne(
+      "SELECT title FROM sessions WHERE id = ?",
+      ["session:deleted"]
+    ).title, "Original title");
+
+    store.upsertSession({
+      id: "session:replacement",
+      title: "Replacement",
+      agent: "Agent",
+      provider: "another-provider",
+      status: "complete",
+      objectiveId: "objective:shared",
+      sessionKind: "objectiveChat"
+    });
+    assert.equal(store.getObjectiveChatSession("objective:shared").id, "session:replacement");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("deleting a Worker Session clears its active WorkItem pointer but retains audit identity", async () => {
+  const { store, directory } = await createStore();
+  try {
+    store.upsertSession({
+      id: "session:worker",
+      title: "Worker",
+      agent: "Agent",
+      provider: "provider-neutral-fixture",
+      status: "complete"
+    });
+    store.createObjective({ id: "objective:worker", name: "Objective" });
+    store.createWorkItem({
+      id: "work-item:worker",
+      objectiveId: "objective:worker",
+      title: "Work item"
+    });
+    store.bindSessionToWorkItem("session:worker", "work-item:worker", "objective:worker");
+    assert.equal(store.getWorkItem("work-item:worker").current_session_id, "session:worker");
+
+    store.deleteSession("session:worker");
+
+    assert.equal(store.getWorkItem("work-item:worker").current_session_id, null);
+    const tombstone = store.selectOne(
+      "SELECT objective_id, work_item_id FROM sessions WHERE id = ?",
+      ["session:worker"]
+    );
+    assert.equal(tombstone.objective_id, "objective:worker");
+    assert.equal(tombstone.work_item_id, "work-item:worker");
+    assert.deepEqual(store.sessionAssociationIssues(), []);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("session_logs：创建 session 即建立 1:1 log，事件指向该 log", async () => {
   const { store, directory } = await createStore();
   try {
