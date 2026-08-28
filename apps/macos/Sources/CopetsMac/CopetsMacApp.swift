@@ -1337,6 +1337,21 @@ enum SettingsTab: Hashable, CaseIterable {
     }
 }
 
+private enum DataRootMigrationDialogPhase: Equatable {
+    case confirmation
+    case migrating
+    case completed
+    case failed
+}
+
+private struct DataRootMigrationDialogState: Equatable {
+    let sourceDataRoot: String
+    let targetDataRoot: String
+    var phase: DataRootMigrationDialogPhase
+    var errorCode: String?
+    var errorMessage: String?
+}
+
 struct SettingsView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @ObservedObject private var appLanguage = AppLanguageController.shared
@@ -1360,6 +1375,7 @@ struct SettingsView: View {
     @State private var newFeishuAppSecret = ""
     @State private var newFeishuProfile = ""
     @State private var feishuPairingCodes: [String: FeishuPairingCodeResponse] = [:]
+    @State private var dataRootMigrationDialog: DataRootMigrationDialogState?
 
     var body: some View {
         VStack(spacing: 12) {
@@ -1436,6 +1452,15 @@ struct SettingsView: View {
             guard tab == .archivedSessions else { return }
             Task { await backendClient.refreshArchivedSessions() }
         }
+        .sheet(
+            isPresented: Binding(
+                get: { dataRootMigrationDialog != nil },
+                set: { if !$0 && !backendClient.isUpdatingSettings { dataRootMigrationDialog = nil } }
+            )
+        ) {
+            dataRootMigrationDialogContent
+                .interactiveDismissDisabled(backendClient.isUpdatingSettings)
+        }
         .confirmationDialog(
             L10n("Delete this archived session permanently?"),
             isPresented: Binding(
@@ -1456,6 +1481,115 @@ struct SettingsView: View {
             Text(L10n("This action cannot be undone."))
         }
         .environment(\.locale, appLanguage.locale)
+    }
+
+    @ViewBuilder
+    private var dataRootMigrationDialogContent: some View {
+        if let dialog = dataRootMigrationDialog {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 12) {
+                    Image(systemName: dataRootMigrationDialogIcon(dialog.phase))
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(dataRootMigrationDialogColor(dialog.phase))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(dataRootMigrationDialogTitle(dialog.phase))
+                            .font(.system(size: 17, weight: .bold))
+                        Text(dialog.targetDataRoot)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                            .lineLimit(2)
+                    }
+                }
+
+                switch dialog.phase {
+                case .confirmation:
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(L10n("Changing the Data Root starts a controlled migration and Backend restart."))
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(L10n("Corptie will temporarily stop new commands and persistent writes, copy and verify all data, restart the Backend, and reconnect automatically. Active work may block the migration. Do not disconnect the target drive or quit Corptie while migration is running."))
+                            .font(.system(size: 12))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                        Text(L10n("If migration fails, the original Data Root remains authoritative. The old directory is retained after success and is never deleted automatically."))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                case .migrating:
+                    let phase = backendClient.dataRootMigrationPresentationPhase ?? "preflight"
+                    VStack(alignment: .leading, spacing: 9) {
+                        ProgressView(value: DataRootMigrationPresentation.progress(for: phase), total: 1)
+                            .progressViewStyle(.linear)
+                        HStack {
+                            Text(dataRootMigrationPhaseLabel(phase))
+                                .font(.system(size: 12, weight: .semibold))
+                            Spacer()
+                            Text("\(Int(DataRootMigrationPresentation.progress(for: phase) * 100))%")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(CorptiePalette.secondaryText)
+                        }
+                        Text(L10n("The Backend may disconnect briefly during restart. This is expected; Corptie will reconnect automatically."))
+                            .font(.system(size: 11))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                case .completed:
+                    Text(L10n("Migration completed. All new writes now use the new Data Root. The previous directory has been retained."))
+                        .font(.system(size: 12))
+                        .foregroundStyle(CorptiePalette.secondaryText)
+                case .failed:
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let code = dialog.errorCode {
+                            Text(code)
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.red)
+                        }
+                        Text(dialog.errorMessage ?? L10n("The migration failed before activation."))
+                            .font(.system(size: 12, weight: .medium))
+                        if let blockers = backendClient.dataRootMigration?.error?.details?.blockers,
+                           !blockers.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(blockers) { blocker in
+                                    Text("• \(dataRootMigrationBlockerLabel(blocker.kind)): \(blocker.count)")
+                                        .font(.system(size: 11, weight: .medium))
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                        Text(L10n("The Data Root setting was restored to the original directory. No new root was activated."))
+                            .font(.system(size: 11))
+                            .foregroundStyle(CorptiePalette.secondaryText)
+                    }
+                }
+
+                HStack {
+                    Spacer()
+                    switch dialog.phase {
+                    case .confirmation:
+                        Button(L10n("Cancel"), role: .cancel) {
+                            dataRootMigrationDialog = nil
+                        }
+                        Button(L10n("Migrate and Restart")) {
+                            Task { await confirmDataRootMigration() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                    case .migrating:
+                        EmptyView()
+                    case .completed:
+                        Button(L10n("Done")) {
+                            dataRootMigrationDialog = nil
+                            onClose()
+                        }
+                        .keyboardShortcut(.defaultAction)
+                    case .failed:
+                        Button(L10n("Close")) {
+                            dataRootMigrationDialog = nil
+                        }
+                        .keyboardShortcut(.defaultAction)
+                    }
+                }
+            }
+            .padding(22)
+            .frame(width: 500)
+        }
     }
 
     private var settingsTabBar: some View {
@@ -2231,22 +2365,62 @@ struct SettingsView: View {
     }
 
     private func saveAllSettings() async {
-        if await backendClient.updateSettings(
+        let requestedDataRoot = dataRoot.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let activeDataRoot = backendClient.settings?.dataRoot,
+           !DataRootMigrationPresentation.pathsEqual(activeDataRoot, requestedDataRoot) {
+            dataRootMigrationDialog = DataRootMigrationDialogState(
+                sourceDataRoot: activeDataRoot,
+                targetDataRoot: requestedDataRoot,
+                phase: .confirmation
+            )
+            return
+        }
+
+        if await persistSettings(dataRoot: requestedDataRoot) {
+            recordSavedSettings()
+            onClose()
+        }
+    }
+
+    private func confirmDataRootMigration() async {
+        guard var dialog = dataRootMigrationDialog, dialog.phase == .confirmation else { return }
+        dialog.phase = .migrating
+        dataRootMigrationDialog = dialog
+
+        if await persistSettings(dataRoot: dialog.targetDataRoot) {
+            recordSavedSettings()
+            dataRoot = backendClient.settings?.dataRoot ?? dialog.targetDataRoot
+            dialog.phase = .completed
+            dataRootMigrationDialog = dialog
+            return
+        }
+
+        let operation = backendClient.dataRootMigration
+        dataRoot = backendClient.settings?.dataRoot ?? dialog.sourceDataRoot
+        dialog.phase = .failed
+        dialog.errorCode = operation?.error?.code
+        dialog.errorMessage = operation?.error?.message ?? backendClient.lastError ?? L10n("The migration failed before activation.")
+        dataRootMigrationDialog = dialog
+    }
+
+    private func persistSettings(dataRoot: String) async -> Bool {
+        await backendClient.updateSettings(
             dataRoot: dataRoot,
             choiceParser: choiceParser,
             codexBackend: codexBackend,
             codeDiff: codeDiff,
             agentProxy: agentProxy,
             gateway: gateway
-        ) {
-            savedChoiceParser = choiceParser
-            savedCodexBackend = codexBackend
-            savedCodeDiff = codeDiff
-            savedAgentProxy = agentProxy
-            savedGateway = gateway
-            choiceParserStatus = .saved
-            onClose()
-        }
+        )
+    }
+
+    private func recordSavedSettings() {
+        savedChoiceParser = choiceParser
+        savedCodexBackend = codexBackend
+        savedCodeDiff = codeDiff
+        savedAgentProxy = agentProxy
+        savedGateway = gateway
+        choiceParserStatus = .saved
     }
 
     private func confirmChoiceParser() async {
@@ -2302,6 +2476,47 @@ struct SettingsView: View {
         case "completed": return L10n("Data Root migration completed")
         case "failed": return L10n("Data Root migration failed")
         default: return phase
+        }
+    }
+
+    private func dataRootMigrationDialogTitle(_ phase: DataRootMigrationDialogPhase) -> String {
+        switch phase {
+        case .confirmation: L10n("Move Data Root?")
+        case .migrating: L10n("Migrating Data Root")
+        case .completed: L10n("Data Root Migration Complete")
+        case .failed: L10n("Data Root Migration Failed")
+        }
+    }
+
+    private func dataRootMigrationDialogIcon(_ phase: DataRootMigrationDialogPhase) -> String {
+        switch phase {
+        case .confirmation: "exclamationmark.triangle.fill"
+        case .migrating: "externaldrive.badge.timemachine"
+        case .completed: "checkmark.circle.fill"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+
+    private func dataRootMigrationDialogColor(_ phase: DataRootMigrationDialogPhase) -> Color {
+        switch phase {
+        case .confirmation: .orange
+        case .migrating: .accentColor
+        case .completed: .green
+        case .failed: .red
+        }
+    }
+
+    private func dataRootMigrationBlockerLabel(_ kind: String) -> String {
+        switch kind {
+        case "active_session_turns": L10n("Active Session turns")
+        case "agent_work_queue": L10n("Agent work queue")
+        case "scheduled_tasks": L10n("Scheduled tasks")
+        case "worktree_integrations": L10n("Worktree integrations")
+        case "artifact_writes": L10n("Artifact writes")
+        case "live_provider_turns": L10n("Live Provider turns")
+        case "background_memory_tasks": L10n("Background Memory tasks")
+        case "background_choice_tasks": L10n("Background choice tasks")
+        default: kind.replacingOccurrences(of: "_", with: " ")
         }
     }
 

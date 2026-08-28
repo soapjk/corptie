@@ -38,6 +38,16 @@ private struct GlobalEventReplayRequiredEnvelope: Decodable {
     let latestCursor: Int
 }
 
+private struct DataRootMigrationStatusEnvelope: Decodable {
+    let operation: DataRootMigrationOperation?
+}
+
+private struct DataRootMigrationErrorEnvelope: Decodable {
+    let error: String
+    let code: String
+    let operation: DataRootMigrationOperation?
+}
+
 private struct SessionTimelineChangedEventEnvelope: Decodable {
     let payload: Payload
 
@@ -930,6 +940,24 @@ final class BackendClient: ObservableObject {
         isUpdatingSettings = true
         defer { isUpdatingSettings = false }
 
+        let migrationRequested = !DataRootMigrationPresentation.pathsEqual(settings?.dataRoot, trimmed)
+        if migrationRequested {
+            dataRootMigrationPresentationPhase = "preflight"
+        }
+        let migrationStatusTask: Task<Void, Never>? = migrationRequested
+            ? Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.refreshDataRootMigrationStatus(expectedTarget: trimmed)
+                    do {
+                        try await Task.sleep(for: .milliseconds(250))
+                    } catch {
+                        return
+                    }
+                }
+            }
+            : nil
+        defer { migrationStatusTask?.cancel() }
+
         do {
             var request = URLRequest(url: baseURL.appending(path: "settings"))
             request.httpMethod = "PATCH"
@@ -968,8 +996,14 @@ final class BackendClient: ObservableObject {
                 throw URLError(.badServerResponse)
             }
             if !(200..<300).contains(httpResponse.statusCode) {
-                let text = String(data: data, encoding: .utf8) ?? "Bad server response"
-                throw BackendError.message(text)
+                if let failure = try? JSONDecoder().decode(DataRootMigrationErrorEnvelope.self, from: data) {
+                    if let operation = failure.operation {
+                        dataRootMigration = operation
+                        dataRootMigrationPresentationPhase = operation.phase
+                    }
+                    throw BackendError.message("\(failure.code): \(failure.error)")
+                }
+                throw BackendError.message(Self.errorMessage(from: data) ?? "Bad server response")
             }
             let updatedSettings = try JSONDecoder().decode(BackendSettings.self, from: data)
             settings = updatedSettings
@@ -989,6 +1023,23 @@ final class BackendClient: ObservableObject {
         } catch {
             lastError = error.localizedDescription
             return false
+        }
+    }
+
+    private func refreshDataRootMigrationStatus(expectedTarget: String) async {
+        do {
+            let (data, response) = try await URLSession.shared.data(
+                from: baseURL.appending(path: "data-root-migrations/current")
+            )
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
+            let status = try JSONDecoder().decode(DataRootMigrationStatusEnvelope.self, from: data)
+            guard let operation = status.operation,
+                  DataRootMigrationPresentation.pathsEqual(operation.targetDataRoot, expectedTarget) else { return }
+            dataRootMigration = operation
+            dataRootMigrationPresentationPhase = operation.phase
+        } catch {
+            // A disconnect is expected after the selector is committed and the
+            // host replaces the Backend. The reconnect loop owns that phase.
         }
     }
 

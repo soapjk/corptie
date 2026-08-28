@@ -1536,12 +1536,46 @@ struct DataRootMigrationOperation: Decodable, Equatable {
 struct DataRootMigrationFailure: Decodable, Equatable {
     let code: String
     let message: String
+    let details: DataRootMigrationFailureDetails?
+}
+
+struct DataRootMigrationFailureDetails: Decodable, Equatable {
+    let blockers: [DataRootMigrationBlocker]?
+}
+
+struct DataRootMigrationBlocker: Decodable, Equatable, Identifiable {
+    var id: String { kind }
+    let kind: String
+    let count: Int
 }
 
 struct DataRootMigrationPhaseEvent: Decodable, Equatable, Identifiable {
     var id: String { "\(phase):\(at)" }
     let phase: String
     let at: String
+}
+
+enum DataRootMigrationPresentation {
+    static func pathsEqual(_ lhs: String?, _ rhs: String) -> Bool {
+        guard let lhs else { return false }
+        return URL(fileURLWithPath: lhs).standardizedFileURL.path
+            == URL(fileURLWithPath: rhs).standardizedFileURL.path
+    }
+
+    static func progress(for phase: String) -> Double {
+        switch phase {
+        case "preflight": 0.08
+        case "quiescing": 0.20
+        case "checkpointing": 0.34
+        case "copying": 0.52
+        case "verifying": 0.70
+        case "switching": 0.82
+        case "restartRequired": 0.88
+        case "reconnecting": 0.94
+        case "completed": 1.0
+        default: 0.0
+        }
+    }
 }
 
 struct GatewaySettings: Codable, Equatable {
