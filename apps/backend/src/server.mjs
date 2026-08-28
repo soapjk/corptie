@@ -128,6 +128,7 @@ import {
 } from "./dsh-adapter/dshWebSocket.mjs";
 import { mapEvent as mapDshEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
+import { DataRootMigrationCoordinator } from "./runtime/dataRootMigrationCoordinator.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
 import { LegacySessionHistoryRepairService } from "./application/legacySessionHistoryRepairService.mjs";
@@ -184,7 +185,7 @@ import {
   normalizeNewSessionDefaults,
   resolveNewCodexRuntimeConfig
 } from "./utils/newSessionDefaults.mjs";
-import { configureBackendLogging } from "./utils/backendLogging.mjs";
+import { configureBackendLogging, suspendBackendLogging } from "./utils/backendLogging.mjs";
 import {
   automationTimelineItems,
   collaborationEnvelopeFailure
@@ -267,6 +268,7 @@ const dshLiveSequenceBySession = new Map();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
 const workItemMemoryExtractions = new Map();
+const startupMaintenanceTasks = new Set();
 const codexChoiceParseRetryAfter = new Map();
 const reconcilingWorkspacePaths = new Set();
 const reservedSessionTitleKeys = new Set();
@@ -289,14 +291,12 @@ const objectiveService = new ObjectiveApplicationService({
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
 const artifactService = new ArtifactService({ store });
-store.setDataRootDidChangeListener(async ({ current, receipt, rollback = false }) => {
-  const artifactVerification = await artifactService.useDataRoot(current);
-  configureBackendLogging(current.logsDirectory, {
-    mirrorToOriginalConsole: environmentName === "development"
-  });
-  if (!rollback) {
-    console.log(`[data-root] migration completed ${JSON.stringify({ ...receipt, ...artifactVerification })}`);
-  }
+const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
+  store,
+  environment: environmentName,
+  inspectBlockers: inspectDataRootMigrationBlockers,
+  quiesce: quiescePersistentRuntime,
+  resume: resumePersistentRuntime
 });
 const objectiveChatContextService = new ObjectiveChatContextService({ store, artifactService });
 const objectiveChatOperationService = new ObjectiveChatOperationService({
@@ -6842,15 +6842,114 @@ async function operateProjectWorktree(sessionId, sourceWorktreeId, input = {}) {
   return { operations, merge, synchronization, cleanup, deletedSessionIds, restart };
 }
 
+function inspectDataRootMigrationBlockers() {
+  const blockers = [];
+  const checks = [
+    ["active_session_turns", "SELECT COUNT(*) AS count FROM session_turns WHERE execution_status IN ('running', 'blocked')"],
+    ["agent_work_queue", "SELECT COUNT(*) AS count FROM agent_work_items WHERE status IN ('queued', 'running')"],
+    ["scheduled_tasks", "SELECT COUNT(*) AS count FROM scheduled_session_runs WHERE status IN ('claimed', 'queued', 'running', 'retry_wait')"],
+    ["worktree_integrations", "SELECT COUNT(*) AS count FROM worktree_integration_jobs WHERE status IN ('queued', 'running', 'cancellation_requested', 'replanning')"],
+    ["artifact_writes", "SELECT COUNT(*) AS count FROM artifact_content_operations WHERE status IN ('prepared', 'file_committed')"]
+  ];
+  for (const [kind, sql] of checks) {
+    const count = Number(store.selectOne(sql)?.count ?? 0);
+    if (count > 0) blockers.push({ kind, count });
+  }
+  if (dshLiveTurns.size > 0) blockers.push({ kind: "live_provider_turns", count: dshLiveTurns.size });
+  if (workItemMemoryExtractions.size > 0) blockers.push({ kind: "background_memory_tasks", count: workItemMemoryExtractions.size });
+  if (pendingCodexChoiceParses.size > 0) blockers.push({ kind: "background_choice_tasks", count: pendingCodexChoiceParses.size });
+  return blockers;
+}
+
+async function quiescePersistentRuntime() {
+  if (agentWorkQueueInterval) {
+    clearInterval(agentWorkQueueInterval);
+    agentWorkQueueInterval = null;
+  }
+  if (mockProgressTimer) {
+    clearInterval(mockProgressTimer);
+    mockProgressTimer = null;
+  }
+  if (stateSyncPublishTimer) {
+    clearTimeout(stateSyncPublishTimer);
+    stateSyncPublishTimer = null;
+  }
+  timelineChangePublisher?.close();
+  scheduledSessionTaskService.stop();
+  await codexResetForecastMonitor?.stop();
+  openClackyManager.stop();
+  await Promise.all([
+    feishuGateway.close(),
+    codexRuntime.close(),
+    claudeProviderRuntime.manager.close()
+  ]);
+  await Promise.allSettled([...startupMaintenanceTasks]);
+  await suspendBackendLogging();
+}
+
+async function resumePersistentRuntime() {
+  activateStoredBackendLogging();
+  timelineChangePublisher = new SessionTimelineChangePublisher({
+    emit: ({ sessionId, timelineRevision }) => emitEvent("SessionTimelineChanged", {
+      sessionId,
+      timelineRevision
+    }, { sessionId, recordSessionEvent: false })
+  });
+  scheduledSessionTaskService.start();
+  codexResetForecastMonitor?.start();
+  openClackyManager.start();
+  if (!agentWorkQueueInterval) {
+    agentWorkQueueInterval = setInterval(() => {
+      tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
+    }, 2000);
+    agentWorkQueueInterval.unref?.();
+  }
+  trackStartupMaintenance(feishuGateway.initialize().catch((error) => {
+    console.warn(`[feishu] gateway resume failed error=${error?.message ?? error}`);
+  }));
+}
+
+function trackStartupMaintenance(promise) {
+  startupMaintenanceTasks.add(promise);
+  promise.finally(() => startupMaintenanceTasks.delete(promise));
+  return promise;
+}
+
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
   if (store.migrationInProgress
-    && !(request.method === "GET" && (url.pathname === "/health" || url.pathname === "/settings"))) {
+    && !((request.method === "GET" && (
+      url.pathname === "/health"
+      || url.pathname === "/settings"
+      || url.pathname === "/data-root-migrations/current"
+    )) || (request.method === "POST" && url.pathname === "/internal/backend/data-root-restart"))) {
     sendJson(response, 503, {
-      error: "Persistent writes are paused while the data root is being migrated.",
-      code: "DATA_ROOT_MIGRATION_IN_PROGRESS"
+      error: "The Backend is in maintenance mode for a Data Root migration.",
+      code: "DATA_ROOT_MAINTENANCE_MODE",
+      operation: dataRootMigrationCoordinator.status()
     });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/internal/backend/data-root-restart") {
+    const operation = dataRootMigrationCoordinator.status();
+    if (operation?.phase !== "restartRequired") {
+      sendJson(response, 409, {
+        error: "Backend restart is only available after a verified Data Root migration.",
+        code: "DATA_ROOT_RESTART_NOT_READY"
+      });
+      return;
+    }
+    dataRootMigrationCoordinator.transition("reconnecting", { restartRequired: false })
+      .then(() => {
+        sendJson(response, 202, { operationId: operation.operationId, accepted: true });
+        setTimeout(() => void shutdown(), 500).unref?.();
+      })
+      .catch((error) => sendJson(response, 500, {
+        error: "Could not persist the Backend restart handoff.",
+        code: error.code ?? "DATA_ROOT_RESTART_HANDOFF_FAILED"
+      }));
     return;
   }
 
@@ -7097,13 +7196,23 @@ function route(request, response) {
       ok: true,
       service: "corptie-backend",
       version: "0.5.3",
-      time: now()
+      time: now(),
+      maintenance: store.migrationInProgress,
+      dataRootMigration: dataRootMigrationCoordinator.status()
     });
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/settings") {
-    sendJson(response, 200, store.settings());
+    sendJson(response, 200, {
+      ...store.settings(),
+      dataRootMigration: dataRootMigrationCoordinator.status()
+    });
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/data-root-migrations/current") {
+    sendJson(response, 200, { operation: dataRootMigrationCoordinator.status() });
     return;
   }
 
@@ -7129,13 +7238,27 @@ function route(request, response) {
     readJson(request)
       .then(async (input) => {
         const before = store.settings();
-        const settings = await store.updateSettings(input);
+        if (Object.hasOwn(input, "dataRoot")
+          && (typeof input.dataRoot !== "string" || !input.dataRoot.trim())) {
+          const error = new TypeError("Data Root must be a non-empty absolute path.");
+          error.code = "DATA_ROOT_INVALID";
+          throw error;
+        }
+        const requestedDataRoot = typeof input.dataRoot === "string" ? input.dataRoot.trim() : null;
+        const settingsPatch = { ...input, dataRoot: store.settings().dataRoot };
+        const settings = await store.updateSettings(settingsPatch);
         const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
         const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
         if (codexBackendChanged || codexProxyChanged) {
           await codexRuntime.close();
         }
-        return settings;
+        const operation = requestedDataRoot && resolve(requestedDataRoot) !== resolve(store.settings().dataRoot)
+          ? await dataRootMigrationCoordinator.migrate(requestedDataRoot)
+          : null;
+        return {
+          ...settings,
+          dataRootMigration: operation ?? dataRootMigrationCoordinator.status()
+        };
       })
       .then((settings) => {
         configureChoiceParserRuntime({
@@ -7145,7 +7268,12 @@ function route(request, response) {
         sendJson(response, 200, settings);
       })
       .catch((error) => {
-        sendJson(response, 400, { error: error.message });
+        sendJson(response, errorStatus(error, 400), {
+          error: error.message,
+          code: error.code ?? "SETTINGS_UPDATE_FAILED",
+          details: error.details ?? null,
+          operation: dataRootMigrationCoordinator.status()
+        });
       });
     return;
   }
@@ -8620,6 +8748,7 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+await dataRootMigrationCoordinator.initialize();
 const recoveredArtifactContentOperations = await artifactService.initialize();
 if (recoveredArtifactContentOperations.length > 0) {
   console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
@@ -8790,21 +8919,21 @@ server.listen(port, "127.0.0.1", () => {
   // services for every configured bot. It is maintenance, not an API
   // readiness dependency, so never hold the loopback server closed for it.
   setImmediate(() => {
-    feishuGateway.initialize()
+    trackStartupMaintenance(feishuGateway.initialize()
       .then(() => {
         const status = feishuGateway.status();
         console.log(`[feishu] gateway ready cli=${status.cliAvailable ? status.cliPath : "unavailable"}`);
       })
       .catch((error) => {
         console.warn(`[feishu] gateway initialization failed error=${error?.message ?? error}`);
-      });
+      }));
   });
   // Legacy Skill repair is maintenance, not a readiness dependency. Run it
   // only after the API is healthy so an invalid external package cannot block
   // every App launch. Persistent failure fingerprints suppress unchanged,
   // deterministic failures on later starts.
   setImmediate(() => {
-    skillRegistryService.repairLegacyRegistrations()
+    trackStartupMaintenance(skillRegistryService.repairLegacyRegistrations()
       .then((result) => {
         if (result.repaired.length > 0) {
           console.log(`[skills] repaired ${result.repaired.length} legacy Skill registration(s)`);
@@ -8815,14 +8944,14 @@ server.listen(port, "127.0.0.1", () => {
       })
       .catch((error) => {
         console.warn(`[skills] legacy Skill repair failed error=${error?.message ?? error}`);
-      });
+      }));
   });
   // The 2026-08-26 Store-authority cutover deliberately removed Provider
   // history reads from GET. Repair pre-cutover Sessions once, after readiness,
   // and retain an audit row for every import, empty history, limitation or
   // failure. Timeline revisions wake connected clients after each commit.
   setImmediate(() => {
-    legacySessionHistoryRepairService.run()
+    trackStartupMaintenance(legacySessionHistoryRepairService.run()
       .then((result) => {
         console.log(`[legacy-history-repair] ${JSON.stringify({
           scanned: result.scanned,
@@ -8837,7 +8966,7 @@ server.listen(port, "127.0.0.1", () => {
       })
       .catch((error) => {
         console.warn(`[legacy-history-repair] run failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
-      });
+      }));
   });
 });
 
@@ -8851,11 +8980,13 @@ function shutdown() {
     if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
     timelineChangePublisher?.close();
     scheduledSessionTaskService.stop();
-    codexResetForecastMonitor?.stop();
+    await codexResetForecastMonitor?.stop();
     openClackyManager.stop();
     await feishuGateway.close();
     await codexRuntime.close();
-    await store.close();
+    await store.close({
+      checkpoint: dataRootMigrationCoordinator.status()?.phase !== "restartRequired"
+    });
     process.exit(0);
   })();
   return shutdownPromise;
