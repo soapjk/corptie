@@ -8,6 +8,7 @@ import {
   readdir,
   rename,
   rmdir,
+  statfs,
   stat,
   writeFile
 } from "node:fs/promises";
@@ -63,10 +64,12 @@ export async function migrateDataRoot({
   sourceDatabase,
   keyTables = ["objectives", "work_items", "sessions", "artifact_versions"],
   beforeCommit,
-  afterCommit
+  afterCommit,
+  onPhase
 }) {
   assertDistinctRoots(sourceLayout.dataRoot, targetLayout.dataRoot);
   await assertTargetEmpty(targetLayout.dataRoot);
+  await assertAvailableSpace(sourceLayout.dataRoot, dirname(targetLayout.dataRoot));
   await mkdir(dirname(targetLayout.dataRoot), { recursive: true, mode: 0o700 });
   const stagingRoot = join(
     dirname(targetLayout.dataRoot),
@@ -75,6 +78,7 @@ export async function migrateDataRoot({
   const stagingLayout = resolveDataRootLayout(stagingRoot, targetLayout.environment);
   let committed = false;
   try {
+    await onPhase?.("copying");
     await cp(sourceLayout.dataRoot, stagingRoot, {
       recursive: true,
       force: false,
@@ -87,12 +91,14 @@ export async function migrateDataRoot({
     await backup(sourceDatabase, stagingLayout.databasePath);
     await syncFile(stagingLayout.databasePath);
 
+    await onPhase?.("verifying");
     const verification = await verifyMigratedDataRoot({
       sourceLayout,
       targetLayout: stagingLayout,
       keyTables
     });
     if (beforeCommit) await beforeCommit({ stagingLayout, verification });
+    await onPhase?.("switching");
     if (await pathExists(targetLayout.dataRoot)) await rmdir(targetLayout.dataRoot);
     await rename(stagingRoot, targetLayout.dataRoot);
     committed = true;
@@ -104,6 +110,14 @@ export async function migrateDataRoot({
     error.migrationCommitted = committed;
     throw error;
   }
+}
+
+export async function preflightDataRootMigration({ sourceLayout, targetLayout }) {
+  assertDistinctRoots(sourceLayout.dataRoot, targetLayout.dataRoot);
+  await assertTargetEmpty(targetLayout.dataRoot);
+  await mkdir(dirname(targetLayout.dataRoot), { recursive: true, mode: 0o700 });
+  const space = await assertAvailableSpace(sourceLayout.dataRoot, dirname(targetLayout.dataRoot));
+  return { sourceBytes: space.sourceBytes, availableBytes: space.availableBytes };
 }
 
 export async function verifyMigratedDataRoot({ sourceLayout, targetLayout, keyTables = [] }) {
@@ -171,6 +185,30 @@ async function assertTargetEmpty(path) {
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
+}
+
+async function assertAvailableSpace(sourceRoot, targetParent) {
+  const [sourceBytes, filesystem] = await Promise.all([
+    directoryBytes(sourceRoot),
+    statfs(targetParent)
+  ]);
+  const availableBytes = Number(filesystem.bavail) * Number(filesystem.bsize);
+  // SQLite backup and copy-on-write files can briefly require more than the
+  // exact source size. Keep a bounded 10% margin plus 64 MiB.
+  const requiredBytes = Math.ceil(sourceBytes * 1.1) + 64 * 1024 * 1024;
+  if (!Number.isFinite(availableBytes) || availableBytes < requiredBytes) {
+    const error = migrationError("DATA_ROOT_INSUFFICIENT_SPACE", "The target filesystem does not have enough free space for a verified migration.");
+    error.statusCode = 507;
+    error.details = { sourceBytes, requiredBytes, availableBytes };
+    throw error;
+  }
+  return { sourceBytes, requiredBytes, availableBytes };
+}
+
+async function directoryBytes(root) {
+  let bytes = 0;
+  for (const path of await listFiles(root)) bytes += Number((await stat(path)).size);
+  return bytes;
 }
 
 function isSQLiteTransientPath(path, databasePath) {
