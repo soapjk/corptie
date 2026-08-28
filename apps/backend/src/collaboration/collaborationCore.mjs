@@ -538,6 +538,31 @@ export class CollaborationCore {
     return row ? taskConfirmationFromRow(row, this) : null;
   }
 
+  hasConfirmedSessionRoute(initiatorSessionId, recipientSessionId) {
+    const sourceSessionId = optionalText(initiatorSessionId);
+    const targetSessionId = optionalText(recipientSessionId);
+    if (!sourceSessionId || !targetSessionId) return false;
+    const currentGrant = this.store.selectOne(
+      `SELECT confirmation_id FROM collaboration_request_confirmations
+       WHERE initiator_session_id = ? AND recipient_session_id = ?
+         AND status = 'confirmed' AND task_id IS NOT NULL
+       ORDER BY resolved_at DESC LIMIT 1`,
+      [sourceSessionId, targetSessionId]
+    );
+    if (currentGrant) return true;
+    return Boolean(this.store.selectOne(
+      `SELECT confirmation.confirmation_id
+       FROM collaboration_request_confirmations confirmation
+       JOIN collaboration_tasks task ON task.task_id = confirmation.task_id
+       WHERE (confirmation.recipient_session_id IS NULL OR confirmation.recipient_session_id = '')
+         AND COALESCE(NULLIF(confirmation.initiator_session_id, ''), task.initiator_session_id) = ?
+         AND task.recipient_session_id = ?
+         AND confirmation.status = 'confirmed'
+       ORDER BY confirmation.resolved_at DESC LIMIT 1`,
+      [sourceSessionId, targetSessionId]
+    ));
+  }
+
   discardPendingTaskConfirmation(confirmationId) {
     const confirmation = this.getTaskConfirmation(confirmationId);
     if (!confirmation) return false;
@@ -587,8 +612,14 @@ export class CollaborationCore {
     });
     this.store.db.run(
       `UPDATE collaboration_request_confirmations
-       SET status = 'confirmed', task_id = ?, resolved_at = ? WHERE confirmation_id = ? AND status = 'pending'`,
-      [task.taskId, this.clock(), confirmationId]
+       SET status = 'confirmed', task_id = ?, resolved_at = ?,
+           initiator_session_id = ?, recipient_session_id = ?,
+           initiator_name_at_send = ?, recipient_name_at_send = ?
+       WHERE confirmation_id = ? AND status = 'pending'`,
+      [
+        task.taskId, this.clock(), task.initiatorSessionId, task.recipientSessionId,
+        task.initiatorNameAtSend, task.recipientNameAtSend, confirmationId
+      ]
     );
     this.store.scheduleSave();
     return this.getTaskConfirmation(confirmationId);

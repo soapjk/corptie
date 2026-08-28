@@ -2407,6 +2407,10 @@ export class CorptieStore {
     this.ensureColumn("collaboration_request_confirmations", "recipient_session_id", "TEXT");
     this.ensureColumn("collaboration_request_confirmations", "initiator_name_at_send", "TEXT");
     this.ensureColumn("collaboration_request_confirmations", "recipient_name_at_send", "TEXT");
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_request_confirmations_route
+      ON collaboration_request_confirmations(
+        initiator_session_id, recipient_session_id, status, resolved_at DESC
+      )`);
     this.migrateCanonicalSessionNames();
     this.migrateCollaborationSessionIdentities();
     this.db.run(`UPDATE collaboration_deliveries

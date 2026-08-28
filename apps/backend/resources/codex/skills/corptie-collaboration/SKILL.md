@@ -25,7 +25,9 @@ When Corptie explicitly creates a one-time project-toolset initialization or upd
 
 ## Send a request
 
-Treat names supplied by the user as search aliases only. Resolve the exact visible target Session within the authorized Objective/WorkItem scope, then call the request tool once with `recipient_session_id`. Do not compose a user-facing confirmation in prose. Corptie renders the confirmation card deterministically from the tool arguments. In that card:
+Treat names supplied by the user as search aliases only. Resolve the exact visible target Session within the authorized Objective/WorkItem scope, then call the request tool once with `recipient_session_id`. The first confirmed request authorizes only that exact logical source Session → logical target Session route. A later request over the same directional Session pair may send immediately, but every call must still revalidate visibility, lifecycle state, Objective/WorkItem scope, and route ownership. A different source or target Session, an ambiguous target, or target-Session creation requires a new confirmation. Never infer trust at Agent or Objective scope.
+
+Do not compose a user-facing confirmation in prose. When confirmation is required, Corptie renders the card deterministically from the tool arguments. In that card:
 
 - show source Session → target Session first, followed by source Objective → target Objective and the message;
 - use readable names and do not expose stable IDs in the user-facing card;
@@ -46,7 +48,7 @@ Call `corptie.collaboration.request` immediately after resolution with:
 
 Do not forward full chat histories, unrelated secrets, or unnecessary local data. Use only local Artifact references unless the user separately authorizes an external upload.
 
-The request call stages a pending confirmation; it does not send yet. End the current turn immediately after the tool returns. Do not ask for confirmation in prose, do not process the user's confirm/reject reply, and do not call the request tool again. Corptie handles button clicks or exact confirmation replies programmatically. After confirmation it creates and sends the task; after rejection it discards the draft. Do not poll with `get_task`, call `list_inbox`, or wait for the peer. Corptie starts a later turn when the peer response arrives.
+The request receipt is either pending or confirmed. Pending means the call staged a confirmation and did not send yet; confirmed means a previously authorized exact Session route was revalidated and the new task was sent immediately. End the current turn after either receipt. Do not ask for confirmation in prose, do not process the user's confirm/reject reply, and do not call the request tool again. Corptie handles button clicks or exact confirmation replies programmatically. After approval it creates and sends the task; after rejection it discards the draft. Do not poll with `get_task`, call `list_inbox`, or wait for the peer. Corptie starts a later turn when the peer response arrives.
 
 ## Handle inbox work
 
