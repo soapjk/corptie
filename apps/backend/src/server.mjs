@@ -333,7 +333,8 @@ const memoryOperationService = new MemoryOperationService({
   store,
   hubService,
   recallService: memoryRecallService,
-  resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId)
+  resolveAgentForSession: (sessionId) => collaborationCore.getAgentForSession(sessionId),
+  onDiagnostic: (diagnostic) => console.warn("[memory-operation]", JSON.stringify(diagnostic))
 });
 const collaborationRouter = new CollaborationRouter({ store });
 const memoryExtractor = new MemoryExtractor({
