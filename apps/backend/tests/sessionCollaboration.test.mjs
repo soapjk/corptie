@@ -276,6 +276,24 @@ test("peer Objective discovery exposes context without allowing Objective Chat a
       targetObjectiveId: peerObjective.id,
       routingIntent: "objective_chat"
     }), { code: "INVALID_ROUTING_INTENT" });
+    const exactConfirmation = f.core.proposeTask({
+      initiatorAgentId: sourceAgent.agentId,
+      initiatorSessionId: "session:source",
+      recipientAgentId: peerAgent.agentId,
+      recipientSessionId: "session:marketcow-worker",
+      sourceObjectiveId: sourceObjective.id,
+      targetObjectiveId: peerObjective.id,
+      workItemId: peerWorkItem.id,
+      type: "change_request",
+      title: "Exact MarketCow collaboration",
+      summary: "Confirm the explicitly named active Worker."
+    });
+    const exactPrepared = await f.service.prepareTaskConfirmationTarget(exactConfirmation);
+    assert.equal(exactPrepared.recipientSessionId, "session:marketcow-worker");
+    assert.equal(exactPrepared.recipientAgentId, peerAgent.agentId);
+    assert.equal(exactPrepared.workItemId, peerWorkItem.id);
+    assert.equal(exactPrepared.created, false);
+
     const confirmation = f.core.proposeTask({
       initiatorAgentId: sourceAgent.agentId,
       initiatorSessionId: "session:source",
@@ -422,6 +440,65 @@ test("closed and invalid Sessions are filtered while an active suitable Session 
   }
 });
 
+test("a completed peer Worker is never routed and creation resources fall back to a new Session", async () => {
+  const f = await fixture();
+  try {
+    const sourceAgent = f.store.createAgent({ id: "agent:source-archived", name: "Source", role: "independentContributor" });
+    const peerAgent = f.store.createAgent({ id: "agent:peer-archived", name: "Peer", role: "independentContributor" });
+    const unauthorizedAgent = f.store.createAgent({ id: "agent:unauthorized-archived", name: "Unauthorized", role: "independentContributor" });
+    const sourceObjective = f.objectiveService.createObjective({
+      name: "Source Archived", contributorAgentIds: [sourceAgent.agentId]
+    });
+    const peerObjective = f.objectiveService.createObjective({
+      name: "Peer Archived", contributorAgentIds: [peerAgent.agentId]
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:source-archived", logicalSessionId: "session:source-archived",
+      agentId: sourceAgent.agentId, kind: "objectiveChat", objectiveId: sourceObjective.id, cwd: f.directory
+    });
+    const completedWorkItem = f.objectiveService.createWorkItem({
+      objectiveId: peerObjective.id,
+      title: "Completed peer work",
+      mainAgentId: peerAgent.agentId,
+      status: "done"
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:peer-archived", logicalSessionId: "session:peer-archived",
+      agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
+      workItemId: completedWorkItem.id, cwd: f.directory
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:unauthorized-archived", logicalSessionId: "session:unauthorized-archived",
+      agentId: unauthorizedAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
+      workItemId: completedWorkItem.id, cwd: f.directory
+    });
+    const metadata = { sessionId: "provider:source-archived" };
+
+    assert.throws(
+      () => f.service.getSession(metadata, sourceAgent.agentId, "session:peer-archived"),
+      (error) => error.code === "RECIPIENT_SESSION_UNAVAILABLE"
+        && error.statusCode === 409
+        && /workItemCompleted/.test(error.message)
+    );
+    assert.equal(resolveRecipientSession(f.service, metadata, sourceAgent.agentId, {
+      recipientSessionId: "session:peer-archived",
+      targetObjectiveId: peerObjective.id,
+      sessionAgentId: peerAgent.agentId
+    }), null);
+    assert.throws(
+      () => f.service.getSession(metadata, sourceAgent.agentId, "session:unauthorized-archived"),
+      (error) => error.code === "SESSION_NOT_VISIBLE"
+    );
+    assert.deepEqual(f.service.discoverSessions(metadata, sourceAgent.agentId, {
+      agentId: peerAgent.agentId,
+      objectiveId: peerObjective.id
+    }), []);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("an unrouted confirmation creates its WorkItem and target Session before the formal task", async () => {
   const f = await fixture();
   try {
@@ -509,7 +586,7 @@ test("a formal task never changes its target Session during delivery preflight",
   }
 });
 
-test("a replaced broken Worker route is rejected and collaboration follows the WorkItem's current Session", async () => {
+test("a formal task rejects a replaced broken Worker without silently changing its recipient Session", async () => {
   const f = await fixture();
   try {
     const sourceAgent = f.store.createAgent({ id: "agent:source-repair", name: "Source", role: "independentContributor" });
@@ -548,17 +625,17 @@ test("a replaced broken Worker route is rejected and collaboration follows the W
       agentId: peerAgent.agentId, kind: "worker", objectiveId: peerObjective.id,
       workItemId: workItem.id, cwd: f.directory
     });
-    const route = await f.service.ensureTaskRecipientSession(task, { reason: "delivery_preflight" });
-
-    assert.equal(route.created, false);
-    assert.equal(route.sessionId, "session:replacement");
-    assert.equal(route.providerSessionId, "provider:replacement");
-    assert.equal(f.core.getTask(task.taskId).recipientSessionId, "session:replacement");
-    const reroute = f.store.selectOne(
-      "SELECT payload_json FROM collaboration_events WHERE task_id=? AND type='recipient_route_reselected' ORDER BY sequence DESC LIMIT 1",
-      [task.taskId]
+    await assert.rejects(
+      f.service.ensureTaskRecipientSession(task, { reason: "delivery_preflight" }),
+      (error) => error.code === "RECIPIENT_SESSION_UNAVAILABLE"
+        && error.statusCode === 409
+        && /work_item_session_superseded/.test(error.message)
     );
-    assert.match(reroute.payload_json, /work_item_session_superseded/);
+    assert.equal(f.core.getTask(task.taskId).recipientSessionId, "session:missing-rollout");
+    assert.equal(f.store.selectOne(
+      "SELECT COUNT(*) AS count FROM collaboration_events WHERE task_id=? AND type='recipient_route_reselected'",
+      [task.taskId]
+    ).count, 0);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

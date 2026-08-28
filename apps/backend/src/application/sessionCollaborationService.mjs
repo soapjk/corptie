@@ -60,7 +60,19 @@ export class SessionCollaborationService {
   getSession(metadata, actorId, sessionId) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
     const target = this.#resolveSession(sessionId);
-    if (!target || !this.#isVisibleSession(scope, target, { explicitPeerLookup: true })) {
+    if (!target) {
+      throw coded("SESSION_NOT_VISIBLE", "The target Session is outside the authenticated Objective/Agent scope.");
+    }
+    if (!this.#isVisibleSession(scope, target, { explicitPeerLookup: true })) {
+      const eligibility = collaborationSessionEligibility(this.store, target);
+      if (eligibility.reasons.includes("session_archived")
+        && this.#isVisibleSession(scope, target, { explicitPeerLookup: true, includeArchived: true })) {
+        throw coded(
+          "RECIPIENT_SESSION_UNAVAILABLE",
+          `The target Session is archived and cannot receive a new collaboration task: ${target.archiveReason ?? "session_archived"}.`,
+          409
+        );
+      }
       throw coded("SESSION_NOT_VISIBLE", "The target Session is outside the authenticated Objective/Agent scope.");
     }
     return this.#sessionDescriptor(target, scope);
@@ -298,7 +310,9 @@ export class SessionCollaborationService {
       return agentId === scope.agent.agentId || (objective.contributorAgentIds ?? []).includes(agentId);
     }
     if (!scope.session.objectiveId) return agentId === scope.agent.agentId;
-    if (!options.explicitPeerLookup || !session.objectiveId || session.archived) return false;
+    if (!options.explicitPeerLookup
+      || !session.objectiveId
+      || (session.archived && !options.includeArchived)) return false;
     const objective = this.store.getObjective(session.objectiveId);
     if (!objective) return false;
     const assignedWorkItem = session.workItemId ? this.store.getWorkItem(session.workItemId) : null;
@@ -352,7 +366,11 @@ export class SessionCollaborationService {
     const request = confirmation.request ?? {};
     if (confirmation.recipientSessionId) {
       const target = collaborationTargetEligibility(this.store, {
-        workItemId: request.workItemId ?? confirmation.recipientWorkItemId
+        workItemId: request.workItemId ?? confirmation.recipientWorkItemId,
+        targetObjectiveId: request.targetObjectiveId ?? confirmation.targetObjectiveId,
+        recipientAgentId: request.sessionAgentId
+          ?? request.recipientAgentId
+          ?? confirmation.recipientAgentId
       }, confirmation.recipientSessionId);
       if (!target.active) {
         throw coded("RECIPIENT_SESSION_UNAVAILABLE", `The selected target Session is unavailable: ${target.reasons.join(", ")}.`, 409);
@@ -401,8 +419,13 @@ export class SessionCollaborationService {
     if (workItem.objective_id !== targetObjectiveId || workItem.main_agent_id !== agent.agentId) {
       throw coded("COLLABORATION_TARGET_RESOURCE_MISMATCH", "The prepared WorkItem does not match the target Objective and Agent resource.", 409);
     }
+    const targetContext = {
+      workItemId: workItem.id,
+      targetObjectiveId,
+      recipientAgentId: agent.agentId
+    };
     const existing = workItem.current_session_id
-      ? collaborationTargetEligibility(this.store, { workItemId: workItem.id }, workItem.current_session_id)
+      ? collaborationTargetEligibility(this.store, targetContext, workItem.current_session_id)
       : null;
     let target = existing?.active ? existing : null;
     if (!target) {
@@ -413,7 +436,7 @@ export class SessionCollaborationService {
         autoUniqueTitle: true,
         source: "collaboration_confirmation"
       });
-      target = collaborationTargetEligibility(this.store, { workItemId: workItem.id }, launched?.id ?? launched?.sessionId);
+      target = collaborationTargetEligibility(this.store, targetContext, launched?.id ?? launched?.sessionId);
     }
     if (!target?.active) {
       throw coded("CREATED_SESSION_NOT_ACTIVE", `The target Worker Session was not created successfully: ${target?.reasons.join(", ") || "unresolved"}.`, 503);
@@ -641,7 +664,17 @@ export class SessionCollaborationService {
 
 export function resolveRecipientSession(service, metadata, actorId, input = {}) {
   if (input.recipientSessionId) {
-    const explicit = service.getSession(metadata, actorId, input.recipientSessionId);
+    let explicit;
+    try {
+      explicit = service.getSession(metadata, actorId, input.recipientSessionId);
+    } catch (error) {
+      if (error.code === "RECIPIENT_SESSION_UNAVAILABLE"
+        && optional(input.targetObjectiveId)
+        && optional(input.sessionAgentId)) {
+        return null;
+      }
+      throw error;
+    }
     return explicit.active
       && explicit.sessionKind === "worker"
       && (!input.workItemId || explicit.workItemId === input.workItemId)
