@@ -743,6 +743,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     var onPositionChange: (AppKitChatTimelinePosition) -> Void = { _ in }
     var scrollToTurnID: String? = nil
     var scrollToTurnRevision: Int = 0
+    var historyRequestEpoch: Int = 0
 
     nonisolated static func rowIndex(forTurnID turnID: String, in rows: [AppKitChatTimelineRow]) -> Int? {
         rows.firstIndex(where: {
@@ -775,6 +776,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.apply(rows: rows, animated: false)
         context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
         context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
+        context.coordinator.lastHistoryRequestEpoch = historyRequestEpoch
         return scrollView
     }
 
@@ -847,6 +849,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
             if let scrollToTurnID { context.coordinator.scrollToTurn(scrollToTurnID) }
         }
+        if context.coordinator.lastHistoryRequestEpoch != historyRequestEpoch {
+            context.coordinator.lastHistoryRequestEpoch = historyRequestEpoch
+            context.coordinator.rearmHistoryRequest()
+        }
     }
 
     @MainActor
@@ -874,6 +880,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var suppressesNearTopTrigger = false
         var lastScrollToBottomRevision = Int.min
         var lastScrollToTurnRevision = Int.min
+        var lastHistoryRequestEpoch = Int.min
         var followsLatest = true
         private var nearTopTriggered = false
         private var positionPublishWorkItem: DispatchWorkItem?
@@ -1310,10 +1317,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             return contentMaxY - visibleMaxY <= 8
         }
 
-        private func viewportDidScroll() {
+        func viewportDidScroll(userInitiated: Bool? = nil) {
             guard let scrollView, !rows.isEmpty else { return }
-            if let eventType = NSApp.currentEvent?.type,
-               eventType == .scrollWheel || eventType == .leftMouseDragged {
+            let eventType = NSApp.currentEvent?.type
+            let eventIsUserInitiated = eventType == .scrollWheel
+                || eventType == .leftMouseDown
+                || eventType == .leftMouseDragged
+            let acceptsHistoryRequest = userInitiated
+                ?? (isProcessingUserScrollEvent || eventIsUserInitiated)
+            if acceptsHistoryRequest {
                 userDidBeginScrolling()
             }
             updateFollowStateFromViewport()
@@ -1327,7 +1339,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             // also emit bounds changes; treating those as user intent was able
             // to prepend history after a tiny wheel delta and visibly jump the
             // reader toward the oldest message.
-            if nearTop && isProcessingUserScrollEvent
+            if nearTop && acceptsHistoryRequest
                 && !nearTopTriggered && !suppressesNearTopTrigger {
                 nearTopTriggered = true
                 onNearTop()
@@ -1359,13 +1371,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func userScrollEventDidEnd() {
-            isProcessingUserScrollEvent = false
             // A wheel/trackpad gesture at the bottom can be fully clamped by
             // the scroll boundary. AppKit then emits no bounds-change event,
             // so `userDidBeginScrolling()` would otherwise leave follow mode
             // false even though the viewport never left the latest region.
             // Reconcile once from final geometry after every user gesture.
+            viewportDidScroll(userInitiated: true)
+            isProcessingUserScrollEvent = false
             updateFollowStateFromViewport()
+        }
+
+        func rearmHistoryRequest() {
+            nearTopTriggered = false
         }
 
         private func updateFollowStateFromViewport() {
