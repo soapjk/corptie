@@ -10,7 +10,7 @@ import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
 import { MemoryOperationService } from "../src/application/memoryOperationService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-async function fixture() {
+async function fixture(options = {}) {
   const directory = await mkdtemp(join(tmpdir(), "corptie-memory-tools-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -48,6 +48,7 @@ async function fixture() {
     store,
     hubService,
     resolveAgentForSession: (sessionId) => core.getAgentForSession(sessionId),
+    onDiagnostic: options.onDiagnostic,
     clock: () => "2026-08-18T08:00:00.000Z",
     idFactory: (() => { let value = 0; return () => `fixed-${++value}`; })()
   });
@@ -134,10 +135,148 @@ test("remember derives Objective/WorkItem owners and rejects every unbound scope
       }),
       { code: "MEMORY_SCOPE_FORBIDDEN" }
     );
+    const assistantMemory = await f.service.execute({
+      actorId: f.other.agentId,
+      tool: "corptie_memory_remember",
+      arguments: { content: "Agent-only memory", kind: "fact", scope: "agent" },
+      metadata: { sessionId: "session:assistant" }
+    });
+    assert.equal(assistantMemory.memory.ownerType, "agent");
+    assert.equal(assistantMemory.memory.ownerId, f.other.agentId);
     await assert.rejects(
       () => call(f.service, f.other.agentId, "corptie_memory_remember", { content: "escape", kind: "fact" }),
       { code: "MEMORY_SESSION_SCOPE_REQUIRED" }
     );
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("five Objective Chat Sessions sharing one Agent route independently and deduplicate retries per Session", async () => {
+  const f = await fixture();
+  try {
+    const sessions = [];
+    for (let index = 1; index <= 5; index += 1) {
+      const objectiveId = `objective:batch-${index}`;
+      const sessionId = `session:batch-${index}`;
+      f.store.createObjective({
+        id: objectiveId,
+        name: `Batch Objective ${index}`,
+        contributorAgentIds: [f.agent.agentId]
+      });
+      f.store.upsertSession({
+        id: sessionId,
+        title: `Batch Session ${index}`,
+        provider: "codex-app-server",
+        status: "running",
+        sessionKind: "objectiveChat",
+        agentId: f.agent.agentId,
+        objectiveId
+      });
+      f.core.bindSession({ agentId: f.agent.agentId, sessionId });
+      sessions.push({ objectiveId, sessionId });
+    }
+    assert.equal(f.store.getAgent(f.agent.agentId).currentSessionId, "session:batch-5");
+
+    const firstPass = await Promise.all(sessions.map(({ objectiveId, sessionId }) => f.service.execute({
+      actorId: f.agent.agentId,
+      tool: "corptie_memory_remember",
+      arguments: {
+        content: "Identical durable instruction",
+        kind: "procedure",
+        scope: "objective",
+        idempotency_key: "same-instruction"
+      },
+      metadata: { sessionId, objectiveId }
+    })));
+    assert.deepEqual(firstPass.map((result) => result.memory.ownerId), sessions.map((item) => item.objectiveId));
+    assert.ok(firstPass.every((result) => result.idempotentReplay === false));
+
+    const retries = await Promise.all(sessions.map(({ objectiveId, sessionId }) => f.service.execute({
+      actorId: f.agent.agentId,
+      tool: "corptie_memory_remember",
+      arguments: {
+        content: "Identical durable instruction",
+        kind: "procedure",
+        scope: "objective",
+        idempotency_key: "same-instruction"
+      },
+      metadata: { sessionId, objectiveId }
+    })));
+    assert.deepEqual(retries.map((result) => result.memory.id), firstPass.map((result) => result.memory.id));
+    assert.ok(retries.every((result) => result.idempotentReplay === true));
+
+    for (const { objectiveId, sessionId } of sessions) {
+      const memories = f.store.listMemoriesByOwner("objective", objectiveId);
+      assert.equal(memories.length, 1);
+      assert.equal(memories[0].source_session_id, sessionId);
+      const rememberEvents = f.store.listSessionEvents(sessionId)
+        .filter((event) => event.type === "memory/remember");
+      assert.equal(rememberEvents.length, 1);
+      assert.equal(Object.hasOwn(rememberEvents[0].payload, "content"), false);
+    }
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("remember rejects cross-Objective claims and idempotency conflicts with content-free diagnostics", async () => {
+  const diagnostics = [];
+  const f = await fixture({ onDiagnostic: (entry) => diagnostics.push(entry) });
+  try {
+    const created = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
+      content: "Sensitive durable正文",
+      kind: "fact",
+      scope: "objective",
+      idempotency_key: "stable-request"
+    }, { objectiveId: "objective:bound" });
+
+    await assert.rejects(
+      () => call(f.service, f.agent.agentId, "corptie_memory_remember", {
+        content: "Different sensitive正文",
+        kind: "fact",
+        scope: "objective",
+        idempotency_key: "stable-request"
+      }, { objectiveId: "objective:bound" }),
+      (error) => error.code === "MEMORY_IDEMPOTENCY_CONFLICT"
+        && error.stage === "idempotency_resolution"
+        && error.message.includes("sessionId=session:current")
+        && error.message.includes("objectiveId=objective:bound")
+    );
+    await assert.rejects(
+      () => call(f.service, f.agent.agentId, "corptie_memory_remember", {
+        content: "Sensitive cross-objective正文",
+        kind: "fact",
+        scope: "objective"
+      }, { objectiveId: "objective:other" }),
+      (error) => error.code === "MEMORY_SESSION_SCOPE_REQUIRED"
+        && error.stage === "context_resolution"
+        && error.message.includes("sessionId=session:current")
+        && error.message.includes("objectiveId=objective:bound")
+    );
+
+    assert.equal(f.store.listMemoriesByOwner("objective", "objective:bound").length, 1);
+    assert.equal(f.store.getMemory(created.memory.id).source_session_id, "session:current");
+    assert.deepEqual(diagnostics.map(({ sessionId, targetObjectiveId, failureStage, errorCode }) => ({
+      sessionId, targetObjectiveId, failureStage, errorCode
+    })), [{
+      sessionId: "session:current",
+      targetObjectiveId: "objective:bound",
+      failureStage: "idempotency_resolution",
+      errorCode: "MEMORY_IDEMPOTENCY_CONFLICT"
+    }, {
+      sessionId: "session:current",
+      targetObjectiveId: "objective:bound",
+      failureStage: "context_resolution",
+      errorCode: "MEMORY_SESSION_SCOPE_REQUIRED"
+    }]);
+    const failureEvents = f.store.listSessionEvents("session:current")
+      .filter((event) => event.type === "memory/remember-failed");
+    assert.equal(failureEvents.length, 2);
+    const serializedDiagnostics = JSON.stringify({ diagnostics, failureEvents });
+    assert.doesNotMatch(serializedDiagnostics, /Sensitive durable正文|Different sensitive正文|Sensitive cross-objective正文/);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

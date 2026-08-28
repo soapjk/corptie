@@ -58,7 +58,13 @@ export const memoryDynamicTools = Object.freeze([
         enum: ["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"]
       },
       scope,
-      tags: { type: "array", items: { type: "string", minLength: 1 } }
+      tags: { type: "array", items: { type: "string", minLength: 1 } },
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        maxLength: 200,
+        description: "Optional retry key scoped to the authenticated Session. Reusing it with identical input returns the original Memory."
+      }
     },
     ["content", "kind"]
   ),
