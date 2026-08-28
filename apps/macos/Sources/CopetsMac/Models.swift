@@ -1464,11 +1464,11 @@ struct BackendSettings: Decodable, Equatable {
     let agentProxy: AgentProxySettings?
     let newSessionDefaults: NewSessionDefaults?
     let gateway: GatewaySettings?
-    let migration: DataRootMigrationReceipt?
+    let dataRootMigration: DataRootMigrationOperation?
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case environment, dataRoot, choiceParser, codexBackend, codeDiff, agentProxy
-        case newSessionDefaults, gateway, migration
+        case newSessionDefaults, gateway, dataRootMigration
     }
 
     init(from decoder: Decoder) throws {
@@ -1490,7 +1490,7 @@ struct BackendSettings: Decodable, Equatable {
         agentProxy = try container.decodeIfPresent(AgentProxySettings.self, forKey: .agentProxy)
         newSessionDefaults = try container.decodeIfPresent(NewSessionDefaults.self, forKey: .newSessionDefaults)
         gateway = try container.decodeIfPresent(GatewaySettings.self, forKey: .gateway)
-        migration = try container.decodeIfPresent(DataRootMigrationReceipt.self, forKey: .migration)
+        dataRootMigration = try container.decodeIfPresent(DataRootMigrationOperation.self, forKey: .dataRootMigration)
     }
 }
 
@@ -1510,6 +1510,30 @@ struct DataRootMigrationReceipt: Decodable, Equatable {
     let verifiedFileBytes: Int
     let sourceDataRoot: String
     let dataRoot: String
+}
+
+struct DataRootMigrationOperation: Decodable, Equatable {
+    let operationId: String
+    let generation: Int
+    let phase: String
+    let sourceDataRoot: String
+    let targetDataRoot: String
+    let restartRequired: Bool
+    let oldDataRootRetained: Bool
+    let receipt: DataRootMigrationReceipt?
+    let error: DataRootMigrationFailure?
+    let history: [DataRootMigrationPhaseEvent]
+}
+
+struct DataRootMigrationFailure: Decodable, Equatable {
+    let code: String
+    let message: String
+}
+
+struct DataRootMigrationPhaseEvent: Decodable, Equatable, Identifiable {
+    var id: String { "\(phase):\(at)" }
+    let phase: String
+    let at: String
 }
 
 struct GatewaySettings: Codable, Equatable {

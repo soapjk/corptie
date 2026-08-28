@@ -389,6 +389,15 @@ export class ClaudeAgentManager {
     session.queryClosed = false;
   }
 
+  async close() {
+    for (const session of this.sessions.values()) {
+      this.resolveAllPendingChoices(session, "Corptie Backend is restarting for Data Root migration.");
+      await this.closeIdleQuery(session);
+      session.turnState = "idle";
+    }
+    this.sessions.clear();
+  }
+
   applyPermissionModeToPendingChoices(session, permissionMode) {
     if (!hasPendingChoices(session) || !["bypassPermissions", "dontAsk"].includes(permissionMode)) {
       return;

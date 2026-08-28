@@ -17,6 +17,12 @@ struct SessionRestartActivity: Equatable {
     let isActive: Bool
 }
 
+struct PendingDataRootMigrationRecovery: Codable, Equatable {
+    let operationId: String
+    let targetDataRoot: String
+    let recordedAt: Date
+}
+
 private struct AutomationClientActionEnvelope: Decodable {
     let payload: Payload
 
@@ -190,6 +196,8 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isCreatingTask = false
     @Published private(set) var settings: BackendSettings?
     @Published private(set) var isUpdatingSettings = false
+    @Published private(set) var dataRootMigration: DataRootMigrationOperation?
+    @Published private(set) var dataRootMigrationPresentationPhase: String?
     @Published private(set) var isTestingChoiceParser = false
     @Published private(set) var feishuBots: [FeishuBot] = []
     @Published private(set) var feishuProfiles: [FeishuProfile] = []
@@ -361,6 +369,7 @@ final class BackendClient: ObservableObject {
             return
         }
         Task {
+            await recoverPendingDataRootMigrationIfNeeded()
             await loadSettings()
             await syncNewSessionDefaultsFromPreferences()
             await loadProviders()
@@ -709,6 +718,8 @@ final class BackendClient: ObservableObject {
                 throw URLError(.badServerResponse)
             }
             settings = try JSONDecoder().decode(BackendSettings.self, from: data)
+            dataRootMigration = settings?.dataRootMigration
+            dataRootMigrationPresentationPhase = settings?.dataRootMigration?.phase
         } catch {
             lastError = error.localizedDescription
         }
@@ -942,13 +953,111 @@ final class BackendClient: ObservableObject {
                 let text = String(data: data, encoding: .utf8) ?? "Bad server response"
                 throw BackendError.message(text)
             }
-            settings = try JSONDecoder().decode(BackendSettings.self, from: data)
+            let updatedSettings = try JSONDecoder().decode(BackendSettings.self, from: data)
+            settings = updatedSettings
+            dataRootMigration = updatedSettings.dataRootMigration
+            dataRootMigrationPresentationPhase = updatedSettings.dataRootMigration?.phase
+            if let operation = updatedSettings.dataRootMigration, operation.restartRequired {
+                persistPendingDataRootMigration(operation)
+                try await CorptieBackendSupervisor.restartBackendForDataRootMigration()
+                dataRootMigrationPresentationPhase = "reconnecting"
+                try await reconnectAfterDataRootMigration(
+                    operationId: operation.operationId,
+                    targetDataRoot: operation.targetDataRoot
+                )
+            }
             lastError = nil
             return true
         } catch {
             lastError = error.localizedDescription
             return false
         }
+    }
+
+    private func reconnectAfterDataRootMigration(operationId: String, targetDataRoot: String) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(45))
+        while ContinuousClock.now < deadline {
+            do {
+                let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "settings"))
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    let current = try JSONDecoder().decode(BackendSettings.self, from: data)
+                    if current.dataRoot == targetDataRoot,
+                       current.dataRootMigration?.operationId == operationId,
+                       current.dataRootMigration?.phase == "completed" {
+                        settings = current
+                        dataRootMigration = current.dataRootMigration
+                        dataRootMigrationPresentationPhase = current.dataRootMigration?.phase
+                        clearPendingDataRootMigration()
+                        AppStateSyncController.shared.start()
+                        startEventStream()
+                        return
+                    }
+                }
+            } catch {
+                // The verified old Backend is expected to disconnect while the
+                // host replaces it. Keep this transition inside migration UI.
+            }
+            try await Task.sleep(for: .milliseconds(350))
+        }
+        throw BackendError.message(L10n("The Backend did not reconnect from the new Data Root in time."))
+    }
+
+    private static let pendingDataRootMigrationKey = "dataRootMigration.pendingRecovery"
+
+    private func persistPendingDataRootMigration(_ operation: DataRootMigrationOperation) {
+        let value = PendingDataRootMigrationRecovery(
+            operationId: operation.operationId,
+            targetDataRoot: operation.targetDataRoot,
+            recordedAt: Date()
+        )
+        if let data = try? JSONEncoder().encode(value) {
+            CorptieAppEnvironment.userDefaults.set(data, forKey: Self.pendingDataRootMigrationKey)
+        }
+    }
+
+    private func clearPendingDataRootMigration() {
+        CorptieAppEnvironment.userDefaults.removeObject(forKey: Self.pendingDataRootMigrationKey)
+    }
+
+    private func recoverPendingDataRootMigrationIfNeeded() async {
+        guard let data = CorptieAppEnvironment.userDefaults.data(forKey: Self.pendingDataRootMigrationKey),
+              let pending = try? JSONDecoder().decode(PendingDataRootMigrationRecovery.self, from: data) else {
+            return
+        }
+        do {
+            if let current = try? await fetchSettingsForDataRootRecovery(),
+               current.dataRoot == pending.targetDataRoot,
+               current.dataRootMigration?.phase == "completed" {
+                settings = current
+                dataRootMigration = current.dataRootMigration
+                dataRootMigrationPresentationPhase = "completed"
+                clearPendingDataRootMigration()
+                return
+            } else if let current = try? await fetchSettingsForDataRootRecovery(),
+                      current.dataRootMigration?.operationId == pending.operationId,
+                      current.dataRootMigration?.restartRequired == true {
+                try await CorptieBackendSupervisor.restartBackendForDataRootMigration()
+            } else {
+                try await CorptieBackendSupervisor.ensureBackendRunningForPendingDataRootMigration()
+            }
+            dataRootMigrationPresentationPhase = "reconnecting"
+            try await reconnectAfterDataRootMigration(
+                operationId: pending.operationId,
+                targetDataRoot: pending.targetDataRoot
+            )
+        } catch {
+            // Keep the durable recovery marker. A later App launch or manual
+            // retry resumes the same operation instead of starting a second one.
+            lastError = L10nFormat("Data Root recovery is pending: %@", error.localizedDescription)
+        }
+    }
+
+    private func fetchSettingsForDataRootRecovery() async throws -> BackendSettings {
+        let (data, response) = try await URLSession.shared.data(from: baseURL.appending(path: "settings"))
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw URLError(.badServerResponse)
+        }
+        return try JSONDecoder().decode(BackendSettings.self, from: data)
     }
 
     func testChoiceParser(_ choiceParser: ChoiceParserSettings, agentProxy: AgentProxySettings? = nil) async -> Result<String, Error> {

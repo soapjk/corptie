@@ -49,6 +49,14 @@ export function logSettings() {
     : null;
 }
 
+export async function suspendBackendLogging() {
+  const closing = Object.values(outputs ?? {});
+  outputs = null;
+  await Promise.all(closing.map((output) => new Promise((resolvePromise) => {
+    output.stream.end(resolvePromise);
+  })));
+}
+
 function installConsoleWriters() {
   installed = true;
   console.log = (...args) => write("stdout", "log", args);
