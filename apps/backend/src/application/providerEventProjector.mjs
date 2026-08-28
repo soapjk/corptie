@@ -321,6 +321,9 @@ function providerTerminalOutcome(event, projectedTurnItems = []) {
   }
   const items = projectedTurnItems.length > 0 ? projectedTurnItems : (event.payload?.items ?? []);
   if (finalItemForTurn({ items }, event.turnId)) return { status, failure: null };
+  if (collaborationConfirmationHandoffForTurn(items, event.turnId)) {
+    return { status, failure: null };
+  }
   const failedItem = [...items].reverse().find((item) =>
     (!event.turnId || item?.turnId === event.turnId)
     && item?.status === "failed"
@@ -335,6 +338,15 @@ function providerTerminalOutcome(event, projectedTurnItems = []) {
       itemId: failedItem.id ?? null
     }
   };
+}
+
+function collaborationConfirmationHandoffForTurn(items, turnId) {
+  return items.some((item) =>
+    (!turnId || item?.turnId === turnId)
+    && item?.type === "collaborationConfirmation"
+    && item?.presentationRole === "collaboration_confirmation"
+    && ["pending", "confirmed", "rejected"].includes(item?.status)
+  );
 }
 
 function normalizeProviderFailure(error) {
