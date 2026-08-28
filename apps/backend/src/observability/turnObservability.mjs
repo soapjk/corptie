@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export const TURN_ANALYSIS_VERSION = "corptie-turn-v2";
+export const TURN_ANALYSIS_VERSION = "corptie-turn-v3";
 export const TURN_CATEGORIES = Object.freeze([
   "queue", "dispatch", "context", "model", "tool", "mcp", "persistence", "delivery", "other"
 ]);
@@ -9,13 +9,17 @@ export const DEVELOPMENT_OPERATIONS = Object.freeze([
   "history.read", "code.search", "code.read", "code.edit", "shell", "git", "test", "build",
   "mcp", "model.reasoning", "persistence", "other"
 ]);
+export const ACTIVITY_PHASES = Object.freeze([
+  "task-planning", "provider-reasoning", "progress-update", "result-synthesis",
+  "code-navigation", "implementation", "verification", "context-loading", "tool-execution", "unknown"
+]);
 
 const ALLOWED_ATTRIBUTES = new Set([
   "corptie.tenant.id", "corptie.session.id", "corptie.logical_turn.id", "corptie.turn_run.id",
   "corptie.provider.id", "corptie.provider_session.id", "corptie.binding.id", "corptie.agent.id",
   "corptie.objective.id", "corptie.work_item.id", "corptie.workspace.id", "corptie.environment",
   "corptie.category", "corptie.observability_level", "corptie.event.type", "corptie.retry.count",
-  "corptie.recovery", "corptie.operation", "service.name", "span.kind", "otel.status_code", "error.type", "error.code",
+  "corptie.recovery", "corptie.operation", "corptie.activity.phase", "service.name", "span.kind", "otel.status_code", "error.type", "error.code",
   "http.request.method", "http.response.status_code", "rpc.system", "rpc.method", "db.system",
   "gen_ai.system", "gen_ai.request.model", "gen_ai.operation.name", "tool.name", "mcp.server.name",
   "code.file.path", "code.line.number", "code.function.name"
@@ -53,6 +57,10 @@ export class TelemetryGateway {
       if (key === "code.function.name") {
         const name = String(value ?? "").trim();
         if (name && name.length <= 200 && !/[\r\n]/.test(name)) output[key] = name;
+        continue;
+      }
+      if (key === "corptie.activity.phase") {
+        if (ACTIVITY_PHASES.includes(value)) output[key] = value;
         continue;
       }
       if (["string", "number", "boolean"].includes(typeof value)) output[key] = value;
@@ -332,7 +340,8 @@ function eventSpan(event, runId, existing) {
     traceId: previous?.traceId ?? traceIdFor(runId), spanId: spanIdFor(`${runId}:${event.providerEventId}`),
     parentSpanId: null, name: event.type, startTimeUnixNano: millisToNano(start), endTimeUnixNano: millisToNano(end),
     status: event.type === "turn.failed" || event.type === "tool.failed" ? "error" : "ok",
-    attributes: { "corptie.category": categoryForEvent(event), "corptie.operation": operationForEvent(event), "corptie.event.type": event.type,
+    attributes: { "corptie.category": categoryForEvent(event), "corptie.operation": operationForEvent(event),
+      "corptie.activity.phase": activityPhaseForEvent(event), "corptie.event.type": event.type,
       "error.code": event.payload?.error?.code, "tool.name": event.payload?.toolName, "mcp.server.name": event.payload?.mcpServer }
   };
 }
@@ -351,6 +360,7 @@ function lifecycleSpan(event, runId, measurement) {
 }
 
 function categoryForEvent(event) {
+  if (operationForEvent(event) === "model.reasoning") return "model";
   if (event.type === "turn.started") return "dispatch";
   if (event.type.startsWith("tool.")) return event.payload?.mcpServer ? "mcp" : "tool";
   if (event.type.startsWith("assistant.")) return "model";
@@ -361,7 +371,14 @@ function categoryForEvent(event) {
 }
 
 function operationForEvent(event) {
-  const tool = String(event.payload?.toolName ?? event.payload?.item?.toolName ?? "").toLowerCase();
+  const item = event.rawPayload?.item ?? event.payload?.item ?? {};
+  const itemType = String(item.type ?? event.payload?.item?.type ?? "");
+  const tool = String(event.payload?.toolName ?? item.toolName ?? item.tool ?? "").toLowerCase();
+  if (itemType === "reasoning" || itemType === "plan" || itemType === "agentMessage") return "model.reasoning";
+  if (itemType === "fileChange" || itemType === "workspaceWrite") return "code.edit";
+  if (itemType === "mcpToolCall" || itemType === "dynamicToolCall") return "mcp";
+  if (itemType === "imageView") return "code.read";
+  if (itemType === "commandExecution") return operationForCommand(item.command);
   if (event.payload?.mcpServer || tool.includes("mcp")) return "mcp";
   if (tool.includes("apply_patch") || tool.includes("write") || tool.includes("edit")) return "code.edit";
   if (tool.includes("search") || tool === "rg" || tool.includes("grep")) return "code.search";
@@ -374,6 +391,36 @@ function operationForEvent(event) {
   if (event.type === "usage.updated") return "history.read";
   if (event.type.startsWith("turn.")) return "persistence";
   return "other";
+}
+
+function operationForCommand(value) {
+  const command = String(value ?? "").toLowerCase();
+  if (!command) return "shell";
+  if (/(^|[;&|]\s*)(rg|grep|find|fd)(\s|$)/.test(command)) return "code.search";
+  if (/(^|[;&|]\s*)git(\s|$)/.test(command)) return "git";
+  if (/\b(swift test|npm test|node --test|pytest|xcodebuild[^;&|]*\btest\b|cargo test|go test)\b/.test(command)) return "test";
+  if (/\b(swift build|npm run build|xcodebuild|cargo build|go build|compile|linker)\b/.test(command)) return "build";
+  if (/(^|[;&|]\s*)(sed|head|tail|cat|bat)(\s|$)/.test(command)) return "code.read";
+  return "shell";
+}
+
+function activityPhaseForEvent(event) {
+  const item = event.rawPayload?.item ?? event.payload?.item ?? {};
+  const itemType = String(item.type ?? event.payload?.item?.type ?? "");
+  const role = String(item.phase ?? item.presentationRole ?? event.payload?.item?.presentationRole ?? "")
+    .toLowerCase().replaceAll("-", "_");
+  if (itemType === "plan") return "task-planning";
+  if (itemType === "reasoning") return "provider-reasoning";
+  if (itemType === "agentMessage") {
+    return ["final", "finalanswer", "final_answer"].includes(role) ? "result-synthesis" : "progress-update";
+  }
+  const operation = operationForEvent(event);
+  if (operation === "history.read") return "context-loading";
+  if (operation === "code.search" || operation === "code.read") return "code-navigation";
+  if (operation === "code.edit") return "implementation";
+  if (operation === "test" || operation === "build") return "verification";
+  if (["shell", "git", "mcp"].includes(operation)) return "tool-execution";
+  return "unknown";
 }
 
 function providerObservabilityLevel(value) {

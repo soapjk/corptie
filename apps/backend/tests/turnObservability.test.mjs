@@ -66,7 +66,8 @@ test("gateway applies a strict whitelist and strips prompts, output, files, shel
     traceId: "trace-safe", spanId: "span-safe", name: "model.operation", startTimeUnixNano: nano(0), endTimeUnixNano: nano(1),
     attributes: {
       "corptie.session.id": "session:test", "corptie.category": "model", "gen_ai.request.model": "gpt-test",
-      "corptie.operation": "code.read", "code.file.path": "apps/backend/src/server.mjs", "code.line.number": 6985,
+      "corptie.operation": "code.read", "corptie.activity.phase": "code-navigation",
+      "code.file.path": "apps/backend/src/server.mjs", "code.line.number": 6985,
       "code.function.name": "route",
       "user.prompt": "secret prompt", "model.output": "secret output", "file.content": "secret file",
       "shell.command": "rm anything", "authorization": "Bearer secret", "cookie": "secret", "api_key": "secret",
@@ -74,13 +75,14 @@ test("gateway applies a strict whitelist and strips prompts, output, files, shel
     }, events: [{ name: "safe.event", timeUnixNano: nano(0), attributes: { "message.content": "secret", "error.code": "SAFE_CODE" } }]
   });
   assert.deepEqual(Object.keys(sanitized.attributes).sort(), [
-    "code.file.path", "code.function.name", "code.line.number", "corptie.category", "corptie.environment",
-    "corptie.operation", "corptie.session.id", "corptie.tenant.id", "gen_ai.request.model"
+    "code.file.path", "code.function.name", "code.line.number", "corptie.activity.phase", "corptie.category",
+    "corptie.environment", "corptie.operation", "corptie.session.id", "corptie.tenant.id", "gen_ai.request.model"
   ]);
   assert.deepEqual(sanitized.events[0].attributes, { "error.code": "SAFE_CODE", "corptie.tenant.id": "tenant:test", "corptie.environment": "development" });
   assert.equal(JSON.stringify(sanitized).includes("secret"), false);
   assert.equal(gateway.sanitizeAttributes({ "code.file.path": "/Users/person/private.swift" })["code.file.path"], undefined);
   assert.equal(gateway.sanitizeAttributes({ "code.file.path": "../outside.swift" })["code.file.path"], undefined);
+  assert.equal(gateway.sanitizeAttributes({ "corptie.activity.phase": "arbitrary secret task" })["corptie.activity.phase"], undefined);
 });
 
 test("development and production gateways use independent credential and retention policies", () => {
@@ -147,13 +149,27 @@ test("provider event adapter creates an independent run id and event-stream summ
     const base = { providerId: binding.providerId, providerSessionId: binding.providerSessionId, bindingId: binding.bindingId,
       turnId: "turn:event", payload: {}, receivedAt: "2026-08-28T02:00:00.000Z" };
     service.ingestProviderEvent({ event: { ...base, type: "turn.started", providerEventId: "e1", occurredAt: "2026-08-28T02:00:00.000Z" }, binding });
-    service.ingestProviderEvent({ event: { ...base, type: "assistant.message.started", providerEventId: "e2", occurredAt: "2026-08-28T02:00:01.000Z" }, binding });
-    const report = service.ingestProviderEvent({ event: { ...base, type: "turn.completed", providerEventId: "e3", occurredAt: "2026-08-28T02:00:02.000Z" }, binding });
+    service.ingestProviderEvent({ event: { ...base, type: "tool.started", providerEventId: "e2",
+      occurredAt: "2026-08-28T02:00:01.000Z", payload: { item: { type: "reasoning" } }, rawPayload: { item: { type: "reasoning" } } }, binding });
+    service.ingestProviderEvent({ event: { ...base, type: "tool.started", providerEventId: "e3",
+      occurredAt: "2026-08-28T02:00:02.000Z", payload: { item: { type: "commandExecution" } },
+      rawPayload: { item: { type: "commandExecution", command: "swift test --filter TurnObservabilityTests" } } }, binding });
+    service.ingestProviderEvent({ event: { ...base, type: "tool.completed", providerEventId: "e4",
+      occurredAt: "2026-08-28T02:00:03.000Z", payload: { item: { type: "commandExecution" } },
+      rawPayload: { item: { type: "commandExecution", command: "swift test --filter TurnObservabilityTests", aggregatedOutput: "must not persist" } } }, binding });
+    const report = service.ingestProviderEvent({ event: { ...base, type: "turn.completed", providerEventId: "e5", occurredAt: "2026-08-28T02:00:04.000Z" }, binding });
     assert.match(report.turnRunId, /^turn_run:/);
     assert.equal(report.logicalTurnId, "turn:event");
     assert.equal(report.providerId, "codex-app-server");
     assert.equal(report.observabilityLevel, "event-stream");
-    assert.equal(report.wallClockMs, 2_000);
+    assert.equal(report.wallClockMs, 4_000);
+    assert.ok(report.developmentOperations["model.reasoning"].inclusiveMs > 0);
+    assert.ok(report.developmentOperations.test.inclusiveMs > 0);
+    const trace = service.rawTrace(report.turnRunId);
+    assert.equal(trace.spans.some((item) => item.attributes["corptie.activity.phase"] === "provider-reasoning"), true);
+    assert.equal(trace.spans.some((item) => item.attributes["corptie.activity.phase"] === "verification"), true);
+    assert.equal(JSON.stringify(trace).includes("swift test"), false);
+    assert.equal(JSON.stringify(trace).includes("must not persist"), false);
   } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
