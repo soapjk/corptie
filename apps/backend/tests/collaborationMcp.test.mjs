@@ -329,7 +329,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
     await client.callTool({ name: "corptie_memory_list", arguments: { scope: "agent", include_revoked: true } });
     await client.callTool({
       name: "corptie_memory_remember",
-      arguments: { content: "Concise replies", kind: "preference" }
+      arguments: { content: "Concise replies", kind: "preference", idempotency_key: "memory-1" }
     });
     await client.callTool({
       name: "corptie_memory_update",
@@ -370,7 +370,7 @@ test("MCP server exposes the complete Phase 2 peer tool set and maps request fie
     }]);
     assert.deepEqual(calls.slice(0, 5), [{
       path: "/internal/collaboration/memory",
-      body: { content: "Concise replies", kind: "preference" }
+      body: { content: "Concise replies", kind: "preference", idempotency_key: "memory-1" }
     }, {
       path: "/internal/collaboration/memory/memory%3A1/update",
       body: { content: "Very concise replies" }
@@ -562,6 +562,12 @@ test("authenticated MCP workspace routes preserve the calling Agent identity", a
     await client.post("/internal/collaboration/worktrees", { target_path: "/repo/feature" });
     await client.post("/internal/collaboration/workspaces/switch", { target_worktree_id: "worktree:feature" });
     await client.get("/internal/collaboration/memory/search", { intent: "" });
+    await client.post("/internal/collaboration/memory", {
+      content: "Scoped memory",
+      kind: "fact",
+      scope: "objective",
+      idempotency_key: "memory:scoped"
+    });
 
     assert.deepEqual(calls, [
       { operation: "list", agentId: "research-agent", metadata: {
@@ -578,6 +584,22 @@ test("authenticated MCP workspace routes preserve the calling Agent identity", a
         agentId: "research-agent",
         tool: "corptie_memory_search",
         arguments: { intent: "" },
+        metadata: {
+          sessionId: "session:research",
+          objectiveId: "objective:research",
+          workItemId: "work_item:research"
+        }
+      },
+      {
+        operation: "memory",
+        agentId: "research-agent",
+        tool: "corptie_memory_remember",
+        arguments: {
+          content: "Scoped memory",
+          kind: "fact",
+          scope: "objective",
+          idempotency_key: "memory:scoped"
+        },
         metadata: {
           sessionId: "session:research",
           objectiveId: "objective:research",
