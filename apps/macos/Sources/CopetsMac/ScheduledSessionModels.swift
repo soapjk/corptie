@@ -531,6 +531,19 @@ enum ScheduledSessionManagementTimeFormatting {
 }
 
 enum ScheduledSessionEventMapping {
+    static let timelineCardEventNames: Set<String> = [
+        "ScheduledSessionTaskCreated",
+        "ScheduledSessionTaskDue",
+        "ScheduledSessionRunQueued"
+    ]
+
+    static let terminalNotificationEventNames: Set<String> = [
+        "ScheduledSessionRunCompleted",
+        "ScheduledSessionRunFailed",
+        "ScheduledSessionTaskCancelled",
+        "ScheduledSessionTaskExpired"
+    ]
+
     static let authoritativeEventNames: Set<String> = [
         "ScheduledSessionTaskCreated",
         "ScheduledSessionTaskUpdated",
@@ -552,5 +565,67 @@ enum ScheduledSessionEventMapping {
               let payload = object["payload"] as? [String: Any] else { return nil }
         return payload["logicalSessionId"] as? String
             ?? (payload["task"] as? [String: Any])?["logicalSessionId"] as? String
+    }
+}
+
+@MainActor
+enum AutomationTimelinePresentation {
+    static func localizedDate(_ value: String?) -> String? {
+        ScheduledSessionManagementTimeFormatting.string(from: value)
+    }
+
+    static func eventTime(for item: CodexThreadItem) -> String? {
+        localizedDate(item.automationEventOccurredAt ?? item.createdAt)
+    }
+
+    static func eventTimeLabel(for eventType: String) -> String {
+        switch eventType {
+        case "ScheduledSessionTaskCreated": L10n("创建时间")
+        case "ScheduledSessionTaskDue": L10n("触发时间")
+        case "ScheduledSessionRunQueued": L10n("排队时间")
+        default: L10n("事件时间")
+        }
+    }
+
+    static func executionPlan(for item: CodexThreadItem) -> String? {
+        let trigger = item.automationTriggerType ?? item.automationScheduleType ?? ""
+        switch trigger {
+        case "at", "once":
+            guard let at = localizedDate(item.automationRunAt ?? item.automationNextRunAt) else { return nil }
+            return L10nFormat("于 %@ 执行", at)
+        case "after":
+            guard let at = localizedDate(item.automationRunAt ?? item.automationNextRunAt) else { return nil }
+            return L10nFormat("延时至 %@ 执行", at)
+        case "interval":
+            guard let seconds = item.automationIntervalSeconds, seconds > 0 else { return nil }
+            let interval = duration(seconds)
+            if let at = localizedDate(item.automationNextRunAt ?? item.automationRunAt) {
+                return L10nFormat("每 %@ 执行；下次执行：%@", interval, at)
+            }
+            return L10nFormat("每 %@ 执行", interval)
+        case "condition":
+            if let seconds = item.automationConditionCheckIntervalSeconds, seconds > 0 {
+                return L10nFormat("条件满足时执行；每 %@ 检查一次", duration(seconds))
+            }
+            return L10n("条件满足时执行")
+        case "processExit", "process":
+            if let seconds = item.automationProcessPollIntervalSeconds, seconds > 0 {
+                return L10nFormat("监控的进程退出时执行；每 %@ 检查一次", duration(seconds))
+            }
+            return L10n("监控的进程退出时执行")
+        default:
+            return nil
+        }
+    }
+
+    private static func duration(_ seconds: Double) -> String {
+        let rounded = Int(seconds.rounded())
+        if rounded.isMultiple(of: 3_600) {
+            return L10nFormat("%lld 小时", Int64(rounded / 3_600))
+        }
+        if rounded.isMultiple(of: 60) {
+            return L10nFormat("%lld 分钟", Int64(rounded / 60))
+        }
+        return L10nFormat("%lld 秒", Int64(rounded))
     }
 }

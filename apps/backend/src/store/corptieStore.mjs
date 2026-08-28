@@ -502,6 +502,27 @@ export class CorptieStore {
     });
   }
 
+  pruneHistoricalAutomationTimelineItems() {
+    this.runDataMigrationOnce("automation-timeline-whitelist-v1", () => {
+      // Authoritative session_events and scheduled_session_events remain
+      // untouched; this only removes obsolete derived Timeline cards.
+      this.db.run(`
+        DELETE FROM session_items
+        WHERE type = 'automationEvent'
+          AND (
+            raw_metadata_json IS NULL
+            OR json_valid(raw_metadata_json) = 0
+            OR COALESCE(json_extract(raw_metadata_json, '$.automationEventType'), '')
+              NOT IN (
+                'ScheduledSessionTaskCreated',
+                'ScheduledSessionTaskDue',
+                'ScheduledSessionRunQueued'
+              )
+          )
+      `);
+    });
+  }
+
   runDataMigrationOnce(migrationId, operation) {
     if (this.selectOne(
       "SELECT migration_id FROM data_migrations WHERE migration_id = ?",
@@ -2577,6 +2598,7 @@ export class CorptieStore {
     this.backfillSessionItemPresentation();
     this.backfillSessionItemBindings();
     this.migrateSessionItemIdentity();
+    this.pruneHistoricalAutomationTimelineItems();
     this.ensureColumn("feishu_bindings", "chat_id", "TEXT");
     this.ensureColumn("feishu_bots", "app_id", "TEXT");
     this.ensureColumn("feishu_bots", "brand", "TEXT NOT NULL DEFAULT 'feishu'");

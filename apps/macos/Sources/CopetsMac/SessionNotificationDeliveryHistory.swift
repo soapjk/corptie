@@ -4,14 +4,16 @@ struct SessionNotificationDeliveryHistory {
     static let storageKey = "corptie.notifications.deliveredEventIds"
 
     private let defaults: UserDefaults
+    private let storageKey: String
     private let limit: Int
     private var orderedEventIDs: [String]
     private var eventIDs: Set<String>
 
-    init(defaults: UserDefaults, limit: Int = 256) {
+    init(defaults: UserDefaults, limit: Int = 256, storageKey: String = Self.storageKey) {
         self.defaults = defaults
+        self.storageKey = storageKey
         self.limit = limit
-        let stored = defaults.stringArray(forKey: Self.storageKey) ?? []
+        let stored = defaults.stringArray(forKey: storageKey) ?? []
         orderedEventIDs = stored
         eventIDs = Set(stored)
     }
@@ -25,7 +27,7 @@ struct SessionNotificationDeliveryHistory {
         orderedEventIDs.append(eventID)
         orderedEventIDs = Array(orderedEventIDs.suffix(limit))
         eventIDs = Set(orderedEventIDs)
-        defaults.set(orderedEventIDs, forKey: Self.storageKey)
+        defaults.set(orderedEventIDs, forKey: storageKey)
     }
 }
 

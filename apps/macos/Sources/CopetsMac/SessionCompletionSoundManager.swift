@@ -330,6 +330,11 @@ extension SessionCompletionSoundManager {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        if let automationID = userInfo["automationId"] as? String, !automationID.isEmpty {
+            AppTabRouter.shared.openAutomation(automationID)
+            completionHandler()
+            return
+        }
         switch SessionNotificationNavigation.destination(for: userInfo) {
         case let .session(sessionID):
             NotificationCenter.default.post(
