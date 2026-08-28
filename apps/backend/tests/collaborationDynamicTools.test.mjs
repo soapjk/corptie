@@ -71,6 +71,29 @@ test("dynamic request rejects an empty success response instead of reporting coo
   );
 });
 
+test("dynamic request reports an already confirmed exact Session route as sent", async () => {
+  const result = await callCollaborationDynamicTool({
+    post: async () => ({
+      confirmation: {
+        confirmationId: "confirmation-trusted",
+        status: "confirmed",
+        taskId: "task-trusted"
+      },
+      routeAuthorization: "trusted_session_pair"
+    })
+  }, "corptie_collaboration_request", {
+    recipient_session_id: "session:target",
+    type: "question",
+    title: "Follow up",
+    summary: "Use the previously confirmed exact Session route."
+  });
+
+  assert.equal(result.confirmation.status, "confirmed");
+  assert.equal(result.routeAuthorization, "trusted_session_pair");
+  assert.equal(result.coordination.delivery, "push");
+  assert.equal(result.coordination.nextAction, "end_current_turn");
+});
+
 test("dynamic read tools use the same backend endpoints as the MCP transport", async () => {
   const calls = [];
   const client = {

@@ -311,7 +311,7 @@ export function createCollaborationMcpServer(options) {
   });
 
   if (sessionObjectiveId && ["objectiveChat", "worker"].includes(sessionKind)) register(server, "corptie.collaboration.request", {
-    description: "Stage a Session-to-Session question or change request for deterministic user confirmation. Supply an exact target Session, or the resources needed to create its WorkItem and Worker Session before the task exists.",
+    description: "Create a Session-to-Session question or change request. The first request over an exact Session route requires deterministic user confirmation; a previously confirmed exact route may send immediately. Supply an exact target Session, or the resources needed to create its WorkItem and Worker Session before the task exists.",
     inputSchema: {
       recipient_session_name: z.string().min(1).optional(),
       recipient_session_id: strictId(sessionIdSchema).optional(),
@@ -329,7 +329,7 @@ export function createCollaborationMcpServer(options) {
       idempotency_key: z.string().min(1).optional()
     },
     afterSend: true,
-    handler: async (input) => requireStagedConfirmation(
+    handler: async (input) => requireCollaborationRequestReceipt(
       await client.post("/internal/collaboration/task-confirmations", mapRequest(input))
     )
   });
@@ -670,14 +670,16 @@ function register(server, name, options) {
   }, async (input) => {
     try {
       const value = await options.handler(input);
+      const pendingConfirmation = Boolean(value?.confirmation)
+        && value.confirmation.status !== "confirmed";
       const data = options.afterSend
         ? {
             ...value,
             coordination: {
-              delivery: value?.confirmation ? "awaiting_user_confirmation" : "push",
+              delivery: pendingConfirmation ? "awaiting_user_confirmation" : "push",
               waitRequired: false,
               nextAction: "end_current_turn",
-              note: value?.confirmation
+              note: pendingConfirmation
                 ? "Corptie will render and resolve confirmation programmatically. Do not write a confirmation message or continue this turn."
                 : "Do not poll or wait. Corptie will push the peer response into this Agent's unified queue."
             }
@@ -811,9 +813,9 @@ function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
 }
 
-function requireStagedConfirmation(value) {
+function requireCollaborationRequestReceipt(value) {
   if (typeof value?.confirmation?.confirmationId === "string" && value.confirmation.confirmationId.trim()) return value;
-  const error = new Error("Corptie collaboration request did not return a staged confirmation ID.");
+  const error = new Error("Corptie collaboration request did not return a confirmation receipt ID.");
   error.code = "COLLABORATION_REQUEST_EMPTY_RESPONSE";
   throw error;
 }

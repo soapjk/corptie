@@ -105,7 +105,7 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_services_describe", "Describe a service, its owner, endpoint, version, metadata, and consumers.", {
     service_id: { type: "string", minLength: 1 }
   }, ["service_id"]),
-  tool("corptie_collaboration_request", "Stage a Session-to-Session question or change request for deterministic user confirmation. Supply an existing recipient Session, or the Objective and Agent resources Corptie must use to create a WorkItem and target Session before the task exists.", {
+  tool("corptie_collaboration_request", "Create a Session-to-Session question or change request. The first request over an exact Session route requires deterministic user confirmation; a previously confirmed exact route may send immediately. Supply an existing recipient Session, or the Objective and Agent resources Corptie must use to create a WorkItem and target Session before the task exists.", {
     recipient_session_name: { type: "string", minLength: 1 },
     recipient_session_id: sessionIdSchema,
     session_agent_id: { ...agentIdSchema, description: "Agent resource used to configure a newly created target Worker Session. This is never the message recipient." },
@@ -249,15 +249,17 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     throw error;
   }
   const value = await handler();
-  if (name === "corptie_collaboration_request") requireStagedConfirmation(value);
+  if (name === "corptie_collaboration_request") requireCollaborationRequestReceipt(value);
+  const pendingConfirmation = Boolean(value?.confirmation)
+    && value.confirmation.status !== "confirmed";
   return afterSendToolNames.has(name)
     ? {
         ...value,
         coordination: {
-          delivery: value?.confirmation ? "awaiting_user_confirmation" : "push",
+          delivery: pendingConfirmation ? "awaiting_user_confirmation" : "push",
           waitRequired: false,
           nextAction: "end_current_turn",
-          note: value?.confirmation
+          note: pendingConfirmation
             ? "Corptie will render and resolve confirmation programmatically. Do not write a confirmation message or continue this turn."
             : "Do not poll or wait. Corptie will push the peer response into this Agent's unified queue."
         }
@@ -265,9 +267,9 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     : value;
 }
 
-function requireStagedConfirmation(value) {
+function requireCollaborationRequestReceipt(value) {
   if (typeof value?.confirmation?.confirmationId === "string" && value.confirmation.confirmationId.trim()) return value;
-  const error = new Error("Corptie collaboration request did not return a staged confirmation ID.");
+  const error = new Error("Corptie collaboration request did not return a confirmation receipt ID.");
   error.code = "COLLABORATION_REQUEST_EMPTY_RESPONSE";
   throw error;
 }

@@ -219,6 +219,31 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     assert.equal(core.listInbox(task.recipientSessionId).some((item) => item.taskId === task.taskId), true);
     assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure + 1);
 
+    const taskCountAfterFirstApproval = store.selectAll("SELECT * FROM collaboration_tasks").length;
+    const stagedCountAfterFirstApproval = staged.length;
+    const repeated = await authoritative.post("/internal/collaboration/task-confirmations", {
+      recipientSessionId: task.recipientSessionId,
+      targetObjectiveId: marketCowObjective.id,
+      workItemId: task.workItemId,
+      type: "question",
+      title: "Follow up over the authorized exact Session route",
+      summary: "The same source and target Sessions should not require another user confirmation.",
+      idempotencyKey: "trusted-session-route-follow-up"
+    });
+    assert.equal(repeated.routeAuthorization, "trusted_session_pair");
+    assert.equal(repeated.confirmation.status, "confirmed");
+    assert.ok(repeated.confirmation.taskId);
+    assert.equal(repeated.confirmation.initiatorSessionId, "session:authoritative");
+    assert.equal(repeated.confirmation.recipientSessionId, task.recipientSessionId);
+    assert.equal(staged.length, stagedCountAfterFirstApproval);
+    assert.equal(
+      store.selectAll("SELECT * FROM collaboration_tasks").length,
+      taskCountAfterFirstApproval + 1
+    );
+    assert.equal(core.listInbox(task.recipientSessionId).some((item) =>
+      item.taskId === repeated.confirmation.taskId
+    ), true);
+
     const recipientRuntime = new CollaborationHttpClient({
       baseUrl,
       agentId: marketCow.agentId,
@@ -228,6 +253,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
         workItemId: task.workItemId
       }
     });
+    const stagedCountBeforeReverseRoute = staged.length;
     const child = await recipientRuntime.post("/internal/collaboration/task-confirmations", {
       recipientSessionName: "session:authoritative",
       targetObjectiveId: sourceObjective.id,
@@ -235,8 +261,11 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       title: "Follow up through the trusted parent relationship",
       summary: "The backend should derive the parent Task and Context from this WorkItem."
     });
-    assert.equal(child.confirmation.request.parentTaskId, task.taskId);
-    assert.equal(child.confirmation.request.contextId, task.contextId);
+    const repeatedTask = core.getTask(repeated.confirmation.taskId);
+    assert.equal(child.confirmation.request.parentTaskId, repeatedTask.taskId);
+    assert.equal(child.confirmation.request.contextId, repeatedTask.contextId);
+    assert.equal(child.confirmation.status, "pending");
+    assert.equal(staged.length, stagedCountBeforeReverseRoute + 1);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     await store.close();
