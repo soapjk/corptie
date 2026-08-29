@@ -196,6 +196,8 @@ private struct ArtifactDetailView: View {
     @State private var exportTarget: URL?
     @State private var showExportConfirm = false
     @State private var showRepositoryExportConfirm = false
+    @State private var isOpeningInSystemApplication = false
+    @State private var openError: String?
 
     init(artifact: ObjectiveArtifact, onChanged: @escaping () -> Void) {
         self.artifact = artifact
@@ -215,6 +217,9 @@ private struct ArtifactDetailView: View {
                     ForEach(artifact.versions, id: \.version) { Text("v\($0.version) \($0.approvalStatus)").tag($0.version) }
                 }.frame(width: 130)
                 Menu {
+                    Button(L10n("Open with System Application")) { openWithSystemApplication() }
+                        .disabled(isOpeningInSystemApplication)
+                    Divider()
                     Button(L10n("Publish New Version")) { showPublish = true }
                     Button(L10n("Secure Export")) { chooseExport() }
                     Button(L10n("Mark Superseded"), role: .destructive) { showSupersede = true }
@@ -222,13 +227,16 @@ private struct ArtifactDetailView: View {
             }.padding(14)
             Divider()
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 14) {
                     metadata
                     references
-                    contentPage
                     audit
                 }.padding(16)
             }
+            .frame(maxHeight: 210)
+            Divider()
+            contentPage
+                .padding(16)
         }
         .frame(width: 720, height: 680)
         .task(id: "\(selectedVersion):\(offset)") { detail = await client.detail(artifactId: artifact.artifactId, version: selectedVersion, offset: offset) }
@@ -247,6 +255,17 @@ private struct ArtifactDetailView: View {
             Button(L10n("Cancel"), role: .cancel) { exportTarget = nil }
         } message: {
             Text(L10n("The exported document may be staged, committed, or uploaded by later Git operations. Corptie will not perform those operations now."))
+        }
+        .alert(
+            L10n("Unable to Open Artifact"),
+            isPresented: Binding(
+                get: { openError != nil },
+                set: { if !$0 { openError = nil } }
+            )
+        ) {
+            Button(L10n("OK"), role: .cancel) { openError = nil }
+        } message: {
+            Text(openError ?? "")
         }
     }
 
@@ -290,13 +309,14 @@ private struct ArtifactDetailView: View {
                 Button(L10n("Next")) { if let next = detail?.nextOffset { offset = next } }
                     .disabled(detail?.nextOffset == nil)
             }
-            Text(detail?.content ?? (artifact.visibility == .repositoryTracked ? artifact.repositoryLocator ?? "" : L10n("Loading…")))
-                .font(.system(size: 11, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(10)
-                .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+            ArtifactContentPreview(
+                content: detail?.content
+                    ?? (artifact.visibility == .repositoryTracked ? artifact.repositoryLocator ?? "" : L10n("Loading…"))
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.12)))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var audit: some View {
@@ -334,6 +354,83 @@ private struct ArtifactDetailView: View {
             _ = await client.export(artifactId: artifact.artifactId, version: selectedVersion, destinationURL: exportTarget, confirmRepositoryWrite: true, confirmOverwrite: true)
             self.exportTarget = nil
         }
+    }
+
+    private func openWithSystemApplication() {
+        guard !isOpeningInSystemApplication else { return }
+        isOpeningInSystemApplication = true
+        Task {
+            defer { isOpeningInSystemApplication = false }
+            do {
+                let receipt = try await client.localFile(
+                    artifactId: artifact.artifactId,
+                    version: selectedVersion
+                )
+                openError = await ArtifactSystemApplicationOpener.open(receipt)
+            } catch let error as EntityLaunchError {
+                openError = localizedOpenError(error)
+            } catch {
+                openError = L10nFormat("The system could not open this Artifact: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    private func localizedOpenError(_ error: EntityLaunchError) -> String {
+        switch error.code {
+        case "ARTIFACT_LOCAL_FILE_NOT_FOUND":
+            L10n("The Artifact file no longer exists.")
+        case "ARTIFACT_LOCAL_FILE_PERMISSION_DENIED":
+            L10n("Corptie does not have permission to open this Artifact file.")
+        case "ARTIFACT_LOCAL_FILE_NOT_FILE":
+            L10n("The Artifact's local path is not a regular file.")
+        default:
+            error.localizedDescription
+        }
+    }
+}
+
+struct ArtifactContentPreview: NSViewRepresentable {
+    let content: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        Self.makeScrollView(content: content)
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView,
+              Self.update(textView: textView, content: content) else { return }
+        textView.scrollToBeginningOfDocument(nil)
+    }
+
+    static func makeScrollView(content: String) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        guard let textView = scrollView.documentView as? NSTextView else { return scrollView }
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.drawsBackground = false
+        textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.textContainerInset = NSSize(width: 10, height: 10)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.string = content
+        return scrollView
+    }
+
+    @discardableResult
+    static func update(textView: NSTextView, content: String) -> Bool {
+        guard textView.string != content else { return false }
+        textView.string = content
+        return true
     }
 }
 

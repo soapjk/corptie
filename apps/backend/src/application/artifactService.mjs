@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
 
 export const ARTIFACT_VISIBILITIES = Object.freeze([
@@ -612,6 +612,63 @@ export class ArtifactService {
     return { artifactId: artifact.artifactId, version: version.version, contentHash: version.contentHash, destinationPath: destination, repositoryWrite: Boolean(repository) };
   }
 
+  async localFile(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    const artifact = this.#readableArtifact(context, artifactId);
+    const version = this.#selectedVersion(context, artifact, input.version);
+    if (!version) throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "Artifact version not found.", 404);
+
+    let path;
+    if (version.storageKey) {
+      path = this.#safeStoragePath(version.storageKey);
+    } else {
+      const locator = requiredText(artifact.repositoryLocator, "repositoryLocator");
+      const candidates = isAbsolute(locator)
+        ? [resolve(locator)]
+        : this.store.listGitRepositories().map((repository) => {
+            const root = resolve(repository.path);
+            const candidate = resolve(root, locator);
+            return candidate === root || candidate.startsWith(`${root}/`) ? candidate : null;
+          }).filter(Boolean);
+      path = await firstExistingFileCandidate(candidates);
+      if (!path) {
+        throw artifactError(
+          "ARTIFACT_LOCAL_FILE_NOT_FOUND",
+          "The Artifact's local file does not exist or its repository location is unavailable.",
+          404
+        );
+      }
+    }
+
+    let info;
+    try {
+      info = await stat(path);
+      if (!info.isFile()) {
+        throw artifactError("ARTIFACT_LOCAL_FILE_NOT_FILE", "The Artifact's local path is not a regular file.", 400);
+      }
+      await access(path, constants.R_OK);
+    } catch (error) {
+      if (error.code === "EACCES" || error.code === "EPERM") {
+        throw artifactError("ARTIFACT_LOCAL_FILE_PERMISSION_DENIED", "Corptie does not have permission to open this Artifact file.", 403);
+      }
+      if (error.code === "ENOENT") {
+        throw artifactError("ARTIFACT_LOCAL_FILE_NOT_FOUND", "The Artifact's local file no longer exists.", 404);
+      }
+      throw error;
+    }
+    if (version.storageKey && Number(info.size) !== Number(version.byteLength)) {
+      throw artifactError("ARTIFACT_INTEGRITY_FAILED", "The Artifact file size no longer matches its recorded version.", 409);
+    }
+
+    return {
+      artifactId: artifact.artifactId,
+      version: version.version,
+      path,
+      suggestedFilename: artifactSuggestedFilename(artifact.title, version.mimeType),
+      mimeType: version.mimeType
+    };
+  }
+
   async backupObjective(contextInput, input = {}) {
     const context = this.context(contextInput);
     this.#assertManager(context);
@@ -979,6 +1036,29 @@ export class ArtifactService {
 }
 
 function sha256(buffer) { return createHash("sha256").update(buffer).digest("hex"); }
+async function firstExistingFileCandidate(candidates) {
+  for (const candidate of candidates) {
+    try {
+      await stat(candidate);
+      return candidate;
+    } catch (error) {
+      if (error.code === "EACCES" || error.code === "EPERM") return candidate;
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  return null;
+}
+function artifactSuggestedFilename(title, mimeType) {
+  const fallbackExtension = new Map([
+    ["text/markdown", ".md"],
+    ["text/plain", ".txt"],
+    ["application/json", ".json"],
+    ["text/html", ".html"],
+    ["text/csv", ".csv"]
+  ]).get(mimeType) ?? "";
+  const filename = basename(optionalText(title) ?? "Artifact").replaceAll("\0", "");
+  return extname(filename) || !fallbackExtension ? filename : `${filename}${fallbackExtension}`;
+}
 function contentBuffer(value) {
   if (Buffer.isBuffer(value)) return value;
   if (typeof value !== "string") throw artifactError("ARTIFACT_CONTENT_REQUIRED", "Artifact content is required.", 400);

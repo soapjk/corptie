@@ -666,6 +666,13 @@
 "Copy full workspace path: %@" = "复制完整工作区路径：%@";
 "Open in Visual Studio Code" = "使用 Visual Studio Code 打开";
 "Open in Finder" = "在 Finder 中打开";
+"Open with System Application" = "用系统应用打开";
+"Unable to Open Artifact" = "无法打开 Artifact";
+"The Artifact file no longer exists." = "Artifact 文件已不存在。";
+"Corptie does not have permission to open this Artifact file." = "Corptie 没有权限打开此 Artifact 文件。";
+"No application is associated with this Artifact file type." = "系统中没有可用于打开此类 Artifact 文件的关联应用。";
+"The Artifact's local path is not a regular file." = "Artifact 的本地路径不是普通文件。";
+"The system could not open this Artifact: %@" = "系统无法打开此 Artifact：%@";
 "Commit message" = "本地提交说明";
 "Generate with Agent" = "使用 Agent 自动生成";
 "Generating…" = "正在生成…";
