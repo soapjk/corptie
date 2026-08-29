@@ -4935,11 +4935,11 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   }
   logSessionMessageLatency(latencyTrace, "provider_dispatch_completed", {
     providerId: reference.providerId,
-    turnId: result?.turn?.id ?? null
+    turnId: result?.turn?.id ?? result?.turnId ?? null
   });
   logSessionMessageLatency(latencyTrace, "session_execution_started", {
     providerId: reference.providerId,
-    turnId: result?.turn?.id ?? null
+    turnId: result?.turn?.id ?? result?.turnId ?? null
   });
 
   emitEvent("SessionRunStarted", {
@@ -5474,7 +5474,7 @@ async function drainAgentWorkSession(sessionId) {
         agentWorkItem: claimed,
         latencyTrace
       });
-      turnId = response.result?.turn?.id ?? null;
+      turnId = response.result?.turn?.id ?? response.result?.turnId ?? null;
     }
     if (store.getAgentWorkItem(claimed.workItemId)?.status === "running") {
       store.updateAgentWorkItem(claimed.workItemId, { status: "running", targetTurnId: turnId, lastError: null });
@@ -5539,7 +5539,7 @@ async function startCollaborationTurn(sessionId, text, metadata = {}) {
     error.code = "SESSION_BUSY";
     throw error;
   }
-  return { turnId: response.result?.turn?.id ?? null };
+  return { turnId: response.result?.turn?.id ?? response.result?.turnId ?? null };
 }
 
 async function interruptUnifiedSession(sessionId, source = { type: "desktop" }) {

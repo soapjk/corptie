@@ -4,14 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
+import { ProviderEventProjector } from "../src/application/providerEventProjector.mjs";
 import { SessionProviderSwitchCoordinator } from "../src/application/sessionProviderSwitchCoordinator.mjs";
+import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
+import { SessionBindingRepository } from "../src/agent-provider/sessionBindingRepository.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { withSessionActions } from "../src/agent-provider/sessionActions.mjs";
 
 function providerSession(store) {
   store.upsertSession({
     id: "codex:provider-switch",
-    title: "Provider switch",
+    title: "Corptie开发工程师_Session",
     agent: "Codex",
     provider: "codex-app-server",
     status: "complete",
@@ -30,7 +33,7 @@ function providerSession(store) {
     providerSessionId: "thread:codex-a",
     providerId: "codex-app-server",
     boundCwd: "/repo/main",
-    title: "Provider switch"
+    title: "Corptie开发工程师_Session"
   });
   return store.getLogicalSession("logical:provider-switch");
 }
@@ -270,6 +273,184 @@ test("provider switch coordinator preserves Session kind and rejects a stale rou
       sandbox: "target-sandbox",
       approvalPolicy: "target-approval"
     });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("provider switch rejects a failed OpenClacky initialization and keeps the Codex route active", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-init-failure-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store);
+    const reference = {
+      sessionId: "codex:provider-switch",
+      logicalSessionId: logical.logicalSessionId,
+      providerId: "codex-app-server",
+      providerSessionId: "thread:codex-a",
+      metadata: { session: { sessionKind: "assistantChat" } }
+    };
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: { resolveId: (providerId) => providerId === "openclacky" ? providerId : null },
+      resolveSessionReference: async () => reference,
+      createTargetSession: async () => ({
+        providerThreadId: "clacky-failed",
+        providerSessionId: "clacky-failed",
+        sessionProjection: {
+          status: "failed",
+          summary: "Operation not permitted @ rb_sysopen - /repo/AGENTS.md",
+          external: { provider: "openclacky", sessionId: "clacky-failed" }
+        }
+      })
+    });
+
+    await assert.rejects(
+      () => coordinator.switchProvider(reference.sessionId, {
+        providerId: "openclacky",
+        expectedRoutingVersion: logical.routingVersion,
+        transitionId: "transition:init-failed"
+      }),
+      (error) => error?.code === "PROVIDER_SESSION_INITIALIZATION_FAILED"
+        && /Operation not permitted.*AGENTS\.md/.test(error.message)
+    );
+    const after = store.getLogicalSession(logical.logicalSessionId);
+    assert.equal(after.activeBinding.providerId, "codex-app-server");
+    assert.equal(after.activeBinding.providerSessionId, "thread:codex-a");
+    assert.equal(after.routingVersion, logical.routingVersion);
+    assert.equal(store.getWorkspaceTransition("transition:init-failed").phase, "failed");
+    assert.equal(
+      store.listProviderThreadBindings(logical.logicalSessionId)
+        .find((binding) => binding.providerSessionId === "clacky-failed")?.state,
+      "invalid"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Corptie开发工程师_Session switches from CodeX to OpenClacky, routes the next message, and preserves history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-send-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store);
+    store.upsertTimelineItemProjection("codex:provider-switch", {
+      id: "history:codex-answer",
+      turnId: "turn:codex-before-switch",
+      type: "agentMessage",
+      title: "Codex",
+      text: "Historical answer remains available.",
+      presentationRole: "final_answer",
+      status: "completed"
+    });
+    const bindings = new SessionBindingRepository({ store });
+    const invocations = [];
+    const registry = {
+      resolveId: (providerId) => ["codex-app-server", "openclacky"].includes(providerId) ? providerId : null,
+      invoke: async (providerId, capability, reference, message) => {
+        invocations.push({ providerId, capability, reference, message });
+        return { turn: { id: "openclacky:turn:after-switch" }, turnId: "openclacky:turn:after-switch" };
+      }
+    };
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry,
+      resolveSessionReference: (sessionId) => bindings.resolve(sessionId),
+      resolveTargetContext: async () => ({ sessionKind: "assistantChat", agentId: "agent:one" }),
+      createTargetSession: async () => ({
+        providerThreadId: "clacky-after-switch",
+        providerSessionId: "clacky-after-switch",
+        sessionProjection: {
+          status: "complete",
+          summary: "OpenClacky is ready.",
+          capabilities: { canSend: true },
+          external: {
+            provider: "openclacky",
+            threadId: "clacky-after-switch",
+            sessionId: "clacky-after-switch",
+            cwd: "/repo/main"
+          }
+        }
+      })
+    });
+    const service = new SessionApplicationService({
+      registry,
+      resolveSessionReference: (sessionId) => bindings.resolve(sessionId)
+    });
+
+    const switched = await coordinator.switchProvider("codex:provider-switch", {
+      providerId: "openclacky",
+      expectedRoutingVersion: logical.routingVersion,
+      transitionId: "transition:send-regression"
+    });
+    const sent = await service.sendMessage("codex:provider-switch", "Continue with OpenClacky");
+    const activeReference = bindings.resolve("codex:provider-switch");
+    const activeBinding = { ...activeReference, isCurrentRoute: true };
+    const projector = new ProviderEventProjector({ store });
+    const providerEvent = (type, overrides = {}) => ({
+      providerId: "openclacky",
+      providerSessionId: activeReference.providerSessionId,
+      bindingId: activeReference.bindingId,
+      logicalSessionId: activeReference.logicalSessionId,
+      routingVersion: activeReference.routingVersion,
+      providerEventId: `event:${type}`,
+      providerSequence: null,
+      turnId: sent.turn.id,
+      itemId: null,
+      type,
+      occurredAt: "2026-08-29T09:00:00.000Z",
+      receivedAt: "2026-08-29T09:00:00.010Z",
+      payload: {},
+      ...overrides
+    });
+    const reply = {
+      id: "openclacky:item:after-switch",
+      turnId: sent.turn.id,
+      turnStatus: "completed",
+      type: "agentMessage",
+      title: "OpenClacky",
+      text: "OpenClacky processed the new message.",
+      presentationRole: "final_answer",
+      status: "completed"
+    };
+    projector.project({ event: providerEvent("turn.started"), binding: activeBinding });
+    projector.project({
+      event: providerEvent("assistant.message.completed", {
+        itemId: reply.id,
+        payload: { item: { ...reply, turnStatus: "inProgress" } }
+      }),
+      binding: activeBinding
+    });
+    projector.project({
+      event: providerEvent("turn.completed", { payload: { items: [reply] } }),
+      binding: activeBinding
+    });
+
+    assert.equal(switched.logicalSession.activeBinding.providerId, "openclacky");
+    assert.equal(invocations.length, 1);
+    assert.equal(invocations[0].providerId, "openclacky");
+    assert.equal(invocations[0].reference.providerSessionId, "clacky-after-switch");
+    assert.equal(invocations[0].message, "Continue with OpenClacky");
+    assert.equal(sent.turn.id, "openclacky:turn:after-switch");
+    assert.equal(store.getSession("codex:provider-switch").status, "complete");
+    assert.equal(
+      store.getSessionItem("codex:provider-switch", reply.id).text,
+      "OpenClacky processed the new message."
+    );
+    assert.equal(
+      store.getSessionItem("codex:provider-switch", "history:codex-answer").text,
+      "Historical answer remains available."
+    );
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

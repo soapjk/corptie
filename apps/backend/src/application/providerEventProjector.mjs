@@ -205,11 +205,15 @@ export class ProviderEventProjector {
     const activeTurn = unsettled.findLast?.((turn) => turn.binding_id === binding.bindingId)
       ?? unsettled.at(-1)
       ?? null;
+    const providerFailure = event.type === "provider.error" && event.payload?.willRetry !== true
+      ? normalizeProviderFailure(event.payload?.error)
+      : null;
     const next = {
       ...session,
       status,
       progress: status === "running" || status === "blocked" ? 0.5 : 1,
-      summary: latestAgentItem?.text || session.summary,
+      summary: latestAgentItem?.text || providerFailure?.message || session.summary,
+      sendUnavailableReason: providerFailure?.message ?? session.sendUnavailableReason ?? null,
       activityStatus,
       suggestedOptions: event.type === "approval.requested"
         ? event.payload?.item?.options ?? session.suggestedOptions
@@ -220,6 +224,7 @@ export class ProviderEventProjector {
       updatedAt: event.receivedAt,
       capabilities: {
         ...(session.capabilities ?? {}),
+        ...(providerFailure ? { canSend: false } : {}),
         canInterrupt: unsettled.length > 0
       },
       external: {
@@ -350,7 +355,13 @@ function collaborationConfirmationHandoffForTurn(items, turnId) {
 }
 
 function normalizeProviderFailure(error) {
-  if (error && typeof error === "object" && !Array.isArray(error)) return error;
+  if (error && typeof error === "object" && !Array.isArray(error)) {
+    const message = [error.message, error.error, error.detail]
+      .find((value) => typeof value === "string" && value.trim())
+      ?.trim()
+      ?? "Provider turn failed.";
+    return { ...error, message };
+  }
   if (typeof error === "string" && error.trim()) return { message: error.trim() };
   return { message: "Provider turn failed." };
 }
@@ -375,10 +386,12 @@ function sameSessionExecutionProjection(left, right) {
   return left.status === right.status
     && left.progress === right.progress
     && left.summary === right.summary
+    && left.sendUnavailableReason === right.sendUnavailableReason
     && left.activityStatus === right.activityStatus
     && JSON.stringify(left.suggestedOptions ?? null) === JSON.stringify(right.suggestedOptions ?? null)
     && left.suggestedPrompt === right.suggestedPrompt
     && left.capabilities?.canInterrupt === right.capabilities?.canInterrupt
+    && left.capabilities?.canSend === right.capabilities?.canSend
     && left.external?.activeTurnId === right.external?.activeTurnId
     && left.external?.lastSettledTurnId === right.external?.lastSettledTurnId
     && left.external?.rawStatus === right.external?.rawStatus;

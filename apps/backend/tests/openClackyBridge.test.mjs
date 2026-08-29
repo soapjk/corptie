@@ -155,10 +155,38 @@ test("send assigns a stable turn id and does not falsely confirm delivery withou
     send(value) { sent.push(JSON.parse(value)); }
     close() {}
   }
-  const manager = new OpenClackyManager({ fetch: async () => Response.json({}), WebSocket: FakeSocket });
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({
+      session: { id: "clacky-1", name: "Ready", working_dir: "/tmp", status: "idle" }
+    }),
+    WebSocket: FakeSocket
+  });
   const result = await manager.send("clacky-1", "Hello");
   assert.equal(result.delivery, "accepted");
   assert.match(result.turnId, /^openclacky:turn:/);
+  assert.equal(result.turn.id, result.turnId);
   // Accepted at the socket is queued, never confirmed until the provider acks.
   assert.notEqual(result.delivery, "confirmed");
+});
+
+test("send rejects a failed OpenClacky Session with the provider initialization error", async () => {
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({
+      session: {
+        id: "clacky-failed",
+        name: "Failed",
+        working_dir: "/repo",
+        status: "error",
+        error: "Operation not permitted @ rb_sysopen - /repo/AGENTS.md"
+      }
+    }),
+    WebSocket: class { constructor() { this.readyState = 1; } addEventListener() {} send() {} close() {} }
+  });
+
+  await assert.rejects(
+    () => manager.send("clacky-failed", "Hello"),
+    (error) => error?.code === "PROVIDER_SESSION_UNAVAILABLE"
+      && error?.statusCode === 409
+      && /Operation not permitted.*AGENTS\.md/.test(error.message)
+  );
 });

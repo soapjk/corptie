@@ -276,6 +276,30 @@ test("a completed Provider turn with a failed tool and no non-empty final reply 
   }
 });
 
+test("a non-retryable Provider error persists an actionable send failure", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const projected = projector.project({
+      event: event("provider.error", {
+        turnId: null,
+        payload: {
+          error: "Operation not permitted @ rb_sysopen - /repo/AGENTS.md",
+          willRetry: false
+        }
+      }),
+      binding
+    });
+
+    assert.equal(projected.session.status, "failed");
+    assert.equal(projected.session.capabilities.canSend, false);
+    assert.equal(projected.session.summary, "Operation not permitted @ rb_sysopen - /repo/AGENTS.md");
+    assert.equal(projected.session.sendUnavailableReason, "Operation not permitted @ rb_sysopen - /repo/AGENTS.md");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a pending collaboration confirmation is a successful turn handoff even after an earlier tool failure", async () => {
   const { directory, store, projector } = await fixture();
   try {

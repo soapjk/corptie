@@ -28,7 +28,7 @@ test("OpenClacky Provider exposes the shared command contract", () => {
   assert.equal(descriptor.runtime.lifecycle, "managed");
 });
 
-test("OpenClacky create uses REST once and then sends through its realtime transport", async () => {
+test("OpenClacky validates create/send state through REST and sends content through its realtime transport", async () => {
   FakeWebSocket.instances.length = 0;
   const requests = [];
   const manager = new OpenClackyManager({
@@ -52,7 +52,11 @@ test("OpenClacky create uses REST once and then sends through its realtime trans
   const delivery = await manager.send("clacky-created", "Hello", { turnId: "turn:stable" });
 
   assert.equal(summary.id, "openclacky:clacky-created");
-  assert.deepEqual(requests, [{ path: "/api/sessions", method: "POST" }]);
+  assert.deepEqual(requests, [
+    { path: "/api/sessions", method: "POST" },
+    { path: "/api/sessions/clacky-created", method: "GET" },
+    { path: "/api/sessions/clacky-created", method: "GET" }
+  ]);
   assert.equal(socket.sent[0].type, "subscribe");
   assert.equal(socket.sent[1].turn_id, "turn:stable");
   assert.equal(delivery.delivery, "accepted");
