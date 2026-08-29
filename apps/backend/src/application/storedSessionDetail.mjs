@@ -11,10 +11,18 @@ export function storedSessionDetail({ summary, storedDetail }) {
     source: provider,
     connectionStatus: "disconnected",
     canSend: false,
-    sendUnavailableReason: "The Provider is offline. Stored conversation history is available read-only.",
+    sendUnavailableReason: providerUnavailableReason(summary),
     capabilities: readOnlyCapabilities(storedDetail?.capabilities ?? summary?.capabilities),
     items: snapshotItems
   };
+}
+
+function providerUnavailableReason(summary) {
+  if (summary?.status === "failed") {
+    const failure = summary.sendUnavailableReason ?? summary.summary;
+    if (typeof failure === "string" && failure.trim()) return failure.trim();
+  }
+  return "The Provider is offline. Stored conversation history is available read-only.";
 }
 
 export function persistableSessionItems(detail) {

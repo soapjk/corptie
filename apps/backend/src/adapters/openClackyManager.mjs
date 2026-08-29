@@ -148,10 +148,15 @@ export class OpenClackyManager {
     this.ownedSessionIds.add(sessionId);
     this.sessions.set(sessionId, summary);
     this.ensureSocket(sessionId);
+    // Session creation can succeed at the HTTP layer while OpenClacky fails its
+    // asynchronous workspace/bootstrap initialization. Read the authoritative
+    // Session once before returning so the route coordinator never commits a
+    // failed target binding as if it were ready.
+    const initialized = await this.refreshOne(sessionId);
     const prompt = optionalText(input.prompt);
     if (prompt) this.sendSocket(sessionId, { type: "message", session_id: sessionId, content: prompt });
-    this.onSessionChanged?.({ type: "created", session: summary });
-    return summary;
+    this.onSessionChanged?.({ type: "created", session: initialized });
+    return initialized;
   }
 
   async buildSessionBootstrap(input = {}) {
@@ -227,6 +232,8 @@ export class OpenClackyManager {
   // event is observed; otherwise the delivery stays `unknown` (never falsely "ok").
   async send(sessionId, message, context = {}) {
     const userMessage = requiredText(message, "message");
+    const session = await this.refreshOne(sessionId);
+    assertOpenClackySessionRunnable(session);
     const contextPrompt = optionalText(context.sessionContext?.prompt);
     const turnId = context.turnId ?? `openclacky:turn:${randomUUID()}`;
     const content = providerMessageWithSessionContext(userMessage, contextPrompt);
@@ -238,8 +245,8 @@ export class OpenClackyManager {
       content
     });
     const result = accepted
-      ? { queued: true, turnId, delivery: "accepted" }
-      : { queued: false, turnId, delivery: "unknown" };
+      ? { queued: true, turn: { id: turnId }, turnId, delivery: "accepted" }
+      : { queued: false, turn: { id: turnId }, turnId, delivery: "unknown" };
     this.deliveryAcks.set(sessionId, { ...this.deliveryAcks.get(sessionId), [turnId]: result });
     return result;
   }
@@ -289,12 +296,9 @@ export class OpenClackyManager {
   }
 
   async refreshOne(sessionId) {
-    const summary = this.sessions.get(sessionId) ?? {
-      id: `openclacky:${sessionId}`,
-      title: "OpenClacky",
-      status: "complete",
-      external: { provider: "openclacky", sessionId }
-    };
+    const payload = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    const row = payload?.session ?? payload;
+    const summary = openClackySessionSummary(row);
     this.sessions.set(sessionId, summary);
     return summary;
   }
@@ -586,17 +590,21 @@ export function openClackySessionSummary(row = {}, options = {}) {
   const updatedAt = isoTimestamp(row.updated_at ?? row.created_at);
   const title = optionalText(row.name) ?? "OpenClacky";
   const bootstrap = options.bootstrap ?? null;
+  const failureMessage = status === "failed"
+    ? optionalText(row.error ?? row.raw_message) ?? "OpenClacky Session initialization or execution failed."
+    : null;
   return {
     id: `openclacky:${id}`,
     title,
     agent: "OpenClacky",
     status,
     progress: status === "running" || status === "blocked" ? 0.5 : 1,
-    summary: optionalText(row.error) ?? (status === "running" ? "OpenClacky is working…" : "OpenClacky is ready."),
+    summary: failureMessage ?? (status === "running" ? "OpenClacky is working…" : "OpenClacky is ready."),
+    sendUnavailableReason: failureMessage,
     suggestedOptions: [],
     activityStatus: status === "running" ? "working" : status,
     capabilities: {
-      canSend: status !== "running" && status !== "blocked",
+      canSend: status === "complete",
       canSwitchModel: true,
       canSwitchReasoning: true,
       canInterrupt: status === "running",
@@ -624,6 +632,18 @@ export function openClackySessionSummary(row = {}, options = {}) {
       raw: row
     }
   };
+}
+
+function assertOpenClackySessionRunnable(session) {
+  if (session?.status !== "failed") return session;
+  const detail = optionalText(session.sendUnavailableReason ?? session.summary)
+    ?? "OpenClacky Session initialization or execution failed.";
+  const error = new Error(`OpenClacky cannot process this message: ${detail}`);
+  error.code = "PROVIDER_SESSION_UNAVAILABLE";
+  error.statusCode = 409;
+  error.providerId = "openclacky";
+  error.providerSessionId = session?.external?.sessionId ?? null;
+  throw error;
 }
 
 function openClackyEventStatus(event, fallback) {

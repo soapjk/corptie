@@ -32,6 +32,21 @@ test("an empty materialized Timeline remains empty without event-log reconstruct
   assert.deepEqual(detail.items, []);
 });
 
+test("failed Provider detail exposes the actionable provider error", () => {
+  const detail = storedSessionDetail({
+    summary: {
+      id: "openclacky:failed",
+      status: "failed",
+      summary: "Operation not permitted @ rb_sysopen - /repo/AGENTS.md",
+      external: { provider: "openclacky" }
+    },
+    storedDetail: { items: [] }
+  });
+
+  assert.equal(detail.canSend, false);
+  assert.equal(detail.sendUnavailableReason, "Operation not permitted @ rb_sysopen - /repo/AGENTS.md");
+});
+
 test("only stable non-empty timeline items are persisted", () => {
   assert.deepEqual(persistableSessionItems({
     items: [
