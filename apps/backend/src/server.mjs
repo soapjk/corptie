@@ -318,6 +318,7 @@ const objectiveChatOperationService = new ObjectiveChatOperationService({
 const sessionCollaborationService = new SessionCollaborationService({
   store,
   objectiveService,
+  artifactService,
   collaborationCore,
   startWorkItem: ({ workItem, agent, title, idempotencyKey, source }) => launchAndBindWorkItemSession({
     workItem, agent, title, idempotencyKey, source

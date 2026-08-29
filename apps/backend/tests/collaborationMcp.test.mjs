@@ -36,6 +36,7 @@ const expectedTools = [
   "corptie.collaboration.work_items.get",
   "corptie.collaboration.work_items.create",
   "corptie.collaboration.work_items.relate",
+  "corptie.collaboration.work_items.share_artifact",
   "corptie.collaboration.work_items.start",
   "corptie.collaboration.work_items.cancel",
   "corptie_list_workspaces",
@@ -91,10 +92,14 @@ test("Objective Chat MCP exposes context plus Session-scoped strict collaboratio
     assert.equal(names.includes("corptie_objective_work_item_start"), false);
     assert.equal(names.includes("corptie_objective_work_items_manage"), false);
     assert.ok(names.includes("corptie.collaboration.work_items.create"));
+    assert.ok(names.includes("corptie.collaboration.work_items.share_artifact"));
     assert.ok(names.includes("corptie_artifact_create"));
     assert.ok(names.includes("corptie_artifact_publish_version"));
     assert.ok(names.includes("corptie_artifact_reference"));
     assert.ok(names.includes("corptie_artifact_revoke_reference"));
+    const createWorkItemTool = tools.tools.find((tool) => tool.name === "corptie.collaboration.work_items.create");
+    assert.ok(createWorkItemTool.inputSchema.properties.artifact_reference);
+    assert.ok(createWorkItemTool.inputSchema.properties.file_reference);
     const requestTool = tools.tools.find((tool) => tool.name === "corptie.collaboration.request");
     assert.equal(Object.hasOwn(requestTool.inputSchema.properties, "parent_task_id"), false);
     assert.equal(Object.hasOwn(requestTool.inputSchema.properties, "context_id"), false);
@@ -114,7 +119,34 @@ test("Objective Chat MCP exposes context plus Session-scoped strict collaboratio
         parentWorkItemId: undefined,
         sourceWorkItemId: undefined,
         relationship: undefined,
+        artifactReference: undefined,
+        fileReference: undefined,
         idempotencyKey: "create:scoped"
+      }
+    });
+    await client.callTool({
+      name: "corptie.collaboration.work_items.create",
+      arguments: {
+        title: "Artifact-backed", idempotency_key: "create:artifact-backed",
+        artifact_reference: { artifact_id: "artifact:spec", required: true }
+      }
+    });
+    assert.deepEqual(calls.at(-1).body.artifactReference, {
+      artifactId: "artifact:spec", relation: undefined, required: true,
+      versionPolicy: undefined, version: undefined
+    });
+    await client.callTool({
+      name: "corptie.collaboration.work_items.share_artifact",
+      arguments: {
+        work_item_id: "work_item:peer", artifact_id: "artifact:owned",
+        relation: "handoff", required: true
+      }
+    });
+    assert.deepEqual(calls.at(-1), {
+      path: "/internal/collaboration/work-item-artifact-references",
+      body: {
+        workItemId: "work_item:peer", artifactId: "artifact:owned",
+        relation: "handoff", required: true, versionPolicy: undefined, version: undefined
       }
     });
   } finally {
