@@ -1418,9 +1418,8 @@ struct SettingsView: View {
             await backendClient.loadFeishuProfiles()
             selectDefaultFeishuProfileIfNeeded()
             await backendClient.loadModels(for: "codex-pty")
-            if dataRoot.isEmpty {
-                dataRoot = backendClient.settings?.dataRoot ?? defaultDataRoot
-            }
+            dataRoot = backendClient.settings?.dataRoot
+                ?? (dataRoot.isEmpty ? defaultDataRoot : dataRoot)
             choiceParser = backendClient.settings?.choiceParser ?? .defaults
             savedChoiceParser = choiceParser
             codexBackend = backendClient.settings?.codexBackend ?? .defaults
@@ -2405,6 +2404,7 @@ struct SettingsView: View {
         }
 
         let operation = backendClient.dataRootMigration
+        await backendClient.loadSettings()
         dataRoot = backendClient.settings?.dataRoot ?? dialog.sourceDataRoot
         dialog.phase = .failed
         dialog.errorCode = operation?.error?.code
