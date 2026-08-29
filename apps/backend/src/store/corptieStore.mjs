@@ -1893,6 +1893,31 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_artifact_references_work_item
       ON artifact_references(work_item_id, revoked_at, required, relation);
 
+      CREATE TABLE IF NOT EXISTS work_item_file_references (
+        reference_id TEXT PRIMARY KEY,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        canonical_path TEXT NOT NULL,
+        workspace_root TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        relation TEXT NOT NULL CHECK (relation IN (
+          'implementation_spec', 'security_requirement', 'test_plan', 'research_evidence',
+          'handoff', 'acceptance_evidence'
+        )),
+        required INTEGER NOT NULL DEFAULT 0,
+        byte_length INTEGER NOT NULL,
+        modified_at TEXT NOT NULL,
+        authorized_by_actor_id TEXT NOT NULL,
+        authorized_by_session_id TEXT NOT NULL,
+        authorized_at TEXT NOT NULL,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE,
+        UNIQUE (work_item_id, canonical_path)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_work_item_file_references_work_item
+      ON work_item_file_references(work_item_id, required, relation, authorized_at);
+
       CREATE TABLE IF NOT EXISTS artifact_worker_create_operations (
         session_id TEXT NOT NULL,
         objective_id TEXT NOT NULL,
@@ -2319,6 +2344,7 @@ export class CorptieStore {
     this.ensureColumn("work_items", "parent_work_item_id", "TEXT");
     this.ensureColumn("work_items", "collaboration_relation", "TEXT");
     this.ensureColumn("work_items", "idempotency_key", "TEXT");
+    this.ensureColumn("work_items", "creation_reference_fingerprint", "TEXT");
     this.ensureColumn("work_items", "resource_version", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("work_items", "canceled_at", "TEXT");
     this.ensureColumn("work_items", "cancel_reason", "TEXT");
@@ -8978,6 +9004,38 @@ export class CorptieStore {
     ).map(artifactReferenceFromRow);
   }
 
+  createWorkItemFileReference(input) {
+    this.db.run(
+      `INSERT INTO work_item_file_references (
+         reference_id, objective_id, work_item_id, canonical_path, workspace_root,
+         display_name, relation, required, byte_length, modified_at,
+         authorized_by_actor_id, authorized_by_session_id, authorized_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.referenceId, input.objectiveId, input.workItemId, input.canonicalPath,
+        input.workspaceRoot, input.displayName, input.relation, input.required,
+        input.byteLength, input.modifiedAt, input.actorId, input.sessionId, input.authorizedAt
+      ]
+    );
+    return this.getWorkItemFileReference(input.referenceId);
+  }
+
+  getWorkItemFileReference(referenceId) {
+    const row = this.selectOne(
+      "SELECT * FROM work_item_file_references WHERE reference_id = ?",
+      [referenceId]
+    );
+    return row ? workItemFileReferenceFromRow(row) : null;
+  }
+
+  listWorkItemFileReferences(workItemId) {
+    return this.selectAll(
+      `SELECT * FROM work_item_file_references WHERE work_item_id = ?
+       ORDER BY required DESC, authorized_at DESC`,
+      [workItemId]
+    ).map(workItemFileReferenceFromRow);
+  }
+
   updateArtifactReference(referenceId, patch = {}) {
     const current = this.getArtifactReference(referenceId);
     if (!current) return null;
@@ -11060,6 +11118,24 @@ function artifactReferenceFromRow(row) {
     revokedByActorId: row.revoked_by_actor_id ?? null,
     revocationReason: row.revocation_reason ?? null,
     resourceVersion: Number(row.resource_version ?? 1)
+  };
+}
+
+function workItemFileReferenceFromRow(row) {
+  return {
+    referenceId: row.reference_id,
+    objectiveId: row.objective_id,
+    workItemId: row.work_item_id,
+    path: row.canonical_path,
+    workspaceRoot: row.workspace_root,
+    displayName: row.display_name,
+    relation: row.relation,
+    required: Boolean(row.required),
+    byteLength: Number(row.byte_length),
+    modifiedAt: row.modified_at,
+    authorizedByActorId: row.authorized_by_actor_id,
+    authorizedBySessionId: row.authorized_by_session_id,
+    authorizedAt: row.authorized_at
   };
 }
 

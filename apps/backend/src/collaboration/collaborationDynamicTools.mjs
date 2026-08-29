@@ -32,6 +32,34 @@ const messageProperties = {
   resource_version: { type: "string", minLength: 1 },
   idempotency_key: { type: "string", minLength: 1 }
 };
+const artifactRelations = [
+  "implementation_spec", "security_requirement", "test_plan", "research_evidence",
+  "handoff", "acceptance_evidence"
+];
+const artifactReferenceSchema = {
+  type: "object",
+  description: "Optional existing Artifact to authorize for the new WorkItem. The authenticated Session must already be able to read it, and it must belong to the same Objective.",
+  properties: {
+    artifact_id: { type: "string", pattern: "^artifact:", description: "Existing Objective Artifact identity." },
+    relation: { type: "string", enum: artifactRelations },
+    required: { type: "boolean" },
+    version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
+    version: { type: "integer", minimum: 1 }
+  },
+  required: ["artifact_id"],
+  additionalProperties: false
+};
+const fileReferenceSchema = {
+  type: "object",
+  description: "Optional readable regular file inside the authenticated Session's active Workspace to reference from the new WorkItem. The file is not copied.",
+  properties: {
+    path: { type: "string", minLength: 1, description: "Absolute path inside the active Session Workspace." },
+    relation: { type: "string", enum: artifactRelations },
+    required: { type: "boolean" }
+  },
+  required: ["path"],
+  additionalProperties: false
+};
 
 function tool(name, description, properties = {}, required = []) {
   return {
@@ -73,6 +101,8 @@ export const collaborationDynamicTools = Object.freeze([
     parent_work_item_id: workItemIdSchema,
     source_work_item_id: workItemIdSchema,
     relationship: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] },
+    artifact_reference: artifactReferenceSchema,
+    file_reference: fileReferenceSchema,
     idempotency_key: { type: "string", minLength: 1 }
   }, ["title", "idempotency_key"]),
   tool("corptie_collaboration_work_items_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Objective; Worker relations must include its bound WorkItem.", {
@@ -80,6 +110,14 @@ export const collaborationDynamicTools = Object.freeze([
     target_work_item_id: workItemIdSchema,
     relationship: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] }
   }, ["work_item_id", "target_work_item_id", "relationship"]),
+  tool("corptie_collaboration_work_items_share_artifact", "Grant one same-Objective, explicitly related WorkItem read-only access to an Artifact. Worker Sessions may share only Artifacts owned by their current WorkItem; recipients cannot re-share received Artifacts.", {
+    work_item_id: workItemIdSchema,
+    artifact_id: { type: "string", pattern: "^artifact:", description: "Artifact owned by the sharing WorkItem, or any same-Objective Artifact when called by Objective Chat." },
+    relation: { type: "string", enum: artifactRelations },
+    required: { type: "boolean" },
+    version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
+    version: { type: "integer", minimum: 1 }
+  }, ["work_item_id", "artifact_id"]),
   tool("corptie_collaboration_work_items_start", "Start an authorized collaboration WorkItem through the Provider-neutral Session/Worktree lifecycle. Returns a staged receipt and never reports start success without an actual Session binding.", {
     work_item_id: workItemIdSchema,
     agent_id: agentIdSchema,
@@ -181,6 +219,18 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       parentWorkItemId: input.parent_work_item_id,
       sourceWorkItemId: input.source_work_item_id,
       relationship: input.relationship,
+      artifactReference: input.artifact_reference ? {
+        artifactId: input.artifact_reference.artifact_id,
+        relation: input.artifact_reference.relation,
+        required: input.artifact_reference.required,
+        versionPolicy: input.artifact_reference.version_policy,
+        version: input.artifact_reference.version
+      } : undefined,
+      fileReference: input.file_reference ? {
+        path: input.file_reference.path,
+        relation: input.file_reference.relation,
+        required: input.file_reference.required
+      } : undefined,
       idempotencyKey: input.idempotency_key
     })),
     corptie_collaboration_work_items_relate: () => client.post("/internal/collaboration/work-item-relations", {
@@ -188,6 +238,14 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       targetWorkItemId: input.target_work_item_id,
       relationship: input.relationship
     }),
+    corptie_collaboration_work_items_share_artifact: () => client.post("/internal/collaboration/work-item-artifact-references", compact({
+      workItemId: input.work_item_id,
+      artifactId: input.artifact_id,
+      relation: input.relation,
+      required: input.required,
+      versionPolicy: input.version_policy,
+      version: input.version
+    })),
     corptie_collaboration_work_items_start: () => client.post(`/internal/collaboration/work-items/${encodeURIComponent(input.work_item_id)}/start`, compact({
       agentId: input.agent_id, title: input.title, resourceVersion: input.resource_version, idempotencyKey: input.idempotency_key
     })),

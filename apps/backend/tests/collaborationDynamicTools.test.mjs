@@ -7,12 +7,13 @@ import {
 
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
-  assert.equal(names.length, 24);
+  assert.equal(names.length, 25);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("corptie_agents_discover"));
   assert.ok(names.includes("corptie_collaboration_request"));
   assert.ok(names.includes("corptie_sessions_discover"));
   assert.ok(names.includes("corptie_collaboration_work_items_create"));
+  assert.ok(names.includes("corptie_collaboration_work_items_share_artifact"));
   assert.equal(names.some((name) => name.includes("work_items_delete") || name.includes("work_items_update")), false);
   for (const entry of collaborationDynamicTools) {
     assert.equal(entry.type, "function");
@@ -24,6 +25,56 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   const request = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_request");
   assert.equal(Object.hasOwn(request.inputSchema.properties, "parent_task_id"), false);
   assert.equal(Object.hasOwn(request.inputSchema.properties, "context_id"), false);
+  const createWorkItem = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_work_items_create");
+  assert.equal(createWorkItem.inputSchema.properties.artifact_reference.required[0], "artifact_id");
+  assert.equal(createWorkItem.inputSchema.properties.file_reference.required[0], "path");
+});
+
+test("dynamic Artifact sharing maps a read-only WorkItem reference request", async () => {
+  const calls = [];
+  const client = { post: async (path, body) => { calls.push({ path, body }); return { access: "read_only" }; } };
+  const result = await callCollaborationDynamicTool(client, "corptie_collaboration_work_items_share_artifact", {
+    work_item_id: "work_item:target", artifact_id: "artifact:owned",
+    relation: "handoff", required: true, version_policy: "fixed", version: 1
+  });
+  assert.deepEqual(calls, [{
+    path: "/internal/collaboration/work-item-artifact-references",
+    body: {
+      workItemId: "work_item:target", artifactId: "artifact:owned",
+      relation: "handoff", required: true, versionPolicy: "fixed", version: 1
+    }
+  }]);
+  assert.equal(result.access, "read_only");
+});
+
+test("dynamic WorkItem creation maps Artifact and file reference contracts without dropping fields", async () => {
+  const calls = [];
+  const client = { post: async (path, body) => { calls.push({ path, body }); return { workItem: { id: "work_item:new" } }; } };
+  await callCollaborationDynamicTool(client, "corptie_collaboration_work_items_create", {
+    title: "Referenced", idempotency_key: "create:referenced",
+    artifact_reference: {
+      artifact_id: "artifact:spec", relation: "implementation_spec", required: true,
+      version_policy: "fixed", version: 2
+    }
+  });
+  assert.deepEqual(calls[0], {
+    path: "/internal/collaboration/work-items",
+    body: {
+      title: "Referenced",
+      artifactReference: {
+        artifactId: "artifact:spec", relation: "implementation_spec", required: true,
+        versionPolicy: "fixed", version: 2
+      },
+      idempotencyKey: "create:referenced"
+    }
+  });
+  calls.length = 0;
+  await callCollaborationDynamicTool(client, "corptie_collaboration_work_items_create", {
+    title: "File", idempotency_key: "create:file",
+    file_reference: { path: "/workspace/spec.md", relation: "test_plan", required: false }
+  });
+  assert.equal(calls[0].body.fileReference.path, "/workspace/spec.md");
+  assert.equal(calls[0].body.fileReference.relation, "test_plan");
 });
 
 test("dynamic request maps tool input to the authenticated collaboration HTTP contract", async () => {

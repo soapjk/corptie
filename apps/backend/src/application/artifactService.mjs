@@ -461,6 +461,76 @@ export class ArtifactService {
     return reference;
   }
 
+  prepareWorkItemCreationReference(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    const artifact = this.#readableArtifact(context, artifactId);
+    const relation = enumValue(
+      input.relation ?? "implementation_spec",
+      RELATIONS,
+      "ARTIFACT_RELATION_INVALID"
+    );
+    const versionPolicy = enumValue(
+      input.versionPolicy ?? "fixed",
+      VERSION_POLICIES,
+      "ARTIFACT_VERSION_POLICY_INVALID"
+    );
+    if (input.required != null && typeof input.required !== "boolean") {
+      throw artifactError("ARTIFACT_INVALID_INPUT", "required must be a boolean.", 400);
+    }
+    const selected = this.#selectedVersion(context, artifact, input.version);
+    if (!selected) throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "Artifact version not found.", 404);
+    return Object.freeze({
+      context, artifactId: artifact.artifactId, objectiveId: context.objectiveId,
+      relation, required: input.required === true, versionPolicy,
+      pinnedVersion: selected.version, pinnedHash: selected.contentHash
+    });
+  }
+
+  createPreparedWorkItemReference(prepared, workItemId) {
+    const workItem = this.store.getWorkItem(requiredText(workItemId, "workItemId"));
+    if (!workItem) throw artifactError("ARTIFACT_WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
+    if (workItem.objective_id !== prepared?.objectiveId) {
+      throw artifactError(
+        "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN",
+        "Artifact references cannot cross Objective boundaries.",
+        403
+      );
+    }
+    if (workItem.deletion_status === "deleting") {
+      throw artifactError("WORK_ITEM_DELETION_IN_PROGRESS", "Cannot reference an Artifact while the WorkItem is being deleted.", 409);
+    }
+    const artifact = this.#sameObjectiveArtifact(prepared.context, prepared.artifactId);
+    const version = this.store.getArtifactVersion(artifact.artifactId, prepared.pinnedVersion);
+    if (!version || version.contentHash !== prepared.pinnedHash) {
+      throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "The selected Artifact version is no longer available.", 409);
+    }
+    const authorizedAt = this.clock();
+    const reference = this.store.createArtifactReference({
+      referenceId: `artifact_reference:${this.idFactory()}`,
+      artifactId: artifact.artifactId,
+      objectiveId: prepared.objectiveId,
+      workItemId: workItem.id,
+      sessionId: null,
+      relation: prepared.relation,
+      required: prepared.required,
+      versionPolicy: prepared.versionPolicy,
+      pinnedVersion: prepared.pinnedVersion,
+      pinnedHash: prepared.pinnedHash,
+      actorId: prepared.context.sessionId ?? prepared.context.actorId,
+      authorizedAt
+    });
+    this.#audit(prepared.context, artifact.artifactId, "artifact.reference_created", {
+      referenceId: reference.referenceId,
+      workItemId: workItem.id,
+      relation: reference.relation,
+      required: reference.required,
+      versionPolicy: reference.versionPolicy,
+      pinnedHash: reference.pinnedHash,
+      source: "work_item_creation"
+    }, null, reference.pinnedVersion);
+    return reference;
+  }
+
   revokeReference(contextInput, referenceId, reason) {
     const context = this.context(contextInput);
     this.#assertManager(context);
