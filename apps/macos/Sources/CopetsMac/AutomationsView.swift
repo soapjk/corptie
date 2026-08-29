@@ -106,7 +106,11 @@ struct AutomationsView: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(spacing: 12) {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 300, maximum: 430), spacing: 12, alignment: .top)],
+                        alignment: .leading,
+                        spacing: 12
+                    ) {
                         ForEach(visibleAutomations) { automation in
                             AutomationCard(
                                 automation: automation,
@@ -194,23 +198,82 @@ private struct AutomationCard: View {
     let openTarget: () -> Void
     let edit: () -> Void
     let perform: (ScheduledSessionTaskAction) -> Void
+    @State private var isShowingDetails = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(automation.name).font(.headline)
-                    Button(action: openTarget) {
-                        Label(targetName, systemImage: "bubble.left.and.bubble.right")
-                    }
-                    .buttonStyle(.link)
-                    .font(.caption)
-                }
+                Text(automation.name)
+                    .font(.headline)
+                    .lineLimit(1)
                 Spacer()
                 statusBadge
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: 12) {
+            Button(action: openTarget) {
+                Label(targetName, systemImage: "bubble.left.and.bubble.right")
+                    .lineLimit(1)
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+
+            HStack(spacing: 8) {
+                Label(triggerLabel, systemImage: "bolt.badge.clock")
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if automation.scheduleType.hasPredictableNextRun,
+                   let nextRunLabel = optionalDateLabel(automation.nextRunAt) {
+                    Label(nextRunLabel, systemImage: "calendar")
+                        .lineLimit(1)
+                }
+            }
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+
+            Text(automation.message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+
+            if isShowingDetails { details }
+
+            Divider()
+            HStack(spacing: 7) {
+                Button {
+                    isShowingDetails.toggle()
+                } label: {
+                    Label(
+                        L10n("详情"),
+                        systemImage: isShowingDetails ? "chevron.up" : "chevron.down"
+                    )
+                }
+                .buttonStyle(.borderless)
+
+                Spacer(minLength: 4)
+                compactActionButton(L10n("Edit"), systemImage: "pencil", action: edit)
+                    .disabled(!automation.status.permitsEditing
+                        || ![ScheduledSessionScheduleType.once, .interval].contains(automation.scheduleType))
+                if automation.status.permitsResume {
+                    compactActionButton(L10n("Retry"), systemImage: "arrow.clockwise") { perform(.retry) }
+                }
+                compactActionButton(L10n("Run Now"), systemImage: "play.fill") { perform(.runNow) }
+                    .disabled(!automation.status.permitsRunNow)
+                compactActionButton(L10n("Cancel"), systemImage: "xmark", role: .destructive) { perform(.cancel) }
+                    .disabled(!automation.status.permitsCancel)
+                if isMutating { ProgressView().controlSize(.mini) }
+            }
+            .disabled(isMutating || automation.operationsDisabledReason != nil)
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 11))
+        .overlay(RoundedRectangle(cornerRadius: 11).stroke(Color(nsColor: .separatorColor).opacity(0.55)))
+    }
+
+    @ViewBuilder
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2), spacing: 9) {
                 metric(L10n("创建时间"), dateLabel(automation.createdAt), "calendar.badge.plus")
                 metric(L10n("上次执行时间"), dateLabel(automation.lastRunAt), "clock.arrow.circlepath")
                 if automation.scheduleType.hasPredictableNextRun {
@@ -226,17 +289,10 @@ private struct AutomationCard: View {
                 ),
                 systemImage: "globe"
             )
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
 
-            Text(automation.message)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(4)
-                .textSelection(.enabled)
-
-            HStack(spacing: 18) {
-                metric(L10n("Trigger"), triggerLabel, "bolt.badge.clock")
+            HStack(spacing: 12) {
                 metric(L10n("Last Result"), automation.lastRunStatus?.rawValue ?? L10n("Not run"), "checklist")
                 metric(L10n("Risk"), automation.risk?.level ?? "minimal", "shield")
             }
@@ -267,28 +323,10 @@ private struct AutomationCard: View {
                 .font(.caption.weight(.semibold))
             }
 
-            HStack {
-                Button(L10n("Edit"), action: edit)
-                    .disabled(!automation.status.permitsEditing
-                        || ![ScheduledSessionScheduleType.once, .interval].contains(automation.scheduleType))
-                if automation.status.permitsResume {
-                    Button(L10n("Retry")) { perform(.retry) }
-                }
-                Button(L10n("Run Now")) { perform(.runNow) }
-                    .disabled(!automation.status.permitsRunNow)
-                Button(L10n("Cancel"), role: .destructive) { perform(.cancel) }
-                    .disabled(!automation.status.permitsCancel)
-                Spacer()
-                if isMutating { ProgressView().controlSize(.mini) }
-                Text("misfire: \(automation.policy?.misfire ?? automation.missedPolicy.rawValue)")
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(isMutating || automation.operationsDisabledReason != nil)
+            Text("misfire: \(automation.policy?.misfire ?? automation.missedPolicy.rawValue)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
         }
-        .padding(15)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(nsColor: .separatorColor).opacity(0.55)))
     }
 
     private var statusBadge: some View {
@@ -316,10 +354,29 @@ private struct AutomationCard: View {
     }
 
     private func dateLabel(_ value: String?) -> String {
+        optionalDateLabel(value) ?? L10n("None")
+    }
+
+    private func optionalDateLabel(_ value: String?) -> String? {
         ScheduledSessionManagementTimeFormatting.string(
             from: value,
             locale: AppLanguageController.shared.locale
-        ) ?? L10n("None")
+        )
+    }
+
+    private func compactActionButton(
+        _ title: String,
+        systemImage: String,
+        role: ButtonRole? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: role, action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 16, height: 16)
+        }
+        .buttonStyle(.borderless)
+        .help(title)
+        .accessibilityLabel(title)
     }
 }
 
