@@ -18,6 +18,8 @@ struct ObjectiveResourcesEditor: View {
 
     @State private var showAgentPicker = false
     @State private var workspaceError: String?
+    @State private var pendingGitInitializationURL: URL?
+    @State private var showGitInitializationConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -35,6 +37,21 @@ struct ObjectiveResourcesEditor: View {
             Button(L10n("确定"), role: .cancel) {}
         } message: {
             Text(workspaceError ?? "")
+        }
+        .confirmationDialog(
+            L10n("初始化 Git 仓库？"),
+            isPresented: $showGitInitializationConfirmation,
+            presenting: pendingGitInitializationURL
+        ) { url in
+            Button(L10n("初始化并添加")) {
+                pendingGitInitializationURL = nil
+                Task { await initializeAndAddWorkspace(at: url) }
+            }
+            Button(L10n("取消"), role: .cancel) {
+                pendingGitInitializationURL = nil
+            }
+        } message: { url in
+            Text(L10nFormat("“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？", url.path))
         }
         .onAppear {
             Task {
@@ -100,12 +117,27 @@ struct ObjectiveResourcesEditor: View {
         panel.prompt = "添加"
         if panel.runModal() == .OK, let url = panel.url {
             Task {
-                if let repo = await client.detectRepository(path: url.path) {
+                switch await client.registerRepository(path: url.path) {
+                case .success(let repo):
                     workspaceIds.insert(repo.id)
-                } else {
-                    workspaceError = client.errorMessage ?? "未能识别所选目录为有效的 Git 仓库。"
+                case .notGitRepository:
+                    pendingGitInitializationURL = url
+                    showGitInitializationConfirmation = true
+                case .failure(let message):
+                    workspaceError = message
                 }
             }
+        }
+    }
+
+    private func initializeAndAddWorkspace(at url: URL) async {
+        switch await client.registerRepository(path: url.path, initializeIfNeeded: true) {
+        case .success(let repo):
+            workspaceIds.insert(repo.id)
+        case .notGitRepository:
+            workspaceError = L10n("Git 初始化完成后仍无法识别所选文件夹。")
+        case .failure(let message):
+            workspaceError = message
         }
     }
 
