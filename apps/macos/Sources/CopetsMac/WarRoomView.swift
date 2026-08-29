@@ -564,6 +564,22 @@ struct WorkItemAutomaticAcceptancePresentation: Equatable {
     }
 }
 
+enum WorkItemAcceptanceReviewState: Equatable {
+    case passed
+    case manuallyRejected
+    case unavailable
+
+    static func resolve(_ workItem: WorkItem) -> Self {
+        if workItem.acceptanceAssessment?.status == "rejected" {
+            return .manuallyRejected
+        }
+        if workItem.completionSuggestion?.recommended == true {
+            return .passed
+        }
+        return .unavailable
+    }
+}
+
 enum WorkItemBoundSessionActivity: Equatable {
     case noSession
     case processing
@@ -997,6 +1013,9 @@ struct WorkItemDetailView: View {
     @State private var isDeletingWorkItem = false
     @State private var deletionFeedback: String?
     @State private var showMemoryInspector = false
+    @State private var showAcceptanceReview = false
+    @State private var isRejectingAcceptance = false
+    @State private var acceptanceRejectionError: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1117,6 +1136,15 @@ struct WorkItemDetailView: View {
                 }
             )
         }
+        .sheet(isPresented: $showAcceptanceReview) {
+            WorkItemAcceptanceReviewView(
+                workItem: workItem,
+                isRejecting: isRejectingAcceptance,
+                rejectionError: acceptanceRejectionError,
+                onClose: { showAcceptanceReview = false },
+                onReject: { rejectAutomaticAcceptance() }
+            )
+        }
         .sheet(isPresented: $showWorkspaceBind) {
             WorkspaceBindSheet(workspaceId: $bindWorkspaceId, workspaceIds: workspaceIds) {
                 guard await client.updateWorkItem(workItemId: workItem.id, mainWorkspaceId: bindWorkspaceId) != nil else {
@@ -1193,14 +1221,32 @@ struct WorkItemDetailView: View {
             }
 
 
-            if isPendingReview {
-                Label(L10n("自动验收已通过"), systemImage: "checkmark.seal.fill")
+            switch acceptanceReviewState {
+            case .passed:
+                Button {
+                    acceptanceRejectionError = nil
+                    showAcceptanceReview = true
+                } label: {
+                    Label(L10n("自动验收已通过"), systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(Color.green.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n("自动验收已通过"))
+                .accessibilityHint(L10n("查看自动验收情况"))
+            case .manuallyRejected:
+                Label(L10n("人工验收未通过"), systemImage: "xmark.seal.fill")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.red)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(Color.green.opacity(0.12), in: Capsule())
-                    .accessibilityLabel(L10n("自动验收已通过"))
+                    .background(Color.red.opacity(0.1), in: Capsule())
+                    .accessibilityLabel(L10n("人工验收未通过"))
+            case .unavailable:
+                EmptyView()
             }
 
             HStack(alignment: .top, spacing: 8) {
@@ -1411,9 +1457,23 @@ struct WorkItemDetailView: View {
         ["done", "complete", "completed"].contains(workItem.status)
     }
 
-    // 是否存在有逐条证据支撑的完成建议。Session complete 本身永远不满足该条件。
-    private var isPendingReview: Bool {
-        workItem.completionSuggestion?.recommended == true
+    private var acceptanceReviewState: WorkItemAcceptanceReviewState {
+        .resolve(workItem)
+    }
+
+    private func rejectAutomaticAcceptance() {
+        guard !isRejectingAcceptance else { return }
+        isRejectingAcceptance = true
+        acceptanceRejectionError = nil
+        Task {
+            defer { isRejectingAcceptance = false }
+            guard await client.rejectWorkItemAcceptance(workItemId: workItem.id) != nil else {
+                acceptanceRejectionError = client.errorMessage ?? L10n("Unable to reject automated acceptance")
+                return
+            }
+            showAcceptanceReview = false
+            onRequestReload()
+        }
     }
 
     // 是否正在运行（当前会话正在执行或等待输入）。
@@ -1834,6 +1894,113 @@ private struct WorkItemDeletionConfirmationView: View {
                 .font(.callout)
             }
         }
+    }
+}
+
+private struct WorkItemAcceptanceReviewView: View {
+    let workItem: WorkItem
+    let isRejecting: Bool
+    let rejectionError: String?
+    let onClose: () -> Void
+    let onReject: () -> Void
+
+    private var results: [WorkItemAcceptanceResult] {
+        workItem.completionSuggestion?.results ?? workItem.acceptanceAssessment?.results ?? []
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Text(L10n("自动验收结论详情"))
+                    .font(.headline)
+
+                HStack {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .symbolRenderingMode(.hierarchical)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(L10n("关闭"))
+                    .disabled(isRejecting)
+                    Spacer()
+                }
+            }
+            .padding(16)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(workItem.title)
+                        .font(.system(size: 13, weight: .semibold))
+                    if results.isEmpty {
+                        ContentUnavailableView(
+                            L10n("暂无自动验收结论详情"),
+                            systemImage: "doc.text.magnifyingglass"
+                        )
+                        .frame(maxWidth: .infinity, minHeight: 150)
+                    } else {
+                        ForEach(Array(results.enumerated()), id: \.offset) { index, result in
+                            acceptanceResult(result, index: index)
+                        }
+                    }
+                    if let rejectionError {
+                        Label(rejectionError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+            }
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button(role: .destructive, action: onReject) {
+                    if isRejecting {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text(L10n("取消验收通过"))
+                        }
+                    } else {
+                        Text(L10n("取消验收通过"))
+                    }
+                }
+                .disabled(isRejecting)
+            }
+            .padding(16)
+        }
+        .frame(width: 480, height: 430)
+        .interactiveDismissDisabled(isRejecting)
+    }
+
+    private func acceptanceResult(_ result: WorkItemAcceptanceResult, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(index + 1). \(result.criterion)")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text(result.verdict == "passed" ? L10n("已通过") : L10n("未通过"))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(result.verdict == "passed" ? Color.green : Color.red)
+            }
+            ForEach(Array(result.evidence.enumerated()), id: \.offset) { _, evidence in
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("• \(evidence.summary)")
+                        .font(.system(size: 11))
+                    Text(evidence.reference)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(11)
+        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
