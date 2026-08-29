@@ -60,7 +60,7 @@ export function createCollaborationMcpServer(options) {
   const sessionKind = typeof options.sessionKind === "string" ? options.sessionKind.trim() : "";
   const sessionObjectiveId = typeof options.sessionObjectiveId === "string" ? options.sessionObjectiveId.trim() : objectiveId;
   const server = new McpServer(
-    { name: "corptie-collaboration", version: "0.5.3" },
+    { name: "corptie-collaboration", version: "0.5.4" },
     {
       instructions: [
         `You are authenticated as Corptie Agent ${agentId}.`,
