@@ -335,6 +335,13 @@
 "Copy full workspace path: %@" = "Copy full workspace path: %@";
 "Open in Visual Studio Code" = "Open in Visual Studio Code";
 "Open in Finder" = "Open in Finder";
+"Open with System Application" = "Open with System Application";
+"Unable to Open Artifact" = "Unable to Open Artifact";
+"The Artifact file no longer exists." = "The Artifact file no longer exists.";
+"Corptie does not have permission to open this Artifact file." = "Corptie does not have permission to open this Artifact file.";
+"No application is associated with this Artifact file type." = "No application is associated with this Artifact file type.";
+"The Artifact's local path is not a regular file." = "The Artifact's local path is not a regular file.";
+"The system could not open this Artifact: %@" = "The system could not open this Artifact: %@";
 "Commit message" = "Commit message";
 "Generate with Agent" = "Generate with Agent";
 "Generating…" = "Generating…";

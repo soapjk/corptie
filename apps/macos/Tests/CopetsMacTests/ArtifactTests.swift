@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import CorptieMac
 
@@ -43,5 +44,72 @@ final class ArtifactTests: XCTestCase {
         XCTAssertTrue(detail.references[0].required)
         XCTAssertEqual(detail.nextOffset, 65_536)
         XCTAssertTrue(detail.truncated)
+    }
+
+    func testLocalFileReceiptUsesSuggestedMarkdownNameOnlyForDefaultApplicationLookup() throws {
+        let json = #"{"artifactId":"artifact:1","version":2,"path":"/data/artifacts/objects/ab/hash","suggestedFilename":"Spec.md","mimeType":"text/markdown"}"#.data(using: .utf8)!
+        let receipt = try JSONDecoder().decode(ArtifactLocalFileReceipt.self, from: json)
+
+        XCTAssertEqual(receipt.fileURL.path, "/data/artifacts/objects/ab/hash")
+        XCTAssertEqual(receipt.applicationLookupURL.lastPathComponent, "Spec.md")
+        XCTAssertEqual(receipt.applicationLookupURL.pathExtension, "md")
+        XCTAssertNotEqual(receipt.fileURL, receipt.applicationLookupURL)
+    }
+
+    @MainActor
+    func testMarkdownLocalFileUsesTheSystemsRegisteredDefaultApplication() throws {
+        let receipt = ArtifactLocalFileReceipt(
+            artifactId: "artifact:1",
+            version: 1,
+            path: "/data/artifacts/objects/ab/hash",
+            suggestedFilename: "Spec.md",
+            mimeType: "text/markdown"
+        )
+        XCTAssertNotNil(ArtifactSystemApplicationOpener.defaultApplicationURL(for: receipt))
+    }
+
+    @MainActor
+    func testUnknownArtifactFileTypeHasNoRegisteredDefaultApplication() {
+        let receipt = ArtifactLocalFileReceipt(
+            artifactId: "artifact:1",
+            version: 1,
+            path: "/data/artifacts/objects/ab/hash",
+            suggestedFilename: "Spec.corptie-unregistered-file-type-6d0d6b",
+            mimeType: "application/octet-stream"
+        )
+        XCTAssertNil(ArtifactSystemApplicationOpener.defaultApplicationURL(for: receipt))
+    }
+
+    @MainActor
+    func testArtifactContentPreviewUsesOneNativeScrollViewAndDoesNotReplaceUnchangedText() {
+        let content = String(repeating: "A line of bounded Artifact content\n", count: 2_048)
+        let scrollView = ArtifactContentPreview.makeScrollView(content: content)
+        let textView = scrollView.documentView as? NSTextView
+
+        XCTAssertTrue(scrollView.hasVerticalScroller)
+        XCTAssertFalse(scrollView.hasHorizontalScroller)
+        XCTAssertEqual(textView?.isEditable, false)
+        XCTAssertEqual(textView?.isSelectable, true)
+        XCTAssertEqual(textView?.string, content)
+        XCTAssertFalse(ArtifactContentPreview.update(textView: textView!, content: content))
+
+        scrollView.frame = NSRect(x: 0, y: 0, width: 680, height: 360)
+        textView?.frame.size.width = scrollView.contentSize.width
+        if let layoutManager = textView?.layoutManager, let textContainer = textView?.textContainer {
+            layoutManager.ensureLayout(for: textContainer)
+            textView?.frame.size.height = layoutManager.usedRect(for: textContainer).height + 20
+        }
+        let maximumOffset = max(0, (textView?.frame.height ?? 0) - scrollView.contentSize.height)
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        for step in 0...240 {
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: maximumOffset * CGFloat(step) / 240))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
+        }
+        let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
+        XCTAssertGreaterThan(maximumOffset, 0)
+        XCTAssertEqual(scrollView.contentView.bounds.origin.y, maximumOffset, accuracy: 1)
+        XCTAssertLessThan(elapsed, 1, "Repeated downward scrolling must remain responsive")
+
+        XCTAssertTrue(ArtifactContentPreview.update(textView: textView!, content: "next page"))
     }
 }

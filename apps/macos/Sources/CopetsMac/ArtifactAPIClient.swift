@@ -115,6 +115,17 @@ final class ArtifactAPIClient: ObservableObject {
         }
     }
 
+    func localFile(artifactId: String, version: Int) async throws -> ArtifactLocalFileReceipt {
+        var components = URLComponents(
+            url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifactId)/local-file"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "version", value: String(version))]
+        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        try Self.validate(response: response, data: data)
+        return try await decode(ArtifactLocalFileReceipt.self, data: data)
+    }
+
     private func get<T: Decodable & Sendable>(_ path: String) async throws -> T {
         let (data, response) = try await URLSession.shared.data(from: Self.endpointURL(baseURL: baseURL, path: path))
         try Self.validate(response: response, data: data)
