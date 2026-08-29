@@ -8,6 +8,7 @@ import { ObjectiveApplicationService } from "../src/application/objectiveApplica
 import { resolveRecipientSession, SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { WorkItemCompletionService } from "../src/application/workItemCompletionService.mjs";
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-collaboration-"));
@@ -460,7 +461,17 @@ test("a completed peer Worker is never routed and creation resources fall back t
       objectiveId: peerObjective.id,
       title: "Completed peer work",
       mainAgentId: peerAgent.agentId,
-      status: "done"
+      status: "in_progress"
+    });
+    const completionService = new WorkItemCompletionService({ store: f.store });
+    const receipt = completionService.issueMacOSIntent(completedWorkItem.id, {
+      requestId: "peer-completed-intent", interactionId: "peer-completed-click",
+      uiSurface: "work_item_completion_confirmation", displayedWorkItemId: completedWorkItem.id,
+      displayedWorkItemTitle: completedWorkItem.title, displayedAcceptanceStatus: "not_assessed"
+    }, { type: "user", id: "user:local-macos" });
+    completionService.completeFromMacOS(completedWorkItem.id, {
+      intentToken: receipt.intentToken, requestId: "peer-completed-intent",
+      idempotencyKey: "peer-completed"
     });
     session(f.store, f.core, {
       providerSessionId: "provider:peer-archived", logicalSessionId: "session:peer-archived",

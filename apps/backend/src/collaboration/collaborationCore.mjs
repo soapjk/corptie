@@ -1882,8 +1882,9 @@ export class CollaborationCore {
   }
 
   #syncWorkItemStatus(workItemId, taskId, taskStatus, timestamp) {
+    const current = this.store.getWorkItem(workItemId);
     const status = taskStatus === "completed"
-      ? "done"
+      ? current?.status ?? "in_progress"
       : ["rejected", "canceled", "escalated"].includes(taskStatus)
         ? "canceled"
         : ["working", "delivered", "verifying", "revision_requested"].includes(taskStatus)
@@ -1898,16 +1899,10 @@ export class CollaborationCore {
           : taskStatus === "delivered" || taskStatus === "verifying"
             ? "awaiting_acceptance"
             : "idle";
-    const patch = { status, executionStatus };
-    if (taskStatus === "completed") {
-      patch.acceptanceAssessment = {
-        status: "passed",
-        source: "collaboration",
-        collaborationTaskId: taskId,
-        assessedAt: timestamp
-      };
-    }
-    this.store.updateWorkItem(workItemId, patch);
+    // A collaboration Task settling is execution evidence, not direct user
+    // intent to complete its resource WorkItem. Preserve the lifecycle status;
+    // only the dedicated acceptance and completion workflows may change it.
+    this.store.updateWorkItem(workItemId, { status, executionStatus });
   }
 
   #migrateLegacyCollaborationTasks() {

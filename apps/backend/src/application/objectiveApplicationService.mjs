@@ -185,14 +185,6 @@ export class ObjectiveApplicationService {
         "acceptanceAssessment and executionStatus are managed by their dedicated workflows."
       );
     }
-    if (["done", "complete", "completed"].includes(patch.status)
-      && !completionSuggestionForWorkItem(current)) {
-      throw new WorkItemAcceptanceError(
-        "ACCEPTANCE_NOT_PROVEN",
-        "The WorkItem cannot be completed because its current acceptance criteria have not been proven."
-      );
-    }
-
     const normalized = validateWorkItemInput(patch, "update");
     const nextPatch = { ...normalized };
     if (Object.prototype.hasOwnProperty.call(normalized, "acceptanceCriteria")
@@ -203,24 +195,11 @@ export class ObjectiveApplicationService {
   }
 
   confirmWorkItemCompletion(id, input = {}) {
-    const current = this.getWorkItem(id);
-    if (input.confirmed !== true) {
-      throw new WorkItemAcceptanceError(
-        "USER_CONFIRMATION_REQUIRED",
-        "Completing a WorkItem through this command requires explicit user confirmation."
-      );
-    }
-    if (["done", "complete", "completed"].includes(current.status)) return current;
-    if (!["in_progress", "doing", "running"].includes(current.status)) {
-      throw new WorkItemAcceptanceError(
-        "INVALID_STATUS_TRANSITION",
-        `A WorkItem in status ${current.status} cannot be confirmed complete.`
-      );
-    }
-    return this.emit(
-      "WorkItemChanged",
-      this.store.updateWorkItem(id, { status: "done" }),
-      "user-confirmed-completion"
+    const workItem = this.getWorkItem(id);
+    this.store.recordRejectedWorkItemCompletionBypass(workItem, "legacy_confirm_completion");
+    throw new WorkItemAcceptanceError(
+      "WORK_ITEM_COMPLETION_INTENT_REQUIRED",
+      "confirmed=true is not completion authorization. Use the direct-user-intent completion workflow."
     );
   }
 
