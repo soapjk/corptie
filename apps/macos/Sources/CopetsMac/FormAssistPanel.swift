@@ -28,7 +28,7 @@ struct AssistFormDraft: Decodable, Equatable {
         case AssistFormType.agent.rawValue:
             expected = ["name", "description", "role", "systemPrompt", "capabilities"]
         case AssistFormType.objective.rawValue:
-            expected = ["name", "description", "idealState", "priority", "targetDate", "tags"]
+            expected = ["name", "description", "idealState", "priority", "tags"]
         case AssistFormType.workItem.rawValue:
             expected = ["title", "description", "acceptanceCriteria", "priority"]
         default:

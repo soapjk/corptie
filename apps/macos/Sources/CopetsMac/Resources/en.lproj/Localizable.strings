@@ -645,6 +645,10 @@
 "Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session." = "Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session.";
 "All" = "All";
 "New Objective" = "New Objective";
+"初始化 Git 仓库？" = "Initialize Git Repository?";
+"初始化并添加" = "Initialize and Add";
+"“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？" = "“%@” is not a Git repository. Initialize a Git repository in this folder?";
+"Git 初始化完成后仍无法识别所选文件夹。" = "The selected folder is still not recognized after Git initialization.";
 "Raw status" = "Raw status";
 "Regenerate Plan" = "Regenerate Plan";
 "Re-preflight" = "Re-preflight";

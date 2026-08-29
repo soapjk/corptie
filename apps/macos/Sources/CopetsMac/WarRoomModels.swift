@@ -309,6 +309,12 @@ struct EntityErrorEnvelope: Codable {
     }
 }
 
+enum RepositoryRegistrationResult {
+    case success(GitRepository)
+    case notGitRepository
+    case failure(String)
+}
+
 // 执行/操作失败的结果（含错误码，供 UI 做针对性引导，如「未绑定仓库」给绑定入口）
 struct EntityLaunchError: Error, LocalizedError {
     let message: String

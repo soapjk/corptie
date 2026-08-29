@@ -894,7 +894,7 @@ final class EntityAPIClient: ObservableObject {
     // 创建 Objective：POST /objectives { name, ... } → 直接返回 objective
     @discardableResult
     func createObjective(id: String? = nil, name: String, description: String? = nil, idealState: String? = nil,
-                         priority: String? = nil, targetDate: String? = nil, tags: [String] = [],
+                         priority: String? = nil, tags: [String] = [],
                          workspaceIds: [String] = [], relatedObjectiveIds: [String] = [],
                          contributorAgentIds: [String] = []) async -> Objective? {
         var request = URLRequest(url: baseURL.appending(path: "objectives"))
@@ -905,7 +905,6 @@ final class EntityAPIClient: ObservableObject {
         if let description { body["description"] = description }
         if let idealState { body["idealState"] = idealState }
         if let priority { body["priority"] = priority }
-        if let targetDate { body["targetDate"] = targetDate }
         if !tags.isEmpty { body["tags"] = tags }
         if !workspaceIds.isEmpty { body["workspaceIds"] = workspaceIds }
         if !relatedObjectiveIds.isEmpty { body["relatedObjectiveIds"] = relatedObjectiveIds }
@@ -920,25 +919,30 @@ final class EntityAPIClient: ObservableObject {
 
     // 手动注册一个 Git 仓库：POST /repositories/detect { dirPath } → { repository }
     @discardableResult
-    func detectRepository(path: String) async -> GitRepository? {
+    func registerRepository(path: String, initializeIfNeeded: Bool = false) async -> RepositoryRegistrationResult {
         var request = URLRequest(url: baseURL.appending(path: "repositories/detect"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["dirPath": path])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "dirPath": path,
+            "initializeIfNeeded": initializeIfNeeded
+        ])
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                errorMessage = envelope?.error ?? "添加仓库失败（HTTP \(http.statusCode)）"
-                return nil
+                let message = envelope?.error ?? "添加仓库失败（HTTP \(http.statusCode)）"
+                errorMessage = message
+                if envelope?.code == "NOT_A_GIT_REPOSITORY" { return .notGitRepository }
+                return .failure(message)
             }
             let repository = try decoder.decode(RepositoryDetectEnvelope.self, from: data).repository
             await refreshRepositories()
             errorMessage = nil
-            return repository
+            return .success(repository)
         } catch {
             errorMessage = error.localizedDescription
-            return nil
+            return .failure(error.localizedDescription)
         }
     }
 
