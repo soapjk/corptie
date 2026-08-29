@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -53,6 +53,51 @@ test("Objective private content is hashed, atomically stored outside repositorie
     assert.equal(page.content, "secret");
     assert.equal(page.nextOffset, 6);
     assert.equal(f.store.selectOne("SELECT operation, content_hash FROM artifact_usage_events").content_hash, artifact.versions[0].contentHash);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("local file lookup reuses the stored Artifact object without reading or materializing another file", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(managerContext(f), {
+      title: "Implementation Notes",
+      visibility: "objective_private",
+      content: "# Existing content",
+      mimeType: "text/markdown"
+    });
+    const objectsDirectory = join(f.directory, "data", "artifacts", "objects", artifact.versions[0].contentHash.slice(0, 2));
+    const before = await readdir(objectsDirectory);
+
+    const receipt = await f.service.localFile(managerContext(f), artifact.artifactId, { version: 1 });
+    const after = await readdir(objectsDirectory);
+
+    assert.equal(receipt.path, join(f.directory, "data", "artifacts", artifact.versions[0].storageKey));
+    assert.equal(receipt.suggestedFilename, "Implementation Notes.md");
+    assert.equal(receipt.mimeType, "text/markdown");
+    assert.deepEqual(after, before);
+
+    await chmod(receipt.path, 0o000);
+    await assert.rejects(
+      () => f.service.localFile(managerContext(f), artifact.artifactId, { version: 1 }),
+      { code: "ARTIFACT_LOCAL_FILE_PERMISSION_DENIED" }
+    );
+    await chmod(receipt.path, 0o600);
+    await unlink(receipt.path);
+    await assert.rejects(
+      () => f.service.localFile(managerContext(f), artifact.artifactId, { version: 1 }),
+      { code: "ARTIFACT_LOCAL_FILE_NOT_FOUND" }
+    );
+
+    const trackedDirectory = await f.service.create(managerContext(f), {
+      title: "Invalid tracked path",
+      visibility: "repository_tracked",
+      repositoryLocator: f.directory,
+      confirmedRepositoryTracked: true
+    });
+    await assert.rejects(
+      () => f.service.localFile(managerContext(f), trackedDirectory.artifactId, { version: 1 }),
+      { code: "ARTIFACT_LOCAL_FILE_NOT_FILE" }
+    );
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 

@@ -110,6 +110,17 @@ export function handleArtifactHttpRequest({ request, response, url, service }) {
       return sendJson(response, 200, await service.verifyIntegrity(decodeURIComponent(integrityMatch[1])));
     }
 
+    const localFileMatch = path.match(/^\/artifacts\/([^/]+)\/local-file$/);
+    if (request.method === "GET" && localFileMatch) {
+      const artifactId = decodeURIComponent(localFileMatch[1]);
+      const artifact = requiredArtifact(service, artifactId);
+      return sendJson(response, 200, await service.localFile(
+        localContext(artifact.objectiveId),
+        artifactId,
+        { version: numberParam(url, "version") }
+      ));
+    }
+
     const exportMatch = path.match(/^\/artifacts\/([^/]+)\/export$/);
     if (request.method === "POST" && exportMatch) {
       const artifactId = decodeURIComponent(exportMatch[1]);
