@@ -5,138 +5,114 @@
 <h1 align="center">Corptie</h1>
 
 <p align="center">
-  <strong>面向长时间、异步和多 Agent 工作流的本地优先 macOS 工作台。</strong>
+  <strong>面向多项目、多任务与多 Agent 并行工作的本地优先工作台</strong>
 </p>
 
 <p align="center">
+  <a href="https://github.com/soapjk/corptie/releases/latest">下载最新版</a>
+  ·
+  <a href="docs/product-showcase.md">产品展示</a>
+  ·
   <a href="README.en.md">English</a>
 </p>
-在复杂的多项目并行开发的实际场景中，往往需要同时在不同的会话之间切换，每一次小特性开发都会不断地增加会话的数量和worktree数量。一个典型的单任务feature开发流程是这样：新建/打开一个会话，告诉他上下文，描述自己想要的功能，讨论大致的实现方向，让agent建立新的worktree开始开发&测试，开发完成后让agent合并至主分支。
-然而复杂版本的多项目并行开发流程则面临更繁琐的操作：在服务a项目下面新建/打开一个会话a，告诉他上下文，描述自己想要的功能，讨论大致的实现方向，让agent开发&测试，开发过程中发现新的问题，需要服务b进行适配变更，用户新开会话b进行服务b的相关改造流程。待b完成后，再返回a，告诉其会话b的结论让其继续开发，完成后让agent合并至主分支. 在这里用户实际上扮演了a和b之间的消息转发器。而sub agent并不能很好的处理此类场景。因为对于B的改造需求是在开发过程中发现的，这类场景很难在一开始的时候就定好sub agent的开发。并且在B的开发过程中，用户也很有可能需要人工介入。
-以上流程用户可能会多开，也就是在服务a下面同时开发多个需求，并且每个需求都可能派生出依赖服务的需求。越来越多的会话被开出，用户和agent和用户本身都极易丢失上下文。并且若每次都通过用户来描述项目背景，那对用户将是极大的折磨。
-还在不断地会话切换。corptie是一个以多项目并行协作为核心的Agent Harness app。基于此，corptie延伸出了多层记忆机制，跨会话协作工具，agent管理等特性。
 
-## 目录
+Corptie 把分散的 Agent 会话、具体任务、worktree和上下文组织在一个持续工作、持续进化的系统中，最大程度的让个人能管理更复杂的项目架构。
 
-- [Corptie 能做什么](#corptie-能做什么)
-- [快速开始](#快速开始)
-- [核心使用流程](#核心使用流程)
-- [配置与数据](#配置与数据)
-- [设计与项目结构](#设计与项目结构)
-- [开发与验证](#开发与验证)
-- [打包与本机安装](#打包与本机安装)
-- [常见问题](#常见问题)
+## 核心能力
 
-## Corptie 能做什么
-
-| 你需要做的事 | Corptie 提供的帮助 |
+| 能力 | 为你解决什么问题 |
 | --- | --- |
-| 两层分级，多个任务同时推进 | objective管理大目标，workitem执行具体任务。用尽量少的操作流程，高效的进行多任务管理|
-| 三层记忆机制，兼顾任务上下文与长期知识沉淀 | agent角色记忆，objective目标记忆，workitem具体任务记忆 分层维护。用最少的上下文发挥记忆作用|
-| 跨任务分工协作 | 随时在不同会话之间让agent跨任务发送协作消息，跨项目对齐开发标准。 |
-| coding角色与聊天角色隔离管理 | 直接创建 Assistant 或 Independent Contributor agent。咨询归咨询开发归开发 |
+| **多项目并行工作台** | 在一个统一界面中查看和管理多个 Agent Session，只在需要关注时介入。 |
+| **Objective 与 WorkItem** | 用 Objective 管理长期目标，用 WorkItem 承载具体任务、验收标准和执行状态。 |
+| **分层记忆** | 分别沉淀 Agent、Objective 和 WorkItem 层级的长期知识与任务上下文，在控制上下文占用的前提下让模型知道项目偏好。 |
+| **跨 Session 协作** | 不同的会话/任务之间可以通过完善的通信机制进行自动化的交互与协作，完全避免人类成为传话员。 |
+| **Worktree管理** | 为并行开发任务维护清晰的项目和 Git Worktree 边界，完善的一键化 worktree合并，清理功能，无需担心并行太多worktree的管理问题。 |
+| **Agent Provider 接入** | 核心agent依赖codex/claude code/openclaky,直接使用你熟悉的模型|
+| **skill管理** | 支持为不同创建的Agent指定其可用的Skill集合，在启动会话时做到只启用需要使用Skill，避免多余的上下文占用。|
+| **计划任务** | 所有会话都可以由模型自主创建计划任务，包括自定义的脚本监控以及定时任务，在合适的时候自动激活会话及时处理。|
+| **本地优先** | App、后端、任务状态和 SQLite 数据全部运行并保存在本地。 |
+
+## 为什么需要 Corptie
+
+单个 Agent 会话很容易开始，但真实项目通常不会停留在一个会话里：多个需求同时推进、不同仓库相互依赖、新问题在执行过程中不断出现，Session 和 Worktree 的数量也随之增长。
+
+当这些工作缺少统一组织时，用户往往需要亲自承担额外的协调成本：
+
+- 在多个窗口和项目之间频繁切换，逐个确认 Agent 是否在运行、等待输入或已经失败；
+- 为新会话重复描述项目背景，并在长时间工作后重新寻找上下文；
+- 把一个任务发现的问题手动转述给另一个项目，再把处理结果带回原任务；
+- 同时管理目标、具体任务、代码 Worktree、审批与验收结果，避免不同工作相互覆盖；
+- 在 Agent 输出“已完成”之后，仍然需要判断功能是否真的实现、测试是否真的通过。
+
+Corptie 的目标不是再增加一个聊天窗口，而是为持续、异步、相互依赖的 Agent 工作建立统一的组织和协作方式。
+
+
+## 一个典型的工作流
+
+1. 创建一个 Agent角色，定义工作方式和可用能力。也可以直接使用内置Agent
+2. 为长期目标创建 Objective，并把不同需求拆成带有验收标准的 WorkItem。
+3. 为 WorkItem 启动 Session；需要代码隔离时，让任务使用独立 Worktree。
+4. 多个 Session 在后台并行推进，你只处理输入、审批、异常和关键决策。
+5. 如果任务依赖另一个项目，来源 Session 可以向目标 Session 发起协作，由对方交付结果。
+6. Agent 完成后逐条提交可复现证据，再由你确认是否真正满足验收标准。
+
+也可以跳过结构化任务管理，直接创建 Assistant Agent 和 Session，把 Corptie 当作低打扰的多 Agent 桌面工作台使用。
+
+## Corptie 如何组织工作
+
+| 概念 | 在产品中的作用 |
+| --- | --- |
+| **Agent** | 定义角色、长期工作方式以及可以使用的 Skills。 |
+| **Session** | 真正执行工作、发送消息、接收审批和参与协作的主体。 |
+| **Objective** | 描述一个需要持续推进的目标和理想状态。 |
+| **WorkItem** | 描述一项可执行、可验收的具体工作。 |
+| **Workspace** | 将工作关联到明确的本地项目或 Git 仓库。 |
+| **Worktree** | 为并行代码任务提供独立工作目录，避免相互覆盖。 |
+
+简单问题可以直接对话，长期目标和跨项目开发则可以逐步引入 Objective、WorkItem、Worktree 与 Session 协作。
 
 ## 快速开始
 
 ### 前置条件
 
-- macOS 14 或更高版本。
-- Node.js 22.13 或更高版本；后端使用内置 `node:sqlite`。
-- Swift 6 工具链（Xcode 16 或兼容的 Command Line Tools）。
-- Git。
-- 至少一个可用的 Agent Provider: codex cli, claude code, openclacky
+- 当前版本支持 macOS 14 或更高版本；
+- Node.js 22.13 或更高版本，并支持内置 `node:sqlite`；
+- 至少一个已安装、可用并完成认证的 Agent Provider，例如 Codex CLI、Claude Code 或 OpenClacky。
 
-### 直接下载安装release版本
+### 安装 Corptie
 
+1. 前往 [GitHub Releases](https://github.com/soapjk/corptie/releases/latest) 下载最新的 DMG 或 PKG；
+2. 打开 Corptie，按界面提示检查本地后端和 Agent Provider；
+3. 当前发布包使用 ad-hoc 签名，PKG 尚未签名。如果 macOS 阻止首次启动，请确认文件来自本仓库的官方 Release，并在 **系统设置 → 隐私与安全性** 中手动允许。
 
+### 第一次使用
 
-## 核心使用流程
+1. 打开 **Agents**，创建 Assistant 或 Independent Contributor Agent；
+2. 从 Agent 卡片启动新 Session，选择 Provider、工作目录和可用模型；
+3. 在 **Sessions** 中发送第一条消息，并在需要时处理输入、审批、中断或恢复；
+4. 需要管理长期目标时，再创建 Objective 和 WorkItem，并为任务选择 Workspace 与执行 Agent。
 
-### 最短可用流程：创建 Agent Session
+## 本地数据与安全
 
-1. 打开 **Agents**，点击 **新建 Agent**。
-2. 选择 **Assistant**（直接对话）或 **Independent Contributor**（项目执行），填写名称和 System Prompt；需要时绑定 Skills。
-3. 在 Agent 卡片中点击 **开始新会话**。
-4. 选择可创建会话的 Provider、会话名称和工作目录后创建 Session。
-5. 在 **Sessions** 中发送消息，按 Provider capability 使用模型切换、权限、审批、中断、恢复和改动审阅。
+- Corptie 的本地后端、任务状态、队列和 SQLite 数据默认保存在你的设备上；
+- Corptie 自己管理的 Provider 运行时使用独立状态目录，减少应用环境与 Provider 原生用户配置相互污染；具体隔离范围以所选 Provider 的能力为准；
+- 审批、协作请求、Workspace 切换以及其他高影响操作通过明确的界面和能力契约执行；
+- Git 修改、Worktree 和未提交内容不会因为 Agent 声称“完成”而被视为已验证；
+- 实际模型请求、账号认证和外部网络行为仍由你选择的 Agent Provider 及其配置决定。
 
-### 结构化流程：Objective 到 WorkItem
+## 进一步了解
 
-1. 在 **Console** 左侧点击 **New Objective**，填写目标与理想状态，并绑定 Workspace 和 Contributor Agent。
-2. 进入该 Objective，点击 **新建工作项**；填写描述、验收标准和主 Workspace。Workspace 是可执行 WorkItem 的必填项。
-3. 在 WorkItem 详情中选择 IC Agent 并开始执行。Corptie 会创建或复用逻辑 Session，并在需要隔离时为任务准备专用 Worktree。
-4. 在 **Sessions** 跟进真实运行状态；需要输入或审批时处理对应卡片。
-5. Agent 完成验证后提交逐条验收证据。只有可复现证据充分时，WorkItem 才应被判定通过。
-6. 在 **Worktrees** 检查修改、提交和本地集成计划。该界面不会自动执行远程 push、删除、reset 或 force-clean。
-
-### 跨 Session 协作
-
-Session 是唯一执行者和消息收发主体。受管 Session 可通过 Corptie Tool Host 选择明确的目标 Session，或指定目标 Objective 与用于创建 Worker Session 的 Agent 资源。新的协作请求先显示确认卡片；若目标 Session 尚不存在，确认后会先在目标 Objective 下创建 WorkItem 和 Worker Session，再建立正式的 Session→Session Task、Message 与 Delivery。目标 Session 可以交付 Artifact，来源 Session 负责验证、请求修订或完成任务。
-
-协议、状态流转、兼容迁移和开发使用说明见 [Agent 协作机制](docs/agent-collaboration.md)。
-
-Agent、Session、Objective、WorkItem、Workspace 和 Provider 的统一技术定义及能力边界见 [Corptie 领域模型与能力边界](docs/domain-model-and-capability-boundaries.md)。该文档是相关概念的单一事实源。
-
-
-## 设计与项目结构
-
-Corptie 的设计围绕四个原则：任务状态必须真实可追踪；Agent 能力通过统一 Provider 合约接入；Session 在恢复、切换 Provider 或切换 Workspace 后仍保持稳定身份；高影响操作必须可审查、可确认，且不能覆盖未提交工作。
-
-运行关系可以概括为：
-
-```text
-macOS App → 本地后端 → Provider（Codex / Claude Code / OpenClacky）
-                      ↘ 本地数据、任务队列与 Git Worktree
-```
-
-代码主要分为以下几部分：
-
-| 路径 | 主要职责 |
+| 你想了解的内容 | 文档 |
 | --- | --- |
-| `apps/macos/` | macOS 客户端、界面状态、后端 Client 与客户端测试。 |
-| `apps/backend/src/agent-provider/` | Provider 合约、能力声明、会话生命周期和适配器。 |
-| `apps/backend/src/application/`、`domain/`、`store/` | 业务用例、输入校验、SQLite 数据与迁移。 |
-| `apps/backend/src/runtime/`、`collaboration/`、`feishu/` | 运行时隔离、Worktree 路由、跨 Session 协作和飞书网关。 |
-| `apps/backend/tests/`、`apps/macos/Tests/` | 后端与客户端自动化测试。 |
-| `scripts/`、`docs/`、`resources/` | 开发与打包脚本、专项文档和项目资源。 |
+| Agent、Session、Objective、WorkItem 与 Workspace 的准确关系 | [领域模型与能力边界](docs/domain-model-and-capability-boundaries.md) |
+| Session 如何跨任务协作、交付和验收 | [Agent 协作机制](docs/agent-collaboration.md) |
+| 如何接入新的 Agent Provider | [Agent Provider 开发指南](docs/agent-provider-development.md) |
+| 产品界面与功能截图 | [产品展示](docs/product-showcase.md) |
+| 产品演示 | [YouTube 视频](https://youtu.be/OqqVC_ITiYc) |
+| 版本下载与变更 | [GitHub Releases](https://github.com/soapjk/corptie/releases) |
 
-## 开发与验证
-
-### 常用命令
-
-```sh
-# 后端完整测试
-npm test --prefix apps/backend
-
-# macOS 单元测试
-swift test --package-path apps/macos
-
-# 只构建 macOS Debug App
-swift build --package-path apps/macos
-
-# 检查后端入口语法
-node --check apps/backend/src/server.mjs
-
-# 修改项目文件后：构建、重启并验证 Development App 与后端
-scripts/dev-rebuild-restart.sh
-```
-
-Makefile 提供相应快捷入口：
-
-```sh
-make help
-make test
-make build
-make restart
-```
-
-`make test` 当前运行后端测试；需要同时验证客户端时请单独执行 `swift test --package-path apps/macos`。开发改动完成后，仓库要求使用 `scripts/dev-rebuild-restart.sh` 重建并确认 App 进程与 Development 后端都已启动，单独编译成功不等同于运行验证通过。
-
+README 只介绍产品价值和最短使用路径。源码构建、测试、打包、内部架构与贡献流程应在独立的开发文档中维护。
 
 ## License
 
 [Apache-2.0](LICENSE)
-
----
-
-最后核对：2026-08-20
