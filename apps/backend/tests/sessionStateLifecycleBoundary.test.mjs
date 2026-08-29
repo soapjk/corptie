@@ -67,6 +67,23 @@ test("Worker initial prompts drain only after WorkItem ownership finalization", 
   assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, workItemExecutionPrompt\(workItem\)/);
 });
 
+test("Worktree conflict Agent initial prompts drain only after WorkItem binding", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const launchBegin = source.indexOf("launchConflictResolution: async");
+  const launchEnd = source.indexOf("removeWorktree:", launchBegin);
+  const launchBody = source.slice(launchBegin, launchEnd);
+  const newWorkItemBegin = launchBody.indexOf("const workItem = objectiveService.createWorkItem");
+  const newWorkItemBody = launchBody.slice(newWorkItemBegin);
+
+  assert.ok(launchBegin >= 0 && launchEnd > launchBegin && newWorkItemBegin >= 0);
+  assert.match(newWorkItemBody, /deferInitialPromptUntilBound:\s*true/);
+  const createIndex = newWorkItemBody.indexOf("await launchWorkItemSession");
+  const bindIndex = newWorkItemBody.indexOf("objectiveService.bindSession");
+  const deliveryIndex = newWorkItemBody.indexOf("await sendUnifiedSessionMessage");
+  assert.ok(createIndex >= 0 && bindIndex > createIndex && deliveryIndex > bindIndex);
+  assert.match(newWorkItemBody.slice(deliveryIndex), /origin:\s*"worktree-integration"/);
+});
+
 test("a replaced Worker Session cannot overwrite its WorkItem lifecycle", async () => {
   const source = await readFile(sourceURL, "utf8");
   const settleBegin = source.indexOf("function settleEntityWorkItemFromSession");
