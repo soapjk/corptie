@@ -232,20 +232,45 @@ export function createCollaborationMcpServer(options) {
     handler: ({ work_item_id }) => client.get(`/internal/collaboration/work-items/${encodeURIComponent(work_item_id)}`)
   });
   if (sessionObjectiveId && ["objectiveChat", "worker"].includes(sessionKind)) register(server, "corptie.collaboration.work_items.create", {
-    description: "Create an Objective-scoped collaboration WorkItem. Worker Sessions require an explicit delegated_subtask, depends_on, blocks, or review_of relation to their bound WorkItem.",
+    description: "Create an Objective-scoped collaboration WorkItem, optionally authorizing one existing same-Objective Artifact or referencing one readable file inside the authenticated Session Workspace. Worker Sessions require an explicit relation to their bound WorkItem.",
     inputSchema: {
       title: z.string().min(1), description: z.string().optional(), acceptance_criteria: z.string().optional(),
       priority: z.enum(WORK_ITEM_PRIORITIES).optional(), agent_id: strictId(agentIdSchema).optional(),
       main_workspace_id: strictId(repositoryIdSchema).optional(), parent_work_item_id: strictId(workItemIdSchema).optional(),
       source_work_item_id: strictId(workItemIdSchema).optional(),
       relationship: z.enum(COLLABORATION_RELATION_TYPES).optional(),
+      artifact_reference: z.object({
+        artifact_id: z.string().startsWith("artifact:"),
+        relation: z.enum(["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"]).optional(),
+        required: z.boolean().optional(),
+        version_policy: z.enum(["fixed", "latest_approved"]).optional(),
+        version: z.number().int().min(1).optional()
+      }).strict().optional(),
+      file_reference: z.object({
+        path: z.string().min(1),
+        relation: z.enum(["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"]).optional(),
+        required: z.boolean().optional()
+      }).strict().optional(),
       idempotency_key: z.string().min(1)
     },
     handler: (input) => client.post("/internal/collaboration/work-items", {
       title: input.title, description: input.description, acceptanceCriteria: input.acceptance_criteria,
       priority: input.priority, agentId: input.agent_id, mainWorkspaceId: input.main_workspace_id,
       parentWorkItemId: input.parent_work_item_id, sourceWorkItemId: input.source_work_item_id,
-      relationship: input.relationship, idempotencyKey: input.idempotency_key
+      relationship: input.relationship,
+      artifactReference: input.artifact_reference ? {
+        artifactId: input.artifact_reference.artifact_id,
+        relation: input.artifact_reference.relation,
+        required: input.artifact_reference.required,
+        versionPolicy: input.artifact_reference.version_policy,
+        version: input.artifact_reference.version
+      } : undefined,
+      fileReference: input.file_reference ? {
+        path: input.file_reference.path,
+        relation: input.file_reference.relation,
+        required: input.file_reference.required
+      } : undefined,
+      idempotencyKey: input.idempotency_key
     })
   });
   if (sessionObjectiveId && ["objectiveChat", "worker"].includes(sessionKind)) register(server, "corptie.collaboration.work_items.relate", {
@@ -256,6 +281,25 @@ export function createCollaborationMcpServer(options) {
     },
     handler: ({ work_item_id, target_work_item_id, relationship }) => client.post("/internal/collaboration/work-item-relations", {
       workItemId: work_item_id, targetWorkItemId: target_work_item_id, relationship
+    })
+  });
+  if (sessionObjectiveId && ["objectiveChat", "worker"].includes(sessionKind)) register(server, "corptie.collaboration.work_items.share_artifact", {
+    description: "Grant one same-Objective, explicitly related WorkItem read-only access to an Artifact. Worker Sessions may share only Artifacts owned by their current WorkItem; received Artifacts cannot be re-shared.",
+    inputSchema: {
+      work_item_id: strictId(workItemIdSchema),
+      artifact_id: z.string().startsWith("artifact:"),
+      relation: z.enum(["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"]).optional(),
+      required: z.boolean().optional(),
+      version_policy: z.enum(["fixed", "latest_approved"]).optional(),
+      version: z.number().int().min(1).optional()
+    },
+    handler: (input) => client.post("/internal/collaboration/work-item-artifact-references", {
+      workItemId: input.work_item_id,
+      artifactId: input.artifact_id,
+      relation: input.relation,
+      required: input.required,
+      versionPolicy: input.version_policy,
+      version: input.version
     })
   });
   if (sessionObjectiveId && ["objectiveChat", "worker"].includes(sessionKind)) register(server, "corptie.collaboration.work_items.start", {

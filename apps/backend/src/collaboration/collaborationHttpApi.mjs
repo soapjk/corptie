@@ -84,6 +84,13 @@ export function handleCollaborationHttpRequest({
         ) });
       }
 
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-item-artifact-references") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Artifact sharing is unavailable.", 503);
+        return sendJson(response, 201, sessionCollaborationService.shareArtifact(
+          sessionMetadata, actorAgentId, await readJson(request)
+        ));
+      }
+
       const scopedWorkItemAction = url.pathname.match(/^\/internal\/collaboration\/work-items\/([^/]+)\/(start|cancel)$/);
       if (request.method === "POST" && scopedWorkItemAction) {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);

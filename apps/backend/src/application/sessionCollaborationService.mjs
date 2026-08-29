@@ -1,3 +1,6 @@
+import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants, accessSync, realpathSync, statSync } from "node:fs";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import {
   COLLABORATION_RELATION_TYPES,
   COLLABORATION_ROUTING_INTENTS,
@@ -6,11 +9,17 @@ import {
 
 const RELATIONS = new Set(COLLABORATION_RELATION_TYPES);
 const ROUTING_INTENTS = new Set(COLLABORATION_ROUTING_INTENTS);
+const ARTIFACT_RELATIONS = new Set([
+  "implementation_spec", "security_requirement", "test_plan", "research_evidence",
+  "handoff", "acceptance_evidence"
+]);
+const ARTIFACT_VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
 
 export class SessionCollaborationService {
   constructor(options = {}) {
     this.store = options.store;
     this.objectiveService = options.objectiveService;
+    this.artifactService = options.artifactService ?? null;
     this.collaborationCore = options.collaborationCore;
     this.launchWorkItem = options.startWorkItem;
     this.onRoutingEvent = options.onRoutingEvent ?? ((event, details) => {
@@ -38,7 +47,7 @@ export class SessionCollaborationService {
       workItemId: scope.session.workItemId,
       actions: ["sessions.discover", "sessions.get", "work_items.list", "work_items.get", "work_items.result",
         ...(!requestDenial ? ["collaboration.request"] : []), ...(canCreate
-        ? ["work_items.create", "work_items.relate", "work_items.start", "work_items.cancel"]
+        ? ["work_items.create", "work_items.relate", "work_items.share_artifact", "work_items.start", "work_items.cancel"]
         : [])],
       denials: requestDenial ? { "collaboration.request": requestDenial } : {},
       destructiveActions: [],
@@ -82,19 +91,20 @@ export class SessionCollaborationService {
     const scope = this.#scope(metadata, actorId, { mutation: false });
     if (!scope.session.objectiveId) return [];
     return this.objectiveService.listWorkItemsByObjective(scope.session.objectiveId)
-      .filter((item) => this.#canReadWorkItem(scope, item));
+      .filter((item) => this.#canReadWorkItem(scope, item))
+      .map((item) => this.#presentWorkItem(item));
   }
 
   getWorkItem(metadata, actorId, workItemId) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
     const item = this.objectiveService.getWorkItem(required(workItemId, "work_item_id"));
     if (!this.#canReadWorkItem(scope, item)) throw coded("WORK_ITEM_OUTSIDE_SCOPE", "WorkItem is outside the authenticated Session scope.");
-    return item;
+    return this.#presentWorkItem(item);
   }
 
   createWorkItem(metadata, actorId, input = {}) {
     assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId", "mainWorkspaceId",
-      "parentWorkItemId", "sourceWorkItemId", "relationship", "idempotencyKey"]);
+      "parentWorkItemId", "sourceWorkItemId", "relationship", "artifactReference", "fileReference", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const kind = scope.session.sessionKind;
     if (!scope.session.objectiveId || !["objectiveChat", "worker"].includes(kind)) {
@@ -123,16 +133,27 @@ export class SessionCollaborationService {
     const workspaceId = optional(input.mainWorkspaceId);
     if (workspaceId) this.#requireWorkspace(scope.session.objectiveId, workspaceId);
     const idempotencyKey = required(input.idempotencyKey, "idempotency_key");
+    if (input.artifactReference != null && input.fileReference != null) {
+      throw coded("WORK_ITEM_REFERENCE_CONFLICT", "Choose either artifactReference or fileReference, not both.", 400);
+    }
+    const creationReferenceFingerprint = fingerprintCreationReference(input);
     const prior = this.store.selectOne(
       "SELECT * FROM work_items WHERE created_by_session_id = ? AND idempotency_key = ?",
       [scope.logicalSessionId, idempotencyKey]
     );
     if (prior) {
-      if (prior.title !== required(input.title, "title") || prior.objective_id !== scope.session.objectiveId) {
+      if (prior.title !== required(input.title, "title") || prior.objective_id !== scope.session.objectiveId
+        || (prior.creation_reference_fingerprint ?? null) !== creationReferenceFingerprint) {
         throw coded("IDEMPOTENCY_CONFLICT", "The idempotency key is already associated with different WorkItem input.", 409);
       }
-      return { workItem: prior, idempotentReplay: true, phase: "created" };
+      return { workItem: this.#presentWorkItem(prior), idempotentReplay: true, phase: "created" };
     }
+    const artifactReference = input.artifactReference == null
+      ? null
+      : this.#prepareArtifactReference(scope, input.artifactReference);
+    const fileReference = input.fileReference == null
+      ? null
+      : this.#prepareFileReference(scope, input.fileReference);
     const priority = optional(input.priority) ?? "medium";
     if (!WORK_ITEM_PRIORITIES.includes(priority)) throw coded("INVALID_PRIORITY", `Unsupported WorkItem priority: ${priority}`);
     let item;
@@ -149,13 +170,93 @@ export class SessionCollaborationService {
       });
       this.store.db.run(
         `UPDATE work_items SET created_by_session_id=?, source_work_item_id=?, parent_work_item_id=?,
-         collaboration_relation=?, idempotency_key=?, resource_version=1 WHERE id=?`,
-        [scope.logicalSessionId, sourceWorkItemId, parentWorkItemId, relationship, idempotencyKey, item.id]
+         collaboration_relation=?, idempotency_key=?, creation_reference_fingerprint=?, resource_version=1 WHERE id=?`,
+        [scope.logicalSessionId, sourceWorkItemId, parentWorkItemId, relationship, idempotencyKey,
+          creationReferenceFingerprint, item.id]
       );
       if (sourceWorkItemId && relationship) this.#relate(item.id, sourceWorkItemId, relationship);
+      if (artifactReference) this.artifactService.createPreparedWorkItemReference(artifactReference, item.id);
+      if (fileReference) this.store.createWorkItemFileReference({
+        referenceId: `work_item_file_reference:${randomUUID()}`,
+        objectiveId: scope.session.objectiveId,
+        workItemId: item.id,
+        ...fileReference,
+        actorId: scope.logicalSessionId,
+        sessionId: scope.logicalSessionId,
+        authorizedAt: new Date().toISOString()
+      });
     });
     this.store.scheduleSave();
-    return { workItem: this.store.getWorkItem(item.id), idempotentReplay: false, phase: "created" };
+    return { workItem: this.#presentWorkItem(this.store.getWorkItem(item.id)), idempotentReplay: false, phase: "created" };
+  }
+
+  #prepareArtifactReference(scope, input) {
+    if (!this.artifactService) {
+      throw coded("ARTIFACT_CAPABILITY_UNAVAILABLE", "Artifact references are unavailable for WorkItem creation.", 503);
+    }
+    assertKnown(input, ["artifactId", "relation", "required", "versionPolicy", "version"]);
+    return this.artifactService.prepareWorkItemCreationReference({
+      actorId: scope.agent.agentId,
+      sessionId: scope.session.id,
+      objectiveId: scope.session.objectiveId,
+      workItemId: scope.session.workItemId
+    }, required(input.artifactId, "artifact_reference.artifact_id"), input);
+  }
+
+  #prepareFileReference(scope, input) {
+    assertKnown(input, ["path", "relation", "required"]);
+    const requestedPath = required(input.path, "file_reference.path");
+    if (!isAbsolute(requestedPath)) {
+      throw coded("INVALID_FILE_REFERENCE", "WorkItem file references require an absolute path.", 400);
+    }
+    const workspacePath = scope.logical?.activeBinding?.boundCwd ?? scope.session.external?.cwd ?? null;
+    if (!workspacePath) {
+      throw coded("FILE_REFERENCE_WORKSPACE_REQUIRED", "The authenticated Session has no active Workspace path for file authorization.", 409);
+    }
+    let workspaceRoot;
+    let canonicalPath;
+    let info;
+    try {
+      workspaceRoot = realpathSync(workspacePath);
+      canonicalPath = realpathSync(requestedPath);
+      info = statSync(canonicalPath);
+    } catch (error) {
+      if (error?.code === "ENOENT") throw coded("FILE_REFERENCE_NOT_FOUND", "Referenced file does not exist.", 404);
+      throw coded("FILE_REFERENCE_UNAVAILABLE", "Referenced file could not be inspected.", 400);
+    }
+    const pathFromWorkspace = relative(workspaceRoot, canonicalPath);
+    if (pathFromWorkspace === ".." || pathFromWorkspace.startsWith(`..${sep}`) || isAbsolute(pathFromWorkspace)) {
+      throw coded("FILE_REFERENCE_FORBIDDEN", "Referenced file must be inside the authenticated Session Workspace.", 403);
+    }
+    if (!info.isFile()) throw coded("INVALID_FILE_REFERENCE", "Referenced path must be a regular file.", 400);
+    try {
+      accessSync(canonicalPath, fsConstants.R_OK);
+    } catch {
+      throw coded("FILE_REFERENCE_FORBIDDEN", "Referenced file is not readable by the Corptie backend.", 403);
+    }
+    const relation = artifactRelation(input.relation ?? "implementation_spec");
+    if (input.required != null && typeof input.required !== "boolean") {
+      throw coded("INVALID_FILE_REFERENCE", "file_reference.required must be a boolean.", 400);
+    }
+    return {
+      canonicalPath,
+      workspaceRoot,
+      displayName: basename(canonicalPath),
+      relation,
+      required: input.required === true,
+      byteLength: info.size,
+      modifiedAt: info.mtime.toISOString()
+    };
+  }
+
+  #presentWorkItem(item) {
+    return {
+      ...item,
+      references: {
+        artifacts: this.store.listArtifactReferences({ workItemId: item.id }),
+        files: this.store.listWorkItemFileReferences(item.id)
+      }
+    };
   }
 
   relateWorkItems(metadata, actorId, input = {}) {
@@ -169,6 +270,58 @@ export class SessionCollaborationService {
       throw coded("WORKER_RELATION_REQUIRED", "Worker Session relationships must include its bound WorkItem.");
     }
     return this.#relate(item.id, target.id, relationship);
+  }
+
+  shareArtifact(metadata, actorId, input = {}) {
+    assertKnown(input, ["workItemId", "artifactId", "relation", "required", "versionPolicy", "version"]);
+    const scope = this.#scope(metadata, actorId, { mutation: true });
+    if (!scope.session.objectiveId || !["objectiveChat", "worker"].includes(scope.session.sessionKind)) {
+      throw coded("ARTIFACT_SHARE_FORBIDDEN", "A bound Objective Chat or Worker Session is required to share an Artifact.", 403);
+    }
+    const target = this.objectiveService.getWorkItem(required(input.workItemId, "work_item_id"));
+    if (!this.#canReadWorkItem(scope, target)) {
+      throw coded("WORK_ITEM_OUTSIDE_SCOPE", "The target WorkItem is outside the authenticated Session scope.", 403);
+    }
+    if (scope.session.sessionKind === "worker" && target.id === scope.session.workItemId) {
+      throw coded("ARTIFACT_SHARE_TARGET_REQUIRED", "Choose another explicitly related WorkItem as the read-only Artifact recipient.", 400);
+    }
+    const prepared = this.#prepareArtifactReference(scope, {
+      artifactId: input.artifactId,
+      relation: input.relation,
+      required: input.required,
+      versionPolicy: input.versionPolicy,
+      version: input.version
+    });
+    const artifact = this.store.getArtifact(prepared.artifactId);
+    if (scope.session.sessionKind === "worker" && artifact?.boundWorkItemId !== scope.session.workItemId) {
+      throw coded(
+        "ARTIFACT_RESHARE_FORBIDDEN",
+        "Worker Sessions may share only Artifacts owned by their current WorkItem; received read-only Artifacts cannot be re-shared.",
+        403
+      );
+    }
+    let reference;
+    let idempotentReplay = false;
+    this.store.runInTransaction(() => {
+      reference = this.store.listArtifactReferences({ artifactId: prepared.artifactId, workItemId: target.id })
+        .find((candidate) => candidate.relation === prepared.relation
+          && candidate.required === prepared.required
+          && candidate.versionPolicy === prepared.versionPolicy
+          && candidate.pinnedVersion === prepared.pinnedVersion
+          && candidate.pinnedHash === prepared.pinnedHash) ?? null;
+      if (reference) {
+        idempotentReplay = true;
+        return;
+      }
+      reference = this.artifactService.createPreparedWorkItemReference(prepared, target.id);
+    });
+    this.store.scheduleSave();
+    return {
+      access: "read_only",
+      reference,
+      workItem: this.#presentWorkItem(this.store.getWorkItem(target.id)),
+      idempotentReplay
+    };
   }
 
   async startWorkItem(metadata, actorId, input = {}) {
@@ -755,6 +908,51 @@ function required(value, field) {
   return result;
 }
 function optional(value) { const result = typeof value === "string" ? value.trim() : ""; return result || null; }
+function artifactRelation(value) {
+  const relation = required(value, "reference.relation");
+  if (!ARTIFACT_RELATIONS.has(relation)) {
+    throw coded("INVALID_REFERENCE_RELATION", `Unsupported WorkItem reference relation: ${relation}.`);
+  }
+  return relation;
+}
+function fingerprintCreationReference(input) {
+  if (input.artifactReference == null && input.fileReference == null) return null;
+  let normalized;
+  if (input.artifactReference != null) {
+    const value = input.artifactReference;
+    assertKnown(value, ["artifactId", "relation", "required", "versionPolicy", "version"]);
+    const artifactId = required(value.artifactId, "artifact_reference.artifact_id");
+    const relation = artifactRelation(value.relation ?? "implementation_spec");
+    const versionPolicy = value.versionPolicy ?? "fixed";
+    if (!ARTIFACT_VERSION_POLICIES.has(versionPolicy)) {
+      throw coded("ARTIFACT_VERSION_POLICY_INVALID", `Unsupported Artifact version policy: ${versionPolicy}.`);
+    }
+    if (value.required != null && typeof value.required !== "boolean") {
+      throw coded("ARTIFACT_INVALID_INPUT", "artifact_reference.required must be a boolean.");
+    }
+    if (value.version != null && (!Number.isSafeInteger(value.version) || value.version < 1)) {
+      throw coded("ARTIFACT_INVALID_INPUT", "artifact_reference.version must be a positive integer.");
+    }
+    normalized = {
+      type: "artifact", artifactId, relation, required: value.required === true,
+      versionPolicy, version: value.version ?? null
+    };
+  } else {
+    const value = input.fileReference;
+    assertKnown(value, ["path", "relation", "required"]);
+    const path = required(value.path, "file_reference.path");
+    if (!isAbsolute(path)) throw coded("INVALID_FILE_REFERENCE", "WorkItem file references require an absolute path.");
+    if (value.required != null && typeof value.required !== "boolean") {
+      throw coded("INVALID_FILE_REFERENCE", "file_reference.required must be a boolean.");
+    }
+    normalized = {
+      type: "file", requestedPath: resolve(path),
+      relation: artifactRelation(value.relation ?? "implementation_spec"),
+      required: value.required === true
+    };
+  }
+  return createHash("sha256").update(JSON.stringify(normalized)).digest("hex");
+}
 function assertKnown(input, fields) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw coded("INVALID_INPUT", "Tool input must be an object.");
   const allowed = new Set(fields);
