@@ -138,6 +138,7 @@ export class SessionProviderSwitchCoordinator {
         sessionKind: context.sessionKind ?? reference?.metadata?.session?.sessionKind ?? "legacy",
         input: context.input ?? {}
       });
+      assertTargetSessionInitialized(created, resolvedTargetProviderId);
       const newThreadId = created?.providerThreadId
         ?? created?.external?.threadId
         ?? created?.external?.sessionId;
@@ -223,6 +224,19 @@ export class SessionProviderSwitchCoordinator {
     }
     return sources;
   }
+}
+
+function assertTargetSessionInitialized(created, providerId) {
+  const session = created?.sessionProjection ?? created?.session ?? null;
+  if (session?.status !== "failed") return;
+  const detail = requiredText(
+    session.sendUnavailableReason ?? session.summary ?? "Provider Session initialization failed.",
+    "Provider initialization error"
+  );
+  const error = new Error(`Session Provider ${providerId} initialization failed: ${detail}`);
+  error.code = "PROVIDER_SESSION_INITIALIZATION_FAILED";
+  error.statusCode = 409;
+  throw error;
 }
 
 function providerPermissionSnapshot(session) {
