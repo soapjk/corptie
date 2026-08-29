@@ -113,10 +113,11 @@ export class ArtifactService {
 
   list(contextInput, options = {}) {
     const context = this.context(contextInput);
+    const relatedWorkItemIds = this.#relatedWorkItemIds(context);
     const artifacts = this.store.listArtifactsByObjective(context.objectiveId, {
       includeRevoked: options.includeRevoked === true && context.kind !== "worker"
     });
-    return artifacts.filter((artifact) => this.#canRead(context, artifact)).map((artifact) => this.present(artifact));
+    return artifacts.filter((artifact) => this.#canRead(context, artifact, relatedWorkItemIds)).map((artifact) => this.present(artifact));
   }
 
   async get(contextInput, artifactId, options = {}) {
@@ -148,15 +149,16 @@ export class ArtifactService {
 
   async search(contextInput, queryValue, options = {}) {
     const context = this.context(contextInput);
+    const relatedWorkItemIds = this.#relatedWorkItemIds(context);
     const query = requiredText(queryValue, "query").toLocaleLowerCase();
     const limit = boundedInteger(options.limit, 1, 50, 20, "limit");
     const results = [];
     for (const artifact of this.store.listArtifactsByObjective(context.objectiveId)) {
-      if (!this.#canRead(context, artifact)) continue;
+      if (!this.#canRead(context, artifact, relatedWorkItemIds)) continue;
       const metadata = `${artifact.title}\n${artifact.summary}`.toLocaleLowerCase();
       let match = metadata.includes(query);
       let excerpt = null;
-      const version = this.#selectedVersion(context, artifact, null);
+      const version = this.#selectedVersion(context, artifact, null, relatedWorkItemIds);
       if (!match && version?.storageKey && version.byteLength <= 2 * 1024 * 1024) {
         const buffer = await readFile(this.#safeStoragePath(version.storageKey));
         if (sha256(buffer) !== version.contentHash) throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Artifact search encountered invalid content.", 409);
@@ -600,10 +602,12 @@ export class ArtifactService {
       sessionId: session.id,
       workItemId: session.workItemId ?? session.work_item_id ?? null
     };
-    const all = this.store.listArtifactsByObjective(objectiveId).filter((artifact) => this.#canRead(context, artifact));
+    const relatedWorkItemIds = this.#relatedWorkItemIds(context);
+    const all = this.store.listArtifactsByObjective(objectiveId)
+      .filter((artifact) => this.#canRead(context, artifact, relatedWorkItemIds));
     const items = all.slice(0, MAX_INDEX_ITEMS).map((artifact) => {
-      const version = this.#selectedVersion(context, artifact, null);
-      const references = this.#matchingReferences(context, artifact);
+      const version = this.#selectedVersion(context, artifact, null, relatedWorkItemIds);
+      const references = this.#matchingReferences(context, artifact, relatedWorkItemIds);
       return {
         artifactId: artifact.artifactId, title: artifact.title, summary: artifact.summary,
         visibility: artifact.visibility, version: version?.version ?? 0,
@@ -887,25 +891,70 @@ export class ArtifactService {
     return artifact;
   }
 
-  #canRead(context, artifact) {
+  #canRead(context, artifact, relatedWorkItemIds = null) {
     if (artifact.objectiveId !== context.objectiveId || artifact.status === "revoked") return false;
     if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return true;
     if (context.kind !== "worker") return false;
     if (artifact.visibility === "session_private" && artifact.boundSessionId === context.sessionId) return true;
-    return this.#matchingReferences(context, artifact).length > 0;
+    return this.#matchingReferences(context, artifact, relatedWorkItemIds).length > 0;
   }
 
-  #matchingReferences(context, artifact) {
-    return this.store.listArtifactReferences({ artifactId: artifact.artifactId }).filter((reference) =>
+  #matchingReferences(context, artifact, relatedWorkItemIds = null) {
+    const references = this.store.listArtifactReferences({ artifactId: artifact.artifactId });
+    const direct = references.filter((reference) =>
       (reference.workItemId && reference.workItemId === context.workItemId)
       || (reference.sessionId && reference.sessionId === context.sessionId)
     );
+    if (direct.length > 0
+      || artifact.visibility !== "work_item_private"
+      || !artifact.boundWorkItemId
+      || !context.workItemId
+      || !(relatedWorkItemIds
+        ? relatedWorkItemIds.has(artifact.boundWorkItemId)
+        : this.#workItemsRelated(artifact.boundWorkItemId, context.workItemId))) {
+      return direct;
+    }
+    return references.filter((reference) => reference.workItemId === artifact.boundWorkItemId);
   }
 
-  #selectedVersion(context, artifact, requestedVersion) {
+  #workItemsRelated(firstWorkItemId, secondWorkItemId) {
+    if (firstWorkItemId === secondWorkItemId) return true;
+    const first = this.store.getWorkItem(firstWorkItemId);
+    const second = this.store.getWorkItem(secondWorkItemId);
+    if (!first || !second || first.objective_id !== second.objective_id) return false;
+    if (first.source_work_item_id === secondWorkItemId
+      || first.parent_work_item_id === secondWorkItemId
+      || second.source_work_item_id === firstWorkItemId
+      || second.parent_work_item_id === firstWorkItemId) {
+      return true;
+    }
+    return this.store.listWorkItemDependencies(firstWorkItemId)
+      .some((edge) => edge.target_work_item_id === secondWorkItemId)
+      || this.store.listWorkItemDependents(firstWorkItemId)
+        .some((edge) => edge.work_item_id === secondWorkItemId);
+  }
+
+  #relatedWorkItemIds(context) {
+    if (context.kind !== "worker" || !context.workItemId) return null;
+    const related = new Set([context.workItemId]);
+    const current = this.store.getWorkItem(context.workItemId);
+    if (!current) return related;
+    if (current.source_work_item_id) related.add(current.source_work_item_id);
+    if (current.parent_work_item_id) related.add(current.parent_work_item_id);
+    for (const edge of this.store.listWorkItemDependencies(context.workItemId)) related.add(edge.target_work_item_id);
+    for (const edge of this.store.listWorkItemDependents(context.workItemId)) related.add(edge.work_item_id);
+    for (const candidate of this.store.listWorkItemsByObjective(context.objectiveId)) {
+      if (candidate.source_work_item_id === context.workItemId || candidate.parent_work_item_id === context.workItemId) {
+        related.add(candidate.id);
+      }
+    }
+    return related;
+  }
+
+  #selectedVersion(context, artifact, requestedVersion, relatedWorkItemIds = null) {
     let version = requestedVersion == null ? null : boundedInteger(requestedVersion, 1, artifact.currentVersion, null, "version");
     if (context.kind === "worker") {
-      const references = this.#matchingReferences(context, artifact);
+      const references = this.#matchingReferences(context, artifact, relatedWorkItemIds);
       const allowed = new Set(references.map((reference) => reference.pinnedVersion));
       if (artifact.visibility === "session_private" && artifact.boundSessionId === context.sessionId) allowed.add(artifact.approvedVersion ?? artifact.currentVersion);
       version ??= references[0]?.pinnedVersion ?? artifact.approvedVersion ?? artifact.currentVersion;
