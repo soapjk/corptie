@@ -122,6 +122,21 @@ struct ArtifactExportReceipt: Codable, Sendable {
     let repositoryWrite: Bool
 }
 
+struct ArtifactLocalFileReceipt: Codable, Sendable, Equatable {
+    let artifactId: String
+    let version: Int
+    let path: String
+    let suggestedFilename: String
+    let mimeType: String
+
+    var fileURL: URL { URL(fileURLWithPath: path) }
+
+    var applicationLookupURL: URL {
+        fileURL.deletingLastPathComponent()
+            .appendingPathComponent(suggestedFilename, isDirectory: false)
+    }
+}
+
 enum ArtifactContentPagingPolicy {
     static let pageBytes = 64 * 1024
 
