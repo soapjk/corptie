@@ -26,6 +26,8 @@ export class OpenClackyManager {
     this.systemPrompt = options.systemPrompt ?? null;
     this.runtimeInstructions = options.runtimeInstructions ?? null;
     this.resolveSessionBootstrap = options.resolveSessionBootstrap ?? null;
+    this.ensureRuntime = options.ensureRuntime ?? null;
+    this.stopRuntime = options.stopRuntime ?? null;
     // Optional bridge token provider. The token is injected by the host process and
     // must not be readable/forgeable by the model; it is bound to Session/Agent/
     // Objective/WorkItem/Workspace roots and re-verified by the Corptie server.
@@ -63,8 +65,12 @@ export class OpenClackyManager {
   }
 
   stop() {
+    // Clear ownership before closing sockets so their close callbacks cannot
+    // schedule reconnect timers after the backend has begun shutting down.
+    this.ownedSessionIds.clear();
     for (const socket of this.sockets.values()) socket.close?.();
     this.sockets.clear();
+    this.stopRuntime?.();
   }
 
   // ---- Phase 0: version / bridge capability handshake ---------------------
@@ -127,12 +133,13 @@ export class OpenClackyManager {
   // ---- Session bootstrap: Corptie-owned isolated runtime ------------------
 
   async create(input = {}) {
+    const modelId = await this.resolveCreateModelId(optionalText(input.model));
     const body = {
       name: requiredText(input.title ?? input.name ?? "OpenClacky", "title"),
       working_dir: requiredText(input.cwd, "cwd"),
       agent_profile: optionalText(input.agentProfile) ?? "coding"
     };
-    if (optionalText(input.model)) body.model_id = optionalText(input.model);
+    if (modelId) body.model_id = modelId;
     // Inject the Corptie Agent system prompt, runtime instructions, scope identity
     // and permission boundary when a session bootstrap is available. This is the
     // trusted session contract; it never mutates the user's native configuration.
@@ -277,6 +284,18 @@ export class OpenClackyManager {
         reasoningLevels: ["off", "low", "medium", "high", "xhigh", "max"]
       }))
     };
+  }
+
+  async resolveCreateModelId(requestedModelId) {
+    if (!requestedModelId) return null;
+    const payload = await this.request("/api/config");
+    const models = Array.isArray(payload?.models) ? payload.models : [];
+    if (models.some((model) => optionalText(model.id) === requestedModelId)) return requestedModelId;
+    // OpenClacky 1.x synthesizes model UUIDs at process startup. A Corptie
+    // binding may therefore hold a valid model selection whose transient id
+    // changed when the managed Provider daemon restarted. In that case the
+    // Provider's persisted current model is authoritative.
+    return optionalText(payload?.current_id) ?? optionalText(models[0]?.id);
   }
 
   async switchModel(sessionId, modelId) {
@@ -513,6 +532,7 @@ export class OpenClackyManager {
 
   async request(path, options = {}) {
     if (typeof this.fetch !== "function") throw new Error("OpenClacky Provider requires fetch support.");
+    if (typeof this.ensureRuntime === "function") await this.ensureRuntime();
     const headers = { accept: "application/json" };
     if (this.accessKey) headers.authorization = `Bearer ${this.accessKey}`;
     let body;
