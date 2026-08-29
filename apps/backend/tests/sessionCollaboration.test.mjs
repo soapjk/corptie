@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { ArtifactService } from "../src/application/artifactService.mjs";
 import { resolveRecipientSession, SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -16,12 +17,14 @@ async function fixture() {
   await store.initialize();
   const core = new CollaborationCore(store);
   const objectiveService = new ObjectiveApplicationService({ store });
+  const artifactService = new ArtifactService({ store, contentRoot: join(directory, "artifacts") });
+  await artifactService.initialize();
   const launches = [];
   const service = new SessionCollaborationService({
-    store, objectiveService, collaborationCore: core,
+    store, objectiveService, artifactService, collaborationCore: core,
     startWorkItem: async (input) => { launches.push(input); return { id: "worker:launched" }; }
   });
-  return { directory, store, core, objectiveService, service, launches };
+  return { directory, store, core, objectiveService, artifactService, service, launches };
 }
 
 function session(store, core, input) {
@@ -676,6 +679,194 @@ test("Worker creation requires an explicit relation, is Objective-scoped, and re
     assert.equal(replay.workItem.id, created.workItem.id);
     assert.equal(replay.idempotentReplay, true);
     assert.equal(f.store.listWorkItemDependencies(created.workItem.id)[0].target_work_item_id, source.id);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("WorkItem creation validates, persists, and returns an existing Artifact reference", async () => {
+  const f = await fixture();
+  try {
+    const agent = f.store.createAgent({ id: "agent:artifact-reference", name: "Artifact owner", role: "independentContributor" });
+    const objective = f.objectiveService.createObjective({ name: "Artifact Objective", contributorAgentIds: [agent.agentId] });
+    session(f.store, f.core, {
+      providerSessionId: "provider:artifact-reference", logicalSessionId: "session:artifact-reference",
+      agentId: agent.agentId, kind: "objectiveChat", objectiveId: objective.id, cwd: f.directory
+    });
+    const artifact = await f.artifactService.create({
+      actorId: agent.agentId, sessionId: "provider:artifact-reference", objectiveId: objective.id
+    }, { title: "Implementation contract", content: "Use the shared contract." });
+
+    const created = f.service.createWorkItem({ sessionId: "provider:artifact-reference" }, agent.agentId, {
+      title: "Referenced work", idempotencyKey: "create:with-artifact",
+      artifactReference: {
+        artifactId: artifact.artifactId, relation: "implementation_spec",
+        required: true, versionPolicy: "fixed"
+      }
+    });
+    assert.equal(created.workItem.references.artifacts.length, 1);
+    assert.equal(created.workItem.references.artifacts[0].artifactId, artifact.artifactId);
+    assert.equal(created.workItem.references.artifacts[0].pinnedVersion, 1);
+    assert.equal(created.workItem.references.artifacts[0].required, true);
+    assert.deepEqual(
+      f.service.getWorkItem({ sessionId: "provider:artifact-reference" }, agent.agentId, created.workItem.id).references,
+      created.workItem.references
+    );
+    const replay = f.service.createWorkItem({ sessionId: "provider:artifact-reference" }, agent.agentId, {
+      title: "Referenced work", idempotencyKey: "create:with-artifact",
+      artifactReference: {
+        artifactId: artifact.artifactId, relation: "implementation_spec",
+        required: true, versionPolicy: "fixed"
+      }
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(f.store.listArtifactReferences({ workItemId: created.workItem.id }).length, 1);
+
+    const otherObjective = f.objectiveService.createObjective({ name: "Other Objective", contributorAgentIds: [agent.agentId] });
+    const otherArtifact = await f.artifactService.create({ kind: "local_user", objectiveId: otherObjective.id }, {
+      title: "Other secret", content: "not visible"
+    });
+    const before = f.store.listWorkItemsByObjective(objective.id).length;
+    assert.throws(() => f.service.createWorkItem({ sessionId: "provider:artifact-reference" }, agent.agentId, {
+      title: "Forbidden cross-objective", idempotencyKey: "create:cross-objective",
+      artifactReference: { artifactId: otherArtifact.artifactId }
+    }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
+    assert.equal(f.store.listWorkItemsByObjective(objective.id).length, before);
+    assert.throws(() => f.service.createWorkItem({ sessionId: "provider:artifact-reference" }, agent.agentId, {
+      title: "Missing Artifact", idempotencyKey: "create:missing-artifact",
+      artifactReference: { artifactId: "artifact:missing" }
+    }), { code: "ARTIFACT_NOT_FOUND" });
+
+    const workerAgent = f.store.createAgent({ id: "agent:artifact-worker", name: "Artifact worker", role: "independentContributor" });
+    f.objectiveService.updateObjective(objective.id, {
+      contributorAgentIds: [agent.agentId, workerAgent.agentId]
+    });
+    const source = f.objectiveService.createWorkItem({ objectiveId: objective.id, title: "Worker source" });
+    session(f.store, f.core, {
+      providerSessionId: "provider:artifact-worker", logicalSessionId: "session:artifact-worker",
+      agentId: workerAgent.agentId, kind: "worker", objectiveId: objective.id,
+      workItemId: source.id, cwd: f.directory
+    });
+    f.store.db.run("UPDATE work_items SET current_session_id=? WHERE id=?", ["provider:artifact-worker", source.id]);
+    assert.throws(() => f.service.createWorkItem({ sessionId: "provider:artifact-worker" }, workerAgent.agentId, {
+      title: "Unauthorized Artifact propagation", relationship: "delegated_subtask",
+      idempotencyKey: "create:unauthorized-artifact",
+      artifactReference: { artifactId: artifact.artifactId }
+    }), { code: "ARTIFACT_READ_FORBIDDEN" });
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("WorkItem creation validates Workspace file authority and returns durable file references", async () => {
+  const f = await fixture();
+  const outsideDirectory = await mkdtemp(join(tmpdir(), "corptie-file-reference-outside-"));
+  try {
+    const agent = f.store.createAgent({ id: "agent:file-reference", name: "File owner", role: "independentContributor" });
+    const objective = f.objectiveService.createObjective({ name: "File Objective", contributorAgentIds: [agent.agentId] });
+    session(f.store, f.core, {
+      providerSessionId: "provider:file-reference", logicalSessionId: "session:file-reference",
+      agentId: agent.agentId, kind: "objectiveChat", objectiveId: objective.id, cwd: f.directory
+    });
+    const filePath = join(f.directory, "implementation-plan.md");
+    await writeFile(filePath, "local plan", "utf8");
+    const created = f.service.createWorkItem({ sessionId: "provider:file-reference" }, agent.agentId, {
+      title: "File-backed work", idempotencyKey: "create:with-file",
+      fileReference: { path: filePath, relation: "test_plan", required: true }
+    });
+    assert.equal(created.workItem.references.files.length, 1);
+    assert.equal(created.workItem.references.files[0].path, await realpath(filePath));
+    assert.equal(created.workItem.references.files[0].relation, "test_plan");
+    assert.equal(created.workItem.references.files[0].required, true);
+    assert.equal(created.workItem.references.files[0].byteLength, 10);
+    assert.equal(
+      f.service.getWorkItem({ sessionId: "provider:file-reference" }, agent.agentId, created.workItem.id)
+        .references.files[0].referenceId,
+      created.workItem.references.files[0].referenceId
+    );
+
+    const outsidePath = join(outsideDirectory, "outside.md");
+    await writeFile(outsidePath, "outside", "utf8");
+    assert.throws(() => f.service.createWorkItem({ sessionId: "provider:file-reference" }, agent.agentId, {
+      title: "Outside file", idempotencyKey: "create:outside-file", fileReference: { path: outsidePath }
+    }), { code: "FILE_REFERENCE_FORBIDDEN" });
+    assert.throws(() => f.service.createWorkItem({ sessionId: "provider:file-reference" }, agent.agentId, {
+      title: "Missing file", idempotencyKey: "create:missing-file",
+      fileReference: { path: join(f.directory, "missing.md") }
+    }), { code: "FILE_REFERENCE_NOT_FOUND" });
+    assert.throws(() => f.service.createWorkItem({ sessionId: "provider:file-reference" }, agent.agentId, {
+      title: "Ambiguous reference", idempotencyKey: "create:ambiguous",
+      artifactReference: { artifactId: "artifact:any" }, fileReference: { path: filePath }
+    }), { code: "WORK_ITEM_REFERENCE_CONFLICT" });
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+    await rm(outsideDirectory, { recursive: true, force: true });
+  }
+});
+
+test("related WorkItems exchange owned Artifacts through explicit read-only references without transitive re-sharing", async () => {
+  const f = await fixture();
+  try {
+    const agentA = f.store.createAgent({ id: "agent:share-a", name: "Share A", role: "independentContributor" });
+    const agentB = f.store.createAgent({ id: "agent:share-b", name: "Share B", role: "independentContributor" });
+    const objective = f.objectiveService.createObjective({
+      name: "Shared Artifacts", contributorAgentIds: [agentA.agentId, agentB.agentId]
+    });
+    const workA = f.objectiveService.createWorkItem({ objectiveId: objective.id, title: "Work A" });
+    const workB = f.objectiveService.createWorkItem({ objectiveId: objective.id, title: "Work B" });
+    const unrelated = f.objectiveService.createWorkItem({ objectiveId: objective.id, title: "Unrelated" });
+    f.objectiveService.addDependency(workB.id, workA.id, "depends_on");
+    session(f.store, f.core, {
+      providerSessionId: "provider:share-a", logicalSessionId: "session:share-a",
+      agentId: agentA.agentId, kind: "worker", objectiveId: objective.id,
+      workItemId: workA.id, cwd: f.directory
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:share-b", logicalSessionId: "session:share-b",
+      agentId: agentB.agentId, kind: "worker", objectiveId: objective.id,
+      workItemId: workB.id, cwd: f.directory
+    });
+    f.store.db.run("UPDATE work_items SET current_session_id=? WHERE id=?", ["provider:share-a", workA.id]);
+    f.store.db.run("UPDATE work_items SET current_session_id=? WHERE id=?", ["provider:share-b", workB.id]);
+    const contextA = { actorId: agentA.agentId, sessionId: "provider:share-a", objectiveId: objective.id, workItemId: workA.id };
+    const contextB = { actorId: agentB.agentId, sessionId: "provider:share-b", objectiveId: objective.id, workItemId: workB.id };
+    const artifactA = await f.artifactService.create(contextA, {
+      title: "A contract", content: "read-only from A", idempotencyKey: "artifact:a"
+    });
+    const sharedA = f.service.shareArtifact({ sessionId: "provider:share-a" }, agentA.agentId, {
+      workItemId: workB.id, artifactId: artifactA.artifactId,
+      relation: "handoff", required: true, versionPolicy: "fixed"
+    });
+    assert.equal(sharedA.access, "read_only");
+    assert.equal(sharedA.reference.workItemId, workB.id);
+    assert.equal(sharedA.reference.pinnedVersion, 1);
+    assert.equal((await f.artifactService.get(contextB, artifactA.artifactId)).content, "read-only from A");
+    const replay = f.service.shareArtifact({ sessionId: "provider:share-a" }, agentA.agentId, {
+      workItemId: workB.id, artifactId: artifactA.artifactId,
+      relation: "handoff", required: true, versionPolicy: "fixed"
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(f.store.listArtifactReferences({ artifactId: artifactA.artifactId, workItemId: workB.id }).length, 1);
+    await assert.rejects(() => f.artifactService.publishVersion(contextB, artifactA.artifactId, {
+      content: "recipient mutation"
+    }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    assert.throws(() => f.service.shareArtifact({ sessionId: "provider:share-b" }, agentB.agentId, {
+      workItemId: workA.id, artifactId: artifactA.artifactId
+    }), { code: "ARTIFACT_RESHARE_FORBIDDEN" });
+    assert.throws(() => f.service.shareArtifact({ sessionId: "provider:share-a" }, agentA.agentId, {
+      workItemId: unrelated.id, artifactId: artifactA.artifactId
+    }), { code: "WORK_ITEM_OUTSIDE_SCOPE" });
+
+    const artifactB = await f.artifactService.create(contextB, {
+      title: "B evidence", content: "read-only from B", idempotencyKey: "artifact:b"
+    });
+    f.service.shareArtifact({ sessionId: "provider:share-b" }, agentB.agentId, {
+      workItemId: workA.id, artifactId: artifactB.artifactId, relation: "research_evidence"
+    });
+    assert.equal((await f.artifactService.get(contextA, artifactB.artifactId)).content, "read-only from B");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
