@@ -1394,7 +1394,8 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         workingDirectory: workspace.path,
         autoUniqueTitle: true,
         sandbox: "danger-full-access",
-        approvalPolicy: "never"
+        approvalPolicy: "never",
+        deferInitialPromptUntilBound: true
       });
       session = objectiveService.bindSession(session.id, workItem.id);
       objectiveService.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
@@ -1402,6 +1403,10 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       objectiveService.deleteWorkItem(workItem.id);
       throw error;
     }
+    await sendUnifiedSessionMessage(session.id, prompt, {
+      type: "session-initialization",
+      origin: "worktree-integration"
+    });
     return {
       workItemId: workItem.id,
       sessionId: session.id,
