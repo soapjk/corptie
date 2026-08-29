@@ -10,6 +10,7 @@ import {
 import {
   buildAcceptanceAssessment,
   completionSuggestionForWorkItem,
+  parseAcceptanceAssessment,
   WorkItemAcceptanceError
 } from "./workItemAcceptance.mjs";
 
@@ -231,6 +232,10 @@ export class ObjectiveApplicationService {
         "Rejecting an automated acceptance result requires explicit user confirmation."
       );
     }
+    const currentAssessment = parseAcceptanceAssessment(current.acceptance_assessment_json);
+    // A retry after the first rejection committed is the same successful
+    // command. Keep its original audit timestamp and authoritative state.
+    if (currentAssessment?.status === "rejected") return current;
     const suggestion = completionSuggestionForWorkItem(current);
     if (!suggestion) {
       throw new WorkItemAcceptanceError(

@@ -723,11 +723,13 @@ export function handleEntityHttpRequest({
       const acceptanceRejectionMatch = path.match(/^\/work-items\/([^/]+)\/reject-acceptance$/);
       if (request.method === "POST" && acceptanceRejectionMatch) {
         const id = decodeURIComponent(acceptanceRejectionMatch[1]);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["rejected"]));
         return sendJson(
           response,
           200,
           presentWorkItemAcceptance(
-            objectiveService.rejectWorkItemAcceptance(id, await readJson(request))
+            objectiveService.rejectWorkItemAcceptance(id, input)
           )
         );
       }
