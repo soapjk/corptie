@@ -64,6 +64,7 @@ struct TurnTraceSpan: Decodable, Identifiable, Equatable {
     var id: String { spanId }
     var category: String { attributes["corptie.category"]?.stringValue ?? "other" }
     var operation: String { attributes["corptie.operation"]?.stringValue ?? "other" }
+    var operationDetail: String? { attributes["corptie.operation.detail"]?.stringValue }
     var activityPhase: String? { attributes["corptie.activity.phase"]?.stringValue }
     var codeLocation: String? {
         guard let path = attributes["code.file.path"]?.stringValue else { return nil }
@@ -126,6 +127,15 @@ struct TurnRawTrace: Decodable, Equatable {
     let spans: [TurnTraceSpan]
 }
 
+private struct TurnObservabilityErrorEnvelope: Decodable { let error: String }
+
+private enum TurnObservabilityClientError: LocalizedError {
+    case server(String)
+    var errorDescription: String? {
+        switch self { case .server(let message): message }
+    }
+}
+
 enum TurnTracePresentationTier: Equatable {
     case spans
     case categoryAggregation
@@ -154,7 +164,9 @@ final class TurnObservabilityClient {
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw URLError(.badServerResponse)
+            let message = (try? JSONDecoder().decode(TurnObservabilityErrorEnvelope.self, from: data).error)
+                ?? "服务端没有返回可用的 Trace"
+            throw TurnObservabilityClientError.server(message)
         }
         return try JSONDecoder().decode(T.self, from: data)
     }
@@ -190,6 +202,7 @@ final class TurnObservabilityViewModel: ObservableObject {
     func loadTraceIfNeeded() async {
         guard let runId = summary?.turnRunId, loadedRunId != runId else { return }
         loadedRunId = runId
+        error = nil
         isLoadingTrace = true
         defer { isLoadingTrace = false }
         do { trace = try await TurnObservabilityClient.shared.rawTrace(turnRunId: runId) }
@@ -323,38 +336,73 @@ struct SessionTurnObservabilityView: View {
         if model.isLoadingTrace {
             ProgressView().controlSize(.small).padding(.vertical, 5)
         } else if let trace = model.trace {
-            if TurnTracePresentationTier.resolve(spanCount: trace.spans.count) == .categoryAggregation {
-                Text("大型 Trace（\(trace.spans.count) spans）已按类别分级聚合；JSON/OTLP 导出可获取完整数据。")
-                    .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if trace.spans.isEmpty {
+                Text("Trace 已返回，但没有可展示的 Span")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
             } else {
+                let isLarge = TurnTracePresentationTier.resolve(spanCount: trace.spans.count) == .categoryAggregation
+                let diagnosticSpans = trace.spans
+                    .filter { $0.operation != "persistence" && $0.durationMs > 0.01 }
+                    .sorted { $0.durationMs > $1.durationMs }
+                let slowest = Array(diagnosticSpans.prefix(isLarge ? 30 : 10))
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(trace.spans.enumerated()), id: \.element.id) { index, span in
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 5) {
-                                Text(operationLabel(span.operation)).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
-                                Text(span.name).lineLimit(1)
-                                Spacer(minLength: 2)
-                                Text(durationText(span.durationMs)).fontDesign(.monospaced)
-                            }
-                            if let location = span.codeLocation {
-                                Text(location)
-                                    .font(.system(size: 8, design: .monospaced))
-                                    .foregroundStyle(.tertiary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            if let explanation = reasoningExplanation(for: span, at: index, in: trace.spans) {
-                                Text(explanation)
-                                    .font(.system(size: 8))
-                                    .foregroundStyle(explanation.hasPrefix("推断") ? Color.orange : Color.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
+                    Text("最慢操作")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    ForEach(slowest) { span in
+                        spanRow(span, index: trace.spans.firstIndex(where: { $0.id == span.id }) ?? 0, spans: trace.spans)
+                    }
+                    if isLarge {
+                        Text("大型 Trace 共 \(trace.spans.count) 个 Span，已展示最慢 \(slowest.count) 项；JSON/OTLP 导出保留完整数据。")
+                            .font(.system(size: 9)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Divider().opacity(0.45).padding(.vertical, 2)
+                        Text("完整时间线")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(Array(trace.spans.enumerated()), id: \.element.id) { index, span in
+                            spanRow(span, index: index, spans: trace.spans)
                         }
-                        .font(.system(size: 8))
                     }
                 }
             }
+        } else if let error = model.error {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Trace 加载失败：\(error)")
+                    .font(.system(size: 9)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                Button("重试") { Task { await model.loadTraceIfNeeded() } }
+                    .buttonStyle(.link).font(.system(size: 9))
+            }
+        } else {
+            Text("Trace 尚未加载")
+                .font(.system(size: 9)).foregroundStyle(.tertiary)
         }
+    }
+
+    @ViewBuilder
+    private func spanRow(_ span: TurnTraceSpan, index: Int, spans: [TurnTraceSpan]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 5) {
+                Text(operationLabel(span.operation)).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
+                Text(span.operationDetail ?? span.name).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 2)
+                Text(durationText(span.durationMs)).fontDesign(.monospaced)
+            }
+            if let location = span.codeLocation {
+                Text(location)
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if let explanation = reasoningExplanation(for: span, at: index, in: spans) {
+                Text(explanation)
+                    .font(.system(size: 8))
+                    .foregroundStyle(explanation.hasPrefix("推断") ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .font(.system(size: 8))
     }
 
     private func durationText(_ value: Double) -> String { value >= 1_000 ? String(format: "%.2fs", value / 1_000) : String(format: "%.0fms", value) }
