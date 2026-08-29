@@ -674,6 +674,16 @@ export class GitWorkspaceManager {
     let main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
     if (!main) throw new Error("The repository's main worktree is unavailable.");
 
+    // A linked Worktree cannot contain the main checkout's untracked project
+    // files before the repository has its first commit. Creating an orphan
+    // Worktree would start the Worker in an empty directory, while creating an
+    // implicit commit would mutate user data. Reuse the only authoritative
+    // checkout for this bootstrap state and make the exception auditable.
+    if (!main.headOid) {
+      this.store.upsertGitWorkspaceSnapshot(snapshot);
+      return presentEnsuredWorkItemWorkspace(main, true, null, "unborn-main");
+    }
+
     const suffix = workItemWorkspaceSuffix(workItemId);
     const branchName = `workitem/${suffix}`;
     const worktreesRoot = resolve(main.path, ".corptie", "worktrees");
@@ -1455,14 +1465,20 @@ function workItemWorkspaceSuffix(workItemId) {
   return `${readable}-${digest}`;
 }
 
-function presentEnsuredWorkItemWorkspace(worktree, reused, sharedAgentConfiguration) {
+function presentEnsuredWorkItemWorkspace(
+  worktree,
+  reused,
+  sharedAgentConfiguration,
+  workspaceMode = "dedicated-worktree"
+) {
   return {
     worktreeId: worktree.worktreeId,
     path: worktree.canonicalPath || worktree.path,
     branchName: worktree.branchName,
     headOid: worktree.headOid,
     reused,
-    sharedAgentConfiguration
+    sharedAgentConfiguration,
+    workspaceMode
   };
 }
 

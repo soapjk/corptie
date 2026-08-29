@@ -985,6 +985,34 @@ test("ensures one deterministic WorkItem Worktree and reuses it on retry", async
   }
 });
 
+test("an unborn repository starts its first WorkItem in the main checkout without inventing a commit", async () => {
+  const fixture = await createFixture("workitem-unborn", { initialCommit: false });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  await writeFile(join(fixture.repository, "untracked-project.txt"), "bootstrap project\n");
+  try {
+    const prepared = await manager.ensureWorkItemWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      workItemId: "work_item:bootstrap"
+    });
+
+    assert.equal(prepared.worktreeId, (await inspectGitWorkspace(fixture.repository)).worktreeId);
+    assert.equal(prepared.path, await realpath(fixture.repository));
+    assert.equal(prepared.branchName, "main");
+    assert.equal(prepared.headOid, null);
+    assert.equal(prepared.reused, true);
+    assert.equal(prepared.workspaceMode, "unborn-main");
+    assert.equal(await readFile(join(prepared.path, "untracked-project.txt"), "utf8"), "bootstrap project\n");
+    assert.equal((await gitOutput(["worktree", "list", "--porcelain"], fixture.repository)).match(/^worktree /gm)?.length, 1);
+    await assert.rejects(() => gitOutput(["rev-parse", "--verify", "HEAD"], fixture.repository));
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("creates WorkItem Worktrees inside a missing repository-local root for paths with spaces and non-ASCII characters", async () => {
   const fixture = await createFixture("workitem-unicode", { repositoryName: "主项目 repo" });
   const manager = new GitWorkspaceManager({
@@ -1446,7 +1474,9 @@ async function createFixture(label, options = {}) {
   const repository = join(directory, options.repositoryName ?? "main repo");
   await mkdir(repository);
   await git(["init", "-b", options.mainBranch ?? "main"], repository);
-  await git(["commit", "--allow-empty", "-m", "initial"], repository);
+  if (options.initialCommit !== false) {
+    await git(["commit", "--allow-empty", "-m", "initial"], repository);
+  }
   const activeWorktree = options.activeFeatureWorktree
     ? join(directory, "session worktree")
     : repository;
