@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import {
   ensureCorptieCodexRuntime,
@@ -99,6 +100,48 @@ test("startup self-heals managed files without replacing authentication or share
     assert.match(config, /mcp_oauth_credentials_store = "file"/);
     assert.ok(config.indexOf('mcp_oauth_credentials_store = "file"') < config.indexOf("[features]"));
     assert.equal(await readFile(second.collaborationSkillPath, "utf8"), await readFile(bundledSkillPath, "utf8"));
+  });
+});
+
+test("startup rebases migrated Codex rollout paths only when the current runtime owns the file", async () => {
+  await withFixture(async ({ directory, sourceAuthPath, bundledAgentsPath, bundledSkillPath, collaborationMcpServerPath }) => {
+    const corptieHome = join(directory, "new-root");
+    const codexHome = join(corptieHome, "runtimes", "codex");
+    const rolloutName = "sessions/2026/08/29/rollout-valid.jsonl";
+    const currentRollout = join(codexHome, rolloutName);
+    await mkdir(dirname(currentRollout), { recursive: true });
+    await writeFile(currentRollout, "{}\n");
+    await mkdir(codexHome, { recursive: true });
+    const statePath = join(codexHome, "state_5.sqlite");
+    const database = new DatabaseSync(statePath);
+    database.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL)");
+    const insert = database.prepare("INSERT INTO threads (id, rollout_path) VALUES (?, ?)");
+    insert.run("valid", join(directory, "old-root", "runtimes", "codex", rolloutName));
+    insert.run("missing", join(directory, "old-root", "runtimes", "codex", "sessions/missing.jsonl"));
+    insert.run("unowned", join(directory, "somewhere-else", "sessions", "rollout.jsonl"));
+    insert.run("current", currentRollout);
+    database.close();
+
+    const options = {
+      corptieHome,
+      sourceAuthPath,
+      bundledAgentsPath,
+      bundledSkillPath,
+      collaborationMcpServerPath
+    };
+    const first = await ensureCorptieCodexRuntime(options);
+    assert.equal(first.rolloutPathRepair.repairedCount, 1);
+    assert.equal(first.rolloutPathRepair.backups.length, 1);
+    const repaired = new DatabaseSync(statePath, { readOnly: true });
+    assert.equal(repaired.prepare("SELECT rollout_path FROM threads WHERE id='valid'").get().rollout_path, currentRollout);
+    assert.match(repaired.prepare("SELECT rollout_path FROM threads WHERE id='missing'").get().rollout_path, /old-root/);
+    assert.match(repaired.prepare("SELECT rollout_path FROM threads WHERE id='unowned'").get().rollout_path, /somewhere-else/);
+    repaired.close();
+    assert.equal((await readdir(codexHome)).filter((name) => name.includes("pre-path-rebase")).length, 1);
+
+    const second = await ensureCorptieCodexRuntime(options);
+    assert.equal(second.rolloutPathRepair.repairedCount, 0);
+    assert.deepEqual(second.rolloutPathRepair.backups, []);
   });
 });
 

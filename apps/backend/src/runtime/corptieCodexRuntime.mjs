@@ -1,7 +1,8 @@
 import { constants as fsConstants } from "node:fs";
-import { chmod, copyFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
 import {
   ensureCorptieAgentMemory,
   ensureProviderMemoryLink,
@@ -70,6 +71,7 @@ export async function ensureCorptieCodexRuntime(options = {}) {
 
   await mkdir(paths.codexHome, { recursive: true, mode: 0o700 });
   await chmod(paths.codexHome, 0o700);
+  const rolloutPathRepair = await repairMigratedRolloutPaths(paths.codexHome);
   await mkdir(paths.collaborationSkillDir, { recursive: true, mode: 0o700 });
   await mkdir(dirname(paths.collaborationProjectToolsReferencePath), { recursive: true, mode: 0o700 });
 
@@ -101,11 +103,85 @@ export async function ensureCorptieCodexRuntime(options = {}) {
     agentMemory,
     skillChanged,
     projectToolsReferenceChanged,
+    rolloutPathRepair,
     authAvailable: await isFile(paths.authPath),
     agentsAvailable: await isFile(paths.agentsPath),
     skillAvailable: await isFile(paths.collaborationSkillPath),
     mcpAvailable: true
   };
+}
+
+export async function repairMigratedRolloutPaths(codexHome) {
+  const runtimeRoot = resolve(codexHome);
+  const stateDatabases = (await readdir(runtimeRoot, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && /^state(?:_\d+)?\.sqlite$/.test(entry.name))
+    .map((entry) => join(runtimeRoot, entry.name));
+  let repairedCount = 0;
+  const backups = [];
+
+  for (const databasePath of stateDatabases) {
+    const database = new DatabaseSync(databasePath);
+    try {
+      if (database.prepare("PRAGMA quick_check").get()?.quick_check !== "ok") {
+        throw new Error(`Codex state database failed integrity verification: ${databasePath}`);
+      }
+      const hasThreads = database.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='threads'"
+      ).get();
+      if (!hasThreads) continue;
+      const columns = new Set(database.prepare("PRAGMA table_info(threads)").all().map((row) => row.name));
+      if (!columns.has("id") || !columns.has("rollout_path")) continue;
+
+      const candidates = [];
+      for (const row of database.prepare("SELECT id, rollout_path FROM threads").all()) {
+        const targetPath = migratedRolloutPath(row.rollout_path, runtimeRoot);
+        if (targetPath && await isFile(targetPath)) {
+          candidates.push({ id: row.id, sourcePath: row.rollout_path, targetPath });
+        }
+      }
+      if (candidates.length === 0) continue;
+
+      const backupPath = `${databasePath}.corptie-pre-path-rebase-${Date.now()}.bak`;
+      await backup(database, backupPath);
+      const update = database.prepare(
+        "UPDATE threads SET rollout_path = ? WHERE id = ? AND rollout_path = ?"
+      );
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        for (const candidate of candidates) {
+          const result = update.run(candidate.targetPath, candidate.id, candidate.sourcePath);
+          repairedCount += Number(result.changes ?? 0);
+        }
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+      backups.push(backupPath);
+    } finally {
+      database.close();
+    }
+  }
+
+  return { repairedCount, backups };
+}
+
+function migratedRolloutPath(value, codexHome) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const currentPath = resolve(value);
+  if (isDescendant(codexHome, currentPath)) return null;
+  const normalized = currentPath.split(sep).join("/");
+  const marker = "/runtimes/codex/sessions/";
+  const markerIndex = normalized.lastIndexOf(marker);
+  if (markerIndex < 0) return null;
+  const suffix = normalized.slice(markerIndex + "/runtimes/codex/".length);
+  const targetPath = resolve(codexHome, suffix);
+  return isDescendant(codexHome, targetPath) ? targetPath : null;
+}
+
+function isDescendant(root, path) {
+  const child = relative(resolve(root), resolve(path));
+  return child !== "" && child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
 }
 
 async function ensureRuntimeConfig(path) {

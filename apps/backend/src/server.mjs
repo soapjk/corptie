@@ -8914,6 +8914,9 @@ process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
 // CLAUDE.md discovery and credentials. Product history remains in Corptie.
 process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir;
 console.log(`[agent-memory] ready shared=${corptieCodexRuntime.sharedMemoryPath}`);
+if (corptieCodexRuntime.rolloutPathRepair.repairedCount > 0) {
+  console.warn(`[codex-runtime] repaired migrated rollout paths count=${corptieCodexRuntime.rolloutPathRepair.repairedCount} backups=${corptieCodexRuntime.rolloutPathRepair.backups.length}`);
+}
 console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
 console.log(`[claude-runtime] ready home=${corptieClaudeRuntime.configDir} auth=${corptieClaudeRuntime.credentialsAvailable ? "available" : "missing"} memory=${corptieClaudeRuntime.memoryAvailable ? "ready" : "missing"} plugin=${corptieClaudeRuntime.pluginPath} skill=${corptieClaudeRuntime.skillAvailable ? "ready" : "missing"} mcp=ready`);
 // 确保每个 Agent 的工作目录（assistant workspace / contributor 持久化目录）物理存在。
