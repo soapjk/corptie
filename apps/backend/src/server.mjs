@@ -850,6 +850,17 @@ const sessionApplicationService = new SessionApplicationService({
   toolHostService,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
+  recoverUnavailableSession: async ({ sessionId, reference, context }) => {
+    await sessionProviderSwitchCoordinator.recoverFailedProviderSession(sessionId, {
+      expectedRoutingVersion: reference.routingVersion,
+      transitionId: `provider-recovery:${context.idempotencyKey ?? randomUUID()}`
+    });
+    const recoveredReference = requireSessionReference(sessionId);
+    if (context.idempotencyKey) {
+      store.rerouteUnsentMessageDelivery(context.idempotencyKey, recoveredReference);
+    }
+    return { reference: recoveredReference };
+  },
   resolveMessageContext: async (reference, messageContext = {}) => {
     const session = store.getSession(reference.sessionId);
     let baseContext = null;
@@ -4919,8 +4930,9 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   }
   if (delivery) {
     const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
+    const routedDelivery = store.getMessageDelivery(deliveryId) ?? delivery;
     const alreadySettledTurn = providerTurnId
-      ? store.getSessionTurn(routedSessionId, delivery.bindingId, providerTurnId)
+      ? store.getSessionTurn(routedSessionId, routedDelivery.bindingId, providerTurnId)
       : null;
     const acknowledgedStatus = alreadySettledTurn
       ? ({ completed: "completed", failed: "failed", cancelled: "cancelled" }[alreadySettledTurn.execution_status]

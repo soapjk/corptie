@@ -39,6 +39,26 @@ test("dynamic Session actions separate Provider support from current availabilit
   });
 });
 
+test("a failed Session remains sendable only when its Provider supports binding recovery", () => {
+  const failed = {
+    status: "failed",
+    canSend: false,
+    sendUnavailableReason: "Provider Session failed",
+    capabilities: { canSend: false }
+  };
+  const recoverable = withSessionActions(failed, {
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY
+    ]
+  });
+  const unavailable = withSessionActions(failed, descriptor);
+
+  assert.equal(recoverable.actions.send.available, true);
+  assert.equal(unavailable.actions.send.available, false);
+  assert.equal(unavailable.actions.send.reason, "PROVIDER_UNAVAILABLE");
+});
+
 test("approval becomes available only while the Session has a pending approval", () => {
   const idle = withSessionActions({ status: "complete", capabilities: {} }, descriptor);
   const blocked = withSessionActions({ status: "blocked", capabilities: {} }, descriptor);
