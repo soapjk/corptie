@@ -224,6 +224,8 @@ private struct ArtifactDetailView: View {
                     Button(L10n("Secure Export")) { chooseExport() }
                     Button(L10n("Mark Superseded"), role: .destructive) { showSupersede = true }
                 } label: { Image(systemName: "ellipsis.circle") }
+                Button(L10n("Close")) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
             }.padding(14)
             Divider()
             ScrollView {
