@@ -63,6 +63,31 @@ test("OpenClacky validates create/send state through REST and sends content thro
   assert.equal(delivery.delivery, "accepted");
 });
 
+test("OpenClacky replaces stale process-local model ids with the persisted current model", async () => {
+  FakeWebSocket.instances.length = 0;
+  const requests = [];
+  const manager = new OpenClackyManager({
+    fetch: async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      const body = init.body ? JSON.parse(init.body) : null;
+      requests.push({ path, body });
+      if (path === "/api/config") {
+        return Response.json({ current_id: "model:new", models: [{ id: "model:new", model: "hy4" }] });
+      }
+      return Response.json({
+        session: { id: "model-session", name: "Model", status: "idle", working_dir: "/repo" }
+      });
+    },
+    WebSocket: FakeWebSocket
+  });
+
+  await manager.create({ title: "Model", cwd: "/repo", model: "model:old" });
+
+  assert.equal(requests[0].path, "/api/config");
+  assert.equal(requests[1].path, "/api/sessions");
+  assert.equal(requests[1].body.model_id, "model:new");
+});
+
 test("OpenClacky resume never reads Session snapshots or message history", async () => {
   FakeWebSocket.instances.length = 0;
   const requests = [];
@@ -103,6 +128,25 @@ test("OpenClacky reconnect subscribes from the last stable realtime cursor", () 
     cursor: "event:42",
     after: "event:42"
   });
+});
+
+test("OpenClacky stop clears ownership before closing sockets and stops its managed runtime", () => {
+  FakeWebSocket.instances.length = 0;
+  let runtimeStopped = false;
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({}),
+    WebSocket: FakeWebSocket,
+    stopRuntime: () => { runtimeStopped = true; }
+  });
+  manager.ownedSessionIds.add("clacky-live");
+  const socket = manager.ensureSocket("clacky-live");
+
+  manager.stop();
+
+  assert.equal(manager.ownedSessionIds.size, 0);
+  assert.equal(manager.sockets.size, 0);
+  assert.equal(socket.readyState, 3);
+  assert.equal(runtimeStopped, true);
 });
 
 test("OpenClacky Session summary normalization is command-response-only", () => {

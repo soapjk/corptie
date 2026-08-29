@@ -169,6 +169,7 @@ import { recoverCollaborationDeliveriesAfterCodexRolloutRepair } from "./applica
 import { ensureAgentWorkDir } from "./runtime/agentWorkDir.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
 import { ensureCorptieOpenClackyRuntime, resolveCorptieOpenClackyRuntimePaths } from "./runtime/corptieOpenClackyRuntime.mjs";
+import { OpenClackyServerRuntime, resolveOpenClackyCommand, resolveOpenClackyManagedPort } from "./runtime/openClackyServerRuntime.mjs";
 import {
   codexPermissionsForSession,
   codexRuntimeWorkspaceRoots,
@@ -367,6 +368,16 @@ const bundledGitCommitProtectionPath = fileURLToPath(new URL(
 const corptieCodexRuntimePaths = resolveCorptieRuntimePaths({ environmentName });
 const corptieClaudeRuntimePaths = resolveCorptieClaudeRuntimePaths({ environmentName });
 const corptieOpenClackyRuntimePaths = resolveCorptieOpenClackyRuntimePaths({ environmentName });
+const configuredOpenClackyBaseURL = process.env.OPENCLACKY_BASE_URL?.trim() || null;
+const managedOpenClackyRuntime = configuredOpenClackyBaseURL ? null : new OpenClackyServerRuntime({
+  command: resolveOpenClackyCommand(),
+  port: resolveOpenClackyManagedPort(environmentName),
+  cwd: corptieOpenClackyRuntimePaths.runtimeRoot,
+  // OpenClacky 1.x stores configuration and Session state below HOME. Give the
+  // Corptie-managed daemon an isolated home while retaining the backend's macOS
+  // privacy grant and other launch context.
+  env: () => ({ ...process.env, HOME: corptieOpenClackyRuntimePaths.providerHome })
+});
 // Skill 维护中心（provider-neutral）：全局共享的 Skill 映射表 + 物化到各 Provider 的 skills 目录。
 // skillsDirs 由组合根声明「各 Provider 的 skills 根目录」，SkillRegistryService 不感知 Provider 名语义，
 // 仅把 Skill 内容镜像到这些目录；Claude Code / Codex 运行时会自动扫描各自目录发现 Skill。
@@ -593,8 +604,10 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
   resolveRuntimeOptions: (providerSessionId) => claudeRuntimeOptionsForSession(providerSessionId)
 });
 const openClackyManager = new OpenClackyManager({
-  baseURL: process.env.OPENCLACKY_BASE_URL,
+  baseURL: configuredOpenClackyBaseURL ?? managedOpenClackyRuntime.baseURL,
   accessKey: process.env.OPENCLACKY_ACCESS_KEY,
+  ensureRuntime: managedOpenClackyRuntime ? () => managedOpenClackyRuntime.ensureRunning() : null,
+  stopRuntime: managedOpenClackyRuntime ? () => managedOpenClackyRuntime.stop() : null,
   runtimeDirectory: corptieOpenClackyRuntimePaths.runtimeRoot,
   resolveOwnedSessionIds: () => store.listActiveProviderSessionIds("openclacky"),
   featureFlags: {
@@ -8875,6 +8888,7 @@ timelineChangePublisher = new SessionTimelineChangePublisher({
 });
 store.setStateDirtyListener(scheduleStateSyncPublish);
 store.setTimelineDirtyListener(scheduleTimelineChangePublish);
+await ensureCorptieOpenClackyRuntime({ environmentName });
 openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
