@@ -4155,11 +4155,7 @@ final class BackendClient: ObservableObject {
             let details = try PerfStopwatch.measure("计划任务总览.前端解码") {
                 try JSONDecoder().decode(ScheduledSessionTaskListEnvelope.self, from: data).tasks
             }
-            automations = details.sorted {
-                let left = ScheduledSessionDateFormatting.date(from: $0.nextRunAt) ?? .distantFuture
-                let right = ScheduledSessionDateFormatting.date(from: $1.nextRunAt) ?? .distantFuture
-                return left == right ? $0.id < $1.id : left < right
-            }
+            automations = AutomationListOrdering.sorted(details)
             automationsError = nil
         } catch {
             automationsError = error.localizedDescription

@@ -401,6 +401,31 @@ struct ScheduledSessionTaskEnvelope: Decodable, Sendable {
     let task: ScheduledSessionTask
 }
 
+enum AutomationListOrdering {
+    static func sorted(_ tasks: [ScheduledSessionTask]) -> [ScheduledSessionTask] {
+        tasks.sorted { left, right in
+            let leftRank = statusRank(left.status)
+            let rightRank = statusRank(right.status)
+            if leftRank != rightRank { return leftRank < rightRank }
+
+            let leftDate = authoritativeDate(left)
+            let rightDate = authoritativeDate(right)
+            if leftDate != rightDate { return leftDate > rightDate }
+            return left.id < right.id
+        }
+    }
+
+    private static func statusRank(_ status: ScheduledSessionTaskStatus) -> Int {
+        status == .active ? 0 : 1
+    }
+
+    private static func authoritativeDate(_ task: ScheduledSessionTask) -> Date {
+        ScheduledSessionDateFormatting.date(from: task.updatedAt)
+            ?? ScheduledSessionDateFormatting.date(from: task.createdAt)
+            ?? .distantPast
+    }
+}
+
 struct ScheduledSessionTaskDraft: Equatable, Sendable {
     var title: String
     var message: String
