@@ -457,6 +457,74 @@ test("Corptie开发工程师_Session switches from CodeX to OpenClacky, routes t
   }
 });
 
+test("a failed active OpenClacky binding is replaced without changing the logical Session or history", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-recovery-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const original = providerSession(store);
+    store.upsertTimelineItemProjection("codex:provider-switch", {
+      id: "history:before-recovery",
+      turnId: "turn:before-recovery",
+      type: "agentMessage",
+      title: "Codex",
+      text: "Keep this history.",
+      status: "completed"
+    });
+    const bindings = new SessionBindingRepository({ store });
+    let createdCount = 0;
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: { resolveId: (providerId) => providerId },
+      resolveSessionReference: (sessionId) => bindings.resolve(sessionId),
+      createTargetSession: async () => {
+        createdCount += 1;
+        const id = createdCount === 1 ? "clacky:failed-active" : "clacky:recovered";
+        return {
+          providerThreadId: id,
+          providerSessionId: id,
+          sessionProjection: {
+            status: "complete",
+            summary: "OpenClacky is ready.",
+            external: { provider: "openclacky", threadId: id, sessionId: id, cwd: "/repo/main" }
+          }
+        };
+      }
+    });
+    await coordinator.switchProvider("codex:provider-switch", {
+      providerId: "openclacky",
+      expectedRoutingVersion: original.routingVersion,
+      transitionId: "transition:to-failed-openclacky"
+    });
+    const failedProjection = store.getSession("codex:provider-switch");
+    store.upsertSession({
+      ...failedProjection,
+      status: "failed",
+      summary: "Operation not permitted @ rb_sysopen - /repo/AGENTS.md",
+      sendUnavailableReason: "Operation not permitted @ rb_sysopen - /repo/AGENTS.md"
+    });
+
+    const recovered = await coordinator.recoverFailedProviderSession("codex:provider-switch", {
+      transitionId: "transition:recover-openclacky"
+    });
+
+    assert.equal(recovered.logicalSession.logicalSessionId, original.logicalSessionId);
+    assert.equal(recovered.logicalSession.activeBinding.providerId, "openclacky");
+    assert.equal(recovered.logicalSession.activeBinding.providerSessionId, "clacky:recovered");
+    assert.equal(recovered.logicalSession.routingVersion, original.routingVersion + 2);
+    assert.equal(store.getSessionItem("codex:provider-switch", "history:before-recovery").text, "Keep this history.");
+    const allBindings = store.listProviderThreadBindings(original.logicalSessionId);
+    assert.equal(allBindings.find((item) => item.providerSessionId === "clacky:failed-active").state, "superseded");
+    assert.equal(allBindings.find((item) => item.providerSessionId === "clacky:recovered").state, "active");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("beginWorkspaceTransition rejects a concurrent unfinished provider transition", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-mutex-"));
   const store = new CorptieStore({

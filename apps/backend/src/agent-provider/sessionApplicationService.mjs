@@ -18,6 +18,7 @@ export class SessionApplicationService {
     this.removeSessionBinding = options.removeSessionBinding ?? null;
     this.persistRenamedSession = options.persistRenamedSession ?? null;
     this.resolveMessageContext = options.resolveMessageContext ?? null;
+    this.recoverUnavailableSession = options.recoverUnavailableSession ?? null;
     this.toolHostService = options.toolHostService ?? null;
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
@@ -260,17 +261,36 @@ export class SessionApplicationService {
   }
 
   async sendMessage(sessionId, message, context = {}) {
-    const reference = await this.referenceFor(sessionId);
-    const sessionContext = this.resolveMessageContext
-      ? await this.resolveMessageContext(reference, { ...context, message })
-      : null;
-    return this.registry.invoke(
-      reference.providerId,
-      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
-      reference,
-      message,
-      sessionContext ? { ...context, sessionContext } : context
-    );
+    let reference = await this.referenceFor(sessionId);
+    const dispatch = async () => {
+      const sessionContext = this.resolveMessageContext
+        ? await this.resolveMessageContext(reference, { ...context, message })
+        : null;
+      return this.registry.invoke(
+        reference.providerId,
+        AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+        reference,
+        message,
+        sessionContext ? { ...context, sessionContext } : context
+      );
+    };
+    try {
+      return await dispatch();
+    } catch (error) {
+      if (typeof this.recoverUnavailableSession !== "function"
+        || error?.dispatchState !== "not_sent"
+        || error?.recoveryAction !== "replace_provider_binding") {
+        throw error;
+      }
+      const recovered = await this.recoverUnavailableSession({
+        sessionId,
+        reference,
+        error,
+        context
+      });
+      reference = recovered?.reference ?? await this.referenceFor(sessionId);
+      return dispatch();
+    }
   }
 
   async clearConversation(sessionId, context = {}) {

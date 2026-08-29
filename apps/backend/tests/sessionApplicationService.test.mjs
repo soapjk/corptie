@@ -446,6 +446,61 @@ test("Session recovery rebuilds and passes the Provider-neutral Tool Host attach
   assert.equal(calls[0].context.toolHost.providerAttachment.config.mcp_servers.investrace.command, "node");
 });
 
+test("an unavailable Provider binding is replaced and an unsent message is retried exactly once", async () => {
+  const sends = [];
+  let currentReference = {
+    sessionId: "session:recover-send",
+    logicalSessionId: "logical:recover-send",
+    bindingId: "binding:failed",
+    providerId: "recoverable-send",
+    providerSessionId: "native:failed",
+    routingVersion: 1
+  };
+  const provider = new CallbackAgentProvider({
+    id: "recoverable-send",
+    displayName: "Recoverable Send",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+  }, {
+    send: async (reference, message) => {
+      sends.push({ reference, message });
+      if (reference.bindingId === "binding:failed") {
+        const error = new Error("physical Provider Session failed during initialization");
+        error.code = "PROVIDER_SESSION_UNAVAILABLE";
+        error.dispatchState = "not_sent";
+        error.recoveryAction = "replace_provider_binding";
+        throw error;
+      }
+      return { turn: { id: "turn:recovered" } };
+    }
+  });
+  const recoveries = [];
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => currentReference,
+    recoverUnavailableSession: async (input) => {
+      recoveries.push(input);
+      currentReference = {
+        ...currentReference,
+        bindingId: "binding:recovered",
+        providerSessionId: "native:recovered",
+        routingVersion: 2
+      };
+      return { reference: currentReference };
+    }
+  });
+
+  const result = await service.sendMessage("logical:recover-send", "send once", {
+    idempotencyKey: "delivery:recover-send"
+  });
+
+  assert.equal(result.turn.id, "turn:recovered");
+  assert.equal(recoveries.length, 1);
+  assert.equal(recoveries[0].error.dispatchState, "not_sent");
+  assert.deepEqual(sends.map((entry) => entry.reference.bindingId), ["binding:failed", "binding:recovered"]);
+  assert.deepEqual(sends.map((entry) => entry.message), ["send once", "send once"]);
+});
+
 test("Session application service rejects retired per-session avatar input", async () => {
   const { service } = fixture();
   await assert.rejects(

@@ -6,6 +6,7 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   SESSION_DISCONNECT: "session.disconnect",
   SESSION_RENAME: "session.rename",
   SESSION_EXECUTION_PREPARE: "session.execution.prepare",
+  SESSION_FAILED_BINDING_RECOVERY: "session.failedBinding.recover",
   CONVERSATION_SEND: "conversation.send",
   CONVERSATION_CLEAR: "conversation.clear",
   CONVERSATION_INTERRUPT: "conversation.interrupt",
@@ -24,7 +25,8 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   TURN_CHANGES_MANAGE: "turn.changes.manage"
 });
 
-// SKILL_LAZY_LOAD、SKILL_MCP_DEPENDENCIES 与 TURN_CHANGES_MANAGE 是「会话编排/上下文组装」型能力，
+// SESSION_FAILED_BINDING_RECOVERY、SKILL_LAZY_LOAD、SKILL_MCP_DEPENDENCIES 与 TURN_CHANGES_MANAGE
+// 是「会话编排/上下文组装」型能力，
 // 不映射到具体 Provider 方法，因此未出现在下方 METHOD_BY_CAPABILITY 映射中。
 // 懒加载 Skill 的「工具注入」由 TOOL_HOST_ATTACH（attachTools）独立负责，
 // 这些能力是独立开关，不应耦合声明。

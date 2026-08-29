@@ -51,6 +51,12 @@ export function sessionActionAvailability(action, session, providerOrDescriptor,
   }
   if (action === "send") {
     if (session.canSend === false || legacy.canSend === false) {
+      if (session.status === "failed" && providerSupports(
+        providerOrDescriptor,
+        AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY
+      )) {
+        return available();
+      }
       return unavailable(session.sendUnavailableReason ? "PROVIDER_UNAVAILABLE" : "SESSION_NOT_READY", true);
     }
     return available();
