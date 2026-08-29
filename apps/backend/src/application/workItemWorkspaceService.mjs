@@ -82,17 +82,22 @@ export class WorkItemWorkspaceService {
           requiresSessionTransition: true
         };
       } catch (error) {
-        if (!String(error?.message ?? "").includes("no longer exists")) throw error;
+        throw worktreeRebuildError(workItem.id, error);
       }
     }
-    return {
-      ...(await this.ensureWorktree({
-        repositoryId,
-        workingDirectory: project.mainPath,
-        workItemId: workItem.id
-      })),
-      requiresSessionTransition: true
-    };
+    try {
+      return {
+        ...(await this.ensureWorktree({
+          repositoryId,
+          workingDirectory: project.mainPath,
+          workItemId: workItem.id
+        })),
+        rebuilt: true,
+        requiresSessionTransition: true
+      };
+    } catch (error) {
+      throw worktreeRebuildError(workItem.id, error);
+    }
   }
 }
 
@@ -113,6 +118,17 @@ function workspaceBindingInvalidError(repositoryId) {
 function workspaceUnavailableError(path, cause) {
   const error = new Error(`已绑定的 Workspace 当前不可访问：${path}。请检查目录、磁盘挂载和读写权限后重试。`);
   error.code = "WORKSPACE_UNAVAILABLE";
+  error.statusCode = 409;
+  error.cause = cause;
+  return error;
+}
+
+function worktreeRebuildError(workItemId, cause) {
+  const detail = typeof cause?.message === "string" && cause.message.trim()
+    ? cause.message.trim()
+    : "Git did not provide a failure reason.";
+  const error = new Error(`无法基于 WorkItem ${workItemId} 的任务分支重建 Worktree：${detail}`);
+  error.code = "WORKTREE_REBUILD_FAILED";
   error.statusCode = 409;
   error.cause = cause;
   return error;

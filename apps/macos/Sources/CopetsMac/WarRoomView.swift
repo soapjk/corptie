@@ -938,11 +938,15 @@ struct AgentRow: View {
 // MARK: - 工作项详情（占位）
 
 enum WorkItemExecutionStartDecision: Equatable {
+    case restoreCompleted
     case resume(sessionId: String)
     case createSession(agentId: String)
     case chooseAgent
 
-    static func resolve(currentSessionId: String?, mainAgentId: String?) -> Self {
+    static func resolve(status: String, currentSessionId: String?, mainAgentId: String?) -> Self {
+        if ["done", "complete", "completed"].contains(status) {
+            return .restoreCompleted
+        }
         if let currentSessionId = normalized(currentSessionId) {
             return .resume(sessionId: currentSessionId)
         }
@@ -1281,14 +1285,12 @@ struct WorkItemDetailView: View {
 
     private var executionSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if !isCompleted {
-                HStack {
-                    Label(L10n("执行状态"), systemImage: "waveform.path.ecg")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    executionControlButton
-                }
+            HStack {
+                Label(L10n("执行状态"), systemImage: "waveform.path.ecg")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                executionControlButton
             }
 
             HStack(spacing: 10) {
@@ -1593,14 +1595,25 @@ struct WorkItemDetailView: View {
     }
 
     // 执行/终止/确认完成控制按钮：圆形、仅图标。
-    // - 已完成 → 不显示控制按钮，完成状态由概览区的状态徽标表达。
+    // - 已完成 → 恢复按钮，通过原子恢复入口先校验/重建 Worktree 再恢复 Session。
     // - 待确认完成（review）→ 绿色对勾按钮，点击弹确认框，确认后变已完成。
     // - 运行中 → 终止按钮（红色停止图标）。
     // - 其它（待开始 / 会话已存在但已停止）→ 执行按钮（播放图标）。
     @ViewBuilder
     private var executionControlButton: some View {
         if isCompleted {
-            EmptyView()
+            Button {
+                Task { await startOrResumeExecution() }
+            } label: {
+                Image(systemName: "arrow.counterclockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 24, height: 24)
+                    .background(Color.accentColor, in: Circle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isLaunchingExecution)
+            .help(L10n("Resume"))
         } else if isRunning {
             Button {
                 Task { await interruptExecution() }
@@ -1632,9 +1645,24 @@ struct WorkItemDetailView: View {
     // 开始执行：已有会话则恢复；否则优先使用 WorkItem 已绑定的 Agent，未绑定时才让用户选择。
     private func startOrResumeExecution() async {
         switch WorkItemExecutionStartDecision.resolve(
+            status: workItem.status,
             currentSessionId: currentSession?.id,
             mainAgentId: workItem.mainAgentId
         ) {
+        case .restoreCompleted:
+            guard !isLaunchingExecution else { return }
+            isLaunchingExecution = true
+            defer { isLaunchingExecution = false }
+            let result = await client.restoreWorkItemExecution(workItemId: workItem.id)
+            if result.workItem != nil {
+                await refreshExecution()
+                onRequestReload()
+            } else {
+                executionError = result.error ?? EntityLaunchError(
+                    message: client.errorMessage ?? L10n("Unable to restore WorkItem execution"),
+                    code: nil
+                )
+            }
         case .resume(let sessionId):
             guard !isLaunchingExecution else { return }
             isLaunchingExecution = true

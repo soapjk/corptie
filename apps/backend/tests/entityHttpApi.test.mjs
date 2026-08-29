@@ -336,6 +336,30 @@ test("WorkItem restore endpoint delegates the atomic execution recovery flow", a
   }
 });
 
+test("WorkItem restore endpoint preserves an actionable Worktree rebuild failure", async () => {
+  const services = await createServices();
+  try {
+    const failed = await callApi({
+      method: "POST",
+      pathname: "/work-items/work_item%3Aone/actions/restore",
+      restoreWorkItemExecution: async () => {
+        throw Object.assign(
+          new Error("无法基于 WorkItem work_item:one 的任务分支重建 Worktree：外置磁盘未挂载。"),
+          { code: "WORKTREE_REBUILD_FAILED", statusCode: 409 }
+        );
+      },
+      ...services
+    });
+
+    assert.equal(failed.statusCode, 409);
+    assert.equal(failed.body.code, "WORKTREE_REBUILD_FAILED");
+    assert.match(failed.body.error, /外置磁盘未挂载/);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("GET /skills/runtime-events exposes filterable persisted stage diagnostics", async () => {
   const services = await createServices();
   try {

@@ -67,13 +67,28 @@ test("restoring a completed WorkItem reuses its available Worktree and restores 
 });
 
 test("restoring recreates a missing Worktree and switches the Session before resuming", async () => {
-  const { orchestrator, calls } = fixture({
+  const { orchestrator, calls, route } = fixture({
     ensureWorkspace: async () => ({
       worktreeId: "worktree:replacement",
       path: "/repo-workitem-one",
       reused: false,
       requiresSessionTransition: true
-    })
+    }),
+    switchWorkspace: async (sessionId, worktreeId) => {
+      calls.push(["switch", sessionId, worktreeId]);
+      route.activeWorkspaceId = worktreeId;
+      route.activeBinding.boundCwd = "/repo-workitem-one";
+      return { status: "committed" };
+    },
+    restoreSessionRoute: async (sessionId) => {
+      assert.equal(route.activeWorkspaceId, "worktree:replacement");
+      calls.push(["unarchive", sessionId]);
+    },
+    resumeSession: async (sessionId) => {
+      assert.equal(route.activeWorkspaceId, "worktree:replacement");
+      calls.push(["resume", sessionId]);
+      return { id: sessionId, status: "complete" };
+    }
   });
   const result = await orchestrator.restore("work_item:one");
 
@@ -84,6 +99,28 @@ test("restoring recreates a missing Worktree and switches the Session before res
     ["unarchive", "session:one"],
     ["resume", "session:one"]
   ]);
+});
+
+test("a clear Worktree rebuild error prevents Session resume and in-progress publication", async () => {
+  let updated = false;
+  const { orchestrator, calls } = fixture({
+    ensureWorkspace: async () => {
+      const error = new Error("无法基于任务分支重建 Worktree：磁盘已卸载");
+      error.code = "WORKTREE_REBUILD_FAILED";
+      error.statusCode = 409;
+      throw error;
+    },
+    updateWorkItem: () => {
+      updated = true;
+    }
+  });
+
+  await assert.rejects(
+    () => orchestrator.restore("work_item:one"),
+    (error) => error.code === "WORKTREE_REBUILD_FAILED" && /磁盘已卸载/.test(error.message)
+  );
+  assert.equal(updated, false);
+  assert.deepEqual(calls, []);
 });
 
 test("a failed Workspace recovery never writes a false in-progress state", async () => {
