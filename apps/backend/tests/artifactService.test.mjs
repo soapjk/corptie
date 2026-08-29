@@ -33,7 +33,7 @@ async function fixture() {
   let id = 0;
   const service = new ArtifactService({ store, contentRoot: join(directory, "data", "artifacts"), idFactory: () => `id-${++id}`, clock: () => "2026-08-23T12:00:00.000Z" });
   await service.initialize();
-  return { directory, store, service, manager, worker, outsider };
+  return { directory, store, service, core, manager, worker, outsider };
 }
 
 const managerContext = (f) => ({ actorId: f.manager.agentId, sessionId: "session:manager", objectiveId: "objective:one" });
@@ -168,6 +168,54 @@ test("Worker Artifact creation is Session-scoped idempotent and rejects conflict
     await assert.rejects(() => f.service.create({ ...workerContext(f), workItemId: "work_item:two" }, {
       ...input, idempotencyKey: "claimed-work-item"
     }), { code: "ARTIFACT_WORK_ITEM_FORBIDDEN" });
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("parallel Worker Sessions owned by one Agent create Artifacts within their authoritative WorkItems", async () => {
+  const f = await fixture();
+  try {
+    f.store.createWorkItem({
+      id: "work_item:parallel",
+      objectiveId: "objective:one",
+      title: "Parallel",
+      mainAgentId: f.worker.agentId
+    });
+    f.store.upsertSession({
+      id: "session:parallel",
+      title: "Parallel Worker",
+      provider: "codex-app-server",
+      status: "running",
+      sessionKind: "worker",
+      agentId: f.worker.agentId,
+      objectiveId: "objective:one",
+      workItemId: "work_item:parallel"
+    });
+    f.store.bindSessionToWorkItem("session:parallel", "work_item:parallel", "objective:one");
+    f.core.bindSession({ agentId: f.worker.agentId, sessionId: "session:parallel" });
+    assert.equal(f.store.getAgent(f.worker.agentId).currentSessionId, "session:parallel");
+
+    const original = await f.service.create(workerContext(f), {
+      title: "Original Worker output",
+      content: "original",
+      idempotencyKey: "parallel-agent-original-worker"
+    });
+    const parallel = await f.service.create({
+      actorId: f.worker.agentId,
+      sessionId: "session:parallel",
+      objectiveId: "objective:one",
+      workItemId: "work_item:parallel"
+    }, {
+      title: "Parallel Worker output",
+      content: "parallel",
+      idempotencyKey: "parallel-agent-second-worker"
+    });
+
+    assert.equal(original.objectiveId, "objective:one");
+    assert.equal(original.boundWorkItemId, "work_item:one");
+    assert.equal(original.references[0].workItemId, "work_item:one");
+    assert.equal(parallel.objectiveId, "objective:one");
+    assert.equal(parallel.boundWorkItemId, "work_item:parallel");
+    assert.equal(parallel.references[0].workItemId, "work_item:parallel");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
