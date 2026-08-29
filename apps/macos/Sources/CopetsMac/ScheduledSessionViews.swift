@@ -100,52 +100,53 @@ private struct ScheduledSessionCompactCard: View {
     let task: ScheduledSessionTask
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 7) {
-                Image(systemName: task.presentationStatus.symbolName)
-                    .foregroundStyle(task.presentationStatus.color)
-                    .frame(width: 16)
                 Text(task.name)
                     .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                Text(task.presentationStatus.label)
+                Label(task.presentationStatus.label, systemImage: task.presentationStatus.symbolName)
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(task.presentationStatus.color)
+                    .lineLimit(1)
             }
 
-            Label(task.typeLabel, systemImage: "bolt.badge.clock")
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 2),
-                alignment: .leading,
-                spacing: 6
-            ) {
-                timestamp(L10n("创建时间"), task.createdAt)
-                timestamp(L10n("上次执行时间"), task.lastRunAt)
-                timestamp(L10n("预计下次执行时间"), task.nextRunAt)
-                timestamp(L10n("过期时间"), task.expiresAt)
+            HStack(spacing: 7) {
+                Label(task.typeLabel, systemImage: "bolt.badge.clock")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if let nextRunText {
+                    Text(L10n("预计下次执行时间"))
+                        .foregroundStyle(.tertiary)
+                    Text(nextRunText)
+                        .fontWeight(.medium)
+                }
             }
+            .font(.system(size: 9))
+            .lineLimit(1)
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.vertical, 7)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(task.presentationStatus.label)，\(task.name)，\(task.typeLabel)")
+        .accessibilityLabel(accessibilityText)
     }
 
-    private func timestamp(_ label: String, _ value: String?) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.system(size: 8)).foregroundStyle(.tertiary)
-            Text(ScheduledSessionManagementTimeFormatting.string(
-                from: value,
-                locale: AppLanguageController.shared.locale
-            ) ?? L10n("None"))
-                .font(.system(size: 9, weight: .medium))
-                .lineLimit(1)
-        }
+    private var nextRunText: String? {
+        guard task.scheduleType.hasPredictableNextRun else { return nil }
+        return ScheduledSessionManagementTimeFormatting.string(
+            from: task.nextRunAt,
+            locale: AppLanguageController.shared.locale
+        )
+    }
+
+    private var accessibilityText: String {
+        let summary = "\(task.presentationStatus.label)，\(task.name)，\(task.typeLabel)"
+        guard let nextRunText else { return summary }
+        return "\(summary)，\(L10n("预计下次执行时间"))，\(nextRunText)"
     }
 }
 

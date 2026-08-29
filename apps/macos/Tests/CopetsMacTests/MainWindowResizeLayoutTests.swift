@@ -250,7 +250,7 @@ struct MainWindowResizeLayoutTests {
         ] {
             #expect(contents.contains(required))
         }
-        #expect(contents.contains("if automation.scheduleType != .condition"))
+        #expect(contents.contains("if automation.scheduleType.hasPredictableNextRun"))
         #expect(contents.contains("ScheduledSessionManagementTimeFormatting.string"))
         let emptyStateStart = try #require(contents.range(of: "ContentUnavailableView("))
         let emptyStateEnd = try #require(contents.range(of: "} else {", range: emptyStateStart.upperBound..<contents.endIndex))

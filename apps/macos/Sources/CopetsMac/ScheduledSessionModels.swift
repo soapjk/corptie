@@ -5,6 +5,15 @@ enum ScheduledSessionScheduleType: String, Codable, CaseIterable, Sendable {
     case interval
     case condition
     case process
+
+    var hasPredictableNextRun: Bool {
+        switch self {
+        case .once, .interval:
+            true
+        case .condition, .process:
+            false
+        }
+    }
 }
 
 enum ScheduledSessionMissedPolicy: String, Codable, CaseIterable, Sendable {
