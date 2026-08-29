@@ -7767,6 +7767,33 @@ export class CorptieStore {
     });
   }
 
+  rerouteUnsentMessageDelivery(deliveryId, binding) {
+    return this.runInTransaction(() => {
+      const current = this.getMessageDelivery(deliveryId);
+      if (!current) return null;
+      if (!["queued", "dispatching"].includes(current.status) || current.providerTurnId) {
+        const error = new Error(`Message Delivery ${deliveryId} is no longer safe to reroute.`);
+        error.code = "MESSAGE_DELIVERY_REROUTE_UNSAFE";
+        throw error;
+      }
+      const bindingId = requiredText(binding?.bindingId, "binding.bindingId");
+      const providerId = requiredText(binding?.providerId, "binding.providerId");
+      const providerSessionId = requiredText(binding?.providerSessionId, "binding.providerSessionId");
+      const routingVersion = Number(binding?.routingVersion);
+      if (!Number.isInteger(routingVersion) || routingVersion < 1) {
+        throw new TypeError("binding.routingVersion must be a positive integer.");
+      }
+      const updatedAt = createdAtFromOrNow();
+      this.db.run(
+        `UPDATE message_deliveries SET
+           binding_id = ?, routing_version = ?, provider_id = ?, provider_session_id = ?, updated_at = ?
+         WHERE delivery_id = ?`,
+        [bindingId, routingVersion, providerId, providerSessionId, updatedAt, deliveryId]
+      );
+      return this.getMessageDelivery(deliveryId);
+    });
+  }
+
   appendSessionEvent(event) {
     const sessionId = String(event.sessionId || "").trim();
     if (!sessionId) {

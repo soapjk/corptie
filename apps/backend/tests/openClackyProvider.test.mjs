@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { OpenClackyManager, openClackySessionSummary } from "../src/adapters/openClackyManager.mjs";
 import { createOpenClackyProvider } from "../src/agent-provider/providers/openClackyProvider.mjs";
-import { validateAgentProvider } from "../src/agent-provider/contracts.mjs";
+import { AGENT_PROVIDER_CAPABILITIES, validateAgentProvider } from "../src/agent-provider/contracts.mjs";
 
 class FakeWebSocket {
   static instances = [];
@@ -26,6 +26,7 @@ test("OpenClacky Provider exposes the shared command contract", () => {
   assert.equal(descriptor.id, "openclacky");
   assert.deepEqual(descriptor.aliases, ["clacky", "open-clacky"]);
   assert.equal(descriptor.runtime.lifecycle, "managed");
+  assert.equal(descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY), true);
 });
 
 test("OpenClacky validates create/send state through REST and sends content through its realtime transport", async () => {
