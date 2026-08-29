@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -675,7 +676,8 @@ export class GitWorkspaceManager {
 
     const suffix = workItemWorkspaceSuffix(workItemId);
     const branchName = `workitem/${suffix}`;
-    const targetPath = resolve(dirname(main.path), `${basename(main.path)}-workitem-${suffix}`);
+    const worktreesRoot = resolve(main.path, ".corptie", "worktrees");
+    const targetPath = resolve(worktreesRoot, suffix);
     const matchingBranch = (worktree) => worktree.branchName === branchName;
     const matchingPath = (worktree) => resolve(worktree.path) === targetPath;
     const resolveExisting = (worktrees) => {
@@ -703,6 +705,7 @@ export class GitWorkspaceManager {
       }
     }
 
+    await mkdir(worktreesRoot, { recursive: true });
     await assertPathMissing(targetPath);
     const branchExists = await this.gitSucceeds(main.path, [
       "show-ref", "--verify", `refs/heads/${branchName}`
@@ -1442,11 +1445,14 @@ function deletionSafetyError(code, message) {
 }
 
 function workItemWorkspaceSuffix(workItemId) {
-  return String(workItemId)
-    .replace(/^work[_-]?item:/i, "")
+  const identifier = String(workItemId).replace(/^work[_-]?item:/i, "");
+  const normalized = identifier
     .replace(/[^a-zA-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "work";
+    .replace(/^-+|-+$/g, "");
+  if (normalized === identifier && normalized.length <= 48) return normalized || "work";
+  const digest = createHash("sha256").update(identifier).digest("hex").slice(0, 10);
+  const readable = normalized.slice(0, 37) || "work";
+  return `${readable}-${digest}`;
 }
 
 function presentEnsuredWorkItemWorkspace(worktree, reused, sharedAgentConfiguration) {

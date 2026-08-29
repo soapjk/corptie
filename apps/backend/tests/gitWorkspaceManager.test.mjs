@@ -977,7 +977,84 @@ test("ensures one deterministic WorkItem Worktree and reuses it on retry", async
     assert.equal(retried.reused, true);
     assert.equal(retried.worktreeId, created.worktreeId);
     assert.equal(retried.path, created.path);
+    assert.equal(created.path, await realpath(join(fixture.repository, ".corptie", "worktrees", "one")));
     assert.equal((await gitOutput(["rev-parse", "HEAD"], created.path)).trim(), created.headOid);
+    assert.equal((await gitOutput(["branch", "--show-current"], created.path)).trim(), "workitem/one");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("creates WorkItem Worktrees inside a missing repository-local root for paths with spaces and non-ASCII characters", async () => {
+  const fixture = await createFixture("workitem-unicode", { repositoryName: "主项目 repo" });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  const root = join(fixture.repository, ".corptie", "worktrees");
+  try {
+    await assert.rejects(() => realpath(root), { code: "ENOENT" });
+    const created = await manager.ensureWorkItemWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      workItemId: "work_item:路径 one"
+    });
+
+    assert.equal(created.path, await realpath(join(root, "one-0b60f425b4")));
+    assert.equal(created.branchName, "workitem/one-0b60f425b4");
+    assert.equal((await gitOutput(["rev-parse", "--show-toplevel"], created.path)).trim(), created.path);
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], created.path)).trim(), "?? .corptie");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("allocates distinct WorkItem Worktrees for names that normalize to the same readable suffix", async () => {
+  const fixture = await createFixture("workitem-distinct");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    const first = await manager.ensureWorkItemWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      workItemId: "work_item:duplicate name"
+    });
+    const second = await manager.ensureWorkItemWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      workItemId: "work_item:duplicate-name"
+    });
+
+    assert.notEqual(first.path, second.path);
+    assert.notEqual(first.branchName, second.branchName);
+    assert.equal((await gitOutput(["branch", "--show-current"], first.path)).trim(), first.branchName);
+    assert.equal((await gitOutput(["branch", "--show-current"], second.path)).trim(), second.branchName);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("reports an explicit error when the repository-local Worktree target is occupied", async () => {
+  const fixture = await createFixture("workitem-conflict");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  const occupied = join(fixture.repository, ".corptie", "worktrees", "occupied");
+  try {
+    await mkdir(occupied, { recursive: true });
+    await assert.rejects(
+      () => manager.ensureWorkItemWorktreeForProject({
+        repositoryId: fixture.repositoryId,
+        workingDirectory: fixture.repository,
+        workItemId: "work_item:occupied"
+      }),
+      (error) => error?.message?.includes("worktree target path already exists:")
+        && error.message.endsWith("/.corptie/worktrees/occupied")
+    );
+    await assert.rejects(() => gitOutput(["show-ref", "--verify", "refs/heads/workitem/occupied"], fixture.repository));
   } finally {
     await fixture.close();
   }
@@ -1366,7 +1443,7 @@ test("replanning aborts only the recorded task-owned integration merge and resto
 
 async function createFixture(label, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
-  const repository = join(directory, "main repo");
+  const repository = join(directory, options.repositoryName ?? "main repo");
   await mkdir(repository);
   await git(["init", "-b", options.mainBranch ?? "main"], repository);
   await git(["commit", "--allow-empty", "-m", "initial"], repository);
