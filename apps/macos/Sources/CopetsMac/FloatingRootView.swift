@@ -948,22 +948,43 @@ private struct ProjectGroupHeader: View {
     }
 }
 
+struct CompactSessionRowStyle {
+    let height: CGFloat
+    let titleWeight: Font.Weight
+
+    static let standard = Self(height: 46, titleWeight: .semibold)
+    static let sessionsSidebar = Self(height: 38, titleWeight: .bold)
+    static let sessionsSidebarWithSubtitle = Self(height: 44, titleWeight: .bold)
+}
+
 struct CompactSessionRow: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var isRenaming = false
     let session: TaskSession
     var isUnread = false
     var showsProjectName = true
+    var style: CompactSessionRowStyle = .standard
+    var displayTitle: String? = nil
+    var subtitle: String? = nil
     var selectionRequested: ((TaskSession) -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
             SessionStatusLight(status: session.executionTaskStatus, diameter: 9)
-            Text(session.title)
-                .font(.system(size: 12.5, weight: .semibold))
-                .lineLimit(1)
-                .layoutPriority(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(displayTitle ?? session.title)
+                    .font(.system(size: 12.5, weight: style.titleWeight))
+                    .lineLimit(1)
+                    .help(session.title)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .layoutPriority(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 4)
             if isUnread {
                 Circle()
@@ -974,7 +995,7 @@ struct CompactSessionRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: 46)
+        .frame(height: style.height)
         .standardSessionCardSurface()
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onTapGesture {
