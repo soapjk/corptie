@@ -7254,7 +7254,7 @@ function route(request, response) {
     sendJson(response, 200, {
       ok: true,
       service: "corptie-backend",
-      version: "0.5.3",
+      version: "0.5.4",
       time: now(),
       maintenance: store.migrationInProgress,
       dataRootMigration: dataRootMigrationCoordinator.status()

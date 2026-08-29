@@ -10,7 +10,7 @@ import {
 
 const PLUGIN_MANIFEST = Object.freeze({
   name: "corptie-runtime",
-  version: "0.5.3",
+  version: "0.5.4",
   description: "Corptie-owned skills for Claude Code sessions."
 });
 
