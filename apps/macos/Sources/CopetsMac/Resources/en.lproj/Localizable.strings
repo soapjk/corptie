@@ -617,6 +617,8 @@
 "Create an Assistant, Objective, or Worker Session" = "Create an Assistant, Objective, or Worker Session";
 "讨论" = "Discuss";
 "自动验收已通过" = "Automated Acceptance Passed";
+"人工验收未通过" = "Manual Acceptance Rejected";
+"取消验收通过" = "Reject Acceptance";
 "打开完成确认" = "Open completion confirmation";
 "自动验收：已通过" = "Automated acceptance: Passed";
 "自动验收：未通过" = "Automated acceptance: Not passed";
