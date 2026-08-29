@@ -1,7 +1,7 @@
 // 实体层 + hub 的 HTTP API（15 Phase 1-3 落地：objective/work_item/memory/hub 路由）。
 // 自包含（sendJson/readJson/apiError 本地定义，不依赖 server.mjs），与 collaborationHttpApi 同风格。
 
-import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
+import { registerGitRepository as registerGitRepositoryDefault } from "./gitRepositoryRegistrationService.mjs";
 import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentWorkItemAcceptance } from "./workItemAcceptance.mjs";
@@ -43,6 +43,7 @@ export function handleEntityHttpRequest({
   onEntityChanged,
   observeWorkItemPerformance = () => {},
   observeFormAssistPerformance = () => {},
+  registerGitRepository = registerGitRepositoryDefault,
   auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
 }) {
   const path = url.pathname;
@@ -527,16 +528,17 @@ export function handleEntityHttpRequest({
       // 手动注册一个 Git 仓库（用户在文件浏览器里选目录后调用）
       if (request.method === "POST" && path === "/repositories/detect") {
         const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["dirPath", "initializeIfNeeded"]));
         const dirPath = String(input.dirPath ?? "").trim();
         if (!dirPath) throw apiError("INVALID_INPUT", "dirPath is required.", 400);
-        let snapshot;
-        try {
-          snapshot = await createGitWorkspaceSnapshot(dirPath);
-        } catch {
-          throw apiError("NOT_A_GIT_REPOSITORY", "所选目录不是有效的 Git 仓库。", 400);
+        if (input.initializeIfNeeded != null && typeof input.initializeIfNeeded !== "boolean") {
+          throw apiError("INVALID_INPUT", "initializeIfNeeded must be a boolean.", 400);
         }
-        objectiveService.store.upsertGitWorkspaceSnapshot(snapshot);
-        const repository = objectiveService.store.listGitRepositories().find((r) => r.id === snapshot.repository.id);
+        const repository = await registerGitRepository({
+          dirPath,
+          initializeIfNeeded: input.initializeIfNeeded === true,
+          store: objectiveService.store
+        });
         return sendJson(response, 201, { repository });
       }
       if (request.method === "GET" && path === "/objectives") {
@@ -1232,7 +1234,6 @@ const FORM_DRAFT_SCHEMAS = Object.freeze({
     description: "Objective scope and desired outcome",
     idealState: "Evolving description of the ideal state this Objective continuously moves toward",
     priority: 'Empty, or exactly one of "low", "medium", "high", "urgent"',
-    targetDate: "Empty, or an ISO calendar date in YYYY-MM-DD format",
     tags: "Comma-separated tags"
   }),
   workItem: Object.freeze({
@@ -1339,25 +1340,13 @@ function validateGeneratedFormEnums(fields, schema) {
     throw apiError("INVALID_GENERATED_DRAFT", "Generated role is invalid.", 502);
   }
   if (Object.hasOwn(schema, "priority")) {
-    const allowed = Object.hasOwn(schema, "targetDate")
+    const allowed = Object.hasOwn(schema, "idealState")
       ? ["", "low", "medium", "high", "urgent"]
       : ["low", "medium", "high"];
     if (!allowed.includes(fields.priority)) {
       throw apiError("INVALID_GENERATED_DRAFT", "Generated priority is invalid.", 502);
     }
   }
-  if (Object.hasOwn(schema, "targetDate") && fields.targetDate && !isValidISODate(fields.targetDate)) {
-    throw apiError("INVALID_GENERATED_DRAFT", "Generated targetDate must use YYYY-MM-DD.", 502);
-  }
-}
-
-function isValidISODate(value) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  return date.getUTCFullYear() === year
-    && date.getUTCMonth() === month - 1
-    && date.getUTCDate() === day;
 }
 
 async function readJson(request) {

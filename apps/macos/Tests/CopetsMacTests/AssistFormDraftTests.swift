@@ -61,7 +61,6 @@ final class AssistFormDraftTests: XCTestCase {
             "description": "统一三个实体创建页的生成体验。",
             "idealState": "创建体验持续一致，草稿始终可检查、可编辑。",
             "priority": "high",
-            "targetDate": "2026-09-01",
             "tags": "macos, forms"
           }
         }
@@ -73,7 +72,7 @@ final class AssistFormDraftTests: XCTestCase {
         XCTAssertEqual(agentDraft.formType, AssistFormType.agent.rawValue)
         XCTAssertEqual(agentDraft.fields["role"], "independentContributor")
         XCTAssertEqual(objectiveDraft.formType, AssistFormType.objective.rawValue)
-        XCTAssertEqual(objectiveDraft.fields["targetDate"], "2026-09-01")
+        XCTAssertNil(objectiveDraft.fields["targetDate"])
     }
 
     func testDecodesCompleteWorkItemDraft() throws {
