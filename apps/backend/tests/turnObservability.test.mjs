@@ -67,6 +67,7 @@ test("gateway applies a strict whitelist and strips prompts, output, files, shel
     attributes: {
       "corptie.session.id": "session:test", "corptie.category": "model", "gen_ai.request.model": "gpt-test",
       "corptie.operation": "code.read", "corptie.activity.phase": "code-navigation",
+      "corptie.operation.detail": "swift test", "corptie.provider_item.id": "item:test",
       "code.file.path": "apps/backend/src/server.mjs", "code.line.number": 6985,
       "code.function.name": "route",
       "user.prompt": "secret prompt", "model.output": "secret output", "file.content": "secret file",
@@ -76,7 +77,8 @@ test("gateway applies a strict whitelist and strips prompts, output, files, shel
   });
   assert.deepEqual(Object.keys(sanitized.attributes).sort(), [
     "code.file.path", "code.function.name", "code.line.number", "corptie.activity.phase", "corptie.category",
-    "corptie.environment", "corptie.operation", "corptie.session.id", "corptie.tenant.id", "gen_ai.request.model"
+    "corptie.environment", "corptie.operation", "corptie.operation.detail", "corptie.provider_item.id",
+    "corptie.session.id", "corptie.tenant.id", "gen_ai.request.model"
   ]);
   assert.deepEqual(sanitized.events[0].attributes, { "error.code": "SAFE_CODE", "corptie.tenant.id": "tenant:test", "corptie.environment": "development" });
   assert.equal(JSON.stringify(sanitized).includes("secret"), false);
@@ -149,26 +151,39 @@ test("provider event adapter creates an independent run id and event-stream summ
     const base = { providerId: binding.providerId, providerSessionId: binding.providerSessionId, bindingId: binding.bindingId,
       turnId: "turn:event", payload: {}, receivedAt: "2026-08-28T02:00:00.000Z" };
     service.ingestProviderEvent({ event: { ...base, type: "turn.started", providerEventId: "e1", occurredAt: "2026-08-28T02:00:00.000Z" }, binding });
-    service.ingestProviderEvent({ event: { ...base, type: "tool.started", providerEventId: "e2",
-      occurredAt: "2026-08-28T02:00:01.000Z", payload: { item: { type: "reasoning" } }, rawPayload: { item: { type: "reasoning" } } }, binding });
-    service.ingestProviderEvent({ event: { ...base, type: "tool.started", providerEventId: "e3",
+    const reasoningEvent = { ...base, type: "tool.started", providerEventId: "e2", itemId: "reasoning:1",
+      occurredAt: "2026-08-28T02:00:01.000Z", payload: { item: { type: "reasoning" } }, rawPayload: { item: { type: "reasoning" } } };
+    const commandStarted = { ...base, type: "tool.started", providerEventId: "e3", itemId: "command:1",
       occurredAt: "2026-08-28T02:00:02.000Z", payload: { item: { type: "commandExecution" } },
-      rawPayload: { item: { type: "commandExecution", command: "swift test --filter TurnObservabilityTests" } } }, binding });
-    service.ingestProviderEvent({ event: { ...base, type: "tool.completed", providerEventId: "e4",
+      rawPayload: { item: { type: "commandExecution", command: "swift test --filter TurnObservabilityTests" } } };
+    const commandCompleted = { ...base, type: "tool.completed", providerEventId: "e4", itemId: "command:1",
       occurredAt: "2026-08-28T02:00:03.000Z", payload: { item: { type: "commandExecution" } },
-      rawPayload: { item: { type: "commandExecution", command: "swift test --filter TurnObservabilityTests", aggregatedOutput: "must not persist" } } }, binding });
+      rawPayload: { item: { type: "commandExecution", command: "swift test --filter TurnObservabilityTests", aggregatedOutput: "must not persist" } } };
+    service.ingestProviderEvent({ event: reasoningEvent, binding });
+    service.ingestProviderEvent({ event: commandStarted, binding });
+    service.ingestProviderEvent({ event: commandCompleted, binding });
     const report = service.ingestProviderEvent({ event: { ...base, type: "turn.completed", providerEventId: "e5", occurredAt: "2026-08-28T02:00:04.000Z" }, binding });
     assert.match(report.turnRunId, /^turn_run:/);
     assert.equal(report.logicalTurnId, "turn:event");
     assert.equal(report.providerId, "codex-app-server");
     assert.equal(report.observabilityLevel, "event-stream");
-    assert.equal(report.wallClockMs, 4_000);
+    assert.ok(Math.abs(report.wallClockMs - 4_000) < 0.01);
     assert.ok(report.developmentOperations["model.reasoning"].inclusiveMs > 0);
     assert.ok(report.developmentOperations.test.inclusiveMs > 0);
+    for (const event of [reasoningEvent, commandStarted, commandCompleted]) {
+      const inboxEvent = { ...event, routingVersion: 1 };
+      store.insertProviderInboxEvent(inboxEvent, binding.sessionId);
+      store.markProviderInboxEvent(event.providerId, event.providerSessionId, event.providerEventId, { status: "applied", appliedAt: event.receivedAt });
+    }
     const trace = service.rawTrace(report.turnRunId);
+    assert.equal(trace.spans.length, 2);
     assert.equal(trace.spans.some((item) => item.attributes["corptie.activity.phase"] === "provider-reasoning"), true);
     assert.equal(trace.spans.some((item) => item.attributes["corptie.activity.phase"] === "verification"), true);
-    assert.equal(JSON.stringify(trace).includes("swift test"), false);
+    const testSpan = trace.spans.find((item) => item.attributes["corptie.operation"] === "test");
+    assert.equal(testSpan.attributes["corptie.operation.detail"], "swift test");
+    assert.equal(Number(BigInt(testSpan.endTimeUnixNano) - BigInt(testSpan.startTimeUnixNano)) / 1_000_000, 1_000);
+    assert.equal(trace.spans.filter((item) => item.attributes["corptie.provider_item.id"] === "command:1").length, 1);
+    assert.equal(JSON.stringify(trace).includes("TurnObservabilityTests"), false);
     assert.equal(JSON.stringify(trace).includes("must not persist"), false);
   } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
 });
