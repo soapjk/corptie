@@ -132,6 +132,18 @@ make restart
 
 `make test` 当前运行后端测试；需要同时验证客户端时请单独执行 `swift test --package-path apps/macos`。开发改动完成后，仓库要求使用 `scripts/dev-rebuild-restart.sh` 重建并确认 App 进程与 Development 后端都已启动，单独编译成功不等同于运行验证通过。
 
+### Session 消息列表滚动回归
+
+修改消息投影、流式状态、历史分页或消息行布局时，至少运行：
+
+```sh
+swift test --package-path apps/macos --filter AppKitChatTimelineControlTests
+swift test --package-path apps/macos --filter EarlierHistoryLoadingTests
+swift test --package-path apps/macos --filter SessionTimelinePositionRepositoryTests
+```
+
+手工验证时，在长会话中停留于中间消息，分别触发新消息、流式更新、窗口尺寸变化和加载更早历史，可见消息及其相对偏移应保持不变；离开再返回该 Session 应恢复之前的语义锚点，首次进入或之前位于底部时则显示最新消息。任何异步投影的短暂空行集都不得被解释为用户要求跳到首条消息。
+
 
 ## License
 

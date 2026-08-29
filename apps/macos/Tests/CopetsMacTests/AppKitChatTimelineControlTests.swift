@@ -570,6 +570,80 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(after.offset, before.offset, accuracy: 4)
     }
 
+    func testTransientEmptyProjectionPreservesReaderAcrossStreamedRowReturn() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let original = (0..<40).map { row(id: "transient-\($0)", text: "Original row \($0)") }
+        harness.coordinator.apply(rows: original)
+        harness.tableView.layoutSubtreeIfNeeded()
+        harness.tableView.scrollRowToVisible(18)
+        await settleMainQueue()
+        let before = visibleAnchor(in: harness.tableView, rows: original)
+
+        // Reproduce an async display projection replacing the current cache:
+        // one empty publication is followed by the same semantic rows with a
+        // streamed tail revision.
+        harness.coordinator.apply(rows: [])
+        let streamed = Array(original.dropLast()) + [
+            row(id: "transient-39", revision: 1, text: "Streamed tail update")
+        ]
+        harness.coordinator.apply(rows: streamed)
+        await settleMainQueue()
+        let after = visibleAnchor(in: harness.tableView, rows: streamed)
+
+        XCTAssertEqual(after.id, before.id)
+        XCTAssertEqual(after.offset, before.offset, accuracy: 4)
+        XCTAssertFalse(harness.followState.value)
+        XCTAssertNotEqual(after.id, streamed.first?.id)
+    }
+
+    func testTransientEmptyProjectionPreservesLatestFollowMode() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let original = (0..<40).map { row(id: "empty-follow-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: original)
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(harness))
+
+        harness.coordinator.apply(rows: [])
+        harness.coordinator.apply(rows: original + [row(id: "empty-follow-40", text: "New message")])
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+    }
+
+    func testTransientEmptyProjectionWithReplacedWindowDegradesToLatestNotOldest() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let original = (0..<40).map { row(id: "removed-\($0)", text: "Old row \($0)") }
+        harness.coordinator.apply(rows: original)
+        harness.tableView.scrollRowToVisible(18)
+        await settleMainQueue()
+
+        harness.coordinator.apply(rows: [])
+        let replacement = (0..<40).map { row(id: "replacement-\($0)", text: "New row \($0)") }
+        harness.coordinator.apply(rows: replacement)
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+        XCTAssertGreaterThan(harness.scrollView.contentView.bounds.minY, 8)
+    }
+
+    func testExplicitJumpToLatestWinsDuringTransientEmptyProjection() async {
+        let harness = makeHarness(followsLatest: false, height: 180)
+        let original = (0..<40).map { row(id: "empty-jump-\($0)", text: "Row \($0)") }
+        harness.coordinator.apply(rows: original)
+        harness.tableView.scrollRowToVisible(18)
+        await settleMainQueue()
+
+        harness.coordinator.apply(rows: [])
+        harness.coordinator.scrollToBottom()
+        harness.coordinator.apply(rows: original + [row(id: "empty-jump-40", text: "Newest")])
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+    }
+
     func testDirectScrollbarJumpMaterializesTheLastMessageWithoutIntermediatePrewarming() async throws {
         let harness = makeHarness(followsLatest: false, height: 180)
         let rows = (0..<40).map { index in

@@ -888,6 +888,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var pendingRestorePosition: AppKitChatTimelinePosition?
         private var lastRequestedRestorePosition: AppKitChatTimelinePosition?
         private var pendingInitialScrollToBottom = false
+        private var deferredEmptyProjectionViewport: DeferredEmptyProjectionViewport?
         private var isRestoringInitialViewport = false
         private var isAwaitingSessionRows = false
         private var userOwnsViewport = false
@@ -916,6 +917,17 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             let sessionID: String
             let rowID: String
             let revision: Int
+        }
+
+        /// An async display projection can briefly publish an empty row set
+        /// for the same Session while loading or replacing its cached window.
+        /// NSTableView clamps that zero-height document to y=0, so retain the
+        /// semantic reader position until rows return instead of interpreting
+        /// AppKit's clamp as a request to show the oldest message.
+        private struct DeferredEmptyProjectionViewport {
+            let anchor: (id: String, offset: CGFloat)?
+            let previousIDs: [String]
+            let followsLatest: Bool
         }
 
         init(
@@ -957,6 +969,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             lastRequestedRestorePosition = nil
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = false
+            deferredEmptyProjectionViewport = nil
             userOwnsViewport = false
             nearTopTriggered = false
             isAwaitingSessionRows = true
@@ -1153,6 +1166,18 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             synchronizeTableWidth()
             let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
             let hasPendingInitialViewport = pendingRestorePosition != nil || pendingInitialScrollToBottom
+            if nextRows.isEmpty,
+               !rows.isEmpty,
+               !hasPendingInitialViewport {
+                deferredEmptyProjectionViewport = DeferredEmptyProjectionViewport(
+                    anchor: visibleAnchor(in: tableView),
+                    previousIDs: oldIDs,
+                    followsLatest: followedLatestBeforeUpdate
+                )
+            }
+            let returningFromEmptyProjection = rows.isEmpty && !nextRows.isEmpty
+                ? deferredEmptyProjectionViewport
+                : nil
             let prependAnchor = !followedLatestBeforeUpdate && !hasPendingInitialViewport
                 ? visibleAnchor(in: tableView)
                 : nil
@@ -1185,6 +1210,25 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 synchronizeDocumentHeight(in: tableView)
                 if followedLatestBeforeUpdate, !pendingInitialScrollToBottom {
                     scrollToBottom()
+                } else if let returningFromEmptyProjection {
+                    deferredEmptyProjectionViewport = nil
+                    if returningFromEmptyProjection.followsLatest {
+                        scrollToBottom()
+                    } else if let anchor = returningFromEmptyProjection.anchor,
+                              restoreClosestAvailableAnchor(
+                                  anchor,
+                                  previousIDs: returningFromEmptyProjection.previousIDs,
+                                  in: tableView
+                              ) {
+                        // The semantic row returned; its relative offset is
+                        // restored asynchronously after AppKit finishes the
+                        // structural insertion.
+                    } else {
+                        // A wholly replaced or deleted row window has no safe
+                        // cross-revision absolute-Y fallback. Match ordinary
+                        // missing-anchor restoration and degrade to latest.
+                        scrollToBottom()
+                    }
                 } else if let prependAnchor {
                     restoreClosestAvailableAnchor(
                         prependAnchor,
@@ -1286,15 +1330,26 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func scrollToBottom() {
             guard !isProcessingUserScrollEvent,
-                  let tableView, !rows.isEmpty else { return }
+                  let tableView else { return }
             // Explicit jump-to-latest and automatic follow both opt in here.
             // If the user leaves the bottom before the queued layout pass,
             // viewportDidScroll flips this back to false and the command is
             // discarded instead of pulling the reader down again.
             followsLatest = true
+            deferredEmptyProjectionViewport = nil
+            pendingRestorePosition = nil
             if !followsLatestBinding.wrappedValue {
                 followsLatestBinding.wrappedValue = true
             }
+            guard !rows.isEmpty else {
+                // An explicit jump can race the same transient empty
+                // projection handled above. Keep that intent authoritative
+                // until the replacement rows acquire usable geometry.
+                pendingInitialScrollToBottom = true
+                schedulePendingInitialViewportRestoreIfNeeded()
+                return
+            }
+            pendingInitialScrollToBottom = false
             suppressNearTopDuringLayout()
             scrollCommandGeneration &+= 1
             let generation = scrollCommandGeneration
