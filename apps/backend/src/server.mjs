@@ -100,6 +100,7 @@ import {
   callWorkItemAcceptanceDynamicTool,
   workItemAcceptanceDynamicTools
 } from "./application/workItemAcceptanceDynamicTools.mjs";
+import { WorkItemCompletionService } from "./application/workItemCompletionService.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
 import { MemoryOperationService } from "./application/memoryOperationService.mjs";
@@ -299,6 +300,14 @@ const collaborationCore = new CollaborationCore(store);
 const objectiveService = new ObjectiveApplicationService({
   store,
   onEntityChanged: (type, payload) => emitEvent(type, payload)
+});
+const workItemCompletionService = new WorkItemCompletionService({
+  store,
+  onCompleted: (workItem, operation) => emitEvent("WorkItemChanged", {
+    action: "user-intent-completion",
+    entity: workItem,
+    completionOperationId: operation.operationId
+  })
 });
 const artifactService = new ArtifactService({ store });
 const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
@@ -504,7 +513,10 @@ const hostToolCatalog = new HostToolCatalog([
   {
     id: "work-item-acceptance",
     tools: workItemAcceptanceDynamicTools,
-    execute: (input) => callWorkItemAcceptanceDynamicTool(reportWorkItemAcceptanceForAgent, input)
+    execute: (input) => callWorkItemAcceptanceDynamicTool({
+      reportAcceptance: reportWorkItemAcceptanceForAgent,
+      completeWorkItem: completeWorkItemForSession
+    }, input)
   },
   {
     id: "platform",
@@ -884,7 +896,17 @@ const sessionApplicationService = new SessionApplicationService({
     // Provider-native thread context remains Provider-owned. Ordinary sends
     // contain only this turn's Corptie product context and never replay chat
     // history from either Provider or session_items.
-    const contexts = [memoryContext, baseContext].filter((item) => item?.prompt);
+    let directUserIntentContext = null;
+    const sourceMessageId = messageContext.source?.messageId;
+    if (sourceMessageId && messageContext.source?.type === "desktop") {
+      const event = store.getSessionEvent(`user-message:${sourceMessageId}`);
+      if (event?.type === "SessionUserMessageCreated" && reference.logicalSessionId) {
+        directUserIntentContext = {
+          prompt: `<corptie_direct_user_message_evidence logical_session_id="${reference.logicalSessionId}" event_id="${event.eventId}" sequence="${event.sequence}" turn_id="${event.payload?.deliveryId ?? ""}">\nThis evidence identifies only this direct user turn. Use it with corptie_work_item_complete only when the user explicitly asks to complete one exact WorkItem.\n</corptie_direct_user_message_evidence>`
+        };
+      }
+    }
+    const contexts = [memoryContext, baseContext, directUserIntentContext].filter((item) => item?.prompt);
     if (contexts.length === 0) return null;
     if (contexts.length === 1) return contexts[0];
     return {
@@ -4089,6 +4111,33 @@ function reportWorkItemAcceptanceForAgent(agentId, input = {}, metadata = {}) {
   }));
 }
 
+function completeWorkItemForSession(agentId, input = {}, metadata = {}) {
+  const requestedSessionId = String(metadata.sessionId ?? "").trim();
+  const logicalSessionId = String(metadata.logicalSessionId ?? "").trim();
+  if (!requestedSessionId || !logicalSessionId) {
+    const error = new Error("WorkItem completion requires an authenticated logical Session scope.");
+    error.code = "SESSION_SCOPE_REQUIRED";
+    throw error;
+  }
+  const session = store.getSession(requestedSessionId);
+  const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
+  if (!session || (session.agentId !== agentId && boundAgent?.agentId !== agentId)) {
+    const error = new Error("The authenticated Session actor does not match this Tool Host call.");
+    error.code = "SESSION_ACTOR_MISMATCH";
+    throw error;
+  }
+  const result = workItemCompletionService.completeFromSession(input, {
+    ...metadata,
+    sessionId: requestedSessionId,
+    logicalSessionId
+  });
+  return {
+    workItem: presentWorkItemAcceptance(result.workItem),
+    operation: result.operation,
+    idempotentReplay: result.idempotentReplay
+  };
+}
+
 // 启动对账：历史落定（修复上线前就已完成的会话）不会重新触发事件，
 // 此处把每个已绑定当前活跃 session 的 WorkItem 状态对齐到 session 状态。
 function reconcileEntityWorkItemsAtStartup() {
@@ -7158,6 +7207,7 @@ function route(request, response) {
     inspectWorkItemDeletion: (workItemId, actor) => workItemDeletionService.inspect(workItemId, actor),
     deleteWorkItemSafely: (workItemId, input, actor) => workItemDeletionService.delete(workItemId, input, actor),
     restoreWorkItemExecution: (workItemId) => workItemExecutionOrchestrator.restore(workItemId),
+    workItemCompletionService,
     resolveAgentAvailability: (agent) => {
       return { status: "available", reason: null };
     },

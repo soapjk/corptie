@@ -1705,18 +1705,43 @@ struct WorkItemDetailView: View {
     // 专用完成接口由全局后台任务执行。重试前先查询权威状态，防止
     // 首次请求已落库但客户端丢失响应时重复提交。
     private func enqueueCompletion() {
-        let taskId = "work-item.complete:\(workItem.id)"
-        let title = workItem.title
+        let target = workItem
+        let requestId = "completion-request:\(UUID().uuidString.lowercased())"
+        let interactionId = "completion-click:\(UUID().uuidString.lowercased())"
+        let idempotencyKey = "completion:\(UUID().uuidString.lowercased())"
+        Task {
+            guard let receipt = await client.issueWorkItemCompletionIntent(
+                workItem: target,
+                interactionId: interactionId,
+                requestId: requestId,
+                uiSurface: "work_item_completion_confirmation"
+            ) else {
+                executionError = EntityLaunchError(
+                    message: client.errorMessage ?? L10n("Unable to authorize WorkItem completion"),
+                    code: "COMPLETION_INTENT_FAILED"
+                )
+                return
+            }
+            guard let submission = WorkItemCompletionSubmission.freeze(
+                workItem: target, receipt: receipt, requestId: requestId, idempotencyKey: idempotencyKey
+            ) else { return }
+            startCompletionBackgroundTask(submission: submission)
+        }
+    }
+
+    private func startCompletionBackgroundTask(submission: WorkItemCompletionSubmission) {
+        let taskId = "work-item.complete:\(submission.workItemId)"
+        let title = submission.displayedTitle
         let started = BackgroundTaskCenter.shared.start(
             id: taskId,
             title: L10nFormat("完成 WorkItem：%@", title)
         ) {
-            if let latest = await client.workItem(id: workItem.id),
+            if let latest = await client.workItem(id: submission.workItemId),
                WorkItemCompletionBackgroundDecision.resolve(status: latest.status) == .alreadyCompleted {
                 onRequestReload()
                 return .success(L10nFormat("WorkItem“%@”已完成。", title))
             }
-            guard await client.confirmWorkItemCompletion(workItemId: workItem.id) != nil else {
+            guard await client.confirmWorkItemCompletion(submission: submission) != nil else {
                 return .failure(client.errorMessage ?? L10n("Unable to confirm WorkItem completion"))
             }
             onRequestReload()
@@ -2052,6 +2077,10 @@ private struct WorkItemCompletionConfirmationView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
+                Text(workItem.id)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
@@ -2290,12 +2319,12 @@ struct WorkItemEditView: View {
         .padding(20)
         .frame(width: 440)
         .alert(L10n("确认修改状态"), isPresented: $showStatusConfirm) {
-            Button(L10n("确认修改"), role: .destructive) {
+            Button(L10n(targetsCompletedStatus ? "确认完成" : "确认修改"), role: .destructive) {
                 enqueuePersist()
             }
             Button(L10n("取消"), role: .cancel) { }
         } message: {
-            Text(L10nFormat("You are manually overriding the WorkItem status (%@), bypassing execution-managed status. Continue?", statusLabel(status)))
+            Text(statusConfirmationMessage)
         }
     }
 
@@ -2306,6 +2335,28 @@ struct WorkItemEditView: View {
     // 是否强制修改了状态（与原始状态不同）。
     private var statusChanged: Bool {
         status != workItem.status
+    }
+
+    private var targetsCompletedStatus: Bool {
+        WorkItemCompletionBackgroundDecision.resolve(status: status) == .alreadyCompleted
+    }
+
+    private var statusConfirmationMessage: String {
+        guard targetsCompletedStatus else {
+            return L10nFormat(
+                "You are manually overriding the WorkItem status (%@), bypassing execution-managed status. Continue?",
+                statusLabel(status)
+            )
+        }
+        let acceptanceStatus: String
+        if workItem.completionSuggestion?.recommended == true {
+            acceptanceStatus = L10n("已通过")
+        } else if workItem.acceptanceAssessment == nil {
+            acceptanceStatus = L10n("尚未验收")
+        } else {
+            acceptanceStatus = L10n("未通过")
+        }
+        return "\(workItem.title)\n\(workItem.id)\n\(L10n("自动验收"))：\(acceptanceStatus)"
     }
 
     private func statusLabel(_ s: String) -> String {
@@ -2354,6 +2405,37 @@ struct WorkItemEditView: View {
             persistForeground()
             return
         }
+        let targetsCompleted = WorkItemCompletionBackgroundDecision.resolve(
+            status: status
+        ) == .alreadyCompleted
+        if targetsCompleted {
+            let target = workItem
+            let requestId = "completion-request:\(UUID().uuidString.lowercased())"
+            let interactionId = "edit-completion-click:\(UUID().uuidString.lowercased())"
+            Task {
+                guard let receipt = await client.issueWorkItemCompletionIntent(
+                    workItem: target,
+                    interactionId: interactionId,
+                    requestId: requestId,
+                    uiSurface: "work_item_edit_status_confirmation"
+                ) else {
+                    saveError = client.errorMessage ?? L10n("Unable to authorize WorkItem completion")
+                    return
+                }
+                guard let submission = WorkItemCompletionSubmission.freeze(
+                    workItem: target,
+                    receipt: receipt,
+                    requestId: requestId,
+                    idempotencyKey: "completion:\(UUID().uuidString.lowercased())"
+                ) else { return }
+                startPersistBackground(completionSubmission: submission)
+            }
+            return
+        }
+        startPersistBackground()
+    }
+
+    private func startPersistBackground(completionSubmission: WorkItemCompletionSubmission? = nil) {
         let requestTitle = trimmedTitle
         let requestDescription = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestAcceptanceCriteria = acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2396,15 +2478,10 @@ struct WorkItemEditView: View {
                     return .failure(client.errorMessage ?? L10n("无法确认 WorkItem 的最新状态，可重试。"))
                 }
                 if WorkItemCompletionBackgroundDecision.resolve(status: latest.status) != .alreadyCompleted {
-                    let completed: WorkItem?
-                    if WorkItemCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: latest.status) {
-                        completed = await client.confirmWorkItemCompletion(workItemId: workItem.id)
-                    } else {
-                        completed = await client.updateWorkItem(
-                            workItemId: workItem.id,
-                            status: requestStatus
-                        )
+                    guard let completionSubmission else {
+                        return .failure(L10n("Completion authorization is missing; reopen the WorkItem and try again."))
                     }
+                    let completed = await client.confirmWorkItemCompletion(submission: completionSubmission)
                     guard completed != nil else {
                         return .failure(client.errorMessage ?? L10n("WorkItem 完成失败，可重试。"))
                     }

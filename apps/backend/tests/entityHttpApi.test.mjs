@@ -15,6 +15,7 @@ import { MemoryRecallService } from "../src/application/memoryRecallService.mjs"
 import { AssistantService } from "../src/application/assistantService.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
+import { WorkItemCompletionService } from "../src/application/workItemCompletionService.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +57,9 @@ async function createServices() {
   const entityEvents = [];
   const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
   const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
+  const workItemCompletionService = new WorkItemCompletionService({ store, onCompleted: (entity) => {
+    onEntityChanged("WorkItemChanged", { action: "user-intent-completion", entity });
+  } });
   const hubService = new HubService({ store });
   return {
     store,
@@ -63,6 +67,7 @@ async function createServices() {
     entityEvents,
     onEntityChanged,
     objectiveService,
+    workItemCompletionService,
     hubService,
     memoryRecallService: new MemoryRecallService({ store, hubService }),
     router: new CollaborationRouter({ store }),
@@ -127,6 +132,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     inspectWorkItemDeletion: services.inspectWorkItemDeletion,
     deleteWorkItemSafely: services.deleteWorkItemSafely,
     restoreWorkItemExecution: services.restoreWorkItemExecution,
+    workItemCompletionService: services.workItemCompletionService,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
     observeWorkItemPerformance: services.observeWorkItemPerformance,
@@ -144,6 +150,34 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     statusCode: response.statusCode,
     body: response.body ? JSON.parse(response.body) : null
   };
+}
+
+async function completeThroughMacOSIntent(services, workItem, suffix = randomUUID()) {
+  const requestId = `completion-intent:${suffix}`;
+  const intent = await callApi({
+    method: "POST",
+    pathname: `/work-items/${workItem.id}/completion-intents`,
+    body: {
+      requestId,
+      interactionId: `interaction:${suffix}`,
+      uiSurface: "work_item_completion_confirmation",
+      displayedWorkItemId: workItem.id,
+      displayedWorkItemTitle: workItem.title,
+      displayedAcceptanceStatus: workItem.acceptanceAssessment?.status ?? "not_assessed"
+    },
+    ...services
+  });
+  assert.equal(intent.statusCode, 201);
+  return callApi({
+    method: "POST",
+    pathname: `/work-items/${workItem.id}/confirm-completion`,
+    body: {
+      intentToken: intent.body.intentToken,
+      requestId,
+      idempotencyKey: `completion:${suffix}`
+    },
+    ...services
+  });
 }
 
 test("WorkItem Worktree endpoints inspect and reclaim through the project service", async () => {
@@ -304,9 +338,22 @@ test("WorkItem restore endpoint delegates the atomic execution recovery flow", a
         idealState: "Recovered"
       }).id,
       title: "Recover me",
-      status: "todo"
+      status: "in_progress"
     });
-    services.store.updateWorkItem(workItem.id, { status: "done" });
+    const restoreReceipt = services.workItemCompletionService.issueMacOSIntent(
+      workItem.id,
+      {
+        requestId: "restore-setup-intent", interactionId: "restore-setup-click",
+        uiSurface: "work_item_completion_confirmation", displayedWorkItemId: workItem.id,
+        displayedWorkItemTitle: workItem.title, displayedAcceptanceStatus: "not_assessed"
+      },
+      { type: "user", id: "user:local-macos" }
+    );
+    services.workItemCompletionService.completeFromMacOS(workItem.id, {
+      intentToken: restoreReceipt.intentToken,
+      requestId: "restore-setup-intent",
+      idempotencyKey: "restore-setup-completion"
+    });
     const calls = [];
     const restored = await callApi({
       method: "POST",
@@ -1183,8 +1230,12 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
       body: { status: "done" },
       ...services
     });
-    assert.equal(rejectedCompletion.statusCode, 400);
-    assert.equal(rejectedCompletion.body.code, "ACCEPTANCE_NOT_PROVEN");
+    assert.equal(rejectedCompletion.statusCode, 403);
+    assert.equal(rejectedCompletion.body.code, "WORK_ITEM_COMPLETION_INTENT_REQUIRED");
+    assert.equal(
+      services.store.listWorkItemCompletionOperations(created.body.id)[0].callSurface,
+      "macos_work_item_patch"
+    );
 
     const assessed = await callApi({
       method: "PUT",
@@ -1268,14 +1319,12 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
     assert.equal(reassessed.statusCode, 200);
     assert.equal(reassessed.body.completionSuggestion.recommended, true);
 
-    const completed = await callApi({
-      method: "POST",
-      pathname: `/work-items/${created.body.id}/confirm-completion`,
-      body: { confirmed: true },
-      ...services
-    });
+    const completed = await completeThroughMacOSIntent(
+      services, services.objectiveService.getWorkItem(created.body.id), "passing-assessment"
+    );
     assert.equal(completed.statusCode, 200);
-    assert.equal(completed.body.status, "done");
+    assert.equal(completed.body.workItem.status, "done");
+    assert.equal(completed.body.operation.sourceType, "direct_macos_ui_action");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -1311,18 +1360,32 @@ test("explicit user confirmation completes an in-progress WorkItem without autom
       body: { confirmed: false },
       ...services
     });
-    assert.equal(missingConfirmation.statusCode, 400);
-    assert.equal(missingConfirmation.body.code, "USER_CONFIRMATION_REQUIRED");
+    assert.equal(missingConfirmation.statusCode, 403);
+    assert.equal(missingConfirmation.body.code, "WORK_ITEM_COMPLETION_INTENT_REQUIRED");
+    assert.equal(
+      services.store.listWorkItemCompletionOperations(created.body.id)[0].callSurface,
+      "legacy_confirmed_true_http"
+    );
 
-    const completed = await callApi({
-      method: "POST",
-      pathname: `/work-items/${created.body.id}/confirm-completion`,
-      body: { confirmed: true },
+    const completed = await completeThroughMacOSIntent(
+      services, services.objectiveService.getWorkItem(created.body.id), "without-assessment"
+    );
+    assert.equal(completed.statusCode, 200);
+    assert.equal(completed.body.workItem.status, "done");
+    assert.equal(completed.body.workItem.completionSuggestion, null);
+    assert.equal(completed.body.workItem.completionSource.sourceType, "direct_macos_ui_action");
+    const auditByWorkItem = await callApi({
+      method: "GET", pathname: `/work-items/${created.body.id}/completion-audit`, ...services
+    });
+    assert.equal(auditByWorkItem.statusCode, 200);
+    assert.equal(auditByWorkItem.body.operations[0].operationId, completed.body.operation.operationId);
+    const auditByOperation = await callApi({
+      method: "GET",
+      pathname: `/work-item-completion-operations/${encodeURIComponent(completed.body.operation.operationId)}`,
       ...services
     });
-    assert.equal(completed.statusCode, 200);
-    assert.equal(completed.body.status, "done");
-    assert.equal(completed.body.completionSuggestion, null);
+    assert.equal(auditByOperation.statusCode, 200);
+    assert.equal(auditByOperation.body.operation.workItemId, created.body.id);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -1377,15 +1440,12 @@ test("explicit user confirmation completes an in-progress WorkItem after automat
     assert.equal(assessed.body.acceptanceAssessment.status, "not_proven");
     assert.equal(assessed.body.completionSuggestion, null);
 
-    const completed = await callApi({
-      method: "POST",
-      pathname: `/work-items/${created.body.id}/confirm-completion`,
-      body: { confirmed: true },
-      ...services
-    });
+    const completed = await completeThroughMacOSIntent(
+      services, services.objectiveService.getWorkItem(created.body.id), "failed-assessment"
+    );
     assert.equal(completed.statusCode, 200);
-    assert.equal(completed.body.status, "done");
-    assert.equal(completed.body.acceptanceAssessment.status, "not_proven");
+    assert.equal(completed.body.workItem.status, "done");
+    assert.equal(completed.body.workItem.acceptanceAssessment.status, "not_proven");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });

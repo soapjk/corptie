@@ -421,7 +421,13 @@ test("legacy existing-Worktree/no-Session shape is detected without deleting or 
       [repositoryId, worktreePath, worktreePath, join(worktreePath, ".git"), new Date().toISOString()]
     );
     f.store.db.run(
-      "UPDATE work_items SET main_workspace_id=?, status='done', execution_status='idle', start_stage=NULL, start_error=NULL WHERE id=?",
+      `INSERT INTO work_item_completion_authorizations
+       (operation_id, work_item_id, objective_id, source_type, nonce, validated_at)
+       VALUES ('fixture:legacy-complete', ?, ?, 'direct_macos_ui_action', 'fixture:legacy-complete', ?)`,
+      [f.workItem.id, f.workItem.objective_id, new Date().toISOString()]
+    );
+    f.store.db.run(
+      "UPDATE work_items SET main_workspace_id=?, status='done', completion_operation_id='fixture:legacy-complete', execution_status='idle', start_stage=NULL, start_error=NULL WHERE id=?",
       [repositoryId, f.workItem.id]
     );
     assert.equal(f.service.detectLegacyPartialStarts(), 0, "completed WorkItems with retained Worktrees are not start remnants");
