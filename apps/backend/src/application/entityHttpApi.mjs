@@ -38,6 +38,7 @@ export function handleEntityHttpRequest({
   inspectWorkItemDeletion,
   deleteWorkItemSafely,
   restoreWorkItemExecution,
+  workItemCompletionService,
   resolveAgentAvailability,
   suggestAgentSessionTitle,
   onEntityChanged,
@@ -83,6 +84,7 @@ export function handleEntityHttpRequest({
   const isEntityApi =
     path === "/objectives" || path.startsWith("/objectives/") ||
     path === "/work-items" || path.startsWith("/work-items/") ||
+    path.startsWith("/work-item-completion-operations/") ||
     path === "/repositories" || path === "/repositories/detect" ||
     path === "/memories" || path.startsWith("/memories/") || path === "/memory-audit" ||
     path.startsWith("/memory-audit/") || path === "/memory-recall-audit" || path === "/memory-recall" ||
@@ -636,10 +638,15 @@ export function handleEntityHttpRequest({
           return sendJson(response, 200, presentWorkItemAcceptance(objectiveService.getWorkItem(id)));
         }
         if (request.method === "PATCH") {
+          const input = await readJson(request);
+          if (["done", "complete", "completed"].includes(String(input.status ?? "").toLowerCase())) {
+            if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
+            workItemCompletionService.rejectNonDirectAttempt(id, { callSurface: "macos_work_item_patch" });
+          }
           return sendJson(
             response,
             200,
-            presentWorkItemAcceptance(objectiveService.updateWorkItem(id, await readJson(request)))
+            presentWorkItemAcceptance(objectiveService.updateWorkItem(id, input))
           );
         }
         if (request.method === "DELETE") {
@@ -677,16 +684,55 @@ export function handleEntityHttpRequest({
         );
       }
 
+      const completionIntentMatch = path.match(/^\/work-items\/([^/]+)\/completion-intents$/);
+      if (request.method === "POST" && completionIntentMatch) {
+        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set([
+          "requestId", "interactionId", "uiSurface", "displayedWorkItemId",
+          "displayedWorkItemTitle", "displayedAcceptanceStatus"
+        ]));
+        return sendJson(response, 201, workItemCompletionService.issueMacOSIntent(
+          decodeURIComponent(completionIntentMatch[1]), input, localMacUserActor()
+        ));
+      }
+
       const completionConfirmationMatch = path.match(/^\/work-items\/([^/]+)\/confirm-completion$/);
       if (request.method === "POST" && completionConfirmationMatch) {
         const id = decodeURIComponent(completionConfirmationMatch[1]);
-        return sendJson(
-          response,
-          200,
-          presentWorkItemAcceptance(
-            objectiveService.confirmWorkItemCompletion(id, await readJson(request))
+        const input = await readJson(request);
+        if (Object.prototype.hasOwnProperty.call(input, "confirmed")) {
+          if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
+          workItemCompletionService.rejectNonDirectAttempt(id, { callSurface: "legacy_confirmed_true_http" });
+        }
+        rejectUnknownFields(input, new Set(["intentToken", "requestId", "idempotencyKey"]));
+        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
+        const result = workItemCompletionService.completeFromMacOS(id, input);
+        return sendJson(response, 200, {
+          workItem: presentWorkItemAcceptance(result.workItem),
+          operation: result.operation,
+          idempotentReplay: result.idempotentReplay
+        });
+      }
+
+      const completionAuditMatch = path.match(/^\/work-items\/([^/]+)\/completion-audit$/);
+      if (request.method === "GET" && completionAuditMatch) {
+        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion audit is unavailable.", 503);
+        return sendJson(response, 200, {
+          operations: workItemCompletionService.listAudit(
+            decodeURIComponent(completionAuditMatch[1]), url.searchParams.get("limit")
           )
-        );
+        });
+      }
+
+      const completionOperationMatch = path.match(/^\/work-item-completion-operations\/([^/]+)$/);
+      if (request.method === "GET" && completionOperationMatch) {
+        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion audit is unavailable.", 503);
+        return sendJson(response, 200, {
+          operation: workItemCompletionService.getAuditOperation(
+            decodeURIComponent(completionOperationMatch[1])
+          )
+        });
       }
 
       const executionRestoreMatch = path.match(/^\/work-items\/([^/]+)\/actions\/restore$/);

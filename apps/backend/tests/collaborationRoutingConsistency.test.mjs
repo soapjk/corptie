@@ -159,7 +159,16 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
     assert.equal(core.listInbox(marketCow.agentId).length, 0);
 
-    store.db.run("UPDATE work_items SET status='done' WHERE id=?", [AUTHORITATIVE_WORK_ITEM]);
+    store.db.run(
+      `INSERT INTO work_item_completion_authorizations
+       (operation_id, work_item_id, objective_id, source_type, nonce, validated_at)
+       VALUES ('fixture:terminal', ?, ?, 'direct_macos_ui_action', 'fixture:terminal', ?)`,
+      [AUTHORITATIVE_WORK_ITEM, sourceObjective.id, new Date().toISOString()]
+    );
+    store.db.run(
+      "UPDATE work_items SET status='done', completion_operation_id='fixture:terminal' WHERE id=?",
+      [AUTHORITATIVE_WORK_ITEM]
+    );
     const terminalCapabilities = await authoritative.get("/internal/collaboration/session-capabilities");
     assert.equal(terminalCapabilities.actions.includes("collaboration.request"), false);
     await assert.rejects(

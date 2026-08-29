@@ -556,8 +556,9 @@ test("Objective-to-Objective collaboration creates and drives the target WorkIte
     assert.equal(task.messages.at(-1).envelope.resources.targetObjectiveId, "objective:research-fixture");
     task = core.beginVerification(task.taskId, "research-agent", "session:research-fixture");
     task = core.complete(task.taskId, "research-agent", "Verified.", { actorSessionId: "session:research-fixture" });
-    assert.equal(store.getWorkItem(task.workItemId).status, "done");
-    assert.equal(JSON.parse(store.getWorkItem(task.workItemId).acceptance_assessment_json).collaborationTaskId, task.taskId);
+    assert.equal(store.getWorkItem(task.workItemId).status, "in_progress");
+    assert.equal(store.getWorkItem(task.workItemId).execution_status, "completed");
+    assert.deepEqual(JSON.parse(store.getWorkItem(task.workItemId).acceptance_assessment_json), {});
   });
 });
 

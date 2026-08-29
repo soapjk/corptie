@@ -202,3 +202,36 @@ test("provider-neutral WorkItem tool reports evidence as the authenticated Agent
     metadata: { sessionId: "session-one", workItemId: "work-item-one" }
   }]);
 });
+
+test("provider-neutral completion tool carries exact direct-user Session evidence", async () => {
+  const definition = workItemAcceptanceDynamicTools.find((tool) => tool.name === "corptie_work_item_complete");
+  assert.ok(definition);
+  assert.equal(definition.inputSchema.additionalProperties, false);
+  assert.deepEqual(new Set(definition.inputSchema.required), new Set([
+    "targetWorkItemId", "objectiveId", "logicalSessionId", "userMessageEventId",
+    "userMessageSequence", "turnId", "requestId", "idempotencyKey"
+  ]));
+  const calls = [];
+  const argumentsValue = {
+    targetWorkItemId: "work_item:one", objectiveId: "objective:one",
+    logicalSessionId: "session:logical", userMessageEventId: "user-message:one",
+    userMessageSequence: 7, turnId: "turn:one", requestId: "request:one",
+    idempotencyKey: "completion:one"
+  };
+  const result = await callWorkItemAcceptanceDynamicTool({
+    reportAcceptance() { throw new Error("wrong handler"); },
+    completeWorkItem(actorId, input, metadata) {
+      calls.push({ actorId, input, metadata });
+      return { workItem: { id: input.targetWorkItemId, status: "done" } };
+    }
+  }, {
+    actorId: "agent:one", tool: "corptie_work_item_complete",
+    arguments: argumentsValue,
+    metadata: { sessionId: "provider-session:one", logicalSessionId: "session:logical" }
+  });
+  assert.equal(result.workItem.status, "done");
+  assert.deepEqual(calls[0], {
+    actorId: "agent:one", input: argumentsValue,
+    metadata: { sessionId: "provider-session:one", logicalSessionId: "session:logical" }
+  });
+});

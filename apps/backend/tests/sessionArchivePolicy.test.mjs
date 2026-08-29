@@ -9,6 +9,7 @@ import {
   resolveSessionArchiveState
 } from "../src/domain/sessionArchivePolicy.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { WorkItemCompletionService } from "../src/application/workItemCompletionService.mjs";
 
 test("the shared archive policy varies by Session kind", () => {
   assert.deepEqual(
@@ -92,7 +93,16 @@ test("Worker archive membership follows WorkItem completion and publishes live S
     );
 
     let revision = sync.snapshot().revision;
-    store.updateWorkItem("work-item:one", { status: "done" });
+    const completionService = new WorkItemCompletionService({ store });
+    const receipt = completionService.issueMacOSIntent("work-item:one", {
+      requestId: "archive-completion-intent", interactionId: "archive-completion-click",
+      uiSurface: "work_item_completion_confirmation", displayedWorkItemId: "work-item:one",
+      displayedWorkItemTitle: "Work item", displayedAcceptanceStatus: "not_assessed"
+    }, { type: "user", id: "user:local-macos" });
+    completionService.completeFromMacOS("work-item:one", {
+      intentToken: receipt.intentToken, requestId: "archive-completion-intent",
+      idempotencyKey: "archive-completion"
+    });
     const completedChanges = sync.changesAfter(revision);
     assert.deepEqual(completedChanges.deletes.sessions, ["session:worker"]);
     assert.equal(completedChanges.upserts.workItems[0].status, "done");

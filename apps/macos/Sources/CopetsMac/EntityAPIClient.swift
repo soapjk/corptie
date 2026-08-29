@@ -274,17 +274,79 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 用户在确认界面作出的最终裁决。通用 PATCH status=done 仍保留证据门禁，
-    // 防止 Agent 或后台流程把普通状态更新冒充为用户确认。
+    func issueWorkItemCompletionIntent(
+        workItem: WorkItem,
+        interactionId: String,
+        requestId: String,
+        uiSurface: String
+    ) async -> WorkItemCompletionIntentReceipt? {
+        var request = URLRequest(
+            url: baseURL.appending(path: "work-items/\(workItem.id)/completion-intents")
+        )
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let acceptanceStatus = workItem.acceptanceAssessment?.status ?? "not_assessed"
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "requestId": requestId,
+            "interactionId": interactionId,
+            "uiSurface": uiSurface,
+            "displayedWorkItemId": workItem.id,
+            "displayedWorkItemTitle": workItem.title,
+            "displayedAcceptanceStatus": acceptanceStatus
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to authorize WorkItem completion"), code: envelope?.code)
+            }
+            let receipt = try decoder.decode(WorkItemCompletionIntentReceipt.self, from: data)
+            guard receipt.workItemId == workItem.id, receipt.objectiveId == workItem.objectiveId,
+                  receipt.interactionId == interactionId else {
+                throw EntityLaunchError(message: L10n("Completion authorization target mismatch"), code: "COMPLETION_INTENT_TARGET_MISMATCH")
+            }
+            errorMessage = nil
+            return receipt
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return nil
+        }
+    }
+
+    // Consumes the exact immutable receipt captured at the user's click. Retry
+    // uses the same request/idempotency keys and never reads current selection.
     @discardableResult
-    func confirmWorkItemCompletion(workItemId: String) async -> WorkItem? {
+    func confirmWorkItemCompletion(submission: WorkItemCompletionSubmission) async -> WorkItem? {
+        let workItemId = submission.workItemId
+        let receipt = submission.receipt
         var request = URLRequest(
             url: baseURL.appending(path: "work-items/\(workItemId)/confirm-completion")
         )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["confirmed": true])
-        return await performEntityMutation(request, as: WorkItem.self)
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "intentToken": receipt.intentToken,
+            "requestId": submission.requestId,
+            "idempotencyKey": submission.idempotencyKey
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to confirm WorkItem completion"), code: envelope?.code)
+            }
+            let result = try decoder.decode(WorkItemCompletionEnvelope.self, from: data)
+            guard result.workItem.id == workItemId else {
+                throw EntityLaunchError(message: L10n("Completion response target mismatch"), code: "COMPLETION_RESPONSE_TARGET_MISMATCH")
+            }
+            appState.acceptWorkItem(result.workItem)
+            await AppStateSyncController.shared.refreshSnapshot()
+            errorMessage = nil
+            return result.workItem
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return nil
+        }
     }
 
     func restoreWorkItemExecution(workItemId: String) async -> EntityWorkItemRestoreResult {
