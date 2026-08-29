@@ -165,6 +165,7 @@ import {
   suggestAvailableSessionTitle
 } from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
+import { recoverCollaborationDeliveriesAfterCodexRolloutRepair } from "./application/collaborationDeliveryInfrastructureRecovery.mjs";
 import { ensureAgentWorkDir } from "./runtime/agentWorkDir.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
 import { ensureCorptieOpenClackyRuntime, resolveCorptieOpenClackyRuntimePaths } from "./runtime/corptieOpenClackyRuntime.mjs";
@@ -8930,6 +8931,14 @@ for (const agent of store.listAgents()) {
 }
 for (const storedSession of storedSessionsAtStartup) {
   ensureCollaborationAgentForSession(storedSession);
+}
+const rolloutRecoveredDeliveries = recoverCollaborationDeliveriesAfterCodexRolloutRepair({
+  core: collaborationCore,
+  store,
+  rolloutPathRepair: corptieCodexRuntime.rolloutPathRepair
+});
+if (rolloutRecoveredDeliveries.length > 0) {
+  console.warn(`[collaboration-recovery] requeued ${rolloutRecoveredDeliveries.length} exhausted Delivery item(s) after Codex rollout relocation repair`);
 }
 const selfRepairedWorkItemSessions = await repairBrokenWorkItemSessionsAtStartup();
 if (selfRepairedWorkItemSessions > 0) {

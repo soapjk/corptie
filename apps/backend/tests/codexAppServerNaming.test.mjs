@@ -21,6 +21,20 @@ test("missing Codex rollout is normalized as a safely replaceable Provider Sessi
   assert.equal(missingThread.code, "PROVIDER_SESSION_UNAVAILABLE");
   assert.equal(missingThread.safeToRetry, true);
 
+  const relocatedRollout = codexResponseError({
+    code: -32600,
+    message: "failed to resolve rollout path `/old/runtime/sessions/rollout-thread-a.jsonl`: file does not exist"
+  });
+  assert.equal(relocatedRollout.code, "PROVIDER_SESSION_UNAVAILABLE");
+  assert.equal(relocatedRollout.safeToRetry, true);
+
+  const unreadableRollout = codexResponseError({
+    code: -32600,
+    message: "failed to resolve rollout path `/old/runtime/sessions/rollout-thread-a.jsonl`: permission denied"
+  });
+  assert.equal(unreadableRollout.code, undefined);
+  assert.equal(unreadableRollout.safeToRetry, undefined);
+
   const ambiguous = codexResponseError({ code: -32603, message: "transport closed" });
   assert.equal(ambiguous.code, undefined);
   assert.equal(ambiguous.safeToRetry, undefined);
