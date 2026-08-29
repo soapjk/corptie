@@ -7298,14 +7298,35 @@ function route(request, response) {
           throw error;
         }
         const requestedDataRoot = typeof input.dataRoot === "string" ? input.dataRoot.trim() : null;
-        const settingsPatch = { ...input, dataRoot: store.settings().dataRoot };
+        if (Object.hasOwn(input, "expectedSourceDataRoot")
+          && (typeof input.expectedSourceDataRoot !== "string" || !input.expectedSourceDataRoot.trim())) {
+          const error = new TypeError("Expected source Data Root must be a non-empty absolute path.");
+          error.code = "DATA_ROOT_INVALID";
+          throw error;
+        }
+        const expectedSourceDataRoot = typeof input.expectedSourceDataRoot === "string"
+          ? input.expectedSourceDataRoot.trim()
+          : null;
+        const activeDataRoot = store.settings().dataRoot;
+        const dataRootChangeRequested = requestedDataRoot
+          && resolve(requestedDataRoot) !== resolve(activeDataRoot);
+        if (dataRootChangeRequested && expectedSourceDataRoot
+          && resolve(expectedSourceDataRoot) !== resolve(activeDataRoot)) {
+          const error = new Error("The active Data Root changed after the settings form was loaded. Reload settings before migrating.");
+          error.code = "DATA_ROOT_SOURCE_CHANGED";
+          error.statusCode = 409;
+          error.details = { activeDataRoot };
+          throw error;
+        }
+        const { expectedSourceDataRoot: _expectedSourceDataRoot, ...settingsInput } = input;
+        const settingsPatch = { ...settingsInput, dataRoot: activeDataRoot };
         const settings = await store.updateSettings(settingsPatch);
         const codexBackendChanged = JSON.stringify(before.codexBackend) !== JSON.stringify(settings.codexBackend);
         const codexProxyChanged = JSON.stringify(before.agentProxy?.codex) !== JSON.stringify(settings.agentProxy?.codex);
         if (codexBackendChanged || codexProxyChanged) {
           await codexRuntime.close();
         }
-        const operation = requestedDataRoot && resolve(requestedDataRoot) !== resolve(store.settings().dataRoot)
+        const operation = dataRootChangeRequested
           ? await dataRootMigrationCoordinator.migrate(requestedDataRoot)
           : null;
         return {

@@ -59,7 +59,8 @@ struct DataRootSettingsTests {
         #expect(contents.contains("DataRootMigrationDialogState"))
         #expect(contents.contains("Migrate and Restart"))
         #expect(contents.contains("confirmDataRootMigration"))
-        #expect(contents.contains("dataRoot = backendClient.settings?.dataRoot ?? dialog.sourceDataRoot"))
+        #expect(contents.contains("await backendClient.loadSettings()"))
+        #expect(contents.contains("dataRoot = backendClient.settings?.dataRoot"))
         #expect(contents.contains("never deleted automatically"))
         #expect(!contents.contains("Text(L10n(\"Log Directory\"))"))
         #expect(!contents.contains("settings.dbPath"))
@@ -141,6 +142,9 @@ struct DataRootSettingsTests {
         #expect(contents.contains("data-root-migrations/current"))
         #expect(contents.contains("refreshDataRootMigrationStatus(expectedTarget:"))
         #expect(contents.contains("dataRootMigrationPresentationPhase = operation.phase"))
+        #expect(contents.contains("request.timeoutInterval = 60 * 60"))
+        #expect(contents.contains("body[\"expectedSourceDataRoot\"] = activeDataRoot"))
+        #expect(contents.contains("try await completeDataRootMigrationHandoff(operation)"))
     }
 
     @Test func pendingMigrationRecoverySurvivesAnAppProcessRestart() throws {
@@ -155,6 +159,17 @@ struct DataRootSettingsTests {
         )
         #expect(restored == pending)
 
+        let intent = PendingDataRootMigrationRecovery(
+            operationId: nil,
+            targetDataRoot: "/Volumes/Data/Corptie",
+            recordedAt: Date(timeIntervalSince1970: 1_787_875_201)
+        )
+        let restoredIntent = try JSONDecoder().decode(
+            PendingDataRootMigrationRecovery.self,
+            from: JSONEncoder().encode(intent)
+        )
+        #expect(restoredIntent == intent)
+
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -164,5 +179,7 @@ struct DataRootSettingsTests {
         #expect(contents.contains("recoverPendingDataRootMigrationIfNeeded"))
         #expect(contents.contains("ensureBackendRunningForPendingDataRootMigration"))
         #expect(contents.contains("clearPendingDataRootMigration"))
+        #expect(contents.contains("persistPendingDataRootMigration(targetDataRoot: trimmed)"))
+        #expect(contents.contains("pending.operationId == nil || pending.operationId == operation.operationId"))
     }
 }
