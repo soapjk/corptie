@@ -7,7 +7,8 @@ const TERMINAL_WORK_ITEM_STATUSES = new Set([
 export const MAX_AUTOMATIC_WORK_ITEM_SESSION_REPAIRS = 4;
 
 export function historicalProviderSessionUnavailable(value) {
-  return /no rollout found for thread id\b/i.test(String(value ?? ""));
+  return /(?:no rollout found for thread id\b|failed to resolve rollout path\b.*\bfile does not exist)/i
+    .test(String(value ?? ""));
 }
 
 export function historicalWorkItemBindingUnavailable(value) {
