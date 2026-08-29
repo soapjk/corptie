@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Objective 创建弹窗（模块 C）：名称 + 描述 + 理想状态 + 优先级 + 目标日期 + 高级折叠（标签/预算）。
+// Objective 创建弹窗（模块 C）：名称 + 描述 + 理想状态 + 优先级 + 高级折叠（标签/预算）。
 
 struct ObjectiveCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
@@ -10,8 +10,6 @@ struct ObjectiveCreateView: View {
     @State private var detail = ""
     @State private var idealState = ""
     @State private var priority: String? = nil
-    @State private var hasTargetDate = false
-    @State private var targetDate = Date()
     @State private var tagsText = ""
     @State private var showAdvanced = false
     @State private var workspaceIds = Set<String>()
@@ -35,7 +33,6 @@ struct ObjectiveCreateView: View {
                                 "description": detail,
                                 "idealState": idealState,
                                 "priority": priority ?? "",
-                                "targetDate": hasTargetDate ? Self.dateString(targetDate) : "",
                                 "tags": tagsText
                             ]
                         },
@@ -64,29 +61,19 @@ struct ObjectiveCreateView: View {
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
                     }
 
-                    HStack(spacing: 24) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(L10n("优先级"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Picker("", selection: $priority) {
-                                Text(L10n("未设置")).tag(String?.none)
-                                Text(L10n("低")).tag(String?.some("low"))
-                                Text(L10n("中")).tag(String?.some("medium"))
-                                Text(L10n("高")).tag(String?.some("high"))
-                                Text(L10n("紧急")).tag(String?.some("urgent"))
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: 160, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n("优先级"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker("", selection: $priority) {
+                            Text(L10n("未设置")).tag(String?.none)
+                            Text(L10n("低")).tag(String?.some("low"))
+                            Text(L10n("中")).tag(String?.some("medium"))
+                            Text(L10n("高")).tag(String?.some("high"))
+                            Text(L10n("紧急")).tag(String?.some("urgent"))
                         }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Toggle(L10n("设置目标日期"), isOn: $hasTargetDate)
-                                .font(.caption)
-                            if hasTargetDate {
-                                DatePicker("", selection: $targetDate, displayedComponents: .date)
-                                    .labelsHidden()
-                            }
-                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 160, alignment: .leading)
                     }
 
                     Divider()
@@ -139,7 +126,6 @@ struct ObjectiveCreateView: View {
         let requestDetail = detail
         let requestIdealState = idealState
         let requestPriority = priority
-        let requestTargetDate = hasTargetDate ? Self.dateString(targetDate) : nil
         let requestWorkspaceIds = Array(workspaceIds)
         let requestRelatedObjectiveIds = Array(relatedObjectiveIds)
         let requestContributorAgentIds = Array(contributorAgentIds)
@@ -153,7 +139,6 @@ struct ObjectiveCreateView: View {
                 description: requestDetail.isEmpty ? nil : requestDetail,
                 idealState: requestIdealState.isEmpty ? nil : requestIdealState,
                 priority: requestPriority,
-                targetDate: requestTargetDate,
                 tags: tags,
                 workspaceIds: requestWorkspaceIds,
                 relatedObjectiveIds: requestRelatedObjectiveIds,
@@ -173,30 +158,8 @@ struct ObjectiveCreateView: View {
         if let generatedPriority = fields["priority"] {
             priority = generatedPriority.isEmpty ? nil : generatedPriority
         }
-        if let dateText = fields["targetDate"] {
-            if dateText.isEmpty {
-                hasTargetDate = false
-            } else if let date = Self.parseDate(dateText) {
-                targetDate = date
-                hasTargetDate = true
-            }
-        }
         tagsText = fields["tags"] ?? tagsText
         if !tagsText.isEmpty { showAdvanced = true }
-    }
-
-    private static func dateString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
-
-    private static func parseDate(_ value: String) -> Date? {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: value)
     }
 
     private func field(_ label: String, @ViewBuilder content: () -> some View, @ViewBuilder trailing: () -> some View = { EmptyView() }) -> some View {

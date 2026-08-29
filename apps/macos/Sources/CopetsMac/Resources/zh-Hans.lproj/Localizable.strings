@@ -1036,6 +1036,10 @@
 "Restore this completed WorkItem to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session." = "要将这个已完成的 WorkItem 恢复为进行中吗？Corptie 会优先复用原 Worktree；如果原 Worktree 已不存在，会先重新创建，再恢复绑定的会话。";
 "All" = "全部";
 "New Objective" = "新建 Objective";
+"初始化 Git 仓库？" = "初始化 Git 仓库？";
+"初始化并添加" = "初始化并添加";
+"“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？" = "“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？";
+"Git 初始化完成后仍无法识别所选文件夹。" = "Git 初始化完成后仍无法识别所选文件夹。";
 "Raw status" = "原始状态";
 "Regenerate Plan" = "重新生成计划";
 "Re-preflight" = "重新预检";

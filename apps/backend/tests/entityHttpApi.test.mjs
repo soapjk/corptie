@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
 import { HubService } from "../src/application/hubService.mjs";
@@ -13,6 +15,8 @@ import { MemoryRecallService } from "../src/application/memoryRecallService.mjs"
 import { AssistantService } from "../src/application/assistantService.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
+
+const execFileAsync = promisify(execFile);
 
 function mockResponse() {
   return {
@@ -127,10 +131,14 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
     observeWorkItemPerformance: services.observeWorkItemPerformance,
     observeFormAssistPerformance: services.observeFormAssistPerformance,
+    registerGitRepository: services.registerGitRepository,
     auditLog: services.auditLog,
     onEntityChanged: services.onEntityChanged
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  const deadline = Date.now() + 2_000;
+  while (!response.headersSent && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   return {
     handled,
     statusCode: response.statusCode,
@@ -456,7 +464,7 @@ test("POST /assist/form-draft generates every field without creating an entity",
   }
 });
 
-test("POST /assist/form-draft shares one structured contract across Agent and Objective forms", async () => {
+test("POST /assist/form-draft shares one structured contract across Agent and Objective forms without targetDate", async () => {
   const services = await createServices();
   try {
     const calls = [];
@@ -482,7 +490,6 @@ test("POST /assist/form-draft shares one structured contract across Agent and Ob
             description: "统一三个实体创建页的草稿生成体验。",
             idealState: "创建体验持续保持一致，生成内容始终可检查、可编辑。",
             priority: "high",
-            targetDate: "2026-09-01",
             tags: "macos, forms"
           })
         };
@@ -518,7 +525,6 @@ test("POST /assist/form-draft shares one structured contract across Agent and Ob
           description: "",
           idealState: "",
           priority: "",
-          targetDate: "",
           tags: ""
         }
       },
@@ -529,12 +535,76 @@ test("POST /assist/form-draft shares one structured contract across Agent and Ob
     assert.equal(agentResult.statusCode, 200);
     assert.equal(agentResult.body.fields.role, "independentContributor");
     assert.equal(objectiveResult.statusCode, 200);
-    assert.equal(objectiveResult.body.fields.targetDate, "2026-09-01");
+    assert.equal(Object.hasOwn(objectiveResult.body.fields, "targetDate"), false);
     assert.equal(objectiveResult.body.fields.priority, "high");
     assert.equal(calls[0].agentId, "agent:test-drafter");
     assert.equal(calls[0].purpose, calls[1].purpose);
     assert.equal(services.store.listAgents().length, 1);
     assert.equal(services.store.listObjectives().length, 0);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /repositories/detect preserves existing repositories and initializes only after confirmation", async () => {
+  const services = await createServices();
+  try {
+    const existing = join(services.directory, "existing-repository");
+    const plain = join(services.directory, "plain-folder");
+    await Promise.all([mkdir(existing), mkdir(plain)]);
+    await execFileAsync("git", ["-C", existing, "init"]);
+
+    const existingResult = await callApi({
+      method: "POST",
+      pathname: "/repositories/detect",
+      body: { dirPath: existing, initializeIfNeeded: false },
+      ...services
+    });
+    assert.equal(existingResult.statusCode, 201);
+
+    const detectionResult = await callApi({
+      method: "POST",
+      pathname: "/repositories/detect",
+      body: { dirPath: plain, initializeIfNeeded: false },
+      ...services
+    });
+    assert.equal(detectionResult.statusCode, 400);
+    assert.equal(detectionResult.body.code, "NOT_A_GIT_REPOSITORY");
+    await assert.rejects(stat(join(plain, ".git")), { code: "ENOENT" });
+
+    const initializedResult = await callApi({
+      method: "POST",
+      pathname: "/repositories/detect",
+      body: { dirPath: plain, initializeIfNeeded: true },
+      ...services
+    });
+    assert.equal(initializedResult.statusCode, 201);
+    assert.equal((await stat(join(plain, ".git"))).isDirectory(), true);
+    assert.equal(services.store.listGitRepositories().length, 2);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /repositories/detect reports Git initialization failure without adding a Workspace", async () => {
+  const services = await createServices();
+  try {
+    const failure = new Error("Git initialization was denied by the filesystem.");
+    failure.code = "GIT_INITIALIZATION_FAILED";
+    failure.statusCode = 500;
+    const result = await callApi({
+      method: "POST",
+      pathname: "/repositories/detect",
+      body: { dirPath: services.directory, initializeIfNeeded: true },
+      registerGitRepository: async () => { throw failure; },
+      ...services
+    });
+    assert.equal(result.statusCode, 500);
+    assert.equal(result.body.code, "GIT_INITIALIZATION_FAILED");
+    assert.match(result.body.error, /denied/);
+    assert.equal(services.store.listGitRepositories().length, 0);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
