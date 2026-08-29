@@ -15,7 +15,7 @@ test("HTTP migration enters maintenance, requests host restart, and reconnects o
   await writeFile(selectionPath, JSON.stringify({ dataRoot: sourceRoot }));
   let backend = startBackend({ port, selectionPath });
   try {
-    await waitForHealth(port);
+    await waitForHealth(port, backend);
     const invalid = await debugFetch(backend, `http://127.0.0.1:${port}/settings`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -23,10 +23,25 @@ test("HTTP migration enters maintenance, requests host restart, and reconnects o
     });
     assert.equal(invalid.status, 400);
     assert.equal((await invalid.json()).code, "DATA_ROOT_INVALID");
+    const staleForm = await debugFetch(backend, `http://127.0.0.1:${port}/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        dataRoot: targetRoot,
+        expectedSourceDataRoot: join(directory, "stale-source")
+      })
+    });
+    const staleFailure = await staleForm.json();
+    assert.equal(staleForm.status, 409);
+    assert.equal(staleFailure.code, "DATA_ROOT_SOURCE_CHANGED");
+    assert.equal(staleFailure.details.activeDataRoot, sourceRoot);
+    assert.equal(staleFailure.operation, null, "a stale form must not create or replace a migration operation");
+    assert.equal(JSON.parse(await readFile(selectionPath, "utf8")).dataRoot, sourceRoot);
+
     const migrationResponse = await debugFetch(backend, `http://127.0.0.1:${port}/settings`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ dataRoot: targetRoot })
+      body: JSON.stringify({ dataRoot: targetRoot, expectedSourceDataRoot: sourceRoot })
     });
     const migrated = await migrationResponse.json();
     assert.equal(migrationResponse.status, 200, `${JSON.stringify(migrated)}\n${backend.debugOutput}`);
@@ -43,7 +58,7 @@ test("HTTP migration enters maintenance, requests host restart, and reconnects o
     await waitForExit(backend);
 
     backend = startBackend({ port, selectionPath });
-    await waitForHealth(port);
+    await waitForHealth(port, backend);
     const settings = await (await fetch(`http://127.0.0.1:${port}/settings`)).json();
     assert.equal(settings.dataRoot, targetRoot);
     assert.equal(settings.dataRootMigration.operationId, migrated.dataRootMigration.operationId);
@@ -80,7 +95,7 @@ async function debugFetch(child, url, options) {
   }
 }
 
-async function waitForHealth(port) {
+async function waitForHealth(port, child) {
   const deadline = Date.now() + 12_000;
   while (Date.now() < deadline) {
     try {
@@ -89,7 +104,7 @@ async function waitForHealth(port) {
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("Backend health timeout");
+  throw new Error(`Backend health timeout\n${child?.debugOutput ?? ""}`);
 }
 
 function waitForExit(child) {
