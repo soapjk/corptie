@@ -138,6 +138,38 @@ struct ScheduledSessionModelTests {
         #expect([ScheduledSessionTaskStatus.active, .cancelled, .completed, .expired, .error].map(\.rawValue)
             == ["active", "cancelled", "completed", "expired", "error"])
     }
+
+    @Test func automationListSortsActiveFirstThenByUpdatedTimeDescending() {
+        func task(_ id: String, status: ScheduledSessionTaskStatus, updatedAt: String) -> ScheduledSessionTask {
+            ScheduledSessionTask(
+                taskId: id,
+                logicalSessionId: "session:1",
+                name: id,
+                message: "Run",
+                scheduleType: .interval,
+                runAt: nil,
+                nextRunAt: nil,
+                intervalSeconds: 3_600,
+                timezone: "Asia/Shanghai",
+                status: status,
+                missedPolicy: .coalesceOnce,
+                createdAt: "2026-08-01T00:00:00.000Z",
+                updatedAt: updatedAt
+            )
+        }
+
+        let ordered = AutomationListOrdering.sorted([
+            task("cancelled-newest", status: .cancelled, updatedAt: "2026-08-29T04:00:00.000Z"),
+            task("active-older", status: .active, updatedAt: "2026-08-29T01:00:00.000Z"),
+            task("failed", status: .error, updatedAt: "2026-08-29T03:00:00.000Z"),
+            task("expired", status: .expired, updatedAt: "2026-08-29T02:00:00.000Z"),
+            task("active-newer", status: .active, updatedAt: "2026-08-29T02:00:00.000Z")
+        ])
+
+        #expect(ordered.map(\.id) == [
+            "active-newer", "active-older", "cancelled-newest", "failed", "expired"
+        ])
+    }
 }
 
 @MainActor
