@@ -95,5 +95,6 @@ docs/**
 !docs/ipad-lan-remote-access-security.md
 !docs/ipad-client-rollout-test-rollback.md
 !docs/private-artifacts.md
+!docs/product-showcase.md
 # Corptie local Agent configuration
 /.corptie/
