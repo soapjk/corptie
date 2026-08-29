@@ -79,6 +79,27 @@ test("parseGitWorktreePorcelain retains records without a trailing empty field",
   );
 });
 
+test("parseGitWorktreePorcelain maps Git's unborn zero OID to no HEAD commit", () => {
+  assert.deepEqual(
+    parseGitWorktreePorcelain(
+      "worktree /tmp/unborn\0HEAD 0000000000000000000000000000000000000000\0branch refs/heads/main\0\0"
+    ),
+    [{
+      path: "/tmp/unborn",
+      headOid: null,
+      branchRef: "refs/heads/main",
+      branchName: "main",
+      isDetached: false,
+      isBare: false,
+      isLocked: false,
+      lockReason: null,
+      isPrunable: false,
+      pruneReason: null,
+      unknownFields: []
+    }]
+  );
+});
+
 test("listGitWorktrees invokes git with NUL-delimited porcelain output", async () => {
   const calls = [];
   const records = await listGitWorktrees("/tmp/repo with space", {

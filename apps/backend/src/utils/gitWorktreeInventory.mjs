@@ -34,7 +34,10 @@ export function parseGitWorktreePorcelain(value) {
 
     switch (key) {
       case "HEAD":
-        current.headOid = data || null;
+        // Git represents an unborn branch in `worktree list --porcelain` with
+        // the all-zero object id. It is a sentinel, not a commit that callers
+        // may safely pass back to `git worktree add`.
+        current.headOid = normalizedHeadOid(data);
         break;
       case "branch":
         current.branchRef = data || null;
@@ -62,6 +65,12 @@ export function parseGitWorktreePorcelain(value) {
 
   if (current) records.push(current);
   return records;
+}
+
+function normalizedHeadOid(value) {
+  const oid = String(value ?? "").trim();
+  if (!oid || /^(?:0{40}|0{64})$/.test(oid)) return null;
+  return oid;
 }
 
 export async function listGitWorktrees(workingDirectory, options = {}) {

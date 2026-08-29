@@ -285,7 +285,14 @@ export class WorkItemStartService {
       );
     });
     this.store.scheduleSave();
-    this.#audit({ event: "work_item_workspace_prepared", ...this.#auditContext(operation, workspace), stage: "preparingWorkspace", reused: workspace?.reused === true, at: timestamp });
+    this.#audit({
+      event: "work_item_workspace_prepared",
+      ...this.#auditContext(operation, workspace),
+      stage: "preparingWorkspace",
+      reused: workspace?.reused === true,
+      workspaceMode: workspace?.workspaceMode ?? "dedicated-worktree",
+      at: timestamp
+    });
   }
 
   #recordSession(operation, sessionId) {
