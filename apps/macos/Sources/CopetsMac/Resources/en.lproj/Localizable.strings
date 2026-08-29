@@ -752,6 +752,7 @@
 "Notification Test" = "Notification Test";
 "Corptie task notifications are enabled." = "Corptie task notifications are enabled.";
 "计划任务通知" = "Automation notifications";
+"详情" = "Details";
 "计划任务完成、终态失败、取消或过期时通知；周期完成会自动覆盖，避免刷屏。" = "Notify when an Automation completes, reaches a final failure, is cancelled, or expires. Recurring completions replace the previous notification.";
 "计划任务已完成" = "Automation Completed";
 "计划任务失败" = "Automation Failed";
