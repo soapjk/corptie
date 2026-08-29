@@ -87,9 +87,6 @@ export class ArtifactService {
     if ((session.agentId ?? session.agent_id) !== actorId) {
       throw artifactError("ARTIFACT_SESSION_SCOPE_REQUIRED", "Session is not bound to the authenticated actor.", 403);
     }
-    if (claimedSessionId && agent.currentSessionId && claimedSessionId !== agent.currentSessionId) {
-      throw artifactError("ARTIFACT_SESSION_SCOPE_REQUIRED", "Artifact tools are restricted to the actor's current Session.", 403);
-    }
     const objectiveId = optionalText(session.objectiveId ?? session.objective_id);
     const workItemId = optionalText(session.workItemId ?? session.work_item_id);
     if (input.objectiveId && input.objectiveId !== objectiveId) {
