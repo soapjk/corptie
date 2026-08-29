@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   MAX_AUTOMATIC_WORK_ITEM_SESSION_REPAIRS,
-  evaluateWorkItemSessionRepair
+  evaluateWorkItemSessionRepair,
+  historicalProviderSessionUnavailable
 } from "../src/application/workItemSessionRepairPolicy.mjs";
 
 function input(overrides = {}) {
@@ -25,6 +26,15 @@ test("an incomplete WorkItem with a definitively missing unused Provider Session
     eligible: true,
     reason: "provider-session-unavailable"
   });
+});
+
+test("relocated rollout file absence is recognized as a historical explicit Provider failure", () => {
+  assert.equal(historicalProviderSessionUnavailable(
+    '{"message":"failed to resolve rollout path `/old/runtime/sessions/rollout-thread-a.jsonl`: file does not exist"}'
+  ), true);
+  assert.equal(historicalProviderSessionUnavailable(
+    '{"message":"failed to resolve rollout path `/old/runtime/sessions/rollout-thread-a.jsonl`: permission denied"}'
+  ), false);
 });
 
 test("self-repair fails closed after any observed or ambiguous Provider execution", () => {
