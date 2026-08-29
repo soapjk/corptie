@@ -381,6 +381,10 @@ struct SessionCollectionPatchTests {
         #expect(groups[0].key == "worker-ungrouped")
         #expect(groups[0].showsHeader == false)
         #expect(groups[0].rows.map(\.id) == ["first-worker", "second-worker"])
+        #expect(groups[0].rowSubtitles == [
+            "first-worker": "Sessions UI",
+            "second-worker": "Sessions UI"
+        ])
     }
 
     @Test
