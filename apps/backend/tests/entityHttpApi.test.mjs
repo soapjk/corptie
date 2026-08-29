@@ -1128,6 +1128,29 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
     assert.equal(rejectedByUser.body.acceptanceAssessment.status, "rejected");
     assert.equal(rejectedByUser.body.completionSuggestion, null);
 
+    const repeatedRejection = await callApi({
+      method: "POST",
+      pathname: `/work-items/${created.body.id}/reject-acceptance`,
+      body: { rejected: true },
+      ...services
+    });
+    assert.equal(repeatedRejection.statusCode, 200);
+    assert.equal(repeatedRejection.body.acceptanceAssessment.status, "rejected");
+    assert.equal(
+      repeatedRejection.body.acceptanceAssessment.rejectedAt,
+      rejectedByUser.body.acceptanceAssessment.rejectedAt
+    );
+    assert.equal(repeatedRejection.body.completionSuggestion, null);
+
+    const rejectedUnknownField = await callApi({
+      method: "POST",
+      pathname: `/work-items/${created.body.id}/reject-acceptance`,
+      body: { rejected: true, unexpected: true },
+      ...services
+    });
+    assert.equal(rejectedUnknownField.statusCode, 400);
+    assert.equal(rejectedUnknownField.body.code, "INVALID_INPUT");
+
     const reassessed = await callApi({
       method: "PUT",
       pathname: `/work-items/${created.body.id}/acceptance-assessment`,

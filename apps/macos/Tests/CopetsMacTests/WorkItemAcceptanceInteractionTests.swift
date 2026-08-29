@@ -50,6 +50,35 @@ struct WorkItemAcceptanceInteractionTests {
         #expect(presentation.results.isEmpty)
     }
 
+    @Test func acceptanceReviewIsAvailableOnlyForAPassingSuggestion() {
+        let result = acceptanceResult(verdict: "passed")
+        let item = makeAcceptanceWorkItem(
+            assessment: acceptanceAssessment(status: "passed", results: [result]),
+            suggestion: WorkItemCompletionSuggestion(
+                recommended: true,
+                sourceSessionId: "session:acceptance",
+                assessedAt: "2026-08-20T00:00:00Z",
+                criteriaSnapshot: "Criterion",
+                results: [result]
+            )
+        )
+        #expect(WorkItemAcceptanceReviewState.resolve(item) == .passed)
+        #expect(WorkItemAcceptanceReviewState.resolve(
+            makeAcceptanceWorkItem(assessment: nil, suggestion: nil)
+        ) == .unavailable)
+    }
+
+    @Test func rejectedAssessmentPresentsTheManualRejectionState() {
+        let item = makeAcceptanceWorkItem(
+            assessment: acceptanceAssessment(
+                status: "rejected",
+                results: [acceptanceResult(verdict: "passed")]
+            ),
+            suggestion: nil
+        )
+        #expect(WorkItemAcceptanceReviewState.resolve(item) == .manuallyRejected)
+    }
+
     @Test func objectiveDiscussionOpensItsExistingBoundSession() {
         let existing = makeObjectiveSession(id: "session:discussion", objectiveId: "objective:one")
         #expect(ObjectiveDiscussionRouteDecision.resolve(
@@ -65,6 +94,29 @@ struct WorkItemAcceptanceInteractionTests {
             sessions: [other]
         ) == .create)
     }
+}
+
+private func makeAcceptanceWorkItem(
+    assessment: WorkItemAcceptanceAssessment?,
+    suggestion: WorkItemCompletionSuggestion?
+) -> WorkItem {
+    WorkItem(
+        id: "work_item:acceptance",
+        objectiveId: "objective:one",
+        title: "Acceptance",
+        description: "",
+        acceptanceCriteria: "Criterion",
+        priority: "medium",
+        status: "in_progress",
+        mainWorkspaceId: nil,
+        mainAgentId: nil,
+        currentSessionId: nil,
+        executionStatus: "idle",
+        acceptanceAssessment: assessment,
+        completionSuggestion: suggestion,
+        createdAt: "2026-08-20T00:00:00Z",
+        updatedAt: "2026-08-20T00:00:00Z"
+    )
 }
 
 private func acceptanceAssessment(
