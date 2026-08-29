@@ -842,7 +842,7 @@ export class CodexAppServerClient {
 export function codexResponseError(payload) {
   const error = new Error(JSON.stringify(payload));
   const message = typeof payload?.message === "string" ? payload.message.trim() : "";
-  if (/^(?:no rollout found for thread id\b|thread not found:)/i.test(message)) {
+  if (/^(?:no rollout found for thread id\b|thread not found:|failed to resolve rollout path\b.*\bfile does not exist$)/i.test(message)) {
     error.code = "PROVIDER_SESSION_UNAVAILABLE";
     error.safeToRetry = true;
   }

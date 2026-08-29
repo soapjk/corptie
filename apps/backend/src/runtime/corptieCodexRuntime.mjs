@@ -7,6 +7,7 @@ import {
   ensureProviderMemoryLink,
   resolveCorptieAgentMemoryPaths
 } from "./corptieAgentMemory.mjs";
+import { repairRelocatedCodexRolloutPaths } from "./codexRolloutPathRepair.mjs";
 
 const MANAGED_CONFIG_HEADER = "# Managed by Corptie. Runtime-specific user settings may be added below.";
 const REQUIRED_CONFIG = Object.freeze({
@@ -70,6 +71,11 @@ export async function ensureCorptieCodexRuntime(options = {}) {
 
   await mkdir(paths.codexHome, { recursive: true, mode: 0o700 });
   await chmod(paths.codexHome, 0o700);
+  // Data Root migration copies the isolated Provider state byte-for-byte. The
+  // Codex state database stores absolute rollout paths, so repair only rows
+  // whose old file disappeared and whose exact relocated file is present in
+  // this authoritative runtime before app-server opens the database.
+  const rolloutPathRepair = await repairRelocatedCodexRolloutPaths(paths.codexHome);
   await mkdir(paths.collaborationSkillDir, { recursive: true, mode: 0o700 });
   await mkdir(dirname(paths.collaborationProjectToolsReferencePath), { recursive: true, mode: 0o700 });
 
@@ -104,7 +110,8 @@ export async function ensureCorptieCodexRuntime(options = {}) {
     authAvailable: await isFile(paths.authPath),
     agentsAvailable: await isFile(paths.agentsPath),
     skillAvailable: await isFile(paths.collaborationSkillPath),
-    mcpAvailable: true
+    mcpAvailable: true,
+    rolloutPathRepair
   };
 }
 

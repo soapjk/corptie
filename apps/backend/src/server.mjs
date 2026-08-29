@@ -165,6 +165,7 @@ import {
   suggestAvailableSessionTitle
 } from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
+import { recoverCollaborationDeliveriesAfterCodexRolloutRepair } from "./application/collaborationDeliveryInfrastructureRecovery.mjs";
 import { ensureAgentWorkDir } from "./runtime/agentWorkDir.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
 import { ensureCorptieOpenClackyRuntime, resolveCorptieOpenClackyRuntimePaths } from "./runtime/corptieOpenClackyRuntime.mjs";
@@ -8894,6 +8895,9 @@ process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
 process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir;
 console.log(`[agent-memory] ready shared=${corptieCodexRuntime.sharedMemoryPath}`);
 console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
+if (corptieCodexRuntime.rolloutPathRepair.repairedCount > 0) {
+  console.warn(`[codex-runtime] repaired ${corptieCodexRuntime.rolloutPathRepair.repairedCount} relocated rollout path(s) before Provider startup`);
+}
 console.log(`[claude-runtime] ready home=${corptieClaudeRuntime.configDir} auth=${corptieClaudeRuntime.credentialsAvailable ? "available" : "missing"} memory=${corptieClaudeRuntime.memoryAvailable ? "ready" : "missing"} plugin=${corptieClaudeRuntime.pluginPath} skill=${corptieClaudeRuntime.skillAvailable ? "ready" : "missing"} mcp=ready`);
 // 确保每个 Agent 的工作目录（assistant workspace / contributor 持久化目录）物理存在。
 // 路径元数据已在 store 迁移期写入 agents.work_dir，这里只做幂等的 mkdir 兜底。
@@ -8906,6 +8910,14 @@ for (const agent of store.listAgents()) {
 }
 for (const storedSession of storedSessionsAtStartup) {
   ensureCollaborationAgentForSession(storedSession);
+}
+const rolloutRecoveredDeliveries = recoverCollaborationDeliveriesAfterCodexRolloutRepair({
+  core: collaborationCore,
+  store,
+  rolloutPathRepair: corptieCodexRuntime.rolloutPathRepair
+});
+if (rolloutRecoveredDeliveries.length > 0) {
+  console.warn(`[collaboration-recovery] requeued ${rolloutRecoveredDeliveries.length} exhausted Delivery item(s) after Codex rollout relocation repair`);
 }
 const selfRepairedWorkItemSessions = await repairBrokenWorkItemSessionsAtStartup();
 if (selfRepairedWorkItemSessions > 0) {
