@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 
-export const TURN_ANALYSIS_VERSION = "corptie-turn-v3";
+export const TURN_ANALYSIS_VERSION = "corptie-turn-v4";
 export const TURN_CATEGORIES = Object.freeze([
   "queue", "dispatch", "context", "model", "tool", "mcp", "persistence", "delivery", "other"
 ]);
@@ -19,7 +19,8 @@ const ALLOWED_ATTRIBUTES = new Set([
   "corptie.provider.id", "corptie.provider_session.id", "corptie.binding.id", "corptie.agent.id",
   "corptie.objective.id", "corptie.work_item.id", "corptie.workspace.id", "corptie.environment",
   "corptie.category", "corptie.observability_level", "corptie.event.type", "corptie.retry.count",
-  "corptie.recovery", "corptie.operation", "corptie.activity.phase", "service.name", "span.kind", "otel.status_code", "error.type", "error.code",
+  "corptie.recovery", "corptie.operation", "corptie.operation.detail", "corptie.activity.phase",
+  "corptie.provider_item.id", "service.name", "span.kind", "otel.status_code", "error.type", "error.code",
   "http.request.method", "http.response.status_code", "rpc.system", "rpc.method", "db.system",
   "gen_ai.system", "gen_ai.request.model", "gen_ai.operation.name", "tool.name", "mcp.server.name",
   "code.file.path", "code.line.number", "code.function.name"
@@ -61,6 +62,16 @@ export class TelemetryGateway {
       }
       if (key === "corptie.activity.phase") {
         if (ACTIVITY_PHASES.includes(value)) output[key] = value;
+        continue;
+      }
+      if (key === "corptie.operation.detail") {
+        const detail = safeOperationDetail(value);
+        if (detail) output[key] = detail;
+        continue;
+      }
+      if (key === "corptie.provider_item.id") {
+        const itemId = optionalSafeId(value, 160);
+        if (itemId) output[key] = itemId;
         continue;
       }
       if (["string", "number", "boolean"].includes(typeof value)) output[key] = value;
@@ -207,10 +218,8 @@ export class TurnObservabilityService {
     const lifecycle = measurement && measurement.projectionEndedAtMs >= measurement.projectionStartedAtMs
       ? lifecycleSpan(event, runId, measurement)
       : null;
-    const spans = [phase, lifecycle].filter(Boolean).reduce(
-      (items, span) => [...items, this.gateway.sanitizeSpan(span, identityAttributes(identity, level))],
-      previousSpans
-    );
+    const spans = applyEventSpan(previousSpans, phase, this.gateway, identity, level);
+    if (lifecycle) spans.push(this.gateway.sanitizeSpan(lifecycle, identityAttributes(identity, level)));
     const startedAt = row?.started_at ?? occurredAt;
     const endedAt = terminal ? occurredAt : null;
     const timestamp = event.receivedAt ?? occurredAt;
@@ -305,7 +314,36 @@ export class TurnObservabilityService {
   rawTrace(turnRunId) {
     const row = this.runRow(turnRunId);
     if (!row) throw apiError("TURN_RUN_NOT_FOUND", "Turn Run not found.", 404);
-    return { identity: identityFromRow(row), observabilityLevel: row.observability_level, spans: parseJson(row.raw_trace_json, []) };
+    const storedSpans = parseJson(row.raw_trace_json, []);
+    const reconstructed = this.reconstructProviderEventSpans(row);
+    const lifecycleSpans = storedSpans.filter((span) => span.name === "corptie.provider-event.persist");
+    const spans = (reconstructed.length > 0 ? [...reconstructed, ...lifecycleSpans] : storedSpans)
+      .sort((left, right) => {
+        const leftStart = BigInt(left.startTimeUnixNano), rightStart = BigInt(right.startTimeUnixNano);
+        return leftStart < rightStart ? -1 : leftStart > rightStart ? 1 : 0;
+      });
+    return { identity: identityFromRow(row), observabilityLevel: row.observability_level, spans };
+  }
+
+  reconstructProviderEventSpans(row) {
+    const records = this.store.selectAll(
+      `SELECT normalized_event_json,raw_payload_json FROM provider_event_inbox
+       WHERE session_id=? AND binding_id=? AND turn_id=? AND status='applied'
+       ORDER BY COALESCE(occurred_at,received_at),provider_sequence,received_at,provider_event_id`,
+      [row.session_id, row.binding_id, row.logical_turn_id]
+    );
+    if (records.length === 0) return [];
+    const identity = identityFromRow(row);
+    const spans = [];
+    for (const record of records) {
+      const event = parseJson(record.normalized_event_json, null);
+      if (!event) continue;
+      event.rawPayload = parseJson(record.raw_payload_json, event.rawPayload ?? {});
+      const phase = eventSpan(event, row.turn_run_id, spans);
+      const updated = applyEventSpan(spans, phase, this.gateway, identity, row.observability_level);
+      spans.splice(0, spans.length, ...updated);
+    }
+    return spans;
   }
 
   export(turnRunId, format = "json") {
@@ -333,17 +371,36 @@ export class TurnObservabilityService {
 function eventSpan(event, runId, existing) {
   const time = Date.parse(event.occurredAt ?? event.receivedAt);
   if (!Number.isFinite(time)) return null;
-  const previous = existing.at(-1);
-  const start = previous ? Number(BigInt(previous.endTimeUnixNano) / 1_000_000n) : time;
+  const itemId = optionalSafeId(event.itemId ?? event.payload?.item?.id ?? event.rawPayload?.item?.id, 160);
+  const isCompletion = /\.(completed|failed|resolved)$/.test(event.type);
+  const replaceIndex = isCompletion && itemId
+    ? existing.findLastIndex((span) => span.attributes?.["corptie.provider_item.id"] === itemId)
+    : -1;
+  const started = replaceIndex >= 0 ? existing[replaceIndex] : null;
+  const start = started ? Number(BigInt(started.startTimeUnixNano) / 1_000_000n) : time;
   const end = Math.max(start + 0.001, time);
-  return {
-    traceId: previous?.traceId ?? traceIdFor(runId), spanId: spanIdFor(`${runId}:${event.providerEventId}`),
-    parentSpanId: null, name: event.type, startTimeUnixNano: millisToNano(start), endTimeUnixNano: millisToNano(end),
+  const operation = operationForEvent(event);
+  return { replaceIndex, span: {
+    traceId: started?.traceId ?? existing.at(-1)?.traceId ?? traceIdFor(runId),
+    spanId: started?.spanId ?? spanIdFor(`${runId}:${event.providerEventId}`),
+    parentSpanId: started?.parentSpanId ?? null, name: event.type,
+    startTimeUnixNano: millisToNano(start), endTimeUnixNano: millisToNano(end),
     status: event.type === "turn.failed" || event.type === "tool.failed" ? "error" : "ok",
-    attributes: { "corptie.category": categoryForEvent(event), "corptie.operation": operationForEvent(event),
+    attributes: { "corptie.category": categoryForEvent(event), "corptie.operation": operation,
+      "corptie.operation.detail": operationDetailForEvent(event, operation),
       "corptie.activity.phase": activityPhaseForEvent(event), "corptie.event.type": event.type,
+      "corptie.provider_item.id": itemId,
       "error.code": event.payload?.error?.code, "tool.name": event.payload?.toolName, "mcp.server.name": event.payload?.mcpServer }
-  };
+  } };
+}
+
+function applyEventSpan(existing, change, gateway, identity, level) {
+  if (!change?.span) return [...existing];
+  const sanitized = gateway.sanitizeSpan(change.span, identityAttributes(identity, level));
+  const spans = [...existing];
+  if (change.replaceIndex >= 0) spans[change.replaceIndex] = sanitized;
+  else spans.push(sanitized);
+  return spans;
 }
 
 function lifecycleSpan(event, runId, measurement) {
@@ -402,6 +459,45 @@ function operationForCommand(value) {
   if (/\b(swift build|npm run build|xcodebuild|cargo build|go build|compile|linker)\b/.test(command)) return "build";
   if (/(^|[;&|]\s*)(sed|head|tail|cat|bat)(\s|$)/.test(command)) return "code.read";
   return "shell";
+}
+
+function operationDetailForEvent(event, operation) {
+  const item = event.rawPayload?.item ?? event.payload?.item ?? {};
+  if (String(item.type ?? "") === "commandExecution") return safeCommandLabel(item.command);
+  if (operation === "mcp") {
+    const server = safeToolSegment(item.server ?? event.payload?.mcpServer);
+    const tool = safeToolSegment(item.tool ?? item.toolName ?? event.payload?.toolName);
+    return [server, tool].filter(Boolean).join(".") || "mcp";
+  }
+  if (operation === "code.edit") return "file change";
+  return null;
+}
+
+function safeCommandLabel(value) {
+  const command = String(value ?? "").toLowerCase();
+  if (!command) return "shell";
+  const fixed = [
+    [/\bscripts\/dev-rebuild-restart\.sh\b/, "dev-rebuild-restart.sh"],
+    [/\bswift\s+test\b/, "swift test"], [/\bswift\s+build\b/, "swift build"],
+    [/\bnpm\s+test\b/, "npm test"], [/\bnpm\s+run\s+build\b/, "npm run build"],
+    [/\bnode\s+--test\b/, "node --test"], [/\bpytest\b/, "pytest"],
+    [/\bxcodebuild\b[^;&|]*\btest\b/, "xcodebuild test"], [/\bxcodebuild\b/, "xcodebuild"],
+    [/\bcargo\s+test\b/, "cargo test"], [/\bcargo\s+build\b/, "cargo build"],
+    [/\bgo\s+test\b/, "go test"], [/\bgo\s+build\b/, "go build"],
+    [/\bgit\s+(status|diff|log|show|worktree|branch|commit|merge|rebase|fetch|pull|push)\b/, (match) => `git ${match[1]}`],
+    [/(^|[;&|]\s*)(rg|grep|find|fd|sed|head|tail|cat|bat|curl|sqlite3|ps|lsof)(\s|$)/, (match) => match[2]]
+  ];
+  for (const [pattern, label] of fixed) {
+    const match = command.match(pattern);
+    if (match) return typeof label === "function" ? label(match) : label;
+  }
+  const script = command.match(/(?:^|[\s;&|/])([a-z0-9_.-]+\.sh)(?:\s|$)/)?.[1];
+  return script ?? "shell";
+}
+
+function safeToolSegment(value) {
+  const segment = String(value ?? "").trim();
+  return segment && segment.length <= 80 && /^[A-Za-z0-9_.:/+-]+$/.test(segment) ? segment : null;
 }
 
 function activityPhaseForEvent(event) {
@@ -558,9 +654,19 @@ function normalizedStatus(status) { const code = typeof status === "object" ? st
 function safeError(error) { return { code: String(error?.code ?? "UNKNOWN").slice(0, 120), type: String(error?.type ?? "error").slice(0, 120), message: "redacted" }; }
 function safeId(value, max, field) { const text = String(value ?? "").trim(); if (!text || text.length > max || !/^[\w:.-]+$/.test(text)) throw new Error(`${field} is invalid.`); return text; }
 function optionalId(value, max) { return value == null || value === "" ? null : safeId(value, max, "parentSpanId"); }
+function optionalSafeId(value, max) {
+  if (value == null || value === "") return null;
+  const text = String(value).trim();
+  return text && text.length <= max && /^[\w:.-]+$/.test(text) ? text : null;
+}
 function safeName(value) {
   const name = String(value ?? "span").trim();
   return name && name.length <= 160 && /^[A-Za-z0-9_.:/-]+$/.test(name) ? name : "redacted.operation";
+}
+function safeOperationDetail(value) {
+  const detail = String(value ?? "").trim();
+  if (!detail || detail.length > 80 || detail.includes("..") || /[\r\n]/.test(detail)) return null;
+  return /^[A-Za-z0-9_.:/+-]+(?: [A-Za-z0-9_.:/+-]+){0,2}$/.test(detail) ? detail : null;
 }
 function safeRelativeCodePath(value) {
   const path = String(value ?? "").trim().replaceAll("\\", "/");

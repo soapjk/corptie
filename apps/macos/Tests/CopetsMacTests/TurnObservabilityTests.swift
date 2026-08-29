@@ -31,11 +31,12 @@ final class TurnObservabilityTests: XCTestCase {
         {"observabilityLevel":"native","spans":[{"traceId":"trace","spanId":"span","parentSpanId":null,
         "name":"code.search","startTimeUnixNano":"1000000","endTimeUnixNano":"3000000","status":"ok",
         "attributes":{"corptie.category":"tool","corptie.operation":"code.search",
-        "corptie.activity.phase":"code-navigation","code.file.path":"apps/backend/src/server.mjs",
+        "corptie.operation.detail":"rg","corptie.activity.phase":"code-navigation","code.file.path":"apps/backend/src/server.mjs",
         "code.line.number":6985,"code.function.name":"route"}}]}
         """.utf8)
         let trace = try JSONDecoder().decode(TurnRawTrace.self, from: data)
         XCTAssertEqual(trace.spans[0].operation, "code.search")
+        XCTAssertEqual(trace.spans[0].operationDetail, "rg")
         XCTAssertEqual(trace.spans[0].activityPhase, "code-navigation")
         XCTAssertEqual(trace.spans[0].codeLocation, "apps/backend/src/server.mjs:6985 · route")
         XCTAssertEqual(trace.spans[0].durationMs, 2)
@@ -55,6 +56,9 @@ final class TurnObservabilityTests: XCTestCase {
         XCTAssertTrue(source.contains("if isTraceExpanded { await model.loadTraceIfNeeded() }"))
         XCTAssertTrue(source.contains("推断用途：为下一步"))
         XCTAssertTrue(source.contains("Provider 未提供安全阶段标签"))
+        XCTAssertTrue(source.contains("Text(\"最慢操作\")"))
+        XCTAssertTrue(source.contains("Trace 加载失败"))
+        XCTAssertTrue(source.contains("span.operationDetail ?? span.name"))
         XCTAssertFalse(source.contains(".onReceive("))
         XCTAssertFalse(source.contains("ServerSentEvents"))
         XCTAssertTrue(source.contains("TurnTracePresentationTier.resolve(spanCount:"))
