@@ -244,7 +244,7 @@ struct MainWindowResizeLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
         for required in [
             "case all", "case running", "case failed", "case history",
-            "Trigger", "创建时间", "上次执行时间", "预计下次执行时间", "过期时间", "Times use system time zone: %@",
+            "创建时间", "上次执行时间", "预计下次执行时间", "过期时间", "Times use system time zone: %@",
             "生效中", "已取消", "已完成", "已过期", "异常", "Last Result", "Risk", "Run History",
             "bindingId", "routingVersion", "Run Now", "Retry", "Cancel"
         ] {
@@ -252,6 +252,9 @@ struct MainWindowResizeLayoutTests {
         }
         #expect(contents.contains("if automation.scheduleType.hasPredictableNextRun"))
         #expect(contents.contains("ScheduledSessionManagementTimeFormatting.string"))
+        #expect(contents.contains("GridItem(.adaptive(minimum: 300, maximum: 430)"))
+        #expect(contents.contains("if isShowingDetails { details }"))
+        #expect(contents.contains("compactActionButton"))
         let emptyStateStart = try #require(contents.range(of: "ContentUnavailableView("))
         let emptyStateEnd = try #require(contents.range(of: "} else {", range: emptyStateStart.upperBound..<contents.endIndex))
         let emptyState = contents[emptyStateStart.lowerBound..<emptyStateEnd.lowerBound]
