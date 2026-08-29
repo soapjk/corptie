@@ -1025,6 +1025,32 @@ export class CollaborationCore {
     return this.getDelivery(deliveryId);
   }
 
+  retryDeliveryAfterInfrastructureRepair(deliveryId, reason) {
+    const recoveryReason = requiredText(reason, "reason");
+    let recovered = false;
+    this.#transaction(() => {
+      const delivery = this.getDelivery(deliveryId);
+      if (!delivery) throw domainError("DELIVERY_NOT_FOUND", `Delivery ${deliveryId} was not found.`);
+      if (delivery.status !== "failed") return;
+      const envelope = this.getDeliveryEnvelope(deliveryId);
+      const timestamp = this.clock();
+      this.store.db.run(
+        `UPDATE collaboration_deliveries SET status = 'pending', attempt_count = 0,
+         next_attempt_at = NULL, delivered_at = NULL, target_turn_id = NULL,
+         last_error = NULL, updated_at = ? WHERE delivery_id = ? AND status = 'failed'`,
+        [timestamp, deliveryId]
+      );
+      this.#appendEvent(envelope.task.taskId, "delivery_recovered", null, {
+        deliveryId,
+        reason: recoveryReason,
+        previousAttemptCount: delivery.attemptCount,
+        previousError: delivery.lastError
+      }, timestamp);
+      recovered = true;
+    });
+    return recovered ? this.getDelivery(deliveryId) : null;
+  }
+
   getDeliveryEnvelope(deliveryId) {
     const row = this.store.selectOne(
       `SELECT d.*, m.task_id, m.sender_agent_id, m.sender_session_id, m.recipient_session_id AS message_recipient_session_id,
