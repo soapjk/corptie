@@ -1771,6 +1771,73 @@ export class CorptieStore {
         FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS work_item_completion_intents (
+        receipt_id TEXT PRIMARY KEY,
+        token_hash TEXT NOT NULL UNIQUE,
+        work_item_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        source_type TEXT NOT NULL CHECK (source_type IN (
+          'direct_macos_ui_action', 'direct_session_user_instruction'
+        )),
+        logical_session_id TEXT,
+        user_message_event_id TEXT,
+        user_message_sequence INTEGER,
+        turn_id TEXT,
+        interaction_id TEXT,
+        ui_surface TEXT,
+        request_id TEXT NOT NULL,
+        nonce TEXT NOT NULL UNIQUE,
+        issued_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        consumed_operation_id TEXT UNIQUE,
+        consumed_at TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_completion_intent_request
+      ON work_item_completion_intents(source_type, request_id);
+
+      CREATE TABLE IF NOT EXISTS work_item_completion_authorizations (
+        operation_id TEXT PRIMARY KEY,
+        work_item_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        nonce TEXT NOT NULL UNIQUE,
+        validated_at TEXT NOT NULL,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT
+      );
+
+      CREATE TABLE IF NOT EXISTS work_item_completion_operations (
+        operation_id TEXT PRIMARY KEY,
+        work_item_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        result TEXT NOT NULL CHECK (result IN ('succeeded', 'rejected')),
+        source_type TEXT NOT NULL,
+        logical_session_id TEXT,
+        user_message_event_id TEXT,
+        user_message_sequence INTEGER,
+        turn_id TEXT,
+        ui_receipt_id TEXT,
+        ui_interaction_id TEXT,
+        call_surface TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        nonce TEXT,
+        error_code TEXT,
+        details_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_item_completion_idempotency
+      ON work_item_completion_operations(source_type, idempotency_key);
+      CREATE INDEX IF NOT EXISTS idx_work_item_completion_work_item
+      ON work_item_completion_operations(work_item_id, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS work_item_start_operations (
         operation_id TEXT PRIMARY KEY,
         work_item_id TEXT NOT NULL,
@@ -2338,6 +2405,27 @@ export class CorptieStore {
     this.ensureColumn("work_items", "deletion_status", "TEXT");
     this.ensureColumn("work_items", "deletion_error", "TEXT");
     this.ensureColumn("work_items", "deletion_worktree_removed_at", "TEXT");
+    this.ensureColumn("work_items", "completion_operation_id", "TEXT");
+    this.ensureColumn("work_items", "completion_source_type", "TEXT");
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_completion_guard
+      BEFORE UPDATE OF status ON work_items
+      WHEN LOWER(TRIM(NEW.status)) IN ('done', 'complete', 'completed')
+       AND LOWER(TRIM(OLD.status)) NOT IN ('done', 'complete', 'completed')
+       AND NOT EXISTS (
+         SELECT 1 FROM work_item_completion_authorizations authorization
+         WHERE authorization.operation_id = NEW.completion_operation_id
+           AND authorization.work_item_id = NEW.id
+           AND authorization.objective_id = NEW.objective_id
+       )
+      BEGIN
+        SELECT RAISE(ABORT, 'WORK_ITEM_COMPLETION_INTENT_REQUIRED');
+      END`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_completion_audit_immutable_update
+      BEFORE UPDATE ON work_item_completion_operations
+      BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_COMPLETION_AUDIT_IMMUTABLE'); END`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_completion_audit_immutable_delete
+      BEFORE DELETE ON work_item_completion_operations
+      BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_COMPLETION_AUDIT_IMMUTABLE'); END`);
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_work_items_session_idempotency
       ON work_items(created_by_session_id, idempotency_key)
       WHERE created_by_session_id IS NOT NULL AND idempotency_key IS NOT NULL`);
@@ -8796,6 +8884,12 @@ export class CorptieStore {
 
   createWorkItem(input = {}) {
     const normalized = validateWorkItemInput(input, "create");
+    if (["done", "complete", "completed"].includes(String(normalized.status ?? "").toLowerCase())) {
+      const error = new Error("A completed WorkItem cannot be created without direct-user-intent authorization.");
+      error.code = "WORK_ITEM_COMPLETION_INTENT_REQUIRED";
+      error.statusCode = 403;
+      throw error;
+    }
     const objective = this.getObjective(normalized.objectiveId);
     if (!objective) {
       throw associationError(
@@ -9287,9 +9381,223 @@ export class CorptieStore {
     );
   }
 
+  getSessionEventByIdentity(sessionId, eventId, sequence) {
+    const row = this.selectOne(
+      `SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+              source_event_seqs_json, call_id, source_json, payload_json, created_at
+       FROM session_events WHERE session_id = ? AND event_id = ? AND sequence = ?`,
+      [sessionId, eventId, Number(sequence)]
+    );
+    return row ? sessionEventFromRow(row) : null;
+  }
+
+  getSessionEvent(eventId) {
+    const row = this.selectOne(
+      `SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+              source_event_seqs_json, call_id, source_json, payload_json, created_at
+       FROM session_events WHERE event_id = ?`,
+      [eventId]
+    );
+    return row ? sessionEventFromRow(row) : null;
+  }
+
+  createWorkItemCompletionIntent(input) {
+    this.db.run(
+      `INSERT INTO work_item_completion_intents (
+        receipt_id, token_hash, work_item_id, objective_id, source_type,
+        logical_session_id, user_message_event_id, user_message_sequence, turn_id,
+        interaction_id, ui_surface, request_id, nonce, issued_at, expires_at, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.receiptId, input.tokenHash, input.workItemId, input.objectiveId, input.sourceType,
+        input.logicalSessionId ?? null, input.userMessageEventId ?? null,
+        input.userMessageSequence ?? null, input.turnId ?? null, input.interactionId ?? null,
+        input.uiSurface ?? null, input.requestId, input.nonce, input.issuedAt, input.expiresAt,
+        JSON.stringify(input.metadata ?? {})
+      ]
+    );
+    this.scheduleSave();
+    return this.getWorkItemCompletionIntent(input.receiptId);
+  }
+
+  getWorkItemCompletionIntent(receiptId) {
+    const row = this.selectOne(
+      "SELECT * FROM work_item_completion_intents WHERE receipt_id = ?",
+      [receiptId]
+    );
+    return row ? workItemCompletionIntentFromRow(row) : null;
+  }
+
+  getWorkItemCompletionIntentByTokenHash(tokenHash) {
+    const row = this.selectOne(
+      "SELECT * FROM work_item_completion_intents WHERE token_hash = ?",
+      [tokenHash]
+    );
+    return row ? workItemCompletionIntentFromRow(row) : null;
+  }
+
+  getWorkItemCompletionIntentByRequest(sourceType, requestId) {
+    const row = this.selectOne(
+      `SELECT * FROM work_item_completion_intents
+       WHERE source_type = ? AND request_id = ?`,
+      [sourceType, requestId]
+    );
+    return row ? workItemCompletionIntentFromRow(row) : null;
+  }
+
+  getWorkItemCompletionOperationByIdempotency(sourceType, idempotencyKey) {
+    const row = this.selectOne(
+      `SELECT * FROM work_item_completion_operations
+       WHERE source_type = ? AND idempotency_key = ?`,
+      [sourceType, idempotencyKey]
+    );
+    return row ? workItemCompletionOperationFromRow(row) : null;
+  }
+
+  getWorkItemCompletionOperation(operationId) {
+    const row = this.selectOne(
+      "SELECT * FROM work_item_completion_operations WHERE operation_id = ?",
+      [operationId]
+    );
+    return row ? workItemCompletionOperationFromRow(row) : null;
+  }
+
+  listWorkItemCompletionOperations(workItemId, limit = 100) {
+    return this.selectAll(
+      `SELECT * FROM work_item_completion_operations WHERE work_item_id = ?
+       ORDER BY created_at DESC, operation_id DESC LIMIT ?`,
+      [workItemId, Math.max(1, Math.min(500, Number(limit) || 100))]
+    ).map(workItemCompletionOperationFromRow);
+  }
+
+  recordRejectedWorkItemCompletion(input) {
+    return this.runInTransaction(() => {
+      const existing = this.getWorkItemCompletionOperationByIdempotency(
+        input.sourceType, input.idempotencyKey
+      );
+      if (existing) return existing;
+      this.#insertWorkItemCompletionOperation({ ...input, result: "rejected" });
+      this.scheduleSave();
+      return this.getWorkItemCompletionOperation(input.operationId);
+    });
+  }
+
+  recordRejectedWorkItemCompletionBypass(workItem, callSurface, errorCode = "WORK_ITEM_COMPLETION_INTENT_REQUIRED") {
+    if (!workItem) return null;
+    const operationId = `completion_operation:${randomUUID()}`;
+    return this.recordRejectedWorkItemCompletion({
+      operationId,
+      workItemId: workItem.id,
+      objectiveId: workItem.objective_id,
+      result: "rejected",
+      sourceType: "non_direct_request",
+      callSurface,
+      requestId: operationId,
+      idempotencyKey: operationId,
+      errorCode,
+      details: { category: "non_direct_or_unattributed" },
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  completeWorkItemWithAuthorization(input) {
+    return this.runInTransaction(() => {
+      const existing = this.getWorkItemCompletionOperationByIdempotency(
+        input.sourceType, input.idempotencyKey
+      );
+      if (existing) {
+        if (existing.workItemId !== input.workItemId || existing.requestId !== input.requestId) {
+          const error = new Error("Completion idempotency key is bound to another request.");
+          error.code = "COMPLETION_IDEMPOTENCY_CONFLICT";
+          throw error;
+        }
+        return { operation: existing, workItem: this.getWorkItem(existing.workItemId), idempotentReplay: true };
+      }
+      const workItem = this.getWorkItem(input.workItemId);
+      if (!workItem || workItem.objective_id !== input.objectiveId) {
+        const error = new Error("Completion target no longer matches its Objective.");
+        error.code = "WORK_ITEM_OBJECTIVE_MISMATCH";
+        throw error;
+      }
+      const completed = ["done", "complete", "completed"].includes(String(workItem.status).toLowerCase());
+      if (completed) {
+        const error = new Error("The WorkItem was already completed by another operation.");
+        error.code = "WORK_ITEM_ALREADY_COMPLETED";
+        throw error;
+      }
+      if (input.receiptId) {
+        const intent = this.getWorkItemCompletionIntent(input.receiptId);
+        if (!intent || intent.workItemId !== input.workItemId || intent.objectiveId !== input.objectiveId) {
+          const error = new Error("Completion intent target mismatch.");
+          error.code = "COMPLETION_INTENT_TARGET_MISMATCH";
+          throw error;
+        }
+        this.db.run(
+          `UPDATE work_item_completion_intents
+           SET consumed_operation_id = ?, consumed_at = ?
+           WHERE receipt_id = ? AND consumed_operation_id IS NULL`,
+          [input.operationId, input.createdAt, input.receiptId]
+        );
+        if (this.db.getRowsModified() !== 1) {
+          const error = new Error("Completion intent has already been consumed.");
+          error.code = "COMPLETION_INTENT_REPLAYED";
+          throw error;
+        }
+      }
+      this.db.run(
+        `INSERT INTO work_item_completion_authorizations
+         (operation_id, work_item_id, objective_id, source_type, nonce, validated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [input.operationId, input.workItemId, input.objectiveId, input.sourceType, input.nonce, input.createdAt]
+      );
+      this.db.run(
+        `UPDATE work_items SET status='done', completion_operation_id=?, completion_source_type=?,
+         resource_version=resource_version+1, updated_at=? WHERE id=?`,
+        [input.operationId, input.sourceType, input.createdAt, input.workItemId]
+      );
+      if (this.db.getRowsModified() !== 1) {
+        const error = new Error("WorkItem completion did not update exactly one row.");
+        error.code = "WORK_ITEM_COMPLETION_WRITE_FAILED";
+        throw error;
+      }
+      this.#insertWorkItemCompletionOperation({ ...input, result: "succeeded" });
+      this.scheduleSave();
+      return {
+        operation: this.getWorkItemCompletionOperation(input.operationId),
+        workItem: this.getWorkItem(input.workItemId),
+        idempotentReplay: false
+      };
+    });
+  }
+
+  #insertWorkItemCompletionOperation(input) {
+    this.db.run(
+      `INSERT INTO work_item_completion_operations (
+        operation_id, work_item_id, objective_id, result, source_type,
+        logical_session_id, user_message_event_id, user_message_sequence, turn_id,
+        ui_receipt_id, ui_interaction_id, call_surface, request_id, idempotency_key,
+        nonce, error_code, details_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.operationId, input.workItemId, input.objectiveId, input.result, input.sourceType,
+        input.logicalSessionId ?? null, input.userMessageEventId ?? null,
+        input.userMessageSequence ?? null, input.turnId ?? null, input.receiptId ?? null,
+        input.interactionId ?? null, input.callSurface, input.requestId, input.idempotencyKey,
+        input.auditNonce ?? null, input.errorCode ?? null, JSON.stringify(input.details ?? {}), input.createdAt
+      ]
+    );
+  }
+
   updateWorkItem(id, patch = {}) {
     const current = this.getWorkItem(id);
     if (!current) return null;
+    if (["done", "complete", "completed"].includes(String(patch.status ?? "").toLowerCase())
+      && !["done", "complete", "completed"].includes(String(current.status ?? "").toLowerCase())) {
+      this.recordRejectedWorkItemCompletionBypass(current, "store.updateWorkItem");
+      const error = new Error("WORK_ITEM_COMPLETION_INTENT_REQUIRED");
+      error.code = "WORK_ITEM_COMPLETION_INTENT_REQUIRED";
+      throw error;
+    }
     const internalPatch = {};
     if (Object.prototype.hasOwnProperty.call(patch, "executionStatus")) {
       internalPatch.executionStatus = patch.executionStatus;
@@ -9311,6 +9619,13 @@ export class CorptieStore {
       mainAgentId: current.main_agent_id,
       ...normalized
     };
+    if (["done", "complete", "completed"].includes(String(prospective.status).toLowerCase())
+      && !["done", "complete", "completed"].includes(String(current.status).toLowerCase())) {
+      const error = new Error("WorkItem completion requires a consumed direct-user-intent credential.");
+      error.code = "WORK_ITEM_COMPLETION_INTENT_REQUIRED";
+      error.statusCode = 403;
+      throw error;
+    }
     const objective = this.getObjective(current.objective_id);
     if (!objective) {
       throw associationError(
@@ -11685,6 +12000,52 @@ function sessionEventFromRow(row) {
     callId: row.call_id,
     source: parseJson(row.source_json, null),
     payload: parseJson(row.payload_json, {}),
+    createdAt: row.created_at
+  };
+}
+
+function workItemCompletionIntentFromRow(row) {
+  return {
+    receiptId: row.receipt_id,
+    tokenHash: row.token_hash,
+    workItemId: row.work_item_id,
+    objectiveId: row.objective_id,
+    sourceType: row.source_type,
+    logicalSessionId: row.logical_session_id ?? null,
+    userMessageEventId: row.user_message_event_id ?? null,
+    userMessageSequence: row.user_message_sequence == null ? null : Number(row.user_message_sequence),
+    turnId: row.turn_id ?? null,
+    interactionId: row.interaction_id ?? null,
+    uiSurface: row.ui_surface ?? null,
+    requestId: row.request_id,
+    nonce: row.nonce,
+    issuedAt: row.issued_at,
+    expiresAt: row.expires_at,
+    consumedOperationId: row.consumed_operation_id ?? null,
+    consumedAt: row.consumed_at ?? null,
+    metadata: parseJson(row.metadata_json, {})
+  };
+}
+
+function workItemCompletionOperationFromRow(row) {
+  return {
+    operationId: row.operation_id,
+    workItemId: row.work_item_id,
+    objectiveId: row.objective_id,
+    result: row.result,
+    sourceType: row.source_type,
+    logicalSessionId: row.logical_session_id ?? null,
+    userMessageEventId: row.user_message_event_id ?? null,
+    userMessageSequence: row.user_message_sequence == null ? null : Number(row.user_message_sequence),
+    turnId: row.turn_id ?? null,
+    uiReceiptId: row.ui_receipt_id ?? null,
+    uiInteractionId: row.ui_interaction_id ?? null,
+    callSurface: row.call_surface,
+    requestId: row.request_id,
+    idempotencyKey: row.idempotency_key,
+    nonce: row.nonce ?? null,
+    errorCode: row.error_code ?? null,
+    details: parseJson(row.details_json, {}),
     createdAt: row.created_at
   };
 }

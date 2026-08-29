@@ -15,6 +15,7 @@ import { SessionApplicationService } from "../src/agent-provider/sessionApplicat
 import { memoryDynamicTools } from "../src/application/memoryDynamicTools.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
 import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
+import { workItemAcceptanceDynamicTools } from "../src/application/workItemAcceptanceDynamicTools.mjs";
 
 function provider(id, capabilities, operations = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
@@ -360,6 +361,30 @@ test("Codex, Claude, and OpenClacky Tool Host attachments receive one platform-a
   }
   const expected = platformDynamicTools.map((tool) => tool.name);
   for (const id of ["codex-platform", "claude-platform", "openclacky-platform"]) assert.deepEqual(attachments.get(id).tools.map((tool) => tool.name), expected);
+});
+
+test("Codex, Claude, and OpenClacky receive one provider-neutral WorkItem completion contract", async () => {
+  const attachments = new Map();
+  const ids = ["codex-completion", "claude-completion", "openclacky-completion"];
+  const providers = ids.map((id) => provider(id, [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+    attachTools(attachment) { attachments.set(id, attachment); return { attached: true }; }
+  }));
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry(providers),
+    catalog: new HostToolCatalog([{
+      id: "work-item-acceptance", tools: workItemAcceptanceDynamicTools, execute: () => ({})
+    }])
+  });
+  for (const id of ids) {
+    await service.prepareSession(id, {
+      actorId: "agent:worker", sessionId: "provider-session:worker",
+      logicalSessionId: "session:worker", sessionKind: "worker",
+      objectiveId: "objective:one", workItemId: "work_item:one"
+    });
+  }
+  const expected = attachments.get(ids[0]).tools;
+  assert.ok(expected.some((tool) => tool.name === "corptie_work_item_complete"));
+  for (const id of ids.slice(1)) assert.deepEqual(attachments.get(id).tools, expected);
 });
 
 test("Session creation passes a prepared Tool Host attachment without knowing Provider mechanics", async () => {

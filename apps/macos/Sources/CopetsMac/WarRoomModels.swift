@@ -55,6 +55,7 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var startWorktreeBranch: String? = nil
     var acceptanceAssessment: WorkItemAcceptanceAssessment?
     var completionSuggestion: WorkItemCompletionSuggestion?
+    var completionSource: WorkItemCompletionSource? = nil
     var createdAt: String
     var updatedAt: String
 
@@ -64,7 +65,7 @@ struct WorkItem: Identifiable, Codable, Hashable {
         case startStage, startFailureStage, startErrorCode, startError
         case startStartedAt, startStageUpdatedAt, startFailedAt, startProviderId, startAgentId
         case startWorktreeId, startWorktreePath, startWorktreeBranch
-        case acceptanceAssessment, completionSuggestion, createdAt, updatedAt
+        case acceptanceAssessment, completionSuggestion, completionSource, createdAt, updatedAt
     }
 }
 
@@ -101,8 +102,76 @@ extension WorkItem {
         // metadata. Drop only that invalid optional field; keep the WorkItem.
         acceptanceAssessment = (try? container.decodeIfPresent(WorkItemAcceptanceAssessment.self, forKey: .acceptanceAssessment)) ?? nil
         completionSuggestion = (try? container.decodeIfPresent(WorkItemCompletionSuggestion.self, forKey: .completionSuggestion)) ?? nil
+        completionSource = (try? container.decodeIfPresent(WorkItemCompletionSource.self, forKey: .completionSource)) ?? nil
         createdAt = try container.decode(String.self, forKey: .createdAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
+    }
+}
+
+struct WorkItemCompletionSource: Codable, Hashable {
+    let sourceType: String
+    let operationId: String?
+    let completedAt: String?
+}
+
+struct WorkItemCompletionIntentReceipt: Codable, Hashable {
+    let receiptId: String
+    let intentToken: String
+    let workItemId: String
+    let objectiveId: String
+    let interactionId: String
+    let uiSurface: String
+    let issuedAt: String
+    let expiresAt: String
+    let purpose: String
+}
+
+struct WorkItemCompletionOperation: Codable, Hashable {
+    let operationId: String
+    let workItemId: String
+    let objectiveId: String
+    let result: String
+    let sourceType: String
+    let requestId: String
+    let idempotencyKey: String
+    let errorCode: String?
+    let createdAt: String
+}
+
+struct WorkItemCompletionEnvelope: Codable {
+    let workItem: WorkItem
+    let operation: WorkItemCompletionOperation
+    let idempotentReplay: Bool
+}
+
+/// Immutable payload captured at the user's click. Background retry owns this
+/// value and never re-derives a target from navigation or current selection.
+struct WorkItemCompletionSubmission: Equatable {
+    let workItemId: String
+    let objectiveId: String
+    let displayedTitle: String
+    let receipt: WorkItemCompletionIntentReceipt
+    let requestId: String
+    let idempotencyKey: String
+
+    static func freeze(
+        workItem: WorkItem,
+        receipt: WorkItemCompletionIntentReceipt,
+        requestId: String,
+        idempotencyKey: String
+    ) -> WorkItemCompletionSubmission? {
+        guard receipt.workItemId == workItem.id,
+              receipt.objectiveId == workItem.objectiveId,
+              !requestId.isEmpty,
+              !idempotencyKey.isEmpty else { return nil }
+        return WorkItemCompletionSubmission(
+            workItemId: workItem.id,
+            objectiveId: workItem.objectiveId,
+            displayedTitle: workItem.title,
+            receipt: receipt,
+            requestId: requestId,
+            idempotencyKey: idempotencyKey
+        )
     }
 }
 

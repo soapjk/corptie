@@ -197,7 +197,13 @@ export function completionSuggestionForWorkItem(workItem) {
 
 export function presentWorkItemAcceptance(workItem) {
   const acceptanceAssessment = parseAcceptanceAssessment(workItem?.acceptance_assessment_json) ?? null;
-  const { acceptance_assessment_json: _storedAssessment, ...presented } = workItem;
+  const {
+    acceptance_assessment_json: _storedAssessment,
+    completion_operation_id: completionOperationId,
+    completion_source_type: completionSourceType,
+    ...presented
+  } = workItem;
+  const completed = ["done", "complete", "completed"].includes(String(workItem?.status ?? "").toLowerCase());
   return {
     ...presented,
     // Rows created before acceptance criteria became part of the WorkItem
@@ -205,7 +211,10 @@ export function presentWorkItemAcceptance(workItem) {
     // string, so normalize at the presentation boundary.
     acceptanceCriteria: String(presented.acceptanceCriteria ?? ""),
     acceptanceAssessment,
-    completionSuggestion: completionSuggestionForWorkItem(workItem)
+    completionSuggestion: completionSuggestionForWorkItem(workItem),
+    ...(completed ? { completionSource: completionOperationId
+        ? { sourceType: completionSourceType, operationId: completionOperationId, completedAt: workItem.updated_at ?? null }
+        : { sourceType: "legacy/unattributed", operationId: null, completedAt: null } } : {})
   };
 }
 

@@ -51,11 +51,27 @@ export const workItemAcceptanceDynamicTools = Object.freeze([
       }
     },
     ["results"]
+  ),
+  tool(
+    "corptie_work_item_complete",
+    "Complete one exact WorkItem only when the current direct user message explicitly requests it. Supply the authoritative logical Session, user-message event, sequence, and current turn evidence shown in Corptie turn context. Assistant/system/collaboration/Automation evidence is rejected.",
+    {
+      targetWorkItemId: { type: "string", minLength: 1 },
+      objectiveId: { type: "string", minLength: 1 },
+      logicalSessionId: { type: "string", minLength: 1 },
+      userMessageEventId: { type: "string", minLength: 1 },
+      userMessageSequence: { type: "integer", minimum: 1 },
+      turnId: { type: "string", minLength: 1 },
+      requestId: { type: "string", minLength: 1 },
+      idempotencyKey: { type: "string", minLength: 1 }
+    },
+    ["targetWorkItemId", "objectiveId", "logicalSessionId", "userMessageEventId",
+      "userMessageSequence", "turnId", "requestId", "idempotencyKey"]
   )
 ]);
 
-export async function callWorkItemAcceptanceDynamicTool(reportAcceptance, input = {}) {
-  if (input.tool !== "corptie_work_item_report_acceptance") {
+export async function callWorkItemAcceptanceDynamicTool(handlers, input = {}) {
+  if (!["corptie_work_item_report_acceptance", "corptie_work_item_complete"].includes(input.tool)) {
     const error = new Error(`Unsupported WorkItem acceptance tool: ${input.tool}`);
     error.code = "HOST_TOOL_UNSUPPORTED";
     throw error;
@@ -66,10 +82,13 @@ export async function callWorkItemAcceptanceDynamicTool(reportAcceptance, input 
     error.code = "AGENT_REQUIRED";
     throw error;
   }
-  if (typeof reportAcceptance !== "function") {
+  const reportAcceptance = typeof handlers === "function" ? handlers : handlers?.reportAcceptance;
+  const completeWorkItem = typeof handlers === "object" ? handlers?.completeWorkItem : null;
+  const operation = input.tool === "corptie_work_item_complete" ? completeWorkItem : reportAcceptance;
+  if (typeof operation !== "function") {
     const error = new Error("WorkItem acceptance reporting is unavailable.");
     error.code = "WORK_ITEM_ACCEPTANCE_UNAVAILABLE";
     throw error;
   }
-  return reportAcceptance(actorId, input.arguments ?? {}, input.metadata ?? {});
+  return operation(actorId, input.arguments ?? {}, input.metadata ?? {});
 }
