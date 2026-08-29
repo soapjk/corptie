@@ -643,6 +643,11 @@ function assertOpenClackySessionRunnable(session) {
   error.statusCode = 409;
   error.providerId = "openclacky";
   error.providerSessionId = session?.external?.sessionId ?? null;
+  // This check runs before the realtime message is written, so the shared
+  // application layer may safely replace the failed physical Provider Session
+  // and retry the same durable Delivery exactly once.
+  error.dispatchState = "not_sent";
+  error.recoveryAction = "replace_provider_binding";
   throw error;
 }
 

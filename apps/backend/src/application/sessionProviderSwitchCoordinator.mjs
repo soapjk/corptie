@@ -55,9 +55,16 @@ export class SessionProviderSwitchCoordinator {
       error.code = "STALE_SESSION_ROUTE";
       throw error;
     }
-    if (logical.activeBinding.providerId === targetProviderId) {
+    const replacingFailedBinding = input.replaceFailedBinding === true
+      && logical.activeBinding.providerId === targetProviderId;
+    if (logical.activeBinding.providerId === targetProviderId && !replacingFailedBinding) {
       const error = new Error("The Session is already bound to the requested Provider.");
       error.code = "PROVIDER_ALREADY_ACTIVE";
+      throw error;
+    }
+    if (replacingFailedBinding && reference.metadata?.session?.status !== "failed") {
+      const error = new Error("The active Provider Session is not failed and cannot be replaced automatically.");
+      error.code = "PROVIDER_SESSION_REPLACEMENT_NOT_ALLOWED";
       throw error;
     }
 
@@ -95,6 +102,17 @@ export class SessionProviderSwitchCoordinator {
     }
 
     return this.completeProviderSwitch(transitionId, targetProviderId, reference, logical);
+  }
+
+  async recoverFailedProviderSession(sessionId, input = {}) {
+    const reference = await this.resolveSessionReference(sessionId);
+    if (!reference?.providerId) throw new SessionNotFoundError(sessionId);
+    return this.switchProvider(sessionId, {
+      ...input,
+      providerId: reference.providerId,
+      expectedRoutingVersion: input.expectedRoutingVersion ?? reference.routingVersion,
+      replaceFailedBinding: true
+    });
   }
 
   async completeProviderSwitch(transitionId, targetProviderId, reference, logical) {

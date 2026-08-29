@@ -160,3 +160,36 @@ test("the first Provider Turn event durably claims the single dispatching Delive
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("an unsent Delivery can move atomically to a recovered Provider binding", async () => {
+  const { directory, store } = await fixture();
+  try {
+    store.createUserMessageDelivery({
+      deliveryId: "delivery:recover",
+      messageId: "message:recover",
+      sessionId: "session:one",
+      binding,
+      agentId: "agent:one",
+      text: "recover without duplication"
+    });
+    store.updateMessageDelivery("delivery:recover", { status: "dispatching", attemptCount: 1 });
+
+    const recovered = store.rerouteUnsentMessageDelivery("delivery:recover", {
+      bindingId: "binding:recovered",
+      providerId: "openclacky",
+      providerSessionId: "clacky:recovered",
+      routingVersion: 3
+    });
+
+    assert.equal(recovered.bindingId, "binding:recovered");
+    assert.equal(recovered.providerId, "openclacky");
+    assert.equal(recovered.providerSessionId, "clacky:recovered");
+    assert.equal(recovered.routingVersion, 3);
+    assert.equal(recovered.status, "dispatching");
+    assert.equal(recovered.attemptCount, 1);
+    assert.equal(store.getSessionItem("session:one", "message:recover").text, "recover without duplication");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
