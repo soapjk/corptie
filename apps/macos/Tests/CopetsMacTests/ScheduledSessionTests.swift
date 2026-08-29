@@ -282,6 +282,13 @@ struct ScheduledSessionBackendClientTests {
         #expect(AutomationTimelinePresentation.executionPlan(for: process)?.contains("5") == true)
     }
 
+    @Test func onlyTimeBasedSchedulesHavePredictableNextRuns() {
+        #expect(ScheduledSessionScheduleType.once.hasPredictableNextRun)
+        #expect(ScheduledSessionScheduleType.interval.hasPredictableNextRun)
+        #expect(!ScheduledSessionScheduleType.condition.hasPredictableNextRun)
+        #expect(!ScheduledSessionScheduleType.process.hasPredictableNextRun)
+    }
+
     @Test func runHistoryTargetTurnLocatesTheActualTimelineRow() {
         let rows = [
             AppKitChatTimelineRow(
@@ -384,10 +391,21 @@ final class ScheduledSessionUITests: XCTestCase {
         XCTAssertTrue(contents.contains("filter { $0.status == .active }"))
         XCTAssertTrue(contents.contains("Array(tasks.prefix(2))"))
         XCTAssertTrue(contents.contains("isExpanded.toggle()"))
-        XCTAssertTrue(contents.contains("Text(task.name)"))
-        for field in ["创建时间", "上次执行时间", "预计下次执行时间", "过期时间"] {
-            XCTAssertTrue(contents.contains(field))
-        }
+        let compactCardStart = try XCTUnwrap(contents.range(of: "private struct ScheduledSessionCompactCard"))
+        let editorStart = try XCTUnwrap(contents.range(
+            of: "struct ScheduledTaskEditorSheet",
+            range: compactCardStart.upperBound..<contents.endIndex
+        ))
+        let compactCard = contents[compactCardStart.lowerBound..<editorStart.lowerBound]
+        XCTAssertTrue(compactCard.contains("Text(task.name)"))
+        XCTAssertTrue(compactCard.contains("task.presentationStatus.label"))
+        XCTAssertTrue(compactCard.contains("Label(task.typeLabel"))
+        XCTAssertTrue(compactCard.contains("预计下次执行时间"))
+        XCTAssertTrue(compactCard.contains("task.scheduleType.hasPredictableNextRun"))
+        XCTAssertFalse(compactCard.contains("创建时间"))
+        XCTAssertFalse(compactCard.contains("上次执行时间"))
+        XCTAssertFalse(compactCard.contains("过期时间"))
+        XCTAssertFalse(compactCard.contains("LazyVGrid"))
     }
 
     func testSessionAutomationSummaryLivesInTheDetailCardNotAboveTheComposer() throws {

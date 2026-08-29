@@ -213,7 +213,7 @@ private struct AutomationCard: View {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4), spacing: 12) {
                 metric(L10n("创建时间"), dateLabel(automation.createdAt), "calendar.badge.plus")
                 metric(L10n("上次执行时间"), dateLabel(automation.lastRunAt), "clock.arrow.circlepath")
-                if automation.scheduleType != .condition {
+                if automation.scheduleType.hasPredictableNextRun {
                     metric(L10n("预计下次执行时间"), dateLabel(automation.nextRunAt), "calendar")
                 }
                 metric(L10n("过期时间"), dateLabel(automation.expiresAt), "calendar.badge.exclamationmark")
