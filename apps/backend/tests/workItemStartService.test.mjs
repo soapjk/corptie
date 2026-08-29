@@ -132,6 +132,35 @@ test("Workspace success followed by Provider failure persists the exact stage, a
   }
 });
 
+test("an unborn-main Workspace proceeds through Provider Session creation with an explicit audit mode", async () => {
+  const f = await fixture({
+    prepareWorkspace: async () => ({
+      worktreeId: "worktree:unborn-main",
+      path: "/repo-without-first-commit",
+      branchName: "main",
+      headOid: null,
+      reused: true,
+      workspaceMode: "unborn-main"
+    })
+  });
+  try {
+    const receipt = await f.service.start(startInput());
+
+    assert.equal(receipt.phase, "running");
+    assert.equal(f.calls.create, 1);
+    assert.equal(f.store.getWorkItem(f.workItem.id).start_worktree_path, "/repo-without-first-commit");
+    const prepared = f.audits.find(({ entry }) => entry.event === "work_item_workspace_prepared")?.entry;
+    assert.equal(prepared?.workspaceMode, "unborn-main");
+    assert.equal(prepared?.reused, true);
+    assert.equal(
+      f.audits.some(({ entry }) => entry.event === "work_item_session_created"),
+      true
+    );
+  } finally {
+    await cleanup(f);
+  }
+});
+
 test("binding failure keeps the created Session and retry reuses both Session and Worktree", async () => {
   const f = await fixture();
   try {
