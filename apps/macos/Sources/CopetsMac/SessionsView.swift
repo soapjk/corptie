@@ -360,14 +360,16 @@ struct SessionsView: View {
                         if group.showsHeader {
                             Section {
                                 if !collapsedGroupKeys.contains(group.key) {
-                                    ForEach(group.rows) { row in sessionRow(row) }
+                                    ForEach(group.rows) { row in
+                                        sessionRow(row, subtitle: group.rowSubtitles[row.id])
+                                    }
                                 }
                             } header: {
                                 sessionGroupHeader(group)
                             }
                         } else {
                             ForEach(group.rows) { row in
-                                sessionRow(row)
+                                sessionRow(row, subtitle: group.rowSubtitles[row.id])
                             }
                         }
                     }
@@ -569,13 +571,14 @@ struct SessionsView: View {
         .modifier(SessionSidebarFunctionBarGlassModifier())
     }
 
-    private func sessionRow(_ row: SessionRowModel) -> some View {
+    private func sessionRow(_ row: SessionRowModel, subtitle: String? = nil) -> some View {
         let isSelected = selectionController.selectedSessionID == row.session.id
         return SessionsSidebarRow(
             row: row,
+            subtitle: subtitle,
             selectionRequested: selectSessionAfterHighlight
         )
-            .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 8))
+            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 8))
             .listRowSeparator(.hidden)
             .listRowBackground(
                 ZStack(alignment: .leading) {
@@ -780,12 +783,16 @@ private struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
 /// a parent-list invalidation or selecting the Session first.
 private struct SessionsSidebarRow: View {
     @ObservedObject var row: SessionRowModel
+    let subtitle: String?
     let selectionRequested: (TaskSession) -> Void
 
     var body: some View {
         CompactSessionRow(
             session: row.session,
             isUnread: isSessionUnread(row.session),
+            style: subtitle == nil ? .sessionsSidebar : .sessionsSidebarWithSubtitle,
+            displayTitle: row.listTitle,
+            subtitle: subtitle,
             selectionRequested: selectionRequested
         )
     }
@@ -822,14 +829,22 @@ struct SessionGroup: Identifiable {
     let title: String
     let rows: [SessionRowModel]
     let showsHeader: Bool
+    let rowSubtitles: [String: String]
 
     var id: String { key }
 
-    init(key: String, title: String, rows: [SessionRowModel], showsHeader: Bool = true) {
+    init(
+        key: String,
+        title: String,
+        rows: [SessionRowModel],
+        showsHeader: Bool = true,
+        rowSubtitles: [String: String] = [:]
+    ) {
         self.key = key
         self.title = title
         self.rows = rows
         self.showsHeader = showsHeader
+        self.rowSubtitles = rowSubtitles
     }
 }
 
@@ -996,6 +1011,7 @@ func makeSessionGroups(
     var objectiveTitles: [String: String] = [:]
     var visibleWorkerRows: [SessionRowModel] = []
     var workerRows: [String: [SessionRowModel]] = [:]
+    var workerObjectiveKeysByRowID: [String: String] = [:]
     var objectiveRows: [String: [SessionRowModel]] = [:]
 
     func registerObjective(_ objectiveID: String?) -> String {
@@ -1027,6 +1043,7 @@ func makeSessionGroups(
             guard (workerScope == .archived) == isArchived else { continue }
             visibleWorkerRows.append(row)
             let objectiveKey = registerObjective(workItem?.objectiveId ?? session.objectiveId)
+            workerObjectiveKeysByRowID[row.id] = objectiveKey
             workerRows[objectiveKey, default: []].append(row)
         case .legacy:
             continue
@@ -1044,11 +1061,19 @@ func makeSessionGroups(
        workerScope == .active,
        workerGroupingMode == .none,
        !visibleWorkerRows.isEmpty {
+        let rowSubtitles: [String: String] = Dictionary(
+            uniqueKeysWithValues: visibleWorkerRows.compactMap { row -> (String, String)? in
+                guard let objectiveKey = workerObjectiveKeysByRowID[row.id],
+                      let objectiveTitle = objectiveTitles[objectiveKey] else { return nil }
+                return (row.id, objectiveTitle)
+            }
+        )
         groups.append(SessionGroup(
             key: "worker-ungrouped",
             title: "",
             rows: visibleWorkerRows,
-            showsHeader: false
+            showsHeader: false,
+            rowSubtitles: rowSubtitles
         ))
         return groups
     }

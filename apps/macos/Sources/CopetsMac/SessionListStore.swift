@@ -1,21 +1,75 @@
 import Combine
 import Foundation
 
+enum SessionListTitlePolicy {
+    static let maximumVisualWidth = 32
+
+    static func displayTitle(_ title: String, isWorkItemSession: Bool) -> String {
+        guard isWorkItemSession else { return title }
+        let normalized = title
+            .split(whereSeparator: \Character.isWhitespace)
+            .joined(separator: " ")
+        guard visualWidth(of: normalized) > maximumVisualWidth else { return normalized }
+
+        let contentBudget = maximumVisualWidth - visualWidth(of: "…")
+        var width = 0
+        var prefix = ""
+        for character in normalized {
+            let nextWidth = visualWidth(of: character)
+            guard width + nextWidth <= contentBudget else { break }
+            prefix.append(character)
+            width += nextWidth
+        }
+
+        if let lastSpace = prefix.lastIndex(of: " ") {
+            let wordBoundary = String(prefix[..<lastSpace])
+            if visualWidth(of: wordBoundary) >= contentBudget * 3 / 5 {
+                prefix = wordBoundary
+            }
+        }
+        prefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines.union(
+            CharacterSet(charactersIn: ",，、:：;；-—_/。")
+        ))
+        return prefix + "…"
+    }
+
+    static func visualWidth<S: StringProtocol>(of text: S) -> Int {
+        text.reduce(into: 0) { width, character in
+            width += visualWidth(of: character)
+        }
+    }
+
+    private static func visualWidth(of character: Character) -> Int {
+        character.unicodeScalars.allSatisfy(\.isASCII) ? 1 : 2
+    }
+}
+
 @MainActor
 final class SessionRowModel: ObservableObject, Identifiable {
     let id: String
     @Published private(set) var session: TaskSession
+    private(set) var listTitle: String
     private(set) var changedFields: SessionChangedFields = []
 
     init(session: TaskSession) {
         id = session.id
         self.session = session
+        listTitle = Self.makeListTitle(for: session)
     }
 
     func apply(_ patch: SessionContentPatch) {
         guard patch.sessionID == id, patch.session != session else { return }
         changedFields = patch.changedFields
+        listTitle = Self.makeListTitle(for: patch.session)
         session = patch.session
+    }
+
+    private static func makeListTitle(for session: TaskSession) -> String {
+        SessionListTitlePolicy.displayTitle(
+            session.title,
+            isWorkItemSession: session.resolvedSessionKind == .worker
+                && session.workItemId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        )
     }
 }
 
