@@ -243,6 +243,7 @@ import { ProjectCodeSearchApplicationService } from "./project-code/projectCodeA
 import { createProjectCodeHostNamespace } from "./project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeIndexStore } from "./project-code/projectCodeIndexStore.mjs";
 import { ProjectCodeSearchService } from "./project-code/projectCodeSearchService.mjs";
+import { ProjectCodeRunIsolationPort } from "./project-code/projectCodeRunIsolationPort.mjs";
 import { RepositorySourceSnapshotBuilder } from "./project-code/projectCodeSnapshot.mjs";
 import { ProjectCodeStartupReceiptRepository } from "./project-code/projectCodeStartupReceiptRepository.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
@@ -1186,15 +1187,32 @@ const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
 const projectCodeIndexStore = new ProjectCodeIndexStore({
   dataRoot: join(store.dataRoot, "project-code-index")
 });
+const projectCodeRunIsolationPort = runIsolationCoordinator
+  ? new ProjectCodeRunIsolationPort({
+      coordinator: runIsolationCoordinator,
+      capabilities: {
+        localSemantic: true,
+        networkAccess: false,
+        languages: [
+          "swift", "objective-c", "objective-cpp", "javascript", "typescript", "python", "rust",
+          "go", "java", "kotlin", "c", "cpp", "json", "markdown", "text"
+        ]
+      }
+    })
+  : null;
 const projectCodeSearchService = new ProjectCodeSearchService({
   snapshotBuilder: projectCodeSnapshotBuilder,
-  indexStore: projectCodeIndexStore
+  indexStore: projectCodeIndexStore,
+  runIsolationPort: projectCodeRunIsolationPort
 });
 projectCodeApplicationService = new ProjectCodeSearchApplicationService({
   store,
   startupReceipts: projectCodeStartupReceipts,
   snapshotBuilder: projectCodeSnapshotBuilder,
-  searchService: projectCodeSearchService
+  searchService: projectCodeSearchService,
+  toolsetReceipts: {
+    require: ({ receiptId }) => projectToolsetProduction?.resolveToolsetReceipt(receiptId) ?? null
+  }
 });
 if (runIsolationCoordinator) {
   projectToolsetProduction = createProjectToolsetProductionComposition({

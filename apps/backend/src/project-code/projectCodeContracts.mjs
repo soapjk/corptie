@@ -8,6 +8,10 @@ export const PROJECT_CODE_SCHEMA_ARTIFACT = Object.freeze({
   relation: "implementation_spec"
 });
 
+export const PROJECT_CODE_RECEIPT_ARTIFACT = Object.freeze({
+  ...PROJECT_CODE_SCHEMA_ARTIFACT
+});
+
 export const STARTUP_BINDING_ARTIFACT = Object.freeze({
   artifactId: "artifact:7f26689a-5b9a-4b32-ad86-ad93c0be2949",
   version: 1,
@@ -32,6 +36,10 @@ export const TOOLSET_VALIDATION_ARTIFACT = Object.freeze({
   version: 1,
   contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d",
   schemaVersion: 3
+});
+
+export const PROJECT_TOOLSET_ARTIFACT = Object.freeze({
+  ...TOOLSET_VALIDATION_ARTIFACT
 });
 
 const schemaPath = new URL("../contracts/project-code-search-receipts.schema.json", import.meta.url);
@@ -95,7 +103,7 @@ export async function validateProjectCodeReceipt(receipt, definition) {
 
 export function snapshotArtifactRef() {
   return Object.freeze({
-    ...PROJECT_CODE_SCHEMA_ARTIFACT,
+    ...PROJECT_CODE_RECEIPT_ARTIFACT,
     receiptType: "RepositorySourceSnapshotReceipt",
     schemaVersion: 1
   });
@@ -103,7 +111,7 @@ export function snapshotArtifactRef() {
 
 export function searchArtifactRef() {
   return Object.freeze({
-    ...PROJECT_CODE_SCHEMA_ARTIFACT,
+    ...PROJECT_CODE_RECEIPT_ARTIFACT,
     receiptType: "SearchReceipt",
     schemaVersion: 1
   });
@@ -115,10 +123,10 @@ export async function validateToolsetValidationReceipt(receipt) {
   validateSchemaNode(receipt, schema, schema, "$", errors);
   try { verifyReceiptHash(receipt, "TOOLSET_RECEIPT_HASH_MISMATCH"); } catch (error) { errors.push(error.message); }
   const artifactRef = receipt?.artifactRef;
-  if (artifactRef?.artifactId !== TOOLSET_VALIDATION_ARTIFACT.artifactId
-    || artifactRef?.version !== TOOLSET_VALIDATION_ARTIFACT.version
-    || artifactRef?.contentHash !== TOOLSET_VALIDATION_ARTIFACT.contentHash) {
-    errors.push("$.artifactRef must point to the approved ToolsetValidationReceipt supporting Artifact");
+  if (artifactRef?.artifactId !== PROJECT_TOOLSET_ARTIFACT.artifactId
+    || artifactRef?.version !== PROJECT_TOOLSET_ARTIFACT.version
+    || artifactRef?.contentHash !== PROJECT_TOOLSET_ARTIFACT.contentHash) {
+    errors.push("$.artifactRef must point to the approved Project Toolset Artifact");
   }
   if (errors.length > 0) {
     const error = contractError("TOOLSET_VALIDATION_RECEIPT_INVALID", `Invalid ToolsetValidationReceipt: ${errors.slice(0, 8).join("; ")}`);

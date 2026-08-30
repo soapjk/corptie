@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -7,7 +7,13 @@ import { ProjectCodeIndexStore } from "../src/project-code/projectCodeIndexStore
 import { RepositorySourceSnapshotBuilder } from "../src/project-code/projectCodeSnapshot.mjs";
 import { ProjectCodeSearchService } from "../src/project-code/projectCodeSearchService.mjs";
 import { validateProjectCodeReceipt } from "../src/project-code/projectCodeContracts.mjs";
-import { createProjectCodeFixture, formalRunIsolationPort } from "./helpers/projectCodeTestFixture.mjs";
+import { defaultExclusionReason } from "../src/project-code/projectCodePaths.mjs";
+import { createProjectCodeFixture, formalRunIsolationPort, toolsetReceiptFor } from "./helpers/projectCodeTestFixture.mjs";
+
+test("project Toolset declarations are excluded from source fingerprinting", () => {
+  assert.equal(defaultExclusionReason(".corptie/project-toolset/declaration.json"), "DEFAULT_EXCLUDED_SPACE");
+  assert.equal(defaultExclusionReason(".corptie/project-toolset/active.json"), "DEFAULT_EXCLUDED_SPACE");
+});
 
 test("L0 exact rg has zero index startup cost and SearchReceipt contains only hashed evidence", async () => {
   const fixture = await createProjectCodeFixture();
@@ -106,6 +112,30 @@ test("search and point-read reject a stale dirty overlay instead of silently ref
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 
+test("warm freshness rejects a new ignore source outside declared search paths", async () => {
+  const fixture = await createProjectCodeFixture();
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build({ ...fixture, sourceDeclarations: [{ path: "Sources", language: "swift" }] });
+    await mkdir(join(fixture.directory, "Other"));
+    await writeFile(join(fixture.directory, "Other/.gitignore"), "secret.txt\n");
+    await assert.rejects(() => builder.assertCurrent(snapshot), (error) => error.code === "SOURCE_SNAPSHOT_STALE");
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
+});
+
+test("warm freshness revalidates the exact Git marker identity without trusting the cached anchor", async () => {
+  const fixture = await createProjectCodeFixture();
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build(fixture);
+    const mismatched = {
+      ...snapshot,
+      workspaceIdentity: { ...snapshot.workspaceIdentity, gitDirCanonicalPath: join(fixture.directory, ".git-other") }
+    };
+    await assert.rejects(() => builder.assertCurrent(mismatched), (error) => error.code === "STARTUP_BINDING_MISMATCH");
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
+});
+
 test("L3 is capability gated, isolated, cleaned and closes one runId", async () => {
   const fixture = await createProjectCodeFixture({ files: { "Sources/App.swift": "struct ConceptualCoordinator {}\n" } });
   const calls = [];
@@ -120,9 +150,10 @@ test("L3 is capability gated, isolated, cleaned and closes one runId", async () 
     });
     const service = new ProjectCodeSearchService({ snapshotBuilder: builder, runIsolationPort: isolation.port });
     const result = await service.search({
-      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-concept", query: "coordination concept", mode: "semantic"
+      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-concept", query: "coordination concept", mode: "semantic",
+      toolsetValidationReceipt: toolsetReceiptFor(snapshot), toolsetRequired: true
     });
-    assert.deepEqual(calls.map(([name]) => name), ["prepare", "commandDescriptor", "execute", "cleanup"]);
+    assert.deepEqual(calls.map(([name]) => name), ["prepare", "execute", "cleanup"]);
     assert.equal(result.receipt.runId, runId);
     assert.equal(result.receipt.runIsolationReceiptRef.runId, runId);
     assert.equal(result.receipt.cleanupReceiptRef.runId, runId);

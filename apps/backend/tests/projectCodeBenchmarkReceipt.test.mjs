@@ -9,29 +9,45 @@ import { ProjectCodeQueryLimiter, ProjectCodeSearchService } from "../src/projec
 import { createProjectCodeFixture } from "./helpers/projectCodeTestFixture.mjs";
 
 test("L0 warm latency stays bounded and never opens an index generation", async (context) => {
+  const warmupCount = 5;
+  const sampleCount = 40;
   const fixture = await createProjectCodeFixture();
   let indexCalls = 0;
   try {
     const builder = new RepositorySourceSnapshotBuilder();
     const snapshot = await builder.build(fixture);
     const service = new ProjectCodeSearchService({ snapshotBuilder: builder, indexStore: { ensureLayer() { indexCalls += 1; } } });
-  const samples = [];
-    const layerSamples = [];
-    for (let index = 0; index < 10; index += 1) {
-      const result = await service.search({ snapshot, sessionContext: fixture.sessionContext, searchScenarioId: `warm-${index}`, query: "exactNeedle", mode: "exact" });
-      samples.push(result.receipt.latency.totalMs);
-      layerSamples.push(result.receipt.latency.layerMs.L0);
+    for (let index = 0; index < warmupCount; index += 1) {
+      await service.search({ snapshot, sessionContext: fixture.sessionContext, searchScenarioId: `warmup-${index}`, query: "exactNeedle", mode: "exact" });
     }
-    samples.sort((a, b) => a - b);
-    layerSamples.sort((a, b) => a - b);
-    const totalP95 = samples[Math.ceil(samples.length * 0.95) - 1];
-    const layerP95 = layerSamples[Math.ceil(layerSamples.length * 0.95) - 1];
-    context.diagnostic(`L0 warm total p95=${totalP95}ms, rg layer p95=${layerP95}ms, index opens=${indexCalls}`);
+    const totalSamples = [];
+    const rgSamples = [];
+    const snapshotVerifySamples = [];
+    const schemaIdentitySamples = [];
+    for (let index = 0; index < sampleCount; index += 1) {
+      const result = await service.search({ snapshot, sessionContext: fixture.sessionContext, searchScenarioId: `warm-${index}`, query: "exactNeedle", mode: "exact" });
+      totalSamples.push(result.receipt.latency.totalMs);
+      rgSamples.push(result.receipt.latency.layerMs.L0);
+      snapshotVerifySamples.push(result.receipt.latency.snapshotVerifyMs);
+      schemaIdentitySamples.push(result.receipt.latency.bindingVerifyMs);
+    }
+    const totalP95 = nearestRankPercentile(totalSamples, 0.95);
+    const rgP95 = nearestRankPercentile(rgSamples, 0.95);
+    const snapshotVerifyP95 = nearestRankPercentile(snapshotVerifySamples, 0.95);
+    const schemaIdentityP95 = nearestRankPercentile(schemaIdentitySamples, 0.95);
+    context.diagnostic(`L0 warm samples=${sampleCount} after warmup=${warmupCount}; nearest-rank p95: total=${totalP95}ms, rg=${rgP95}ms, snapshot verify=${snapshotVerifyP95}ms, schema/identity=${schemaIdentityP95}ms; index opens=${indexCalls}`);
     assert.ok(totalP95 <= 500, `warm total p95=${totalP95}ms`);
-    assert.ok(layerP95 <= 300, `warm rg layer p95=${layerP95}ms`);
+    assert.ok(rgP95 <= 300, `warm rg layer p95=${rgP95}ms`);
+    assert.ok(snapshotVerifyP95 <= 300, `warm snapshot verify p95=${snapshotVerifyP95}ms`);
     assert.equal(indexCalls, 0);
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
+
+function nearestRankPercentile(values, percentile) {
+  assert.ok(values.length >= 20, "performance percentiles require at least 20 measured warm samples");
+  const sorted = [...values].sort((left, right) => left - right);
+  return sorted[Math.ceil(sorted.length * percentile) - 1];
+}
 
 test("in-flight cancellation is observed within the bounded subprocess path", async () => {
   const fixture = await createProjectCodeFixture();
