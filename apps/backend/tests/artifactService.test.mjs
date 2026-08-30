@@ -101,38 +101,50 @@ test("local file lookup reuses the stored Artifact object without reading or mat
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Worker permissions require an explicit same-Objective reference and reject cross-Objective access and writes", async () => {
+test("Work Sessions read unreferenced Artifacts across Sessions and Objectives while mutation authority stays scoped", async () => {
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), { title: "Security", visibility: "objective_private", content: "security requirement" });
-    await assert.rejects(() => f.service.get(workerContext(f), artifact.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
-    assert.throws(() => f.service.createReference(managerContext(f), artifact.artifactId, { workItemId: "work_item:two", relation: "security_requirement" }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
-    f.service.createReference(managerContext(f), artifact.artifactId, { workItemId: "work_item:one", relation: "security_requirement", required: true, versionPolicy: "fixed" });
+    assert.equal(f.store.listArtifactReferences({ artifactId: artifact.artifactId }).length, 0);
     assert.equal((await f.service.get(workerContext(f), artifact.artifactId)).content, "security requirement");
+    assert.equal((await f.service.get(outsiderContext(f), artifact.artifactId)).content, "security requirement");
+    assert.ok(f.service.list(outsiderContext(f)).some((candidate) => candidate.artifactId === artifact.artifactId));
+    assert.equal(
+      (await f.service.search(outsiderContext(f), "security requirement")).results[0].artifact.artifactId,
+      artifact.artifactId
+    );
+    assert.equal((await f.service.localFile(outsiderContext(f), artifact.artifactId)).artifactId, artifact.artifactId);
+    await f.service.publishVersion(managerContext(f), artifact.artifactId, {
+      content: "unapproved draft", approvalStatus: "draft"
+    });
+    assert.equal((await f.service.get(outsiderContext(f), artifact.artifactId, { version: 2 })).content, "unapproved draft");
+
+    const otherObjectiveArtifact = await f.service.create({ kind: "local_user", objectiveId: "objective:two" }, {
+      title: "Other Objective evidence", content: "cross objective evidence"
+    });
+    assert.equal((await f.service.get(workerContext(f), otherObjectiveArtifact.artifactId)).content, "cross objective evidence");
+    await assert.rejects(() => f.service.publishVersion(managerContext(f), otherObjectiveArtifact.artifactId, {
+      content: "cross-objective mutation"
+    }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
+    assert.throws(() => f.service.createReference(managerContext(f), artifact.artifactId, { workItemId: "work_item:two", relation: "security_requirement" }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
 
     const workItemPrivate = await f.service.create(managerContext(f), {
       title: "WorkItem private", visibility: "work_item_private", boundWorkItemId: "work_item:one", content: "work item only"
     });
-    await assert.rejects(() => f.service.get(workerContext(f), workItemPrivate.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
-    f.service.createReference(managerContext(f), workItemPrivate.artifactId, { workItemId: "work_item:one", relation: "implementation_spec" });
-    assert.equal((await f.service.get(workerContext(f), workItemPrivate.artifactId)).content, "work item only");
+    assert.equal((await f.service.get(outsiderContext(f), workItemPrivate.artifactId)).content, "work item only");
 
     const sessionPrivate = await f.service.create(managerContext(f), {
       title: "Session private", visibility: "session_private", boundSessionId: "session:manager", content: "manager only"
     });
-    await assert.rejects(() => f.service.get(workerContext(f), sessionPrivate.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
-    f.service.createReference(managerContext(f), sessionPrivate.artifactId, { sessionId: "session:worker", relation: "research_evidence" });
     assert.equal((await f.service.get(workerContext(f), sessionPrivate.artifactId)).content, "manager only");
 
     const repositoryTracked = await f.service.create(managerContext(f), {
       title: "Tracked", visibility: "repository_tracked", repositoryLocator: "docs/tracked.md", confirmedRepositoryTracked: true
     });
-    f.service.createReference(managerContext(f), repositoryTracked.artifactId, { workItemId: "work_item:one", relation: "research_evidence" });
-    assert.equal((await f.service.get(workerContext(f), repositoryTracked.artifactId)).content, null);
+    assert.equal((await f.service.get(outsiderContext(f), repositoryTracked.artifactId)).content, null);
 
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "work_item_private", { confirmed: true }), { code: "ARTIFACT_WORK_ITEM_REQUIRED" });
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "repository_tracked", { confirmed: true }), { code: "ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN" });
-    await assert.rejects(() => f.service.get(outsiderContext(f), artifact.artifactId), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
     await assert.rejects(() => f.service.create(workerContext(f), {
       title: "escape", visibility: "objective_private", content: "no", idempotencyKey: "escape"
     }), { code: "ARTIFACT_WORKER_SCOPE_FORBIDDEN" });
@@ -341,13 +353,13 @@ test("started WorkItems pin latest-approved references until an explicit audited
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("revocation is stable, audited, and removes Worker access without deleting content", async () => {
+test("Reference revocation remains stable and audited without removing inherent Work Session read access", async () => {
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), { title: "Handoff", visibility: "objective_private", content: "handoff" });
     const reference = f.service.createReference(managerContext(f), artifact.artifactId, { workItemId: "work_item:one", relation: "handoff", versionPolicy: "fixed" });
     f.service.revokeReference(managerContext(f), reference.referenceId, "No longer needed");
-    await assert.rejects(() => f.service.get(workerContext(f), artifact.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
+    assert.equal((await f.service.get(workerContext(f), artifact.artifactId)).content, "handoff");
     assert.equal(await readFile(join(f.directory, "data", "artifacts", artifact.versions[0].storageKey), "utf8"), "handoff");
     assert.equal(f.store.getArtifactReference(reference.referenceId).revocationReason, "No longer needed");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
