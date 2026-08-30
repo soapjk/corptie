@@ -29,6 +29,12 @@ export class CollaborationCore {
     const legacy = this.#migrateLegacyCollaborationTasks();
     const result = this.#migrateSessionActorProtocol();
     if (this.store.db) this.#recordChannelSchemaMigration();
+    if (this.store.db) {
+      const repair = this.store.reconcileLegacyCollaborationWorkItemStatusPollution();
+      if (repair.repaired.length > 0) {
+        console.info(`[collaboration-work-item-repair] repaired=${repair.repaired.length}`);
+      }
+    }
     return legacy.status === "applied" ? legacy : result;
   }
 
@@ -1882,14 +1888,6 @@ export class CollaborationCore {
   }
 
   #syncWorkItemStatus(workItemId, taskId, taskStatus, timestamp) {
-    const current = this.store.getWorkItem(workItemId);
-    const status = taskStatus === "completed"
-      ? current?.status ?? "in_progress"
-      : ["rejected", "canceled", "escalated"].includes(taskStatus)
-        ? "canceled"
-        : ["working", "delivered", "verifying", "revision_requested"].includes(taskStatus)
-          ? "in_progress"
-          : "todo";
     const executionStatus = taskStatus === "working" || taskStatus === "revision_requested"
       ? "running"
       : taskStatus === "completed"
@@ -1902,7 +1900,7 @@ export class CollaborationCore {
     // A collaboration Task settling is execution evidence, not direct user
     // intent to complete its resource WorkItem. Preserve the lifecycle status;
     // only the dedicated acceptance and completion workflows may change it.
-    this.store.updateWorkItem(workItemId, { status, executionStatus });
+    this.store.updateWorkItem(workItemId, { executionStatus });
   }
 
   #migrateLegacyCollaborationTasks() {
@@ -1946,7 +1944,10 @@ export class CollaborationCore {
           title: row.title,
           summary: row.summary,
           acceptanceCriteria: parseJson(row.acceptance_criteria_json, []),
-          status: this.#workItemStatusForTask(row.status)
+          // Legacy Task state is not WorkItem review state. The Task migration
+          // may create the resource, but only WorkItem workflows may advance or
+          // cancel it.
+          status: "todo"
         });
         this.store.db.run(
           `UPDATE collaboration_tasks SET protocol_version = ?, source_objective_id = ?,
@@ -2041,13 +2042,6 @@ export class CollaborationCore {
       ?? (logical?.legacySessionId ? this.store.getSession(logical.legacySessionId) : null);
     const objectiveId = session?.objectiveId ?? session?.objective_id ?? null;
     return objectiveId && this.store.getObjective(objectiveId) ? objectiveId : null;
-  }
-
-  #workItemStatusForTask(taskStatus) {
-    if (taskStatus === "completed") return "done";
-    if (["rejected", "canceled", "escalated"].includes(taskStatus)) return "canceled";
-    if (["working", "delivered", "verifying", "revision_requested"].includes(taskStatus)) return "in_progress";
-    return "todo";
   }
 
   #assertActor(task, actorAgentId, role, actorSessionId = null) {

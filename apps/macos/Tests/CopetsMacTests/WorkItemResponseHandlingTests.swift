@@ -153,4 +153,25 @@ final class WorkItemResponseHandlingTests: XCTestCase {
         XCTAssertEqual(item.id, "work-item:legacy")
         XCTAssertNil(item.acceptanceAssessment)
     }
+
+    func testExplicitCancellationMetadataAndVersionDecodeTogether() throws {
+        let data = Data(
+            """
+            {"workItems":[{
+              "id":"work_item:canceled","objective_id":"objective:one","title":"Canceled",
+              "description":"","acceptance_criteria":"","priority":"medium","status":"canceled",
+              "execution_status":"cancelled","canceled_at":"2026-08-30T00:00:00.000Z",
+              "cancel_reason":"Explicit user decision",
+              "cancellation_operation_id":"work_item_cancellation:one","resource_version":4,
+              "created_at":"2026-08-29T00:00:00.000Z","updated_at":"2026-08-30T00:00:00.000Z"
+            }]}
+            """.utf8
+        )
+
+        let item = try XCTUnwrap(decoder().decode(WorkItemListEnvelope.self, from: data).workItems.first)
+        XCTAssertEqual(item.canceledAt, "2026-08-30T00:00:00.000Z")
+        XCTAssertEqual(item.cancelReason, "Explicit user decision")
+        XCTAssertEqual(item.cancellationOperationId, "work_item_cancellation:one")
+        XCTAssertEqual(item.resourceVersion, 4)
+    }
 }

@@ -466,6 +466,15 @@ test("safe cancellation preserves recorded Worktree metadata", async () => {
     assert.equal(canceled.status, "canceled");
     assert.equal(canceled.execution_status, "cancelled");
     assert.equal(canceled.start_worktree_path, path);
+    assert.ok(canceled.canceled_at);
+    assert.equal(canceled.cancel_reason, "User chose another task");
+    assert.ok(canceled.cancellation_operation_id);
+    const [audit] = f.store.listWorkItemCancellationOperations(f.workItem.id);
+    assert.equal(audit.source_type, "work_item_start_cancel");
+    assert.equal(audit.resource_version_before + 1, audit.resource_version_after);
+    const replay = f.service.cancel(f.workItem.id, "User chose another task");
+    assert.equal(replay.cancellation_operation_id, canceled.cancellation_operation_id);
+    assert.equal(f.store.listWorkItemCancellationOperations(f.workItem.id).length, 1);
   } finally {
     await cleanup(f);
   }

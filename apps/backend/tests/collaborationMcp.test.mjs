@@ -149,6 +149,16 @@ test("Objective Chat MCP exposes context plus Session-scoped strict collaboratio
         relation: "handoff", required: true, versionPolicy: undefined, version: undefined
       }
     });
+    await client.callTool({
+      name: "corptie.collaboration.work_items.cancel",
+      arguments: {
+        work_item_id: "work_item:peer", reason: "Explicit cancellation", resource_version: "7"
+      }
+    });
+    assert.deepEqual(calls.at(-1), {
+      path: "/internal/collaboration/work-items/work_item%3Apeer/cancel",
+      body: { reason: "Explicit cancellation", resourceVersion: "7" }
+    });
   } finally {
     await client.close();
   }
