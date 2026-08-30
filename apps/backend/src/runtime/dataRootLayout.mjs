@@ -37,6 +37,7 @@ export function resolveDataRootLayout(dataRoot, environment = "production") {
     logsDirectory: join(environmentRoot, "logs"),
     artifactsDirectory: join(environmentRoot, "artifacts"),
     runtimeDirectory: join(environmentRoot, "runtimes"),
+    worktreesDirectory: join(environmentRoot, "worktrees"),
     backupsDirectory: join(environmentRoot, "backups"),
     stateDirectory: join(environmentRoot, "state")
   });
@@ -51,6 +52,7 @@ export async function ensureDataRootLayout(layout) {
     layout.logsDirectory,
     layout.artifactsDirectory,
     layout.runtimeDirectory,
+    layout.worktreesDirectory,
     layout.backupsDirectory,
     layout.stateDirectory
   ]) {
@@ -79,12 +81,14 @@ export async function migrateDataRoot({
   let committed = false;
   try {
     await onPhase?.("copying");
+    const sourceFileManifest = await createMigrationFileManifest(sourceLayout);
+    const manifestPaths = manifestPathSets(sourceFileManifest);
     await cp(sourceLayout.dataRoot, stagingRoot, {
       recursive: true,
       force: false,
       errorOnExist: true,
       preserveTimestamps: true,
-      filter: (source) => !isSQLiteTransientPath(source, sourceLayout.databasePath)
+      filter: (source) => shouldCopyManifestPath(sourceLayout.dataRoot, source, manifestPaths)
     });
     await ensureDataRootLayout(stagingLayout);
     await mkdir(dirname(stagingLayout.databasePath), { recursive: true, mode: 0o700 });
@@ -95,7 +99,8 @@ export async function migrateDataRoot({
     const verification = await verifyMigratedDataRoot({
       sourceLayout,
       targetLayout: stagingLayout,
-      keyTables
+      keyTables,
+      sourceFileManifest
     });
     if (beforeCommit) await beforeCommit({ stagingLayout, verification });
     await onPhase?.("switching");
@@ -130,7 +135,7 @@ export async function preflightDataRootMigration({ sourceLayout, targetLayout, s
   };
 }
 
-export async function verifyMigratedDataRoot({ sourceLayout, targetLayout, keyTables = [] }) {
+export async function verifyMigratedDataRoot({ sourceLayout, targetLayout, keyTables = [], sourceFileManifest = null }) {
   const sourceDb = new DatabaseSync(sourceLayout.databasePath, { readOnly: true });
   const targetDb = new DatabaseSync(targetLayout.databasePath, { readOnly: true });
   try {
@@ -146,7 +151,7 @@ export async function verifyMigratedDataRoot({ sourceLayout, targetLayout, keyTa
       keyRecordCounts[table] = targetCount;
     }
     const artifactResult = await verifyArtifacts(targetDb, targetLayout.artifactsDirectory);
-    const fileResult = await verifyCopiedFiles(sourceLayout, targetLayout);
+    const fileResult = await verifyCopiedFiles(targetLayout, sourceFileManifest ?? await createMigrationFileManifest(sourceLayout));
     return {
       databaseIntegrity: "ok",
       keyRecordCounts,
@@ -292,22 +297,58 @@ function artifactFailureDetails(version) {
   };
 }
 
-async function verifyCopiedFiles(sourceLayout, targetLayout) {
+export async function createMigrationFileManifest(sourceLayout) {
   const sourceFiles = await listFiles(sourceLayout.dataRoot);
-  let count = 0;
-  let bytes = 0;
+  const entries = [];
   for (const sourcePath of sourceFiles) {
     if (isSQLiteTransientPath(sourcePath, sourceLayout.databasePath)) continue;
     const relativePath = relative(sourceLayout.dataRoot, sourcePath);
-    const targetPath = safeDescendant(targetLayout.dataRoot, relativePath);
-    const [sourceHash, targetHash] = await Promise.all([fileHash(sourcePath), fileHash(targetPath)]);
-    if (sourceHash.hash !== targetHash.hash || sourceHash.bytes !== targetHash.bytes) {
-      throw migrationError("DATA_ROOT_FILE_INTEGRITY_FAILED", `Migrated file failed integrity verification: ${relativePath}`);
+    const sourceHash = await fileHash(sourcePath);
+    entries.push({ relativePath, hash: sourceHash.hash, bytes: sourceHash.bytes });
+  }
+  return Object.freeze(entries.sort((left, right) => left.relativePath.localeCompare(right.relativePath)).map(Object.freeze));
+}
+
+async function verifyCopiedFiles(targetLayout, sourceFileManifest) {
+  let count = 0;
+  let bytes = 0;
+  for (const expected of sourceFileManifest) {
+    const targetPath = safeDescendant(targetLayout.dataRoot, expected.relativePath);
+    let targetHash;
+    try { targetHash = await fileHash(targetPath); }
+    catch (cause) {
+      const error = migrationError("DATA_ROOT_FILE_MISSING", `Migrated snapshot file is missing or unreadable: ${expected.relativePath}`);
+      error.cause = cause;
+      throw error;
+    }
+    if (expected.hash !== targetHash.hash || expected.bytes !== targetHash.bytes) {
+      throw migrationError("DATA_ROOT_FILE_INTEGRITY_FAILED", `Migrated file failed integrity verification: ${expected.relativePath}`);
     }
     count += 1;
     bytes += targetHash.bytes;
   }
   return { count, bytes };
+}
+
+function manifestPathSets(manifest) {
+  const files = new Set();
+  const directories = new Set([""]);
+  for (const entry of manifest) {
+    files.add(entry.relativePath);
+    let current = dirname(entry.relativePath);
+    while (current !== "." && current !== "") {
+      directories.add(current);
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+  }
+  return { files, directories };
+}
+
+function shouldCopyManifestPath(sourceRoot, source, manifestPaths) {
+  const relativePath = relative(sourceRoot, source);
+  return relativePath === "" || manifestPaths.files.has(relativePath) || manifestPaths.directories.has(relativePath);
 }
 
 async function listFiles(root) {

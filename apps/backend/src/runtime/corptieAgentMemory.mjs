@@ -81,7 +81,7 @@ function renderBundledMemory(template, environmentName) {
 
 function migrateLegacyCodexContext(content, bundled) {
   if (!LEGACY_CODEX_CONTEXT.test(content)) return content;
-  const neutralContext = bundled.split("\n# Git worktree isolation", 1)[0].trimEnd();
+  const neutralContext = bundled.split(/\n# (?:Authoritative Work Session workspace|Git worktree isolation)/, 1)[0].trimEnd();
   return content.replace(LEGACY_CODEX_CONTEXT, neutralContext);
 }
 

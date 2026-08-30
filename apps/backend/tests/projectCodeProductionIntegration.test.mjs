@@ -7,11 +7,14 @@ import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
 import { ProjectCodeSearchApplicationService } from "../src/project-code/projectCodeApplicationService.mjs";
 import { createProjectCodeHostNamespace } from "../src/project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeIndexStore } from "../src/project-code/projectCodeIndexStore.mjs";
+import { ProjectCodeRunIsolationPort } from "../src/project-code/projectCodeRunIsolationPort.mjs";
 import { ProjectCodeSearchService } from "../src/project-code/projectCodeSearchService.mjs";
 import { RepositorySourceSnapshotBuilder } from "../src/project-code/projectCodeSnapshot.mjs";
-import { createProjectCodeFixture, formalRunIsolationPort } from "./helpers/projectCodeTestFixture.mjs";
+import { RunIsolationExecutionCoordinator } from "../src/runIsolation/runIsolationExecutionCoordinator.mjs";
+import { createProjectCodeFixture, toolsetReceiptFor } from "./helpers/projectCodeTestFixture.mjs";
+import { fixture as createRunIsolationFixture } from "./runIsolationTestHelpers.mjs";
 
-test("Project Tool Host production entry persists authoritative L0-L3 Snapshot/Search receipts", async () => {
+test("Project Tool Host production entry persists authoritative L0-L3 receipts through real Run v6 isolation", async (t) => {
   const fixture = await createProjectCodeFixture({
     files: { "Sources/App.swift": "struct ProductionNeedleCoordinator {}\n" }
   });
@@ -71,28 +74,67 @@ test("Project Tool Host production entry persists authoritative L0-L3 Snapshot/S
       receipt: snap.receipt,
       startupReceipt: fixture.startupReceipt
     };
-    const isolation = formalRunIsolationPort(capturedSnapshot, fixture.sessionContext, {
-      results: [{ path: "Sources/App.swift", line: 1, kind: "semantic", score: 0.95, snippet: "not persisted" }]
+    const { service: runIsolationService } = await createRunIsolationFixture(t);
+    const runIsolationPort = new ProjectCodeRunIsolationPort({
+      coordinator: new RunIsolationExecutionCoordinator({ service: runIsolationService }),
+      capabilities: { localSemantic: true, networkAccess: false, languages: ["swift"] }
     });
-    application = applicationFor({ store, fixture, builder, indexStore, runIsolationPort: isolation.port });
+    const toolsetReceipt = toolsetReceiptFor(capturedSnapshot);
+    application = applicationFor({ store, fixture, builder, indexStore, runIsolationPort, toolsetReceipt });
     const l3 = await catalog.execute({
       tool: "corptie_project_code_search", metadata,
-      arguments: { snapshot_receipt_id: snap.receipt.receiptId, query: "coordination concept", mode: "semantic" }
+      arguments: {
+        snapshot_receipt_id: snap.receipt.receiptId,
+        toolset_validation_receipt_id: toolsetReceipt.receiptId,
+        query: "coordination concept",
+        mode: "semantic"
+      }
     });
-    assert.deepEqual(isolation.calls.map(([name]) => name), ["prepare", "commandDescriptor", "execute", "cleanup"]);
+    assert.equal(l3.searchReceipt.outcome, "success");
     assert.equal(l3.searchReceipt.runIsolationReceiptRef.schemaVersion, 6);
     assert.equal(l3.searchReceipt.cleanupReceiptRef.schemaVersion, 4);
-    assert.equal(JSON.stringify(receipts.get(l3.searchReceipt.receiptId).receipt).includes("not persisted"), false);
+    assert.equal(runIsolationService.store.latestCleanupReceipt(l3.searchReceipt.runId).outcome, "cleaned");
+    assert.equal(JSON.stringify(receipts.get(l3.searchReceipt.receiptId).receipt).includes("ProductionNeedleCoordinator"), false);
+
+    const cancellationSnapshot = await builder.build(fixture);
+    const cancellationToolset = toolsetReceiptFor(cancellationSnapshot, { receiptId: "toolset_validation_receipt:cancel" });
+    const cancelledPrepared = await runIsolationPort.prepareRun({
+      snapshot: cancellationSnapshot,
+      sessionContext: fixture.sessionContext,
+      toolsetValidationReceipt: cancellationToolset,
+      idempotencyKey: "production-project-code-cancel:prepare"
+    });
+    const controller = new AbortController();
+    controller.abort("cancelled");
+    const cancelled = await runIsolationPort.execute({
+      prepared: cancelledPrepared,
+      snapshot: cancellationSnapshot,
+      sessionContext: fixture.sessionContext,
+      query: "coordination concept",
+      limit: 10,
+      signal: controller.signal,
+      idempotencyKey: "production-project-code-cancel:execute"
+    });
+    const cancelledCleanup = await runIsolationPort.cleanup({
+      prepared: cancelledPrepared,
+      snapshot: cancellationSnapshot,
+      sessionContext: fixture.sessionContext,
+      policy: "success_default",
+      idempotencyKey: "production-project-code-cancel:cleanup"
+    });
+    assert.equal(cancelled.receipt.state, "cancelled");
+    assert.equal(cancelledCleanup.receipt.schemaVersion, 4);
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
     await rm(dataRoot, { recursive: true, force: true });
   }
 });
 
-function applicationFor({ store, fixture, builder, indexStore, runIsolationPort = null }) {
+function applicationFor({ store, fixture, builder, indexStore, runIsolationPort = null, toolsetReceipt = null }) {
   return new ProjectCodeSearchApplicationService({
     store,
     startupReceipts: { require: () => fixture.startupReceipt },
+    toolsetReceipts: { require: ({ receiptId }) => receiptId === toolsetReceipt?.receiptId ? toolsetReceipt : null },
     snapshotBuilder: builder,
     searchService: new ProjectCodeSearchService({ snapshotBuilder: builder, indexStore, runIsolationPort })
   });

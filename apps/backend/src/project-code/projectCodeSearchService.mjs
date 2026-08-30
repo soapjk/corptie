@@ -201,10 +201,13 @@ export class ProjectCodeSearchService {
         return success(deduplicate(all).slice(0, limit), isolation, input.state.layers.some((fact) => fact.status === "degraded") ? "degraded" : "success");
       }
     }
-    if (["auto", "semantic"].includes(mode) && this.#l3Available(input.snapshot)) {
+    if (["auto", "semantic"].includes(mode) && this.#l3Available(input.snapshot)
+      && (mode === "semantic" || input.toolsetValidationReceipt)) {
       const value = await this.#runL3(input, limit);
       await runLayer("L3", async () => value);
       isolation = value.isolation;
+    } else if (mode === "auto" && this.#l3Available(input.snapshot) && !input.toolsetValidationReceipt) {
+      input.state.layers.push(layerFact("L3", "skipped", { skippedReason: "TOOLSET_CONTRACT_UNRESOLVED" }));
     } else if (mode === "semantic") {
       throw contractError("SEMANTIC_LANGUAGE_UNVALIDATED", "L3 semantic search is unavailable for this Snapshot language set.", 503);
     }

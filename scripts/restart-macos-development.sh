@@ -3,15 +3,33 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_BIN="${ROOT_DIR}/apps/macos/.build/debug/CorptieMac"
-APP_LOG="${CORPTIE_APP_LOG:-/private/tmp/corptie-dev/app.log}"
-BACKEND_LOG="${CORPTIE_BACKEND_LOG:-/private/tmp/corptie-dev/backend.log}"
+EXTERNAL_RUNTIME_ROOT="${CORPTIE_DEVELOPMENT_RUNTIME_ROOT:-/Volumes/T9/CorptieData/development-launcher}"
+if [[ "${EXTERNAL_RUNTIME_ROOT}" != /Volumes/* ]]; then
+  echo "Development runtime root must be an explicitly configured external volume path." >&2
+  exit 1
+fi
+WORKTREE_HASH="$(printf '%s' "${ROOT_DIR}" | shasum -a 256 | awk '{print substr($1,1,24)}')"
+WORKTREE_RUNTIME_ROOT="${EXTERNAL_RUNTIME_ROOT}/worktrees/${WORKTREE_HASH}"
+APP_LAUNCH_LABEL="com.corptie.mac.development.${WORKTREE_HASH}"
+BACKEND_LAUNCH_LABEL="com.corptie.backend.development.${WORKTREE_HASH}"
+BACKEND_TMUX_SESSION="corptie-backend-development-${WORKTREE_HASH}"
+APP_LOG="${CORPTIE_APP_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/app.log}"
+BACKEND_LOG="${CORPTIE_BACKEND_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/backend.log}"
+DEVELOPMENT_DATA_ROOT="${CORPTIE_DEVELOPMENT_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/backend-data}"
+RUN_ISOLATION_DATA_ROOT="${CORPTIE_RUN_ISOLATION_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/run-isolation}"
+PRESENTATION_DATA_DIR="${WORKTREE_RUNTIME_ROOT}/presentation"
+USER_DEFAULTS_SUITE="com.corptie.development.${WORKTREE_HASH}"
 BACKEND_PORT="${CORPTIE_DEVELOPMENT_BACKEND_PORT:-47322}"
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}/health"
 PRODUCTION_BACKEND_PORT=47321
 
 PRODUCTION_BACKEND_PID_BEFORE="$(lsof -tiTCP:"${PRODUCTION_BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
 
-mkdir -p "$(dirname "${APP_LOG}")"
+mkdir -p "$(dirname "${APP_LOG}")" "${PRESENTATION_DATA_DIR}" "${DEVELOPMENT_DATA_ROOT}" "${RUN_ISOLATION_DATA_ROOT}"
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "tmux is required to supervise external-volume Development processes." >&2
+  exit 1
+fi
 
 stop_pids() {
   local label="$1"
@@ -53,14 +71,17 @@ stop_pids() {
 
 echo "Building Corptie macOS development app..."
 swift build --package-path "${ROOT_DIR}/apps/macos"
+echo "Building Corptie backend native safety module..."
+npm --prefix "${ROOT_DIR}/apps/backend" run build:native
 
 echo "Stopping existing CorptieMac processes..."
-launchctl remove com.corptie.mac.development 2>/dev/null || true
+launchctl remove "${APP_LAUNCH_LABEL}" 2>/dev/null || true
 app_pids=()
 while IFS= read -r pid; do
   [[ -n "${pid}" ]] || continue
   process_command="$(ps -p "${pid}" -o command= 2>/dev/null || true)"
-  if [[ "${process_command}" == */apps/macos/.build/debug/CorptieMac* ]]; then
+  process_cwd="$(lsof -a -p "${pid}" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+  if [[ "${process_cwd}" == "${ROOT_DIR}" && "${process_command}" == *"apps/macos/.build/debug/CorptieMac"* ]]; then
     app_pids+=("${pid}")
   fi
 done < <(pgrep -x CorptieMac 2>/dev/null || true)
@@ -69,10 +90,16 @@ if (( ${#app_pids[@]} > 0 )); then
 fi
 
 echo "Stopping existing Corptie development backend processes..."
-launchctl remove com.corptie.backend.development 2>/dev/null || true
+launchctl remove "${BACKEND_LAUNCH_LABEL}" 2>/dev/null || true
+tmux kill-session -t "${BACKEND_TMUX_SESSION}" 2>/dev/null || true
 backend_pids=()
 while IFS= read -r pid; do
-  [[ -n "${pid}" ]] && backend_pids+=("${pid}")
+  [[ -n "${pid}" ]] || continue
+  process_cwd="$(lsof -a -p "${pid}" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+  process_command="$(ps -p "${pid}" -o command= 2>/dev/null || true)"
+  if [[ "${process_cwd}" == "${ROOT_DIR}/apps/backend" && "${process_command}" == *"node src/server.mjs"* ]]; then
+    backend_pids+=("${pid}")
+  fi
 done < <(lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null || true)
 if (( ${#backend_pids[@]} > 0 )); then
   stop_pids "development backend" "${backend_pids[@]}"
@@ -87,11 +114,12 @@ fi
 : >"${APP_LOG}"
 
 echo "Starting Corptie development backend..."
-(
-  cd "${ROOT_DIR}"
-  env CORPTIE_ENV=development CORPTIE_BACKEND_PORT="${BACKEND_PORT}" \
-    "${ROOT_DIR}/scripts/start-backend-development.sh" >>"${BACKEND_LOG}" 2>&1
-) &
+backend_command_args=(/usr/bin/env "PATH=${PATH}" CORPTIE_ENV=development "CORPTIE_BACKEND_PORT=${BACKEND_PORT}" \
+  "CORPTIE_DATA_ROOT=${DEVELOPMENT_DATA_ROOT}" \
+  "CORPTIE_RUN_ISOLATION_DATA_ROOT=${RUN_ISOLATION_DATA_ROOT}" \
+  "${ROOT_DIR}/scripts/launch-development-process.sh" "${BACKEND_LOG}" "${ROOT_DIR}/scripts/start-backend-development.sh")
+printf -v backend_command '%q ' "${backend_command_args[@]}"
+tmux new-session -d -s "${BACKEND_TMUX_SESSION}" -c "${ROOT_DIR}/apps/backend" "${backend_command}"
 
 for _ in {1..30}; do
   if curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
@@ -107,12 +135,19 @@ if ! curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
 fi
 
 echo "Starting CorptieMac..."
-env CORPTIE_ENV=development CORPTIE_BACKEND_PORT="${BACKEND_PORT}" \
-  "${APP_BIN}" >>"${APP_LOG}" 2>&1 &
-
-sleep 0.5
-APP_PID="$(pgrep -x CorptieMac | head -1 || true)"
-if [[ -z "${APP_PID}" ]]; then
+launchctl submit -l "${APP_LAUNCH_LABEL}" -- \
+  /usr/bin/env "PATH=${PATH}" CORPTIE_ENV=development "CORPTIE_BACKEND_PORT=${BACKEND_PORT}" \
+  "CORPTIE_USER_DEFAULTS_SUITE=${USER_DEFAULTS_SUITE}" "CORPTIE_PRESENTATION_DATA_DIR=${PRESENTATION_DATA_DIR}" \
+  "${ROOT_DIR}/scripts/launch-development-process.sh" "${APP_LOG}" "${APP_BIN}"
+APP_PID=""
+for _ in {1..30}; do
+  APP_PID="$(launchctl list | awk -v label="${APP_LAUNCH_LABEL}" '$3 == label && $1 != "-" { print $1; exit }')"
+  if [[ -n "${APP_PID}" ]] && kill -0 "${APP_PID}" 2>/dev/null; then
+    break
+  fi
+  sleep 0.1
+done
+if [[ -z "${APP_PID}" ]] || ! kill -0 "${APP_PID}" 2>/dev/null; then
   echo "CorptieMac exited before becoming ready. Log:"
   tail -n 80 "${APP_LOG}" || true
   exit 1
