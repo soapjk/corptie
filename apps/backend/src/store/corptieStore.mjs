@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
 import { performance } from "node:perf_hooks";
@@ -59,7 +59,8 @@ const DEPRECATED_PATH_FIELDS = new Set([
 
 export class CorptieStore {
   constructor(options = {}) {
-    this.explicitPaths = Boolean(options.dbPath || options.configPath);
+    const isolatedPaths = resolveRunIsolationStorePaths(process.env);
+    this.explicitPaths = Boolean(options.dbPath || options.configPath || isolatedPaths);
     this.manageProcessEnvironment = options.manageProcessEnvironment !== false;
     this.dataRootExplicit = Boolean(
       options.dataRoot
@@ -69,7 +70,7 @@ export class CorptieStore {
     this.rootSelectionPath = options.rootSelectionPath
       || process.env.CORPTIE_DATA_ROOT_SELECTION_PATH
       || rootSelectionPath;
-    this.configPath = options.configPath || null;
+    this.configPath = options.configPath || isolatedPaths?.configPath || null;
     this.dataRoot = options.dataRoot
       || process.env.CORPTIE_DATA_ROOT
       || readConfiguredDataRootSync(this.rootSelectionPath)
@@ -77,7 +78,7 @@ export class CorptieStore {
     if (!this.explicitPaths && this.manageProcessEnvironment) process.env.CORPTIE_HOME = resolve(this.dataRoot);
     this.layout = null;
     this.dataDir = null;
-    this.dbPath = options.dbPath || process.env.CORPTIE_DB_PATH || null;
+    this.dbPath = options.dbPath || isolatedPaths?.dbPath || process.env.CORPTIE_DB_PATH || null;
     this.db = null;
     this.config = {};
     this.stateDirtyListener = null;
@@ -12441,6 +12442,24 @@ function normalizeStoredText(text = "", provider = "") {
 function normalizeEnvironment(value = "") {
   const normalized = String(value || "").toLowerCase();
   return normalized === "dev" || normalized === "development" ? "development" : "production";
+}
+
+export function resolveRunIsolationStorePaths(environment = {}) {
+  const runId = environment.CORPTIE_RUN_ID;
+  if (!runId) return null;
+  const mode = environment.CORPTIE_RUN_MODE;
+  if (!["development", "test"].includes(mode)) throw storeDomainError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", "Isolated Store requires a valid CORPTIE_RUN_MODE.", 409);
+  const required = ["CORPTIE_DATABASE_PATH", "CORPTIE_DATA_DIR", "CORPTIE_CACHE_DIR", "CORPTIE_TMP_DIR", "CORPTIE_LOG_DIR", "CORPTIE_UPLOAD_DIR", "CORPTIE_QUEUE_DIR", "CORPTIE_RUNTIME_DIR"];
+  for (const key of required) if (typeof environment[key] !== "string" || !environment[key].trim()) throw storeDomainError("RUN_PATH_MISSING", `${key} is required before Store initialization.`, 409);
+  const dbPath = resolve(environment.CORPTIE_DATABASE_PATH);
+  const runRoot = dirname(dirname(dbPath));
+  for (const key of required) {
+    const candidate = resolve(environment[key]);
+    if (candidate !== runRoot && !candidate.startsWith(`${runRoot}${sep}`)) throw storeDomainError("RUN_PATH_OUT_OF_BOUNDS", `${key} escapes the isolated run root.`, 409);
+  }
+  const forbidden = [resolve(os.homedir()), resolve("/tmp"), resolve("/private/tmp")];
+  if (forbidden.some((root) => runRoot === root || runRoot.startsWith(`${root}${sep}`))) throw storeDomainError("RUN_GLOBAL_PATH_FORBIDDEN", "Isolated Store cannot use HOME or system tmp.", 409);
+  return { dbPath, configPath: join(resolve(environment.CORPTIE_DATA_DIR), "config.json"), runRoot };
 }
 
 async function exists(path) {
