@@ -72,6 +72,16 @@ export class ClaudeAgentManager {
         ? { additionalDirectories: input.runtimeWorkspaceRoots }
         : {})
     });
+    if (typeof input.recoveryContext === "string" && input.recoveryContext.trim()) {
+      const current = session.runtimeOptions.systemPrompt;
+      const base = current?.type === "preset"
+        ? current
+        : { type: "preset", preset: "claude_code", append: typeof current === "string" ? current : "" };
+      session.runtimeOptions.systemPrompt = {
+        ...base,
+        append: [base.append, input.recoveryContext.trim()].filter(Boolean).join("\n\n")
+      };
+    }
     this.sessions.set(id, session);
     console.log(`[claude-sdk] session created id=${id} cwd=${session.cwd}`);
     if (hasInitialPrompt) {

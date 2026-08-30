@@ -51,7 +51,15 @@ export function createOpenClackyProvider(manager, options = {}) {
     aliases: ["clacky", "open-clacky"],
     protocolVersion: "corptie-bridge-v1",
     runtime: { lifecycle: "managed" },
-    metadata: { ...(options.metadata ?? {}), toolSchemaCapabilities: openClackyToolSchemaCapabilities(manager) },
+    metadata: {
+      ...(options.metadata ?? {}),
+      toolSchemaCapabilities: openClackyToolSchemaCapabilities(manager),
+      sessionRecovery: {
+        revision: `openclacky:session-recovery:1:${manager?.probe?.protocolVersion ?? "unprobed"}`,
+        capabilities: ["system_context_injection", "max_context_estimation"],
+        maxContextTokens: 64_000
+      }
+    },
     configuration: {
       fields: [
         { id: "baseURL", type: "url", label: "Server URL", required: true, defaultValue: "http://127.0.0.1:7070" },

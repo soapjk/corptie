@@ -143,7 +143,10 @@ export class OpenClackyManager {
     // Inject the Corptie Agent system prompt, runtime instructions, scope identity
     // and permission boundary when a session bootstrap is available. This is the
     // trusted session contract; it never mutates the user's native configuration.
-    const bootstrap = await this.buildSessionBootstrap(input);
+    const bootstrap = await this.buildSessionBootstrap({
+      ...input,
+      runtimeInstructions: [input.runtimeInstructions, input.recoveryContext].filter(Boolean).join("\n\n") || undefined
+    });
     if (bootstrap) Object.assign(body, bootstrap.body ?? {});
     const toolHost = await this.prepareToolHost(input.toolHost);
     if (toolHost) body.corptie_tool_host = toolHost.manifest;

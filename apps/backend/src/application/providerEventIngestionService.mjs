@@ -269,6 +269,12 @@ export function deterministicProviderEventId(event) {
 }
 
 function validateBinding(event, binding) {
+  if (binding.isCurrentRoute === false) {
+    return providerEventError(
+      "PROVIDER_BINDING_GENERATION_STALE",
+      "Provider event belongs to a superseded Binding generation."
+    );
+  }
   if (binding.bindingId !== event.bindingId) {
     return providerEventError("PROVIDER_BINDING_MISMATCH", "Provider event resolved to a different Binding.");
   }
