@@ -267,7 +267,12 @@ export class OpenClackyManager {
   // event is observed; otherwise the delivery stays `unknown` (never falsely "ok").
   async send(sessionId, message, context = {}) {
     const userMessage = requiredText(message, "message");
-    const session = await this.refreshOne(sessionId);
+    let session;
+    try {
+      session = await this.refreshOne(sessionId);
+    } catch (error) {
+      throw openClackyPreDispatchRecoveryError(error, sessionId);
+    }
     assertOpenClackySessionRunnable(session);
     const contextPrompt = optionalText(context.sessionContext?.prompt);
     const turnId = context.turnId ?? `openclacky:turn:${randomUUID()}`;
@@ -680,6 +685,19 @@ export function openClackySessionSummary(row = {}, options = {}) {
       raw: row
     }
   };
+}
+
+export function openClackyPreDispatchRecoveryError(error, sessionId) {
+  if (Number(error?.statusCode) !== 404) return error;
+  const unavailable = new Error("The bound OpenClacky Provider Session is unavailable.");
+  unavailable.code = "PROVIDER_SESSION_UNAVAILABLE";
+  unavailable.statusCode = 409;
+  unavailable.providerId = "openclacky";
+  unavailable.providerSessionId = sessionId ?? null;
+  unavailable.dispatchState = "not_sent";
+  unavailable.recoveryAction = "replace_provider_binding";
+  unavailable.replacementReason = "provider-session-not-found";
+  return unavailable;
 }
 
 function assertOpenClackySessionRunnable(session) {

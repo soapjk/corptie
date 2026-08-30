@@ -32,6 +32,7 @@ const ATTEMPT_FIELDS = new Set([
   "attemptId", "idempotencyKey", "logicalSessionId", "sessionId", "providerId",
   "sourceBindingId", "sourceProviderSessionId", "sourceRoutingVersion", "sourceBindingGeneration",
   "targetBindingGeneration", "capabilityRevision", "boundarySequence", "boundaryTurnId",
+  "triggerDeliveryId",
   "repositoryId", "workspaceId", "worktreeId", "boundCwd", "objectiveId", "workItemId",
   "instructionSources", "permissionSnapshot", "toolCatalog", "artifactReferences", "contextReferences",
   "strategy", "manifest", "manifestHash", "state", "cancelRequested", "replacement", "error",
@@ -212,6 +213,9 @@ export function normalizeSessionRecoveryAttempt(input) {
     targetBindingGeneration: positiveInteger(input.targetBindingGeneration, "SessionRecoveryAttempt.targetBindingGeneration"),
     capabilityRevision: requiredString(input.capabilityRevision, "SessionRecoveryAttempt.capabilityRevision"),
     boundarySequence: nonNegativeInteger(input.boundarySequence, "SessionRecoveryAttempt.boundarySequence"),
+    triggerDeliveryId: input.triggerDeliveryId == null
+      ? null
+      : requiredString(input.triggerDeliveryId, "SessionRecoveryAttempt.triggerDeliveryId"),
     instructionSources: canonicalizeRecoveryValue(input.instructionSources ?? []),
     permissionSnapshot: canonicalizeRecoveryValue(input.permissionSnapshot ?? {}),
     toolCatalog: canonicalizeRecoveryValue(input.toolCatalog ?? {}),
@@ -402,6 +406,7 @@ export class SessionRecoveryCoordinator {
       idempotencyKey,
       logicalSessionId: input.logicalSessionId,
       capabilityRevision: capabilities.revision,
+      triggerDeliveryId: input.triggerDeliveryId ?? null,
       createdAt: this.clock().toISOString()
     });
     attempt = normalizeSessionRecoveryAttempt(attempt);
@@ -511,11 +516,15 @@ function eventToReplayEntries(event) {
   const payload = event.payload ?? {};
   const sequence = positiveInteger(event.sequence, "Timeline sequence");
   if (SIDE_EFFECT_EVENT_PATTERN.test(type) && !/(?:tool\.completed|tool\/result|artifact\/reference)/i.test(type)) return [];
-  if (/^(?:user\/message|SessionUserMessageCreated|user\.message\.accepted)$/i.test(type)) {
-    return [normalizeReplayEntry({ kind: "user_message", sequence, turnId: payload.turnId, role: "user", content: payload.text ?? payload.message ?? "", metadata: { executable: false } })];
+  if (/^(?:user\/message|SessionUserMessageCreated)$/i.test(type)) {
+    const content = recoveryMessageText(payload.message?.text, payload.text, payload.message);
+    if (content == null) throw recoveryError("RECOVERY_TIMELINE_MESSAGE_INVALID", "Persisted user message content is missing or invalid.");
+    return [normalizeReplayEntry({ kind: "user_message", sequence, turnId: payload.turnId ?? payload.message?.turnId, role: "user", content, metadata: { executable: false } })];
   }
   if (/^(?:assistant\/message|assistant\.message\.completed|AgentTurnCompleted|CodexThreadCompleted)$/i.test(type)) {
-    return [normalizeReplayEntry({ kind: "assistant_message", sequence, turnId: payload.turnId, role: "assistant", content: payload.text ?? payload.message ?? payload.summary ?? "", metadata: { executable: false } })];
+    const content = recoveryMessageText(payload.item?.text, payload.text, payload.message, payload.summary);
+    if (content == null) throw recoveryError("RECOVERY_TIMELINE_MESSAGE_INVALID", "Persisted assistant message content is missing or invalid.");
+    return [normalizeReplayEntry({ kind: "assistant_message", sequence, turnId: payload.turnId ?? payload.item?.turnId, role: "assistant", content, metadata: { executable: false } })];
   }
   if (/(?:tool\.completed|tool\/result)/i.test(type)) {
     return [normalizeReplayEntry({ kind: "tool_result_summary", sequence, turnId: payload.turnId, content: payload.summary ?? payload.text ?? "Historical tool result retained as evidence summary.", metadata: { toolName: payload.toolName ?? null, executable: false } })];
@@ -543,6 +552,12 @@ function assertClosedObject(input, allowed, name) {
 }
 
 function recoveryError(code, message, details) { return new SessionRecoveryError(code, message, details); }
+function recoveryMessageText(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
 function isPlainObject(value) { return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype; }
 function requiredString(value, field) { const text = optionalString(value); if (!text) throw recoveryError("RECOVERY_FIELD_INVALID", `${field} is required.`); return text; }
 function optionalString(value) { return typeof value === "string" && value.trim() ? value.trim() : null; }

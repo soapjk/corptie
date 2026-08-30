@@ -872,6 +872,18 @@ export function codexResponseError(payload) {
   return error;
 }
 
+// A missing native rollout discovered by thread/resume is proven to occur
+// before turn/start, so the durable Corptie Delivery has not reached Codex.
+// Keep this annotation at that pre-dispatch boundary; applying it to arbitrary
+// app-server failures would make an ambiguous in-flight turn unsafe to retry.
+export function codexPreDispatchRecoveryError(error) {
+  if (error?.code !== "PROVIDER_SESSION_UNAVAILABLE" || error?.safeToRetry !== true) return error;
+  error.dispatchState = "not_sent";
+  error.recoveryAction = "replace_provider_binding";
+  error.replacementReason = "PROVIDER_SESSION_UNAVAILABLE";
+  return error;
+}
+
 export function normalizeCodexTokenUsage(rawUsage, fallback = {}) {
   if (!rawUsage || typeof rawUsage !== "object") return null;
   const active = rawUsage.last ?? rawUsage.lastUsage ?? rawUsage.last_usage

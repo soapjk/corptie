@@ -5254,11 +5254,35 @@ export class CorptieStore {
       }
       this.assertLogicalSessionRoute(logicalSessionId);
       const workBinding = this.assertLogicalWorkSessionBinding(logicalSessionId);
-      const boundary = this.selectOne(
-        `SELECT sequence, payload_json FROM session_events
-         WHERE session_id = ? ORDER BY sequence DESC LIMIT 1`,
-        [session.id]
-      );
+      const triggerDeliveryId = input.triggerDeliveryId == null
+        ? null
+        : requiredText(input.triggerDeliveryId, "triggerDeliveryId");
+      const triggerEvent = triggerDeliveryId
+        ? this.selectOne(
+          `SELECT sequence FROM session_events
+           WHERE session_id = ? AND (
+             json_extract(source_json, '$.deliveryId') = ?
+             OR json_extract(payload_json, '$.deliveryId') = ?
+           ) ORDER BY sequence ASC LIMIT 1`,
+          [session.id, triggerDeliveryId, triggerDeliveryId]
+        )
+        : null;
+      if (triggerDeliveryId && !triggerEvent) {
+        const error = new Error("The recovery-triggering Message Delivery is not present in the authoritative Timeline.");
+        error.code = "RECOVERY_TRIGGER_DELIVERY_MISSING";
+        throw error;
+      }
+      const boundary = triggerEvent
+        ? this.selectOne(
+          `SELECT sequence, payload_json FROM session_events
+           WHERE session_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT 1`,
+          [session.id, Number(triggerEvent.sequence)]
+        )
+        : this.selectOne(
+          `SELECT sequence, payload_json FROM session_events
+           WHERE session_id = ? ORDER BY sequence DESC LIMIT 1`,
+          [session.id]
+        );
       const toolCatalog = this.getSessionToolCatalogMaterialization(logicalSessionId, binding.bindingId);
       const artifactReferences = [
         ...this.listArtifactReferences({ sessionId: session.id }),
@@ -5278,6 +5302,7 @@ export class CorptieStore {
         sourceBindingGeneration: binding.bindingGeneration,
         targetBindingGeneration: binding.bindingGeneration + 1,
         capabilityRevision: requiredText(input.capabilityRevision, "capabilityRevision"),
+        triggerDeliveryId,
         boundarySequence: Number(boundary?.sequence ?? 0),
         boundaryTurnId: boundaryPayload.turnId ?? null,
         repositoryId: logical.repositoryId ?? null,

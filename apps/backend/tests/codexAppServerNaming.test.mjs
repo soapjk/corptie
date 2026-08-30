@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   CodexAppServerClient,
+  codexPreDispatchRecoveryError,
   codexResponseError,
   mapCodexThreadToSession
 } from "../src/adapters/codexAppServer.mjs";
@@ -38,6 +39,20 @@ test("missing Codex rollout is normalized as a safely replaceable Provider Sessi
   const ambiguous = codexResponseError({ code: -32603, message: "transport closed" });
   assert.equal(ambiguous.code, undefined);
   assert.equal(ambiguous.safeToRetry, undefined);
+});
+
+test("a missing rollout is retryable only when marked at the pre-dispatch resume boundary", () => {
+  const missing = codexPreDispatchRecoveryError(codexResponseError({
+    code: -32600,
+    message: "failed to resolve rollout path `/development/rollout-thread-a.jsonl`: file does not exist"
+  }));
+  assert.equal(missing.dispatchState, "not_sent");
+  assert.equal(missing.recoveryAction, "replace_provider_binding");
+  assert.equal(missing.replacementReason, "PROVIDER_SESSION_UNAVAILABLE");
+
+  const ambiguous = new Error("transport closed after turn/start");
+  ambiguous.code = "PROVIDER_SESSION_UNAVAILABLE";
+  assert.equal(codexPreDispatchRecoveryError(ambiguous).dispatchState, undefined);
 });
 
 test("setThreadName uses the Codex app-server thread naming method", async () => {
