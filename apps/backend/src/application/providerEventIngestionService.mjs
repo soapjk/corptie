@@ -134,6 +134,7 @@ export class ProviderEventIngestionService {
         result.observability = this.observe({
           event,
           binding,
+          sessionEvent: result.sessionEvent,
           projection: result.projection,
           measurement: { projectionStartedAtMs, projectionEndedAtMs: performance.timeOrigin + performance.now() }
         });
