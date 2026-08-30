@@ -82,12 +82,15 @@ export function toolsetReceiptFor(snapshot, overrides = {}) {
   const now = "2026-08-30T00:00:00.000Z";
   return signReceipt({
     receiptId: overrides.receiptId ?? "toolset_validation_receipt:test",
-    schemaVersion: 2,
+    schemaVersion: 3,
     resourceVersion: 1,
     artifactRef: {
       artifactId: "artifact:172b9f2e-a2d1-451c-a3e4-d52ba3d95850",
       version: 1,
-      contentHash: "c203f2fd99d24064c46ab46e17f016a9494d643ab2b64e95c3f363fc8af00e62"
+      contentHash: "c203f2fd99d24064c46ab46e17f016a9494d643ab2b64e95c3f363fc8af00e62",
+      relation: "implementation_spec",
+      receiptType: "ToolsetValidationReceipt",
+      schemaVersion: 3
     },
     identity: {
       logicalSessionId: "logical:test",
@@ -135,8 +138,8 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
     async execute(request, authenticatedSession) {
       calls.push(["execute", request, authenticatedSession]);
       if (options.executeError) throw options.executeError;
-      runReceipt = signReceipt({
-        schemaVersion: 5,
+      const runFields = {
+        schemaVersion: 6,
         receiptId: "run_receipt:test",
         runId,
         mode: "test",
@@ -147,7 +150,7 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
         sourceFingerprint: snapshot.receipt.sourceFingerprint,
         startupBindingReceiptRef: runStartupBindingReceiptRef(snapshot.startupReceipt),
         repositorySourceSnapshotReceiptRef: snapshotReceiptRef(snapshot.receipt),
-        toolsetValidationReceiptRef: null,
+        toolsetValidationReceiptPointer: request.toolsetValidationReceiptPointer,
         state: options.runState ?? "completed",
         outcome: options.runOutcome ?? "passed",
         runContextHash: "4".repeat(64),
@@ -162,13 +165,15 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
         error: (options.runState ?? "completed") === "failed"
           ? { code: "SEMANTIC_EXECUTION_FAILED", message: "Semantic execution failed.", traceId: null, detailsHash: null }
           : null
-      });
+      };
+      Object.assign(runFields, options.runReceiptOverrides ?? {});
+      runReceipt = signReceipt(runFields);
       return { receipt: runReceipt, results: options.results ?? [] };
     },
     async cleanup(request, authenticatedSession) {
       calls.push(["cleanup", request, authenticatedSession]);
       if (options.cleanupError) throw options.cleanupError;
-      return { receipt: signReceipt({
+      const cleanupFields = {
         schemaVersion: 4,
         receiptId: "cleanup_receipt:test",
         cleanupOperationId: "cleanup:test",
@@ -176,7 +181,7 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
         runReceiptRef: {
           receiptId: runReceipt.receiptId,
           receiptHash: runReceipt.receiptHash,
-          schemaVersion: 5,
+          schemaVersion: 6,
           issuer: "run_isolation",
           resourceVersion: runReceipt.resourceVersion,
           artifactRef: {
@@ -213,8 +218,28 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
         eventRefs: [],
         startedAt: now,
         finishedAt: now,
-        error: null
-      }) };
+        error: null,
+        ...(options.cleanupReceiptOverrides ?? {})
+      };
+      if (options.validUnknownCleanup === true) {
+        cleanupFields.outcome = "unknown";
+        cleanupFields.processReconciliation = "indeterminate";
+        cleanupFields.error = {
+          code: "RUN_CLEANUP_RECONCILIATION_UNKNOWN",
+          message: "Cleanup outcome requires reconciliation.",
+          traceId: null,
+          detailsHash: null
+        };
+        cleanupFields.safetyChecks = {
+          ...cleanupFields.safetyChecks,
+          canonicalRoot: {
+            status: "indeterminate",
+            errorCode: "RUN_CLEANUP_CANONICAL_ROOT_INVALID",
+            evidenceHash: "f".repeat(64)
+          }
+        };
+      }
+      return { receipt: signReceipt(cleanupFields) };
     }
   };
   const commandDescriptors = {

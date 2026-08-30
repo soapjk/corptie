@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.corptie.local/project-toolset/toolset-validation-receipt-v2.schema.json",
-  "title": "ToolsetValidationReceipt v2 — Cross-Contract Closed Revision",
-  "description": "Approved fixed revision. Supersedes artifact:a8312599-44fb-4e1a-8c1a-263526f90a09@1. StartupBindingRef, RepositorySourceSnapshotReceiptRef, RunReceiptRef and CleanupReceiptRef are exact closed copies of fixed upstream contracts; semantic validation dereferences upstream receipts and does not extend their schemas. receiptHash removes only the top-level receiptHash, RFC8785 canonicalizes the remaining object, and SHA-256 hashes its UTF-8 bytes.",
+  "$id": "https://schemas.corptie.local/project-toolset/toolset-validation-receipt-v3-run-v6.schema.json",
+  "title": "ToolsetValidationReceipt v3 — Approved Run v6 Convergence",
+  "description": "Approved fixed supporting implementation_spec. Explicitly supersedes artifact:1a1ac78b-1bce-4298-b7ca-e6b3fa673f84@1. Shared Startup, RepositorySourceSnapshot, RunReceipt v6 and CleanupReceipt v4 contract definitions are exact closed copies of artifact:ee9b734f-799d-41b6-804f-9868697de511@1, which pins artifact:42cd149b-e230-4347-b4ff-b816c18cf25f@1. ToolsetValidationReceipt remains its full schemaVersion 3 receipt contract; it is not reduced to the Run-owned six-field pointer. receiptHash removes only the top-level receiptHash, RFC 8785 canonicalizes the remaining object, and SHA-256 hashes its UTF-8 bytes. sourceFingerprint is echoed byte-for-byte from the consumed RepositorySourceSnapshotReceipt and is never computed or normalized by Project Toolset. This schema contains no Run-to-Toolset schema Artifact pin.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -35,34 +35,28 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "schemaVersion": {
-      "const": 2
+      "const": 3
     },
     "resourceVersion": {
       "type": "integer",
       "minimum": 1
     },
     "artifactRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "artifactId",
-        "version",
-        "contentHash"
-      ],
-      "properties": {
-        "artifactId": {
-          "type": "string",
-          "pattern": "^artifact:[0-9a-f-]+$"
+      "allOf": [
+        {
+          "$ref": "#/$defs/GenericContractArtifactRef"
         },
-        "version": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "contentHash": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+        {
+          "properties": {
+            "receiptType": {
+              "const": "ToolsetValidationReceipt"
+            },
+            "schemaVersion": {
+              "const": 3
+            }
+          }
         }
-      }
+      ]
     },
     "identity": {
       "type": "object",
@@ -188,29 +182,6 @@
     "LowercaseHex64": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
-    },
-    "ArtifactRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "artifactId",
-        "version",
-        "contentHash"
-      ],
-      "properties": {
-        "artifactId": {
-          "type": "string",
-          "pattern": "^artifact:[0-9a-f-]+$"
-        },
-        "version": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "contentHash": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      }
     },
     "BusinessError": {
       "type": "object",
@@ -411,13 +382,13 @@
       ],
       "properties": {
         "artifactId": {
-          "const": "artifact:a4e25781-d3fc-4e84-b268-a8f5deebae73"
+          "const": "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f"
         },
         "version": {
           "const": 1
         },
         "contentHash": {
-          "const": "ad71ee6619d01da05d5b40d228bd30e94c47b51024519a0aea54adf070eb0959"
+          "const": "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951"
         },
         "relation": {
           "const": "implementation_spec"
@@ -426,7 +397,7 @@
           "const": "RunReceipt"
         },
         "schemaVersion": {
-          "const": 4
+          "const": 6
         }
       }
     },
@@ -443,13 +414,13 @@
       ],
       "properties": {
         "artifactId": {
-          "const": "artifact:a4e25781-d3fc-4e84-b268-a8f5deebae73"
+          "const": "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f"
         },
         "version": {
           "const": 1
         },
         "contentHash": {
-          "const": "ad71ee6619d01da05d5b40d228bd30e94c47b51024519a0aea54adf070eb0959"
+          "const": "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951"
         },
         "relation": {
           "const": "implementation_spec"
@@ -484,7 +455,7 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "schemaVersion": {
-          "const": 4
+          "const": 6
         },
         "resourceVersion": {
           "type": "integer",
@@ -714,7 +685,8 @@
             }
           }
         }
-      ]
+      ],
+      "$comment": "For executed actions both refs are required. The semantic validator MUST validate the enclosing snapshotRef against the authoritative snapshot, dereference both refs, require matching runId, RunReceipt v6 outcome passed, CleanupReceipt v4 outcome cleaned, and dereferenced RunReceipt sourceFingerprint byte-for-byte equal to the enclosing snapshotRef.sourceFingerprint. Any absence, snapshot mismatch, source mismatch, unknown, stale, non-success, retained, blocked, or quarantined cleanup fails closed and forbids passed/stored/reused."
     },
     "AssertionReceipt": {
       "type": "object",
@@ -792,6 +764,49 @@
           ]
         }
       }
+    },
+    "GenericContractArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "type": "string",
+          "enum": [
+            "RepositorySourceSnapshotReceipt",
+            "SearchReceipt",
+            "ToolsetValidationReceipt",
+            "RunReceipt",
+            "CleanupReceipt"
+          ]
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
     }
   },
   "oneOf": [
@@ -830,6 +845,56 @@
         "outcome",
         "error"
       ]
+    }
+  ],
+  "$comment": "Normative semantic validation MUST validate the enclosing snapshotRef against the authoritative RepositorySourceSnapshotReceipt reference, then dereference every executed action RunReceiptRef and CleanupReceiptRef. It MUST require exact snapshot identity, identical runId, RunReceipt v6 outcome passed, CleanupReceipt v4 outcome cleaned, and RunReceipt sourceFingerprint byte-for-byte equal to snapshotRef.sourceFingerprint. Missing, stale, snapshot mismatch, source mismatch, unknown, non-passed Run, or non-cleaned Cleanup fails closed: receipt outcome cannot be passed and cacheDisposition cannot be stored or reused. JSON Schema validates closed pointer shapes; cross-document equality and outcome rules are mandatory application validation.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "unknown",
+              "stale",
+              "mismatch"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "cacheDisposition": {
+            "enum": [
+              "bypassed",
+              "miss",
+              "rejected",
+              "invalidated"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "passed"
+          }
+        },
+        "required": [
+          "outcome"
+        ]
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "const": null
+          }
+        }
+      }
     }
   ]
 }

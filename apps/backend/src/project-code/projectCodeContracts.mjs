@@ -2,9 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 export const PROJECT_CODE_SCHEMA_ARTIFACT = Object.freeze({
-  artifactId: "artifact:aa6c9c01-7a1a-45bb-9a2d-51b3ffca1516",
+  artifactId: "artifact:ee9b734f-799d-41b6-804f-9868697de511",
   version: 1,
-  contentHash: "03e5985fcd33abc95c4d805b3e023390db48b18391a4e49cfb20c758fe2703cc",
+  contentHash: "920fa9b2952490e4e4c93c88ca2855c11aeac9ff615bea43f738feff7d6d93e9",
   relation: "implementation_spec"
 });
 
@@ -22,11 +22,11 @@ export const STARTUP_BINDING_ARTIFACT = Object.freeze({
 });
 
 export const RUN_RECEIPT_ARTIFACT = Object.freeze({
-  artifactId: "artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef",
+  artifactId: "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f",
   version: 1,
-  contentHash: "81b374c134fa74e0eb89673b2599eeb7d7d66f6ef7df0710289c6dc379b67184",
+  contentHash: "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951",
   relation: "implementation_spec",
-  schemaVersion: 5
+  schemaVersion: 6
 });
 
 export const CLEANUP_RECEIPT_ARTIFACT = Object.freeze({
@@ -35,10 +35,10 @@ export const CLEANUP_RECEIPT_ARTIFACT = Object.freeze({
 });
 
 export const TOOLSET_VALIDATION_ARTIFACT = Object.freeze({
-  artifactId: "artifact:f665b81c-aeae-496d-9157-a880588e7005",
+  artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
   version: 1,
-  contentHash: "b54ce2c5d36d2d5b31aa024b1c2ad40267fd1650b67a9545b6fc6062fac70df5",
-  schemaVersion: 2
+  contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d",
+  schemaVersion: 3
 });
 
 export const PROJECT_TOOLSET_ARTIFACT = Object.freeze({
@@ -48,16 +48,16 @@ export const PROJECT_TOOLSET_ARTIFACT = Object.freeze({
 });
 
 const schemaPath = new URL("../contracts/project-code-search-receipts.schema.json", import.meta.url);
-const toolsetSchemaPath = new URL("../contracts/toolset-validation-receipt-v2.schema.json", import.meta.url);
-const runReceiptSchemaPath = new URL("../contracts/run-receipt-v5.schema.json", import.meta.url);
+const toolsetSchemaPath = new URL("../contracts/toolset-validation-receipt-v3.schema.json", import.meta.url);
+const runReceiptSchemaPath = new URL("../contracts/run-receipt-v6.schema.json", import.meta.url);
 const cleanupReceiptSchemaPath = new URL("../contracts/cleanup-receipt-v4.schema.json", import.meta.url);
 let cachedSchema = null;
 let cachedToolsetSchema = null;
 const runIsolationSchemas = new Map();
 
 const RUN_ISOLATION_SCHEMA_HASHES = Object.freeze({
-  RunReceipt: "1f3f91c1f73352d90a98289e2d73112175f470f518fca5f6066ab8c4768012df",
-  CleanupReceipt: "fac1c7b7f1906dcd80bc0bc8d01eef0da60a30fcaa2860b83a6c0f5d731b8adf"
+  RunReceipt: "eabcf91d8849a82bd5df3cb187213068521b5873446f636eb58af377f78e4c50",
+  CleanupReceipt: "e432d1d53611f13c6c985c2126c082aacc917fc7458106d216b65b71112b819d"
 });
 
 export async function loadProjectCodeReceiptSchema() {
@@ -176,9 +176,7 @@ export function projectToolsetReceiptRef(receipt, sourceFingerprint) {
   return Object.freeze({
     receiptId: receipt.receiptId,
     receiptHash: receipt.receiptHash,
-    schemaVersion: receipt.schemaVersion,
     resourceVersion: receipt.resourceVersion,
-    artifactRef: receipt.artifactRef,
     toolsetVersion: receipt.toolsetVersion,
     validationPlanIdentity: receipt.validationPlanIdentity,
     sourceFingerprint

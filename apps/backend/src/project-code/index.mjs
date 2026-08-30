@@ -19,6 +19,10 @@ export {
   callProjectCodeSnapshotDynamicTool
 } from "./projectCodeSnapshotDynamicTools.mjs";
 export { ProjectCodeSearchApplicationService } from "./projectCodeApplicationService.mjs";
-export { projectCodeDynamicTools, callProjectCodeDynamicTool } from "./projectCodeDynamicTools.mjs";
+export {
+  projectCodeDynamicTools,
+  callProjectCodeDynamicTool,
+  createProjectCodeHostNamespace
+} from "./projectCodeDynamicTools.mjs";
 export { ProjectCodeRunIsolationPort } from "./projectCodeRunIsolationPort.mjs";
 export { ProjectCodeStartupReceiptRepository } from "./projectCodeStartupReceiptRepository.mjs";

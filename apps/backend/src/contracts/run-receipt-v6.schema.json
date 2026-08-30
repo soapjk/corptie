@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:corptie:run-isolation:run-receipt:5",
+  "$id": "urn:corptie:run-isolation:run-receipt:6",
   "title": "RunReceipt",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "schemaVersion": {
-      "const": 5
+      "const": 6
     },
     "receiptId": {
       "type": "string",
@@ -86,16 +86,6 @@
       "anyOf": [
         {
           "$ref": "#/$defs/RepositorySourceSnapshotReceiptRef"
-        },
-        {
-          "type": "null"
-        }
-      ]
-    },
-    "toolsetValidationReceiptRef": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ToolsetValidationReceiptRef"
         },
         {
           "type": "null"
@@ -230,6 +220,16 @@
           "type": "null"
         }
       ]
+    },
+    "toolsetValidationReceiptPointer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolsetValidationReceiptPointer"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [
@@ -245,7 +245,7 @@
     "sourceFingerprint",
     "startupBindingReceiptRef",
     "repositorySourceSnapshotReceiptRef",
-    "toolsetValidationReceiptRef",
+    "toolsetValidationReceiptPointer",
     "state",
     "outcome",
     "runContextHash",
@@ -463,52 +463,6 @@
         "artifactRef"
       ]
     },
-    "ToolsetValidationReceiptRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "receiptId": {
-          "type": "string",
-          "pattern": "^toolset_validation_receipt:[A-Za-z0-9_-]+$"
-        },
-        "receiptHash": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "schemaVersion": {
-          "const": 2
-        },
-        "resourceVersion": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "artifactRef": {
-          "$ref": "#/$defs/ToolsetValidationContractArtifactRef"
-        },
-        "toolsetVersion": {
-          "type": "string",
-          "pattern": "^ptv1:[0-9a-f]{64}$"
-        },
-        "validationPlanIdentity": {
-          "type": "string",
-          "pattern": "^vp1:[0-9a-f]{64}$"
-        },
-        "sourceFingerprint": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      },
-      "required": [
-        "receiptId",
-        "receiptHash",
-        "schemaVersion",
-        "resourceVersion",
-        "artifactRef",
-        "toolsetVersion",
-        "validationPlanIdentity",
-        "sourceFingerprint"
-      ]
-    },
     "LeaseRef": {
       "type": "object",
       "additionalProperties": false,
@@ -676,27 +630,42 @@
         "targetBoundary"
       ]
     },
-    "ToolsetValidationContractArtifactRef": {
+    "ToolsetValidationReceiptPointer": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "artifactId": {
+        "receiptId": {
           "type": "string",
-          "pattern": "^artifact:[0-9a-f-]+$"
+          "pattern": "^toolset_validation_receipt:[A-Za-z0-9_-]+$"
         },
-        "version": {
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resourceVersion": {
           "type": "integer",
           "minimum": 1
         },
-        "contentHash": {
+        "toolsetVersion": {
+          "type": "string",
+          "pattern": "^ptv1:[0-9a-f]{64}$"
+        },
+        "validationPlanIdentity": {
+          "type": "string",
+          "pattern": "^vp1:[0-9a-f]{64}$"
+        },
+        "sourceFingerprint": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         }
       },
       "required": [
-        "artifactId",
-        "version",
-        "contentHash"
+        "receiptId",
+        "receiptHash",
+        "resourceVersion",
+        "toolsetVersion",
+        "validationPlanIdentity",
+        "sourceFingerprint"
       ]
     }
   },

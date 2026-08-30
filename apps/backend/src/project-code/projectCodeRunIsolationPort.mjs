@@ -1,6 +1,7 @@
 import {
   CLEANUP_RECEIPT_ARTIFACT,
   RUN_RECEIPT_ARTIFACT,
+  canonicalJson,
   contractError,
   projectToolsetReceiptRef,
   runStartupBindingReceiptRef,
@@ -12,7 +13,7 @@ import {
 const runFields = new Set([
   "schemaVersion", "receiptId", "receiptHash", "runId", "mode", "logicalSessionId", "workItemId",
   "repositoryId", "worktreeId", "sourceFingerprint", "startupBindingReceiptRef",
-  "repositorySourceSnapshotReceiptRef", "toolsetValidationReceiptRef", "state", "outcome", "runContextHash",
+  "repositorySourceSnapshotReceiptRef", "toolsetValidationReceiptPointer", "state", "outcome", "runContextHash",
   "dataRootBindingId", "processLeaseRefs", "portLeaseRefs", "dataLeaseRef", "credentialLeaseRefs",
   "fencingToken", "resourceVersion", "eventRefs", "metricsRef", "readyAt", "startedAt", "stoppedAt",
   "completedAt", "error"
@@ -39,13 +40,13 @@ export class ProjectCodeRunIsolationPort {
 
   async prepareRun(input) {
     const snapshot = input.snapshot;
-    const toolsetRef = input.toolsetValidationReceipt
+    const toolsetPointer = input.toolsetValidationReceipt
       ? projectToolsetReceiptRef(input.toolsetValidationReceipt, snapshot.receipt.sourceFingerprint)
       : null;
     const request = Object.freeze({
       startupBindingReceiptRef: runStartupBindingReceiptRef(snapshot.startupReceipt),
       repositorySourceSnapshotReceiptRef: snapshotReceiptRef(snapshot.receipt),
-      toolsetValidationReceiptRef: toolsetRef,
+      toolsetValidationReceiptPointer: toolsetPointer,
       testPlanRef: null,
       fixtureRef: null,
       baseSnapshotRef: null,
@@ -65,7 +66,7 @@ export class ProjectCodeRunIsolationPort {
       || context.sourceFingerprint !== snapshot.receipt.sourceFingerprint) {
       throw contractError("RUN_SOURCE_FINGERPRINT_MISMATCH", "Prepared RunContext does not match the authoritative Session/Snapshot identity.");
     }
-    return Object.freeze({ ...prepared, runContext: Object.freeze({ ...context }), toolsetValidationReceiptRef: toolsetRef });
+    return Object.freeze({ ...prepared, runContext: Object.freeze({ ...context }), toolsetValidationReceiptPointer: toolsetPointer });
   }
 
   async execute(input) {
@@ -76,12 +77,18 @@ export class ProjectCodeRunIsolationPort {
       preparedResourceVersion: context.resourceVersion,
       fencingToken: context.fencingToken,
       commandDescriptorRef,
-      toolsetValidationReceiptRef: input.prepared.toolsetValidationReceiptRef,
+      toolsetValidationReceiptPointer: input.prepared.toolsetValidationReceiptPointer,
       idempotencyKey: input.idempotencyKey
     });
     const response = await this.service.execute(request, authenticatedSession(input));
     const receipt = response?.receipt ?? response;
-    await validateRunReceipt(receipt, input.snapshot, input.sessionContext, context.runId);
+    await validateRunReceipt(
+      receipt,
+      input.snapshot,
+      input.sessionContext,
+      context.runId,
+      input.prepared.toolsetValidationReceiptPointer
+    );
     const results = response?.results
       ?? (typeof this.service.readSemanticResults === "function"
         ? await this.service.readSemanticResults(context.runId, authenticatedSession(input))
@@ -134,15 +141,19 @@ export function cleanupReceiptRef(receipt) {
   return receiptRef(receipt, CLEANUP_RECEIPT_ARTIFACT, "CleanupReceipt");
 }
 
-export async function validateRunReceipt(receipt, snapshot, sessionContext, runId) {
+export async function validateRunReceipt(receipt, snapshot, sessionContext, runId, toolsetValidationReceiptPointer = null) {
   assertClosed(receipt, runFields, "RunReceipt");
   await validateRunIsolationReceiptSchema(receipt, "RunReceipt");
   verifyReceiptHash(receipt, "RUN_RECEIPT_HASH_MISMATCH");
-  if (receipt.schemaVersion !== 5 || receipt.runId !== runId) throw contractError("RUN_RECEIPT_REFERENCE_MISMATCH", "RunReceipt v5 identity mismatch.");
+  if (receipt.schemaVersion !== 6 || receipt.runId !== runId) throw contractError("RUN_RECEIPT_REFERENCE_MISMATCH", "RunReceipt v6 identity mismatch.");
   assertSourceIdentity(receipt, snapshot, sessionContext);
-  if (!receipt.repositorySourceSnapshotReceiptRef
-    || receipt.repositorySourceSnapshotReceiptRef.receiptId !== snapshot.receipt.receiptId
-    || receipt.repositorySourceSnapshotReceiptRef.receiptHash !== snapshot.receipt.receiptHash) {
+  if (!sameJson(receipt.toolsetValidationReceiptPointer, toolsetValidationReceiptPointer)) {
+    throw contractError("RUN_TOOLSET_POINTER_MISMATCH", "RunReceipt Toolset pointer does not match the verified full Toolset receipt.");
+  }
+  if (!sameJson(receipt.startupBindingReceiptRef, runStartupBindingReceiptRef(snapshot.startupReceipt))) {
+    throw contractError("RUN_STARTUP_BINDING_MISMATCH", "RunReceipt does not reference the authoritative Startup binding receipt.");
+  }
+  if (!sameJson(receipt.repositorySourceSnapshotReceiptRef, snapshotReceiptRef(snapshot.receipt))) {
     throw contractError("SOURCE_SNAPSHOT_IDENTITY_MISMATCH", "RunReceipt does not reference the authoritative Snapshot receipt.");
   }
   if (!["completed", "failed", "cancelled"].includes(receipt.state)) {
@@ -158,6 +169,7 @@ export async function validateCleanupReceipt(receipt, snapshot, sessionContext, 
   verifyReceiptHash(receipt, "CLEANUP_RECEIPT_HASH_MISMATCH");
   if (receipt.schemaVersion !== 4 || receipt.runId !== runId) throw contractError("RUN_RECEIPT_REFERENCE_MISMATCH", "CleanupReceipt v4 identity mismatch.");
   assertSourceIdentity(receipt, snapshot, sessionContext);
+  validateCleanupSemantics(receipt);
   assertTimeOrder([receipt.startedAt, receipt.finishedAt]);
   return receipt;
 }
@@ -180,6 +192,31 @@ function assertSourceIdentity(receipt, snapshot, sessionContext) {
     || receipt.worktreeId !== snapshot.receipt.worktreeId
     || receipt.sourceFingerprint !== snapshot.receipt.sourceFingerprint) {
     throw contractError("RUN_SOURCE_FINGERPRINT_MISMATCH", "RunIsolation receipt source identity mismatch.");
+  }
+}
+
+function sameJson(left, right) {
+  return canonicalJson(left) === canonicalJson(right);
+}
+
+function validateCleanupSemantics(receipt) {
+  const checks = Object.values(receipt.safetyChecks ?? {});
+  for (const check of checks) {
+    if (check.status === "passed" && (check.errorCode !== null || check.evidenceHash === null)) {
+      throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", "A passed Cleanup safety check requires evidence and no error code.");
+    }
+    if (["failed", "indeterminate"].includes(check.status) && (check.errorCode === null || check.evidenceHash === null)) {
+      throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", "A failed or indeterminate Cleanup safety check requires error and evidence.");
+    }
+    if (check.status === "not_applicable"
+      && (receipt.outcome !== "retained" || check.errorCode !== null || check.evidenceHash !== null)) {
+      throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", "Cleanup not_applicable checks are valid only for retained, unstarted deletion.");
+    }
+  }
+  if (["blocked", "quarantined", "unknown"].includes(receipt.outcome)
+    && !checks.some((check) => ["failed", "indeterminate"].includes(check.status))
+    && !["indeterminate", "foreign", "pidReused"].includes(receipt.processReconciliation)) {
+    throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", `${receipt.outcome} Cleanup requires concrete failed or indeterminate safety evidence.`);
   }
 }
 
