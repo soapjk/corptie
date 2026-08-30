@@ -253,8 +253,9 @@ import {
 import { ReplayEventLog } from "./utils/replayEventLog.mjs";
 import { deliveredStateRevision, StateSyncService } from "./application/stateSyncService.mjs";
 import { SessionTimelineChangePublisher } from "./application/sessionTimelineChangePublisher.mjs";
-import { TurnObservabilityService } from "./observability/turnObservability.mjs";
-import { handleTurnObservabilityHttpRequest } from "./observability/turnObservabilityHttpApi.mjs";
+import { CodeTaskObservabilityService } from "./observability/codeTaskObservability.mjs";
+import { handleCodeTaskObservabilityHttpRequest } from "./observability/codeTaskObservabilityHttpApi.mjs";
+import { OBSERVABILITY_DEPENDENCY_PINS } from "./observability/dependencyContractManifest.mjs";
 import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
 import { RunIsolationAuthorityResolver, RunIsolationExecutionCoordinator } from "./runIsolation/index.mjs";
 import {
@@ -314,10 +315,17 @@ const reportedUnclassifiedProviderSessionIds = new Set();
 const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
-const turnObservability = new TurnObservabilityService({
+const turnObservability = new CodeTaskObservabilityService({
   store,
   environment: environmentName,
-  tenantId: process.env.CORPTIE_TENANT_ID ?? "local"
+  dataRootResolver: () => store.settings().dataRoot,
+  resolveArtifactPin: (artifactId, version) => {
+    const stored = store.getArtifactVersion(artifactId, version);
+    if (!stored) return null;
+    const expected = OBSERVABILITY_DEPENDENCY_PINS.find((entry) => entry.artifactId === artifactId && entry.version === version);
+    return expected ? { ...stored,
+      acceptanceState: stored.approvalStatus === "approved" ? "approved_fixed" : "unapproved" } : null;
+  }
 });
 const providerEventProjector = new ProviderEventProjector({ store });
 const providerEventIngestion = new ProviderEventIngestionService({
@@ -7533,7 +7541,7 @@ function route(request, response) {
     return;
   }
 
-  if (handleTurnObservabilityHttpRequest({ request, response, url, service: turnObservability })) {
+  if (handleCodeTaskObservabilityHttpRequest({ request, response, url, service: turnObservability })) {
     return;
   }
 

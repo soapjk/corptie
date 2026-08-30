@@ -10,43 +10,59 @@ struct TurnTimeCategory: Decodable, Equatable {
 }
 
 struct TurnDataCompleteness: Decodable, Equatable {
-    let status: String
-    let coverageRatio: Double
-    let exact: Bool
-    let spanCount: Int
+    let state: String
+    let droppedEventCount: Int
+    let missingTerminal: Bool
+    let rawCaptureStatus: String
+
+    var status: String { state }
+    var exact: Bool { state == "complete" }
+    var coverageRatio: Double { exact ? 1 : 0 }
+}
+
+struct TurnObservabilityIdentity: Decodable, Equatable {
+    let logicalSessionId: String
+    let turnId: String
+    let turnExecutionId: String
+    let providerBindingId: String
+    let bindingGeneration: Int
+}
+
+struct TurnWallSummary: Decodable, Equatable {
+    let finalized: Bool
+    let wallClockMs: Double?
+    let observedWatermarkMs: Double?
+}
+
+struct TurnWallPartition: Decodable, Equatable {
+    let attributedUnionMs: Double
+    let unattributedMs: Double
+    let overlapMs: Double
 }
 
 struct TurnTimeSummary: Decodable, Equatable {
-    let tenantId: String
-    let sessionId: String
-    let logicalTurnId: String
-    let turnRunId: String
-    let providerId: String
-    let providerSessionId: String?
-    let bindingId: String
-    let agentId: String?
-    let objectiveId: String?
-    let workItemId: String?
-    let workspaceId: String?
+    let schemaVersion: Int
+    let identity: TurnObservabilityIdentity
     let analysisVersion: String
-    let observabilityLevel: String
-    let wallClockMs: Double
-    let criticalPathMs: Double?
-    let estimatedCriticalPathMs: Double?
-    let unattributedMs: Double?
-    let estimatedUnattributedMs: Double?
-    let categories: [String: TurnTimeCategory]
-    let developmentOperations: [String: TurnTimeCategory]?
+    let wall: TurnWallSummary
+    let wallPartition: TurnWallPartition
+    let inclusive: [String: Double]
     let spanCount: Int
-    let dataCompleteness: TurnDataCompleteness
-    let retryCount: Int
-    let recovered: Bool
-    let startedAt: String
-    let endedAt: String
+    let completeness: TurnDataCompleteness
 
-    var displayedCriticalPathMs: Double? { criticalPathMs ?? estimatedCriticalPathMs }
-    var displayedUnattributedMs: Double? { unattributedMs ?? estimatedUnattributedMs }
-    var isBoundaryOnly: Bool { observabilityLevel == "boundary-only" }
+    var sessionId: String { identity.logicalSessionId }
+    var logicalTurnId: String { identity.turnId }
+    var turnExecutionId: String { identity.turnExecutionId }
+    var observabilityLevel: String { completeness.state }
+    var wallClockMs: Double { wall.wallClockMs ?? wall.observedWatermarkMs ?? 0 }
+    var displayedCriticalPathMs: Double? { wallPartition.attributedUnionMs }
+    var displayedUnattributedMs: Double? { wallPartition.unattributedMs }
+    var isBoundaryOnly: Bool { inclusive.keys.contains("provider.opaque") && !inclusive.keys.contains("provider.model_sampling") }
+    var categories: [String: TurnTimeCategory] {
+        inclusive.mapValues { TurnTimeCategory(inclusiveMs: $0, estimateMs: nil, precise: wall.finalized) }
+    }
+    var developmentOperations: [String: TurnTimeCategory]? { nil }
+    var dataCompleteness: TurnDataCompleteness { completeness }
 }
 
 struct TurnTimeSummaryEnvelope: Decodable { let summary: TurnTimeSummary }
@@ -55,76 +71,28 @@ struct TurnTraceSpan: Decodable, Identifiable, Equatable {
     let traceId: String
     let spanId: String
     let parentSpanId: String?
-    let name: String
-    let startTimeUnixNano: String
-    let endTimeUnixNano: String
+    let operation: String
+    let intervalClass: String
+    let startObservedAtUnixNano: String
+    let endObservedAtUnixNano: String
     let status: String
-    let attributes: [String: TurnTraceAttribute]
 
     var id: String { spanId }
-    var category: String { attributes["corptie.category"]?.stringValue ?? "other" }
-    var operation: String { attributes["corptie.operation"]?.stringValue ?? "other" }
-    var operationDetail: String? { attributes["corptie.operation.detail"]?.stringValue }
-    var activityPhase: String? { attributes["corptie.activity.phase"]?.stringValue }
-    var codeLocation: String? {
-        guard let path = attributes["code.file.path"]?.stringValue else { return nil }
-        let line = attributes["code.line.number"]?.stringValue
-        let function = attributes["code.function.name"]?.stringValue
-        let normalizedLine = line.map { $0.hasSuffix(".0") ? String($0.dropLast(2)) : $0 }
-        return [normalizedLine.map { "\(path):\($0)" } ?? path, function]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-    }
+    var category: String { intervalClass }
+    var operationDetail: String? { nil }
+    var activityPhase: String? { nil }
+    var codeLocation: String? { nil }
     var durationMs: Double {
-        guard let start = Decimal(string: startTimeUnixNano),
-              let end = Decimal(string: endTimeUnixNano) else { return 0 }
+        guard let start = Decimal(string: startObservedAtUnixNano),
+              let end = Decimal(string: endObservedAtUnixNano) else { return 0 }
         return NSDecimalNumber(decimal: end - start).doubleValue / 1_000_000
-    }
-
-    enum CodingKeys: CodingKey { case traceId, spanId, parentSpanId, name, startTimeUnixNano, endTimeUnixNano, status, attributes }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        traceId = try container.decode(String.self, forKey: .traceId)
-        spanId = try container.decode(String.self, forKey: .spanId)
-        parentSpanId = try container.decodeIfPresent(String.self, forKey: .parentSpanId)
-        name = try container.decode(String.self, forKey: .name)
-        startTimeUnixNano = try container.decode(String.self, forKey: .startTimeUnixNano)
-        endTimeUnixNano = try container.decode(String.self, forKey: .endTimeUnixNano)
-        status = try container.decode(String.self, forKey: .status)
-        let values = try container.decode([String: JSONScalar].self, forKey: .attributes)
-        attributes = values.mapValues(TurnTraceAttribute.init)
-    }
-}
-
-struct TurnTraceAttribute: Equatable {
-    let stringValue: String
-    init(_ scalar: JSONScalar) { stringValue = scalar.description }
-}
-
-enum JSONScalar: Decodable, CustomStringConvertible {
-    case string(String), number(Double), boolean(Bool)
-
-    init(from decoder: Decoder) throws {
-        let value = try decoder.singleValueContainer()
-        if let string = try? value.decode(String.self) { self = .string(string) }
-        else if let number = try? value.decode(Double.self) { self = .number(number) }
-        else if let boolean = try? value.decode(Bool.self) { self = .boolean(boolean) }
-        else { throw DecodingError.typeMismatch(JSONScalar.self, .init(codingPath: decoder.codingPath, debugDescription: "Trace attributes must be scalar.")) }
-    }
-
-    var description: String {
-        switch self {
-        case .string(let value): return value
-        case .number(let value): return String(value)
-        case .boolean(let value): return String(value)
-        }
     }
 }
 
 struct TurnRawTrace: Decodable, Equatable {
-    let observabilityLevel: String
     let spans: [TurnTraceSpan]
+
+    enum CodingKeys: String, CodingKey { case spans = "items" }
 }
 
 private struct TurnObservabilityErrorEnvelope: Decodable { let error: String }
@@ -155,8 +123,8 @@ final class TurnObservabilityClient {
         return envelope.summary
     }
 
-    func rawTrace(turnRunId: String) async throws -> TurnRawTrace {
-        try await get("turn-runs/\(encoded(turnRunId))/trace")
+    func rawTrace(turnExecutionId: String) async throws -> TurnRawTrace {
+        try await get("turn-executions/\(encoded(turnExecutionId))/spans")
     }
 
     private func get<T: Decodable>(_ path: String) async throws -> T {
@@ -184,12 +152,12 @@ final class TurnObservabilityViewModel: ObservableObject {
     @Published private(set) var isLoadingTrace = false
     @Published private(set) var error: String?
     private var loadedSessionId: String?
-    private var loadedRunId: String?
+    private var loadedExecutionId: String?
 
     func loadSummary(sessionId: String) async {
         guard loadedSessionId != sessionId else { return }
         loadedSessionId = sessionId
-        loadedRunId = nil
+        loadedExecutionId = nil
         summary = nil
         trace = nil
         error = nil
@@ -200,13 +168,13 @@ final class TurnObservabilityViewModel: ObservableObject {
     }
 
     func loadTraceIfNeeded() async {
-        guard let runId = summary?.turnRunId, loadedRunId != runId else { return }
-        loadedRunId = runId
+        guard let executionId = summary?.turnExecutionId, loadedExecutionId != executionId else { return }
+        loadedExecutionId = executionId
         error = nil
         isLoadingTrace = true
         defer { isLoadingTrace = false }
-        do { trace = try await TurnObservabilityClient.shared.rawTrace(turnRunId: runId) }
-        catch { self.error = error.localizedDescription; loadedRunId = nil }
+        do { trace = try await TurnObservabilityClient.shared.rawTrace(turnExecutionId: executionId) }
+        catch { self.error = error.localizedDescription; loadedExecutionId = nil }
     }
 }
 
@@ -216,7 +184,7 @@ struct SessionTurnObservabilityView: View {
     @State private var isAnalysisExpanded = false
     @State private var isTraceExpanded = false
 
-    private let categoryOrder = ["queue", "dispatch", "context", "model", "tool", "mcp", "persistence", "delivery", "other"]
+    private let categoryOrder = ["host.queue", "session.readiness", "worktree.readiness", "context.assembly", "provider.queue", "provider.model_sampling", "provider.opaque", "tool.dispatch", "tool.execute", "tool.result_serialization", "process.test", "process.build", "process.search", "process.version_control", "process.service_start", "process.cleanup", "artifact.operation", "user.wait", "approval.wait", "recovery.retry"]
     private let operationOrder = ["history.read", "code.search", "code.read", "code.edit", "shell", "git", "test", "build", "mcp", "model.reasoning", "persistence", "other"]
 
     var body: some View {
@@ -384,7 +352,7 @@ struct SessionTurnObservabilityView: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 5) {
                 Text(operationLabel(span.operation)).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
-                Text(span.operationDetail ?? span.name).lineLimit(1).truncationMode(.middle)
+                Text(span.operationDetail ?? span.operation).lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 2)
                 Text(durationText(span.durationMs)).fontDesign(.monospaced)
             }

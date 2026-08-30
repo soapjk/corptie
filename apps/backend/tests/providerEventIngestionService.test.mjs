@@ -19,7 +19,7 @@ const binding = {
   sessionId: "session:one"
 };
 
-async function fixture({ project, onCommitted } = {}) {
+async function fixture({ project, onCommitted, observe } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-ingestion-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -64,7 +64,8 @@ async function fixture({ project, onCommitted } = {}) {
         outbox: [{ topic: "timeline", eventType: "TimelineChanged", payload: { itemId: event.itemId } }]
       };
     }),
-    onCommitted
+    onCommitted,
+    observe
   });
   return { directory, store, service };
 }
@@ -146,6 +147,25 @@ test("Provider event ingestion atomically commits Inbox, event, turn, item, curs
     assert.equal(committed[0][0].status, "pending");
     assert.equal(stateNotifications, 1, "nested state writes notify once after commit");
     assert.equal(timelineNotifications.length, 1, "nested timeline writes notify once after commit");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("production observe boundary receives the committed Session event and returns its durable receipt", async () => {
+  const calls = [];
+  const { directory, store, service } = await fixture({ observe: (context) => {
+    calls.push(context);
+    assert.ok(store.providerInboxEvent(binding.providerId, binding.providerSessionId, context.event.providerEventId));
+    assert.ok(store.listSessionEvents(binding.sessionId).some((event) => event.eventId === context.sessionEvent.eventId));
+    return { state: "accepted", observationId: `observation:${context.event.providerEventId}` };
+  } });
+  try {
+    const result = service.ingest(providerEvent());
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].sessionEvent.eventId, result.sessionEvent.eventId);
+    assert.deepEqual(result.observability, { state: "accepted", observationId: "observation:event:one" });
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
