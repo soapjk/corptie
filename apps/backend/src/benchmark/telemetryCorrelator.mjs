@@ -38,7 +38,8 @@ export class TelemetryCorrelator {
     same(chain.providerBindingGeneration, observation.identity?.bindingGeneration);
     same(chain.catalogVersion, observation.versions?.catalogVersion);
     same(chain.sourceFingerprint, toolset.snapshotRef?.sourceFingerprint, run.sourceFingerprint, cleanup.sourceFingerprint);
-    same(chain.runId, cleanup.runId, cleanup.runReceiptRef?.runId, observation.runId);
+    same(chain.runId, cleanup.runId, observation.runId);
+    same(run.receiptId, cleanup.runReceiptRef?.receiptId);
     same(chain.logicalSessionId, observationExport.identity?.logicalSessionId);
     same(chain.providerBindingId, observationExport.identity?.providerBindingId);
     same(chain.providerBindingGeneration, observationExport.identity?.bindingGeneration);

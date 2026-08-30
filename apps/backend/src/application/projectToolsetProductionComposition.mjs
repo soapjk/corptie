@@ -183,7 +183,7 @@ function resolveSessionAuthority({ store, startupReceipts, authenticatedSession,
   const startup = startupReceipts.require(authenticatedSession.logicalSessionId);
   const binding = logical?.activeBinding;
   if (!ownership?.objectiveId || ownership.workItemId !== authenticatedSession.workItemId
-    || !binding || binding.state !== "active" || binding.bindingId !== startup.providerBindingId
+    || !binding || binding.state !== "active"
     || binding.worktreeId !== startup.worktreeId || resolve(binding.boundCwd) !== resolve(startup.canonicalWorktreePath)
     || resolve(workingDirectory) !== resolve(startup.canonicalWorktreePath)) {
     fail("TOOLSET_PERMISSION_DENIED", "Authenticated Session, Startup receipt and active Worktree differ.");
@@ -194,8 +194,13 @@ function resolveSessionAuthority({ store, startupReceipts, authenticatedSession,
     workItemId: ownership.workItemId,
     repositoryId: startup.repositoryId,
     worktreeId: startup.worktreeId,
-    bindingId: binding.bindingId,
+    // StartupBindingReceipt owns the execution binding generation. The
+    // Provider route has its own opaque binding id; comparing those two ids
+    // would conflate separate authorities and reject every real Work Session.
+    bindingId: startup.providerBindingId,
     bindingGeneration: startup.bindingGeneration,
+    providerBindingId: binding.bindingId,
+    providerBindingGeneration: binding.routingVersion,
     capabilityClass: "full_required"
   });
 }
