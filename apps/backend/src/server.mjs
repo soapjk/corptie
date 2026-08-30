@@ -223,7 +223,7 @@ import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
 import { PROJECT_TOOLSET_ISOLATED_ACTIONS, ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
-import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
+import { createProjectToolsetProductionComposition } from "./application/projectToolsetProductionComposition.mjs";
 import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
@@ -262,7 +262,7 @@ const runIsolationCoordinator = runIsolationDataRoot
   : null;
 // Startup/Snapshot/Toolset production owners compose their authoritative ports
 // here. Until that integration exists, executable Toolset actions fail closed.
-const runIsolationAuthorityResolver = new RunIsolationAuthorityResolver();
+let runIsolationAuthorityResolver = new RunIsolationAuthorityResolver();
 // 会话快照只返回尾部窗口的完整消息，更早的历史通过补拉端点按需获取。
 // 打开会话时前端只渲染尾部一屏，全量 text（千级消息约 1MB+）是切会话延迟的主因。
 const execFileAsync = promisify(execFile);
@@ -288,6 +288,8 @@ let workItemExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
 let projectCodeApplicationService = null;
 let workSessionStartupCoordinator = null;
+let projectToolsetProduction = null;
+let projectToolsetInitializer = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -808,7 +810,10 @@ const gitWorkspaces = new GitWorkspaceManager({
     console.info(`[worktree-performance] ${JSON.stringify(measurement)}`);
   }
 });
-const projectToolsets = new ProjectToolsetManager({ runIsolationCoordinator });
+const projectToolsets = new ProjectToolsetManager({
+  runIsolationCoordinator,
+  validationReceiptResolver: (receiptId) => projectToolsetProduction?.resolveToolsetReceipt(receiptId) ?? null
+});
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
 const openClackyProvider = createOpenClackyProvider(openClackyManager, {
@@ -1073,12 +1078,6 @@ const backgroundAgentService = new BackgroundAgentService({
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
   backgroundAgent: backgroundAgentService
 }));
-const projectToolsetInitializer = new ProjectToolsetInitializer({
-  manager: projectToolsets,
-  backgroundAgent: backgroundAgentService,
-  referencePath: bundledProjectToolsetReferencePath,
-  onEvent: (type, payload) => emitEvent(type, payload)
-});
 const projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
 const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
 const projectCodeIndexStore = new ProjectCodeIndexStore({
@@ -1094,6 +1093,22 @@ projectCodeApplicationService = new ProjectCodeSearchApplicationService({
   snapshotBuilder: projectCodeSnapshotBuilder,
   searchService: projectCodeSearchService
 });
+if (runIsolationCoordinator) {
+  projectToolsetProduction = createProjectToolsetProductionComposition({
+    store,
+    startupReceipts: projectCodeStartupReceipts,
+    projectCodeApplicationService,
+    runIsolationCoordinator,
+    backgroundAgentService,
+    dataRoot: store.dataRoot,
+    environment: environmentName,
+    onEvent: (type, payload) => emitEvent(type, payload)
+  });
+  projectToolsetInitializer = projectToolsetProduction.initializer;
+  runIsolationAuthorityResolver = projectToolsetProduction.runAuthorityResolver;
+} else {
+  projectToolsetInitializer = disabledProjectToolsetInitializer();
+}
 const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
@@ -3962,7 +3977,6 @@ async function createSessionThroughApplication(providerId, input = {}, context =
         origin: context.source ?? "application"
       });
     }
-    if (providerId === "codex-app-server") scheduleProjectToolsetInitialization(cwd);
     return store.getSession(session.id) ?? session;
   } finally {
     releaseTitle();
@@ -5893,8 +5907,10 @@ async function performProjectDevelopmentServiceAction(project, action, input = {
     throw error;
   }
   if (action === "initialize" || action === "update") {
-    projectToolsetInitializer.schedule(project.mainPath, { force: action === "update" });
-    return { scheduled: true };
+    const error = new Error("Project Toolset initialization requires an authenticated Work Session.");
+    error.code = "TOOLSET_PERMISSION_DENIED";
+    error.statusCode = 403;
+    throw error;
   }
   if (action === "profile") {
     const profileId = String(input.profileId ?? "").trim();
@@ -6404,18 +6420,13 @@ function projectWorkingDirectoryForSession(sessionId) {
   return cwd;
 }
 
-function scheduleProjectToolsetInitialization(cwd) {
-  inspectGitWorkspace(cwd)
-    .then(() => projectToolsetInitializer.schedule(cwd))
-    .catch(() => {});
-}
-
 async function projectToolsetStatus(sessionId) {
   const cwd = projectWorkingDirectoryForSession(sessionId);
-  return projectToolsetStatusForPath(cwd);
+  const authenticatedSession = projectToolsetAuthenticatedSession(sessionId);
+  return projectToolsetStatusForPath(cwd, { logicalSessionId: authenticatedSession.logicalSessionId });
 }
 
-async function projectToolsetStatusForPath(cwd) {
+async function projectToolsetStatusForPath(cwd, options = {}) {
   const toolset = await projectToolsets.inspect(cwd);
   if (toolset.configurationError) {
     return {
@@ -6465,8 +6476,7 @@ async function projectToolsetStatusForPath(cwd) {
     };
   }
   if (!toolset.configured) {
-    await projectToolsetInitializer.recoverOnce(cwd);
-    const initialization = projectToolsetInitializer.status(toolset.repositoryId);
+    const initialization = await projectToolsetInitializer.status(toolset.repositoryId, options.logicalSessionId ?? null);
     return {
       toolset,
       service: {
@@ -6480,7 +6490,9 @@ async function projectToolsetStatusForPath(cwd) {
       }
     };
   }
-  const desiredSource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
+  const desiredSource = options.logicalSessionId && projectToolsetProduction
+    ? runtimeSourceIdentity((await projectToolsetProduction.runtimeAuthority(options.logicalSessionId)).snapshot)
+    : await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
   const [status, health, version] = await Promise.all([
     projectToolsets.run(cwd, "status", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
     projectToolsets.run(cwd, "health", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
@@ -8433,7 +8445,7 @@ function route(request, response) {
   const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
   const sessionDeletionPlanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/deletion-plan$/);
   const sessionProjectToolsetMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|profile|start|restart|stop))?$/
+    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|cancel|profile|start|restart|stop))?$/
   );
   const sessionGitHubPushMatch = url.pathname.match(
     /^\/sessions\/([^/]+)\/github-push\/(prepare|commit-message|confirm)$/
@@ -8499,8 +8511,20 @@ function route(request, response) {
         const cwd = projectWorkingDirectoryForSession(sessionId);
         const input = await readJson(request);
         if (action === "initialize" || action === "update") {
-          projectToolsetInitializer.schedule(cwd, { force: action === "update" });
+          const authenticatedSession = projectToolsetAuthenticatedSession(sessionId);
+          void projectToolsetInitializer.schedule(cwd, {
+            force: action === "update",
+            authenticatedSession,
+            idempotencyKey: input.idempotencyKey
+          }).catch(() => {});
           sendJson(response, 202, { scheduled: true, action });
+          return;
+        }
+        if (action === "cancel") {
+          const operationId = String(input.operationId ?? "").trim();
+          if (!operationId) throw Object.assign(new Error("operationId is required."), { code: "TOOLSET_CANCEL_REQUIRED", statusCode: 400 });
+          const operation = await projectToolsetInitializer.cancel(operationId);
+          sendJson(response, 200, { operation });
           return;
         }
         if (action === "profile") {
@@ -8514,7 +8538,7 @@ function route(request, response) {
         }
         const isolatedAction = PROJECT_TOOLSET_ISOLATED_ACTIONS.includes(action);
         const runIsolation = isolatedAction ? await projectToolsetRunIsolationOptions(sessionId, cwd, action) : null;
-        const result = await projectToolsets.run(cwd, action, { ...(runIsolation ? { runIsolation } : {}), ...(action === "start" || action === "restart" ? { timeoutMs: 60_000 } : {}) });
+        const result = await projectToolsets.run(cwd, action, { ...(runIsolation ? { runIsolation, sourceIdentity: runIsolation.sourceIdentity } : {}), ...(action === "start" || action === "restart" ? { timeoutMs: 60_000 } : {}) });
         const status = await projectToolsetStatus(sessionId);
         emitEvent("ProjectServiceChanged", { sessionId, action, result, ...status }, { sessionId });
         sendJson(response, result.ok ? 200 : 409, { action: result, ...status });
@@ -9004,24 +9028,51 @@ function route(request, response) {
 
 async function projectToolsetRunIsolationOptions(sessionId, cwd, action) {
   if (!runIsolationCoordinator) throw Object.assign(new Error("RunIsolation production execution is disabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 });
+  if (!projectToolsetProduction) throw Object.assign(new Error("Project Toolset production composition is unavailable."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 });
+  const authenticated = projectToolsetAuthenticatedSession(sessionId);
+  const runtime = await projectToolsetProduction.runtimeAuthority(authenticated.logicalSessionId);
+  const startup = projectCodeStartupReceipts.require(authenticated.logicalSessionId);
+  if (resolve(cwd) !== resolve(startup.canonicalWorktreePath)) throw Object.assign(new Error("Toolset action Worktree differs from authoritative Startup."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
+  const authority = await runIsolationAuthorityResolver.resolve({
+    logicalSessionId: runtime.logicalSessionId,
+    workItemId: runtime.workItemId,
+    repositoryId: runtime.repositoryId,
+    worktreeId: runtime.worktreeId,
+    action,
+    bindingId: runtime.bindingId,
+    bindingGeneration: runtime.bindingGeneration
+  });
+  return {
+    prepare: { mode: "development", sourceAware: true, toolsetRequired: true, startupBindingReceiptRef: authority.startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: authority.repositorySourceSnapshotReceiptRef, toolsetValidationReceiptPointer: authority.toolsetValidationReceiptPointer, idempotencyKey: `toolset:${action}:${runtime.logicalSessionId}:${randomUUID()}` },
+    session: { logicalSessionId: runtime.logicalSessionId, workItemId: runtime.workItemId, repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId },
+    sourceIdentity: runtimeSourceIdentity(runtime.snapshot)
+  };
+}
+
+function projectToolsetAuthenticatedSession(sessionId) {
   const reference = requireSessionReference(sessionId);
   const logical = reference.logicalSessionId
     ? store.getLogicalSession(reference.logicalSessionId)
     : store.getLogicalSessionByLegacySessionId(reference.sessionId);
-  const identity = await inspectGitWorkspace(cwd);
-  const workItemId = reference.metadata.session?.workItemId;
-  const binding = logical?.activeBinding;
-  if (!logical?.logicalSessionId || !workItemId || !binding?.bindingId || binding.state !== "active") throw Object.assign(new Error("RunIsolation requires a WorkItem-bound logical Session with an active binding."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
-  if (binding.logicalSessionId !== logical.logicalSessionId
-    || binding.worktreeId !== identity.worktreeId
-    || (logical.repositoryId && logical.repositoryId !== identity.repositoryId)) {
-    throw Object.assign(new Error("RunIsolation execution does not match the authenticated Session's active repository and Worktree binding."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
-  }
-  const authority = await runIsolationAuthorityResolver.resolve({ logicalSessionId: logical.logicalSessionId, workItemId, repositoryId: identity.repositoryId, worktreeId: identity.worktreeId, action, bindingId: binding.bindingId, bindingGeneration: Number(binding.routingVersion) });
-  return {
-    prepare: { mode: "development", sourceAware: true, toolsetRequired: true, startupBindingReceiptRef: authority.startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: authority.repositorySourceSnapshotReceiptRef, toolsetValidationReceiptPointer: authority.toolsetValidationReceiptPointer, idempotencyKey: `toolset:${action}:${logical.logicalSessionId}:${randomUUID()}` },
-    session: { logicalSessionId: logical.logicalSessionId, workItemId, repositoryId: identity.repositoryId, worktreeId: identity.worktreeId }
-  };
+  if (!logical?.logicalSessionId) throw Object.assign(new Error("Project Toolset requires an authenticated logical Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
+  const ownership = store.assertLogicalWorkSessionBinding(logical.logicalSessionId);
+  if (!ownership?.workItemId) throw Object.assign(new Error("Project Toolset requires a WorkItem-bound Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
+  return Object.freeze({ logicalSessionId: logical.logicalSessionId, workItemId: ownership.workItemId });
+}
+
+function runtimeSourceIdentity(snapshot) {
+  if (!snapshot?.sourceCommitOid || !snapshot?.sourceFingerprint) throw Object.assign(new Error("Authoritative Snapshot source identity is unavailable."), { code: "SOURCE_SNAPSHOT_REQUIRED", statusCode: 409 });
+  return Object.freeze({
+    revision: snapshot.sourceCommitOid,
+    fingerprint: snapshot.sourceFingerprint,
+    dirty: Number(snapshot.dirtyOverlayRef?.entryCount ?? 0) > 0,
+    worktreePath: null
+  });
+}
+
+function disabledProjectToolsetInitializer() {
+  const unavailable = () => { throw Object.assign(new Error("Project Toolset production composition is disabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 }); };
+  return Object.freeze({ schedule: unavailable, cancel: unavailable, recoverAll: async () => [], status: async () => ({ state: "failed", outcome: "unknown", operationId: null, error: "DEPENDENCY_CONTRACT_UNRESOLVED" }) });
 }
 
 function userMessageCommandSource(input = {}) {
@@ -9092,6 +9143,10 @@ if (recoveredInterruptedWorkItemStarts > 0) {
   console.warn(`[work-item-start-recovery] ${JSON.stringify({
     recoveredInterruptedWorkItemStarts
   })}`);
+}
+const recoveredProjectToolsets = await projectToolsetInitializer.recoverAll();
+if (recoveredProjectToolsets.length > 0) {
+  console.warn(`[project-toolset-recovery] ${JSON.stringify({ recoveredOperations: recoveredProjectToolsets.length })}`);
 }
 const collaborationMigration = collaborationCore.initialize();
 if (collaborationMigration.status === "applied") {

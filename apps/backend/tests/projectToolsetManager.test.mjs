@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,16 +87,11 @@ test("run enforces configuration and parses the standard JSON contract", async (
 
 test("Toolset-owned receipt resolver exposes only the exact receipt requested by Run v6", async () => {
   const fixture = await createFixture();
-  const manager = new ProjectToolsetManager();
+  const receipt = { receiptId: "toolset_validation_receipt:run_v6", schemaVersion: 3 };
+  const manager = new ProjectToolsetManager({ validationReceiptResolver: async (receiptId) => receiptId === receipt.receiptId ? receipt : null });
   try {
-    const state = await manager.scaffold(fixture.mainPath);
-    const receiptId = "toolset_validation_receipt:run_v6";
-    const receiptsPath = join(state.runtimePath, "validation-receipts");
-    const name = createHash("sha256").update(receiptId, "utf8").digest("hex");
-    const receipt = { receiptId, schemaVersion: 3 };
-    await mkdir(receiptsPath, { recursive: true });
-    await writeFile(join(receiptsPath, `${name}.json`), `${JSON.stringify(receipt)}\n`);
-    assert.deepEqual(await manager.resolveValidationReceipt(fixture.featurePath, receiptId), receipt);
+    await manager.scaffold(fixture.mainPath);
+    assert.deepEqual(await manager.resolveValidationReceipt(fixture.featurePath, receipt.receiptId), receipt);
     assert.equal(await manager.resolveValidationReceipt(fixture.featurePath, "toolset_validation_receipt:missing"), null);
     assert.equal(await manager.resolveValidationReceipt(fixture.featurePath, "../escape"), null);
   } finally {
@@ -112,7 +106,7 @@ test("mutating and validation actions fail closed without server-owned RunIsolat
     await manager.scaffold(fixture.mainPath);
     await manager.markConfigured(fixture.mainPath);
     for (const action of ["build", "start", "restart", "stop", "verify"]) {
-      await assert.rejects(() => manager.run(fixture.mainPath, action), { code: "DEPENDENCY_CONTRACT_UNRESOLVED" });
+      await assert.rejects(() => manager.run(fixture.mainPath, action, { sourceIdentity: { revision: "test", fingerprint: "f".repeat(64), dirty: false } }), { code: "DEPENDENCY_CONTRACT_UNRESOLVED" });
     }
   } finally {
     await fixture.close();
@@ -124,7 +118,8 @@ test("production manager composition executes a Toolset action through Run v6 an
   t.after(() => project.close());
   const { service } = await runIsolationFixture(t);
   const coordinator = new RunIsolationExecutionCoordinator({ service });
-  const manager = new ProjectToolsetManager({ runIsolationCoordinator: coordinator });
+  let toolsetReceipt = null;
+  const manager = new ProjectToolsetManager({ runIsolationCoordinator: coordinator, validationReceiptResolver: async (receiptId) => receiptId === toolsetReceipt?.receiptId ? toolsetReceipt : null });
   const state = await manager.scaffold(project.mainPath);
   await writeFile(state.scripts.build.path, "#!/bin/sh\nprintf '%s\\n' '{\"schemaVersion\":2,\"action\":\"build\",\"ok\":true,\"artifactId\":\"artifact:test\"}'\n");
   await chmod(state.scripts.build.path, 0o700);
@@ -132,14 +127,11 @@ test("production manager composition executes a Toolset action through Run v6 an
   const workspace = await import("../src/utils/gitWorktreeInventory.mjs").then(({ inspectGitWorkspace }) => inspectGitWorkspace(project.mainPath));
   const authority = { logicalSessionId: "logical:test", workItemId: "work_item:test", repositoryId: workspace.repositoryId, worktreeId: workspace.worktreeId };
   const toolset = toolsetFixture({ receiptId: "toolset_validation_receipt:production", authority });
-  const receiptsPath = join(state.runtimePath, "validation-receipts");
-  const name = createHash("sha256").update(toolset.receipt.receiptId, "utf8").digest("hex");
-  await mkdir(receiptsPath, { recursive: true });
-  await writeFile(join(receiptsPath, `${name}.json`), `${JSON.stringify(toolset.receipt)}\n`);
+  toolsetReceipt = toolset.receipt;
   const request = { ...authority, action: "build", bindingId: "binding:production", bindingGeneration: 1 };
   const authorityResolver = new RunIsolationAuthorityResolver({ resolveAuthority: async (input) => ({ logicalSessionId: input.logicalSessionId, workItemId: input.workItemId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, bindingId: input.bindingId, bindingGeneration: input.bindingGeneration, startupBindingReceiptRef: prepareInput().startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: toolset.snapshotRef, toolsetValidationReceiptPointer: toolset.pointer }) });
   const resolved = await authorityResolver.resolve(request);
-  const result = await manager.run(project.mainPath, "build", { runIsolation: { session: authority, prepare: prepareInput({ sourceAware: true, toolsetRequired: true, ...resolved, idempotencyKey: "production-manager-build" }) } });
+  const result = await manager.run(project.mainPath, "build", { sourceIdentity: { revision: "test", fingerprint: toolset.snapshotRef.sourceFingerprint, dirty: false }, runIsolation: { session: authority, prepare: prepareInput({ sourceAware: true, toolsetRequired: true, ...resolved, idempotencyKey: "production-manager-build" }) } });
   assert.equal(result.ok, true);
   assert.equal(result.payload.artifactId, "artifact:test");
   assert.equal(result.runIsolation.runReceipt.schemaVersion, 6);
@@ -161,6 +153,7 @@ test("run can restart the service from a selected worktree", async () => {
 
     const result = await manager.run(fixture.mainPath, "restart", {
       executionRoot: fixture.featurePath,
+      sourceIdentity: await manager.sourceIdentity(fixture.featurePath),
       runIsolation: TEST_RUN_AUTHORITY
     });
 

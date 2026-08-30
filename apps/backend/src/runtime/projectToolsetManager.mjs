@@ -26,6 +26,7 @@ export class ProjectToolsetManager {
     this.execFile = options.execFile ?? execFileAsync;
     this.now = options.now ?? (() => new Date().toISOString());
     this.runIsolationCoordinator = options.runIsolationCoordinator ?? null;
+    this.validationReceiptResolver = options.validationReceiptResolver ?? null;
   }
 
   async inspect(workingDirectory) {
@@ -148,6 +149,9 @@ export class ProjectToolsetManager {
       throw new Error("The requested service worktree belongs to a different Git repository.");
     }
     const executionRoot = executionIdentity.canonicalPath;
+    if (!readOnlyProbe && !options.sourceIdentity) {
+      throw Object.assign(new Error(`An authoritative Snapshot source identity is required for the ${action} Toolset action.`), { code: "SOURCE_SNAPSHOT_REQUIRED" });
+    }
     const source = options.sourceIdentity ?? await this.sourceIdentity(executionRoot, state.runtimePath);
     if (!readOnlyProbe && !options.runIsolation) {
       throw Object.assign(new Error(`RunIsolation authority is required for the ${action} Toolset action.`), { code: "DEPENDENCY_CONTRACT_UNRESOLVED" });
@@ -326,9 +330,8 @@ export class ProjectToolsetManager {
 
   async resolveValidationReceipt(workingDirectory, receiptId) {
     if (!/^toolset_validation_receipt:[A-Za-z0-9_-]+$/.test(receiptId)) return null;
-    const layout = await this.layout(workingDirectory);
-    const name = createHash("sha256").update(receiptId, "utf8").digest("hex");
-    const receipt = await readJsonFile(join(layout.runtimePath, "validation-receipts", `${name}.json`));
+    if (typeof this.validationReceiptResolver !== "function") return null;
+    const receipt = await this.validationReceiptResolver(receiptId, { workingDirectory });
     return receipt?.receiptId === receiptId ? receipt : null;
   }
 

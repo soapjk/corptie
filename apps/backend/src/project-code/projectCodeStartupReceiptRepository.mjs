@@ -41,4 +41,22 @@ export class ProjectCodeStartupReceiptRepository {
     verifyReceiptHash(receipt, "STARTUP_RECEIPT_HASH_MISMATCH");
     return receipt;
   }
+
+  getByReference(reference) {
+    if (!reference?.startupOperationId || !reference?.startupReceiptHash) return null;
+    let row;
+    try {
+      row = this.store.selectOne(
+        "SELECT receipt_json FROM work_session_startup_receipts WHERE startup_operation_id=? AND receipt_hash=? LIMIT 1",
+        [reference.startupOperationId, reference.startupReceiptHash]
+      );
+    } catch (error) {
+      if (/no such table/i.test(error?.message ?? "")) return null;
+      throw error;
+    }
+    if (!row) return null;
+    const receipt = JSON.parse(row.receipt_json);
+    verifyReceiptHash(receipt, "STARTUP_RECEIPT_HASH_MISMATCH");
+    return receipt;
+  }
 }

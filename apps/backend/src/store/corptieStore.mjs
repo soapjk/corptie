@@ -3112,6 +3112,21 @@ export class CorptieStore {
     } : null;
   }
 
+  getProjectCodeReceiptById(receiptId) {
+    const row = this.selectOne("SELECT * FROM project_code_receipts WHERE receipt_id=?", [receiptId]);
+    return row ? {
+      receiptType: row.receipt_type,
+      logicalSessionId: row.logical_session_id,
+      objectiveId: row.objective_id,
+      workItemId: row.work_item_id,
+      repositoryId: row.repository_id,
+      worktreeId: row.worktree_id,
+      sourceFingerprint: row.source_fingerprint,
+      receipt: JSON.parse(row.receipt_json),
+      createdAt: row.created_at
+    } : null;
+  }
+
   // Durable control-plane revision log. SQLite triggers make every mutation to
   // a client-visible entity participate in the same transaction as the entity
   // write, including writes performed by background/provider callbacks. The
