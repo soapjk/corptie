@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OpenClackyManager, openClackyPreDispatchRecoveryError, probeRuntimeResult } from "../src/adapters/openClackyManager.mjs";
+import {
+  OpenClackyManager,
+  mergeOpenClackyRuntimeInstructions,
+  openClackyPreDispatchRecoveryError,
+  probeRuntimeResult
+} from "../src/adapters/openClackyManager.mjs";
 import { createOpenClackyProvider, openClackyCapabilities } from "../src/agent-provider/providers/openClackyProvider.mjs";
 import { validateAgentProvider, AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 
@@ -35,6 +40,43 @@ test("healthy bridge handshake unlocks Tool Host and Workspace transition capabi
   assert.equal(caps.has(CAP.TOOL_HOST_ATTACH), true);
   assert.equal(caps.has(CAP.WORKSPACE_TRANSITION), true);
   assert.equal(caps.has(CAP.SESSION_USAGE_READ), true);
+});
+
+test("OpenClacky bootstrap preserves injected recovery context with ordinary runtime instructions", () => {
+  assert.equal(
+    mergeOpenClackyRuntimeInstructions("ordinary Session boundary", "recovery manifest payload"),
+    "ordinary Session boundary\n\nrecovery manifest payload"
+  );
+  assert.equal(mergeOpenClackyRuntimeInstructions(null, "recovery only"), "recovery only");
+});
+
+test("older OpenClacky runtimes receive recovery context on the replacement's first message exactly once", async () => {
+  const sent = [];
+  class FakeSocket {
+    constructor() { this.readyState = 1; }
+    addEventListener() {}
+    send(value) { sent.push(JSON.parse(value)); }
+    close() {}
+  }
+  const manager = new OpenClackyManager({
+    fetch: async (url, init = {}) => {
+      const path = new URL(url).pathname;
+      if (path === "/api/sessions" && init.method === "POST") {
+        return Response.json({ session: { id: "recovered", name: "Recovered", working_dir: "/tmp", status: "idle" } });
+      }
+      return Response.json({ session: { id: "recovered", name: "Recovered", working_dir: "/tmp", status: "idle" } });
+    },
+    WebSocket: FakeSocket
+  });
+  await manager.create({ title: "Recovered", cwd: "/tmp", recoveryContext: "RECOVERY-SEED-6621" });
+  await manager.send("recovered", "first visible message");
+  await manager.send("recovered", "second visible message");
+
+  const messages = sent.filter((message) => message.type === "message");
+  assert.match(messages[0].content, /RECOVERY-SEED-6621/);
+  assert.match(messages[0].content, /first visible message/);
+  assert.doesNotMatch(messages[1].content, /RECOVERY-SEED-6621/);
+  assert.equal(messages[1].content, "second visible message");
 });
 
 test("OpenClacky bridge installs Session-scoped tools and executes calls with trusted identity", async () => {
@@ -167,6 +209,58 @@ test("send assigns a stable turn id and does not falsely confirm delivery withou
   assert.equal(result.turn.id, result.turnId);
   // Accepted at the socket is queued, never confirmed until the provider acks.
   assert.notEqual(result.delivery, "confirmed");
+});
+
+test("realtime events without native ids remain correlated to the dispatched Turn and project stable items", async () => {
+  const changes = [];
+  class FakeSocket {
+    constructor() { this.readyState = 1; }
+    addEventListener() {}
+    send() {}
+    close() {}
+  }
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({
+      session: { id: "clacky-events", name: "Ready", working_dir: "/tmp", status: "idle" }
+    }),
+    WebSocket: FakeSocket,
+    onSessionChanged: (change) => changes.push(change)
+  });
+  const delivery = await manager.send("clacky-events", "Remember LANTERN-7429");
+
+  manager.handleSocketEvent("clacky-events", JSON.stringify({ type: "task_started" }));
+  manager.handleSocketEvent("clacky-events", JSON.stringify({
+    type: "assistant_message",
+    content: "LANTERN-7429"
+  }));
+  manager.handleSocketEvent("clacky-events", JSON.stringify({ type: "task_finished" }));
+
+  const events = changes.filter((change) => change.type === "event");
+  assert.equal(events.length, 3);
+  assert.deepEqual(events.map((change) => change.event.turn_id), [
+    delivery.turnId,
+    delivery.turnId,
+    delivery.turnId
+  ]);
+  assert.match(events[1].event.event_id, /^openclacky:event:[a-f0-9]{64}$/);
+  assert.equal(events[1].event.item_id, events[1].event.event_id);
+  assert.equal(events[2].hasAgentMessage, true);
+
+  const duplicateChanges = [];
+  manager.onSessionChanged = (change) => duplicateChanges.push(change);
+  manager.handleSocketEvent("clacky-events", JSON.stringify({
+    type: "assistant_message",
+    content: "LANTERN-7429"
+  }));
+  assert.equal(duplicateChanges[0].event.event_id, events[1].event.event_id);
+  assert.equal(duplicateChanges[0].event.turn_id, delivery.turnId);
+
+  manager.handleSocketEvent("unrelated-session", JSON.stringify({ type: "task_finished" }));
+  assert.equal(duplicateChanges.at(-1).hasAgentMessage, false);
+
+  manager.handleSocketEvent("clacky-events", JSON.stringify({ type: "token_usage", usage: { total_tokens: 10 } }));
+  manager.handleSocketEvent("clacky-events", JSON.stringify({ type: "token_usage", usage: { total_tokens: 11 } }));
+  assert.notEqual(duplicateChanges.at(-2).event.event_id, duplicateChanges.at(-1).event.event_id);
 });
 
 test("send rejects a failed OpenClacky Session with the provider initialization error", async () => {
