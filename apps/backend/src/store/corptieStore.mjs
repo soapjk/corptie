@@ -2854,6 +2854,7 @@ export class CorptieStore {
     this.migrateWorkItemMemoryAssociations();
     this.initializeSortOrder();
     this.migrateAgentAvailability();
+    this.ensureProjectCodeReceiptTables();
     this.ensureSkillTables();
     this.ensureStateSyncTables();
     this.ensureProviderEventPipelineTables();
@@ -2923,6 +2924,67 @@ export class CorptieStore {
              AND m.message_type = 'question'
          )`
     );
+  }
+
+  ensureProjectCodeReceiptTables() {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS project_code_receipts (
+        receipt_id TEXT PRIMARY KEY,
+        receipt_type TEXT NOT NULL CHECK (receipt_type IN ('RepositorySourceSnapshotReceipt', 'SearchReceipt', 'ToolsetValidationReceipt')),
+        logical_session_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        worktree_id TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        receipt_hash TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_code_receipts_session
+      ON project_code_receipts(logical_session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_project_code_receipts_snapshot
+      ON project_code_receipts(repository_id, worktree_id, source_fingerprint, receipt_type);
+    `);
+  }
+
+  putProjectCodeReceipt(input) {
+    const receipt = input?.receipt;
+    if (!receipt || receipt.receiptId !== input.receiptId || receipt.receiptHash !== input.receiptHash) {
+      throw new Error("Project-code receipt identity does not match its persistence envelope.");
+    }
+    const existing = this.selectOne(
+      "SELECT receipt_hash FROM project_code_receipts WHERE receipt_id=?",
+      [input.receiptId]
+    );
+    if (existing && existing.receipt_hash !== receipt.receiptHash) throw new Error("PROJECT_CODE_RECEIPT_IMMUTABLE");
+    if (!existing) this.db.run(
+      `INSERT INTO project_code_receipts (
+        receipt_id, receipt_type, logical_session_id, objective_id, work_item_id,
+        repository_id, worktree_id, source_fingerprint, receipt_hash, receipt_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.receiptId, input.receiptType, input.logicalSessionId, input.objectiveId, input.workItemId,
+        input.repositoryId, input.worktreeId, input.sourceFingerprint, input.receiptHash,
+        JSON.stringify(receipt), input.createdAt]
+    );
+    this.scheduleSave();
+    return this.getProjectCodeReceipt(input.receiptId, input.logicalSessionId);
+  }
+
+  getProjectCodeReceipt(receiptId, logicalSessionId) {
+    const row = this.selectOne(
+      "SELECT * FROM project_code_receipts WHERE receipt_id=? AND logical_session_id=?",
+      [receiptId, logicalSessionId]
+    );
+    return row ? {
+      receiptType: row.receipt_type,
+      receipt: JSON.parse(row.receipt_json),
+      sourceFingerprint: row.source_fingerprint,
+      repositoryId: row.repository_id,
+      worktreeId: row.worktree_id,
+      createdAt: row.created_at
+    } : null;
   }
 
   // Durable control-plane revision log. SQLite triggers make every mutation to
