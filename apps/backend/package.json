@@ -11,6 +11,7 @@
     "pretest": "npm run build:native",
     "test": "node --test tests/*.test.mjs",
     "benchmark:scheduled-task-list": "node scripts/benchmark-scheduled-task-list.mjs",
+    "benchmark:session-recovery": "node scripts/benchmark-session-recovery.mjs",
     "build:native": "cd native && cargo build --release && cp target/release/libcorptie_native.dylib corptie_native.node",
     "postinstall": "node scripts/fix-node-pty-permissions.mjs"
   },

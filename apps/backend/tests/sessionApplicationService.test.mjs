@@ -487,6 +487,30 @@ test("unusable replacement cleanup removes the local Session even when the Provi
   ]]);
 });
 
+test("Provider deletion and product binding removal remain separate lifecycle steps", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "delete-boundary",
+    displayName: "Delete Boundary",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE]
+  }, {
+    deleteSession: async () => { calls.push("provider-delete"); return true; }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:delete-boundary", logicalSessionId: "logical:delete-boundary",
+      bindingId: "binding:delete-boundary", providerId: "delete-boundary",
+      providerSessionId: "native:delete-boundary", routingVersion: 1
+    }),
+    removeSessionBinding: async () => { calls.push("product-binding-delete"); }
+  });
+
+  await service.deleteSession("logical:delete-boundary");
+  assert.deepEqual(calls, ["provider-delete", "product-binding-delete"]);
+});
+
 test("Session recovery rebuilds and passes the Provider-neutral Tool Host attachment", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({
@@ -596,6 +620,42 @@ test("an unavailable Provider binding is replaced and an unsent message is retri
   assert.equal(recoveries[0].error.dispatchState, "not_sent");
   assert.deepEqual(sends.map((entry) => entry.reference.bindingId), ["binding:failed", "binding:recovered"]);
   assert.deepEqual(sends.map((entry) => entry.message), ["send once", "send once"]);
+});
+
+test("delivery_unknown is never recovered or retried automatically", async () => {
+  let recoveries = 0;
+  let sends = 0;
+  const provider = new CallbackAgentProvider({
+    id: "unknown-delivery",
+    displayName: "Unknown Delivery",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+  }, {
+    send: async () => {
+      sends += 1;
+      const error = new Error("connection ended after request bytes may have been accepted");
+      error.code = "DELIVERY_UNKNOWN";
+      error.dispatchState = "delivery_unknown";
+      error.recoveryAction = "replace_provider_binding";
+      throw error;
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:unknown", logicalSessionId: "logical:unknown",
+      bindingId: "binding:unknown", providerId: "unknown-delivery",
+      providerSessionId: "native:unknown", routingVersion: 1
+    }),
+    recoverUnavailableSession: async () => { recoveries += 1; }
+  });
+
+  await assert.rejects(
+    service.sendMessage("logical:unknown", "do not duplicate", { idempotencyKey: "delivery:unknown" }),
+    { code: "DELIVERY_UNKNOWN" }
+  );
+  assert.equal(sends, 1);
+  assert.equal(recoveries, 0);
 });
 
 test("Session application service rejects retired per-session avatar input", async () => {

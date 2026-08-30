@@ -117,7 +117,6 @@ export function mapOpenClackyProviderChange({ change, binding, receivedAt }) {
     payload: compactObject({
       item,
       items: type.startsWith("turn.") ? change?.detail?.items ?? undefined : undefined,
-      session: change.session,
       error: change.error ?? event.error,
       hasAgentMessage: change.hasAgentMessage === true,
       connectionStatus: type === "provider.connection.changed"

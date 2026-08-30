@@ -19,7 +19,17 @@ export function createCodexAppServerProvider(operations, options = {}) {
     transport: "app-server",
     aliases: ["codex"],
     runtime: { lifecycle: "managed" },
-    metadata: { ...(options.metadata ?? {}), toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES },
+    metadata: {
+      ...(options.metadata ?? {}),
+      toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES,
+      sessionRecovery: {
+        revision: "codex-app-server:session-recovery:1",
+        capabilities: [
+          "explicit_replay", "system_context_injection", "tool_result_history", "max_context_estimation"
+        ],
+        maxContextTokens: 128_000
+      }
+    },
     capabilities: options.capabilities ?? [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,

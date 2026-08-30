@@ -26,7 +26,14 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     runtime: { lifecycle: "managed" },
     metadata: {
       backgroundPermissionProfiles: ["read-only"],
-      toolSchemaCapabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES
+      toolSchemaCapabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES,
+      sessionRecovery: {
+        revision: "claude-sdk:session-recovery:1",
+        capabilities: [
+          "explicit_replay", "system_context_injection", "tool_result_history", "max_context_estimation"
+        ],
+        maxContextTokens: 200_000
+      }
     },
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
