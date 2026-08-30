@@ -1,3 +1,6 @@
+import { writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { RunIsolationAuthorityResolver } from "../runIsolation/runIsolationAuthorityResolver.mjs";
 import {
   CLEANUP_RECEIPT_ARTIFACT,
   RUN_RECEIPT_ARTIFACT,
@@ -28,9 +31,10 @@ const cleanupFields = new Set([
 
 export class ProjectCodeRunIsolationPort {
   constructor(options = {}) {
-    if (!options.service) throw new TypeError("ProjectCodeRunIsolationPort requires RunIsolationService.");
-    this.service = options.service;
-    this.commandDescriptors = options.commandDescriptors ?? null;
+    if (!options.coordinator) throw new TypeError("ProjectCodeRunIsolationPort requires RunIsolationExecutionCoordinator.");
+    this.coordinator = options.coordinator;
+    this.semanticWorkerPath = options.semanticWorkerPath
+      ?? fileURLToPath(new URL("./projectCodeSemanticWorker.mjs", import.meta.url));
     this.capabilities = Object.freeze({
       localSemantic: options.capabilities?.localSemantic === true,
       networkAccess: false,
@@ -40,22 +44,52 @@ export class ProjectCodeRunIsolationPort {
 
   async prepareRun(input) {
     const snapshot = input.snapshot;
-    const toolsetPointer = input.toolsetValidationReceipt
-      ? projectToolsetReceiptRef(input.toolsetValidationReceipt, snapshot.receipt.sourceFingerprint)
-      : null;
+    if (!input.toolsetValidationReceipt) {
+      throw contractError("TOOLSET_CONTRACT_UNRESOLVED", "Production L3 requires an authoritative ToolsetValidationReceipt v3.", 503);
+    }
+    const toolsetPointer = projectToolsetReceiptRef(input.toolsetValidationReceipt, snapshot.receipt.sourceFingerprint);
+    const startupBindingReceiptRef = runStartupBindingReceiptRef(snapshot.startupReceipt);
+    const repositorySourceSnapshotReceiptRef = snapshotReceiptRef(snapshot.receipt);
+    const session = authenticatedSession(input, snapshot);
+    const authorityResolver = new RunIsolationAuthorityResolver({
+      resolveAuthority: async () => Object.freeze({
+        logicalSessionId: session.logicalSessionId,
+        workItemId: session.workItemId,
+        repositoryId: session.repositoryId,
+        worktreeId: session.worktreeId,
+        bindingId: snapshot.startupReceipt.providerBindingId,
+        bindingGeneration: snapshot.startupReceipt.bindingGeneration,
+        startupBindingReceiptRef,
+        repositorySourceSnapshotReceiptRef,
+        toolsetValidationReceiptPointer: toolsetPointer
+      })
+    });
+    const authority = await authorityResolver.resolve(Object.freeze({
+      logicalSessionId: session.logicalSessionId,
+      workItemId: session.workItemId,
+      repositoryId: session.repositoryId,
+      worktreeId: session.worktreeId,
+      action: "verify",
+      bindingId: snapshot.startupReceipt.providerBindingId,
+      bindingGeneration: snapshot.startupReceipt.bindingGeneration
+    }));
     const request = Object.freeze({
-      startupBindingReceiptRef: runStartupBindingReceiptRef(snapshot.startupReceipt),
-      repositorySourceSnapshotReceiptRef: snapshotReceiptRef(snapshot.receipt),
-      toolsetValidationReceiptPointer: toolsetPointer,
+      mode: "development",
+      sourceAware: true,
+      startupBindingReceiptRef: authority.startupBindingReceiptRef,
+      repositorySourceSnapshotReceiptRef: authority.repositorySourceSnapshotReceiptRef,
+      toolsetValidationReceiptPointer: authority.toolsetValidationReceiptPointer,
+      toolsetRequired: true,
       testPlanRef: null,
       fixtureRef: null,
-      baseSnapshotRef: null,
-      retentionPolicyRef: input.retentionPolicyRef ?? "retention:ephemeral-search-v1",
       quotaClass: input.quotaClass ?? "project_code_search",
       idempotencyKey: input.idempotencyKey
     });
-    const prepared = await this.service.prepareRun(request, authenticatedSession(input));
-    const context = prepared?.runContext ?? prepared;
+    const resolveToolsetReceipt = async (receiptId) => receiptId === input.toolsetValidationReceipt.receiptId
+      ? input.toolsetValidationReceipt
+      : null;
+    const prepared = await this.coordinator.prepareRun(request, session, { toolsetReceiptResolver: resolveToolsetReceipt });
+    const context = prepared?.context ?? prepared?.runContext ?? prepared;
     if (!context?.runId || !Number.isInteger(context.resourceVersion) || !Number.isInteger(context.fencingToken)) {
       throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", "RunIsolation prepareRun returned no valid RunContext.");
     }
@@ -66,22 +100,63 @@ export class ProjectCodeRunIsolationPort {
       || context.sourceFingerprint !== snapshot.receipt.sourceFingerprint) {
       throw contractError("RUN_SOURCE_FINGERPRINT_MISMATCH", "Prepared RunContext does not match the authoritative Session/Snapshot identity.");
     }
-    return Object.freeze({ ...prepared, runContext: Object.freeze({ ...context }), toolsetValidationReceiptPointer: toolsetPointer });
+    return Object.freeze({
+      ...prepared,
+      runContext: Object.freeze({ ...context }),
+      toolsetValidationReceiptPointer: toolsetPointer,
+      resolveToolsetReceipt
+    });
   }
 
   async execute(input) {
     const context = input.prepared.runContext;
-    const commandDescriptorRef = await this.#createCommandDescriptor(input, context);
-    const request = Object.freeze({
-      runId: context.runId,
-      preparedResourceVersion: context.resourceVersion,
-      fencingToken: context.fencingToken,
-      commandDescriptorRef,
-      toolsetValidationReceiptPointer: input.prepared.toolsetValidationReceiptPointer,
-      idempotencyKey: input.idempotencyKey
-    });
-    const response = await this.service.execute(request, authenticatedSession(input));
-    const receipt = response?.receipt ?? response;
+    const requestPath = `${context.tmpDir}/project-code-semantic-request.json`;
+    await writeFile(requestPath, JSON.stringify({
+      schemaVersion: 1,
+      query: input.query,
+      limit: input.limit,
+      sourceFingerprint: input.snapshot.receipt.sourceFingerprint,
+      candidates: input.snapshot.candidates.map(({ path, language }) => ({ path, language }))
+    }), { mode: 0o600, flag: "wx" });
+    const session = authenticatedSession(input, input.snapshot);
+    let cancellation = null;
+    const cancel = async () => {
+      const current = this.coordinator.service.inspect(context.runId, session);
+      cancellation ??= this.coordinator.cancel({
+        runId: current.runId,
+        expectedResourceVersion: current.resourceVersion,
+        fencingToken: current.fencingToken,
+        idempotencyKey: `${input.idempotencyKey}:cancel`
+      }, session);
+      return cancellation;
+    };
+    if (input.signal?.aborted) {
+      const receipt = await cancel();
+      await validateRunReceipt(receipt, input.snapshot, input.sessionContext, context.runId, input.prepared.toolsetValidationReceiptPointer);
+      return Object.freeze({ receipt, results: Object.freeze([]) });
+    }
+    const abort = () => { cancel().catch(() => {}); };
+    input.signal?.addEventListener("abort", abort, { once: true });
+    let receipt;
+    try {
+      receipt = await this.coordinator.execute({
+        runContext: context,
+        descriptor: {
+          executable: process.execPath,
+          args: [this.semanticWorkerPath, requestPath],
+          cwd: input.snapshot.canonicalWorktreePath,
+          role: "project-code-semantic",
+          timeoutMilliseconds: 30_000,
+          captureOutput: true,
+          environment: {}
+        },
+        idempotencyKey: input.idempotencyKey,
+        toolsetReceiptResolver: input.prepared.resolveToolsetReceipt
+      }, session);
+      if (cancellation) await cancellation;
+    } finally {
+      input.signal?.removeEventListener("abort", abort);
+    }
     await validateRunReceipt(
       receipt,
       input.snapshot,
@@ -89,26 +164,21 @@ export class ProjectCodeRunIsolationPort {
       context.runId,
       input.prepared.toolsetValidationReceiptPointer
     );
-    const results = response?.results
-      ?? (typeof this.service.readSemanticResults === "function"
-        ? await this.service.readSemanticResults(context.runId, authenticatedSession(input))
-        : []);
-    return Object.freeze({ receipt, results: Object.freeze([...(results ?? [])]) });
+    const output = this.coordinator.service.takeCommandOutput(context.runId);
+    const results = receipt.state === "completed" && receipt.outcome === "passed"
+      ? parseSemanticOutput(output, input.snapshot.receipt.sourceFingerprint)
+      : [];
+    return Object.freeze({ receipt, results: Object.freeze(results) });
   }
 
   async cleanup(input) {
     const context = input.prepared.runContext;
-    const request = Object.freeze({
-      runId: context.runId,
-      policy: input.policy ?? "success_default",
-      expectedResourceVersion: input.expectedResourceVersion,
-      fencingToken: context.fencingToken,
-      idempotencyKey: input.idempotencyKey
-    });
-    const response = await this.service.cleanup(request, authenticatedSession(input));
-    const receipt = response?.receipt ?? response;
+    const session = authenticatedSession(input, input.snapshot);
+    const receipt = this.coordinator.service.store?.latestCleanupReceipt?.(context.runId)
+      ?? this.coordinator.service.store?.latestCleanup?.(context.runId)?.receipt
+      ?? await cleanupCurrentRun(this.coordinator, context.runId, input.policy, input.idempotencyKey, session);
     await validateCleanupReceipt(receipt, input.snapshot, input.sessionContext, context.runId);
-    if (receipt.outcome !== "cleaned") {
+    if (!['cleaned', 'retained'].includes(receipt.outcome)) {
       throw contractError(
         receipt.outcome === "unknown" ? "RUN_CLEANUP_OUTCOME_UNKNOWN" : "RUN_CLEANUP_BLOCKED",
         `RunIsolation cleanup did not reach cleaned: ${receipt.outcome}.`,
@@ -117,20 +187,17 @@ export class ProjectCodeRunIsolationPort {
     }
     return Object.freeze({ receipt });
   }
+}
 
-  async #createCommandDescriptor(input, context) {
-    if (!this.commandDescriptors?.create) {
-      throw contractError("RUN_ISOLATION_REQUIRED_FAILED", "RunIsolation command descriptor storage is unavailable.", 503);
-    }
-    return this.commandDescriptors.create({
-      type: "project-code-semantic-query",
-      runId: context.runId,
-      query: input.query,
-      queryHash: input.queryHash,
-      limit: input.limit,
-      sourceFingerprint: input.snapshot.receipt.sourceFingerprint
-    });
-  }
+async function cleanupCurrentRun(coordinator, runId, policy, idempotencyKey, session) {
+  const current = coordinator.service.inspect(runId, session);
+  return coordinator.cleanup({
+    runId: current.runId,
+    policy: policy ?? "success_default",
+    expectedResourceVersion: current.resourceVersion,
+    fencingToken: current.fencingToken,
+    idempotencyKey
+  }, session);
 }
 
 export function runReceiptRef(receipt) {
@@ -236,10 +303,22 @@ function assertTimeOrder(values) {
   }
 }
 
-function authenticatedSession(input) {
+function authenticatedSession(input, snapshot = input.snapshot) {
   return Object.freeze({
     logicalSessionId: input.sessionContext.logicalSessionId,
     workItemId: input.sessionContext.workItemId,
-    objectiveId: input.sessionContext.objectiveId
+    objectiveId: input.sessionContext.objectiveId,
+    repositoryId: snapshot.receipt.repositoryId,
+    worktreeId: snapshot.receipt.worktreeId
   });
+}
+
+function parseSemanticOutput(output, sourceFingerprint) {
+  let parsed;
+  try { parsed = JSON.parse(String(output ?? "")); }
+  catch { throw contractError("RUN_EXECUTION_FAILED", "Semantic worker returned invalid JSON.", 503); }
+  if (parsed?.schemaVersion !== 1 || parsed?.sourceFingerprint !== sourceFingerprint || !Array.isArray(parsed.results)) {
+    throw contractError("RUN_SOURCE_FINGERPRINT_MISMATCH", "Semantic worker output does not close over the authoritative Snapshot.");
+  }
+  return parsed.results;
 }
