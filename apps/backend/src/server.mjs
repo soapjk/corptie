@@ -67,6 +67,9 @@ import { WorkItemDeletionService } from "./application/workItemDeletionService.m
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
+import { BenchmarkControlPlane } from "./benchmark/controlPlane.mjs";
+import { handleBenchmarkHttpRequest } from "./benchmark/httpApi.mjs";
+import { createArtifactEvidencePort } from "./benchmark/ports.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
@@ -311,6 +314,10 @@ const workItemCompletionService = new WorkItemCompletionService({
   })
 });
 const artifactService = new ArtifactService({ store });
+const benchmarkControlPlane = new BenchmarkControlPlane({
+  store,
+  ports: { artifactEvidencePort: createArtifactEvidencePort(artifactService) }
+});
 const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
   store,
   environment: environmentName,
@@ -7201,6 +7208,9 @@ function route(request, response) {
   if (handleArtifactHttpRequest({ request, response, url, service: artifactService })) {
     return;
   }
+  if (handleBenchmarkHttpRequest({ request, response, url, controlPlane: benchmarkControlPlane })) {
+    return;
+  }
 
   if (handleTurnObservabilityHttpRequest({ request, response, url, service: turnObservability })) {
     return;
@@ -8904,6 +8914,7 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+benchmarkControlPlane.initialize();
 await dataRootMigrationCoordinator.initialize();
 const telemetryConfiguration = turnObservability.initialize();
 console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
