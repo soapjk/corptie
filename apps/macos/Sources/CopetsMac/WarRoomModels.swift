@@ -56,6 +56,10 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var acceptanceAssessment: WorkItemAcceptanceAssessment?
     var completionSuggestion: WorkItemCompletionSuggestion?
     var completionSource: WorkItemCompletionSource? = nil
+    var canceledAt: String? = nil
+    var cancelReason: String? = nil
+    var cancellationOperationId: String? = nil
+    var resourceVersion: Int = 1
     var createdAt: String
     var updatedAt: String
 
@@ -65,7 +69,9 @@ struct WorkItem: Identifiable, Codable, Hashable {
         case startStage, startFailureStage, startErrorCode, startError
         case startStartedAt, startStageUpdatedAt, startFailedAt, startProviderId, startAgentId
         case startWorktreeId, startWorktreePath, startWorktreeBranch
-        case acceptanceAssessment, completionSuggestion, completionSource, createdAt, updatedAt
+        case acceptanceAssessment, completionSuggestion, completionSource
+        case canceledAt, cancelReason, cancellationOperationId, resourceVersion
+        case createdAt, updatedAt
     }
 }
 
@@ -103,6 +109,10 @@ extension WorkItem {
         acceptanceAssessment = (try? container.decodeIfPresent(WorkItemAcceptanceAssessment.self, forKey: .acceptanceAssessment)) ?? nil
         completionSuggestion = (try? container.decodeIfPresent(WorkItemCompletionSuggestion.self, forKey: .completionSuggestion)) ?? nil
         completionSource = (try? container.decodeIfPresent(WorkItemCompletionSource.self, forKey: .completionSource)) ?? nil
+        canceledAt = try container.decodeIfPresent(String.self, forKey: .canceledAt)
+        cancelReason = try container.decodeIfPresent(String.self, forKey: .cancelReason)
+        cancellationOperationId = try container.decodeIfPresent(String.self, forKey: .cancellationOperationId)
+        resourceVersion = try container.decodeIfPresent(Int.self, forKey: .resourceVersion) ?? 1
         createdAt = try container.decode(String.self, forKey: .createdAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
     }

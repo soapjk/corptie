@@ -904,8 +904,29 @@ test("Assistant Chat without an Objective cannot create and cancellation preserv
       workItemId: created.workItem.id, resourceVersion: "1", reason: "No longer needed"
     });
     assert.equal(canceled.workItem.status, "canceled");
+    assert.ok(canceled.workItem.canceled_at);
+    assert.equal(canceled.workItem.cancel_reason, "No longer needed");
+    assert.equal(canceled.workItem.resource_version, 2);
+    assert.equal(canceled.cancellationOperation.resource_version_before, 1);
+    assert.equal(canceled.cancellationOperation.resource_version_after, 2);
+    assert.equal(canceled.idempotentReplay, false);
     assert.equal(canceled.physicallyDeleted, false);
     assert.ok(f.store.getWorkItem(created.workItem.id));
+    const replay = f.service.cancelWorkItem({ sessionId: "provider:objective" }, agent.agentId, {
+      workItemId: created.workItem.id, resourceVersion: "1", reason: "No longer needed"
+    });
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.cancellationOperation.operation_id, canceled.cancellationOperation.operation_id);
+    assert.equal(f.store.listWorkItemCancellationOperations(created.workItem.id).length, 1);
+    assert.throws(() => f.service.cancelWorkItem({ sessionId: "provider:objective" }, agent.agentId, {
+      workItemId: created.workItem.id, resourceVersion: "2", reason: "A different reason"
+    }), { code: "CANCELLATION_IDEMPOTENCY_CONFLICT" });
+    assert.throws(() => f.objectiveService.createWorkItem({
+      objectiveId: objective.id, title: "Invalid canceled create", status: "canceled"
+    }), { code: "WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED" });
+    assert.throws(() => f.store.updateWorkItem(source.id, { status: "canceled" }), {
+      code: "WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED"
+    });
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
