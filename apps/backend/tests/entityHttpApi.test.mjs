@@ -2373,9 +2373,10 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
       ...services,
       method: "POST",
       pathname: "/agents/assistant/sessions",
-      body: { providerId: "codex-app-server", title: "自定义 Chat" },
-      launchAgentSession: async ({ agent, title }) => {
+      body: { providerId: "codex-app-server", title: "自定义 Chat", model: "gateway/model" },
+      launchAgentSession: async ({ agent, title, model }) => {
         assert.equal(title, "自定义 Chat");
+        assert.equal(model, "gateway/model");
         services.store.upsertSession({
           id: "assistant-session",
           title,
