@@ -130,9 +130,9 @@ test("L3 validates the full Toolset v3 receipt then passes only the Run-owned si
         ...result.receipt.runIsolationReceiptRef,
         schemaVersion: 5,
         artifactRef: {
-          artifactId: "artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef",
+          artifactId: "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f",
           version: 1,
-          contentHash: "81b374c134fa74e0eb89673b2599eeb7d7d66f6ef7df0710289c6dc379b67184",
+          contentHash: "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951",
           relation: "implementation_spec",
           receiptType: "RunReceipt",
           schemaVersion: 5

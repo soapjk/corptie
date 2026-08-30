@@ -85,9 +85,9 @@ export function toolsetReceiptFor(snapshot, overrides = {}) {
     schemaVersion: 3,
     resourceVersion: 1,
     artifactRef: {
-      artifactId: "artifact:172b9f2e-a2d1-451c-a3e4-d52ba3d95850",
+      artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
       version: 1,
-      contentHash: "c203f2fd99d24064c46ab46e17f016a9494d643ab2b64e95c3f363fc8af00e62",
+      contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d",
       relation: "implementation_spec",
       receiptType: "ToolsetValidationReceipt",
       schemaVersion: 3
