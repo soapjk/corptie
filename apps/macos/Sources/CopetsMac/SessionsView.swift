@@ -1295,6 +1295,14 @@ struct SessionDetailPanel: View {
                                 .help(cwd)
                         }
                     }
+
+                    detailSection(title: "会话恢复边界", systemImage: "arrow.clockwise.circle") {
+                        Text(L10n("Corptie 可用本地 Timeline 重建可见消息、已固定的 Artifact 引用、权限与工具目录，但 Provider 的隐藏推理、KV cache、内部压缩或私有状态、未持久化事件、不确定的在途操作，以及没有本地副本的 Provider-only 附件无法恢复。历史工具和审批只作为不可执行证据恢复，不会重新运行，也不构成新的用户授权。"))
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityLabel(L10n("Provider 会话恢复限制"))
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)

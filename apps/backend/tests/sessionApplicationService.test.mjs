@@ -514,6 +514,42 @@ test("an unavailable Provider binding is replaced and an unsent message is retri
   assert.deepEqual(sends.map((entry) => entry.message), ["send once", "send once"]);
 });
 
+test("delivery_unknown is never recovered or retried automatically", async () => {
+  let recoveries = 0;
+  let sends = 0;
+  const provider = new CallbackAgentProvider({
+    id: "unknown-delivery",
+    displayName: "Unknown Delivery",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+  }, {
+    send: async () => {
+      sends += 1;
+      const error = new Error("connection ended after request bytes may have been accepted");
+      error.code = "DELIVERY_UNKNOWN";
+      error.dispatchState = "delivery_unknown";
+      error.recoveryAction = "replace_provider_binding";
+      throw error;
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:unknown", logicalSessionId: "logical:unknown",
+      bindingId: "binding:unknown", providerId: "unknown-delivery",
+      providerSessionId: "native:unknown", routingVersion: 1
+    }),
+    recoverUnavailableSession: async () => { recoveries += 1; }
+  });
+
+  await assert.rejects(
+    service.sendMessage("logical:unknown", "do not duplicate", { idempotencyKey: "delivery:unknown" }),
+    { code: "DELIVERY_UNKNOWN" }
+  );
+  assert.equal(sends, 1);
+  assert.equal(recoveries, 0);
+});
+
 test("Session application service rejects retired per-session avatar input", async () => {
   const { service } = fixture();
   await assert.rejects(
