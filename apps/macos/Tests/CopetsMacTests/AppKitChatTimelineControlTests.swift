@@ -1112,6 +1112,58 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(historyRequests, 1)
     }
 
+    func testUnderfilledViewportRequestsHistoryWithoutUserGestureWhenHistoryExists() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: true,
+            height: 520,
+            hasMoreHistory: true,
+            onUnderfilledHistory: { historyRequests += 1 }
+        )
+
+        harness.coordinator.apply(rows: [
+            row(id: "underfilled-user", text: "Question"),
+            row(id: "underfilled-process", text: "Collapsed execution")
+        ])
+        await settleMainQueue()
+
+        XCTAssertEqual(historyRequests, 1)
+        harness.coordinator.apply(rows: [
+            row(id: "underfilled-user", text: "Question"),
+            row(id: "underfilled-process", text: "Collapsed execution")
+        ])
+        await settleMainQueue()
+        XCTAssertEqual(historyRequests, 1, "The same underfilled projection must not loop")
+    }
+
+    func testUnderfilledViewportDoesNotRequestWhenHistoryIsExhausted() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: true,
+            height: 520,
+            hasMoreHistory: false,
+            onUnderfilledHistory: { historyRequests += 1 }
+        )
+        harness.coordinator.apply(rows: [row(id: "only-row", text: "Latest")])
+        await settleMainQueue()
+
+        XCTAssertEqual(historyRequests, 0)
+    }
+
+    func testScrollableViewportDoesNotUseUnderfilledHistoryPath() async {
+        var historyRequests = 0
+        let harness = makeHarness(
+            followsLatest: true,
+            height: 180,
+            hasMoreHistory: true,
+            onUnderfilledHistory: { historyRequests += 1 }
+        )
+        harness.coordinator.apply(rows: (0..<40).map { row(id: "scrollable-\($0)", text: "Row \($0)") })
+        await settleMainQueue()
+
+        XCTAssertEqual(historyRequests, 0)
+    }
+
     func testDirectScrollbarDragToTopRequestsHistory() async {
         var historyRequests = 0
         let harness = makeHarness(
@@ -1518,6 +1570,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         onToggle: @escaping (String) -> Void = { _ in },
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
         onNearTop: @escaping () -> Void = {},
+        hasMoreHistory: Bool = false,
+        onUnderfilledHistory: @escaping () -> Void = {},
         onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
     ) -> (
         window: NSWindow,
@@ -1535,6 +1589,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             onToggleExpansion: onToggle,
             onAction: onAction,
             onNearTop: onNearTop,
+            hasMoreHistory: hasMoreHistory,
+            onUnderfilledHistory: onUnderfilledHistory,
             onPositionChange: onPositionChange
         )
         coordinator.followsLatest = followsLatest
