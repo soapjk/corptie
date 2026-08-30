@@ -20,6 +20,7 @@ export function collaborationMcpEnvironment({
     CORPTIE_BACKEND_URL: backendUrl,
     CORPTIE_ENV: environmentName,
     CORPTIE_SESSION_ID: metadata?.sessionId ?? "",
+    CORPTIE_PROVIDER_BINDING_ID: metadata?.providerBindingId ?? "",
     CORPTIE_SESSION_KIND: metadata?.sessionKind ?? "",
     CORPTIE_OBJECTIVE_ID: metadata?.objectiveId ?? "",
     CORPTIE_WORK_ITEM_ID: metadata?.workItemId ?? "",

@@ -114,6 +114,9 @@ export class SessionApplicationService {
         reference,
         toolHost ? { ...finalizationContext, toolHost } : finalizationContext
       );
+      if (toolHost?.materialization?.status === "applying") {
+        await this.toolHostService.confirmPreparedSession(toolHost);
+      }
     } catch (cause) {
       const error = new Error(`Session Tool Host finalization failed: ${cause?.message ?? cause}`);
       error.code = "SESSION_TOOL_MATERIALIZATION_FAILED";
@@ -143,10 +146,10 @@ export class SessionApplicationService {
       purpose: "session-resume",
       actorId,
       sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId ?? null,
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
       workItemId: storedSession?.workItemId ?? context.workItemId ?? null,
-      logicalSessionId: reference.logicalSessionId ?? null,
       ...(reference.bindingId ?? reference.providerBindingId
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {})
@@ -161,6 +164,9 @@ export class SessionApplicationService {
       reference,
       toolHost ? { ...resumeContext, toolHost } : resumeContext
     );
+    if (toolHost?.materialization?.status === "applying") {
+      await this.toolHostService.confirmPreparedSession(toolHost);
+    }
     return this.decorateLifecycleSession(reference.providerId, session, reference);
   }
 
