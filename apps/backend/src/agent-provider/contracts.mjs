@@ -16,6 +16,7 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   REASONING_SWITCH: "configuration.reasoning.switch",
   PERMISSIONS_UPDATE: "configuration.permissions.update",
   WORKSPACE_TRANSITION: "workspace.transition",
+  WORKSPACE_BIND: "workspace.bind",
   BACKGROUND_PROMPT: "background.prompt",
   ACCOUNT_USAGE_READ: "usage.account.read",
   SESSION_USAGE_READ: "usage.session.read",
@@ -47,6 +48,7 @@ export const AGENT_PROVIDER_METHOD_BY_CAPABILITY = Object.freeze({
   [AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH]: "switchReasoning",
   [AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE]: "updatePermissions",
   [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION]: "prepareWorkspaceTransition",
+  [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND]: "bindWorkspace",
   [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT]: "runBackgroundPrompt",
   [AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ]: "readAccountUsage",
   [AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ]: "readSessionUsage",
@@ -121,6 +123,13 @@ export function validateAgentProvider(provider) {
         { providerId: descriptor.id, capability, method }
       );
     }
+  }
+  if (descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND)
+    && typeof provider.inspectWorkspaceBinding !== "function") {
+    throw new AgentProviderContractError(
+      `Agent Provider ${descriptor.id} declares workspace.bind but does not implement inspectWorkspaceBinding().`,
+      { providerId: descriptor.id, capability: AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND, method: "inspectWorkspaceBinding" }
+    );
   }
   return Object.freeze({
     ...descriptor,

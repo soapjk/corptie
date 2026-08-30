@@ -946,9 +946,7 @@ test("collaboration start delegates shared orchestration receipts and retries wi
 
     f.service.launchWorkItem = async () => {
       f.store.db.run(
-        `UPDATE work_items SET execution_status='start_failed', start_stage='failed',
-         start_failure_stage='creatingSession', start_error_code='PROVIDER_UNAVAILABLE',
-         start_error='provider unavailable' WHERE id=?`,
+        `UPDATE work_items SET execution_status='start_failed' WHERE id=?`,
         [created.workItem.id]
       );
       throw Object.assign(new Error("provider unavailable"), {

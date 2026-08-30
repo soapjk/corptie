@@ -1,0 +1,864 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:corptie:run-isolation:run-receipt:6",
+  "title": "RunReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 6
+    },
+    "receiptId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "receiptHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^(run|dev):.+$"
+    },
+    "mode": {
+      "enum": [
+        "development",
+        "test"
+      ]
+    },
+    "logicalSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "workItemId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "repositoryId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worktreeId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceFingerprint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "startupBindingReceiptRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StartupBindingReceiptRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "repositorySourceSnapshotReceiptRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RepositorySourceSnapshotReceiptRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "state": {
+      "enum": [
+        "ready",
+        "running",
+        "stopping",
+        "completed",
+        "failed",
+        "cancelled",
+        "recoverable",
+        "orphaned"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "cancelled",
+        "infrastructure_failed",
+        "unknown",
+        null
+      ]
+    },
+    "runContextHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "dataRootBindingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "processLeaseRefs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LeaseRef"
+      },
+      "uniqueItems": true
+    },
+    "portLeaseRefs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LeaseRef"
+      },
+      "uniqueItems": true
+    },
+    "dataLeaseRef": {
+      "$ref": "#/$defs/LeaseRef"
+    },
+    "credentialLeaseRefs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/LeaseRef"
+      },
+      "uniqueItems": true
+    },
+    "fencingToken": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "resourceVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "eventRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "uniqueItems": true
+    },
+    "metricsRef": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MetricsRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "readyAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "startedAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stoppedAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "completedAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BusinessError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "toolsetValidationReceiptPointer": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolsetValidationReceiptPointer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "receiptHash",
+    "runId",
+    "mode",
+    "logicalSessionId",
+    "workItemId",
+    "repositoryId",
+    "worktreeId",
+    "sourceFingerprint",
+    "startupBindingReceiptRef",
+    "repositorySourceSnapshotReceiptRef",
+    "toolsetValidationReceiptPointer",
+    "state",
+    "outcome",
+    "runContextHash",
+    "dataRootBindingId",
+    "processLeaseRefs",
+    "portLeaseRefs",
+    "dataLeaseRef",
+    "credentialLeaseRefs",
+    "fencingToken",
+    "resourceVersion",
+    "eventRefs",
+    "metricsRef",
+    "readyAt",
+    "startedAt",
+    "stoppedAt",
+    "completedAt",
+    "error"
+  ],
+  "$defs": {
+    "BusinessError": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,127}$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "traceId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detailsHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "traceId",
+        "detailsHash"
+      ]
+    },
+    "ContractArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "enum": [
+            "StartupBindingReceipt",
+            "RepositorySourceSnapshotReceipt",
+            "ToolsetValidationReceipt",
+            "RunReceipt",
+            "CleanupReceipt"
+          ]
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ]
+    },
+    "ResolvedReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "issuer": {
+          "enum": [
+            "worktree_startup",
+            "repository_source_snapshot",
+            "project_toolset",
+            "run_isolation"
+          ]
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ContractArtifactRef"
+        }
+      },
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "schemaVersion",
+        "issuer",
+        "resourceVersion",
+        "artifactRef"
+      ]
+    },
+    "StartupBindingReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startupOperationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 2
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ContractArtifactRef"
+        }
+      },
+      "required": [
+        "startupOperationId",
+        "receiptHash",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef"
+      ]
+    },
+    "RepositorySourceSnapshotReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ContractArtifactRef"
+        }
+      },
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "sourceFingerprint",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef"
+      ]
+    },
+    "LeaseRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "kind": {
+          "enum": [
+            "run",
+            "process",
+            "port",
+            "data",
+            "credential"
+          ]
+        },
+        "fencingToken": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "leaseId",
+        "kind",
+        "fencingToken",
+        "resourceVersion"
+      ]
+    },
+    "MetricsRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metricsId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer": {
+          "const": "run_isolation"
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "metricsId",
+        "schemaVersion",
+        "producer",
+        "contentHash"
+      ]
+    },
+    "SafetyCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "indeterminate",
+            "not_applicable"
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{2,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidenceHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "errorCode",
+        "evidenceHash"
+      ]
+    },
+    "SafetyChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "canonicalRoot": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "runMarker": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "identity": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "leaseOwner": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "fence": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noSymlink": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noHardlinkEscape": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noMountCrossing": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActiveProcess": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActivePort": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActiveDataLease": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActiveCredentialLease": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "serverHandleClosed": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "targetBoundary": {
+          "$ref": "#/$defs/SafetyCheck"
+        }
+      },
+      "required": [
+        "canonicalRoot",
+        "runMarker",
+        "identity",
+        "leaseOwner",
+        "fence",
+        "noSymlink",
+        "noHardlinkEscape",
+        "noMountCrossing",
+        "noActiveProcess",
+        "noActivePort",
+        "noActiveDataLease",
+        "noActiveCredentialLease",
+        "serverHandleClosed",
+        "targetBoundary"
+      ]
+    },
+    "ToolsetValidationReceiptPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "pattern": "^toolset_validation_receipt:[A-Za-z0-9_-]+$"
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "toolsetVersion": {
+          "type": "string",
+          "pattern": "^ptv1:[0-9a-f]{64}$"
+        },
+        "validationPlanIdentity": {
+          "type": "string",
+          "pattern": "^vp1:[0-9a-f]{64}$"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "resourceVersion",
+        "toolsetVersion",
+        "validationPlanIdentity",
+        "sourceFingerprint"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "state": {
+          "const": "ready"
+        },
+        "outcome": {
+          "const": null
+        },
+        "startedAt": {
+          "const": null
+        },
+        "stoppedAt": {
+          "const": null
+        },
+        "completedAt": {
+          "const": null
+        },
+        "error": {
+          "const": null
+        }
+      }
+    },
+    {
+      "properties": {
+        "state": {
+          "const": "running"
+        },
+        "outcome": {
+          "const": null
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "stoppedAt": {
+          "const": null
+        },
+        "completedAt": {
+          "const": null
+        },
+        "error": {
+          "const": null
+        }
+      }
+    },
+    {
+      "properties": {
+        "state": {
+          "const": "stopping"
+        },
+        "outcome": {
+          "const": null
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "stoppedAt": {
+          "const": null
+        },
+        "completedAt": {
+          "const": null
+        }
+      }
+    },
+    {
+      "properties": {
+        "state": {
+          "const": "completed"
+        },
+        "outcome": {
+          "const": "passed"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "stoppedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error": {
+          "const": null
+        }
+      }
+    },
+    {
+      "properties": {
+        "state": {
+          "const": "failed"
+        },
+        "outcome": {
+          "enum": [
+            "failed",
+            "infrastructure_failed"
+          ]
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stoppedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error": {
+          "$ref": "#/$defs/BusinessError"
+        }
+      }
+    },
+    {
+      "properties": {
+        "state": {
+          "const": "cancelled"
+        },
+        "outcome": {
+          "const": "cancelled"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stoppedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error": {
+          "const": null
+        }
+      }
+    },
+    {
+      "properties": {
+        "state": {
+          "enum": [
+            "recoverable",
+            "orphaned"
+          ]
+        },
+        "outcome": {
+          "const": "unknown"
+        },
+        "startedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stoppedAt": {
+          "const": null
+        },
+        "completedAt": {
+          "const": null
+        },
+        "error": {
+          "$ref": "#/$defs/BusinessError"
+        }
+      }
+    }
+  ]
+}

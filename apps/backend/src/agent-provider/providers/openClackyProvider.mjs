@@ -64,6 +64,10 @@ export function createOpenClackyProvider(manager, options = {}) {
     ...(typeof options.prepareWorkspaceTransition === "function"
       ? { prepareWorkspaceTransition: options.prepareWorkspaceTransition }
       : {}),
+    ...(typeof options.bindWorkspace === "function" ? { bindWorkspace: options.bindWorkspace } : {}),
+    ...(typeof options.inspectWorkspaceBinding === "function"
+      ? { inspectWorkspaceBinding: options.inspectWorkspaceBinding }
+      : {}),
     ...(typeof options.attachTools === "function"
       ? { attachTools: options.attachTools }
       : {}),
@@ -88,6 +92,9 @@ export function openClackyCapabilities(manager, options = {}) {
   }
   if (typeof options.readSessionUsage === "function") {
     capabilities.add(AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ);
+  }
+  if (typeof options.bindWorkspace === "function" && typeof options.inspectWorkspaceBinding === "function") {
+    capabilities.add(AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND);
   }
   return [...capabilities].sort();
 }

@@ -1,0 +1,965 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:corptie:run-isolation:cleanup-receipt:4",
+  "title": "CleanupReceipt",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 4
+    },
+    "receiptId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "receiptHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cleanupOperationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^(run|dev):.+$"
+    },
+    "runReceiptRef": {
+      "$ref": "#/$defs/ResolvedReceiptRef"
+    },
+    "logicalSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "workItemId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "repositoryId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worktreeId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceFingerprint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "cleaned",
+        "retained",
+        "blocked",
+        "quarantined",
+        "unknown"
+      ]
+    },
+    "policy": {
+      "enum": [
+        "success_default",
+        "failure_ttl",
+        "cancelled_ttl",
+        "infrastructure_ttl",
+        "explicit_pin",
+        "janitor_expiry"
+      ]
+    },
+    "ownerSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "retentionReason": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "retentionPolicyVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "retainUntil": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "quotaBytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "observedBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fencingToken": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "resourceVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "dataRootBindingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "sourceIdentityHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "trashIdentityHash": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "safetyChecks": {
+      "$ref": "#/$defs/SafetyChecks"
+    },
+    "processReconciliation": {
+      "enum": [
+        "matchedExited",
+        "esrch",
+        "indeterminate",
+        "foreign",
+        "pidReused"
+      ]
+    },
+    "bytesReclaimed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "filesRemoved": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "eventRefs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      },
+      "uniqueItems": true
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BusinessError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "receiptId",
+    "receiptHash",
+    "cleanupOperationId",
+    "runId",
+    "runReceiptRef",
+    "logicalSessionId",
+    "workItemId",
+    "repositoryId",
+    "worktreeId",
+    "sourceFingerprint",
+    "outcome",
+    "policy",
+    "ownerSessionId",
+    "retentionReason",
+    "retentionPolicyVersion",
+    "retainUntil",
+    "quotaBytes",
+    "observedBytes",
+    "fencingToken",
+    "resourceVersion",
+    "dataRootBindingId",
+    "sourceIdentityHash",
+    "trashIdentityHash",
+    "safetyChecks",
+    "processReconciliation",
+    "bytesReclaimed",
+    "filesRemoved",
+    "eventRefs",
+    "startedAt",
+    "finishedAt",
+    "error"
+  ],
+  "$defs": {
+    "BusinessError": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,127}$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "traceId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "detailsHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "traceId",
+        "detailsHash"
+      ]
+    },
+    "ContractArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "enum": [
+            "StartupBindingReceipt",
+            "RepositorySourceSnapshotReceipt",
+            "ToolsetValidationReceipt",
+            "RunReceipt",
+            "CleanupReceipt"
+          ]
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ]
+    },
+    "ResolvedReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "issuer": {
+          "enum": [
+            "worktree_startup",
+            "repository_source_snapshot",
+            "project_toolset",
+            "run_isolation"
+          ]
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ContractArtifactRef"
+        }
+      },
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "schemaVersion",
+        "issuer",
+        "resourceVersion",
+        "artifactRef"
+      ]
+    },
+    "StartupBindingReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "startupOperationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 2
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ContractArtifactRef"
+        }
+      },
+      "required": [
+        "startupOperationId",
+        "receiptHash",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef"
+      ]
+    },
+    "RepositorySourceSnapshotReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ContractArtifactRef"
+        }
+      },
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "sourceFingerprint",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef"
+      ]
+    },
+    "LeaseRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "leaseId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "kind": {
+          "enum": [
+            "run",
+            "process",
+            "port",
+            "data",
+            "credential"
+          ]
+        },
+        "fencingToken": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "leaseId",
+        "kind",
+        "fencingToken",
+        "resourceVersion"
+      ]
+    },
+    "MetricsRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "metricsId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "producer": {
+          "const": "run_isolation"
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "metricsId",
+        "schemaVersion",
+        "producer",
+        "contentHash"
+      ]
+    },
+    "SafetyCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "enum": [
+            "passed",
+            "failed",
+            "indeterminate",
+            "not_applicable"
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{2,127}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidenceHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "status",
+        "errorCode",
+        "evidenceHash"
+      ]
+    },
+    "SafetyChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "canonicalRoot": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "runMarker": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "identity": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "leaseOwner": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "fence": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noSymlink": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noHardlinkEscape": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noMountCrossing": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActiveProcess": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActivePort": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActiveDataLease": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "noActiveCredentialLease": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "serverHandleClosed": {
+          "$ref": "#/$defs/SafetyCheck"
+        },
+        "targetBoundary": {
+          "$ref": "#/$defs/SafetyCheck"
+        }
+      },
+      "required": [
+        "canonicalRoot",
+        "runMarker",
+        "identity",
+        "leaseOwner",
+        "fence",
+        "noSymlink",
+        "noHardlinkEscape",
+        "noMountCrossing",
+        "noActiveProcess",
+        "noActivePort",
+        "noActiveDataLease",
+        "noActiveCredentialLease",
+        "serverHandleClosed",
+        "targetBoundary"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "policy": {
+            "const": "explicit_pin"
+          }
+        },
+        "required": [
+          "policy"
+        ]
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "const": "retained"
+          },
+          "retentionReason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "retainUntil": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  ],
+  "oneOf": [
+    {
+      "properties": {
+        "outcome": {
+          "const": "cleaned"
+        },
+        "retentionReason": {
+          "const": null
+        },
+        "retainUntil": {
+          "const": null
+        },
+        "error": {
+          "const": null
+        },
+        "processReconciliation": {
+          "enum": [
+            "matchedExited",
+            "esrch"
+          ]
+        },
+        "safetyChecks": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "canonicalRoot": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "runMarker": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "identity": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "leaseOwner": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "fence": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "noSymlink": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "noHardlinkEscape": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "noMountCrossing": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "noActiveProcess": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "noActivePort": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "noActiveDataLease": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "noActiveCredentialLease": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "serverHandleClosed": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            },
+            "targetBoundary": {
+              "properties": {
+                "status": {
+                  "const": "passed"
+                },
+                "errorCode": {
+                  "const": null
+                }
+              },
+              "required": [
+                "status",
+                "errorCode",
+                "evidenceHash"
+              ]
+            }
+          },
+          "required": [
+            "canonicalRoot",
+            "runMarker",
+            "identity",
+            "leaseOwner",
+            "fence",
+            "noSymlink",
+            "noHardlinkEscape",
+            "noMountCrossing",
+            "noActiveProcess",
+            "noActivePort",
+            "noActiveDataLease",
+            "noActiveCredentialLease",
+            "serverHandleClosed",
+            "targetBoundary"
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "outcome": {
+          "const": "retained"
+        },
+        "retentionReason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "retainUntil": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error": {
+          "const": null
+        }
+      }
+    },
+    {
+      "properties": {
+        "outcome": {
+          "const": "blocked"
+        },
+        "retentionReason": {
+          "const": null
+        },
+        "retainUntil": {
+          "const": null
+        },
+        "error": {
+          "$ref": "#/$defs/BusinessError"
+        }
+      }
+    },
+    {
+      "properties": {
+        "outcome": {
+          "const": "quarantined"
+        },
+        "retentionReason": {
+          "const": null
+        },
+        "retainUntil": {
+          "const": null
+        },
+        "error": {
+          "$ref": "#/$defs/BusinessError"
+        }
+      }
+    },
+    {
+      "properties": {
+        "outcome": {
+          "const": "unknown"
+        },
+        "retentionReason": {
+          "const": null
+        },
+        "retainUntil": {
+          "const": null
+        },
+        "error": {
+          "$ref": "#/$defs/BusinessError"
+        }
+      }
+    }
+  ]
+}

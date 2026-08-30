@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // 控制台数据模型（15 Phase 5 净新增）。
 // 独立于现有 Models.swift 巨石，对齐后端 entityHttpApi 返回的 snake_case JSON
@@ -41,18 +42,6 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var mainAgentId: String?
     var currentSessionId: String?
     var executionStatus: String?
-    var startStage: String? = nil
-    var startFailureStage: String? = nil
-    var startErrorCode: String? = nil
-    var startError: String? = nil
-    var startStartedAt: String? = nil
-    var startStageUpdatedAt: String? = nil
-    var startFailedAt: String? = nil
-    var startProviderId: String? = nil
-    var startAgentId: String? = nil
-    var startWorktreeId: String? = nil
-    var startWorktreePath: String? = nil
-    var startWorktreeBranch: String? = nil
     var acceptanceAssessment: WorkItemAcceptanceAssessment?
     var completionSuggestion: WorkItemCompletionSuggestion?
     var completionSource: WorkItemCompletionSource? = nil
@@ -66,9 +55,6 @@ struct WorkItem: Identifiable, Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case id, objectiveId, title, description, acceptanceCriteria, priority, status
         case mainWorkspaceId, mainAgentId, currentSessionId, executionStatus
-        case startStage, startFailureStage, startErrorCode, startError
-        case startStartedAt, startStageUpdatedAt, startFailedAt, startProviderId, startAgentId
-        case startWorktreeId, startWorktreePath, startWorktreeBranch
         case acceptanceAssessment, completionSuggestion, completionSource
         case canceledAt, cancelReason, cancellationOperationId, resourceVersion
         case createdAt, updatedAt
@@ -92,18 +78,6 @@ extension WorkItem {
         mainAgentId = try container.decodeIfPresent(String.self, forKey: .mainAgentId)
         currentSessionId = try container.decodeIfPresent(String.self, forKey: .currentSessionId)
         executionStatus = try container.decodeIfPresent(String.self, forKey: .executionStatus)
-        startStage = try container.decodeIfPresent(String.self, forKey: .startStage)
-        startFailureStage = try container.decodeIfPresent(String.self, forKey: .startFailureStage)
-        startErrorCode = try container.decodeIfPresent(String.self, forKey: .startErrorCode)
-        startError = try container.decodeIfPresent(String.self, forKey: .startError)
-        startStartedAt = try container.decodeIfPresent(String.self, forKey: .startStartedAt)
-        startStageUpdatedAt = try container.decodeIfPresent(String.self, forKey: .startStageUpdatedAt)
-        startFailedAt = try container.decodeIfPresent(String.self, forKey: .startFailedAt)
-        startProviderId = try container.decodeIfPresent(String.self, forKey: .startProviderId)
-        startAgentId = try container.decodeIfPresent(String.self, forKey: .startAgentId)
-        startWorktreeId = try container.decodeIfPresent(String.self, forKey: .startWorktreeId)
-        startWorktreePath = try container.decodeIfPresent(String.self, forKey: .startWorktreePath)
-        startWorktreeBranch = try container.decodeIfPresent(String.self, forKey: .startWorktreeBranch)
         // A pre-contract collaboration object used this field for unrelated
         // metadata. Drop only that invalid optional field; keep the WorkItem.
         acceptanceAssessment = (try? container.decodeIfPresent(WorkItemAcceptanceAssessment.self, forKey: .acceptanceAssessment)) ?? nil
@@ -341,22 +315,276 @@ enum WorkItemExecutionPresentation {
     }
 }
 
-enum WorkItemStartPresentation {
-    static func isPartialFailure(_ workItem: WorkItem) -> Bool {
-        workItem.startStage == "failed" && workItem.currentSessionId == nil
+struct StartupBindingReceipt: Codable, Hashable {
+    let schemaVersion: Int
+    let status: String
+    let startupOperationId: String
+    let objectiveId: String
+    let workItemId: String
+    let logicalSessionId: String
+    let repositoryId: String
+    let worktreeId: String
+    let canonicalWorktreePath: String
+    let headIdentity: StartupHeadIdentity
+    let providerBindingId: String
+    let bindingGeneration: Int
+    let sourceCommitOid: String
+    let sourceTreeOid: String
+    let baseRef: String?
+    let repositoryInventoryVersion: String
+    let workspaceResourceVersion: Int
+    let resourceVersion: Int
+    let providerContextHash: String
+    let phaseTimestamps: StartupPhaseTimestamps
+    let compensation: StartupCompensation
+    let error: String?
+    let receiptHash: String
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion, status, startupOperationId, objectiveId, workItemId, logicalSessionId
+        case repositoryId, worktreeId, canonicalWorktreePath, headIdentity, providerBindingId
+        case bindingGeneration, sourceCommitOid, sourceTreeOid, baseRef, repositoryInventoryVersion
+        case workspaceResourceVersion, resourceVersion, providerContextHash, phaseTimestamps
+        case compensation, error, receiptHash
     }
 
-    @MainActor
-    static func stageLabel(_ stage: String?) -> String {
-        switch stage {
-        case "validating": L10n("Validating")
-        case "preparingWorkspace": L10n("Preparing Worktree")
-        case "creatingSession": L10n("Creating Worker Session")
-        case "binding": L10n("Binding Session")
-        case "running": L10n("Running")
-        case "failed": L10n("Failed")
-        default: L10n("Unknown Stage")
+    init(from decoder: Decoder) throws {
+        try rejectUnknownStartupKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)), context: "StartupBindingReceipt")
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        status = try container.decode(String.self, forKey: .status)
+        guard schemaVersion == 2, status == "ready" else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .status, in: container,
+                debugDescription: "Unsupported StartupBindingReceipt schema/status"
+            )
         }
+        startupOperationId = try container.decode(String.self, forKey: .startupOperationId)
+        objectiveId = try container.decode(String.self, forKey: .objectiveId)
+        workItemId = try container.decode(String.self, forKey: .workItemId)
+        logicalSessionId = try container.decode(String.self, forKey: .logicalSessionId)
+        repositoryId = try container.decode(String.self, forKey: .repositoryId)
+        worktreeId = try container.decode(String.self, forKey: .worktreeId)
+        canonicalWorktreePath = try container.decode(String.self, forKey: .canonicalWorktreePath)
+        headIdentity = try container.decode(StartupHeadIdentity.self, forKey: .headIdentity)
+        providerBindingId = try container.decode(String.self, forKey: .providerBindingId)
+        bindingGeneration = try container.decode(Int.self, forKey: .bindingGeneration)
+        sourceCommitOid = try container.decode(String.self, forKey: .sourceCommitOid)
+        sourceTreeOid = try container.decode(String.self, forKey: .sourceTreeOid)
+        guard container.contains(.baseRef), container.contains(.error) else {
+            throw DecodingError.keyNotFound(
+                container.contains(.baseRef) ? CodingKeys.error : CodingKeys.baseRef,
+                .init(codingPath: decoder.codingPath, debugDescription: "StartupBindingReceipt nullable fields must be present")
+            )
+        }
+        baseRef = try container.decodeIfPresent(String.self, forKey: .baseRef)
+        repositoryInventoryVersion = try container.decode(String.self, forKey: .repositoryInventoryVersion)
+        workspaceResourceVersion = try container.decode(Int.self, forKey: .workspaceResourceVersion)
+        resourceVersion = try container.decode(Int.self, forKey: .resourceVersion)
+        providerContextHash = try container.decode(String.self, forKey: .providerContextHash)
+        phaseTimestamps = try container.decode(StartupPhaseTimestamps.self, forKey: .phaseTimestamps)
+        compensation = try container.decode(StartupCompensation.self, forKey: .compensation)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        receiptHash = try container.decode(String.self, forKey: .receiptHash)
+        guard error == nil, bindingGeneration > 0, workspaceResourceVersion > 0, resourceVersion > 0,
+              startupOperationId.hasPrefix("startup:"), objectiveId.hasPrefix("objective:"),
+              workItemId.hasPrefix("work_item:"), repositoryId.hasPrefix("repository:"),
+              worktreeId.hasPrefix("worktree:"), providerBindingId.hasPrefix("startup-binding:"),
+              logicalSessionId.hasPrefix("session:") || logicalSessionId.hasPrefix("logical:"),
+              canonicalWorktreePath.hasPrefix("/"),
+              sourceCommitOid.range(of: #"^[0-9a-f]{40,64}$"#, options: .regularExpression) != nil,
+              sourceTreeOid.range(of: #"^[0-9a-f]{40,64}$"#, options: .regularExpression) != nil,
+              providerContextHash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
+              receiptHash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .receiptHash, in: container,
+                debugDescription: "StartupBindingReceipt required identity fields are invalid"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(status, forKey: .status)
+        try container.encode(startupOperationId, forKey: .startupOperationId)
+        try container.encode(objectiveId, forKey: .objectiveId)
+        try container.encode(workItemId, forKey: .workItemId)
+        try container.encode(logicalSessionId, forKey: .logicalSessionId)
+        try container.encode(repositoryId, forKey: .repositoryId)
+        try container.encode(worktreeId, forKey: .worktreeId)
+        try container.encode(canonicalWorktreePath, forKey: .canonicalWorktreePath)
+        try container.encode(headIdentity, forKey: .headIdentity)
+        try container.encode(providerBindingId, forKey: .providerBindingId)
+        try container.encode(bindingGeneration, forKey: .bindingGeneration)
+        try container.encode(sourceCommitOid, forKey: .sourceCommitOid)
+        try container.encode(sourceTreeOid, forKey: .sourceTreeOid)
+        if let baseRef { try container.encode(baseRef, forKey: .baseRef) }
+        else { try container.encodeNil(forKey: .baseRef) }
+        try container.encode(repositoryInventoryVersion, forKey: .repositoryInventoryVersion)
+        try container.encode(workspaceResourceVersion, forKey: .workspaceResourceVersion)
+        try container.encode(resourceVersion, forKey: .resourceVersion)
+        try container.encode(providerContextHash, forKey: .providerContextHash)
+        try container.encode(phaseTimestamps, forKey: .phaseTimestamps)
+        try container.encode(compensation, forKey: .compensation)
+        if let receiptError = error { try container.encode(receiptError, forKey: .error) }
+        else { try container.encodeNil(forKey: .error) }
+        try container.encode(receiptHash, forKey: .receiptHash)
+    }
+
+    func hasValidHash() -> Bool {
+        guard let encoded = try? JSONEncoder().encode(self),
+              let decoded = try? JSONSerialization.jsonObject(with: encoded),
+              var object = decoded as? [String: Any] else { return false }
+        object.removeValue(forKey: "receiptHash")
+        guard let canonical = try? JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        ) else { return false }
+        return SHA256.hash(data: canonical).map { String(format: "%02x", $0) }.joined() == receiptHash
+    }
+}
+
+enum StartupHeadIdentity: Codable, Hashable {
+    case branch(String)
+    case detached(String)
+
+    private enum CodingKeys: String, CodingKey { case kind, branch, commitOid }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(String.self, forKey: .kind) {
+        case "branch":
+            try rejectUnknownStartupKeys(decoder, allowed: ["kind", "branch"], context: "StartupHeadIdentity.branch")
+            let branch = try container.decode(String.self, forKey: .branch)
+            guard !branch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw DecodingError.dataCorruptedError(forKey: .branch, in: container, debugDescription: "Branch identity is empty")
+            }
+            self = .branch(branch)
+        case "detached":
+            try rejectUnknownStartupKeys(decoder, allowed: ["kind", "commitOid"], context: "StartupHeadIdentity.detached")
+            let commitOid = try container.decode(String.self, forKey: .commitOid)
+            guard commitOid.range(of: #"^[0-9a-f]{40,64}$"#, options: .regularExpression) != nil else {
+                throw DecodingError.dataCorruptedError(forKey: .commitOid, in: container, debugDescription: "Detached identity OID is invalid")
+            }
+            self = .detached(commitOid)
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind, in: container, debugDescription: "Unknown Startup head identity kind"
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .branch(let branch):
+            try container.encode("branch", forKey: .kind)
+            try container.encode(branch, forKey: .branch)
+        case .detached(let commitOid):
+            try container.encode("detached", forKey: .kind)
+            try container.encode(commitOid, forKey: .commitOid)
+        }
+    }
+}
+
+struct StartupPhaseTimestamps: Codable, Hashable {
+    let allocatedAt: String
+    let worktreePreparedAt: String
+    let sessionBoundAt: String
+    let providerBoundAt: String
+    let readyAt: String
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case allocatedAt, worktreePreparedAt, sessionBoundAt, providerBoundAt, readyAt
+    }
+
+    init(from decoder: Decoder) throws {
+        try rejectUnknownStartupKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)), context: "StartupPhaseTimestamps")
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        allocatedAt = try container.decode(String.self, forKey: .allocatedAt)
+        worktreePreparedAt = try container.decode(String.self, forKey: .worktreePreparedAt)
+        sessionBoundAt = try container.decode(String.self, forKey: .sessionBoundAt)
+        providerBoundAt = try container.decode(String.self, forKey: .providerBoundAt)
+        readyAt = try container.decode(String.self, forKey: .readyAt)
+    }
+}
+
+struct StartupCompensation: Codable, Hashable {
+    let attempted: Bool
+    let result: String
+    let completedSteps: [String]
+    let failedStep: String?
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case attempted, result, completedSteps, failedStep
+    }
+
+    init(from decoder: Decoder) throws {
+        try rejectUnknownStartupKeys(decoder, allowed: Set(CodingKeys.allCases.map(\.rawValue)), context: "StartupCompensation")
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        attempted = try container.decode(Bool.self, forKey: .attempted)
+        result = try container.decode(String.self, forKey: .result)
+        guard ["not_required", "completed", "manual_required"].contains(result) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .result, in: container, debugDescription: "Unknown startup compensation result"
+            )
+        }
+        completedSteps = try container.decode([String].self, forKey: .completedSteps)
+        guard container.contains(.failedStep) else {
+            throw DecodingError.keyNotFound(CodingKeys.failedStep, .init(codingPath: decoder.codingPath, debugDescription: "failedStep must be present"))
+        }
+        failedStep = try container.decodeIfPresent(String.self, forKey: .failedStep)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(attempted, forKey: .attempted)
+        try container.encode(result, forKey: .result)
+        try container.encode(completedSteps, forKey: .completedSteps)
+        if let failedStep { try container.encode(failedStep, forKey: .failedStep) }
+        else { try container.encodeNil(forKey: .failedStep) }
+    }
+}
+
+struct WorkItemStartupReady: Codable {
+    let status: String
+    let idempotentReplay: Bool
+    let receipt: StartupBindingReceipt
+
+    init(from decoder: Decoder) throws {
+        try rejectUnknownStartupKeys(decoder, allowed: ["status", "idempotentReplay", "receipt"], context: "WorkItemStartupReady")
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        status = try container.decode(String.self, forKey: .status)
+        guard status == "ready" else {
+            throw DecodingError.dataCorruptedError(forKey: .status, in: container, debugDescription: "Startup is not ready")
+        }
+        idempotentReplay = try container.decode(Bool.self, forKey: .idempotentReplay)
+        receipt = try container.decode(StartupBindingReceipt.self, forKey: .receipt)
+        guard receipt.hasValidHash() else {
+            throw DecodingError.dataCorruptedError(forKey: .receipt, in: container, debugDescription: "Startup receipt hash mismatch")
+        }
+    }
+}
+
+private struct StartupAnyCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+}
+
+private func rejectUnknownStartupKeys(
+    _ decoder: Decoder,
+    allowed: Set<String>,
+    context: String
+) throws {
+    let keys = try decoder.container(keyedBy: StartupAnyCodingKey.self).allKeys.map(\.stringValue)
+    let unknown = Set(keys).subtracting(allowed)
+    guard unknown.isEmpty else {
+        throw DecodingError.dataCorrupted(
+            .init(codingPath: decoder.codingPath, debugDescription: "Unknown \(context) fields: \(unknown.sorted().joined(separator: ", "))")
+        )
     }
 }
 
@@ -368,6 +596,11 @@ struct WorkItemSessionListEnvelope: Codable {
 // 后端响应 envelope：POST /sessions / POST /agents/:id/sessions → { session: TaskSession }
 struct SessionCreateEnvelope: Codable {
     let session: TaskSession
+}
+
+struct WorkSessionCreateEnvelope: Codable {
+    let session: TaskSession
+    let start: WorkItemStartupReady
 }
 
 struct WorkItemRestoreEnvelope: Decodable {
