@@ -54,34 +54,27 @@ test("initial prompts are persisted after Session and Binding creation before Pr
   assert.doesNotMatch(source.slice(providerCreateBegin, providerCreateEnd), /startTurn/);
 });
 
-test("Worker initial prompts drain only after WorkItem ownership finalization", async () => {
+test("Worker initial prompts drain only after the authoritative ready receipt commit", async () => {
   const source = await readFile(sourceURL, "utf8");
-  const serviceBegin = source.indexOf("workItemStartService = new WorkItemStartService");
+  const serviceBegin = source.indexOf("workSessionStartupCoordinator = new WorkSessionStartupCoordinator");
   const serviceEnd = source.indexOf("projectWorktreeIntegrationService", serviceBegin);
   const serviceBody = source.slice(serviceBegin, serviceEnd);
 
   assert.match(serviceBody, /deferInitialPromptUntilBound:\s*true/);
-  const finalizeIndex = serviceBody.indexOf("finalizeStart:");
+  const finalizeIndex = serviceBody.indexOf("bindProviderWorkspace:");
   const activateIndex = serviceBody.indexOf("activateSession:");
   assert.ok(finalizeIndex >= 0 && activateIndex > finalizeIndex);
-  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, workItemExecutionPrompt\(workItem\)/);
+  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, initialPrompt \|\| workItemExecutionPrompt\(workItem\)/);
 });
 
-test("Worktree conflict Agent initial prompts drain only after WorkItem binding", async () => {
+test("every Worker Session production entry routes through the authoritative startup coordinator", async () => {
   const source = await readFile(sourceURL, "utf8");
-  const launchBegin = source.indexOf("launchConflictResolution: async");
-  const launchEnd = source.indexOf("removeWorktree:", launchBegin);
-  const launchBody = source.slice(launchBegin, launchEnd);
-  const newWorkItemBegin = launchBody.indexOf("const workItem = objectiveService.createWorkItem");
-  const newWorkItemBody = launchBody.slice(newWorkItemBegin);
-
-  assert.ok(launchBegin >= 0 && launchEnd > launchBegin && newWorkItemBegin >= 0);
-  assert.match(newWorkItemBody, /deferInitialPromptUntilBound:\s*true/);
-  const createIndex = newWorkItemBody.indexOf("await launchWorkItemSession");
-  const bindIndex = newWorkItemBody.indexOf("objectiveService.bindSession");
-  const deliveryIndex = newWorkItemBody.indexOf("await sendUnifiedSessionMessage");
-  assert.ok(createIndex >= 0 && bindIndex > createIndex && deliveryIndex > bindIndex);
-  assert.match(newWorkItemBody.slice(deliveryIndex), /origin:\s*"worktree-integration"/);
+  assert.equal(source.match(/launchWorkItemSession\(/g)?.length, 2, "only the coordinator adapter and function definition may reference the low-level launcher");
+  assert.match(source, /platform-operation/);
+  assert.match(source, /integration-conflict-resolution/);
+  assert.match(source, /integration-plan-resolution/);
+  assert.match(source, /async function launchPreparedWorkItemSession[\s\S]*launchAndBindWorkItemSession/);
+  assert.match(source, /async function launchAndBindWorkItemSession[\s\S]*workSessionStartupCoordinator\.start/);
 });
 
 test("a replaced Worker Session cannot overwrite its WorkItem lifecycle", async () => {
