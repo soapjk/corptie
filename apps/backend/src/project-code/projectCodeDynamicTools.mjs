@@ -26,6 +26,11 @@ export const projectCodeDynamicTools = Object.freeze([
       paths: { type: "array", maxItems: 100, items: { type: "string", minLength: 1 } },
       languages: { type: "array", maxItems: 32, items: { type: "string", minLength: 1 } },
       kinds: { type: "array", maxItems: 32, items: { type: "string", minLength: 1 } },
+      toolset_validation_receipt_id: {
+        type: "string",
+        pattern: "^toolset_validation_receipt:[A-Za-z0-9_-]+$",
+        description: "Authoritative ToolsetValidationReceipt v3 id required only for L3 semantic execution."
+      },
       limit: { type: "integer", minimum: 1, maximum: 50 },
       min_results: { type: "integer", minimum: 1, maximum: 20 },
       timeout_ms: { type: "integer", minimum: 250, maximum: 10000 }
@@ -83,6 +88,8 @@ export async function callProjectCodeDynamicTool(service, input = {}) {
       limit: args.limit,
       minResults: args.min_results,
       timeoutMs: args.timeout_ms,
+      toolsetValidationReceiptId: args.toolset_validation_receipt_id,
+      toolsetRequired: args.mode === "semantic",
       signal: input.signal
     });
   }

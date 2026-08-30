@@ -8,6 +8,7 @@ export class ProjectCodeSearchApplicationService {
       this[field] = options[field];
     }
     this.now = options.now ?? (() => new Date().toISOString());
+    this.toolsetReceipts = options.toolsetReceipts ?? null;
   }
 
   async createSnapshot(input = {}) {
@@ -27,7 +28,8 @@ export class ProjectCodeSearchApplicationService {
   async search(input = {}) {
     const context = this.#context(input);
     const snapshot = await this.#loadSnapshot(input.snapshotReceiptId, context, input.signal);
-    const toolsetValidationReceipt = input.toolsetValidationReceipt ?? null;
+    const toolsetValidationReceipt = input.toolsetValidationReceipt
+      ?? await this.#resolveToolsetReceipt(input.toolsetValidationReceiptId, context);
     if (toolsetValidationReceipt) await validateToolsetValidationReceipt(toolsetValidationReceipt);
     const result = await this.searchService.search({
       snapshot,
@@ -131,6 +133,18 @@ export class ProjectCodeSearchApplicationService {
       receipt,
       createdAt: receipt.createdAt ?? this.now()
     });
+  }
+
+  async #resolveToolsetReceipt(receiptId, context) {
+    if (receiptId == null) return null;
+    if (!this.toolsetReceipts?.require) {
+      throw contractError("TOOLSET_CONTRACT_UNRESOLVED", "The authoritative Toolset receipt resolver is unavailable.", 503);
+    }
+    const receipt = await this.toolsetReceipts.require({ receiptId, context });
+    if (!receipt || receipt.receiptId !== receiptId) {
+      throw contractError("TOOLSET_CONTRACT_UNRESOLVED", "The authoritative ToolsetValidationReceipt is unavailable.", 404);
+    }
+    return receipt;
   }
 }
 

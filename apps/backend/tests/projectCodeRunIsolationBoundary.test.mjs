@@ -43,8 +43,8 @@ test("Search delegates isolation lifecycle and never reports success after clean
     cleanupError.code = "RUN_CLEANUP_FAILED";
     const isolation = formalRunIsolationPort(snapshot, fixture.sessionContext, { calls, cleanupError });
     const service = new ProjectCodeSearchService({ snapshotBuilder: builder, runIsolationPort: isolation.port });
-    const result = await service.search({ snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "cleanup-failure", query: "concept", mode: "semantic" });
-    assert.deepEqual(calls.map(([name]) => name).filter((name) => name !== "commandDescriptor"), ["prepare", "execute", "cleanup"]);
+    const result = await service.search({ snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "cleanup-failure", query: "concept", mode: "semantic", toolsetValidationReceipt: toolsetReceiptFor(snapshot), toolsetRequired: true });
+    assert.deepEqual(calls.map(([name]) => name), ["prepare", "execute", "cleanup"]);
     assert.equal(result.receipt.outcome, "failed");
     assert.equal(result.receipt.errorCode, "RUN_CLEANUP_FAILED");
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
@@ -72,13 +72,14 @@ test("L3 cancellation is closed by Cleanup v4 and preserved as a cancelled Searc
       runOutcome: "cancelled"
     });
     const result = await new ProjectCodeSearchService({ snapshotBuilder: builder, runIsolationPort: isolation.port }).search({
-      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-cancel", query: "concept", mode: "semantic"
+      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-cancel", query: "concept", mode: "semantic",
+      toolsetValidationReceipt: toolsetReceiptFor(snapshot), toolsetRequired: true
     });
     assert.equal(result.receipt.outcome, "cancelled");
     assert.equal(result.receipt.errorCode, "QUERY_CANCELLED");
     assert.equal(result.receipt.runIsolationReceiptRef.schemaVersion, 6);
     assert.equal(result.receipt.cleanupReceiptRef.schemaVersion, 4);
-    assert.deepEqual(isolation.calls.map(([name]) => name), ["prepare", "commandDescriptor", "execute", "cleanup"]);
+    assert.deepEqual(isolation.calls.map(([name]) => name), ["prepare", "execute", "cleanup"]);
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 
@@ -92,7 +93,8 @@ test("L3 failed RunReceipt v6 still cleans and cannot produce successful Search"
       runOutcome: "failed"
     });
     const result = await new ProjectCodeSearchService({ snapshotBuilder: builder, runIsolationPort: isolation.port }).search({
-      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-fail", query: "concept", mode: "semantic"
+      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-fail", query: "concept", mode: "semantic",
+      toolsetValidationReceipt: toolsetReceiptFor(snapshot), toolsetRequired: true
     });
     assert.equal(result.receipt.outcome, "failed");
     assert.equal(result.receipt.errorCode, "RUN_EXECUTION_FAILED");
@@ -117,12 +119,12 @@ test("L3 validates the full Toolset v3 receipt then passes only the Run-owned si
       toolsetRequired: true
     });
     assert.equal(result.receipt.outcome, "success");
-    const executeRequest = isolation.calls.find(([name]) => name === "execute")[1];
-    assert.deepEqual(Object.keys(executeRequest.toolsetValidationReceiptPointer).sort(), [
+    const prepareRequest = isolation.calls.find(([name]) => name === "prepare")[1];
+    assert.deepEqual(Object.keys(prepareRequest.toolsetValidationReceiptPointer).sort(), [
       "receiptHash", "receiptId", "resourceVersion", "sourceFingerprint", "toolsetVersion", "validationPlanIdentity"
     ]);
-    assert.equal(Object.hasOwn(executeRequest.toolsetValidationReceiptPointer, "artifactRef"), false);
-    assert.equal(Object.hasOwn(executeRequest.toolsetValidationReceiptPointer, "schemaVersion"), false);
+    assert.equal(Object.hasOwn(prepareRequest.toolsetValidationReceiptPointer, "artifactRef"), false);
+    assert.equal(Object.hasOwn(prepareRequest.toolsetValidationReceiptPointer, "schemaVersion"), false);
 
     const legacy = signReceipt({
       ...result.receipt,
@@ -165,7 +167,9 @@ test("Run v6 identity, Snapshot, closed shape and legacy v5 mismatches fail clos
         sessionContext: fixture.sessionContext,
         searchScenarioId: `l3-mismatch-${name}`,
         query: "concept",
-        mode: "semantic"
+        mode: "semantic",
+        toolsetValidationReceipt: toolsetReceiptFor(snapshot),
+        toolsetRequired: true
       });
       assert.equal(result.receipt.outcome, "failed", name);
       assert.equal(result.receipt.errorCode, expectedCode, name);
@@ -184,7 +188,9 @@ test("valid Cleanup v4 unknown outcome is preserved as failed and never inferred
       sessionContext: fixture.sessionContext,
       searchScenarioId: "l3-cleanup-unknown",
       query: "concept",
-      mode: "semantic"
+      mode: "semantic",
+      toolsetValidationReceipt: toolsetReceiptFor(snapshot),
+      toolsetRequired: true
     });
     assert.equal(result.receipt.outcome, "failed");
     assert.equal(result.receipt.errorCode, "RUN_CLEANUP_OUTCOME_UNKNOWN");

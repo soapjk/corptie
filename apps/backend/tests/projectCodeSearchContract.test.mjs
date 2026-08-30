@@ -7,7 +7,7 @@ import { ProjectCodeIndexStore } from "../src/project-code/projectCodeIndexStore
 import { RepositorySourceSnapshotBuilder } from "../src/project-code/projectCodeSnapshot.mjs";
 import { ProjectCodeSearchService } from "../src/project-code/projectCodeSearchService.mjs";
 import { validateProjectCodeReceipt } from "../src/project-code/projectCodeContracts.mjs";
-import { createProjectCodeFixture, formalRunIsolationPort } from "./helpers/projectCodeTestFixture.mjs";
+import { createProjectCodeFixture, formalRunIsolationPort, toolsetReceiptFor } from "./helpers/projectCodeTestFixture.mjs";
 
 test("L0 exact rg has zero index startup cost and SearchReceipt contains only hashed evidence", async () => {
   const fixture = await createProjectCodeFixture();
@@ -120,9 +120,10 @@ test("L3 is capability gated, isolated, cleaned and closes one runId", async () 
     });
     const service = new ProjectCodeSearchService({ snapshotBuilder: builder, runIsolationPort: isolation.port });
     const result = await service.search({
-      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-concept", query: "coordination concept", mode: "semantic"
+      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "l3-concept", query: "coordination concept", mode: "semantic",
+      toolsetValidationReceipt: toolsetReceiptFor(snapshot), toolsetRequired: true
     });
-    assert.deepEqual(calls.map(([name]) => name), ["prepare", "commandDescriptor", "execute", "cleanup"]);
+    assert.deepEqual(calls.map(([name]) => name), ["prepare", "execute", "cleanup"]);
     assert.equal(result.receipt.runId, runId);
     assert.equal(result.receipt.runIsolationReceiptRef.runId, runId);
     assert.equal(result.receipt.cleanupReceiptRef.runId, runId);

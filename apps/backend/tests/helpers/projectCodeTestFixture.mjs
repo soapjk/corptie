@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { promisify } from "node:util";
@@ -36,7 +37,7 @@ export async function createProjectCodeFixture(options = {}) {
     git(directory, ["rev-parse", "HEAD"]), git(directory, ["rev-parse", "HEAD^{tree}"])
   ]);
   const sessionContext = {
-    objectiveId: "objective:test", workItemId: "work_item:test", logicalSessionId: "logical:test"
+    objectiveId: "objective:11111111-1111-1111-1111-111111111111", workItemId: "work_item:test", logicalSessionId: "logical:test"
   };
   const binding = {
     repositoryId: identity.repositoryId,
@@ -85,16 +86,16 @@ export function toolsetReceiptFor(snapshot, overrides = {}) {
     schemaVersion: 3,
     resourceVersion: 1,
     artifactRef: {
-      artifactId: "artifact:172b9f2e-a2d1-451c-a3e4-d52ba3d95850",
+      artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
       version: 1,
-      contentHash: "c203f2fd99d24064c46ab46e17f016a9494d643ab2b64e95c3f363fc8af00e62",
+      contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d",
       relation: "implementation_spec",
       receiptType: "ToolsetValidationReceipt",
       schemaVersion: 3
     },
     identity: {
       logicalSessionId: "logical:test",
-      objectiveId: "objective:11111111-1111-1111-1111-111111111111",
+      objectiveId: snapshot.receipt.objectiveId,
       workItemId: "work_item:test",
       repositoryId: snapshot.receipt.repositoryId,
       worktreeId: snapshot.receipt.worktreeId,
@@ -127,13 +128,35 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
     worktreeId: snapshot.receipt.worktreeId,
     sourceFingerprint: snapshot.receipt.sourceFingerprint,
     resourceVersion: 1,
-    fencingToken: 7
+    fencingToken: 7,
+    tmpDir: null,
+    toolsetValidationReceiptPointer: null
   };
   let runReceipt;
-  const service = {
-    async prepareRun(request, authenticatedSession) {
+  let commandOutput = null;
+  const coordinator = {
+    service: {
+      store: {
+        latestCleanupReceipt: () => null,
+        latestCleanup: () => null
+      },
+      inspect(requestedRunId) {
+        assert.equal(requestedRunId, runId);
+        return context;
+      },
+      takeCommandOutput(requestedRunId) {
+        assert.equal(requestedRunId, runId);
+        const output = commandOutput;
+        commandOutput = null;
+        return output;
+      }
+    },
+    async prepareRun(request, authenticatedSession, { toolsetReceiptResolver } = {}) {
       calls.push(["prepare", request, authenticatedSession]);
-      return { runContext: context };
+      context.tmpDir ??= await mkdtemp(join(tmpdir(), "corptie-project-code-run-"));
+      context.toolsetValidationReceiptPointer = request.toolsetValidationReceiptPointer;
+      assert.ok(await toolsetReceiptResolver?.(request.toolsetValidationReceiptPointer.receiptId));
+      return { context };
     },
     async execute(request, authenticatedSession) {
       calls.push(["execute", request, authenticatedSession]);
@@ -150,7 +173,7 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
         sourceFingerprint: snapshot.receipt.sourceFingerprint,
         startupBindingReceiptRef: runStartupBindingReceiptRef(snapshot.startupReceipt),
         repositorySourceSnapshotReceiptRef: snapshotReceiptRef(snapshot.receipt),
-        toolsetValidationReceiptPointer: request.toolsetValidationReceiptPointer,
+        toolsetValidationReceiptPointer: context.toolsetValidationReceiptPointer,
         state: options.runState ?? "completed",
         outcome: options.runOutcome ?? "passed",
         runContextHash: "4".repeat(64),
@@ -168,7 +191,12 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
       };
       Object.assign(runFields, options.runReceiptOverrides ?? {});
       runReceipt = signReceipt(runFields);
-      return { receipt: runReceipt, results: options.results ?? [] };
+      commandOutput = JSON.stringify({
+        schemaVersion: 1,
+        sourceFingerprint: snapshot.receipt.sourceFingerprint,
+        results: options.results ?? []
+      });
+      return runReceipt;
     },
     async cleanup(request, authenticatedSession) {
       calls.push(["cleanup", request, authenticatedSession]);
@@ -239,21 +267,19 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
           }
         };
       }
-      return { receipt: signReceipt(cleanupFields) };
-    }
-  };
-  const commandDescriptors = {
-    async create(descriptor) {
-      calls.push(["commandDescriptor", descriptor]);
-      return "command_descriptor:semantic-test";
+      await rm(context.tmpDir, { recursive: true, force: true });
+      return signReceipt(cleanupFields);
+    },
+    async cancel(request, authenticatedSession) {
+      calls.push(["cancel", request, authenticatedSession]);
+      return runReceipt;
     }
   };
   return {
     calls,
-    service,
+    coordinator,
     port: new ProjectCodeRunIsolationPort({
-      service,
-      commandDescriptors,
+      coordinator,
       capabilities: { localSemantic: true, networkAccess: false, languages: ["swift", "typescript"] }
     })
   };

@@ -1,4 +1,7 @@
-export function buildWorkSessionContext({ session, workItem, objective, artifactIndex = null } = {}) {
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+
+export function buildWorkSessionContext({ session, workItem, objective, artifactIndex = null, startupReceipt = null } = {}) {
   if (!session || session.sessionKind !== "worker" || !workItem) return null;
   if (session.workItemId !== workItem.id || session.objectiveId !== workItem.objective_id) {
     const error = new Error("Worker Session context does not match its bound WorkItem.");
@@ -10,6 +13,18 @@ export function buildWorkSessionContext({ session, workItem, objective, artifact
     error.code = "WORK_SESSION_BINDING_MISMATCH";
     throw error;
   }
+  if (startupReceipt && (startupReceipt.schemaVersion !== 2
+    || startupReceipt.status !== "ready"
+    || startupReceipt.workItemId !== workItem.id
+    || startupReceipt.objectiveId !== workItem.objective_id
+    || startupReceipt.repositoryId !== workItem.main_workspace_id
+    || !validReceiptHash(startupReceipt)
+    || (session.external?.cwd
+      && resolve(session.external.cwd) !== resolve(startupReceipt.canonicalWorktreePath)))) {
+    const error = new Error("Worker Session startup receipt does not match its Store binding.");
+    error.code = "WORK_SESSION_STARTUP_RECEIPT_MISMATCH";
+    throw error;
+  }
 
   const lines = [
     `<corptie_work_session_binding session_id="${xml(session.id)}" work_item_id="${xml(workItem.id)}" objective_id="${xml(workItem.objective_id)}">`,
@@ -19,6 +34,9 @@ export function buildWorkSessionContext({ session, workItem, objective, artifact
     "The WorkItem binding does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls. Apply those constraints normally; refuse, pause, or request authorization only when one of those constraints requires it, not merely because the request is outside the WorkItem scope.",
     "An expanded request does not rebind this Session or authorize lifecycle operations on a different WorkItem.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
+    startupReceipt
+      ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} generation=${startupReceipt.bindingGeneration} repository=${text(startupReceipt.repositoryId)} worktree=${text(startupReceipt.worktreeId)} receiptHash=${text(startupReceipt.receiptHash)}`
+      : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",
     "You may create an Artifact only through corptie_artifact_create. Corptie derives its Objective and WorkItem from this binding, forces work_item_private visibility, and atomically creates the current WorkItem Reference.",
     "For Worker Artifact creation, supply a stable idempotency_key. Reference defaults are relation=acceptance_evidence, required=false, version_policy=fixed; the initial pin is version 1 and its immutable content hash.",
     "",
@@ -35,6 +53,22 @@ export function buildWorkSessionContext({ session, workItem, objective, artifact
     "</corptie_work_session_binding>"
   ].filter(Boolean);
   return { prompt: lines.join("\n") };
+}
+
+function validReceiptHash(receipt) {
+  if (!/^[0-9a-f]{64}$/.test(String(receipt?.receiptHash ?? ""))) return false;
+  const { receiptHash, ...unsigned } = receipt;
+  return createHash("sha256").update(canonicalJson(unsigned)).digest("hex") === receiptHash;
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(sortValue(value));
+}
+
+function sortValue(value) {
+  if (Array.isArray(value)) return value.map(sortValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortValue(value[key])]));
 }
 
 function text(value) {

@@ -9,10 +9,7 @@ export const PROJECT_CODE_SCHEMA_ARTIFACT = Object.freeze({
 });
 
 export const PROJECT_CODE_RECEIPT_ARTIFACT = Object.freeze({
-  artifactId: "artifact:619de450-ff1f-4506-b06e-24c015317422",
-  version: 1,
-  contentHash: "49deb38e337da1af7067dc458fb552cae2d33e20531124d3c7143060615b957e",
-  relation: "implementation_spec"
+  ...PROJECT_CODE_SCHEMA_ARTIFACT
 });
 
 export const STARTUP_BINDING_ARTIFACT = Object.freeze({
@@ -42,9 +39,7 @@ export const TOOLSET_VALIDATION_ARTIFACT = Object.freeze({
 });
 
 export const PROJECT_TOOLSET_ARTIFACT = Object.freeze({
-  artifactId: "artifact:172b9f2e-a2d1-451c-a3e4-d52ba3d95850",
-  version: 1,
-  contentHash: "c203f2fd99d24064c46ab46e17f016a9494d643ab2b64e95c3f363fc8af00e62"
+  ...TOOLSET_VALIDATION_ARTIFACT
 });
 
 const schemaPath = new URL("../contracts/project-code-search-receipts.schema.json", import.meta.url);
