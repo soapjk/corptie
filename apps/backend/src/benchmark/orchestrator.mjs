@@ -90,10 +90,16 @@ export class BenchmarkOrchestrator {
       : await requiredPort(this.ports.runIsolationScenarioPort, "execute", request);
     validateReceiptEnvelope(runReceipt, { now: this.now() });
     receipts.push(runReceipt);
+    let executionReceipt;
     if (!recovering) {
       attempt = this.controlStore.updateAttemptControl(attempt.recordId, "execution_dispatching", runReceipt.payload.runId);
-      await requiredPort(this.ports.sessionExecutionPort, "execute", { ...request, runId: runReceipt.payload.runId });
-      attempt = this.controlStore.updateAttemptControl(attempt.recordId, "dispatched", runReceipt.payload.runId);
+      executionReceipt = await requiredPort(this.ports.sessionExecutionPort, "execute", { ...request, runReceipt });
+      attempt = this.controlStore.updateAttemptControl(attempt.recordId, "dispatched", runReceipt.payload.runId,
+        { sessionExecutionRef: executionReceipt });
+    } else {
+      executionReceipt = await requiredPort(this.ports.sessionExecutionPort, "query", {
+        ...request, runReceipt, receiptRef: attempt.payload.sessionExecutionRef
+      });
     }
     const cleanupReceipt = recovering
       ? await requiredPort(this.ports.runIsolationScenarioPort, "queryCleanupReceipt", { ...request, runReceipt })
@@ -101,9 +107,13 @@ export class BenchmarkOrchestrator {
     receipts.push(cleanupReceipt);
     this.controlStore.updateAttemptControl(attempt.recordId, "awaiting_evidence", runReceipt.payload.runId);
     if (plan.search === true) receipts.push(await requiredPort(this.ports.layeredSearchScenarioPort, recovering ? "queryReceipt" : "execute", { ...request, runReceipt, cleanupReceipt }));
-    const observation = await requiredPort(this.ports.observabilityQueryPort, "queryObservation", { ...request, runReceipt });
+    const observation = await requiredPort(this.ports.observabilityQueryPort, "queryObservation", {
+      ...request, runReceipt, executionReceipt
+    });
     receipts.push(observation);
-    receipts.push(await requiredPort(this.ports.observabilityQueryPort, "queryExport", { ...request, runReceipt, observation }));
+    receipts.push(await requiredPort(this.ports.observabilityQueryPort, "queryExport", {
+      ...request, runReceipt, executionReceipt, observation
+    }));
     const correlation = this.correlator.correlate({ attemptId: attempt.recordId, receipts, expectedScope: scope, now: this.now() });
     this.controlStore.linkReceipts(scope, attempt.recordId, correlation, receipts);
     const report = buildRunReport(experimentId, request, correlation, receipts, this.now());

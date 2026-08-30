@@ -148,6 +148,7 @@ import { mapEvent as mapDshEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
 import { DataRootMigrationCoordinator } from "./runtime/dataRootMigrationCoordinator.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
+import { ProviderNeutralCodeTaskExecutionService } from "./application/providerNeutralCodeTaskExecutionService.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
 import { LegacySessionHistoryRepairService } from "./application/legacySessionHistoryRepairService.mjs";
 import {
@@ -299,6 +300,7 @@ const sessionStateDiagnostics = new SessionStateDiagnostics();
 let workItemExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
 let projectCodeApplicationService = null;
+let projectCodeStartupReceipts = null;
 let workSessionStartupCoordinator = null;
 let projectToolsetProduction = null;
 let projectToolsetInitializer = null;
@@ -1179,7 +1181,7 @@ const backgroundAgentService = new BackgroundAgentService({
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
   backgroundAgent: backgroundAgentService
 }));
-const projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
+projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
 const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
 const projectCodeIndexStore = new ProjectCodeIndexStore({
   dataRoot: join(store.dataRoot, "project-code-index")
@@ -1211,6 +1213,11 @@ if (runIsolationCoordinator) {
   projectToolsetInitializer = disabledProjectToolsetInitializer();
 }
 const benchmarkArtifactEvidencePort = createArtifactEvidencePort(artifactService);
+const benchmarkCodeTaskExecution = new ProviderNeutralCodeTaskExecutionService({
+  sessionService: sessionApplicationService,
+  store,
+  observabilityService: turnObservability
+});
 const benchmarkPorts = runIsolationCoordinator && projectToolsetProduction
   ? createBenchmarkProductionPorts({
     store,
@@ -1219,7 +1226,8 @@ const benchmarkPorts = runIsolationCoordinator && projectToolsetProduction
     projectCodeApplicationService,
     projectToolsetProduction,
     runIsolationCoordinator,
-    observabilityService: turnObservability
+    observabilityService: turnObservability,
+    codeTaskExecutionService: benchmarkCodeTaskExecution
   })
   : { artifactEvidencePort: benchmarkArtifactEvidencePort };
 benchmarkControlPlane = new BenchmarkControlPlane({ store, ports: benchmarkPorts });
@@ -2531,8 +2539,26 @@ function resolveProviderEventBinding(event) {
   if (!binding) return null;
   const logical = store.getLogicalSession(binding.logicalSessionId);
   if (!logical?.legacySessionId) return null;
+  const startup = (() => {
+    try { return projectCodeStartupReceipts?.require(binding.logicalSessionId) ?? null; } catch { return null; }
+  })();
+  const materialization = store.getSessionToolCatalogMaterialization(binding.logicalSessionId, binding.bindingId);
+  const toolHostAppliedReceipt = materialization?.status === "applied" ? materialization.providerReceipt : null;
   return {
     ...binding,
+    providerMetadata: {
+      ...(binding.providerMetadata ?? {}),
+      ...(startup ? {
+        startupBindingReceipt: startup,
+        startupProviderBindingMapping: {
+          startupProviderBindingId: startup.providerBindingId,
+          providerBindingId: binding.bindingId,
+          startupBindingGeneration: startup.bindingGeneration,
+          providerBindingGeneration: binding.routingVersion
+        }
+      } : {}),
+      ...(toolHostAppliedReceipt ? { toolHostAppliedReceipt } : {})
+    },
     sessionId: logical.legacySessionId,
     isCurrentRoute: logical.activeBinding?.bindingId === binding.bindingId
   };

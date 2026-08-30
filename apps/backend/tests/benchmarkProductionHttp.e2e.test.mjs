@@ -4,6 +4,12 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 
+import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
+import { CallbackAgentProvider } from "../src/agent-provider/callbackAgentProvider.mjs";
+import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
+import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
+import { ProviderEventIngestionService } from "../src/application/providerEventIngestionService.mjs";
+import { ProviderNeutralCodeTaskExecutionService } from "../src/application/providerNeutralCodeTaskExecutionService.mjs";
 import { createProjectToolsetProductionComposition } from "../src/application/projectToolsetProductionComposition.mjs";
 import { WorkSessionStartupCoordinator } from "../src/application/workSessionStartupCoordinator.mjs";
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
@@ -90,9 +96,15 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
       return pin ? { ...pin, acceptanceState: "approved_fixed", approvalStatus: "approved" } : null;
     } });
   observability.initialize();
+  const routeBindingId = store.getLogicalSession(startup.receipt.logicalSessionId).activeBinding.bindingId;
+  const sourceToolHostReceipt = structuredClone(
+    store.getSessionToolCatalogMaterialization(startup.receipt.logicalSessionId, routeBindingId).providerReceipt
+  );
+  const execution = createProviderExecutionEntry({ store, startup: startup.receipt, observability });
   const ports = createBenchmarkProductionPorts({ store, artifactEvidencePort: { readPinned: async () => null },
     startupReceipts, projectCodeApplicationService: projectCode, projectToolsetProduction: toolsets,
-    runIsolationCoordinator, observabilityService: observability });
+    runIsolationCoordinator, observabilityService: observability,
+    codeTaskExecutionService: execution.codeTaskExecution });
   const controlPlane = new BenchmarkControlPlane({ store, ports,
     dependencyVerifier: async () => ({ manifestIdentity: DEPENDENCY_MANIFEST_IDENTITY,
       evidence: [{ artifactId: "artifact:test-fixture", readReceiptId: "artifact_usage:test-fixture" }] }) });
@@ -118,7 +130,14 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
   assert.deepEqual(producers, new Set(["tool-host", "startup-binding", "repository-source-snapshot",
     "project-toolset", "run-isolation", "layered-search", "turn-observability"]));
   assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM project_code_receipts WHERE receipt_type='SearchReceipt'").count, 4);
-  assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM observation_correlation_index").count, 16);
+  assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM observation_correlation_index").count, 32);
+  assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM observation_correlation_index WHERE producer='provider_event_ingestion'").count, 32);
+  assert.equal(execution.sentTurns, 8);
+  assert.deepEqual(
+    store.getSessionToolCatalogMaterialization(startup.receipt.logicalSessionId, routeBindingId).providerReceipt,
+    sourceToolHostReceipt,
+    "Benchmark Tool Host mapping is a read-only projection"
+  );
   assert.ok(runService.store.listRuns().length >= 8);
 
   const reportResponse = await fetch(`${origin}/benchmark/reports/${encodeURIComponent(result.suiteReport.reportId)}`, { headers });
@@ -135,7 +154,8 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
 
   const killedPorts = createBenchmarkProductionPorts({ store, artifactEvidencePort: { readPinned: async () => null },
     startupReceipts, projectCodeApplicationService: projectCode, projectToolsetProduction: toolsets,
-    runIsolationCoordinator, observabilityService: observability, readKillSwitch: () => true });
+    runIsolationCoordinator, observabilityService: observability,
+    codeTaskExecutionService: execution.codeTaskExecution, readKillSwitch: () => true });
   const killed = controlWith(store, killedPorts);
   const killedExperiment = killed.createExperiment(startup.receipt.logicalSessionId, experimentInput("kill-switch"));
   assert.equal((await killed.runExperiment(startup.receipt.logicalSessionId, killedExperiment.recordId)).status, "held");
@@ -144,7 +164,8 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
   const unknown = controlWith(store, createBenchmarkProductionPorts({ store,
     artifactEvidencePort: { readPinned: async () => null }, startupReceipts,
     projectCodeApplicationService: projectCode, projectToolsetProduction: unknownToolsets,
-    runIsolationCoordinator, observabilityService: observability }));
+    runIsolationCoordinator, observabilityService: observability,
+    codeTaskExecutionService: execution.codeTaskExecution }));
   const unknownExperiment = unknown.createExperiment(startup.receipt.logicalSessionId, experimentInput("unknown-toolset"));
   await assert.rejects(() => unknown.runExperiment(startup.receipt.logicalSessionId, unknownExperiment.recordId),
     { code: "BENCHMARK_PORT_UNAVAILABLE" });
@@ -169,7 +190,82 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
   await assert.rejects(() => mismatched.runExperiment(startup.receipt.logicalSessionId, mismatchExperiment.recordId),
     (error) => ["SOURCE_FINGERPRINT_MISMATCH", "SNAPSHOT_STALE"].includes(error.code));
   await writeFile(sourcePath, originalSource);
+
+  const productionAdapterSource = await readFile(new URL("../src/benchmark/productionPorts.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(productionAdapterSource, /recordObservation\s*\(/);
+  assert.doesNotMatch(productionAdapterSource, /benchmark_production_composition/);
 });
+
+function createProviderExecutionEntry({ store, startup, observability }) {
+  const logical = store.getLogicalSession(startup.logicalSessionId);
+  const binding = logical.activeBinding;
+  const materialization = store.getSessionToolCatalogMaterialization(startup.logicalSessionId, binding.bindingId);
+  const authoritativeBinding = {
+    ...binding,
+    sessionId: logical.legacySessionId,
+    providerMetadata: {
+      startupBindingReceipt: startup,
+      startupProviderBindingMapping: {
+        startupProviderBindingId: startup.providerBindingId,
+        providerBindingId: binding.bindingId,
+        startupBindingGeneration: startup.bindingGeneration,
+        providerBindingGeneration: binding.routingVersion
+      },
+      toolHostAppliedReceipt: materialization.providerReceipt
+    }
+  };
+  const ingestion = new ProviderEventIngestionService({
+    store,
+    resolveBinding: () => authoritativeBinding,
+    project: () => ({ surface: false, outbox: [] }),
+    observe: (context) => observability.ingestProviderEvent(context)
+  });
+  let providerSequence = 0;
+  let sentTurns = 0;
+  const provider = new CallbackAgentProvider({
+    id: binding.providerId,
+    displayName: "Benchmark Provider",
+    transport: "production-test",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT]
+  }, {
+    send: async (_reference, _message, context) => {
+      sentTurns += 1;
+      const turnId = `turn:benchmark:${context.source.attemptId}`;
+      const base = Date.now() + sentTurns * 100;
+      for (const [offset, type, itemId] of [
+        [0, "turn.started", null], [10, "assistant.message.started", `message:${sentTurns}`],
+        [20, "assistant.message.completed", `message:${sentTurns}`], [30, "turn.completed", null]
+      ]) {
+        providerSequence += 1;
+        const result = ingestion.ingest({ schemaVersion: 1, providerId: binding.providerId,
+          providerSessionId: binding.providerSessionId, bindingId: binding.bindingId,
+          logicalSessionId: startup.logicalSessionId, routingVersion: binding.routingVersion,
+          providerEventId: `provider-event:${sentTurns}:${providerSequence}`, providerSequence,
+          turnId, itemId, type, occurredAt: new Date(base + offset).toISOString(),
+          receivedAt: new Date(base + offset + 1).toISOString(),
+          payload: { providerCapabilityClass: "event_stream" } });
+        assert.equal(result.status, "applied");
+        assert.notEqual(result.observability?.state, "skipped");
+      }
+      return { turn: { id: turnId } };
+    },
+    interrupt: async () => ({ accepted: true })
+  });
+  const sessionService = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async (sessionId) => sessionId === startup.logicalSessionId
+      ? { ...binding, sessionId: logical.legacySessionId, logicalSessionId: startup.logicalSessionId,
+          metadata: { session: store.getSession(logical.legacySessionId) } }
+      : null
+  });
+  return {
+    codeTaskExecution: new ProviderNeutralCodeTaskExecutionService({
+      sessionService, store, observabilityService: observability, pollIntervalMs: 1, timeoutMs: 2_000
+    }),
+    get sentTurns() { return sentTurns; }
+  };
+}
 
 async function establishWorkSession({ store, source }) {
   const objectiveService = new ObjectiveApplicationService({ store });

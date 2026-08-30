@@ -145,7 +145,8 @@ test("B6 capability classes A/B/C share one contract while D is explicit unsuppo
 test("B3 restart recovery queries authoritative receipts and never resends an unknown Provider turn", async () => {
   let sessionExecutions = 0;
   const ports = fakePorts();
-  ports.sessionExecutionPort.execute = async () => { sessionExecutions += 1; return { accepted: true }; };
+  ports.sessionExecutionPort.execute = async ({ attemptId }) => { sessionExecutions += 1; return executionReceipt(attemptId); };
+  ports.sessionExecutionPort.query = async ({ receiptRef }) => receiptRef;
   const harness = makeHarness({ ports, dependencyVerifier: verifiedDependencies });
   try {
     harness.control.initialize();
@@ -155,7 +156,8 @@ test("B3 restart recovery queries authoritative receipts and never resends an un
     experiment = harness.control.controlStore.transitionExperiment(scope, experiment.recordId, experiment.resourceVersion, "awaiting_evidence");
     const plan = experiment.payload.definition.samplePlans[0];
     const attempt = harness.control.controlStore.createAttempt(scope, experiment.recordId, plan.recordId, plan.variantOrder[0]);
-    harness.control.controlStore.updateAttemptControl(attempt.recordId, "execution_dispatching", `run:${attempt.recordId}`);
+    harness.control.controlStore.updateAttemptControl(attempt.recordId, "execution_dispatching", `run:${attempt.recordId}`,
+      { sessionExecutionRef: executionReceipt(attempt.recordId) });
     const result = await harness.control.runExperiment(scope.logicalSessionId, experiment.recordId);
     assert.equal(result.experiment.status, "held");
     assert.equal(sessionExecutions, 3, "one uncertain attempt was queried while the other three were dispatched once");
@@ -166,7 +168,7 @@ test("architecture keeps external business state and concrete Providers out of B
   const root = new URL("../src/benchmark/", import.meta.url);
   const files = (await readdir(root)).filter((name) => name.endsWith(".mjs"));
   const source = (await Promise.all(files.map((name) => readFile(new URL(name, root), "utf8")))).join("\n");
-  for (const forbidden of ["codexClient", "claudeAgents", "OpenClacky", "GitWorkspace", "projectToolsetManager", "ResourceLeaseService", "RepositorySearchService", "node:child_process", "process.kill"]) {
+  for (const forbidden of ["codexClient", "claudeAgents", "OpenClacky", "GitWorkspace", "projectToolsetManager", "ResourceLeaseService", "RepositorySearchService", "node:child_process", "process.kill", "recordObservation(", "benchmark_production_composition"]) {
     assert.equal(source.includes(forbidden), false, `Benchmark must not import or own ${forbidden}`);
   }
   const harness = makeHarness();
@@ -252,7 +254,11 @@ function fakePorts(options = {}) {
       cleanup: async ({ runReceipt, ...request }) => authority("CleanupReceipt", { ...request, runId: runReceipt.payload.runId }),
       queryCleanupReceipt: async ({ runReceipt, ...request }) => authority("CleanupReceipt", { ...request, runId: runReceipt.payload.runId })
     },
-    sessionExecutionPort: { execute: async () => ({ accepted: true }), cancel: async () => ({ accepted: true }) },
+    sessionExecutionPort: {
+      execute: async ({ attemptId }) => executionReceipt(attemptId),
+      query: async ({ receiptRef }) => receiptRef,
+      cancel: async () => ({ accepted: true })
+    },
     layeredSearchScenarioPort: {
       execute: async ({ runReceipt, cleanupReceipt, ...request }) => authority("SearchReceipt", { ...request, runId: runReceipt.payload.runId, cleanupReceipt }),
       queryReceipt: async ({ runReceipt, cleanupReceipt, ...request }) => authority("SearchReceipt", { ...request, runId: runReceipt.payload.runId, cleanupReceipt })
@@ -262,6 +268,11 @@ function fakePorts(options = {}) {
       queryExport: async ({ runReceipt, ...request }) => authority("ObservationExport", { ...request, runId: runReceipt.payload.runId }, { observabilityLevel: options.observabilityLevel ?? "event-stream" })
     }
   };
+}
+
+function executionReceipt(attemptId) {
+  return { receiptId: `turn_execution_receipt:${attemptId}`, turnExecutionId: `execution:${attemptId}`,
+    turnId: `turn:${attemptId}`, logicalSessionId: scope.logicalSessionId };
 }
 
 function receiptChain({ attemptId, search = false }) {

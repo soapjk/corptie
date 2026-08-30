@@ -128,6 +128,14 @@ export class BenchmarkControlStore {
 
   createAttempt(scope, experimentId, samplePlanId, variant) {
     const recordId = `attempt:${contentHash({ samplePlanId, variant }).slice(0, 32)}`;
+    const existing = this.#get("benchmark_attempts", recordId);
+    if (existing) {
+      if (existing.created_by_session_id !== scope.logicalSessionId || existing.experiment_id !== experimentId
+        || existing.sample_plan_id !== samplePlanId || existing.variant !== variant) {
+        throw benchmarkError("BENCHMARK_IMMUTABLE_RECORD_CONFLICT", "Attempt identity differs from the existing record.", "store", { statusCode: 409 });
+      }
+      return present(existing);
+    }
     const payload = { experimentId, samplePlanId, variant };
     this.#insertImmutable("benchmark_attempts", recordId, scope.logicalSessionId, payload,
       ["experiment_id", "sample_plan_id", "variant", "control_state", "external_run_id"], [experimentId, samplePlanId, variant, "planned", null]);
