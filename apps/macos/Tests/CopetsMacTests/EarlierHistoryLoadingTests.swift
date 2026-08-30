@@ -84,6 +84,8 @@ struct EarlierHistoryLoadingTests {
         #expect(view.contains("let previousVisibleMessageLimit = visibleMessageLimit"))
         #expect(view.contains("visibleMessageLimit += 100"))
         #expect(view.contains("visibleMessageLimit = previousVisibleMessageLimit"))
+        #expect(view.contains("onUnderfilledHistory: loadEarlierMessagesForUnderfilledViewport"))
+        #expect(view.contains("loadEarlierMessages(preservingLatestFollow: true)"))
         #expect(view.contains("Loading earlier messages…"))
         #expect(view.contains("Earlier messages could not be loaded"))
         #expect(view.contains("The earliest message is displayed"))
