@@ -1,0 +1,141 @@
+import { randomUUID } from "node:crypto";
+import { contractError, validateProjectCodeReceipt, validateToolsetValidationReceipt } from "./projectCodeContracts.mjs";
+
+export class ProjectCodeSearchApplicationService {
+  constructor(options = {}) {
+    for (const field of ["store", "startupReceipts", "snapshotBuilder", "searchService"]) {
+      if (!options[field]) throw new TypeError(`ProjectCodeSearchApplicationService requires ${field}.`);
+      this[field] = options[field];
+    }
+    this.now = options.now ?? (() => new Date().toISOString());
+  }
+
+  async createSnapshot(input = {}) {
+    const context = this.#context(input);
+    const snapshot = await this.snapshotBuilder.build({
+      startupReceipt: context.startupReceipt,
+      binding: context.binding,
+      sessionContext: context.sessionContext,
+      sourceDeclarations: input.sourceDeclarations ?? [],
+      signal: input.signal
+    });
+    await validateProjectCodeReceipt(snapshot.receipt, "RepositorySourceSnapshotReceipt");
+    this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
+    return Object.freeze({ receipt: snapshot.receipt, rejectedPaths: Object.freeze(snapshot.rejectedPaths) });
+  }
+
+  async search(input = {}) {
+    const context = this.#context(input);
+    const snapshot = await this.#loadSnapshot(input.snapshotReceiptId, context, input.signal);
+    const toolsetValidationReceipt = input.toolsetValidationReceipt ?? null;
+    if (toolsetValidationReceipt) await validateToolsetValidationReceipt(toolsetValidationReceipt);
+    const result = await this.searchService.search({
+      snapshot,
+      sessionContext: context.sessionContext,
+      searchScenarioId: input.searchScenarioId ?? `project-code:${randomUUID()}`,
+      query: input.query,
+      mode: input.mode,
+      paths: input.paths,
+      languages: input.languages,
+      kinds: input.kinds,
+      limit: input.limit,
+      minResults: input.minResults,
+      timeoutMs: input.timeoutMs,
+      signal: input.signal,
+      toolsetValidationReceipt,
+      toolsetRequired: input.toolsetRequired === true
+    });
+    this.#persist("SearchReceipt", result.receipt, context);
+    return Object.freeze({ snapshotReceipt: snapshot.receipt, searchReceipt: result.receipt, results: result.results });
+  }
+
+  async pointRead(input = {}) {
+    const context = this.#context(input);
+    const snapshot = await this.#loadSnapshot(input.snapshotReceiptId, context, input.signal);
+    return this.searchService.pointRead({
+      snapshot,
+      sessionContext: context.sessionContext,
+      path: input.path,
+      startLine: input.startLine,
+      lineCount: input.lineCount,
+      maxBytes: input.maxBytes,
+      signal: input.signal
+    });
+  }
+
+  #context(input) {
+    const logicalSessionId = requiredText(input.logicalSessionId, "logicalSessionId");
+    const ownership = this.store.assertLogicalWorkSessionBinding(logicalSessionId);
+    const logical = this.store.getLogicalSession(logicalSessionId);
+    const session = ownership.sessionId ? this.store.getSession(ownership.sessionId) : null;
+    const workItem = this.store.getWorkItem(ownership.workItemId);
+    const startupReceipt = this.startupReceipts.require(logicalSessionId);
+    if (!logical?.activeBinding || !session || !workItem
+      || startupReceipt.providerBindingId !== logical.activeBinding.bindingId
+      || startupReceipt.worktreeId !== logical.activeBinding.worktreeId
+      || startupReceipt.canonicalWorktreePath !== logical.activeBinding.boundCwd
+      || startupReceipt.objectiveId !== ownership.objectiveId
+      || startupReceipt.workItemId !== ownership.workItemId) {
+      throw contractError("STARTUP_BINDING_STALE", "Project-code request does not match the active Work Session route.");
+    }
+    const sessionContext = Object.freeze({
+      objectiveId: ownership.objectiveId,
+      workItemId: ownership.workItemId,
+      logicalSessionId
+    });
+    const binding = Object.freeze({
+      repositoryId: startupReceipt.repositoryId,
+      worktreeId: startupReceipt.worktreeId,
+      canonicalWorktreePath: startupReceipt.canonicalWorktreePath,
+      providerBindingId: logical.activeBinding.bindingId,
+      bindingGeneration: startupReceipt.bindingGeneration,
+      repositoryInventoryVersion: startupReceipt.repositoryInventoryVersion,
+      workspaceResourceVersion: startupReceipt.workspaceResourceVersion,
+      resourceVersion: startupReceipt.resourceVersion
+    });
+    return Object.freeze({ logical, session, workItem, startupReceipt, sessionContext, binding });
+  }
+
+  async #loadSnapshot(receiptId, context, signal) {
+    const stored = this.store.getProjectCodeReceipt(requiredText(receiptId, "snapshotReceiptId"), context.sessionContext.logicalSessionId);
+    if (!stored || stored.receiptType !== "RepositorySourceSnapshotReceipt") {
+      throw contractError("SOURCE_SNAPSHOT_REQUIRED", "The requested authoritative RepositorySourceSnapshotReceipt is unavailable.", 404);
+    }
+    await validateProjectCodeReceipt(stored.receipt, "RepositorySourceSnapshotReceipt");
+    const current = await this.snapshotBuilder.build({
+      startupReceipt: context.startupReceipt,
+      binding: context.binding,
+      sessionContext: context.sessionContext,
+      sourceDeclarations: [],
+      signal
+    });
+    for (const field of ["repositoryId", "worktreeId", "sourceCommitOid", "sourceTreeOid", "sourceFingerprint"]) {
+      if (current.receipt[field] !== stored.receipt[field]) {
+        throw contractError("SOURCE_SNAPSHOT_STALE", `Persisted Snapshot ${field} no longer matches current source state.`);
+      }
+    }
+    return Object.freeze({ ...current, receipt: Object.freeze(stored.receipt) });
+  }
+
+  #persist(receiptType, receipt, context) {
+    this.store.putProjectCodeReceipt({
+      receiptId: receipt.receiptId,
+      receiptType,
+      logicalSessionId: context.sessionContext.logicalSessionId,
+      objectiveId: context.sessionContext.objectiveId,
+      workItemId: context.sessionContext.workItemId,
+      repositoryId: receipt.repositoryId ?? context.startupReceipt.repositoryId,
+      worktreeId: receipt.worktreeId ?? context.startupReceipt.worktreeId,
+      sourceFingerprint: receipt.sourceFingerprint,
+      receiptHash: receipt.receiptHash,
+      receipt,
+      createdAt: receipt.createdAt ?? this.now()
+    });
+  }
+}
+
+function requiredText(value, field) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) throw contractError("QUERY_INVALID", `${field} is required.`, 400);
+  return text;
+}
