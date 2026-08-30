@@ -355,6 +355,90 @@ test("new Session fails closed when authenticated Tool Host finalization fails",
   assert.equal(preparations, 2);
 });
 
+test("authoritative startup can defer Tool Host finalization until its ready commit", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "deferred-tool-host-provider",
+    displayName: "Deferred Tool Host Provider",
+    transport: "fake",
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+    ]
+  }, {
+    createSession: async () => { calls.push("create"); return { id: "session:deferred" }; },
+    resumeSession: async () => { calls.push("resume"); return { id: "session:deferred" }; },
+    attachTools: async () => ({})
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    toolHostService: {
+      async prepareSession(_providerId, context) {
+        calls.push(context.purpose);
+        return { actorId: context.actorId, providerAttachment: {} };
+      }
+    },
+    resolveSessionReference: async () => null,
+    bindCreatedSession: async ({ session }) => {
+      calls.push("bind");
+      return {
+        sessionId: session.id,
+        logicalSessionId: "logical:deferred",
+        providerId: "deferred-tool-host-provider",
+        providerSessionId: "native:deferred"
+      };
+    }
+  });
+
+  const created = await service.createSession(
+    "deferred-tool-host-provider",
+    { sessionKind: "worker" },
+    { actorId: "agent:one", sessionKind: "worker", deferToolHostFinalization: true }
+  );
+
+  assert.equal(created.logicalSessionId, "logical:deferred");
+  assert.deepEqual(calls, ["session-bootstrap", "create", "bind"]);
+});
+
+test("deferred startup finalization preserves its Provider lifecycle purpose", async () => {
+  let resumeContext = null;
+  const capabilities = [
+    AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+    AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+  ];
+  const provider = new CallbackAgentProvider({
+    id: "startup-finalization-provider",
+    displayName: "Startup Finalization Provider",
+    transport: "fake",
+    capabilities
+  }, {
+    resumeSession: async (_reference, context) => {
+      resumeContext = context;
+      return { id: "session:ready" };
+    },
+    attachTools: async () => ({})
+  });
+  const reference = {
+    sessionId: "session:ready",
+    logicalSessionId: "logical:ready",
+    providerId: "startup-finalization-provider",
+    providerSessionId: "native:ready",
+    metadata: { session: { id: "session:ready", agentId: "agent:one", sessionKind: "worker" } }
+  };
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => reference,
+    toolHostService: {
+      async prepareSession() { return { actorId: "agent:one", providerAttachment: {} }; }
+    }
+  });
+
+  await service.resumeSession("session:ready", { purpose: "session-create-finalization" });
+
+  assert.equal(resumeContext.purpose, "session-create-finalization");
+});
+
 test("unusable replacement cleanup removes the local Session even when the Provider thread is already missing", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({

@@ -4592,6 +4592,22 @@ export class CorptieStore {
             prune_reason=excluded.prune_reason,
             inventory_version=excluded.inventory_version,
             observed_at=excluded.observed_at,
+            dedicated=CASE
+              WHEN git_worktrees.availability<>'available' AND excluded.availability='available'
+                AND EXISTS (
+                  SELECT 1 FROM work_session_startup_operations startup
+                  WHERE startup.startup_operation_id=git_worktrees.created_by_startup_operation_id
+                    AND startup.state IN ('failed_compensated','failed_manual_cleanup')
+                )
+              THEN 0 ELSE git_worktrees.dedicated END,
+            created_by_startup_operation_id=CASE
+              WHEN git_worktrees.availability<>'available' AND excluded.availability='available'
+                AND EXISTS (
+                  SELECT 1 FROM work_session_startup_operations startup
+                  WHERE startup.startup_operation_id=git_worktrees.created_by_startup_operation_id
+                    AND startup.state IN ('failed_compensated','failed_manual_cleanup')
+                )
+              THEN NULL ELSE git_worktrees.created_by_startup_operation_id END,
             resource_version=git_worktrees.resource_version+1,
             raw_json=excluded.raw_json`,
           [

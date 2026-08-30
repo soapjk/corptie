@@ -61,10 +61,22 @@ test("Worker initial prompts drain only after the authoritative ready receipt co
   const serviceBody = source.slice(serviceBegin, serviceEnd);
 
   assert.match(serviceBody, /deferInitialPromptUntilBound:\s*true/);
+  assert.match(serviceBody, /deferToolHostFinalization:\s*true/);
   const finalizeIndex = serviceBody.indexOf("bindProviderWorkspace:");
   const activateIndex = serviceBody.indexOf("activateSession:");
   assert.ok(finalizeIndex >= 0 && activateIndex > finalizeIndex);
+  assert.match(serviceBody.slice(activateIndex), /sessionApplicationService\.resumeSession\(session\.id,[\s\S]*purpose:\s*"session-create-finalization"/);
   assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, initialPrompt \|\| workItemExecutionPrompt\(workItem\)/);
+});
+
+test("Worker startup composition consumes the coordinator's requested Agent identity", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const serviceBegin = source.indexOf("workSessionStartupCoordinator = new WorkSessionStartupCoordinator");
+  const serviceEnd = source.indexOf("projectWorktreeIntegrationService", serviceBegin);
+  const serviceBody = source.slice(serviceBegin, serviceEnd);
+
+  assert.match(serviceBody, /store\.getAgent\(operation\.requestedAgentId\)/);
+  assert.doesNotMatch(serviceBody, /operation\.agentId/);
 });
 
 test("every Worker Session production entry routes through the authoritative startup coordinator", async () => {

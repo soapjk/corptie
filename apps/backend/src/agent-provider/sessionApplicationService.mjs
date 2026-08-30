@@ -83,7 +83,9 @@ export class SessionApplicationService {
     const reference = this.bindCreatedSession && context.deferSessionBinding !== true
       ? await this.bindCreatedSession({ providerId, session, input: preparedInput, context })
       : null;
-    await this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference);
+    if (context.deferToolHostFinalization !== true) {
+      await this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference);
+    }
     return this.decorateLifecycleSession(providerId, session, reference);
   }
 
@@ -143,7 +145,7 @@ export class SessionApplicationService {
     const actorId = normalizedText(context.actorId ?? storedSession?.agentId);
     const resumeContext = {
       ...context,
-      purpose: "session-resume",
+      purpose: normalizedText(context.purpose) ?? "session-resume",
       actorId,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId ?? null,
