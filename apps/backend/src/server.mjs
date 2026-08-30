@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { copyFile, mkdtemp, readFile, realpath, stat, mkdir, writeFile } from "node:fs/promises";
@@ -58,7 +58,12 @@ import {
 } from "./runtime/conflictResolutionWorkspacePermissions.mjs";
 import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
 import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
-import { WorkItemStartService } from "./application/workItemStartService.mjs";
+import { WorkSessionStartupCoordinator } from "./application/workSessionStartupCoordinator.mjs";
+import { WorktreeStartupPreparer } from "./application/worktreeStartupPreparer.mjs";
+import {
+  ProviderWorkspaceBindingService,
+  persistedProviderWorkspaceProof
+} from "./agent-provider/providerWorkspaceBindingService.mjs";
 import {
   evaluateWorkItemSessionRepair,
   historicalProviderSessionUnavailable
@@ -220,11 +225,17 @@ import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTra
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
-import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
-import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
+import { PROJECT_TOOLSET_ISOLATED_ACTIONS, ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
+import { createProjectToolsetProductionComposition } from "./application/projectToolsetProductionComposition.mjs";
 import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
+import { ProjectCodeSearchApplicationService } from "./project-code/projectCodeApplicationService.mjs";
+import { createProjectCodeHostNamespace } from "./project-code/projectCodeDynamicTools.mjs";
+import { ProjectCodeIndexStore } from "./project-code/projectCodeIndexStore.mjs";
+import { ProjectCodeSearchService } from "./project-code/projectCodeSearchService.mjs";
+import { RepositorySourceSnapshotBuilder } from "./project-code/projectCodeSnapshot.mjs";
+import { ProjectCodeStartupReceiptRepository } from "./project-code/projectCodeStartupReceiptRepository.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 import { WorkspaceRoutePreparationCache } from "./runtime/workspaceRoutePreparationCache.mjs";
 import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
@@ -238,6 +249,7 @@ import { SessionTimelineChangePublisher } from "./application/sessionTimelineCha
 import { TurnObservabilityService } from "./observability/turnObservability.mjs";
 import { handleTurnObservabilityHttpRequest } from "./observability/turnObservabilityHttpApi.mjs";
 import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
+import { RunIsolationAuthorityResolver, RunIsolationExecutionCoordinator } from "./runIsolation/index.mjs";
 import {
   DEFAULT_SESSION_HISTORY_WINDOW,
   MAX_SESSION_HISTORY_PAGE,
@@ -247,6 +259,13 @@ import {
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
+const runIsolationDataRoot = process.env.CORPTIE_RUN_ISOLATION_DATA_ROOT?.trim() || null;
+const runIsolationCoordinator = runIsolationDataRoot
+  ? new RunIsolationExecutionCoordinator({ dataRoot: runIsolationDataRoot })
+  : null;
+// Startup/Snapshot/Toolset production owners compose their authoritative ports
+// here. Until that integration exists, executable Toolset actions fail closed.
+let runIsolationAuthorityResolver = new RunIsolationAuthorityResolver();
 // 会话快照只返回尾部窗口的完整消息，更早的历史通过补拉端点按需获取。
 // 打开会话时前端只渲染尾部一屏，全量 text（千级消息约 1MB+）是切会话延迟的主因。
 const execFileAsync = promisify(execFile);
@@ -270,7 +289,10 @@ let stateSyncService = null;
 const sessionStateDiagnostics = new SessionStateDiagnostics();
 let workItemExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
-let workItemStartService = null;
+let projectCodeApplicationService = null;
+let workSessionStartupCoordinator = null;
+let projectToolsetProduction = null;
+let projectToolsetInitializer = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -478,6 +500,10 @@ const hostToolCatalog = new HostToolCatalog([
     tools: workspaceDynamicTools,
     execute: (input) => callWorkspaceDynamicTool(input)
   },
+  createProjectCodeHostNamespace({
+    getService: () => projectCodeApplicationService,
+    validateRoute: validateProjectCodeHostRoute
+  }),
   {
     id: "collaboration",
     tools: sessionCollaborationV2Enabled
@@ -614,6 +640,8 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
   listModels: loadClaudeModels,
   onTurnSettled: handleClaudeTurnSettledSafely,
   prepareWorkspaceTransition: switchClaudeProviderWorkspace,
+  bindWorkspace: (input) => persistedProviderWorkspaceProof(store, input),
+  inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input),
   attachTools: async (attachment) => claudeToolHostAttachment(
     attachment,
     withObjectiveChatClaudeContext(
@@ -781,17 +809,26 @@ const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
 const gitWorkspaces = new GitWorkspaceManager({
   store,
   transitions: workspaceTransitionManager,
+  workItemWorktreesRoot: ({ repositoryId }) => resolve(
+    store.layout.worktreesDirectory,
+    repositoryId.split(":").at(-1)
+  ),
   observePerformance: (measurement) => {
     console.info(`[worktree-performance] ${JSON.stringify(measurement)}`);
   }
 });
-const projectToolsets = new ProjectToolsetManager();
+const projectToolsets = new ProjectToolsetManager({
+  runIsolationCoordinator,
+  validationReceiptResolver: (receiptId) => projectToolsetProduction?.resolveToolsetReceipt(receiptId) ?? null
+});
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
 const openClackyProvider = createOpenClackyProvider(openClackyManager, {
   attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
   prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
-  readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null
+  readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null,
+  bindWorkspace: (input) => persistedProviderWorkspaceProof(store, input),
+  inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input)
 });
 const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   claudeProvider: claudeProviderRuntime,
@@ -819,6 +856,8 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     readAccountUsage: readCodexProviderAccountUsage,
     readSessionUsage: readCodexProviderSessionUsage,
     prepareWorkspaceTransition: switchCodexProviderWorkspace,
+    bindWorkspace: (input) => persistedProviderWorkspaceProof(store, input),
+    inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input),
     attachTools: async (attachment) => codexToolHostAttachment(
       attachment,
       withObjectiveChatCodexContext(
@@ -860,7 +899,9 @@ openClackyManager.onProbe = () => {
   agentProviderRegistry.refreshProvider(createOpenClackyProvider(openClackyManager, {
     attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
     prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
-    readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null
+    readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null,
+    bindWorkspace: (input) => persistedProviderWorkspaceProof(store, input),
+    inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input)
   }));
 };
 const sessionBindingRepository = new SessionBindingRepository({
@@ -905,8 +946,18 @@ const sessionApplicationService = new SessionApplicationService({
       const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
       const workItem = store.getWorkItem(ownership.workItemId);
       const objective = workItem?.objective_id ? store.getObjective(workItem.objective_id) : null;
+      const startupReceiptRow = store.selectOne(
+        `SELECT receipt.receipt_json FROM work_session_startup_receipts receipt
+         JOIN work_session_startup_operations operation
+           ON operation.startup_operation_id=receipt.startup_operation_id
+         WHERE operation.logical_session_id=? AND operation.state='ready'
+         ORDER BY operation.binding_generation DESC LIMIT 1`,
+        [reference.logicalSessionId]
+      );
       baseContext = buildWorkSessionContext({
-        session, workItem, objective, artifactIndex: artifactService.indexForSession(session)
+        session, workItem, objective,
+        artifactIndex: artifactService.indexForSession(session),
+        startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null
       });
     }
     let memoryContext = null;
@@ -1007,7 +1058,9 @@ platformOperationService = new PlatformOperationService({
     }
     if (workItemId) {
       const workItem = objectiveService.getWorkItem(workItemId);
-      return launchWorkItemSession({ agent, workItem, providerId, title, prompt });
+      return launchAndBindWorkItemSession({
+        agent, workItem, providerId, title, initialPrompt: prompt, source: "platform-operation"
+      });
     }
     return launchAgentSession({ agent, providerId, title, prompt });
   },
@@ -1032,12 +1085,37 @@ const backgroundAgentService = new BackgroundAgentService({
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
   backgroundAgent: backgroundAgentService
 }));
-const projectToolsetInitializer = new ProjectToolsetInitializer({
-  manager: projectToolsets,
-  backgroundAgent: backgroundAgentService,
-  referencePath: bundledProjectToolsetReferencePath,
-  onEvent: (type, payload) => emitEvent(type, payload)
+const projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
+const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
+const projectCodeIndexStore = new ProjectCodeIndexStore({
+  dataRoot: join(store.dataRoot, "project-code-index")
 });
+const projectCodeSearchService = new ProjectCodeSearchService({
+  snapshotBuilder: projectCodeSnapshotBuilder,
+  indexStore: projectCodeIndexStore
+});
+projectCodeApplicationService = new ProjectCodeSearchApplicationService({
+  store,
+  startupReceipts: projectCodeStartupReceipts,
+  snapshotBuilder: projectCodeSnapshotBuilder,
+  searchService: projectCodeSearchService
+});
+if (runIsolationCoordinator) {
+  projectToolsetProduction = createProjectToolsetProductionComposition({
+    store,
+    startupReceipts: projectCodeStartupReceipts,
+    projectCodeApplicationService,
+    runIsolationCoordinator,
+    backgroundAgentService,
+    dataRoot: store.dataRoot,
+    environment: environmentName,
+    onEvent: (type, payload) => emitEvent(type, payload)
+  });
+  projectToolsetInitializer = projectToolsetProduction.initializer;
+  runIsolationAuthorityResolver = projectToolsetProduction.runAuthorityResolver;
+} else {
+  projectToolsetInitializer = disabledProjectToolsetInitializer();
+}
 const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
@@ -1150,7 +1228,14 @@ workItemExecutionOrchestrator = new WorkItemExecutionOrchestrator({
   updateWorkItem: (workItemId, patch) => store.updateWorkItem(workItemId, patch),
   onChanged: (type, payload) => emitEvent(type, payload)
 });
-workItemStartService = new WorkItemStartService({
+const startupWorktreePreparer = new WorktreeStartupPreparer({
+  store,
+  ensureWorkspace: ensureWorkItemWorkspace
+});
+const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
+  registry: agentProviderRegistry
+});
+workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
   store,
   validateStart: async (operation) => {
     const workItem = objectiveService.getWorkItem(operation.workItemId);
@@ -1180,22 +1265,35 @@ workItemStartService = new WorkItemStartService({
       throw error;
     }
     agentProviderRegistry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE);
+    try {
+      agentProviderRegistry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND);
+    } catch (error) {
+      error.code = "START_PROVIDER_BIND_UNSUPPORTED";
+      error.statusCode = 409;
+      error.retryable = false;
+      throw error;
+    }
     return { workItem, objective, agent, providerId };
   },
-  prepareWorkspace: ensureWorkItemWorkspace,
-  createSession: ({ workItem, agent, providerId, title, workspace }) => launchWorkItemSession({
+  prepareWorktree: (input) => startupWorktreePreparer.prepare(input),
+  inspectWorktree: (input) => startupWorktreePreparer.inspect(input),
+  createSession: ({ workItem, agent, providerId, title, workspace, source }) => launchWorkItemSession({
     agent,
     workItem,
     providerId,
     title,
-    workingDirectory: workspace.path,
+    workingDirectory: workspace.canonicalWorktreePath,
     autoUniqueTitle: true,
-    deferInitialPromptUntilBound: true
+    deferInitialPromptUntilBound: true,
+    ...(source === "integration-plan-resolution"
+      ? { sandbox: "danger-full-access", approvalPolicy: "never" }
+      : {})
   }),
-  finalizeStart: (input) => store.finalizeWorkItemStart(input),
-  activateSession: async ({ session, workItem }) => {
+  bindProviderWorkspace: (input) => providerWorkspaceBindingService.bindWorkspace(input),
+  inspectProviderBinding: (input) => providerWorkspaceBindingService.inspectBinding(input),
+  activateSession: async ({ session, workItem, initialPrompt }) => {
     try {
-      return await sendUnifiedSessionMessage(session.id, workItemExecutionPrompt(workItem), {
+      return await sendUnifiedSessionMessage(session.id, initialPrompt || workItemExecutionPrompt(workItem), {
         type: "session-initialization",
         origin: "work-item-start"
       });
@@ -1204,12 +1302,38 @@ workItemStartService = new WorkItemStartService({
       throw error;
     }
   },
-  onChanged: (type, payload) => emitEvent(type, payload),
-  onAudit: (record, { failed } = {}) => {
-    const line = `[work-item-start] ${JSON.stringify(record)}`;
-    if (failed) console.error(line);
-    else console.info(line);
-  }
+  markSessionStartupFailed: async (sessionId) => {
+    store.db.run(
+      "UPDATE sessions SET status='failed', updated_at=? WHERE id=? AND status NOT IN ('completed','deleted')",
+      [new Date().toISOString(), sessionId]
+    );
+    store.scheduleSave();
+  },
+  compensateWorktree: async ({ operation, allocation }) => {
+    const inventory = store.getGitWorktree(allocation.worktreeId);
+    if (!inventory || inventory.repositoryId !== allocation.repositoryId
+      || resolve(inventory.canonicalPath || inventory.path) !== resolve(allocation.canonicalWorktreePath)) {
+      return { manualRequired: true, removed: false };
+    }
+    const project = await projectApplicationService.requireProject(allocation.repositoryId);
+    try {
+      await gitWorkspaces.removeWorktreeForProject({
+        repositoryId: allocation.repositoryId,
+        workingDirectory: project.mainPath,
+        sourceWorktreeId: allocation.worktreeId,
+        ignoreLogicalSessionIds: operation.logical_session_id ? [operation.logical_session_id] : [],
+        safeOnly: true,
+        deleteBranch: true
+      });
+      return { removed: true, manualRequired: false };
+    } catch (error) {
+      if (["UNCOMMITTED_CHANGES", "UNMERGED_WORKTREE_CONFIRMATION_REQUIRED"].includes(error?.code)) {
+        return { removed: false, dirty: error.code === "UNCOMMITTED_CHANGES", manualRequired: true };
+      }
+      throw error;
+    }
+  },
+  onChanged: (type, payload) => emitEvent(type, payload)
 });
 const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
   store,
@@ -1249,13 +1373,14 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
     });
     let session;
     try {
-      session = await launchWorkItemSession({
+      session = await launchPreparedWorkItemSession({
         agent,
         workItem,
         providerId: agentProviderRegistry.defaultProviderId,
         title,
-        prompt,
-        workingDirectory: workspace.path
+        initialPrompt: prompt,
+        workspace,
+        source: "integration-conflict-resolution"
       });
     } catch (error) {
       objectiveService.deleteWorkItem(workItem.id);
@@ -1439,20 +1564,15 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     });
     let session;
     try {
-      session = await launchWorkItemSession({
+      session = await launchPreparedWorkItemSession({
         agent,
         workItem,
         providerId: agentProviderRegistry.defaultProviderId,
         title,
-        prompt,
-        workingDirectory: workspace.path,
-        autoUniqueTitle: true,
-        sandbox: "danger-full-access",
-        approvalPolicy: "never",
-        deferInitialPromptUntilBound: true
+        initialPrompt: prompt,
+        workspace,
+        source: "integration-plan-resolution"
       });
-      session = objectiveService.bindSession(session.id, workItem.id);
-      objectiveService.updateWorkItem(workItem.id, { status: "in_progress", mainAgentId: agent.agentId });
     } catch (error) {
       objectiveService.deleteWorkItem(workItem.id);
       throw error;
@@ -3062,7 +3182,7 @@ async function resolveScheduledSessionRoute(logicalSessionId) {
   return {
     logicalSession: logical,
     sessionId: session.id,
-    agentId: agent.agentId,
+    requestedAgentId: agent.agentId,
     binding: logical.activeBinding
   };
 }
@@ -3137,6 +3257,17 @@ async function callWorkspaceDynamicTool(params) {
     return sessionWorkspaceOperations.switchWorkspace(metadata, params.actorId, params.arguments ?? {});
   }
   throw new Error(`Unsupported workspace tool: ${params.tool}`);
+}
+
+function validateProjectCodeHostRoute(params) {
+  const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
+  if (!logical || logical.activeThreadId !== params.threadId
+    || logical.logicalSessionId !== params.metadata?.logicalSessionId) {
+    const error = new Error("Project-code search is only available from the active authoritative Worker Session thread.");
+    error.code = "PROJECT_CODE_SESSION_ROUTE_STALE";
+    error.stage = "route_validation";
+    throw error;
+  }
 }
 
 function collaborationRuntimeInstructions(agentId) {
@@ -3853,7 +3984,6 @@ async function createSessionThroughApplication(providerId, input = {}, context =
         origin: context.source ?? "application"
       });
     }
-    if (providerId === "codex-app-server") scheduleProjectToolsetInitialization(cwd);
     return store.getSession(session.id) ?? session;
   } finally {
     releaseTitle();
@@ -3890,7 +4020,8 @@ function resolveSessionProviderId(provider) {
   return agentProviderRegistry.resolveId(normalized, { useDefault: normalized === "" });
 }
 
-// 实体层「执行」入口：真正启动模型（Codex / Claude），并把 session 绑定到 Agent + WorkItem。
+// Startup coordinator 专用的低层 Session 构造端口。调用方必须提供已由
+// WorktreeStartupPreparer 验证的目录；此函数不发现、创建或切换 Worktree。
 async function launchWorkItemSession({
   agent,
   workItem,
@@ -3916,27 +4047,19 @@ async function launchWorkItemSession({
     error.code = "PROVIDER_UNSUPPORTED";
     throw error;
   }
-  const previousSession = workItem.current_session_id
-    ? store.getSession(workItem.current_session_id)
-    : null;
-  let phaseStartedAt = performance.now();
-  const preparedWorkspace = typeof workingDirectory === "string" && workingDirectory.trim()
-    ? null
-    : await workItemExecutionOrchestrator.prepareWorkspace(workItem, previousSession);
-  observePerformance("workspacePrepareMs", performance.now() - phaseStartedAt);
   const cwd = typeof workingDirectory === "string" && workingDirectory.trim()
     ? resolve(workingDirectory.trim())
-    : preparedWorkspace?.path;
+    : null;
   if (!cwd) {
-    const error = new Error("该工作项尚未绑定 Git 仓库（Workspace），无法执行。");
-    error.code = "WORKSPACE_REQUIRED";
+    const error = new Error("Worker Session creation requires an authoritative prepared Worktree binding.");
+    error.code = "START_WORKTREE_BINDING_REQUIRED";
     throw error;
   }
   const prompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
     ? requestedPrompt.trim()
     : workItemExecutionPrompt(workItem);
 
-  phaseStartedAt = performance.now();
+  const phaseStartedAt = performance.now();
   const session = await createSessionThroughApplication(
     providerId,
     {
@@ -3964,9 +4087,9 @@ async function launchWorkItemSession({
 }
 
 // 实体层「自由对话」入口：仅凭 Agent（role=assistant）开聊，不绑定具体工作项。
-// 与 launchWorkItemSession 复用同一 createSessionThroughApplication。
+// 与 startup coordinator 的低层 Session 构造端口复用 createSessionThroughApplication。
 // cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir（仅同一 Assistant 的会话共享）；
-// 目录缺失时在此幂等创建。独立贡献者的会话应走 WorkItem 绑定路径（launchWorkItemSession），
+// 目录缺失时在此幂等创建。独立贡献者必须走权威 Work Session startup coordinator，
 // 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
 async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt }) {
   if (agent.role !== "assistant") {
@@ -4041,18 +4164,55 @@ async function launchAndBindWorkItemSession({
   title,
   providerId = agentProviderRegistry.defaultProviderId,
   idempotencyKey = null,
+  initialPrompt = null,
   source = "application"
 }) {
-  const result = await workItemStartService.start({
+  const result = await workSessionStartupCoordinator.start({
     workItemId: workItem.id,
     agentId: agent.agentId,
     providerId,
     title,
+    initialPrompt,
     idempotencyKey: idempotencyKey ?? `start:${workItem.id}`,
     source,
     actorId: agent.agentId
   });
   return result.session;
+}
+
+async function launchPreparedWorkItemSession({ workItem, agent, workspace, source, ...options }) {
+  const inventory = workspace?.worktreeId ? store.getGitWorktree(workspace.worktreeId) : null;
+  const canonicalPath = resolve(workspace?.path ?? "");
+  if (!inventory || inventory.repositoryId !== workItem.main_workspace_id
+    || inventory.isMain === true || inventory.availability !== "available"
+    || resolve(inventory.canonicalPath || inventory.path) !== canonicalPath) {
+    const error = new Error("Prepared Integration Worktree does not match the WorkItem Repository inventory.");
+    error.code = "START_WORKTREE_INVENTORY_MISMATCH";
+    error.statusCode = 409;
+    throw error;
+  }
+  const idempotencyKey = options.idempotencyKey ?? `start:${workItem.id}`;
+  const startupOperationId = `startup:${createHash("sha256")
+    .update(`${workItem.id}\0${idempotencyKey}`)
+    .digest("hex")
+    .slice(0, 32)}`;
+  store.db.run(
+    `UPDATE git_worktrees SET dedicated=1, created_by_startup_operation_id=?
+     WHERE worktree_id=? AND repository_id=?
+       AND (created_by_startup_operation_id IS NULL OR created_by_startup_operation_id=?)`,
+    [startupOperationId, inventory.worktreeId, workItem.main_workspace_id, startupOperationId]
+  );
+  if (store.db.getRowsModified() !== 1
+    || store.getGitWorktree(inventory.worktreeId)?.createdByStartupOperationId !== startupOperationId) {
+    const error = new Error("Prepared Integration Worktree is already owned by another startup operation.");
+    error.code = "START_WORKTREE_COLLISION";
+    error.statusCode = 409;
+    throw error;
+  }
+  store.scheduleSave();
+  return launchAndBindWorkItemSession({
+    workItem: store.getWorkItem(workItem.id), agent, source, ...options, idempotencyKey
+  });
 }
 
 // Session 生命周期只投影到 WorkItem.execution_status。WorkItem.status 的 review
@@ -5344,7 +5504,7 @@ function workItemSessionRepairProof(sessionId, failedWork, error) {
     [session.id]
   );
   const repairCount = Number(store.selectOne(
-    "SELECT COUNT(*) AS count FROM work_item_start_operations WHERE work_item_id=? AND source='self-repair'",
+    "SELECT COUNT(*) AS count FROM work_session_startup_operations WHERE work_item_id=? AND source='self-repair'",
     [workItem.id]
   )?.count ?? 0);
   const logical = store.getLogicalSessionByLegacySessionId(session.id);
@@ -5370,9 +5530,9 @@ async function selfRepairWorkItemSession(sessionId, failedWork, error) {
   const existing = workItemSessionRepairs.get(proof.workItem.id);
   if (existing) return existing;
   const repair = (async () => {
-    const result = await workItemStartService.start({
+    const result = await workSessionStartupCoordinator.start({
       workItemId: proof.workItem.id,
-      agentId: proof.agent.agentId,
+      requestedAgentId: proof.agent.agentId,
       providerId: proof.logical.activeBinding.providerId,
       title: proof.session.title,
       idempotencyKey: `self-repair:${proof.workItem.id}:${proof.session.id}`,
@@ -5754,8 +5914,10 @@ async function performProjectDevelopmentServiceAction(project, action, input = {
     throw error;
   }
   if (action === "initialize" || action === "update") {
-    projectToolsetInitializer.schedule(project.mainPath, { force: action === "update" });
-    return { scheduled: true };
+    const error = new Error("Project Toolset initialization requires an authenticated Work Session.");
+    error.code = "TOOLSET_PERMISSION_DENIED";
+    error.statusCode = 403;
+    throw error;
   }
   if (action === "profile") {
     const profileId = String(input.profileId ?? "").trim();
@@ -6265,18 +6427,13 @@ function projectWorkingDirectoryForSession(sessionId) {
   return cwd;
 }
 
-function scheduleProjectToolsetInitialization(cwd) {
-  inspectGitWorkspace(cwd)
-    .then(() => projectToolsetInitializer.schedule(cwd))
-    .catch(() => {});
-}
-
 async function projectToolsetStatus(sessionId) {
   const cwd = projectWorkingDirectoryForSession(sessionId);
-  return projectToolsetStatusForPath(cwd);
+  const authenticatedSession = projectToolsetAuthenticatedSession(sessionId);
+  return projectToolsetStatusForPath(cwd, { logicalSessionId: authenticatedSession.logicalSessionId });
 }
 
-async function projectToolsetStatusForPath(cwd) {
+async function projectToolsetStatusForPath(cwd, options = {}) {
   const toolset = await projectToolsets.inspect(cwd);
   if (toolset.configurationError) {
     return {
@@ -6326,8 +6483,7 @@ async function projectToolsetStatusForPath(cwd) {
     };
   }
   if (!toolset.configured) {
-    await projectToolsetInitializer.recoverOnce(cwd);
-    const initialization = projectToolsetInitializer.status(toolset.repositoryId);
+    const initialization = await projectToolsetInitializer.status(toolset.repositoryId, options.logicalSessionId ?? null);
     return {
       toolset,
       service: {
@@ -6341,21 +6497,19 @@ async function projectToolsetStatusForPath(cwd) {
       }
     };
   }
-  const desiredSource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
-  const [status, health, verify, version] = await Promise.all([
+  const desiredSource = options.logicalSessionId && projectToolsetProduction
+    ? runtimeSourceIdentity((await projectToolsetProduction.runtimeAuthority(options.logicalSessionId)).snapshot)
+    : await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
+  const [status, health, version] = await Promise.all([
     projectToolsets.run(cwd, "status", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
     projectToolsets.run(cwd, "health", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
-    projectToolsets.run(cwd, "verify", { timeoutMs: 10_000, sourceIdentity: desiredSource }),
     projectToolsets.run(cwd, "version", { timeoutMs: 5_000, sourceIdentity: desiredSource })
   ]);
+  const verify = { ok: false, action: "verify", payload: null, code: "DEPENDENCY_CONTRACT_UNRESOLVED", detail: "Verification requires an explicit authenticated RunIsolation action." };
   const running = status.payload?.running === true;
   const runningRevision = version.payload?.revision ?? null;
   const dirty = version.payload?.dirty === true;
-  const verified = version.ok
-    && version.payload?.verified === true
-    && Boolean(version.payload?.artifactId)
-    && verify.ok
-    && verify.payload?.verified === true;
+  const verified = false;
   let revisionDetails = null;
   if (runningRevision) {
     try {
@@ -6495,11 +6649,16 @@ async function inspectWorkItemWorktree(workItemId) {
     try {
       const project = await projectApplicationService.requireProject(workItem.main_workspace_id);
       const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
-      const expectedBranch = workItem.start_worktree_branch
-        ?? `workitem/${String(workItem.id).includes(":") ? String(workItem.id).split(":").at(-1) : workItem.id}`;
+      const startup = store.selectOne(
+        `SELECT worktree_id FROM work_session_startup_operations
+         WHERE work_item_id=? AND worktree_id IS NOT NULL
+         ORDER BY allocated_at DESC LIMIT 1`,
+        [workItem.id]
+      );
+      const expectedBranch = `workitem/${String(workItem.id).includes(":") ? String(workItem.id).split(":").at(-1) : workItem.id}`;
       const worktree = status.worktrees.find((candidate) =>
         candidate.isMain !== true && (
-          candidate.worktreeId === workItem.start_worktree_id || candidate.branchName === expectedBranch
+          candidate.worktreeId === startup?.worktree_id || candidate.branchName === expectedBranch
         )
       ) ?? null;
       if (!worktree) return { status: "none", sessionId: null, repositoryId: status.repositoryId, worktree: null, canReclaim: false, blocker: null };
@@ -7227,9 +7386,11 @@ function route(request, response) {
     memoryRecallService,
     memoryLifecycleService,
     assistantService,
-    launchSession: launchWorkItemSession,
-    startWorkItemExecution: (input) => workItemStartService.start(input),
-    cancelWorkItemStart: (workItemId, reason) => workItemStartService.cancel(workItemId, reason),
+    startWorkItemExecution: (input) => workSessionStartupCoordinator.start(input),
+    beginWorkItemExecution: (input) => workSessionStartupCoordinator.begin(input),
+    getWorkItemStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
+    getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
+    cancelWorkItemStart: (workItemId, reason) => workSessionStartupCoordinator.cancel(workItemId, reason),
     launchAgentSession,
     launchObjectiveChatSession,
     createSession: (input) => {
@@ -8294,7 +8455,7 @@ function route(request, response) {
   const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
   const sessionDeletionPlanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/deletion-plan$/);
   const sessionProjectToolsetMatch = url.pathname.match(
-    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|profile|start|restart|stop))?$/
+    /^\/sessions\/([^/]+)\/project-toolset(?:\/(initialize|update|cancel|profile|start|restart|stop))?$/
   );
   const sessionGitHubPushMatch = url.pathname.match(
     /^\/sessions\/([^/]+)\/github-push\/(prepare|commit-message|confirm)$/
@@ -8358,13 +8519,25 @@ function route(request, response) {
     Promise.resolve()
       .then(async () => {
         const cwd = projectWorkingDirectoryForSession(sessionId);
+        const input = await readJson(request);
         if (action === "initialize" || action === "update") {
-          projectToolsetInitializer.schedule(cwd, { force: action === "update" });
+          const authenticatedSession = projectToolsetAuthenticatedSession(sessionId);
+          void projectToolsetInitializer.schedule(cwd, {
+            force: action === "update",
+            authenticatedSession,
+            idempotencyKey: input.idempotencyKey
+          }).catch(() => {});
           sendJson(response, 202, { scheduled: true, action });
           return;
         }
+        if (action === "cancel") {
+          const operationId = String(input.operationId ?? "").trim();
+          if (!operationId) throw Object.assign(new Error("operationId is required."), { code: "TOOLSET_CANCEL_REQUIRED", statusCode: 400 });
+          const operation = await projectToolsetInitializer.cancel(operationId);
+          sendJson(response, 200, { operation });
+          return;
+        }
         if (action === "profile") {
-          const input = await readJson(request);
           const profileId = String(input.profileId ?? "").trim();
           if (!profileId) throw new Error("A Corptie service profile is required.");
           const toolset = await projectToolsets.selectProfile(cwd, profileId);
@@ -8373,9 +8546,9 @@ function route(request, response) {
           sendJson(response, 200, status);
           return;
         }
-        const result = action === "start" || action === "restart"
-          ? await rebuildAndRestartProjectService(cwd)
-          : await projectToolsets.run(cwd, action);
+        const isolatedAction = PROJECT_TOOLSET_ISOLATED_ACTIONS.includes(action);
+        const runIsolation = isolatedAction ? await projectToolsetRunIsolationOptions(sessionId, cwd, action) : null;
+        const result = await projectToolsets.run(cwd, action, { ...(runIsolation ? { runIsolation, sourceIdentity: runIsolation.sourceIdentity } : {}), ...(action === "start" || action === "restart" ? { timeoutMs: 60_000 } : {}) });
         const status = await projectToolsetStatus(sessionId);
         emitEvent("ProjectServiceChanged", { sessionId, action, result, ...status }, { sessionId });
         sendJson(response, result.ok ? 200 : 409, { action: result, ...status });
@@ -8863,6 +9036,55 @@ function route(request, response) {
   sendJson(response, 404, { error: "Not found" });
 }
 
+async function projectToolsetRunIsolationOptions(sessionId, cwd, action) {
+  if (!runIsolationCoordinator) throw Object.assign(new Error("RunIsolation production execution is disabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 });
+  if (!projectToolsetProduction) throw Object.assign(new Error("Project Toolset production composition is unavailable."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 });
+  const authenticated = projectToolsetAuthenticatedSession(sessionId);
+  const runtime = await projectToolsetProduction.runtimeAuthority(authenticated.logicalSessionId);
+  const startup = projectCodeStartupReceipts.require(authenticated.logicalSessionId);
+  if (resolve(cwd) !== resolve(startup.canonicalWorktreePath)) throw Object.assign(new Error("Toolset action Worktree differs from authoritative Startup."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
+  const authority = await runIsolationAuthorityResolver.resolve({
+    logicalSessionId: runtime.logicalSessionId,
+    workItemId: runtime.workItemId,
+    repositoryId: runtime.repositoryId,
+    worktreeId: runtime.worktreeId,
+    action,
+    bindingId: runtime.bindingId,
+    bindingGeneration: runtime.bindingGeneration
+  });
+  return {
+    prepare: { mode: "development", sourceAware: true, toolsetRequired: true, startupBindingReceiptRef: authority.startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: authority.repositorySourceSnapshotReceiptRef, toolsetValidationReceiptPointer: authority.toolsetValidationReceiptPointer, idempotencyKey: `toolset:${action}:${runtime.logicalSessionId}:${randomUUID()}` },
+    session: { logicalSessionId: runtime.logicalSessionId, workItemId: runtime.workItemId, repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId },
+    sourceIdentity: runtimeSourceIdentity(runtime.snapshot)
+  };
+}
+
+function projectToolsetAuthenticatedSession(sessionId) {
+  const reference = requireSessionReference(sessionId);
+  const logical = reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
+  if (!logical?.logicalSessionId) throw Object.assign(new Error("Project Toolset requires an authenticated logical Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
+  const ownership = store.assertLogicalWorkSessionBinding(logical.logicalSessionId);
+  if (!ownership?.workItemId) throw Object.assign(new Error("Project Toolset requires a WorkItem-bound Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
+  return Object.freeze({ logicalSessionId: logical.logicalSessionId, workItemId: ownership.workItemId });
+}
+
+function runtimeSourceIdentity(snapshot) {
+  if (!snapshot?.sourceCommitOid || !snapshot?.sourceFingerprint) throw Object.assign(new Error("Authoritative Snapshot source identity is unavailable."), { code: "SOURCE_SNAPSHOT_REQUIRED", statusCode: 409 });
+  return Object.freeze({
+    revision: snapshot.sourceCommitOid,
+    fingerprint: snapshot.sourceFingerprint,
+    dirty: Number(snapshot.dirtyOverlayRef?.entryCount ?? 0) > 0,
+    worktreePath: null
+  });
+}
+
+function disabledProjectToolsetInitializer() {
+  const unavailable = () => { throw Object.assign(new Error("Project Toolset production composition is disabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 }); };
+  return Object.freeze({ schedule: unavailable, cancel: unavailable, recoverAll: async () => [], status: async () => ({ state: "failed", outcome: "unknown", operationId: null, error: "DEPENDENCY_CONTRACT_UNRESOLVED" }) });
+}
+
 function userMessageCommandSource(input = {}) {
   const source = input.source && typeof input.source === "object" && !Array.isArray(input.source)
     ? { ...input.source }
@@ -8915,6 +9137,11 @@ server.on("upgrade", (request, socket, head) => {
 
 await store.initialize();
 benchmarkControlPlane.initialize();
+if (runIsolationCoordinator) {
+  await mkdir(runIsolationDataRoot, { recursive: true, mode: 0o700 });
+  await runIsolationCoordinator.initialize();
+  console.log(`[run-isolation] production coordinator ready dataRootHash=${runIsolationCoordinator.service.binding.canonicalPathHash}`);
+}
 await dataRootMigrationCoordinator.initialize();
 const telemetryConfiguration = turnObservability.initialize();
 console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
@@ -8922,13 +9149,15 @@ const recoveredArtifactContentOperations = await artifactService.initialize();
 if (recoveredArtifactContentOperations.length > 0) {
   console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
 }
-const recoveredInterruptedWorkItemStarts = workItemStartService.recoverInterruptedStarts();
-const detectedLegacyPartialWorkItemStarts = workItemStartService.detectLegacyPartialStarts();
-if (recoveredInterruptedWorkItemStarts > 0 || detectedLegacyPartialWorkItemStarts > 0) {
+const recoveredInterruptedWorkItemStarts = workSessionStartupCoordinator.recoverInterruptedStarts();
+if (recoveredInterruptedWorkItemStarts > 0) {
   console.warn(`[work-item-start-recovery] ${JSON.stringify({
-    recoveredInterruptedWorkItemStarts,
-    detectedLegacyPartialWorkItemStarts
+    recoveredInterruptedWorkItemStarts
   })}`);
+}
+const recoveredProjectToolsets = await projectToolsetInitializer.recoverAll();
+if (recoveredProjectToolsets.length > 0) {
+  console.warn(`[project-toolset-recovery] ${JSON.stringify({ recoveredOperations: recoveredProjectToolsets.length })}`);
 }
 const collaborationMigration = collaborationCore.initialize();
 if (collaborationMigration.status === "applied") {
@@ -9165,6 +9394,7 @@ function shutdown() {
     openClackyManager.stop();
     await feishuGateway.close();
     await codexRuntime.close();
+    await runIsolationCoordinator?.close();
     await store.close({
       checkpoint: dataRootMigrationCoordinator.status()?.phase !== "restartRequired"
     });

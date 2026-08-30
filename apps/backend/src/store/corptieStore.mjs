@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import os from "node:os";
 import { backup, DatabaseSync } from "node:sqlite";
 import { performance } from "node:perf_hooks";
@@ -59,7 +59,8 @@ const DEPRECATED_PATH_FIELDS = new Set([
 
 export class CorptieStore {
   constructor(options = {}) {
-    this.explicitPaths = Boolean(options.dbPath || options.configPath);
+    const isolatedPaths = resolveRunIsolationStorePaths(process.env);
+    this.explicitPaths = Boolean(options.dbPath || options.configPath || isolatedPaths);
     this.manageProcessEnvironment = options.manageProcessEnvironment !== false;
     this.dataRootExplicit = Boolean(
       options.dataRoot
@@ -69,7 +70,7 @@ export class CorptieStore {
     this.rootSelectionPath = options.rootSelectionPath
       || process.env.CORPTIE_DATA_ROOT_SELECTION_PATH
       || rootSelectionPath;
-    this.configPath = options.configPath || null;
+    this.configPath = options.configPath || isolatedPaths?.configPath || null;
     this.dataRoot = options.dataRoot
       || process.env.CORPTIE_DATA_ROOT
       || readConfiguredDataRootSync(this.rootSelectionPath)
@@ -77,7 +78,7 @@ export class CorptieStore {
     if (!this.explicitPaths && this.manageProcessEnvironment) process.env.CORPTIE_HOME = resolve(this.dataRoot);
     this.layout = null;
     this.dataDir = null;
-    this.dbPath = options.dbPath || process.env.CORPTIE_DB_PATH || null;
+    this.dbPath = options.dbPath || isolatedPaths?.dbPath || process.env.CORPTIE_DB_PATH || null;
     this.db = null;
     this.config = {};
     this.stateDirtyListener = null;
@@ -1602,6 +1603,9 @@ export class CorptieStore {
         prune_reason TEXT,
         inventory_version TEXT NOT NULL,
         observed_at TEXT NOT NULL,
+        dedicated INTEGER NOT NULL DEFAULT 0,
+        created_by_startup_operation_id TEXT,
+        resource_version INTEGER NOT NULL DEFAULT 1,
         raw_json TEXT NOT NULL DEFAULT '{}',
         FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE CASCADE
       );
@@ -1881,36 +1885,165 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_work_item_status_repair_work_item
       ON work_item_status_repair_audit(work_item_id, repaired_at DESC);
 
-      CREATE TABLE IF NOT EXISTS work_item_start_operations (
-        operation_id TEXT PRIMARY KEY,
-        work_item_id TEXT NOT NULL,
+      CREATE TABLE IF NOT EXISTS work_session_startup_operations (
+        startup_operation_id TEXT PRIMARY KEY,
         objective_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        repository_id TEXT,
+        work_item_id TEXT NOT NULL,
+        requested_agent_id TEXT NOT NULL,
         provider_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        actor_logical_session_id TEXT,
         idempotency_key TEXT NOT NULL,
-        input_fingerprint TEXT NOT NULL,
-        source TEXT NOT NULL,
-        status TEXT NOT NULL,
-        stage TEXT NOT NULL,
-        failure_stage TEXT,
-        error_code TEXT,
-        error_summary TEXT,
-        worktree_id TEXT,
-        worktree_path TEXT,
-        worktree_branch TEXT,
-        session_id TEXT,
+        request_fingerprint TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'application',
+        requested_title TEXT,
+        initial_prompt TEXT,
+        replacing_session_id TEXT,
+        state TEXT NOT NULL CHECK (state IN (
+          'allocated', 'worktree_prepared', 'session_bound', 'provider_bound', 'ready',
+          'compensating', 'failed_compensated', 'failed_manual_cleanup'
+        )),
         logical_session_id TEXT,
+        legacy_session_id TEXT,
+        worktree_id TEXT,
         provider_binding_id TEXT,
-        created_at TEXT NOT NULL,
+        binding_generation INTEGER,
+        allocation_json TEXT,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        error_code TEXT,
+        error_message_redacted TEXT,
+        error_retryable INTEGER,
+        correlation_id TEXT NOT NULL,
+        compensation_state TEXT,
+        compensation_result_json TEXT,
+        allocated_at TEXT NOT NULL,
+        worktree_prepared_at TEXT,
+        session_bound_at TEXT,
+        provider_bound_at TEXT,
+        ready_at TEXT,
+        failed_at TEXT,
         updated_at TEXT NOT NULL,
-        completed_at TEXT,
         UNIQUE (work_item_id, idempotency_key),
-        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE
+        CHECK ((state='ready' AND ready_at IS NOT NULL) OR (state<>'ready' AND ready_at IS NULL)),
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (requested_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE RESTRICT,
+        FOREIGN KEY (worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE RESTRICT,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE RESTRICT,
+        FOREIGN KEY (legacy_session_id) REFERENCES sessions(id) ON DELETE RESTRICT
       );
 
-      CREATE INDEX IF NOT EXISTS idx_work_item_start_operations_context
-      ON work_item_start_operations(objective_id, work_item_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_session_startup_active_work_item
+      ON work_session_startup_operations(work_item_id)
+      WHERE state IN ('allocated', 'worktree_prepared', 'session_bound', 'provider_bound', 'compensating');
+
+      CREATE INDEX IF NOT EXISTS idx_work_session_startup_recovery
+      ON work_session_startup_operations(state, lease_expires_at, updated_at);
+
+      CREATE TABLE IF NOT EXISTS work_session_startup_bindings (
+        provider_binding_id TEXT PRIMARY KEY,
+        startup_operation_id TEXT NOT NULL UNIQUE,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        logical_session_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        worktree_id TEXT NOT NULL,
+        canonical_worktree_path TEXT NOT NULL,
+        head_kind TEXT NOT NULL CHECK (head_kind IN ('branch', 'detached')),
+        branch TEXT,
+        detached_commit_oid TEXT,
+        base_ref TEXT,
+        source_commit_oid TEXT NOT NULL,
+        source_tree_oid TEXT NOT NULL,
+        repository_inventory_version TEXT NOT NULL,
+        workspace_resource_version INTEGER NOT NULL,
+        binding_generation INTEGER NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('binding', 'ready', 'retired', 'failed')),
+        provider_id TEXT NOT NULL,
+        provider_resource_id TEXT,
+        provider_cwd_proof TEXT,
+        provider_context_hash TEXT NOT NULL,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        ready_at TEXT,
+        retired_at TEXT,
+        failure_code TEXT,
+        UNIQUE (logical_session_id, binding_generation),
+        CHECK ((head_kind='branch' AND branch IS NOT NULL AND detached_commit_oid IS NULL)
+          OR (head_kind='detached' AND branch IS NULL AND detached_commit_oid IS NOT NULL)),
+        FOREIGN KEY (startup_operation_id) REFERENCES work_session_startup_operations(startup_operation_id) ON DELETE RESTRICT,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE RESTRICT,
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE RESTRICT,
+        FOREIGN KEY (worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE RESTRICT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_session_startup_current_generation
+      ON work_session_startup_bindings(logical_session_id)
+      WHERE status IN ('binding', 'ready');
+
+      CREATE TRIGGER IF NOT EXISTS work_session_startup_binding_path_immutable
+      BEFORE UPDATE OF canonical_worktree_path ON work_session_startup_bindings
+      WHEN NEW.canonical_worktree_path IS NOT OLD.canonical_worktree_path
+      BEGIN
+        SELECT RAISE(ABORT, 'START_BINDING_PATH_IMMUTABLE');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS work_session_startup_binding_ready_guard
+      BEFORE UPDATE OF status ON work_session_startup_bindings
+      WHEN NEW.status='ready' AND (
+        NEW.provider_resource_id IS NULL OR TRIM(NEW.provider_resource_id)=''
+        OR NEW.provider_cwd_proof IS NULL OR TRIM(NEW.provider_cwd_proof)=''
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'START_PROVIDER_PROOF_REQUIRED');
+      END;
+
+      CREATE TABLE IF NOT EXISTS work_session_startup_receipts (
+        startup_operation_id TEXT PRIMARY KEY,
+        provider_binding_id TEXT NOT NULL,
+        binding_generation INTEGER NOT NULL,
+        receipt_schema_version INTEGER NOT NULL CHECK (receipt_schema_version=2),
+        receipt_hash TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        resource_version INTEGER NOT NULL,
+        FOREIGN KEY (startup_operation_id) REFERENCES work_session_startup_operations(startup_operation_id) ON DELETE RESTRICT,
+        FOREIGN KEY (provider_binding_id) REFERENCES work_session_startup_bindings(provider_binding_id) ON DELETE RESTRICT
+      );
+
+      CREATE TABLE IF NOT EXISTS work_session_startup_audit (
+        audit_id TEXT PRIMARY KEY,
+        startup_operation_id TEXT NOT NULL,
+        event TEXT NOT NULL,
+        actor_logical_session_id TEXT,
+        correlation_id TEXT NOT NULL,
+        previous_resource_version INTEGER,
+        resource_version INTEGER NOT NULL,
+        binding_generation INTEGER,
+        details_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (startup_operation_id) REFERENCES work_session_startup_operations(startup_operation_id) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_work_session_startup_audit_operation
+      ON work_session_startup_audit(startup_operation_id, created_at, audit_id);
+
+      CREATE TRIGGER IF NOT EXISTS work_session_startup_operation_ready_guard
+      BEFORE UPDATE OF state ON work_session_startup_operations
+      WHEN NEW.state='ready' AND NOT EXISTS (
+        SELECT 1 FROM work_session_startup_receipts receipt
+        WHERE receipt.startup_operation_id=NEW.startup_operation_id
+          AND receipt.provider_binding_id=NEW.provider_binding_id
+          AND receipt.binding_generation=NEW.binding_generation
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'START_RECEIPT_REQUIRED');
+      END;
 
       CREATE TABLE IF NOT EXISTS work_item_dependencies (
         work_item_id TEXT NOT NULL,
@@ -2458,25 +2591,27 @@ export class CorptieStore {
     this.ensureColumn("work_items", "resource_version", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("work_items", "canceled_at", "TEXT");
     this.ensureColumn("work_items", "cancel_reason", "TEXT");
-    this.ensureColumn("work_items", "start_idempotency_key", "TEXT");
-    this.ensureColumn("work_items", "start_error", "TEXT");
-    this.ensureColumn("work_items", "start_stage", "TEXT");
-    this.ensureColumn("work_items", "start_failure_stage", "TEXT");
-    this.ensureColumn("work_items", "start_error_code", "TEXT");
-    this.ensureColumn("work_items", "start_started_at", "TEXT");
-    this.ensureColumn("work_items", "start_stage_updated_at", "TEXT");
-    this.ensureColumn("work_items", "start_failed_at", "TEXT");
-    this.ensureColumn("work_items", "start_provider_id", "TEXT");
-    this.ensureColumn("work_items", "start_agent_id", "TEXT");
-    this.ensureColumn("work_items", "start_worktree_id", "TEXT");
-    this.ensureColumn("work_items", "start_worktree_path", "TEXT");
-    this.ensureColumn("work_items", "start_worktree_branch", "TEXT");
     this.ensureColumn("work_items", "deletion_status", "TEXT");
     this.ensureColumn("work_items", "deletion_error", "TEXT");
     this.ensureColumn("work_items", "deletion_worktree_removed_at", "TEXT");
     this.ensureColumn("work_items", "completion_operation_id", "TEXT");
     this.ensureColumn("work_items", "completion_source_type", "TEXT");
     this.ensureColumn("work_items", "cancellation_operation_id", "TEXT");
+    this.ensureColumn("git_worktrees", "dedicated", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("git_worktrees", "created_by_startup_operation_id", "TEXT");
+    this.ensureColumn("git_worktrees", "resource_version", "INTEGER NOT NULL DEFAULT 1");
+    this.runDataMigrationOnce("remove-legacy-work-item-start-operations-v1", () => {
+      this.db.run("DROP INDEX IF EXISTS idx_work_item_start_operations_context");
+      this.db.run("DROP TABLE IF EXISTS work_item_start_operations");
+    });
+    this.runDataMigrationOnce("remove-legacy-work-item-start-projections-v2", () => {
+      for (const column of [
+        "start_idempotency_key", "start_error", "start_stage", "start_failure_stage",
+        "start_error_code", "start_started_at", "start_stage_updated_at", "start_failed_at",
+        "start_provider_id", "start_agent_id", "start_worktree_id", "start_worktree_path",
+        "start_worktree_branch"
+      ]) this.dropColumnIfExists("work_items", column);
+    });
     this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_completion_guard
       BEFORE UPDATE OF status ON work_items
       WHEN LOWER(TRIM(NEW.status)) IN ('done', 'complete', 'completed')
@@ -2714,16 +2849,6 @@ export class CorptieStore {
     this.db.run(`UPDATE sessions SET session_kind = 'legacy'
       WHERE session_kind IS NULL OR TRIM(session_kind) = ''
         OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker', 'legacy')`);
-    const historicalSessionRepair = this.repairOrphanedWorkSessions({
-      repairedBy: "store-migration",
-      reason: "Recovered a historical Worker Session before installing association guards."
-    });
-    if (historicalSessionRepair.repaired.length > 0) {
-      console.info(`[session-association] repaired=${historicalSessionRepair.repaired.length} source=store-migration`);
-    }
-    if (historicalSessionRepair.unresolved.length > 0) {
-      console.warn(`[session-association] unresolved=${historicalSessionRepair.unresolved.length} source=store-migration`);
-    }
     this.db.run("DROP TRIGGER IF EXISTS sessions_worker_association_insert_guard");
     this.db.run("DROP TRIGGER IF EXISTS sessions_worker_association_update_guard");
     this.db.run(`CREATE TRIGGER sessions_worker_association_insert_guard
@@ -2854,6 +2979,7 @@ export class CorptieStore {
     this.migrateWorkItemMemoryAssociations();
     this.initializeSortOrder();
     this.migrateAgentAvailability();
+    this.ensureProjectCodeReceiptTables();
     this.ensureSkillTables();
     this.ensureStateSyncTables();
     this.ensureProviderEventPipelineTables();
@@ -2923,6 +3049,82 @@ export class CorptieStore {
              AND m.message_type = 'question'
          )`
     );
+  }
+
+  ensureProjectCodeReceiptTables() {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS project_code_receipts (
+        receipt_id TEXT PRIMARY KEY,
+        receipt_type TEXT NOT NULL CHECK (receipt_type IN ('RepositorySourceSnapshotReceipt', 'SearchReceipt', 'ToolsetValidationReceipt')),
+        logical_session_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        worktree_id TEXT NOT NULL,
+        source_fingerprint TEXT NOT NULL,
+        receipt_hash TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_code_receipts_session
+      ON project_code_receipts(logical_session_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_project_code_receipts_snapshot
+      ON project_code_receipts(repository_id, worktree_id, source_fingerprint, receipt_type);
+    `);
+  }
+
+  putProjectCodeReceipt(input) {
+    const receipt = input?.receipt;
+    if (!receipt || receipt.receiptId !== input.receiptId || receipt.receiptHash !== input.receiptHash) {
+      throw new Error("Project-code receipt identity does not match its persistence envelope.");
+    }
+    const existing = this.selectOne(
+      "SELECT receipt_hash FROM project_code_receipts WHERE receipt_id=?",
+      [input.receiptId]
+    );
+    if (existing && existing.receipt_hash !== receipt.receiptHash) throw new Error("PROJECT_CODE_RECEIPT_IMMUTABLE");
+    if (!existing) this.db.run(
+      `INSERT INTO project_code_receipts (
+        receipt_id, receipt_type, logical_session_id, objective_id, work_item_id,
+        repository_id, worktree_id, source_fingerprint, receipt_hash, receipt_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.receiptId, input.receiptType, input.logicalSessionId, input.objectiveId, input.workItemId,
+        input.repositoryId, input.worktreeId, input.sourceFingerprint, input.receiptHash,
+        JSON.stringify(receipt), input.createdAt]
+    );
+    this.scheduleSave();
+    return this.getProjectCodeReceipt(input.receiptId, input.logicalSessionId);
+  }
+
+  getProjectCodeReceipt(receiptId, logicalSessionId) {
+    const row = this.selectOne(
+      "SELECT * FROM project_code_receipts WHERE receipt_id=? AND logical_session_id=?",
+      [receiptId, logicalSessionId]
+    );
+    return row ? {
+      receiptType: row.receipt_type,
+      receipt: JSON.parse(row.receipt_json),
+      sourceFingerprint: row.source_fingerprint,
+      repositoryId: row.repository_id,
+      worktreeId: row.worktree_id,
+      createdAt: row.created_at
+    } : null;
+  }
+
+  getProjectCodeReceiptById(receiptId) {
+    const row = this.selectOne("SELECT * FROM project_code_receipts WHERE receipt_id=?", [receiptId]);
+    return row ? {
+      receiptType: row.receipt_type,
+      logicalSessionId: row.logical_session_id,
+      objectiveId: row.objective_id,
+      workItemId: row.work_item_id,
+      repositoryId: row.repository_id,
+      worktreeId: row.worktree_id,
+      sourceFingerprint: row.source_fingerprint,
+      receipt: JSON.parse(row.receipt_json),
+      createdAt: row.created_at
+    } : null;
   }
 
   // Durable control-plane revision log. SQLite triggers make every mutation to
@@ -4250,6 +4452,7 @@ export class CorptieStore {
       `SELECT repository_id, worktree_id, path, canonical_path, git_dir, is_main, availability,
               head_oid, branch_ref, branch_name, detached, locked, lock_reason,
               prunable, prune_reason, inventory_version, observed_at
+              , resource_version
        FROM git_worktrees WHERE repository_id = ?`,
       [repository.id]
     );
@@ -4318,6 +4521,7 @@ export class CorptieStore {
             prune_reason=excluded.prune_reason,
             inventory_version=excluded.inventory_version,
             observed_at=excluded.observed_at,
+            resource_version=git_worktrees.resource_version+1,
             raw_json=excluded.raw_json`,
           [
             worktreeId,
@@ -4430,6 +4634,9 @@ export class CorptieStore {
       isPrunable: Boolean(row.prunable),
       pruneReason: row.prune_reason,
       inventoryVersion: row.inventory_version,
+      dedicated: Boolean(row.dedicated),
+      createdByStartupOperationId: row.created_by_startup_operation_id ?? null,
+      resourceVersion: Number(row.resource_version ?? 1),
       observedAt: row.observed_at
     } : null;
   }
@@ -5519,103 +5726,6 @@ export class CorptieStore {
     }
   }
 
-  // Finalize every durable relationship established by a WorkItem start in one
-  // transaction. Provider creation may already have persisted the Session,
-  // logical route, Provider binding, and Agent binding; this method refuses to
-  // publish `running` unless that complete graph is present and consistent.
-  finalizeWorkItemStart({
-    sessionId, workItemId, objectiveId, agentId, operationId, workspace,
-    repairedBy = "work-item-start-finalizer",
-    repairReason = "Recovered a Provider-created Worker Session from its authoritative start operation."
-  }) {
-    const session = this.getSession(sessionId);
-    const workItem = this.getWorkItem(workItemId);
-    const logical = this.getLogicalSessionByLegacySessionId(sessionId);
-    const activeBinding = logical?.activeBinding ?? null;
-    const agentBinding = this.selectOne(
-      `SELECT binding_id FROM agent_sessions
-       WHERE agent_id=? AND session_id=? AND unbound_at IS NULL`,
-      [agentId, sessionId]
-    );
-    const associationMissing = session
-      && !session.objectiveId && !session.workItemId && session.sessionKind === "worker";
-    const associationMatches = session?.objectiveId === objectiveId
-      && session?.workItemId === workItemId && session?.sessionKind === "worker";
-    if (!session || !workItem || workItem.objective_id !== objectiveId
-      || (!associationMissing && !associationMatches)
-      || session.agentId !== agentId || !logical || !activeBinding || !agentBinding) {
-      const error = new Error("Worker Session graph is incomplete; WorkItem start was not published as running.");
-      error.code = "WORK_ITEM_START_INVARIANT_VIOLATION";
-      throw error;
-    }
-    const expectedPath = typeof workspace?.path === "string" ? resolve(workspace.path) : null;
-    const boundPath = typeof activeBinding.boundCwd === "string" ? resolve(activeBinding.boundCwd) : null;
-    if (expectedPath && boundPath !== expectedPath) {
-      const error = new Error("Worker Session Provider binding points to a different Worktree.");
-      error.code = "WORK_ITEM_WORKTREE_BINDING_MISMATCH";
-      throw error;
-    }
-    const timestamp = createdAtFromOrNow();
-    this.runInTransaction(() => {
-      this.db.run(
-        `UPDATE sessions SET objective_id=?, work_item_id=?, session_kind='worker', agent_id=?, updated_at=?
-         WHERE id=?`,
-        [objectiveId, workItemId, agentId, timestamp, sessionId]
-      );
-      this.db.run(
-        `UPDATE work_items SET current_session_id=?, status='in_progress', execution_status='running',
-         main_agent_id=?, acceptance_assessment_json='{}', start_stage='running',
-         start_failure_stage=NULL, start_error_code=NULL, start_error=NULL, start_failed_at=NULL,
-         start_stage_updated_at=?, resource_version=resource_version+1, updated_at=? WHERE id=?`,
-        [sessionId, agentId, timestamp, timestamp, workItemId]
-      );
-      this.db.run(
-        `UPDATE agents SET current_session_id=?, updated_at=? WHERE agent_id=?`,
-        [sessionId, timestamp, agentId]
-      );
-      this.db.run(
-        `UPDATE work_item_start_operations SET status='succeeded', stage='running', failure_stage=NULL,
-         error_code=NULL, error_summary=NULL, session_id=?, logical_session_id=?,
-         provider_binding_id=?, updated_at=?, completed_at=? WHERE operation_id=?`,
-        [sessionId, logical.logicalSessionId, activeBinding.bindingId, timestamp, timestamp, operationId]
-      );
-      if (associationMissing) {
-        this.db.run(
-          `INSERT INTO session_association_repair_audit (
-             audit_id, session_id, anomaly_code, previous_objective_id, previous_work_item_id,
-             repaired_objective_id, repaired_work_item_id, source_operation_id,
-             repaired_by, reason, repaired_at
-           ) VALUES (?, ?, 'worker_association_missing', NULL, NULL, ?, ?, ?, ?, ?, ?)`,
-          [randomUUID(), sessionId, objectiveId, workItemId, operationId, repairedBy, repairReason, timestamp]
-        );
-      }
-      const invariant = this.selectOne(
-        `SELECT wi.id FROM work_items wi
-         JOIN sessions s ON s.id=wi.current_session_id
-         JOIN agents a ON a.agent_id=wi.main_agent_id
-         JOIN agent_sessions ab ON ab.agent_id=a.agent_id AND ab.session_id=s.id AND ab.unbound_at IS NULL
-         JOIN logical_sessions ls ON ls.legacy_session_id=s.id
-         JOIN provider_thread_bindings pb ON pb.logical_session_id=ls.logical_session_id
-         JOIN work_item_start_operations op ON op.operation_id=?
-         WHERE wi.id=? AND wi.objective_id=? AND s.objective_id=wi.objective_id
-           AND s.work_item_id=wi.id AND s.agent_id=a.agent_id
-           AND pb.binding_id=op.provider_binding_id AND pb.state='active'`,
-        [operationId, workItemId, objectiveId]
-      );
-      if (!invariant) {
-        const error = new Error("WorkItem start finalization violated persisted relationship invariants.");
-        error.code = "WORK_ITEM_START_INVARIANT_VIOLATION";
-        throw error;
-      }
-    });
-    this.scheduleSave();
-    return {
-      session: this.getSession(sessionId),
-      workItem: this.getWorkItem(workItemId),
-      logicalSession: this.getLogicalSession(logical.logicalSessionId)
-    };
-  }
-
   sessionAssociationIssues() {
     return this.selectAll(`
       SELECT 'worker_objective_missing' AS code, s.id AS session_id,
@@ -5681,10 +5791,11 @@ export class CorptieStore {
        FROM sessions s
        JOIN work_items wi
          ON wi.id=s.work_item_id AND wi.current_session_id IS NOT s.id
-       JOIN work_item_start_operations replacement
+       JOIN work_session_startup_operations replacement
          ON replacement.work_item_id=s.work_item_id
         AND replacement.source='self-repair'
-        AND replacement.status='succeeded'
+        AND replacement.state='ready'
+        AND replacement.replacing_session_id=s.id
         AND replacement.idempotency_key=('self-repair:' || s.work_item_id || ':' || s.id)
        WHERE s.session_kind='worker'
          AND s.deleted_at IS NULL
@@ -5693,54 +5804,6 @@ export class CorptieStore {
          )
        ORDER BY s.created_at ASC`
     ).map((row) => row.id);
-  }
-
-  repairOrphanedWorkSessions(options = {}) {
-    const repaired = [];
-    const unresolved = [];
-    const sessionIds = [...new Set(this.sessionAssociationIssues()
-      .filter((issue) => issue.code === "worker_objective_missing" || issue.code === "worker_work_item_missing")
-      .map((issue) => issue.sessionId))];
-    for (const sessionId of sessionIds) {
-      const candidates = this.selectAll(
-        `SELECT op.* FROM work_item_start_operations op
-         JOIN work_items wi ON wi.id=op.work_item_id AND wi.objective_id=op.objective_id
-         JOIN sessions s ON s.id=op.session_id AND s.agent_id=op.agent_id
-         WHERE op.session_id=? ORDER BY op.created_at DESC`,
-        [sessionId]
-      );
-      if (candidates.length !== 1) {
-        unresolved.push({
-          sessionId,
-          reason: candidates.length === 0 ? "authoritative_start_operation_not_found" : "ambiguous_start_operations",
-          candidateOperationIds: candidates.map((candidate) => candidate.operation_id)
-        });
-        continue;
-      }
-      const candidate = candidates[0];
-      try {
-        const result = this.finalizeWorkItemStart({
-          sessionId,
-          workItemId: candidate.work_item_id,
-          objectiveId: candidate.objective_id,
-          agentId: candidate.agent_id,
-          operationId: candidate.operation_id,
-          workspace: { path: candidate.worktree_path },
-          repairedBy: options.repairedBy ?? "session-association-integrity",
-          repairReason: options.reason ?? "Repaired historical Worker Session association from its unique WorkItem start operation."
-        });
-        repaired.push({
-          sessionId,
-          objectiveId: candidate.objective_id,
-          workItemId: candidate.work_item_id,
-          operationId: candidate.operation_id,
-          logicalSessionId: result.logicalSession.logicalSessionId
-        });
-      } catch (error) {
-        unresolved.push({ sessionId, reason: error.code ?? "repair_failed", detail: error.message });
-      }
-    }
-    return { repaired, unresolved, remainingIssues: this.sessionAssociationIssues() };
   }
 
   finalizeConflictResolutionLaunch({ sessionId, workItemId, objectiveId, agentId, integrationRunId }) {
@@ -9896,8 +9959,8 @@ export class CorptieStore {
               event.type AS evidence_event_type, event.sequence AS evidence_event_sequence,
               event.created_at AS evidence_event_at,
               EXISTS (
-                SELECT 1 FROM work_item_start_operations start
-                WHERE start.work_item_id=wi.id AND start.status='succeeded'
+                SELECT 1 FROM work_session_startup_operations start
+                WHERE start.work_item_id=wi.id AND start.state='ready'
               ) AS has_succeeded_start,
               EXISTS (
                 SELECT 1 FROM collaboration_events started
@@ -9940,8 +10003,8 @@ export class CorptieStore {
          )
          AND (
            EXISTS (
-             SELECT 1 FROM work_item_start_operations start
-             WHERE start.work_item_id=wi.id AND start.status='succeeded'
+             SELECT 1 FROM work_session_startup_operations start
+             WHERE start.work_item_id=wi.id AND start.state='ready'
            )
            OR EXISTS (
              SELECT 1 FROM collaboration_events started
@@ -12388,6 +12451,24 @@ function normalizeEnvironment(value = "") {
   return normalized === "dev" || normalized === "development" ? "development" : "production";
 }
 
+export function resolveRunIsolationStorePaths(environment = {}) {
+  const runId = environment.CORPTIE_RUN_ID;
+  if (!runId) return null;
+  const mode = environment.CORPTIE_RUN_MODE;
+  if (!["development", "test"].includes(mode)) throw storeDomainError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", "Isolated Store requires a valid CORPTIE_RUN_MODE.", 409);
+  const required = ["CORPTIE_DATABASE_PATH", "CORPTIE_DATA_DIR", "CORPTIE_CACHE_DIR", "CORPTIE_TMP_DIR", "CORPTIE_LOG_DIR", "CORPTIE_UPLOAD_DIR", "CORPTIE_QUEUE_DIR", "CORPTIE_RUNTIME_DIR"];
+  for (const key of required) if (typeof environment[key] !== "string" || !environment[key].trim()) throw storeDomainError("RUN_PATH_MISSING", `${key} is required before Store initialization.`, 409);
+  const dbPath = resolve(environment.CORPTIE_DATABASE_PATH);
+  const runRoot = dirname(dirname(dbPath));
+  for (const key of required) {
+    const candidate = resolve(environment[key]);
+    if (candidate !== runRoot && !candidate.startsWith(`${runRoot}${sep}`)) throw storeDomainError("RUN_PATH_OUT_OF_BOUNDS", `${key} escapes the isolated run root.`, 409);
+  }
+  const forbidden = [resolve(os.homedir()), resolve("/tmp"), resolve("/private/tmp")];
+  if (forbidden.some((root) => runRoot === root || runRoot.startsWith(`${root}${sep}`))) throw storeDomainError("RUN_GLOBAL_PATH_FORBIDDEN", "Isolated Store cannot use HOME or system tmp.", 409);
+  return { dbPath, configPath: join(resolve(environment.CORPTIE_DATA_DIR), "config.json"), runRoot };
+}
+
 async function exists(path) {
   try {
     await access(path);
@@ -12612,6 +12693,9 @@ function presentGitWorktreeRow(row) {
     isPrunable: Boolean(row.prunable),
     pruneReason: row.prune_reason,
     inventoryVersion: row.inventory_version,
+    dedicated: Boolean(row.dedicated),
+    createdByStartupOperationId: row.created_by_startup_operation_id ?? null,
+    resourceVersion: Number(row.resource_version ?? 1),
     observedAt: row.observed_at
   };
 }

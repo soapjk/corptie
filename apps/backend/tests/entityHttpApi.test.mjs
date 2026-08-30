@@ -104,8 +104,8 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
           status: "in_progress", mainAgentId: agent.agentId, executionStatus: "running"
         });
         return {
-          phase: "running", idempotentReplay: false, session: bound,
-          logicalSessionId: null, providerBinding: null, workspace: null
+          status: "ready", idempotentReplay: false, session: bound,
+          receipt: { status: "ready", logicalSessionId: bound.logicalSessionId ?? bound.id }
         };
       }
     : undefined);
@@ -124,6 +124,9 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     createSession: services.createSession,
     launchSession: services.launchSession,
     startWorkItemExecution,
+    beginWorkItemExecution: services.beginWorkItemExecution,
+    getWorkItemStartup: services.getWorkItemStartup,
+    getSessionStartupBinding: services.getSessionStartupBinding,
     cancelWorkItemStart: services.cancelWorkItemStart,
     launchAgentSession: services.launchAgentSession,
     launchObjectiveChatSession: services.launchObjectiveChatSession,
@@ -1194,9 +1197,9 @@ test("binding a valid Workspace is persisted and immediately visible to WorkItem
       startWorkItemExecution: async (input) => {
         observedRepositoryId = services.store.getWorkItem(input.workItemId).main_workspace_id;
         return {
-          phase: "running", idempotentReplay: false,
-          session: { id: "session:immediate" }, logicalSessionId: null,
-          providerBinding: null, workspace: { repositoryId: observedRepositoryId }
+          status: "ready", idempotentReplay: false,
+          session: { id: "session:immediate" },
+          receipt: { status: "ready", repositoryId: observedRepositoryId }
         };
       },
       ...services

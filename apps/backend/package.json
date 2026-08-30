@@ -8,9 +8,10 @@
     "dev": "node src/server.mjs",
     "mcp:collaboration": "node src/mcp/collaborationMcpServer.mjs",
     "start": "node src/server.mjs",
+    "pretest": "npm run build:native",
     "test": "node --test tests/*.test.mjs",
     "benchmark:scheduled-task-list": "node scripts/benchmark-scheduled-task-list.mjs",
-    "build:native": "cargo build --release --manifest-path native/Cargo.toml && cp native/target/release/libcorptie_native.dylib native/corptie_native.node",
+    "build:native": "cd native && cargo build --release && cp target/release/libcorptie_native.dylib corptie_native.node",
     "postinstall": "node scripts/fix-node-pty-permissions.mjs"
   },
   "engines": {
@@ -19,6 +20,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.199",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
     "node-pty": "^1.1.0",
     "zod": "^4.4.3"
   }

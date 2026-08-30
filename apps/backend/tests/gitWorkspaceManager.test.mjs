@@ -977,7 +977,8 @@ test("ensures one deterministic WorkItem Worktree and reuses it on retry", async
     assert.equal(retried.reused, true);
     assert.equal(retried.worktreeId, created.worktreeId);
     assert.equal(retried.path, created.path);
-    assert.equal(created.path, await realpath(join(fixture.repository, ".corptie", "worktrees", "one")));
+    const root = join(fixture.directory, `.corptie-worktrees-${fixture.repositoryId.split(":").at(-1)}`);
+    assert.equal(created.path, await realpath(join(root, "one")));
     assert.equal((await gitOutput(["rev-parse", "HEAD"], created.path)).trim(), created.headOid);
     assert.equal((await gitOutput(["branch", "--show-current"], created.path)).trim(), "workitem/one");
   } finally {
@@ -1013,13 +1014,13 @@ test("an unborn repository starts its first WorkItem in the main checkout withou
   }
 });
 
-test("creates WorkItem Worktrees inside a missing repository-local root for paths with spaces and non-ASCII characters", async () => {
+test("creates WorkItem Worktrees inside a missing managed non-nested root for paths with spaces and non-ASCII characters", async () => {
   const fixture = await createFixture("workitem-unicode", { repositoryName: "主项目 repo" });
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") }
   });
-  const root = join(fixture.repository, ".corptie", "worktrees");
+  const root = join(fixture.directory, `.corptie-worktrees-${fixture.repositoryId.split(":").at(-1)}`);
   try {
     await assert.rejects(() => realpath(root), { code: "ENOENT" });
     const created = await manager.ensureWorkItemWorktreeForProject({
@@ -1031,7 +1032,7 @@ test("creates WorkItem Worktrees inside a missing repository-local root for path
     assert.equal(created.path, await realpath(join(root, "one-0b60f425b4")));
     assert.equal(created.branchName, "workitem/one-0b60f425b4");
     assert.equal((await gitOutput(["rev-parse", "--show-toplevel"], created.path)).trim(), created.path);
-    assert.equal((await gitOutput(["status", "--porcelain=v1"], created.path)).trim(), "?? .corptie");
+    assert.equal((await gitOutput(["status", "--porcelain=v1"], created.path)).trim(), "");
   } finally {
     await fixture.close();
   }
@@ -1064,13 +1065,36 @@ test("allocates distinct WorkItem Worktrees for names that normalize to the same
   }
 });
 
-test("reports an explicit error when the repository-local Worktree target is occupied", async () => {
+test("refuses a managed WorkItem Worktree root nested inside any registered Worktree", async () => {
+  const fixture = await createFixture("workitem-nested-root");
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    workItemWorktreesRoot: join(fixture.repository, ".corptie", "worktrees")
+  });
+  try {
+    await assert.rejects(
+      () => manager.ensureWorkItemWorktreeForProject({
+        repositoryId: fixture.repositoryId,
+        workingDirectory: fixture.repository,
+        workItemId: "work_item:nested"
+      }),
+      /must not be nested inside another Git Worktree/
+    );
+    assert.equal((await gitOutput(["worktree", "list", "--porcelain"], fixture.repository)).match(/^worktree /gm)?.length, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("reports an explicit error when the managed Worktree target is occupied", async () => {
   const fixture = await createFixture("workitem-conflict");
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") }
   });
-  const occupied = join(fixture.repository, ".corptie", "worktrees", "occupied");
+  const root = join(fixture.directory, `.corptie-worktrees-${fixture.repositoryId.split(":").at(-1)}`);
+  const occupied = join(root, "occupied");
   try {
     await mkdir(occupied, { recursive: true });
     await assert.rejects(
@@ -1080,7 +1104,7 @@ test("reports an explicit error when the repository-local Worktree target is occ
         workItemId: "work_item:occupied"
       }),
       (error) => error?.message?.includes("worktree target path already exists:")
-        && error.message.endsWith("/.corptie/worktrees/occupied")
+        && error.message.endsWith("/occupied")
     );
     await assert.rejects(() => gitOutput(["show-ref", "--verify", "refs/heads/workitem/occupied"], fixture.repository));
   } finally {

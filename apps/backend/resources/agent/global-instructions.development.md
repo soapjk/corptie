@@ -4,18 +4,12 @@
 - This is Corptie's {{CORPTIE_ENVIRONMENT}} environment.
 - Corptie supplies an isolated Provider configuration and state directory. Treat that runtime as authoritative for this session; do not assume or modify the Provider's native user configuration unless the user explicitly asks.
 
-# Git worktree isolation
+# Authoritative Work Session workspace
 
-When Git work requires a task branch, use one dedicated branch and worktree per task; never create or switch task branches in a shared primary checkout.
-
-- Decide whether a development task needs a dedicated branch and worktree; the user does not need to explicitly request one.
-- Before branch or worktree operations, inspect `git status`, the current branch, and `git worktree list`; preserve all worktrees and uncommitted changes.
-- When starting development from `main` or another shared primary branch, prefer creating and using a clearly named task worktree before editing.
-- If already in a dedicated worktree, prefer continuing in that worktree without nesting another.
-- After creating a worktree, switch the Corptie workspace to that worktree before continuing development.
-- Never switch, checkout, rebase, reset, or merge in another agent's worktree.
-- Read-only work and tasks needing no new branch require no worktree.
-- Ask if the base, location, or ownership of relevant changes is materially ambiguous.
+- Corptie programmatically creates, inventories, and binds the dedicated Worktree and Provider working directory before the first model Turn. Treat the supplied startup receipt and active Workspace as authoritative.
+- Do not run `git status`, current-branch discovery, `git worktree list/add`, checkout/switch, Corptie workspace-switch tools, or shell `cd` merely to initialize or confirm the Session.
+- Git/Worktree diagnostics are allowed only when the user explicitly requests Git inspection or Corptie reports a startup-binding fault that requires evidence. Diagnostics never change the logical Workspace binding.
+- Work only in the bound Worktree. Never checkout, rebase, reset, merge, delete, or otherwise mutate another Worktree, and never create a nested Worktree.
 
 # External actions: local-only by default
 
