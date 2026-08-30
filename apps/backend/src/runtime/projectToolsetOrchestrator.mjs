@@ -286,7 +286,7 @@ function hasGeneration(value) { return value === "restricted_project_toolset_gen
 function businessError(code, actionId, phase) { return { code, message: "Project Toolset validation did not complete successfully.", retryable: ["TOOLSET_CLEANUP_UNKNOWN", "TOOLSET_RUN_PREPARE_FAILED"].includes(code), details: { actionId, assertionId: null, phase } }; }
 function requiredPort(options, name) { if (!options?.[name]) throw new TypeError(`ProjectToolsetOrchestrator requires ${name}.`); return options[name]; }
 function clone(value) { return value === undefined ? undefined : structuredClone(value); }
-function authenticatedSession(input) { return Object.freeze({ logicalSessionId: input.logicalSessionId, workItemId: input.workItemId }); }
+function authenticatedSession(input) { return Object.freeze({ logicalSessionId: input.logicalSessionId, workItemId: input.workItemId, repositoryId: input.repositoryId, worktreeId: input.worktreeId }); }
 function authoritativeIdentity(input) { return Object.freeze({ logicalSessionId: input.logicalSessionId, objectiveId: input.objectiveId, workItemId: input.workItemId, repositoryId: input.repositoryId, worktreeId: input.worktreeId }); }
 function runContext(input, snapshotRef) { return { logicalSessionId: input.logicalSessionId, workItemId: input.workItemId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, snapshotRef, startupBindingReceiptRef: input.startupBindingReceiptRef }; }
 function snapshotMatches(expected, actual) {

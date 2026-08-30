@@ -36,6 +36,11 @@ export class SqliteProjectToolsetStore {
         receipt_json TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS project_toolset_validation_plans (
+        validation_plan_identity TEXT PRIMARY KEY,
+        plan_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
     `);
   }
 
@@ -104,6 +109,19 @@ export class SqliteProjectToolsetStore {
   }
 
   async getReceipt(receiptId) { return parse(this.database.prepare("SELECT receipt_json FROM project_toolset_validation_receipts WHERE receipt_id=?").get(receiptId)?.receipt_json); }
+  async getValidationPlan(identity) { return parse(this.database.prepare("SELECT plan_json FROM project_toolset_validation_plans WHERE validation_plan_identity=?").get(identity)?.plan_json); }
+  async putValidationPlan(identity, value) {
+    const json = JSON.stringify(value);
+    try {
+      this.database.prepare("INSERT INTO project_toolset_validation_plans(validation_plan_identity,plan_json,created_at) VALUES(?,?,?)")
+        .run(identity, json, new Date().toISOString());
+    } catch (error) {
+      if (!/constraint/i.test(`${error.code ?? ""} ${error.message ?? ""}`)) throw error;
+      const existing = await this.getValidationPlan(identity);
+      if (JSON.stringify(existing) !== json) throw contractError("TOOLSET_CAS_CONFLICT", "ValidationPlan identity cannot be overwritten.");
+    }
+    return structuredClone(value);
+  }
   close() { if (this.ownsDatabase) this.database.close(); }
 }
 
