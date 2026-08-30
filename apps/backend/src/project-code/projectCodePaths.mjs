@@ -2,7 +2,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { sha256Hex, contractError } from "./projectCodeContracts.mjs";
 
-export const PROJECT_CODE_EXCLUSION_REVISION = "project-code-exclusions/v4";
+export const PROJECT_CODE_EXCLUSION_REVISION = "project-code-exclusions/v5";
 
 const excludedSegments = new Set([
   ".git", ".build", "build", "DerivedData", "dist", "out", "coverage", "target",
@@ -23,7 +23,7 @@ export function normalizeRelativePath(input) {
 export function defaultExclusionReason(relativePath, options = {}) {
   const segments = relativePath.split("/");
   if (segments.some((segment) => excludedSegments.has(segment))) return "DEFAULT_EXCLUDED_SPACE";
-  if (segments[0] === ".corptie" && segments[1] === "worktrees") return "OTHER_WORKTREE";
+  if (segments[0] === ".corptie") return segments[1] === "worktrees" ? "OTHER_WORKTREE" : "DEFAULT_EXCLUDED_SPACE";
   if (segments.some((segment) => /^(?:generated|codegen)$/i.test(segment)) && !options.generatedAllowed) {
     return "GENERATED_SOURCE_NOT_ALLOWED";
   }
