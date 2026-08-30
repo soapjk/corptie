@@ -222,8 +222,10 @@ import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.m
 import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
-import { ProjectCodeSnapshotApplicationService } from "./project-code/projectCodeSnapshotApplicationService.mjs";
-import { projectCodeSnapshotDynamicTools, callProjectCodeSnapshotDynamicTool } from "./project-code/projectCodeSnapshotDynamicTools.mjs";
+import { ProjectCodeSearchApplicationService } from "./project-code/projectCodeApplicationService.mjs";
+import { projectCodeDynamicTools, callProjectCodeDynamicTool } from "./project-code/projectCodeDynamicTools.mjs";
+import { ProjectCodeIndexStore } from "./project-code/projectCodeIndexStore.mjs";
+import { ProjectCodeSearchService } from "./project-code/projectCodeSearchService.mjs";
 import { RepositorySourceSnapshotBuilder } from "./project-code/projectCodeSnapshot.mjs";
 import { ProjectCodeStartupReceiptRepository } from "./project-code/projectCodeStartupReceiptRepository.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
@@ -272,7 +274,7 @@ const sessionStateDiagnostics = new SessionStateDiagnostics();
 let workItemExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
 let workItemStartService = null;
-let projectCodeSnapshotApplicationService = null;
+let projectCodeApplicationService = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -477,13 +479,13 @@ const hostToolCatalog = new HostToolCatalog([
     execute: (input) => callWorkspaceDynamicTool(input)
   },
   {
-    id: "project-code-snapshot",
-    tools: projectCodeSnapshotDynamicTools,
+    id: "project-code",
+    tools: projectCodeDynamicTools,
     authorize: ({ metadata }) => metadata?.sessionKind === "worker"
       && Boolean(metadata?.logicalSessionId)
       && Boolean(metadata?.workItemId)
       && Boolean(metadata?.objectiveId),
-    execute: (input) => callProjectCodeSnapshotHostTool(input)
+    execute: (input) => callProjectCodeHostTool(input)
   },
   {
     id: "collaboration",
@@ -1047,10 +1049,18 @@ const projectToolsetInitializer = new ProjectToolsetInitializer({
 });
 const projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
 const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
-projectCodeSnapshotApplicationService = new ProjectCodeSnapshotApplicationService({
+const projectCodeIndexStore = new ProjectCodeIndexStore({
+  dataRoot: join(store.dataRoot, "project-code-index")
+});
+const projectCodeSearchService = new ProjectCodeSearchService({
+  snapshotBuilder: projectCodeSnapshotBuilder,
+  indexStore: projectCodeIndexStore
+});
+projectCodeApplicationService = new ProjectCodeSearchApplicationService({
   store,
   startupReceipts: projectCodeStartupReceipts,
-  snapshotBuilder: projectCodeSnapshotBuilder
+  snapshotBuilder: projectCodeSnapshotBuilder,
+  searchService: projectCodeSearchService
 });
 const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,
@@ -3153,16 +3163,16 @@ async function callWorkspaceDynamicTool(params) {
   throw new Error(`Unsupported workspace tool: ${params.tool}`);
 }
 
-async function callProjectCodeSnapshotHostTool(params) {
+async function callProjectCodeHostTool(params) {
   const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
   if (!logical || logical.activeThreadId !== params.threadId
     || logical.logicalSessionId !== params.metadata?.logicalSessionId) {
-    const error = new Error("Project-code Snapshot is only available from the active authoritative Worker Session thread.");
+    const error = new Error("Project-code search is only available from the active authoritative Worker Session thread.");
     error.code = "PROJECT_CODE_SESSION_ROUTE_STALE";
     error.stage = "route_validation";
     throw error;
   }
-  return callProjectCodeSnapshotDynamicTool(projectCodeSnapshotApplicationService, params);
+  return callProjectCodeDynamicTool(projectCodeApplicationService, params);
 }
 
 function collaborationRuntimeInstructions(agentId) {
