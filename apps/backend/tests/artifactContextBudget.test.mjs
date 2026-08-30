@@ -58,12 +58,15 @@ test("pinned Worker reads verify hash and enforce per-Turn unique page budget wi
       title: "Paged", content: body, idempotencyKey: "paged"
     });
     const hash = artifact.versions[0].contentHash;
-    const options = { version: 1, contentHash: hash, offset: 0, limit: 8192, format: "text" };
+    const options = {
+      version: 1, contentHash: hash, referenceId: artifact.references[0].referenceId,
+      turnExecutionId: "turn:one", offset: 0, limit: 8192, format: "text"
+    };
     assert.equal((await value.service.get(value.context, artifact.artifactId, options)).content.length, 8192);
     assert.equal((await value.service.get(value.context, artifact.artifactId, options)).content.length, 8192);
     await assert.rejects(() => value.service.get(value.context, artifact.artifactId, {
       ...options, contentHash: "0".repeat(64)
-    }), { code: "ARTIFACT_PINNED_HASH_MISMATCH" });
+    }), { code: "ARTIFACT_VERSION_HASH_MISMATCH" });
     for (let page = 1; page < 16; page += 1) {
       await value.service.get(value.context, artifact.artifactId, { ...options, offset: page * 8192 });
     }

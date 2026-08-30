@@ -37,17 +37,24 @@ test("same Agent parallel Workers authorize only exact Session/WorkItem bindings
     const artifactB = await service.create(context("b"), {
       title: "B only", content: "b", idempotencyKey: "artifact-b"
     });
+    let turn = 0;
+    const pinned = (artifact) => ({
+      version: 1,
+      contentHash: artifact.versions[0].contentHash,
+      referenceId: artifact.references[0].referenceId,
+      turnExecutionId: `turn:parallel:${++turn}`
+    });
     store.updateAgent(agent.agentId, { currentSessionId: "session:a" });
-    assert.equal((await service.get(context("a"), artifactA.artifactId)).content, "a");
-    assert.equal((await service.get(context("b"), artifactB.artifactId)).content, "b");
-    await assert.rejects(() => service.get(context("a"), artifactB.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
-    await assert.rejects(() => service.get(context("b"), artifactA.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
+    assert.equal((await service.get(context("a"), artifactA.artifactId, pinned(artifactA))).content, "a");
+    assert.equal((await service.get(context("b"), artifactB.artifactId, pinned(artifactB))).content, "b");
+    await assert.rejects(() => service.get(context("a"), artifactB.artifactId, pinned(artifactB)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
+    await assert.rejects(() => service.get(context("b"), artifactA.artifactId, pinned(artifactA)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
     store.updateAgent(agent.agentId, { currentSessionId: "session:b" });
-    assert.equal((await service.get(context("a"), artifactA.artifactId)).content, "a");
-    assert.equal((await service.get(context("b"), artifactB.artifactId)).content, "b");
+    assert.equal((await service.get(context("a"), artifactA.artifactId, pinned(artifactA))).content, "a");
+    assert.equal((await service.get(context("b"), artifactB.artifactId, pinned(artifactB))).content, "b");
     store.db.run("UPDATE work_items SET current_session_id = NULL WHERE id = ?", ["work_item:a"]);
-    await assert.rejects(() => service.get(context("a"), artifactA.artifactId), {
-      code: "ARTIFACT_WORK_ITEM_FORBIDDEN"
+    await assert.rejects(() => service.get(context("a"), artifactA.artifactId, pinned(artifactA)), {
+      code: "ARTIFACT_SESSION_BINDING_INVALID"
     });
   } finally {
     store.close();
