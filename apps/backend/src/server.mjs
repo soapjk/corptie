@@ -222,6 +222,10 @@ import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.m
 import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
+import { ProjectCodeSnapshotApplicationService } from "./project-code/projectCodeSnapshotApplicationService.mjs";
+import { projectCodeSnapshotDynamicTools, callProjectCodeSnapshotDynamicTool } from "./project-code/projectCodeSnapshotDynamicTools.mjs";
+import { RepositorySourceSnapshotBuilder } from "./project-code/projectCodeSnapshot.mjs";
+import { ProjectCodeStartupReceiptRepository } from "./project-code/projectCodeStartupReceiptRepository.mjs";
 import { assertWorkspaceRouteUsable } from "./runtime/workspaceRouteGuard.mjs";
 import { WorkspaceRoutePreparationCache } from "./runtime/workspaceRoutePreparationCache.mjs";
 import { sanitizeSessionCommitMessage, sessionCommitMessagePrompt } from "./utils/sessionCommitMessage.mjs";
@@ -268,6 +272,7 @@ const sessionStateDiagnostics = new SessionStateDiagnostics();
 let workItemExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
 let workItemStartService = null;
+let projectCodeSnapshotApplicationService = null;
 const sessionEventListeners = new Set();
 const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
@@ -470,6 +475,15 @@ const hostToolCatalog = new HostToolCatalog([
     id: "workspace",
     tools: workspaceDynamicTools,
     execute: (input) => callWorkspaceDynamicTool(input)
+  },
+  {
+    id: "project-code-snapshot",
+    tools: projectCodeSnapshotDynamicTools,
+    authorize: ({ metadata }) => metadata?.sessionKind === "worker"
+      && Boolean(metadata?.logicalSessionId)
+      && Boolean(metadata?.workItemId)
+      && Boolean(metadata?.objectiveId),
+    execute: (input) => callProjectCodeSnapshotHostTool(input)
   },
   {
     id: "collaboration",
@@ -1030,6 +1044,13 @@ const projectToolsetInitializer = new ProjectToolsetInitializer({
   backgroundAgent: backgroundAgentService,
   referencePath: bundledProjectToolsetReferencePath,
   onEvent: (type, payload) => emitEvent(type, payload)
+});
+const projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
+const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
+projectCodeSnapshotApplicationService = new ProjectCodeSnapshotApplicationService({
+  store,
+  startupReceipts: projectCodeStartupReceipts,
+  snapshotBuilder: projectCodeSnapshotBuilder
 });
 const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,
@@ -3130,6 +3151,18 @@ async function callWorkspaceDynamicTool(params) {
     return sessionWorkspaceOperations.switchWorkspace(metadata, params.actorId, params.arguments ?? {});
   }
   throw new Error(`Unsupported workspace tool: ${params.tool}`);
+}
+
+async function callProjectCodeSnapshotHostTool(params) {
+  const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
+  if (!logical || logical.activeThreadId !== params.threadId
+    || logical.logicalSessionId !== params.metadata?.logicalSessionId) {
+    const error = new Error("Project-code Snapshot is only available from the active authoritative Worker Session thread.");
+    error.code = "PROJECT_CODE_SESSION_ROUTE_STALE";
+    error.stage = "route_validation";
+    throw error;
+  }
+  return callProjectCodeSnapshotDynamicTool(projectCodeSnapshotApplicationService, params);
 }
 
 function collaborationRuntimeInstructions(agentId) {
