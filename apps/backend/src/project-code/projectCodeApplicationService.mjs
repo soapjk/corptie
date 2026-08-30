@@ -13,21 +13,23 @@ export class ProjectCodeSearchApplicationService {
 
   async createSnapshot(input = {}) {
     const context = this.#context(input);
-    const snapshot = await this.snapshotBuilder.build({
-      startupReceipt: context.startupReceipt,
-      binding: context.binding,
-      sessionContext: context.sessionContext,
-      sourceDeclarations: input.sourceDeclarations ?? [],
-      signal: input.signal
-    });
-    await validateProjectCodeReceipt(snapshot.receipt, "RepositorySourceSnapshotReceipt");
-    this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
+    const snapshot = await this.#createSnapshot(context, input);
     return Object.freeze({ receipt: snapshot.receipt, rejectedPaths: Object.freeze(snapshot.rejectedPaths) });
+  }
+
+  async find(input = {}) {
+    const context = this.#context(input);
+    const snapshot = await this.#createSnapshot(context, input);
+    return this.#searchSnapshot(snapshot, context, input);
   }
 
   async search(input = {}) {
     const context = this.#context(input);
     const snapshot = await this.#loadSnapshot(input.snapshotReceiptId, context, input.signal);
+    return this.#searchSnapshot(snapshot, context, input);
+  }
+
+  async #searchSnapshot(snapshot, context, input) {
     const toolsetValidationReceipt = input.toolsetValidationReceipt
       ?? await this.#resolveToolsetReceipt(input.toolsetValidationReceiptId, context);
     if (toolsetValidationReceipt) await validateToolsetValidationReceipt(toolsetValidationReceipt);
@@ -49,6 +51,19 @@ export class ProjectCodeSearchApplicationService {
     });
     this.#persist("SearchReceipt", result.receipt, context);
     return Object.freeze({ snapshotReceipt: snapshot.receipt, searchReceipt: result.receipt, results: result.results });
+  }
+
+  async #createSnapshot(context, input) {
+    const snapshot = await this.snapshotBuilder.build({
+      startupReceipt: context.startupReceipt,
+      binding: context.binding,
+      sessionContext: context.sessionContext,
+      sourceDeclarations: input.sourceDeclarations ?? [],
+      signal: input.signal
+    });
+    await validateProjectCodeReceipt(snapshot.receipt, "RepositorySourceSnapshotReceipt");
+    this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
+    return snapshot;
   }
 
   async pointRead(input = {}) {

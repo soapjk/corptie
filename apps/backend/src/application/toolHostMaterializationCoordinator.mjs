@@ -122,25 +122,36 @@ export class ToolHostMaterializationCoordinator {
     const started = performance.now();
     const binding = await this.#binding(input.logicalSessionId, input.providerBindingId);
     const snapshot = this.catalog.snapshot();
-    const query = String(input.intent ?? "").trim().toLocaleLowerCase();
-    const hint = String(input.domainHint ?? "").trim().toLocaleLowerCase();
+    const query = normalizedSearchText(input.intent);
+    const queryTokens = searchTokens(query);
+    const hint = normalizedSearchText(input.domainHint);
     const domains = [];
     for (const [domainId, entries] of this.catalog.domains(catalogContext(binding))) {
-      if (hint && !domainId.toLocaleLowerCase().includes(hint)) continue;
-      const tools = entries.filter((entry) => !query
-        || `${entry.canonicalName} ${entry.definition.description ?? ""} ${domainId}`.toLocaleLowerCase().includes(query));
-      if (query && tools.length === 0) continue;
+      if (hint && !domainMatchesHint(domainId, entries, hint)) continue;
+      let ranked = entries.map((entry) => ({
+        entry,
+        score: query ? catalogSearchScore(entry, domainId, query, queryTokens) : 1
+      })).filter((candidate) => candidate.score > 0)
+        .sort((left, right) => right.score - left.score
+          || left.entry.canonicalName.localeCompare(right.entry.canonicalName));
+      if (hint && ranked.length === 0) {
+        ranked = entries.map((entry) => ({ entry, score: 1 }));
+      }
+      if (query && ranked.length === 0) continue;
       const snapshotDomain = snapshot.domains.find((domain) => domain.domainId === domainId);
       domains.push({
         domainId,
         domainRevision: snapshotDomain?.domainRevision ?? "1",
-        toolCount: tools.length,
-        tools: tools.slice(0, 20).map((entry) => ({
+        toolCount: ranked.length,
+        relevance: ranked.reduce((total, candidate) => total + candidate.score, 0),
+        tools: ranked.slice(0, 20).map(({ entry }) => ({
           canonicalName: entry.canonicalName,
           description: entry.definition.description ?? ""
         }))
       });
     }
+    domains.sort((left, right) => right.relevance - left.relevance
+      || left.domainId.localeCompare(right.domainId));
     const durationMs = performance.now() - started;
     this.#emit("catalog_search", { binding, durationMs, resultCount: domains.length });
     return { catalogVersion: snapshot.catalogVersion, domains, durationMs };
@@ -466,6 +477,52 @@ function desiredDomains(binding, explicit) {
   const domains = new Set(Array.isArray(explicit) ? explicit : []);
   if (binding.sessionKind === "worker") domains.add("artifacts");
   return [...domains].sort();
+}
+
+const SEARCH_STOP_WORDS = new Set([
+  "a", "an", "and", "are", "can", "for", "from", "how", "i", "in", "is", "it", "me",
+  "of", "on", "or", "please", "the", "this", "to", "tool", "tools", "use", "want", "where", "with"
+]);
+
+function normalizedSearchText(value) {
+  return String(value ?? "").normalize("NFKC")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLocaleLowerCase()
+    .replace(/[_./:-]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function searchTokens(query) {
+  return [...new Set(query.split(/\s+/u)
+    .filter((token) => token.length >= 2 && !SEARCH_STOP_WORDS.has(token)))];
+}
+
+function domainMatchesHint(domainId, entries, hint) {
+  const document = normalizedSearchText([
+    domainId,
+    ...entries.flatMap((entry) => entry.discoveryTerms ?? [])
+  ].join(" "));
+  return document.includes(hint) || hint.includes(normalizedSearchText(domainId));
+}
+
+function catalogSearchScore(entry, domainId, query, queryTokens) {
+  const discoveryTerms = (entry.discoveryTerms ?? []).map(normalizedSearchText).filter(Boolean);
+  const document = normalizedSearchText([
+    domainId,
+    entry.canonicalName,
+    entry.definition.description ?? "",
+    ...discoveryTerms
+  ].join(" "));
+  let score = document.includes(query) ? 100 : 0;
+  for (const token of queryTokens) {
+    if (document.includes(token)) score += token.length >= 8 ? 12 : 6;
+  }
+  for (const term of discoveryTerms) {
+    if (query.includes(term)) score += term.length >= 4 ? 24 : 12;
+  }
+  if (normalizedSearchText(domainId) === query) score += 200;
+  return score;
 }
 
 function materializedDomains(catalog, context, snapshot, desiredDomainIds, surface) {
