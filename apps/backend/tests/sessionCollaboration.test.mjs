@@ -48,6 +48,16 @@ function session(store, core, input) {
   core.bindSession({ agentId: input.agentId, sessionId: input.providerSessionId });
 }
 
+let collaborationArtifactTurn = 0;
+function readPinnedArtifact(service, context, artifact, reference) {
+  return service.get(context, artifact.artifactId, {
+    version: reference.pinnedVersion,
+    contentHash: reference.pinnedHash,
+    referenceId: reference.referenceId,
+    turnExecutionId: `collaboration-artifact-turn:${++collaborationArtifactTurn}`
+  });
+}
+
 function registerRepository(store, repositoryId) {
   const observedAt = "2026-08-23T00:00:00.000Z";
   store.upsertGitWorkspaceSnapshot({
@@ -807,7 +817,7 @@ test("WorkItem creation validates Workspace file authority and returns durable f
   }
 });
 
-test("related WorkItems automatically read owned Artifacts without receiving write or transitive sharing authority", async () => {
+test("related WorkItems require an explicit Reference and never receive implicit or transitive body access", async () => {
   const f = await fixture();
   try {
     const agentA = f.store.createAgent({ id: "agent:share-a", name: "Share A", role: "independentContributor" });
@@ -845,10 +855,16 @@ test("related WorkItems automatically read owned Artifacts without receiving wri
       title: "A contract", content: "read-only from A", idempotencyKey: "artifact:a"
     });
     assert.equal(f.store.listArtifactReferences({ artifactId: artifactA.artifactId, workItemId: workB.id }).length, 0);
-    assert.equal((await f.artifactService.get(contextB, artifactA.artifactId)).content, "read-only from A");
-    assert.ok(f.artifactService.list(contextB).some((artifact) => artifact.artifactId === artifactA.artifactId));
-    assert.equal((await f.artifactService.search(contextB, "read-only from A")).results[0].artifact.artifactId, artifactA.artifactId);
-    await assert.rejects(() => f.artifactService.get(contextU, artifactA.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
+    await assert.rejects(
+      () => readPinnedArtifact(f.artifactService, contextB, artifactA, artifactA.references[0]),
+      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
+    );
+    assert.equal(f.artifactService.list(contextB).some((artifact) => artifact.artifactId === artifactA.artifactId), false);
+    assert.equal((await f.artifactService.search(contextB, "A contract")).results.length, 0);
+    await assert.rejects(
+      () => readPinnedArtifact(f.artifactService, contextU, artifactA, artifactA.references[0]),
+      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
+    );
     const sharedA = f.service.shareArtifact({ sessionId: "provider:share-a" }, agentA.agentId, {
       workItemId: workB.id, artifactId: artifactA.artifactId,
       relation: "handoff", required: true, versionPolicy: "fixed"
@@ -856,7 +872,7 @@ test("related WorkItems automatically read owned Artifacts without receiving wri
     assert.equal(sharedA.access, "read_only");
     assert.equal(sharedA.reference.workItemId, workB.id);
     assert.equal(sharedA.reference.pinnedVersion, 1);
-    assert.equal((await f.artifactService.get(contextB, artifactA.artifactId)).content, "read-only from A");
+    assert.equal((await readPinnedArtifact(f.artifactService, contextB, artifactA, sharedA.reference)).content, "read-only from A");
     const replay = f.service.shareArtifact({ sessionId: "provider:share-a" }, agentA.agentId, {
       workItemId: workB.id, artifactId: artifactA.artifactId,
       relation: "handoff", required: true, versionPolicy: "fixed"
@@ -876,9 +892,12 @@ test("related WorkItems automatically read owned Artifacts without receiving wri
     const artifactB = await f.artifactService.create(contextB, {
       title: "B evidence", content: "read-only from B", idempotencyKey: "artifact:b"
     });
-    assert.equal((await f.artifactService.get(contextA, artifactB.artifactId)).content, "read-only from B");
+    await assert.rejects(
+      () => readPinnedArtifact(f.artifactService, contextA, artifactB, artifactB.references[0]),
+      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
+    );
     f.store.removeWorkItemDependency(workB.id, workA.id);
-    await assert.rejects(() => f.artifactService.get(contextA, artifactB.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
+    assert.equal((await readPinnedArtifact(f.artifactService, contextB, artifactB, artifactB.references[0])).content, "read-only from B");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

@@ -32,13 +32,24 @@ final class ArtifactAPIClient: ObservableObject {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func detail(artifactId: String, version: Int? = nil, offset: Int = 0) async -> ArtifactDetailEnvelope? {
-        var components = URLComponents(url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifactId)"), resolvingAgainstBaseURL: false)!
+    func detail(artifact: ObjectiveArtifact, version: Int, offset: Int = 0, turnExecutionId: String) async -> ArtifactDetailEnvelope? {
+        guard let reference = artifact.references.first(where: {
+            $0.revokedAt == nil && $0.pinnedVersion == version
+        }), let pinnedVersion = artifact.versions.first(where: {
+            $0.version == reference.pinnedVersion && $0.contentHash == reference.pinnedHash
+        }) else {
+            errorMessage = "Artifact content requires an explicit active Reference pinned to the selected version."
+            return nil
+        }
+        var components = URLComponents(url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifact.artifactId)"), resolvingAgainstBaseURL: false)!
         components.queryItems = [
-            version.map { URLQueryItem(name: "version", value: String($0)) },
+            URLQueryItem(name: "version", value: String(pinnedVersion.version)),
+            URLQueryItem(name: "contentHash", value: pinnedVersion.contentHash),
+            URLQueryItem(name: "referenceId", value: reference.referenceId),
             URLQueryItem(name: "offset", value: String(offset)),
-            URLQueryItem(name: "limit", value: String(ArtifactContentPagingPolicy.pageBytes))
-        ].compactMap { $0 }
+            URLQueryItem(name: "limit", value: String(ArtifactContentPagingPolicy.pageBytes)),
+            URLQueryItem(name: "turnExecutionId", value: turnExecutionId)
+        ]
         do {
             let (data, response) = try await URLSession.shared.data(from: components.url!)
             try Self.validate(response: response, data: data)
@@ -89,13 +100,15 @@ final class ArtifactAPIClient: ObservableObject {
         return result != nil
     }
 
-    func export(artifactId: String, version: Int, destinationURL: URL, confirmRepositoryWrite: Bool, confirmOverwrite: Bool) async -> ArtifactExportOutcome {
+    func export(artifact: ObjectiveArtifact, version: Int, destinationURL: URL, confirmRepositoryWrite: Bool, confirmOverwrite: Bool) async -> ArtifactExportOutcome {
         do {
-            var request = URLRequest(url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifactId)/export"))
+            let pin = try pinnedReference(artifact: artifact, version: version)
+            var request = URLRequest(url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifact.artifactId)/export"))
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: [
-                "destinationPath": destinationURL.path, "version": version, "confirmed": true,
+                "destinationPath": destinationURL.path, "version": version,
+                "contentHash": pin.contentHash, "referenceId": pin.referenceId, "confirmed": true,
                 "confirmedRepositoryWrite": confirmRepositoryWrite, "confirmedOverwrite": confirmOverwrite
             ])
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -115,15 +128,28 @@ final class ArtifactAPIClient: ObservableObject {
         }
     }
 
-    func localFile(artifactId: String, version: Int) async throws -> ArtifactLocalFileReceipt {
+    func localFile(artifact: ObjectiveArtifact, version: Int) async throws -> ArtifactLocalFileReceipt {
+        let pin = try pinnedReference(artifact: artifact, version: version)
         var components = URLComponents(
-            url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifactId)/local-file"),
+            url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifact.artifactId)/local-file"),
             resolvingAgainstBaseURL: false
         )!
-        components.queryItems = [URLQueryItem(name: "version", value: String(version))]
+        components.queryItems = [
+            URLQueryItem(name: "version", value: String(version)),
+            URLQueryItem(name: "contentHash", value: pin.contentHash),
+            URLQueryItem(name: "referenceId", value: pin.referenceId)
+        ]
         let (data, response) = try await URLSession.shared.data(from: components.url!)
         try Self.validate(response: response, data: data)
         return try await decode(ArtifactLocalFileReceipt.self, data: data)
+    }
+
+    private func pinnedReference(artifact: ObjectiveArtifact, version: Int) throws -> (referenceId: String, contentHash: String) {
+        guard let reference = artifact.references.first(where: { $0.revokedAt == nil && $0.pinnedVersion == version }),
+              let artifactVersion = artifact.versions.first(where: { $0.version == version && $0.contentHash == reference.pinnedHash }) else {
+            throw EntityLaunchError(message: "Artifact content requires an active Reference pinned to this exact version and hash.", code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN")
+        }
+        return (reference.referenceId, artifactVersion.contentHash)
     }
 
     private func get<T: Decodable & Sendable>(_ path: String) async throws -> T {
