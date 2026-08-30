@@ -88,6 +88,7 @@ import {
   RegistryToolMaterializationPort,
   ToolHostMaterializationCoordinator
 } from "./application/toolHostMaterializationCoordinator.mjs";
+import { ToolBootstrapBindingPreflight } from "./application/toolBootstrapBindingPreflight.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import { OpenClackyManager, mergeOpenClackyRuntimeInstructions } from "./adapters/openClackyManager.mjs";
@@ -1272,6 +1273,14 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
     console.info(`[session-recovery] ${JSON.stringify({ type, ...payload })}`);
     emitEvent(type, payload, { sessionId: payload.attempt?.sessionId ?? null });
   }
+});
+const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
+  store,
+  coordinator: toolHostMaterializationCoordinator,
+  isSessionBusy: (session) => sessionHasActiveRun(session),
+  recoverBinding: (input) => sessionRecoveryCoordinator.recover(input),
+  maxCandidates: 32,
+  concurrency: 2
 });
 platformOperationService = new PlatformOperationService({
   store,
@@ -9814,6 +9823,18 @@ if (process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
+  // Validate old bindings after the loopback API is ready so startup latency is
+  // unaffected. The preflight first attempts an in-place/gateway refresh and
+  // replaces a binding only after an exact not-sent/unconfirmed Provider proof.
+  setImmediate(() => {
+    toolBootstrapBindingPreflight.run()
+      .then((summary) => {
+        if (summary.scanned > 0) console.info(`[tool-bootstrap-preflight] ${JSON.stringify(summary)}`);
+      })
+      .catch((error) => {
+        console.warn(`[tool-bootstrap-preflight] failed code=${error?.code ?? "TOOL_BOOTSTRAP_PREFLIGHT_FAILED"}`);
+      });
+  });
   // Provider callbacks converge truth into SQLite before wake publication.
   // There is intentionally no periodic read/repair loop here.
   // Feishu reconciliation may stop daemons and call remote identity/model
