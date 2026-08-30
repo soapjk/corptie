@@ -89,7 +89,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
   const startWorkItemExecution = services.startWorkItemExecution ?? (services.launchSession
     ? async (input) => {
         const workItem = services.objectiveService.store.getWorkItem(input.workItemId);
-        const agent = services.objectiveService.store.getAgent(input.agentId);
+        const agent = services.objectiveService.store.getAgent(input.requestedAgentId);
         const session = await services.launchSession({
           workItem,
           agent,
@@ -1195,6 +1195,8 @@ test("binding a valid Workspace is persisted and immediately visible to WorkItem
       pathname: "/sessions",
       body: { workItemId: item.id, agentId: agent.agentId, providerId: "codex-app-server" },
       startWorkItemExecution: async (input) => {
+        assert.equal(input.requestedAgentId, agent.agentId);
+        assert.equal(Object.hasOwn(input, "agentId"), false);
         observedRepositoryId = services.store.getWorkItem(input.workItemId).main_workspace_id;
         return {
           status: "ready", idempotentReplay: false,

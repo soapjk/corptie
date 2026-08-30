@@ -1374,9 +1374,9 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
   validateStart: async (operation) => {
     const workItem = objectiveService.getWorkItem(operation.workItemId);
     const objective = objectiveService.getObjective(workItem.objective_id);
-    const agent = store.getAgent(operation.agentId);
+    const agent = store.getAgent(operation.requestedAgentId);
     if (!agent) {
-      const error = new Error(`Agent not found: ${operation.agentId}`);
+      const error = new Error(`Agent not found: ${operation.requestedAgentId}`);
       error.code = "AGENT_NOT_FOUND";
       error.statusCode = 404;
       throw error;
@@ -1419,14 +1419,23 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
     workingDirectory: workspace.canonicalWorktreePath,
     autoUniqueTitle: true,
     deferInitialPromptUntilBound: true,
+    deferToolHostFinalization: true,
     ...(source === "integration-plan-resolution"
       ? { sandbox: "danger-full-access", approvalPolicy: "never" }
       : {})
   }),
   bindProviderWorkspace: (input) => providerWorkspaceBindingService.bindWorkspace(input),
   inspectProviderBinding: (input) => providerWorkspaceBindingService.inspectBinding(input),
-  activateSession: async ({ session, workItem, initialPrompt }) => {
+  activateSession: async ({ session, workItem, agent, initialPrompt }) => {
     try {
+      await sessionApplicationService.resumeSession(session.id, {
+        source: "work-item-start",
+        purpose: "session-create-finalization",
+        actorId: agent.agentId,
+        objectiveId: workItem.objective_id,
+        workItemId: workItem.id,
+        sessionKind: "worker"
+      });
       return await sendUnifiedSessionMessage(session.id, initialPrompt || workItemExecutionPrompt(workItem), {
         type: "session-initialization",
         origin: "work-item-start"
@@ -4241,6 +4250,7 @@ async function launchWorkItemSession({
   approvalPolicy = null,
   runtimeWorkspaceRoots = null,
   deferInitialPromptUntilBound = false,
+  deferToolHostFinalization = false,
   observePerformance = () => {}
 }) {
   if (agent.role !== "independentContributor") {
@@ -4286,7 +4296,8 @@ async function launchWorkItemSession({
       actorId: agent.agentId,
       objectiveId: workItem.objective_id,
       workItemId: workItem.id,
-      sessionKind: "worker"
+      sessionKind: "worker",
+      deferToolHostFinalization
     }
   );
   observePerformance("providerSessionCreateMs", performance.now() - phaseStartedAt);

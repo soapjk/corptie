@@ -897,7 +897,7 @@ export function handleEntityHttpRequest({
         phaseStartedAt = performance.now();
         const started = await startWorkItemExecution({
           workItemId,
-          agentId,
+          requestedAgentId: agentId,
           providerId,
           title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
           idempotencyKey: timing.operationId,

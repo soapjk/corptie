@@ -1421,6 +1421,76 @@ test("Git workspace snapshots persist stable repository and worktree identities"
   }
 });
 
+test("a recreated Worktree releases ownership held by a terminal startup operation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-git-recreated-owner-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  const repository = {
+    id: "repository:recreated",
+    commonGitDirCanonicalPath: "/repo/.git",
+    discoveredAt: "2026-08-30T00:00:00.000Z",
+    lastValidatedAt: "2026-08-30T00:00:00.000Z"
+  };
+  const main = {
+    worktreeId: "worktree:main", path: "/repo", canonicalPath: "/repo",
+    gitDirCanonicalPath: "/repo/.git", isMain: true, availability: "available",
+    headOid: "a".repeat(40), branchRef: "refs/heads/main", branchName: "main",
+    isDetached: false, isLocked: false, lockReason: null, isPrunable: false, pruneReason: null
+  };
+  const worker = {
+    ...main,
+    worktreeId: "worktree:worker", path: "/repo-worker", canonicalPath: "/repo-worker",
+    gitDirCanonicalPath: "/repo/.git/worktrees/worker", isMain: false,
+    branchRef: "refs/heads/workitem/one", branchName: "workitem/one"
+  };
+  const snapshot = (inventoryVersion, worktrees) => ({
+    repository: { ...repository, lastValidatedAt: `2026-08-30T00:0${inventoryVersion.slice(-1)}:00.000Z` },
+    inventoryVersion,
+    observedAt: `2026-08-30T00:0${inventoryVersion.slice(-1)}:00.000Z`,
+    worktrees
+  });
+
+  try {
+    await store.initialize();
+    store.upsertGitWorkspaceSnapshot(snapshot("inventory-1", [main, worker]));
+    const agent = store.createAgent({ id: "agent:worker", name: "Worker" });
+    store.createObjective({
+      id: "objective:one", name: "One",
+      workspaceIds: [repository.id], contributorAgentIds: [agent.agentId]
+    });
+    store.createWorkItem({
+      id: "work_item:one", objectiveId: "objective:one", title: "One",
+      mainWorkspaceId: repository.id, mainAgentId: agent.agentId
+    });
+    store.db.run(
+      "UPDATE git_worktrees SET dedicated=1, created_by_startup_operation_id='startup:failed' WHERE worktree_id='worktree:worker'"
+    );
+    store.db.run(
+      `INSERT INTO work_session_startup_operations (
+        startup_operation_id, objective_id, work_item_id, requested_agent_id, provider_id,
+        repository_id, idempotency_key, request_fingerprint, state, worktree_id,
+        correlation_id, allocated_at, failed_at, updated_at
+      ) VALUES ('startup:failed','objective:one','work_item:one','agent:worker','test-provider',
+        'repository:recreated','start:failed','fingerprint','failed_compensated','worktree:worker',
+        'correlation:failed','2026-08-30T00:00:00.000Z','2026-08-30T00:00:01.000Z','2026-08-30T00:00:01.000Z')`
+    );
+
+    store.upsertGitWorkspaceSnapshot(snapshot("inventory-2", [main]));
+    assert.equal(store.getGitWorktree("worktree:worker").availability, "missing");
+    store.upsertGitWorkspaceSnapshot(snapshot("inventory-3", [main, worker]));
+
+    const recreated = store.getGitWorktree("worktree:worker");
+    assert.equal(recreated.availability, "available");
+    assert.equal(recreated.dedicated, false);
+    assert.equal(recreated.createdByStartupOperationId, null);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("unchanged Git workspace snapshots skip SQLite writes, audit, and dirty notifications", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-git-noop-"));
   const store = new CorptieStore({
