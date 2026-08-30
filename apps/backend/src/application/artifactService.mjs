@@ -3,6 +3,9 @@ import { constants } from "node:fs";
 import { access, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, resolve } from "node:path";
 import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
+import { ArtifactReferenceAuthorizer, SessionAuthorizationResolver, artifactError as pinnedReadError, safeHashEqual } from "./artifactAuthorization.mjs";
+import { buildArtifactContextIndex } from "./artifactContextIndex.mjs";
+import { ArtifactReadCoordinator, ARTIFACT_READ_DEFAULT_LIMITS } from "./artifactReadCoordinator.mjs";
 
 export const ARTIFACT_VISIBILITIES = Object.freeze([
   "objective_private", "work_item_private", "session_private", "repository_tracked"
@@ -14,8 +17,7 @@ export const ARTIFACT_RELATIONS = Object.freeze([
 const VISIBILITIES = new Set(ARTIFACT_VISIBILITIES);
 const RELATIONS = new Set(ARTIFACT_RELATIONS);
 const VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
-const MAX_READ_BYTES = 64 * 1024;
-const MAX_INDEX_ITEMS = 80;
+const MAX_READ_BYTES = ARTIFACT_READ_DEFAULT_LIMITS.maxPageBytes;
 
 export class ArtifactService {
   constructor(options = {}) {
@@ -23,6 +25,12 @@ export class ArtifactService {
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.idFactory = options.idFactory ?? randomUUID;
     this.contentRoot = options.contentRoot ?? null;
+    this.sessionAuthorizationResolver = options.sessionAuthorizationResolver
+      ?? new SessionAuthorizationResolver({ store: this.store });
+    this.referenceAuthorizer = options.referenceAuthorizer
+      ?? new ArtifactReferenceAuthorizer({ store: this.store });
+    this.readCoordinator = options.readCoordinator
+      ?? new ArtifactReadCoordinator({ store: this.store, clock: this.clock });
     if (!this.store) throw new TypeError("ArtifactService requires a store.");
   }
 
@@ -33,6 +41,7 @@ export class ArtifactService {
     await mkdir(join(this.contentRoot, "tmp"), { recursive: true, mode: 0o700 });
     const recovered = await this.recoverContentOperations();
     const orphaned = await this.auditOrphanedContent();
+    this.store.reconcileArtifactTurnReadUsage?.(this.clock());
     return [...recovered, ...orphaned];
   }
 
@@ -78,73 +87,122 @@ export class ArtifactService {
       if (!this.store.getObjective(objectiveId)) throw artifactError("ARTIFACT_OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
       return { kind: "local_user", actorId: input.actorId ?? "local-user", objectiveId, sessionId: null, workItemId: null };
     }
-    const actorId = requiredText(input.actorId, "actorId");
-    const agent = this.store.getAgent(actorId);
-    const claimedSessionId = optionalText(input.sessionId);
-    const sessionId = claimedSessionId ?? optionalText(agent?.currentSessionId);
-    const session = sessionId ? this.store.getSession(sessionId) : null;
-    if (!agent || !session) throw artifactError("ARTIFACT_SESSION_SCOPE_REQUIRED", "Artifact tools require an authenticated current Session.", 403);
-    if ((session.agentId ?? session.agent_id) !== actorId) {
-      throw artifactError("ARTIFACT_SESSION_SCOPE_REQUIRED", "Session is not bound to the authenticated actor.", 403);
-    }
-    const objectiveId = optionalText(session.objectiveId ?? session.objective_id);
-    const workItemId = optionalText(session.workItemId ?? session.work_item_id);
+    const resolved = this.sessionAuthorizationResolver.resolve({
+      actorId: input.actorId,
+      sessionId: input.sessionId,
+      authenticatedLogicalSessionId: input.logicalSessionId,
+      providerBindingId: input.providerBindingId,
+      expectedSessionKind: input.expectedSessionKind
+    });
+    const actorId = resolved.agentId;
+    const sessionId = resolved.productSessionId;
+    const objectiveId = resolved.objectiveId;
+    const workItemId = resolved.workItemId;
     if (input.objectiveId && input.objectiveId !== objectiveId) {
       throw artifactError("ARTIFACT_OBJECTIVE_FORBIDDEN", "Claimed Objective does not match the Session binding.", 403);
     }
     if (input.workItemId && input.workItemId !== workItemId) {
       throw artifactError("ARTIFACT_WORK_ITEM_FORBIDDEN", "Claimed WorkItem does not match the Session binding.", 403);
     }
-    if (!objectiveId || !this.store.getObjective(objectiveId)) {
-      throw artifactError("ARTIFACT_OBJECTIVE_SCOPE_REQUIRED", "Session is not bound to an existing Objective.", 403);
-    }
-    const kind = session.sessionKind ?? session.session_kind;
-    if (!['objectiveChat', 'worker'].includes(kind)) {
-      throw artifactError("ARTIFACT_SESSION_KIND_FORBIDDEN", "Only Objective Chat and Worker Sessions can access Objective Artifacts.", 403);
-    }
-    if (kind === "worker") {
-      const workItem = workItemId ? this.store.getWorkItem(workItemId) : null;
-      if (!workItem || workItem.objective_id !== objectiveId || workItem.current_session_id !== sessionId) {
-        throw artifactError("ARTIFACT_WORK_ITEM_FORBIDDEN", "Worker Session has an invalid WorkItem binding.", 403);
-      }
-    }
-    return { kind, actorId, objectiveId, sessionId, workItemId };
+    return {
+      kind: resolved.sessionKind, actorId, objectiveId, sessionId, productSessionId: sessionId, workItemId,
+      logicalSessionId: resolved.logicalSessionId,
+      providerBindingId: resolved.providerBindingId,
+      authorizationRevision: resolved.authorizationRevision
+    };
   }
 
   list(contextInput, options = {}) {
     const context = this.context(contextInput);
     const relatedWorkItemIds = this.#relatedWorkItemIds(context);
-    const artifacts = this.#readCandidates(context, {
+    const artifacts = this.store.listArtifactsByObjective(context.objectiveId, {
       includeRevoked: options.includeRevoked === true && context.kind !== "worker"
     });
     return artifacts.filter((artifact) => this.#canRead(context, artifact, relatedWorkItemIds)).map((artifact) => this.present(artifact));
   }
 
   async get(contextInput, artifactId, options = {}) {
-    const context = this.context(contextInput);
-    const artifact = this.#readableArtifact(context, artifactId);
-    const selected = this.#selectedVersion(context, artifact, options.version);
-    if (!selected) throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "Artifact version not found.", 404);
+    const context = this.#pinnedReadContext(contextInput);
+    if (options.version == null) throw artifactError("ARTIFACT_INVALID_INPUT", "version is required.", 400);
+    const requestedVersion = boundedInteger(options.version, 1, Number.MAX_SAFE_INTEGER, null, "version");
+    const requestedHash = requiredText(options.contentHash, "contentHash");
+    if (!/^[a-f0-9]{64}$/.test(requestedHash)) throw artifactError("ARTIFACT_HASH_INVALID", "contentHash must be a lowercase SHA-256 digest.", 400);
+    const authorized = this.referenceAuthorizer.authorize(context, {
+      artifactId, version: requestedVersion, contentHash: requestedHash,
+      referenceId: options.referenceId
+    });
     const offset = boundedInteger(options.offset, 0, Number.MAX_SAFE_INTEGER, 0, "offset");
-    const limit = boundedInteger(options.limit, 1, MAX_READ_BYTES, MAX_READ_BYTES, "limit");
-    let content = null;
-    let nextOffset = null;
-    if (selected.storageKey) {
-      const buffer = await readFile(this.#safeStoragePath(selected.storageKey));
-      const hash = sha256(buffer);
-      if (hash !== selected.contentHash || buffer.byteLength !== selected.byteLength) {
-        throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Artifact content failed hash or length verification.", 409);
-      }
-      const chunk = buffer.subarray(offset, Math.min(buffer.byteLength, offset + limit));
-      content = chunk.toString("utf8");
-      nextOffset = offset + chunk.byteLength < buffer.byteLength ? offset + chunk.byteLength : null;
-      this.#recordUsage(context, artifact, selected, "get", offset, chunk.byteLength);
+    const limit = boundedInteger(options.limit, 1, MAX_READ_BYTES, ARTIFACT_READ_DEFAULT_LIMITS.defaultPageBytes, "limit");
+    const format = options.format ?? (isTextMime(authorized.version.mimeType) ? "text" : "base64");
+    if (!["text", "base64"].includes(format)) throw artifactError("ARTIFACT_INVALID_INPUT", "format must be text or base64.", 400);
+    if (format === "text" && !isTextMime(authorized.version.mimeType)) {
+      throw artifactError("ARTIFACT_TEXT_ENCODING_INVALID", "Text format is unavailable for this MIME type.", 415);
     }
-    return {
-      artifact: this.present(artifact), version: selected, content, offset,
-      nextOffset, truncated: nextOffset != null,
-      references: this.store.listArtifactReferences({ artifactId: artifact.artifactId, includeRevoked: context.kind !== "worker" })
+    if (offset > authorized.version.byteLength) throw artifactError("ARTIFACT_RANGE_INVALID", "Artifact offset exceeds total bytes.", 416);
+    const turnExecutionId = requiredText(options.turnExecutionId ?? contextInput.turnExecutionId, "turnExecutionId");
+    if (format === "text" && !this.store.hasArtifactTextReadBoundary({
+      logicalSessionId: context.logicalSessionId,
+      providerBindingId: context.providerBindingId,
+      turnExecutionId,
+      artifactId,
+      version: requestedVersion,
+      contentHash: requestedHash,
+      referenceId: authorized.reference.referenceId,
+      authorizationRevision: authorized.authorizationRevision,
+      offset
+    })) throw artifactError("ARTIFACT_RANGE_INVALID", "Text offset must continue an authorized page from this exact Turn and Reference.", 416);
+    const anticipatedBytes = Math.min(limit, Math.max(0, authorized.version.byteLength - offset));
+    const reauthorize = async () => {
+      const currentContext = this.#pinnedReadContext(contextInput);
+      const current = this.referenceAuthorizer.authorize(currentContext, {
+        artifactId, version: requestedVersion, contentHash: requestedHash,
+        referenceId: options.referenceId
+      });
+      if (current.authorizationRevision !== authorized.authorizationRevision
+        || currentContext.providerBindingId !== context.providerBindingId) {
+        throw pinnedReadError("ARTIFACT_READ_CONCURRENT_UPDATE", "Artifact authorization changed during the page read.", 409);
+      }
+      return current;
     };
+    const page = await this.readCoordinator.read({
+      logicalSessionId: context.logicalSessionId,
+      providerBindingId: context.providerBindingId,
+      turnExecutionId,
+      artifactId,
+      version: requestedVersion,
+      contentHash: requestedHash,
+      offset,
+      limit,
+      format,
+      referenceId: authorized.reference.referenceId,
+      authorizationRevision: authorized.authorizationRevision,
+      anticipatedBytes,
+      signal: options.signal ?? contextInput.signal,
+      reauthorize,
+      load: () => this.#readPinnedPage(authorized.version, { offset, limit, format }),
+      recordUsage: (_receipt, loadedPage) => this.#recordUsage(
+        context, authorized.artifact, authorized.version, "get", offset, loadedPage.byteLength
+      )
+    });
+    const pendingUpdate = page.authorization.reference.pendingVersion == null ? null : {
+      version: page.authorization.reference.pendingVersion,
+      contentHash: page.authorization.reference.pendingHash
+    };
+    return Object.freeze({
+      artifactId,
+      version: requestedVersion,
+      contentHash: requestedHash,
+      mimeType: authorized.version.mimeType,
+      totalBytes: authorized.version.byteLength,
+      encoding: page.encoding,
+      content: page.content,
+      range: Object.freeze({ offset, byteLength: page.byteLength, nextOffset: page.nextOffset }),
+      complete: page.nextOffset == null,
+      pendingUpdate,
+      readReceiptId: page.readReceiptId,
+      deduplicated: page.deduplicated,
+      turnBudget: page.turnBudget
+    });
   }
 
   async readPinnedEvidence(contextInput, artifactId, options = {}) {
@@ -172,22 +230,12 @@ export class ArtifactService {
     const query = requiredText(queryValue, "query").toLocaleLowerCase();
     const limit = boundedInteger(options.limit, 1, 50, 20, "limit");
     const results = [];
-    for (const artifact of this.#readCandidates(context)) {
+    for (const artifact of this.store.listArtifactsByObjective(context.objectiveId)) {
       if (!this.#canRead(context, artifact, relatedWorkItemIds)) continue;
       const metadata = `${artifact.title}\n${artifact.summary}`.toLocaleLowerCase();
       let match = metadata.includes(query);
-      let excerpt = null;
+      const excerpt = null;
       const version = this.#selectedVersion(context, artifact, null, relatedWorkItemIds);
-      if (!match && version?.storageKey && version.byteLength <= 2 * 1024 * 1024) {
-        const buffer = await readFile(this.#safeStoragePath(version.storageKey));
-        if (sha256(buffer) !== version.contentHash) throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Artifact search encountered invalid content.", 409);
-        const text = buffer.toString("utf8");
-        const index = text.toLocaleLowerCase().indexOf(query);
-        if (index >= 0) {
-          match = true;
-          excerpt = text.slice(Math.max(0, index - 100), Math.min(text.length, index + query.length + 180));
-        }
-      }
       if (match && version) {
         results.push({ artifact: this.present(artifact), version, excerpt });
         this.#recordUsage(context, artifact, version, "search", 0, 0);
@@ -615,31 +663,7 @@ export class ArtifactService {
   }
 
   indexForSession(session) {
-    const objectiveId = session?.objectiveId ?? session?.objective_id;
-    if (!objectiveId) return { items: [], omittedCount: 0 };
-    const context = {
-      kind: session.sessionKind ?? session.session_kind,
-      actorId: session.agentId ?? session.agent_id ?? "context-index",
-      objectiveId,
-      sessionId: session.id,
-      workItemId: session.workItemId ?? session.work_item_id ?? null
-    };
-    const relatedWorkItemIds = this.#relatedWorkItemIds(context);
-    const all = this.#readCandidates(context)
-      .filter((artifact) => this.#canRead(context, artifact, relatedWorkItemIds));
-    const items = all.slice(0, MAX_INDEX_ITEMS).map((artifact) => {
-      const version = this.#selectedVersion(context, artifact, null, relatedWorkItemIds);
-      const references = this.#matchingReferences(context, artifact, relatedWorkItemIds);
-      return {
-        artifactId: artifact.artifactId, title: artifact.title, summary: artifact.summary,
-        visibility: artifact.visibility, version: version?.version ?? 0,
-        contentHash: version?.contentHash ?? null,
-        required: references.some((reference) => reference.required),
-        relations: [...new Set(references.map((reference) => reference.relation))],
-        pendingUpdate: references.some((reference) => reference.pendingVersion != null)
-      };
-    });
-    return { items, omittedCount: Math.max(0, all.length - items.length) };
+    return buildArtifactContextIndex({ store: this.store, session });
   }
 
   present(artifact) {
@@ -669,11 +693,16 @@ export class ArtifactService {
   }
 
   async exportArtifact(contextInput, artifactId, input = {}) {
-    const context = this.context(contextInput);
+    const context = this.#pinnedReadContext(contextInput);
     this.#assertManager(context);
     if (input.confirmed !== true) throw artifactError("ARTIFACT_CONFIRMATION_REQUIRED", "Export requires explicit confirmation.", 409);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
-    const version = this.#selectedVersion(context, artifact, input.version);
+    const authorized = this.referenceAuthorizer.authorize(context, {
+      artifactId,
+      version: input.version,
+      contentHash: input.contentHash,
+      referenceId: input.referenceId
+    });
+    const { artifact, version } = authorized;
     if (!version?.storageKey) throw artifactError("ARTIFACT_EXPORT_UNAVAILABLE", "This Artifact has no private content to export.", 400);
     const destination = resolve(requiredText(input.destinationPath, "destinationPath"));
     const repository = this.store.listGitRepositories().find((entry) => {
@@ -706,10 +735,14 @@ export class ArtifactService {
   }
 
   async localFile(contextInput, artifactId, input = {}) {
-    const context = this.context(contextInput);
-    const artifact = this.#readableArtifact(context, artifactId);
-    const version = this.#selectedVersion(context, artifact, input.version);
-    if (!version) throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "Artifact version not found.", 404);
+    const context = this.#pinnedReadContext(contextInput);
+    const authorized = this.referenceAuthorizer.authorize(context, {
+      artifactId,
+      version: input.version,
+      contentHash: input.contentHash,
+      referenceId: input.referenceId
+    });
+    const { artifact, version } = authorized;
 
     let path;
     if (version.storageKey) {
@@ -964,25 +997,17 @@ export class ArtifactService {
   }
 
   #readableArtifact(context, artifactId) {
-    const artifact = this.store.getArtifact(requiredText(artifactId, "artifactId"));
-    if (!artifact) throw artifactError("ARTIFACT_NOT_FOUND", "Artifact not found.", 404);
+    const artifact = this.#sameObjectiveArtifact(context, artifactId);
     if (!this.#canRead(context, artifact)) throw artifactError("ARTIFACT_READ_FORBIDDEN", "Artifact is not authorized for this Session.", 403);
     if (artifact.status === "revoked") throw artifactError("ARTIFACT_REVOKED", "Artifact access has been revoked.", 403);
     return artifact;
   }
 
   #canRead(context, artifact, relatedWorkItemIds = null) {
-    if (artifact.status === "revoked") return false;
-    if (["objectiveChat", "worker"].includes(context.kind)) return true;
-    return ["local_user", "platform_admin"].includes(context.kind)
-      && artifact.objectiveId === context.objectiveId;
-  }
-
-  #readCandidates(context, options = {}) {
-    if (["objectiveChat", "worker"].includes(context.kind)) {
-      return this.store.listArtifacts(options);
-    }
-    return this.store.listArtifactsByObjective(context.objectiveId, options);
+    if (artifact.objectiveId !== context.objectiveId || artifact.status === "revoked") return false;
+    if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return true;
+    if (context.kind !== "worker") return false;
+    return this.#matchingReferences(context, artifact, relatedWorkItemIds).length > 0;
   }
 
   #canAuthorizeReference(context, artifact) {
@@ -995,20 +1020,10 @@ export class ArtifactService {
 
   #matchingReferences(context, artifact, relatedWorkItemIds = null) {
     const references = this.store.listArtifactReferences({ artifactId: artifact.artifactId });
-    const direct = references.filter((reference) =>
+    return references.filter((reference) =>
       (reference.workItemId && reference.workItemId === context.workItemId)
       || (reference.sessionId && reference.sessionId === context.sessionId)
     );
-    if (direct.length > 0
-      || artifact.visibility !== "work_item_private"
-      || !artifact.boundWorkItemId
-      || !context.workItemId
-      || !(relatedWorkItemIds
-        ? relatedWorkItemIds.has(artifact.boundWorkItemId)
-        : this.#workItemsRelated(artifact.boundWorkItemId, context.workItemId))) {
-      return direct;
-    }
-    return references.filter((reference) => reference.workItemId === artifact.boundWorkItemId);
   }
 
   #workItemsRelated(firstWorkItemId, secondWorkItemId) {
@@ -1049,7 +1064,9 @@ export class ArtifactService {
     let version = requestedVersion == null ? null : boundedInteger(requestedVersion, 1, artifact.currentVersion, null, "version");
     if (context.kind === "worker") {
       const references = this.#matchingReferences(context, artifact, relatedWorkItemIds);
+      const allowed = new Set(references.map((reference) => reference.pinnedVersion));
       version ??= references[0]?.pinnedVersion ?? artifact.approvedVersion ?? artifact.currentVersion;
+      if (!allowed.has(version)) throw artifactError("ARTIFACT_VERSION_FORBIDDEN", "Requested version is not pinned for this Worker Session.", 403);
     } else {
       version ??= artifact.approvedVersion ?? artifact.currentVersion;
     }
@@ -1166,6 +1183,28 @@ export class ArtifactService {
     return path;
   }
 
+  #pinnedReadContext(contextInput) {
+    const context = this.context(contextInput);
+    if (!["local_user", "platform_admin"].includes(context.kind)) return context;
+    const logicalSessionId = contextInput.logicalSessionId ?? `${context.kind}:${context.actorId}`;
+    return {
+      ...context,
+      productSessionId: context.sessionId,
+      logicalSessionId,
+      providerBindingId: contextInput.providerBindingId ?? `${context.kind}:local`,
+      authorizationRevision: sha256(Buffer.from([
+        context.kind, context.actorId, context.objectiveId, context.sessionId ?? ""
+      ].join("\0")))
+    };
+  }
+
+  async #readPinnedPage(version, { offset, limit, format }) {
+    return readVerifiedArtifactPage({
+      path: version.storageKey ? this.#safeStoragePath(version.storageKey) : null,
+      version, offset, limit, format
+    });
+  }
+
   #recordUsage(context, artifact, version, operation, byteOffset, byteLength) {
     if (!context.sessionId) return null;
     const usageId = `artifact_usage:${this.idFactory()}`;
@@ -1187,7 +1226,81 @@ export class ArtifactService {
   }
 }
 
+export async function readVerifiedArtifactPage({ path, version, offset, limit, format }) {
+  if (!version.storageKey) {
+    return Object.freeze({ encoding: null, content: null, byteLength: 0, nextOffset: null });
+  }
+  let handle;
+  try {
+    handle = await open(path, "r");
+    const info = await handle.stat();
+    if (!info.isFile() || info.size !== version.byteLength) {
+      throw artifactError("ARTIFACT_CONTENT_INTEGRITY_FAILED", "Artifact content length failed verification.", 409);
+    }
+    const hash = createHash("sha256");
+    const decoder = isTextMime(version.mimeType) ? new TextDecoder("utf-8", { fatal: true }) : null;
+    const verificationBuffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, version.byteLength)));
+    let position = 0;
+    while (position < version.byteLength) {
+      const expected = Math.min(verificationBuffer.byteLength, version.byteLength - position);
+      const { bytesRead } = await handle.read(verificationBuffer, 0, expected, position);
+      if (bytesRead <= 0) throw artifactError("ARTIFACT_CONTENT_INTEGRITY_FAILED", "Artifact content ended before its recorded length.", 409);
+      const chunk = verificationBuffer.subarray(0, bytesRead);
+      hash.update(chunk);
+      if (decoder) {
+        try { decoder.decode(chunk, { stream: position + bytesRead < version.byteLength }); }
+        catch { throw artifactError("ARTIFACT_TEXT_ENCODING_INVALID", "Artifact text is not valid UTF-8.", 415); }
+      }
+      position += bytesRead;
+    }
+    if (!safeHashEqual(hash.digest("hex"), version.contentHash)) {
+      throw artifactError("ARTIFACT_CONTENT_INTEGRITY_FAILED", "Artifact content hash failed verification.", 409);
+    }
+    const requestedBytes = Math.min(limit, Math.max(0, version.byteLength - offset));
+    const pageBuffer = Buffer.allocUnsafe(Math.max(1, requestedBytes));
+    const { bytesRead } = requestedBytes > 0
+      ? await handle.read(pageBuffer, 0, requestedBytes, offset)
+      : { bytesRead: 0 };
+    let raw = pageBuffer.subarray(0, bytesRead);
+    if (format === "text" && raw.byteLength > 0) {
+      let completeLength = raw.byteLength;
+      while (completeLength > 0) {
+        try {
+          new TextDecoder("utf-8", { fatal: true }).decode(raw.subarray(0, completeLength));
+          break;
+        } catch {
+          completeLength -= 1;
+        }
+      }
+      if (completeLength === 0) {
+        throw artifactError("ARTIFACT_RANGE_INVALID", "The requested text page is too small for the next UTF-8 code point.", 416);
+      }
+      raw = raw.subarray(0, completeLength);
+    }
+    const nextOffset = offset + raw.byteLength < version.byteLength ? offset + raw.byteLength : null;
+    return Object.freeze({
+      encoding: format === "text" ? "utf-8" : "base64",
+      content: format === "text"
+        ? new TextDecoder("utf-8", { fatal: true }).decode(raw)
+        : raw.toString("base64"),
+      byteLength: raw.byteLength,
+      nextOffset
+    });
+  } catch (error) {
+    if (error.code === "ENOENT") throw artifactError("ARTIFACT_CONTENT_INTEGRITY_FAILED", "Artifact content object is missing.", 409);
+    throw error;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 function sha256(buffer) { return createHash("sha256").update(buffer).digest("hex"); }
+function isTextMime(value) {
+  const mimeType = String(value ?? "").toLowerCase();
+  return mimeType.startsWith("text/")
+    || ["application/json", "application/xml", "application/yaml", "application/x-yaml"].includes(mimeType)
+    || mimeType.endsWith("+json") || mimeType.endsWith("+xml");
+}
 async function firstExistingFileCandidate(candidates) {
   for (const candidate of candidates) {
     try {

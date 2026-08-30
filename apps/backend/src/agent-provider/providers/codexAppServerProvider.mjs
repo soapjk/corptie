@@ -2,6 +2,15 @@ import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../contracts.mjs";
 
 export const CODEX_APP_SERVER_PROVIDER_ID = "codex-app-server";
+export const CODEX_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
+  bootstrapAttach: true,
+  appendInPlace: false,
+  replaceAtTurnBoundary: false,
+  generatedMcpRefresh: false,
+  restrictedGateway: true,
+  bindingReplacement: false,
+  capabilityRevision: "codex-app-server:tool-schema:3"
+});
 
 export function createCodexAppServerProvider(operations, options = {}) {
   return new CallbackAgentProvider({
@@ -10,7 +19,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
     transport: "app-server",
     aliases: ["codex"],
     runtime: { lifecycle: "managed" },
-    metadata: options.metadata ?? {},
+    metadata: { ...(options.metadata ?? {}), toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES },
     capabilities: options.capabilities ?? [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
@@ -38,7 +47,11 @@ export function createCodexAppServerProvider(operations, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES,
       AGENT_PROVIDER_CAPABILITIES.TURN_CHANGES_MANAGE
     ]
-  }, operations);
+  }, {
+    ...operations,
+    probeToolSchemaCapabilities: operations.probeToolSchemaCapabilities
+      ?? (() => CODEX_TOOL_SCHEMA_CAPABILITIES)
+  });
 }
 
 export function codexToolHostAttachment(attachment, providerOptions = {}) {

@@ -20,6 +20,8 @@ export class SessionApplicationService {
     this.resolveMessageContext = options.resolveMessageContext ?? null;
     this.recoverUnavailableSession = options.recoverUnavailableSession ?? null;
     this.toolHostService = options.toolHostService ?? null;
+    this.toolMaterializationPort = options.toolMaterializationPort ?? null;
+    this.resolveRequiredToolDomains = options.resolveRequiredToolDomains ?? (() => []);
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
       throw new TypeError("SessionApplicationService requires resolveSessionReference().");
@@ -96,18 +98,25 @@ export class SessionApplicationService {
       actorId,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId ?? null,
+      ...(reference.bindingId ?? reference.providerBindingId
+        ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
+        : {}),
       sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
       objectiveId: context.objectiveId ?? null,
       workItemId: context.workItemId ?? null
     };
     try {
       const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
+      await this.#ensureRequiredDomains(finalizationContext);
       await this.registry.invoke(
         providerId,
         AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
         reference,
         toolHost ? { ...finalizationContext, toolHost } : finalizationContext
       );
+      if (toolHost?.materialization?.status === "applying") {
+        await this.toolHostService.confirmPreparedSession(toolHost);
+      }
     } catch (cause) {
       const error = new Error(`Session Tool Host finalization failed: ${cause?.message ?? cause}`);
       error.code = "SESSION_TOOL_MATERIALIZATION_FAILED";
@@ -137,19 +146,27 @@ export class SessionApplicationService {
       purpose: "session-resume",
       actorId,
       sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId ?? null,
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
-      workItemId: storedSession?.workItemId ?? context.workItemId ?? null
+      workItemId: storedSession?.workItemId ?? context.workItemId ?? null,
+      ...(reference.bindingId ?? reference.providerBindingId
+        ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
+        : {})
     };
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, resumeContext)
       : null;
+    await this.#ensureRequiredDomains(resumeContext);
     const session = await this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
       reference,
       toolHost ? { ...resumeContext, toolHost } : resumeContext
     );
+    if (toolHost?.materialization?.status === "applying") {
+      await this.toolHostService.confirmPreparedSession(toolHost);
+    }
     return this.decorateLifecycleSession(reference.providerId, session, reference);
   }
 
@@ -167,11 +184,16 @@ export class SessionApplicationService {
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
       workItemId: storedSession?.workItemId ?? context.workItemId ?? null,
-      sessionId: reference.sessionId
+      sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId ?? null,
+      ...(reference.bindingId ?? reference.providerBindingId
+        ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
+        : {})
     };
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, materializationContext)
       : null;
+    await this.#ensureRequiredDomains(materializationContext);
     return this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
@@ -184,6 +206,22 @@ export class SessionApplicationService {
 
   async deleteSession(sessionId, context = {}) {
     return this.#deleteSession(sessionId, context, false);
+  }
+
+  async #ensureRequiredDomains(context) {
+    if (!this.toolMaterializationPort) return null;
+    const domains = this.resolveRequiredToolDomains(context);
+    if (!Array.isArray(domains) || domains.length === 0) return null;
+    const logicalSessionId = normalizedText(context.logicalSessionId ?? context.sessionId);
+    if (!logicalSessionId) {
+      const error = new Error("Required Tool domains need an authenticated logical Session.");
+      error.code = "SESSION_BINDING_CHANGED";
+      throw error;
+    }
+    return this.toolMaterializationPort.ensureDomainsApplied(logicalSessionId, domains, {
+      turnExecutionId: context.turnExecutionId ?? context.turnId ?? null,
+      purpose: context.purpose
+    });
   }
 
   // Replacement is allowed only after the caller has proved that the old

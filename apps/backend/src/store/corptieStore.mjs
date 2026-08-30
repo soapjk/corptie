@@ -1696,6 +1696,35 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_provider_thread_bindings_worktree
       ON provider_thread_bindings(worktree_id, state);
 
+      CREATE TABLE IF NOT EXISTS session_tool_catalog_materializations (
+        logical_session_id TEXT NOT NULL,
+        provider_binding_id TEXT NOT NULL,
+        desired_version TEXT NOT NULL,
+        applied_version TEXT,
+        desired_catalog_version TEXT NOT NULL,
+        applied_catalog_version TEXT,
+        desired_domains_json TEXT NOT NULL DEFAULT '[]',
+        applied_domains_json TEXT NOT NULL DEFAULT '[]',
+        exposure_plan_json TEXT NOT NULL DEFAULT '{}',
+        provider_receipt_json TEXT,
+        status TEXT NOT NULL
+          CHECK (status IN ('uninitialized', 'stale', 'refreshing', 'applied', 'error', 'canceled')),
+        attempt INTEGER NOT NULL DEFAULT 0,
+        last_error_code TEXT,
+        last_error_summary TEXT,
+        refresh_requested_at TEXT,
+        refresh_started_at TEXT,
+        applied_at TEXT,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (logical_session_id, provider_binding_id),
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_tool_catalog_materializations_status
+      ON session_tool_catalog_materializations(status, updated_at);
+
       CREATE TABLE IF NOT EXISTS provider_thread_lineage (
         child_thread_id TEXT PRIMARY KEY,
         parent_thread_id TEXT NOT NULL,
@@ -2104,6 +2133,9 @@ export class CorptieStore {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_versions_storage
       ON artifact_versions(artifact_id, content_hash);
 
+      CREATE INDEX IF NOT EXISTS idx_artifact_versions_pinned_read
+      ON artifact_versions(artifact_id, version, content_hash);
+
       CREATE TABLE IF NOT EXISTS artifact_references (
         reference_id TEXT PRIMARY KEY,
         artifact_id TEXT NOT NULL,
@@ -2135,6 +2167,12 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_artifact_references_work_item
       ON artifact_references(work_item_id, revoked_at, required, relation);
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_references_objective_work_item
+      ON artifact_references(objective_id, work_item_id, revoked_at);
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_references_objective_session
+      ON artifact_references(objective_id, session_id, revoked_at);
 
       CREATE TABLE IF NOT EXISTS work_item_file_references (
         reference_id TEXT PRIMARY KEY,
@@ -2230,6 +2268,39 @@ export class CorptieStore {
         FOREIGN KEY (artifact_id, version)
           REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT
       );
+
+      CREATE TABLE IF NOT EXISTS artifact_read_receipts (
+        read_receipt_id TEXT PRIMARY KEY,
+        logical_session_id TEXT NOT NULL,
+        provider_binding_id TEXT NOT NULL,
+        turn_execution_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        byte_offset INTEGER NOT NULL,
+        byte_length INTEGER NOT NULL,
+        format TEXT NOT NULL CHECK (format IN ('text', 'base64')),
+        reference_id TEXT NOT NULL,
+        authorization_revision TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (artifact_id, version)
+          REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT,
+        FOREIGN KEY (reference_id) REFERENCES artifact_references(reference_id) ON DELETE RESTRICT
+      );
+
+      CREATE TABLE IF NOT EXISTS artifact_turn_read_usage (
+        logical_session_id TEXT NOT NULL,
+        provider_binding_id TEXT NOT NULL,
+        turn_execution_id TEXT NOT NULL,
+        unique_bytes INTEGER NOT NULL DEFAULT 0,
+        unique_pages INTEGER NOT NULL DEFAULT 0,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (logical_session_id, provider_binding_id, turn_execution_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_read_receipts_boundary
+      ON artifact_read_receipts(logical_session_id, artifact_id, version, content_hash, byte_offset, byte_length);
 
       CREATE INDEX IF NOT EXISTS idx_work_items_objective_id ON work_items(objective_id);
       CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
@@ -4874,6 +4945,158 @@ export class CorptieStore {
       [providerThreadId]
     );
     return row ? providerThreadBindingFromRow(row) : null;
+  }
+
+  getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId) {
+    const row = this.selectOne(
+      `SELECT * FROM session_tool_catalog_materializations
+       WHERE logical_session_id = ? AND provider_binding_id = ?`,
+      [logicalSessionId, providerBindingId]
+    );
+    return row ? sessionToolCatalogMaterializationFromRow(row) : null;
+  }
+
+  listSessionToolCatalogMaterializations(logicalSessionId = null) {
+    const rows = logicalSessionId
+      ? this.selectAll(
+        `SELECT * FROM session_tool_catalog_materializations
+         WHERE logical_session_id = ? ORDER BY created_at, provider_binding_id`,
+        [logicalSessionId]
+      )
+      : this.selectAll(
+        `SELECT * FROM session_tool_catalog_materializations
+         ORDER BY logical_session_id, created_at, provider_binding_id`,
+        []
+      );
+    return rows.map(sessionToolCatalogMaterializationFromRow);
+  }
+
+  writeSessionToolCatalogDesired(input, expectedResourceVersion = null) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    const existing = this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+    if (!existing) {
+      if (expectedResourceVersion != null) return null;
+      this.db.run(
+        `INSERT INTO session_tool_catalog_materializations (
+          logical_session_id, provider_binding_id, desired_version, applied_version,
+          desired_catalog_version, applied_catalog_version, desired_domains_json,
+          applied_domains_json, exposure_plan_json, provider_receipt_json, status,
+          attempt, refresh_requested_at, resource_version, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, NULL, ?, '[]', ?, NULL, 'stale', 0, ?, 1, ?, ?)`,
+        [
+          input.logicalSessionId, input.providerBindingId, input.desiredVersion,
+          input.desiredCatalogVersion, JSON.stringify(input.desiredDomains ?? []),
+          JSON.stringify(input.exposurePlan ?? {}), now, now, now
+        ]
+      );
+      this.scheduleSave();
+      return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+    }
+    const expected = expectedResourceVersion ?? existing.resourceVersion;
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         desired_version = ?, desired_catalog_version = ?, desired_domains_json = ?,
+         exposure_plan_json = ?, status = CASE
+           WHEN desired_version = ? AND applied_version = ? THEN status ELSE 'stale' END,
+         refresh_requested_at = ?, last_error_code = NULL, last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ?
+         AND resource_version = ? AND status <> 'canceled'`,
+      [
+        input.desiredVersion, input.desiredCatalogVersion, JSON.stringify(input.desiredDomains ?? []),
+        JSON.stringify(input.exposurePlan ?? {}), input.desiredVersion, input.desiredVersion,
+        now, now, input.logicalSessionId, input.providerBindingId, expected
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  beginSessionToolCatalogRefresh(logicalSessionId, providerBindingId, expectedResourceVersion, now = createdAtFromOrNow()) {
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         status = 'refreshing', attempt = attempt + 1, refresh_started_at = ?,
+         last_error_code = NULL, last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status IN ('stale', 'error', 'uninitialized')`,
+      [now, now, logicalSessionId, providerBindingId, expectedResourceVersion]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
+  }
+
+  applySessionToolCatalogReceipt(input, expectedResourceVersion) {
+    const now = input.appliedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         applied_version = ?, applied_catalog_version = ?, applied_domains_json = ?,
+         provider_receipt_json = ?, status = 'applied', applied_at = ?,
+         last_error_code = NULL, last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status = 'refreshing' AND desired_version = ?`,
+      [
+        input.appliedVersion, input.appliedCatalogVersion, JSON.stringify(input.appliedDomains ?? []),
+        JSON.stringify(input.providerReceipt), now, now, input.logicalSessionId,
+        input.providerBindingId, expectedResourceVersion, input.appliedVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  failSessionToolCatalogRefresh(input, expectedResourceVersion) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         status = 'error', last_error_code = ?, last_error_summary = ?,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status = 'refreshing'`,
+      [
+        input.errorCode, String(input.errorSummary ?? "").slice(0, 500), now,
+        input.logicalSessionId, input.providerBindingId, expectedResourceVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  recordSessionToolCatalogPendingReceipt(input, expectedResourceVersion) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET provider_receipt_json = ?,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status = 'refreshing'`,
+      [
+        JSON.stringify(input.providerReceipt), now, input.logicalSessionId,
+        input.providerBindingId, expectedResourceVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  cancelSessionToolCatalogMaterialization(logicalSessionId, providerBindingId, expectedResourceVersion = null) {
+    const now = createdAtFromOrNow();
+    const versionClause = expectedResourceVersion == null ? "" : " AND resource_version = ?";
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET status = 'canceled',
+         last_error_code = 'SESSION_BINDING_TOMBSTONED', last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND status <> 'canceled'${versionClause}`,
+      [now, logicalSessionId, providerBindingId, ...(expectedResourceVersion == null ? [] : [expectedResourceVersion])]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
   }
 
   getAgentSessionBinding(bindingId) {
@@ -9395,6 +9618,134 @@ export class CorptieStore {
     );
   }
 
+  getArtifactTurnReadUsage(logicalSessionId, providerBindingId, turnExecutionId) {
+    const row = this.selectOne(
+      `SELECT * FROM artifact_turn_read_usage
+       WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=?`,
+      [logicalSessionId, providerBindingId, turnExecutionId]
+    );
+    return row ? {
+      logicalSessionId: row.logical_session_id,
+      providerBindingId: row.provider_binding_id,
+      turnExecutionId: row.turn_execution_id,
+      uniqueBytes: Number(row.unique_bytes),
+      uniquePages: Number(row.unique_pages),
+      resourceVersion: Number(row.resource_version),
+      updatedAt: row.updated_at
+    } : null;
+  }
+
+  reserveArtifactTurnRead(input) {
+    const current = this.getArtifactTurnReadUsage(
+      input.logicalSessionId, input.providerBindingId, input.turnExecutionId
+    );
+    const uniqueBytes = (current?.uniqueBytes ?? 0) + input.byteLength;
+    const uniquePages = (current?.uniquePages ?? 0) + 1;
+    if (uniqueBytes > input.uniqueBytesLimit || uniquePages > input.uniquePagesLimit) return null;
+    if (current) {
+      this.db.run(
+        `UPDATE artifact_turn_read_usage
+         SET unique_bytes=?, unique_pages=?, resource_version=resource_version+1, updated_at=?
+         WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=? AND resource_version=?`,
+        [uniqueBytes, uniquePages, input.updatedAt, input.logicalSessionId, input.providerBindingId,
+          input.turnExecutionId, current.resourceVersion]
+      );
+      if (this.db.getRowsModified() !== 1) return null;
+    } else {
+      this.db.run(
+        `INSERT INTO artifact_turn_read_usage (
+           logical_session_id, provider_binding_id, turn_execution_id,
+           unique_bytes, unique_pages, resource_version, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+        [input.logicalSessionId, input.providerBindingId, input.turnExecutionId,
+          uniqueBytes, uniquePages, input.updatedAt]
+      );
+    }
+    this.scheduleSave();
+    return this.getArtifactTurnReadUsage(input.logicalSessionId, input.providerBindingId, input.turnExecutionId);
+  }
+
+  adjustArtifactTurnReadReservation(input) {
+    const current = this.getArtifactTurnReadUsage(
+      input.logicalSessionId, input.providerBindingId, input.turnExecutionId
+    );
+    if (!current) return null;
+    const uniqueBytes = Math.max(0, current.uniqueBytes + input.byteDelta);
+    const uniquePages = Math.max(0, current.uniquePages + input.pageDelta);
+    this.db.run(
+      `UPDATE artifact_turn_read_usage
+       SET unique_bytes=?, unique_pages=?, resource_version=resource_version+1, updated_at=?
+       WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=?`,
+      [uniqueBytes, uniquePages, input.updatedAt, input.logicalSessionId,
+        input.providerBindingId, input.turnExecutionId]
+    );
+    this.scheduleSave();
+    return this.getArtifactTurnReadUsage(input.logicalSessionId, input.providerBindingId, input.turnExecutionId);
+  }
+
+  createArtifactReadReceipt(input) {
+    this.db.run(
+      `INSERT OR IGNORE INTO artifact_read_receipts (
+         read_receipt_id, logical_session_id, provider_binding_id, turn_execution_id,
+         artifact_id, version, content_hash, byte_offset, byte_length, format,
+         reference_id, authorization_revision, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.readReceiptId, input.logicalSessionId, input.providerBindingId, input.turnExecutionId,
+        input.artifactId, input.version, input.contentHash, input.byteOffset, input.byteLength,
+        input.format, input.referenceId, input.authorizationRevision, input.createdAt]
+    );
+    const row = this.selectOne(
+      "SELECT * FROM artifact_read_receipts WHERE read_receipt_id=?",
+      [input.readReceiptId]
+    );
+    this.scheduleSave();
+    return artifactReadReceiptFromRow(row);
+  }
+
+  getArtifactReadReceipt(readReceiptId) {
+    return artifactReadReceiptFromRow(this.selectOne(
+      "SELECT * FROM artifact_read_receipts WHERE read_receipt_id=?",
+      [readReceiptId]
+    ));
+  }
+
+  hasArtifactTextReadBoundary(input) {
+    if (input.offset === 0) return true;
+    return Boolean(this.selectOne(
+      `SELECT 1 FROM artifact_read_receipts
+       WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=?
+         AND artifact_id=? AND version=? AND content_hash=?
+         AND reference_id=? AND authorization_revision=?
+         AND format='text' AND byte_offset + byte_length = ? LIMIT 1`,
+      [input.logicalSessionId, input.providerBindingId, input.turnExecutionId,
+        input.artifactId, input.version, input.contentHash,
+        input.referenceId, input.authorizationRevision, input.offset]
+    ));
+  }
+
+  reconcileArtifactTurnReadUsage(updatedAt = createdAtFromOrNow()) {
+    this.db.run(
+      `UPDATE artifact_turn_read_usage
+       SET unique_bytes=COALESCE((
+             SELECT SUM(byte_length) FROM artifact_read_receipts receipt
+             WHERE receipt.logical_session_id=artifact_turn_read_usage.logical_session_id
+               AND receipt.provider_binding_id=artifact_turn_read_usage.provider_binding_id
+               AND receipt.turn_execution_id=artifact_turn_read_usage.turn_execution_id
+           ), 0),
+           unique_pages=COALESCE((
+             SELECT COUNT(*) FROM artifact_read_receipts receipt
+             WHERE receipt.logical_session_id=artifact_turn_read_usage.logical_session_id
+               AND receipt.provider_binding_id=artifact_turn_read_usage.provider_binding_id
+               AND receipt.turn_execution_id=artifact_turn_read_usage.turn_execution_id
+           ), 0),
+           resource_version=resource_version+1,
+           updated_at=?`,
+      [updatedAt]
+    );
+    this.scheduleSave();
+    return Number(this.db.getRowsModified());
+  }
+
   appendArtifactStorageAudit(input) {
     this.db.run(
       `INSERT OR IGNORE INTO artifact_storage_audit_events (
@@ -11468,6 +11819,31 @@ function providerThreadBindingFromRow(row) {
   };
 }
 
+function sessionToolCatalogMaterializationFromRow(row) {
+  return {
+    logicalSessionId: row.logical_session_id,
+    providerBindingId: row.provider_binding_id,
+    desiredVersion: row.desired_version,
+    appliedVersion: row.applied_version ?? null,
+    desiredCatalogVersion: row.desired_catalog_version,
+    appliedCatalogVersion: row.applied_catalog_version ?? null,
+    desiredDomains: parseJson(row.desired_domains_json, []),
+    appliedDomains: parseJson(row.applied_domains_json, []),
+    exposurePlan: parseJson(row.exposure_plan_json, {}),
+    providerReceipt: row.provider_receipt_json ? parseJson(row.provider_receipt_json, null) : null,
+    status: row.status,
+    attempt: Number(row.attempt ?? 0),
+    lastErrorCode: row.last_error_code ?? null,
+    lastErrorSummary: row.last_error_summary ?? null,
+    refreshRequestedAt: row.refresh_requested_at ?? null,
+    refreshStartedAt: row.refresh_started_at ?? null,
+    appliedAt: row.applied_at ?? null,
+    resourceVersion: Number(row.resource_version),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function messageDeliveryFromRow(row) {
   return {
     deliveryId: row.delivery_id,
@@ -11947,6 +12323,25 @@ function artifactAuditFromRow(row) {
     fromVersion: row.from_version == null ? null : Number(row.from_version),
     toVersion: row.to_version == null ? null : Number(row.to_version),
     details: parseJson(row.details_json, {}),
+    createdAt: row.created_at
+  };
+}
+
+function artifactReadReceiptFromRow(row) {
+  if (!row) return null;
+  return {
+    readReceiptId: row.read_receipt_id,
+    logicalSessionId: row.logical_session_id,
+    providerBindingId: row.provider_binding_id,
+    turnExecutionId: row.turn_execution_id,
+    artifactId: row.artifact_id,
+    version: Number(row.version),
+    contentHash: row.content_hash,
+    byteOffset: Number(row.byte_offset),
+    byteLength: Number(row.byte_length),
+    format: row.format,
+    referenceId: row.reference_id,
+    authorizationRevision: row.authorization_revision,
     createdAt: row.created_at
   };
 }

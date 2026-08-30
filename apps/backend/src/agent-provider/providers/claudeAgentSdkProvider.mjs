@@ -2,6 +2,15 @@ import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../contracts.mjs";
 
 export const CLAUDE_AGENT_SDK_PROVIDER_ID = "claude-sdk";
+export const CLAUDE_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
+  bootstrapAttach: false,
+  appendInPlace: false,
+  replaceAtTurnBoundary: false,
+  generatedMcpRefresh: true,
+  restrictedGateway: false,
+  bindingReplacement: false,
+  capabilityRevision: "claude-sdk:catalog-mcp:3"
+});
 const CORPTIE_OWNED_CLAUDE_WORKSPACE_TOOLS = Object.freeze([
   "EnterWorktree",
   "ExitWorktree"
@@ -15,7 +24,10 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     transport: "agent-sdk",
     aliases: ["claude", "claude-code", "claude_code"],
     runtime: { lifecycle: "managed" },
-    metadata: { backgroundPermissionProfiles: ["read-only"] },
+    metadata: {
+      backgroundPermissionProfiles: ["read-only"],
+      toolSchemaCapabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES
+    },
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
@@ -77,7 +89,12 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       : {}),
     readAccountUsage: (reference) => manager.readAccountUsage(reference.providerSessionId),
     readSessionUsage: (reference) => manager.readSessionUsage(reference.providerSessionId),
-    runBackgroundPrompt: (input) => manager.runBackgroundPrompt(input)
+    runBackgroundPrompt: (input) => manager.runBackgroundPrompt(input),
+    probeToolSchemaCapabilities: options.probeToolSchemaCapabilities
+      ?? (() => CLAUDE_TOOL_SCHEMA_CAPABILITIES),
+    ...(typeof options.applyToolPlanAtTurnBoundary === "function"
+      ? { applyToolPlanAtTurnBoundary: options.applyToolPlanAtTurnBoundary }
+      : {})
   });
 }
 

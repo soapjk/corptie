@@ -3,6 +3,20 @@ import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 
 export const OPENCLACKY_PROVIDER_ID = "openclacky";
 
+export function openClackyToolSchemaCapabilities(manager) {
+  const bridge = manager?.probe?.capabilities ?? {};
+  const toolHost = bridge.toolHost === true;
+  return Object.freeze({
+    bootstrapAttach: toolHost,
+    appendInPlace: false,
+    replaceAtTurnBoundary: bridge.toolHostReplace === true,
+    generatedMcpRefresh: false,
+    restrictedGateway: toolHost,
+    bindingReplacement: false,
+    capabilityRevision: `openclacky:tool-schema:3:${manager?.probe?.protocolVersion ?? "unprobed"}:${toolHost ? "gateway" : "unsupported"}`
+  });
+}
+
 // Capabilities that OpenClacky can always advertise regardless of the bridge
 // handshake. These are the honest baseline for basic chat and session lifecycle.
 const OPENCLACKY_BASE_CAPABILITIES = Object.freeze([
@@ -37,7 +51,7 @@ export function createOpenClackyProvider(manager, options = {}) {
     aliases: ["clacky", "open-clacky"],
     protocolVersion: "corptie-bridge-v1",
     runtime: { lifecycle: "managed" },
-    metadata: options.metadata ?? {},
+    metadata: { ...(options.metadata ?? {}), toolSchemaCapabilities: openClackyToolSchemaCapabilities(manager) },
     configuration: {
       fields: [
         { id: "baseURL", type: "url", label: "Server URL", required: true, defaultValue: "http://127.0.0.1:7070" },
@@ -73,6 +87,11 @@ export function createOpenClackyProvider(manager, options = {}) {
       : {}),
     ...(typeof options.readSessionUsage === "function"
       ? { readSessionUsage: options.readSessionUsage }
+      : {}),
+    probeToolSchemaCapabilities: options.probeToolSchemaCapabilities
+      ?? (() => openClackyToolSchemaCapabilities(manager)),
+    ...(typeof options.applyToolPlanAtTurnBoundary === "function"
+      ? { applyToolPlanAtTurnBoundary: options.applyToolPlanAtTurnBoundary }
       : {})
   });
 }

@@ -88,7 +88,7 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
     metadata: { sessionId: "session:runtime" },
     tool: definition.name,
     arguments: { action: "list" }
-  }), (error) => error.code === "AGENT_TOOL_FORBIDDEN");
+  }), (error) => error.code === "SESSION_TOOL_FORBIDDEN");
 });
 
 test("provider-neutral Automation aliases dispatch with the finalized logical Session scope", async () => {
