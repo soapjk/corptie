@@ -136,6 +136,36 @@ test("public Port never turns generated MCP registration into Applied", async ()
   }
 });
 
+test("public Port preserves Blocked and Provider Error outcomes as fail-closed errors", async () => {
+  const blocked = await fixture();
+  try {
+    await assert.rejects(() => blocked.port.ensureDomainsApplied(
+      "logical:one", ["artifacts"], { activeTurn: true, turnExecutionId: "turn:blocked" }
+    ), { code: "SESSION_TOOL_CATALOG_REFRESH_FAILED", statusCode: 503 });
+    assert.equal(blocked.applyCount, 0);
+  } finally {
+    blocked.store.close();
+    await rm(blocked.directory, { recursive: true, force: true });
+  }
+
+  const failed = await fixture({
+    apply: async () => {
+      throw Object.assign(new Error("provider rejected materialization"), {
+        code: "PROVIDER_TOOL_APPLICATION_FAILED"
+      });
+    }
+  });
+  try {
+    await assert.rejects(() => failed.port.ensureDomainsApplied(
+      "logical:one", ["artifacts"], { turnExecutionId: "turn:error" }
+    ), { code: "SESSION_TOOL_CATALOG_REFRESH_FAILED", statusCode: 503 });
+    assert.equal(failed.applyCount, 1);
+  } finally {
+    failed.store.close();
+    await rm(failed.directory, { recursive: true, force: true });
+  }
+});
+
 test("public Port generation fence rejects a binding change after a valid late receipt", async () => {
   const value = await fixture({
     apply: async (input, control) => {
