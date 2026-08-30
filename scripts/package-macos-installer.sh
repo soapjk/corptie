@@ -84,8 +84,14 @@ PLIST
 
 BACKEND_SOURCE="${ROOT}/apps/backend"
 BACKEND_DEST="${APP_DIR}/Contents/Resources/backend"
+(
+  cd "${BACKEND_SOURCE}"
+  npm run build:native
+)
 mkdir -p "${BACKEND_DEST}"
 cp -R "${BACKEND_SOURCE}/package.json" "${BACKEND_SOURCE}/package-lock.json" "${BACKEND_SOURCE}/src" "${BACKEND_SOURCE}/scripts" "${BACKEND_SOURCE}/resources" "${BACKEND_DEST}/"
+mkdir -p "${BACKEND_DEST}/native"
+cp "${BACKEND_SOURCE}/native/corptie_native.node" "${BACKEND_DEST}/native/"
 if [ -d "${BACKEND_SOURCE}/node_modules" ]; then
   # Feature worktrees may share the repository's installed dependencies through
   # a symlink. App bundles cannot be signed when that link points outside the

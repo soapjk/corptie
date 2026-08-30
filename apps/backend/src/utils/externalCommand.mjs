@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { accessSync, constants, readdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -25,20 +24,6 @@ function childDirectories(root, suffix = "") {
   }
 }
 
-function loginShellCommand(command) {
-  if (!/^[a-zA-Z0-9_-]+$/.test(command)) return "";
-  const shell = process.env.SHELL || "/bin/zsh";
-  try {
-    return execFileSync(shell, ["-lic", `command -v ${command}`], {
-      encoding: "utf8",
-      timeout: 2500,
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim().split("\n").at(-1) || "";
-  } catch {
-    return "";
-  }
-}
-
 export function externalCommandCandidates(command) {
   const home = os.homedir();
   const pathDirectories = String(process.env.PATH || "").split(path.delimiter).filter(Boolean);
@@ -58,10 +43,7 @@ export function externalCommandCandidates(command) {
     "/opt/homebrew/bin",
     "/usr/local/bin"
   ];
-  return [
-    loginShellCommand(command),
-    ...directories.map((directory) => path.join(directory, command))
-  ];
+  return directories.map((directory) => path.join(directory, command));
 }
 
 export function resolveExternalCommand(command, options = {}) {
