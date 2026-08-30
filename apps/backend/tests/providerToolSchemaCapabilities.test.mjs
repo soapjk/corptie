@@ -23,7 +23,8 @@ test("Codex reports create attach but never claims thread/resume dynamic append"
   assert.equal(capabilities.bootstrapAttach, true);
   assert.equal(capabilities.appendInPlace, false);
   assert.equal(capabilities.replaceAtTurnBoundary, false);
-  assert.equal(capabilities.restrictedGateway || capabilities.bindingReplacement, true);
+  assert.equal(capabilities.restrictedGateway, true);
+  assert.equal(capabilities.bindingReplacement, true);
 });
 
 test("Claude exposes only catalog-backed authenticated MCP refresh", async () => {

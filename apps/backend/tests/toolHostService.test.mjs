@@ -49,6 +49,38 @@ test("Tool Host attaches one product-owned catalog through a Provider capability
   assert.equal(prepared.providerAttachment.identity, "agent-one");
 });
 
+test("prospective replacement bindings preserve the explicitly requested Tool domains", async () => {
+  const attachments = [];
+  const registry = new AgentProviderRegistry([
+    provider("replacement", [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+      attachTools(attachment) {
+        attachments.push(attachment);
+        return { attached: true };
+      }
+    })
+  ]);
+  const service = new ToolHostService({
+    registry,
+    coordinator: {},
+    catalog: new HostToolCatalog([{
+      id: "memory",
+      tools: memoryDynamicTools,
+      execute: () => ({})
+    }])
+  });
+
+  const prepared = await service.prepareSession("replacement", {
+    actorId: "agent:replacement",
+    logicalSessionId: "logical:replacement",
+    sessionKind: "legacy",
+    desiredToolDomains: ["memory"]
+  });
+
+  assert.deepEqual(prepared.materialization.desiredDomains, ["memory"]);
+  assert.equal(attachments.length, 1);
+  assert.ok(Array.isArray(attachments[0].tools));
+});
+
 test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact contracts", async () => {
   const attachments = new Map();
   const providerIds = ["codex-app-server", "claude-sdk", "openclacky"];

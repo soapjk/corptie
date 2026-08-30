@@ -268,6 +268,7 @@ export class CodexAppServerClient {
       modelProvider: options.modelProvider ?? undefined,
       config: options.config ?? undefined,
       developerInstructions: options.developerInstructions ?? undefined,
+      dynamicTools: options.dynamicTools ?? undefined,
       threadSource: options.threadSource ?? "user",
       ephemeral: options.ephemeral ?? false,
       excludeTurns: options.excludeTurns ?? false,
@@ -279,6 +280,11 @@ export class CodexAppServerClient {
     }
     if (result?.thread?.id) {
       this.threadResumeFingerprints.set(result.thread.id, threadResumeFingerprint(options));
+      this.freshThreadIds.add(result.thread.id);
+      this.confirmedToolSchemasByThread.set(result.thread.id, {
+        schema: JSON.stringify(options.dynamicTools ?? []),
+        providerRevision: `thread-fork:${result.thread.id}:${result.thread.updatedAt ?? result.thread.createdAt ?? "confirmed"}`
+      });
     }
     return result;
   }
