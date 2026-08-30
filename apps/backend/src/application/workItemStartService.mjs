@@ -138,15 +138,24 @@ export class WorkItemStartService {
     );
     if (active) throw coded("START_IN_PROGRESS", "Wait for the active start attempt to settle before canceling it safely.", 409);
     const timestamp = this.clock();
+    let cancellation;
     this.store.runInTransaction(() => {
+      cancellation = this.store.cancelWorkItem({
+        workItemId: item.id,
+        sourceType: "work_item_start_cancel",
+        idempotencyKey: item.id,
+        expectedResourceVersion: item.resource_version ?? 1,
+        reason: safeSummary(reason),
+        authorityType: "local_user_action",
+        canceledAt: timestamp
+      });
       this.store.db.run(
-        `UPDATE work_items SET status='canceled', execution_status='cancelled', cancel_reason=?, canceled_at=?,
-         start_stage=CASE WHEN start_stage IS NULL THEN NULL ELSE 'failed' END,
+        `UPDATE work_items SET start_stage=CASE WHEN start_stage IS NULL THEN NULL ELSE 'failed' END,
          start_failure_stage=CASE WHEN start_failure_stage IS NULL THEN start_stage ELSE start_failure_stage END,
          start_error_code=COALESCE(start_error_code, 'START_CANCELED'),
          start_error=COALESCE(start_error, 'Start canceled safely; any existing Worktree was preserved.'),
-         start_failed_at=COALESCE(start_failed_at, ?), updated_at=?, resource_version=resource_version+1 WHERE id=?`,
-        [safeSummary(reason), timestamp, timestamp, timestamp, item.id]
+         start_failed_at=COALESCE(start_failed_at, ?), updated_at=? WHERE id=?`,
+        [timestamp, timestamp, item.id]
       );
       this.store.db.run(
         `UPDATE work_item_start_operations SET status='canceled', error_code=COALESCE(error_code, 'START_CANCELED'),
@@ -157,7 +166,12 @@ export class WorkItemStartService {
     });
     this.store.scheduleSave();
     const updated = this.store.getWorkItem(item.id);
-    this.onChanged("WorkItemChanged", { action: "start-canceled", entity: updated });
+    this.onChanged("WorkItemChanged", {
+      action: "start-canceled",
+      entity: updated,
+      cancellationOperation: cancellation.operation,
+      idempotentReplay: cancellation.idempotentReplay
+    });
     return updated;
   }
 

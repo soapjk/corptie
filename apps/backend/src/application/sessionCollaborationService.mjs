@@ -362,20 +362,28 @@ export class SessionCollaborationService {
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const item = this.getWorkItem(metadata, actorId, input.workItemId);
     const expectedVersion = required(input.resourceVersion, "resource_version");
-    if (expectedVersion !== String(item.resource_version ?? 1)) {
-      throw coded("RESOURCE_VERSION_CONFLICT", "WorkItem changed before cancellation; refresh and retry.", 409);
-    }
     if (scope.session.sessionKind === "worker" && item.created_by_session_id !== scope.logicalSessionId) {
       throw coded("CANCEL_FORBIDDEN", "Worker Sessions may only cancel collaboration WorkItems they created.");
     }
-    const timestamp = new Date().toISOString();
     const reason = required(input.reason, "reason");
-    this.store.db.run(
-      "UPDATE work_items SET status='canceled', canceled_at=?, cancel_reason=?, resource_version=resource_version+1, updated_at=? WHERE id=?",
-      [timestamp, reason, timestamp, item.id]
-    );
-    this.store.scheduleSave();
-    return { workItem: this.store.getWorkItem(item.id), canceled: true, physicallyDeleted: false, auditPreserved: true };
+    const result = this.store.cancelWorkItem({
+      workItemId: item.id,
+      sourceType: "collaboration_work_item_cancel",
+      idempotencyKey: `${scope.logicalSessionId}:${item.id}`,
+      expectedResourceVersion: expectedVersion,
+      reason,
+      actorSessionId: scope.logicalSessionId,
+      authorityType: "session",
+      authorityId: scope.logicalSessionId
+    });
+    return {
+      workItem: result.workItem,
+      cancellationOperation: result.operation,
+      canceled: true,
+      idempotentReplay: result.idempotentReplay,
+      physicallyDeleted: false,
+      auditPreserved: true
+    };
   }
 
   #scope(metadata, actorId, options = {}) {

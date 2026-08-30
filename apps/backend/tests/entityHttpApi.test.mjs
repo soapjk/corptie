@@ -853,6 +853,23 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
     assert.equal(invalidWorkItemPatch.body.code, "UNKNOWN_PATCH_FIELD");
     assert.equal(invalidWorkItemPatch.body.field, "main_agent_id");
     assert.equal(services.store.getWorkItem(workItem.body.id).title, "Valid item");
+    const unknownStatus = await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${workItem.body.id}`,
+      body: { status: "reviewing_unknown" },
+      ...services
+    });
+    assert.equal(unknownStatus.statusCode, 400);
+    assert.equal(unknownStatus.body.code, "INVALID_STATUS");
+    const bypassCancellation = await callApi({
+      method: "PATCH",
+      pathname: `/work-items/${workItem.body.id}`,
+      body: { status: "canceled" },
+      ...services
+    });
+    assert.equal(bypassCancellation.statusCode, 403);
+    assert.equal(bypassCancellation.body.code, "WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED");
+    assert.equal(services.store.getWorkItem(workItem.body.id).status, "todo");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
