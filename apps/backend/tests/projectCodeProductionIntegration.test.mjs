@@ -41,6 +41,15 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
     workItemId: fixture.sessionContext.workItemId
   };
   try {
+    const found = await catalog.execute({
+      tool: "corptie_project_code_find", metadata,
+      arguments: { query: "ProductionNeedle", mode: "exact" }
+    });
+    assert.equal(found.searchReceipt.layers[0].layer, "L0");
+    assert.equal(found.results[0].path, "Sources/App.swift");
+    assert.equal(receipts.get(found.snapshotReceipt.receiptId).receiptType, "RepositorySourceSnapshotReceipt");
+    assert.equal(receipts.get(found.searchReceipt.receiptId).receiptType, "SearchReceipt");
+
     const snap = await catalog.execute({ tool: "corptie_project_code_snapshot", metadata });
     assert.equal(receipts.get(snap.receipt.receiptId).receiptType, "RepositorySourceSnapshotReceipt");
     await assert.rejects(

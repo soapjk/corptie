@@ -508,6 +508,10 @@ const hostToolCatalog = new HostToolCatalog([
   },
   {
     id: "artifacts",
+    discoveryTerms: [
+      "artifact", "acceptance evidence", "implementation spec", "reference", "share",
+      "工件", "产物", "验收证据", "技术规格", "引用", "分享"
+    ],
     tools: artifactDynamicTools,
     authorize: authorizeArtifactDynamicTool,
     execute: (input) => callArtifactDynamicTool(artifactService, input, { toolMaterializationPort })
@@ -1018,7 +1022,8 @@ const sessionApplicationService = new SessionApplicationService({
   toolMaterializationPort,
   resolveRequiredToolDomains: (context) => ArtifactDomainRequirements
     .forSessionRole({ sessionKind: context.sessionKind, roleCapabilities: context.roleCapabilities ?? [] })
-    .requiredBeforeFirstTurn.map((requirement) => requirement.domainId),
+    .requiredBeforeFirstTurn.map((requirement) => requirement.domainId)
+    .concat(context.sessionKind === "worker" ? ["project-code"] : []),
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
   recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {
@@ -3485,7 +3490,8 @@ function collaborationRuntimeInstructions(agentId) {
     "Every new user instruction to a peer is a new collaboration task, even if it resembles a previous failed request. Reuse an existing task only when the user explicitly names that task and continues the exact same objective and acceptance criteria. Never call collaboration.reply for a new user instruction.",
     "After collaboration.request returns, end the current turn immediately. If its receipt is pending, Corptie handles confirm or reject programmatically; if confirmed through a previously authorized exact Session route, the task was already sent. Corptie pushes any peer response into this Agent's unified queue as a later turn; do not poll or wait.",
     "When the user asks to schedule, remind, monitor, defer, repeat, pause, resume, cancel, inspect, or run an Automation, use the corptie_automations_* tools. Creation defaults to the current logical Session, so do not invent or persist a Provider thread id.",
-    "Use corptie_list_workspaces, corptie_create_worktree, and corptie_switch_workspace for Git worktree discovery, creation, or logical workspace switching. These operations may appear as host tools or as tools from the local Corptie MCP server; use the available form. Never treat changing a command workdir or running cd as a logical workspace switch. A switch requested during a turn is applied only after that turn completes."
+    "Use corptie_list_workspaces, corptie_create_worktree, and corptie_switch_workspace for Git worktree discovery, creation, or logical workspace switching. These operations may appear as host tools or as tools from the local Corptie MCP server; use the available form. Never treat changing a command workdir or running cd as a logical workspace switch. A switch requested during a turn is applied only after that turn completes.",
+    "In a Worker Session, use Corptie's built-in project-code capability before shell filesystem search for repository source navigation. Search the Tool Host catalog with domain_hint=project-code when needed, then prefer corptie_project_code_find for a fresh authoritative Snapshot and search; use corptie_project_code_read for bounded source reads. Use rg, rg --files, find, grep, or sed for repository discovery only when project-code is unavailable, rejects the requested scope, or an exact raw-filesystem diagnostic is specifically required."
   ].join(" ");
 }
 
