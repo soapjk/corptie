@@ -13,6 +13,8 @@ export function createClaudeProviderRuntime(options = {}) {
     prepareSessionInput: options.prepareSessionInput,
     listModels: options.listModels,
     prepareWorkspaceTransition: options.prepareWorkspaceTransition,
+    bindWorkspace: options.bindWorkspace,
+    inspectWorkspaceBinding: options.inspectWorkspaceBinding,
     attachTools: options.attachTools
   });
   provider.manager = manager;

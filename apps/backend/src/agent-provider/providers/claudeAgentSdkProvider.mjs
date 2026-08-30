@@ -31,6 +31,9 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       ...(typeof options.prepareWorkspaceTransition === "function"
         ? [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION]
         : []),
+      ...(typeof options.bindWorkspace === "function" && typeof options.inspectWorkspaceBinding === "function"
+        ? [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND]
+        : []),
       ...(typeof options.attachTools === "function"
         ? [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]
         : []),
@@ -64,6 +67,10 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     updatePermissions: (reference, permissions) => manager.updatePermissions(reference.providerSessionId, permissions),
     ...(typeof options.prepareWorkspaceTransition === "function"
       ? { prepareWorkspaceTransition: options.prepareWorkspaceTransition }
+      : {}),
+    ...(typeof options.bindWorkspace === "function" ? { bindWorkspace: options.bindWorkspace } : {}),
+    ...(typeof options.inspectWorkspaceBinding === "function"
+      ? { inspectWorkspaceBinding: options.inspectWorkspaceBinding }
       : {}),
     ...(typeof options.attachTools === "function"
       ? { attachTools: options.attachTools }

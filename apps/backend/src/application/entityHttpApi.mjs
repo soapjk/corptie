@@ -25,8 +25,10 @@ export function handleEntityHttpRequest({
   memoryRecallService,
   memoryLifecycleService,
   assistantService,
-  launchSession,
   startWorkItemExecution,
+  beginWorkItemExecution,
+  getWorkItemStartup,
+  getSessionStartupBinding,
   cancelWorkItemStart,
   launchAgentSession,
   launchObjectiveChatSession,
@@ -95,7 +97,8 @@ export function handleEntityHttpRequest({
     // 只拦截 POST /sessions（创建，供 WorkItem 执行绑定）；
     // DELETE /sessions/:id 一律交给 server.mjs 的完整删除链路
     // （会清理 provider 线程 + logical route + store，只删表行会导致会话“复活”）。
-    (path === "/sessions" && request.method === "POST");
+    (path === "/sessions" && request.method === "POST") ||
+    /^\/sessions\/[^/]+\/startup-binding$/.test(path);
 
   if (!isEntityApi) return false;
 
@@ -788,6 +791,39 @@ export function handleEntityHttpRequest({
         return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByWorkItem(id) });
       }
 
+      const workItemStartMatch = path.match(/^\/work-items\/([^/]+)\/start$/);
+      if (request.method === "POST" && workItemStartMatch) {
+        if (typeof beginWorkItemExecution !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
+        const workItemId = decodeURIComponent(workItemStartMatch[1]);
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["requestedAgentId", "providerId", "idempotencyKey", "title"]));
+        const startup = beginWorkItemExecution({
+          workItemId,
+          requestedAgentId: input.requestedAgentId,
+          providerId: input.providerId,
+          idempotencyKey: input.idempotencyKey,
+          title: input.title,
+          source: "macos-start-api",
+          authenticatedSessionId: boundedHeaderText(request, "x-corptie-logical-session-id") || null
+        });
+        return sendJson(response, startup.status === "ready" ? 200 : 202, startup);
+      }
+
+      const workItemStartupMatch = path.match(/^\/work-items\/([^/]+)\/startup\/([^/]+)$/);
+      if (request.method === "GET" && workItemStartupMatch) {
+        if (typeof getWorkItemStartup !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
+        return sendJson(response, 200, getWorkItemStartup({
+          workItemId: decodeURIComponent(workItemStartupMatch[1]),
+          startupOperationId: decodeURIComponent(workItemStartupMatch[2])
+        }));
+      }
+
+      const sessionStartupMatch = path.match(/^\/sessions\/([^/]+)\/startup-binding$/);
+      if (request.method === "GET" && sessionStartupMatch) {
+        if (typeof getSessionStartupBinding !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
+        return sendJson(response, 200, getSessionStartupBinding(decodeURIComponent(sessionStartupMatch[1])));
+      }
+
       const cancelStartMatch = path.match(/^\/work-items\/([^/]+)\/actions\/cancel-start$/);
       if (request.method === "POST" && cancelStartMatch) {
         if (typeof cancelWorkItemStart !== "function") throw apiError("INTERNAL", "cancelWorkItemStart is not configured.", 500);
@@ -869,14 +905,16 @@ export function handleEntityHttpRequest({
           actorId: "user:local-macos"
         });
         timing.phases.orchestrationMs = roundedMilliseconds(performance.now() - phaseStartedAt);
+        if (started.status !== "ready" || !started.receipt) {
+          throw apiError("START_NOT_READY", "Work Session startup did not produce a ready receipt.", 409);
+        }
         const result = sendJson(response, started.idempotentReplay ? 200 : 201, {
           session: started.session,
           start: {
-            phase: started.phase,
+            status: started.status,
             idempotentReplay: started.idempotentReplay,
-            logicalSessionId: started.logicalSessionId,
-            providerBinding: started.providerBinding,
-            workspace: started.workspace
+            receipt: started.receipt,
+            turnDispatch: started.turnDispatch ?? null
           }
         });
         finishWorkItemTiming("succeeded");
