@@ -82,7 +82,9 @@ export class ToolHostService {
       tools = materialization.plan.providerDefinitions;
     } else if (this.coordinator) {
       const capability = await providerToolSchemaCapabilities(provider, null);
-      const desiredDomains = context.sessionKind === "worker" ? ["artifacts"] : [];
+      const desiredDomains = Array.isArray(context.desiredToolDomains)
+        ? context.desiredToolDomains
+        : context.sessionKind === "worker" ? ["artifacts"] : [];
       const plan = buildToolExposurePlan({
         catalog: this.catalog,
         context: { actorId, metadata: context },

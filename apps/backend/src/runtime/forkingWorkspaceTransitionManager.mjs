@@ -141,7 +141,9 @@ export class ForkingWorkspaceTransitionManager {
           ?? coarseSandboxMode(permission.sandboxPolicy)
           ?? "workspace-write",
         permissions: input.permissions,
+        dynamicTools: input.dynamicTools,
         dynamicToolAgentId: input.dynamicToolAgentId,
+        dynamicToolMetadata: input.dynamicToolMetadata,
         config: input.config,
         developerInstructions: input.developerInstructions,
         threadSource: "user",

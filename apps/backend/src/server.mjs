@@ -1021,10 +1021,11 @@ const sessionApplicationService = new SessionApplicationService({
     .requiredBeforeFirstTurn.map((requirement) => requirement.domainId),
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
-  recoverUnavailableSession: async ({ sessionId, reference, context }) => {
-    await sessionProviderSwitchCoordinator.recoverFailedProviderSession(sessionId, {
-      expectedRoutingVersion: reference.routingVersion,
-      transitionId: `provider-recovery:${context.idempotencyKey ?? randomUUID()}`
+  recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {
+    await sessionApplicationService.restartSession(sessionId, {
+      transitionId: `provider-recovery:${context.idempotencyKey ?? randomUUID()}`,
+      replacementReason: error?.replacementReason ?? null,
+      preserveContext: true
     });
     const recoveredReference = requireSessionReference(sessionId);
     if (context.idempotencyKey) {
@@ -3189,13 +3190,31 @@ async function claudeRuntimeOptionsForSession(providerSessionId) {
   }))?.providerAttachment ?? {};
 }
 
-async function collaborationThreadOptionsForSession(sessionId) {
+async function collaborationThreadOptionsForSession(sessionId, options = {}) {
   if (!sessionId) return {};
   const session = store.getSession(sessionId);
   const agent = collaborationCore.getAgentForSession(sessionId)
     ?? ensureCollaborationAgentForSession(session);
   if (!agent?.agentId) return {};
   const metadata = sessionToolMetadata(session);
+  if (options.prospectiveBinding === true) {
+    const logical = metadata.logicalSessionId
+      ? store.getLogicalSession(metadata.logicalSessionId)
+      : null;
+    const current = logical?.activeBinding?.bindingId
+      ? store.getSessionToolCatalogMaterialization(
+          logical.logicalSessionId,
+          logical.activeBinding.bindingId
+        )
+      : null;
+    delete metadata.providerBindingId;
+    metadata.purpose = options.purpose ?? "session-recovery";
+    if (current) {
+      metadata.desiredToolDomains = current.desiredDomains
+        .map((domain) => domain?.domainId)
+        .filter(Boolean);
+    }
+  }
   return (await toolHostService.prepareSession("codex-app-server", {
     actorId: agent.agentId,
     ...metadata
@@ -6476,7 +6495,7 @@ async function handleClaudeTurnSettled(event) {
   }
 }
 
-async function restartCodexProviderSession(reference) {
+async function restartCodexProviderSession(reference, context = {}) {
   const sessionId = reference.sessionId;
   const session = reference.metadata?.session
     ?? store.getSession(sessionId);
@@ -6485,12 +6504,16 @@ async function restartCodexProviderSession(reference) {
     ? store.getLogicalSession(reference.logicalSessionId)
     : null) ?? await ensureLogicalRouteForCodexSession(session);
   const checkpoint = sessionTransitionCheckpoint(sessionId, logical.activeBinding?.bindingId);
+  const preservingRecovery = context.preserveContext === true
+    && context.replacementReason === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
   const result = await workspaceTransitionManager.restartSession({
-    transitionId: `session-restart:${randomUUID()}`,
+    transitionId: context.transitionId ?? `session-restart:${randomUUID()}`,
     logicalSessionId: logical.logicalSessionId,
     activeTurnId: checkpoint.activeTurnId,
     lastCompletedTurnId: checkpoint.lastCompletedTurnId,
-    ...await collaborationThreadOptionsForSession(sessionId)
+    ...await collaborationThreadOptionsForSession(sessionId, preservingRecovery
+      ? { prospectiveBinding: true, purpose: "session-recovery" }
+      : {})
   });
   emitEvent(
     result.status === "waitingForTurn" ? "SessionRestartWaiting" : "SessionRestartCompleted",

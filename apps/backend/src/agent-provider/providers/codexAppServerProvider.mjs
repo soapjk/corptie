@@ -8,8 +8,8 @@ export const CODEX_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
   replaceAtTurnBoundary: false,
   generatedMcpRefresh: false,
   restrictedGateway: true,
-  bindingReplacement: false,
-  capabilityRevision: "codex-app-server:tool-schema:3"
+  bindingReplacement: true,
+  capabilityRevision: "codex-app-server:tool-schema:4"
 });
 
 export function createCodexAppServerProvider(operations, options = {}) {

@@ -302,7 +302,8 @@ test("forkThread fixes the forked thread to the target workspace and completed s
     runtimeWorkspaceRoots: ["/repo/feature worktree"],
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
-    dynamicToolAgentId: "agent-a"
+    dynamicToolAgentId: "agent-a",
+    dynamicTools: [{ name: "corptie_tool_gateway", inputSchema: { type: "object" } }]
   });
 
   assert.equal(calls[0].method, "thread/fork");
@@ -312,9 +313,16 @@ test("forkThread fixes the forked thread to the target workspace and completed s
   assert.deepEqual(calls[0].params.runtimeWorkspaceRoots, ["/repo/feature worktree"]);
   assert.equal(calls[0].params.sandbox, "workspace-write");
   assert.equal(calls[0].params.deferGoalContinuation, true);
+  assert.deepEqual(calls[0].params.dynamicTools, [
+    { name: "corptie_tool_gateway", inputSchema: { type: "object" } }
+  ]);
   assert.equal(calls[0].timeoutMs, 30000);
   assert.deepEqual(result.instructionSources, ["/repo/feature worktree/AGENTS.md"]);
   assert.equal(client.dynamicToolAgentsByThread.get("thread-feature"), "agent-a");
+  assert.match(
+    client.confirmThreadToolPlan("thread-feature", calls[0].params.dynamicTools).providerRevision,
+    /^thread-fork:thread-feature:/
+  );
 });
 
 test("updateThreadSettings updates cwd and sandbox policy together for recovery", async () => {

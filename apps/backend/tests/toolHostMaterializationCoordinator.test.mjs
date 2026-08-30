@@ -199,6 +199,38 @@ test("failed refresh retries from the persisted error state and applies without 
   }
 });
 
+test("unconfirmed bootstrap-only Tool schema is marked safe for one binding replacement before dispatch", async () => {
+  const value = await fixture({
+    capability: {
+      bootstrapAttach: true, appendInPlace: false, replaceAtTurnBoundary: false,
+      generatedMcpRefresh: false, restrictedGateway: true, bindingReplacement: true,
+      capabilityRevision: "fake:bootstrap-replacement:1"
+    },
+    apply: async () => {
+      const error = new Error("Provider did not retain the thread/start Tool schema receipt.");
+      error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+      throw error;
+    }
+  });
+  try {
+    await assert.rejects(
+      () => value.coordinator.ensureApplied({
+        logicalSessionId: "logical:worker", providerBindingId: "binding:worker"
+      }),
+      (error) => error?.code === "SESSION_TOOL_CATALOG_REFRESH_FAILED"
+        && error.dispatchState === "not_sent"
+        && error.recoveryAction === "replace_provider_binding"
+        && error.replacementReason === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
+    );
+    const failed = value.store.getSessionToolCatalogMaterialization("logical:worker", "binding:worker");
+    assert.equal(failed.status, "error");
+    assert.equal(failed.lastErrorCode, "PROVIDER_TOOL_APPLICATION_UNCONFIRMED");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("an active Turn records desired state but never mutates Provider tool schemas", async () => {
   const value = await fixture();
   try {

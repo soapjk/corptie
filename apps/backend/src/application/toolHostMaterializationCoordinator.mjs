@@ -310,12 +310,23 @@ export class ToolHostMaterializationCoordinator {
         errorSummary: safeErrorSummary(error),
         updatedAt: this.clock()
       }, refreshing.resourceVersion);
-      throw toolError(
+      const failure = toolError(
         "SESSION_TOOL_CATALOG_REFRESH_FAILED",
         "Session Tool catalog refresh failed before the next Turn.",
         503,
         error
       );
+      // A Provider that can only install a Tool schema while creating its
+      // physical Session must recover by replacing that binding. This failure
+      // occurs before turn/start, so the user's message is safe to retry once
+      // after the shared Session route commits the replacement.
+      if (state.capability.bindingReplacement === true
+        && error?.code === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED") {
+        failure.dispatchState = "not_sent";
+        failure.recoveryAction = "replace_provider_binding";
+        failure.replacementReason = error.code;
+      }
+      throw failure;
     }
   }
 

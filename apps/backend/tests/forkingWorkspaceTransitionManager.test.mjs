@@ -125,7 +125,10 @@ test("a Git workspace session restarts its thread while preserving context", asy
     const result = await manager.restartSession({
       transitionId: "transition:restart",
       logicalSessionId: "logical:one",
-      lastCompletedTurnId: "turn-7"
+      lastCompletedTurnId: "turn-7",
+      dynamicTools: [{ name: "corptie_tool_gateway" }],
+      dynamicToolAgentId: "agent:one",
+      dynamicToolMetadata: { sessionId: "session:one" }
     });
     assert.equal(result.status, "committed");
     assert.equal(result.logicalSession.activeThreadId, "thread-restarted");
@@ -135,6 +138,9 @@ test("a Git workspace session restarts its thread while preserving context", asy
     assert.equal(calls[0].options.lastTurnId, "turn-7");
     assert.equal(calls[0].options.cwd, fixture.main);
     assert.equal(calls[0].options.deferGoalContinuation, true);
+    assert.deepEqual(calls[0].options.dynamicTools, [{ name: "corptie_tool_gateway" }]);
+    assert.equal(calls[0].options.dynamicToolAgentId, "agent:one");
+    assert.deepEqual(calls[0].options.dynamicToolMetadata, { sessionId: "session:one" });
     assert.equal(result.transition.resumeGoalAfterTransition, false);
   } finally {
     await fixture.close();
