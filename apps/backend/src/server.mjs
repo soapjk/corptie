@@ -76,6 +76,7 @@ import { ArtifactService } from "./application/artifactService.mjs";
 import { BenchmarkControlPlane } from "./benchmark/controlPlane.mjs";
 import { handleBenchmarkHttpRequest } from "./benchmark/httpApi.mjs";
 import { createArtifactEvidencePort } from "./benchmark/ports.mjs";
+import { createBenchmarkProductionPorts } from "./benchmark/productionPorts.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
@@ -351,10 +352,7 @@ const workItemCompletionService = new WorkItemCompletionService({
   })
 });
 const artifactService = new ArtifactService({ store });
-const benchmarkControlPlane = new BenchmarkControlPlane({
-  store,
-  ports: { artifactEvidencePort: createArtifactEvidencePort(artifactService) }
-});
+let benchmarkControlPlane = null;
 const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
   store,
   environment: environmentName,
@@ -1212,6 +1210,19 @@ if (runIsolationCoordinator) {
 } else {
   projectToolsetInitializer = disabledProjectToolsetInitializer();
 }
+const benchmarkArtifactEvidencePort = createArtifactEvidencePort(artifactService);
+const benchmarkPorts = runIsolationCoordinator && projectToolsetProduction
+  ? createBenchmarkProductionPorts({
+    store,
+    artifactEvidencePort: benchmarkArtifactEvidencePort,
+    startupReceipts: projectCodeStartupReceipts,
+    projectCodeApplicationService,
+    projectToolsetProduction,
+    runIsolationCoordinator,
+    observabilityService: turnObservability
+  })
+  : { artifactEvidencePort: benchmarkArtifactEvidencePort };
+benchmarkControlPlane = new BenchmarkControlPlane({ store, ports: benchmarkPorts });
 const sessionWorkspaceCoordinator = new SessionWorkspaceCoordinator({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),

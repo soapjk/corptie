@@ -79,6 +79,33 @@ const profiles = {
 
 export const RECEIPT_IDENTITY_PROFILES = Object.freeze(profiles);
 
+// Composition adapters use this single constructor when projecting an
+// authoritative service receipt into the fixed Benchmark envelope. The
+// authority payload is never extended with Benchmark-owned identity aliases.
+export function createReceiptEnvelope(receiptType, payload, request = {}, options = {}) {
+  const profile = profiles[receiptType];
+  if (!profile) throw benchmarkError("BENCHMARK_RECEIPT_SCHEMA_INVALID", "Unknown receipt type.", "envelope");
+  const receiptId = payload?.receiptId ?? payload?.readReceiptId ?? payload?.startupOperationId
+    ?? payload?.observationId ?? (receiptType === "ObservationExport" ? `observation_export:${payload?.summaryHash}` : null);
+  const envelope = {
+    receiptId,
+    receiptType,
+    producerServiceId: profile.producer,
+    schemaVersion: profile.schemaVersion,
+    identitySubset: receiptIdentitySubset(receiptType, payload),
+    identityProfileVersion: 1,
+    requestHash: contentHash(request),
+    contentHash: contentHash(payload),
+    issuedAt: options.issuedAt ?? new Date().toISOString(),
+    status: options.status ?? "issued",
+    metrics: options.metrics ?? {},
+    evidence: options.evidence ?? [],
+    error: options.error ?? null,
+    payload
+  };
+  return validateReceiptEnvelope(envelope, options.validation ?? {});
+}
+
 export function validateManifest(candidate) {
   assertClosedObject(candidate, ["schemaVersion", "entries"], "DependencyContractManifest");
   if (candidate.schemaVersion !== 1 || !Array.isArray(candidate.entries) || candidate.entries.length !== 10) mismatch();
@@ -144,7 +171,10 @@ export function receiptIdentitySubset(type, value) {
 
 function validateSemantics(type, value, options) {
   if (type === "StartupBindingReceipt" && (value.status !== "ready" || value.error !== null)) throw benchmarkError("BENCHMARK_RECEIPT_SCHEMA_INVALID", "Startup receipt is not ready.", "startup");
-  if (type === "ToolHostAppliedReceipt" && (!Array.isArray(value.appliedDomains) || !value.appliedDomains.includes("artifacts"))) throw benchmarkError("BENCHMARK_RECEIPT_SCHEMA_INVALID", "Tool Host receipt lacks Artifact domain.", "tool_host");
+  if (type === "ToolHostAppliedReceipt" && (!Array.isArray(value.appliedDomains)
+    || !value.appliedDomains.some((domain) => domain === "artifacts" || domain?.domainId === "artifacts"))) {
+    throw benchmarkError("BENCHMARK_RECEIPT_SCHEMA_INVALID", "Tool Host receipt lacks Artifact domain.", "tool_host");
+  }
   if (type === "ToolsetValidationReceipt" && value.expiresAt && Date.parse(value.expiresAt) <= (options.now ?? Date.now())) throw benchmarkError("BENCHMARK_RECEIPT_STALE", "Toolset receipt is stale.", "toolset");
   if (type === "ToolsetValidationReceipt") {
     closedNested(value.identity, ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId", "startupBindingRef"], "Toolset identity");

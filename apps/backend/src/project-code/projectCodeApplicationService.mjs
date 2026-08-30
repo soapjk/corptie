@@ -71,7 +71,6 @@ export class ProjectCodeSearchApplicationService {
     const workItem = this.store.getWorkItem(ownership.workItemId);
     const startupReceipt = this.startupReceipts.require(logicalSessionId);
     if (!logical?.activeBinding || !session || !workItem
-      || startupReceipt.providerBindingId !== logical.activeBinding.bindingId
       || startupReceipt.worktreeId !== logical.activeBinding.worktreeId
       || startupReceipt.canonicalWorktreePath !== logical.activeBinding.boundCwd
       || startupReceipt.objectiveId !== ownership.objectiveId
@@ -87,7 +86,7 @@ export class ProjectCodeSearchApplicationService {
       repositoryId: startupReceipt.repositoryId,
       worktreeId: startupReceipt.worktreeId,
       canonicalWorktreePath: startupReceipt.canonicalWorktreePath,
-      providerBindingId: logical.activeBinding.bindingId,
+      providerBindingId: startupReceipt.providerBindingId,
       bindingGeneration: startupReceipt.bindingGeneration,
       repositoryInventoryVersion: startupReceipt.repositoryInventoryVersion,
       workspaceResourceVersion: startupReceipt.workspaceResourceVersion,
