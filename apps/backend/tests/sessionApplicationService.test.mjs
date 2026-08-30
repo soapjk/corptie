@@ -622,6 +622,103 @@ test("an unavailable Provider binding is replaced and an unsent message is retri
   assert.deepEqual(sends.map((entry) => entry.message), ["send once", "send once"]);
 });
 
+test("restart replaces an unconfirmed Tool schema binding exactly once without creating a Turn", async () => {
+  const restartCalls = [];
+  const recoveries = [];
+  let currentReference = {
+    sessionId: "session:restart-recovery",
+    logicalSessionId: "logical:restart-recovery",
+    bindingId: "binding:old",
+    providerId: "restart-recovery",
+    providerSessionId: "native:old",
+    routingVersion: 4
+  };
+  const provider = new CallbackAgentProvider({
+    id: "restart-recovery",
+    displayName: "Restart Recovery",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART]
+  }, {
+    restartSession: async (reference) => {
+      restartCalls.push(reference);
+      const error = new Error("Provider did not confirm the current Tool schema.");
+      error.code = "SESSION_TOOL_CATALOG_REFRESH_FAILED";
+      error.dispatchState = "not_sent";
+      error.recoveryAction = "replace_provider_binding";
+      error.replacementReason = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+      throw error;
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => currentReference,
+    recoverUnavailableSession: async (input) => {
+      recoveries.push(input);
+      currentReference = {
+        ...currentReference,
+        bindingId: "binding:new",
+        providerSessionId: "native:new",
+        routingVersion: 5
+      };
+      return { reference: currentReference };
+    }
+  });
+
+  const result = await service.restartSession("logical:restart-recovery", {
+    idempotencyKey: "session-restart:test"
+  });
+
+  assert.equal(restartCalls.length, 1);
+  assert.equal(recoveries.length, 1);
+  assert.equal(recoveries[0].context.recoveryKind, "restart");
+  assert.equal(recoveries[0].error.replacementReason, "PROVIDER_TOOL_APPLICATION_UNCONFIRMED");
+  assert.deepEqual(result, {
+    status: "completed",
+    recovered: true,
+    recoveryAction: "provider_binding_replaced",
+    sessionId: "session:restart-recovery",
+    logicalSessionId: "logical:restart-recovery",
+    providerBindingId: "binding:new",
+    routingVersion: 5
+  });
+});
+
+test("restart never replaces a binding after an outcome-unknown failure", async () => {
+  let recoveries = 0;
+  const provider = new CallbackAgentProvider({
+    id: "restart-unknown",
+    displayName: "Restart Unknown",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART]
+  }, {
+    restartSession: async () => {
+      const error = new Error("Provider may have restarted the Session.");
+      error.code = "RESTART_OUTCOME_UNKNOWN";
+      error.dispatchState = "delivery_unknown";
+      error.recoveryAction = "replace_provider_binding";
+      throw error;
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:restart-unknown",
+      logicalSessionId: "logical:restart-unknown",
+      bindingId: "binding:unknown",
+      providerId: "restart-unknown",
+      providerSessionId: "native:unknown",
+      routingVersion: 1
+    }),
+    recoverUnavailableSession: async () => { recoveries += 1; }
+  });
+
+  await assert.rejects(
+    service.restartSession("logical:restart-unknown", { idempotencyKey: "session-restart:unknown" }),
+    { code: "RESTART_OUTCOME_UNKNOWN" }
+  );
+  assert.equal(recoveries, 0);
+});
+
 test("delivery_unknown is never recovered or retried automatically", async () => {
   let recoveries = 0;
   let sends = 0;

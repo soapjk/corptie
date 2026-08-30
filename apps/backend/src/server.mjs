@@ -18,6 +18,7 @@ import { createCodexProviderRuntime } from "./agent-provider/bootstrap/codexProv
 import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceStageWithConfiguredParser } from "./adapters/choiceParser.mjs";
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
+import { withResolvedSessionActions } from "./agent-provider/sessionActions.mjs";
 import { SessionStateDiagnostics } from "./application/sessionStateDiagnostics.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
 import {
@@ -1048,18 +1049,19 @@ const sessionApplicationService = new SessionApplicationService({
       recoveryError.code = "SESSION_RECOVERY_IDEMPOTENCY_REQUIRED";
       throw recoveryError;
     }
-    await sessionRecoveryCoordinator.recover({
+    const recoveryKind = context.recoveryKind === "restart" ? "restart" : "message";
+    const attempt = await sessionRecoveryCoordinator.recover({
       logicalSessionId: reference.logicalSessionId,
       providerId: reference.providerId,
-      idempotencyKey: `message-recovery:${context.idempotencyKey}`,
-      triggerDeliveryId: context.idempotencyKey,
+      idempotencyKey: `${recoveryKind}-recovery:${context.idempotencyKey}`,
+      triggerDeliveryId: recoveryKind === "message" ? context.idempotencyKey : null,
       reason: error?.replacementReason ?? error?.code ?? "provider-session-unavailable"
     });
     const recoveredReference = requireSessionReference(sessionId);
-    if (context.idempotencyKey) {
+    if (recoveryKind === "message") {
       store.rerouteUnsentMessageDelivery(context.idempotencyKey, recoveredReference);
     }
-    return { reference: recoveredReference };
+    return { reference: recoveredReference, attempt };
   },
   resolveMessageContext: async (reference, messageContext = {}) => {
     const session = store.getSession(reference.sessionId);
@@ -4227,10 +4229,10 @@ function listGatewaySessions(options = {}) {
   return visibleStoredSessionProjections(
     store,
     store.listSessions({ archived: options.archived === true })
-  ).map((session) => ({
+  ).map((session) => withResolvedSessionActions({
     ...session,
     sessionKind: session.sessionKind ?? "legacy"
-  }));
+  }, agentProviderRegistry));
 }
 
 function describeGatewaySession(session) {
@@ -9320,10 +9322,17 @@ function route(request, response) {
   const sessionRestartMatch = url.pathname.match(/^\/sessions\/([^/]+)\/restart$/);
   if (request.method === "POST" && sessionRestartMatch) {
     const sessionId = decodeURIComponent(sessionRestartMatch[1]);
-    Promise.resolve()
-      .then(async () => {
+    readJson(request)
+      .then(async (input) => {
+        const unknown = Object.keys(input).filter((field) => field !== "idempotencyKey");
+        if (unknown.length > 0) {
+          const error = new Error("Session restart request contains unknown fields.");
+          error.code = "SESSION_RESTART_UNKNOWN_FIELD";
+          throw error;
+        }
         const result = await sessionApplicationService.restartSession(sessionId, {
-          source: "compatibility-route"
+          source: "compatibility-route",
+          idempotencyKey: String(input.idempotencyKey ?? `restart:${randomUUID()}`).trim()
         });
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })

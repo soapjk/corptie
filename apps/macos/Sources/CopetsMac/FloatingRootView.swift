@@ -5741,6 +5741,7 @@ struct DetailHeaderView: View {
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
     @State private var gitHeadState: GitHeadState?
+    @State private var isRenamingSession = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -5866,6 +5867,32 @@ struct DetailHeaderView: View {
             if let status = supplementaryData.selectedProjectWorktreeStatus {
                 ProjectServiceStatusDot(status: status.service)
                     .help(projectServiceStatusHelp(status))
+            }
+
+            if let selectedSession = backendClient.selectedSession {
+                Menu {
+                    SessionContextMenuContent(
+                        session: selectedSession,
+                        isRenaming: $isRenamingSession
+                    )
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help(L10n("Session actions"))
+                .accessibilityIdentifier("session.detail.actions")
+            }
+        }
+        .sheet(isPresented: $isRenamingSession) {
+            if let selectedSession = backendClient.selectedSession {
+                RenameSessionSheet(session: selectedSession) {
+                    isRenamingSession = false
+                }
+                .environmentObject(backendClient)
+                .presentationBackground(.clear)
             }
         }
         .task(id: workspaceRouteIdentity) {
