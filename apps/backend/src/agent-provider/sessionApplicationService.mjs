@@ -267,12 +267,32 @@ export class SessionApplicationService {
 
   async restartSession(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
-    return this.registry.invoke(
-      reference.providerId,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
-      reference,
-      context
-    );
+    try {
+      return await this.registry.invoke(
+        reference.providerId,
+        AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
+        reference,
+        context
+      );
+    } catch (error) {
+      if (!this.#canReplaceProviderBinding(error)) throw error;
+      const recovered = await this.recoverUnavailableSession({
+        sessionId,
+        reference,
+        error,
+        context: { ...context, recoveryKind: "restart" }
+      });
+      const recoveredReference = recovered?.reference ?? await this.referenceFor(sessionId);
+      return {
+        status: "completed",
+        recovered: true,
+        recoveryAction: "provider_binding_replaced",
+        sessionId: recoveredReference.sessionId,
+        logicalSessionId: recoveredReference.logicalSessionId,
+        providerBindingId: recoveredReference.bindingId,
+        routingVersion: recoveredReference.routingVersion
+      };
+    }
   }
 
   async disconnectSession(sessionId, context = {}) {
@@ -317,11 +337,7 @@ export class SessionApplicationService {
     try {
       return await dispatch();
     } catch (error) {
-      if (typeof this.recoverUnavailableSession !== "function"
-        || error?.dispatchState !== "not_sent"
-        || error?.recoveryAction !== "replace_provider_binding") {
-        throw error;
-      }
+      if (!this.#canReplaceProviderBinding(error)) throw error;
       const recovered = await this.recoverUnavailableSession({
         sessionId,
         reference,
@@ -331,6 +347,12 @@ export class SessionApplicationService {
       reference = recovered?.reference ?? await this.referenceFor(sessionId);
       return dispatch();
     }
+  }
+
+  #canReplaceProviderBinding(error) {
+    return typeof this.recoverUnavailableSession === "function"
+      && error?.dispatchState === "not_sent"
+      && error?.recoveryAction === "replace_provider_binding";
   }
 
   async clearConversation(sessionId, context = {}) {

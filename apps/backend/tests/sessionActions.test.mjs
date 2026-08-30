@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
-import { withSessionActions } from "../src/agent-provider/sessionActions.mjs";
+import {
+  withResolvedSessionActions,
+  withSessionActions
+} from "../src/agent-provider/sessionActions.mjs";
 
 const descriptor = {
   capabilities: [
@@ -77,6 +80,24 @@ test("restart availability is driven only by the Provider capability", () => {
   assert.equal(supported.actions.restart.available, true);
   assert.equal(unsupported.actions.restart.available, false);
   assert.equal(unsupported.actions.restart.reason, "CAPABILITY_UNSUPPORTED");
+});
+
+test("stored Session projections resolve Provider capabilities before reaching the client", () => {
+  const registry = {
+    resolveId: (identity) => identity === "codex-app-server" ? identity : null,
+    decorateSession: (_providerId, session) => withSessionActions(session, {
+      capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART]
+    })
+  };
+  const projected = withResolvedSessionActions({
+    id: "session:stored",
+    status: "complete",
+    external: { provider: "codex-app-server" }
+  }, registry);
+  const unknown = { id: "session:legacy", external: { provider: "retired-provider" } };
+
+  assert.equal(projected.actions.restart.available, true);
+  assert.strictEqual(withResolvedSessionActions(unknown, registry), unknown);
 });
 
 test("manual disconnect availability is driven only by the Provider capability", () => {
