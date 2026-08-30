@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -18,11 +18,14 @@ export const PROJECT_TOOLSET_ACTIONS = Object.freeze([
   "verify",
   "version"
 ]);
+export const PROJECT_TOOLSET_READ_ONLY_PROBES = Object.freeze(["status", "health", "version"]);
+export const PROJECT_TOOLSET_ISOLATED_ACTIONS = Object.freeze(PROJECT_TOOLSET_ACTIONS.filter((action) => !PROJECT_TOOLSET_READ_ONLY_PROBES.includes(action)));
 
 export class ProjectToolsetManager {
   constructor(options = {}) {
     this.execFile = options.execFile ?? execFileAsync;
     this.now = options.now ?? (() => new Date().toISOString());
+    this.runIsolationCoordinator = options.runIsolationCoordinator ?? null;
   }
 
   async inspect(workingDirectory) {
@@ -128,9 +131,10 @@ export class ProjectToolsetManager {
       throw new Error(`Unsupported Corptie project toolset action: ${action}`);
     }
     const state = await this.inspect(workingDirectory);
+    const readOnlyProbe = PROJECT_TOOLSET_READ_ONLY_PROBES.includes(action);
     const canRunLegacyProbe = options.allowIncompatible === true
       && state.manifestConfigured
-      && ["status", "health", "version"].includes(action);
+      && readOnlyProbe;
     if (!state.installed || (!state.configured && !canRunLegacyProbe)) {
       throw new Error("The Corptie Scripts Tools Set is not configured for this project.");
     }
@@ -145,6 +149,37 @@ export class ProjectToolsetManager {
     }
     const executionRoot = executionIdentity.canonicalPath;
     const source = options.sourceIdentity ?? await this.sourceIdentity(executionRoot, state.runtimePath);
+    if (!readOnlyProbe && !options.runIsolation) {
+      throw Object.assign(new Error(`RunIsolation authority is required for the ${action} Toolset action.`), { code: "DEPENDENCY_CONTRACT_UNRESOLVED" });
+    }
+    if (options.runIsolation) {
+      if (!this.runIsolationCoordinator) throw Object.assign(new Error("RunIsolation production coordinator is not enabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED" });
+      const isolated = await this.runIsolationCoordinator.runCommand({
+        prepare: options.runIsolation.prepare,
+        session: options.runIsolation.session,
+        toolsetReceiptResolver: (receiptId) => this.resolveValidationReceipt(executionRoot, receiptId),
+        descriptor: {
+          executable: script.path,
+          args: [],
+          cwd: executionRoot,
+          role: `project-toolset-${action}`,
+          timeoutMilliseconds: options.timeoutMs ?? 30_000,
+          captureOutput: true,
+          environment: {
+            CORPTIE_PROJECT_ROOT: executionRoot,
+            CORPTIE_MAIN_PROJECT_ROOT: state.mainPath,
+            CORPTIE_TOOLSET_ROOT: state.toolsetPath,
+            CORPTIE_TOOLSET_SCHEMA_VERSION: String(PROJECT_TOOLSET_SCHEMA_VERSION),
+            CORPTIE_SERVICE_PROFILE: state.selectedProfile,
+            CORPTIE_SOURCE_REVISION: source.revision,
+            CORPTIE_SOURCE_FINGERPRINT: source.fingerprint,
+            CORPTIE_SOURCE_DIRTY: String(source.dirty)
+          }
+        }
+      });
+      const parsed = parseActionOutput(action, isolated.commandOutput ?? "", isolated.runReceipt.error?.message ?? "", isolated.runReceipt.outcome === "passed" ? 0 : 1);
+      return { ...parsed, runIsolation: isolated };
+    }
     try {
       const result = await this.execFile(script.path, [], {
         cwd: executionRoot,
@@ -184,19 +219,21 @@ export class ProjectToolsetManager {
     const build = await this.run(workingDirectory, "build", {
       executionRoot,
       sourceIdentity: source,
+      runIsolation: options.runIsolation,
       timeoutMs: options.buildTimeoutMs ?? 10 * 60_000
     });
     if (!build.ok) return { ok: false, stage: "build", source, build };
     const restart = await this.run(workingDirectory, "restart", {
       executionRoot,
       sourceIdentity: source,
+      runIsolation: options.runIsolation,
       timeoutMs: options.restartTimeoutMs ?? 60_000
     });
     if (!restart.ok) return { ok: false, stage: "restart", source, build, restart };
     const [status, health, verify, version] = await Promise.all([
       this.run(workingDirectory, "status", { executionRoot, sourceIdentity: source, timeoutMs: 5_000 }),
       this.run(workingDirectory, "health", { executionRoot, sourceIdentity: source, timeoutMs: 15_000 }),
-      this.run(workingDirectory, "verify", { executionRoot, sourceIdentity: source, timeoutMs: 15_000 }),
+      this.run(workingDirectory, "verify", { executionRoot, sourceIdentity: source, runIsolation: options.runIsolation, timeoutMs: 15_000 }),
       this.run(workingDirectory, "version", { executionRoot, sourceIdentity: source, timeoutMs: 5_000 })
     ]);
     const validation = validateActivation({
@@ -285,6 +322,14 @@ export class ProjectToolsetManager {
     } finally {
       await rm(temporaryIndex, { force: true });
     }
+  }
+
+  async resolveValidationReceipt(workingDirectory, receiptId) {
+    if (!/^toolset_validation_receipt:[A-Za-z0-9_-]+$/.test(receiptId)) return null;
+    const layout = await this.layout(workingDirectory);
+    const name = createHash("sha256").update(receiptId, "utf8").digest("hex");
+    const receipt = await readJsonFile(join(layout.runtimePath, "validation-receipts", `${name}.json`));
+    return receipt?.receiptId === receiptId ? receipt : null;
   }
 
   async revisionDetails(workingDirectory, revision, worktreePath) {

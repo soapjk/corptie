@@ -217,7 +217,7 @@ import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTra
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
-import { ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
+import { PROJECT_TOOLSET_ISOLATED_ACTIONS, ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
 import { ProjectToolsetInitializer } from "./runtime/projectToolsetInitializer.mjs";
 import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
@@ -235,6 +235,7 @@ import { SessionTimelineChangePublisher } from "./application/sessionTimelineCha
 import { TurnObservabilityService } from "./observability/turnObservability.mjs";
 import { handleTurnObservabilityHttpRequest } from "./observability/turnObservabilityHttpApi.mjs";
 import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
+import { RunIsolationAuthorityResolver, RunIsolationExecutionCoordinator } from "./runIsolation/index.mjs";
 import {
   DEFAULT_SESSION_HISTORY_WINDOW,
   MAX_SESSION_HISTORY_PAGE,
@@ -244,6 +245,13 @@ import {
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
+const runIsolationDataRoot = process.env.CORPTIE_RUN_ISOLATION_DATA_ROOT?.trim() || null;
+const runIsolationCoordinator = runIsolationDataRoot
+  ? new RunIsolationExecutionCoordinator({ dataRoot: runIsolationDataRoot })
+  : null;
+// Startup/Snapshot/Toolset production owners compose their authoritative ports
+// here. Until that integration exists, executable Toolset actions fail closed.
+const runIsolationAuthorityResolver = new RunIsolationAuthorityResolver();
 // 会话快照只返回尾部窗口的完整消息，更早的历史通过补拉端点按需获取。
 // 打开会话时前端只渲染尾部一屏，全量 text（千级消息约 1MB+）是切会话延迟的主因。
 const execFileAsync = promisify(execFile);
@@ -778,7 +786,7 @@ const gitWorkspaces = new GitWorkspaceManager({
     console.info(`[worktree-performance] ${JSON.stringify(measurement)}`);
   }
 });
-const projectToolsets = new ProjectToolsetManager();
+const projectToolsets = new ProjectToolsetManager({ runIsolationCoordinator });
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
 const openClackyProvider = createOpenClackyProvider(openClackyManager, {
@@ -6335,20 +6343,16 @@ async function projectToolsetStatusForPath(cwd) {
     };
   }
   const desiredSource = await projectToolsets.sourceIdentity(toolset.mainPath, toolset.runtimePath);
-  const [status, health, verify, version] = await Promise.all([
+  const [status, health, version] = await Promise.all([
     projectToolsets.run(cwd, "status", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
     projectToolsets.run(cwd, "health", { timeoutMs: 5_000, sourceIdentity: desiredSource }),
-    projectToolsets.run(cwd, "verify", { timeoutMs: 10_000, sourceIdentity: desiredSource }),
     projectToolsets.run(cwd, "version", { timeoutMs: 5_000, sourceIdentity: desiredSource })
   ]);
+  const verify = { ok: false, action: "verify", payload: null, code: "DEPENDENCY_CONTRACT_UNRESOLVED", detail: "Verification requires an explicit authenticated RunIsolation action." };
   const running = status.payload?.running === true;
   const runningRevision = version.payload?.revision ?? null;
   const dirty = version.payload?.dirty === true;
-  const verified = version.ok
-    && version.payload?.verified === true
-    && Boolean(version.payload?.artifactId)
-    && verify.ok
-    && verify.payload?.verified === true;
+  const verified = false;
   let revisionDetails = null;
   if (runningRevision) {
     try {
@@ -8348,13 +8352,13 @@ function route(request, response) {
     Promise.resolve()
       .then(async () => {
         const cwd = projectWorkingDirectoryForSession(sessionId);
+        const input = await readJson(request);
         if (action === "initialize" || action === "update") {
           projectToolsetInitializer.schedule(cwd, { force: action === "update" });
           sendJson(response, 202, { scheduled: true, action });
           return;
         }
         if (action === "profile") {
-          const input = await readJson(request);
           const profileId = String(input.profileId ?? "").trim();
           if (!profileId) throw new Error("A Corptie service profile is required.");
           const toolset = await projectToolsets.selectProfile(cwd, profileId);
@@ -8363,9 +8367,9 @@ function route(request, response) {
           sendJson(response, 200, status);
           return;
         }
-        const result = action === "start" || action === "restart"
-          ? await rebuildAndRestartProjectService(cwd)
-          : await projectToolsets.run(cwd, action);
+        const isolatedAction = PROJECT_TOOLSET_ISOLATED_ACTIONS.includes(action);
+        const runIsolation = isolatedAction ? await projectToolsetRunIsolationOptions(sessionId, cwd, action) : null;
+        const result = await projectToolsets.run(cwd, action, { ...(runIsolation ? { runIsolation } : {}), ...(action === "start" || action === "restart" ? { timeoutMs: 60_000 } : {}) });
         const status = await projectToolsetStatus(sessionId);
         emitEvent("ProjectServiceChanged", { sessionId, action, result, ...status }, { sessionId });
         sendJson(response, result.ok ? 200 : 409, { action: result, ...status });
@@ -8853,6 +8857,28 @@ function route(request, response) {
   sendJson(response, 404, { error: "Not found" });
 }
 
+async function projectToolsetRunIsolationOptions(sessionId, cwd, action) {
+  if (!runIsolationCoordinator) throw Object.assign(new Error("RunIsolation production execution is disabled."), { code: "DEPENDENCY_CONTRACT_UNRESOLVED", statusCode: 409 });
+  const reference = requireSessionReference(sessionId);
+  const logical = reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
+  const identity = await inspectGitWorkspace(cwd);
+  const workItemId = reference.metadata.session?.workItemId;
+  const binding = logical?.activeBinding;
+  if (!logical?.logicalSessionId || !workItemId || !binding?.bindingId || binding.state !== "active") throw Object.assign(new Error("RunIsolation requires a WorkItem-bound logical Session with an active binding."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
+  if (binding.logicalSessionId !== logical.logicalSessionId
+    || binding.worktreeId !== identity.worktreeId
+    || (logical.repositoryId && logical.repositoryId !== identity.repositoryId)) {
+    throw Object.assign(new Error("RunIsolation execution does not match the authenticated Session's active repository and Worktree binding."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
+  }
+  const authority = await runIsolationAuthorityResolver.resolve({ logicalSessionId: logical.logicalSessionId, workItemId, repositoryId: identity.repositoryId, worktreeId: identity.worktreeId, action, bindingId: binding.bindingId, bindingGeneration: Number(binding.routingVersion) });
+  return {
+    prepare: { mode: "development", sourceAware: true, toolsetRequired: true, startupBindingReceiptRef: authority.startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: authority.repositorySourceSnapshotReceiptRef, toolsetValidationReceiptPointer: authority.toolsetValidationReceiptPointer, idempotencyKey: `toolset:${action}:${logical.logicalSessionId}:${randomUUID()}` },
+    session: { logicalSessionId: logical.logicalSessionId, workItemId, repositoryId: identity.repositoryId, worktreeId: identity.worktreeId }
+  };
+}
+
 function userMessageCommandSource(input = {}) {
   const source = input.source && typeof input.source === "object" && !Array.isArray(input.source)
     ? { ...input.source }
@@ -8904,6 +8930,11 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 await store.initialize();
+if (runIsolationCoordinator) {
+  await mkdir(runIsolationDataRoot, { recursive: true, mode: 0o700 });
+  await runIsolationCoordinator.initialize();
+  console.log(`[run-isolation] production coordinator ready dataRootHash=${runIsolationCoordinator.service.binding.canonicalPathHash}`);
+}
 await dataRootMigrationCoordinator.initialize();
 const telemetryConfiguration = turnObservability.initialize();
 console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
@@ -9154,6 +9185,7 @@ function shutdown() {
     openClackyManager.stop();
     await feishuGateway.close();
     await codexRuntime.close();
+    await runIsolationCoordinator?.close();
     await store.close({
       checkpoint: dataRootMigrationCoordinator.status()?.phase !== "restartRequired"
     });
