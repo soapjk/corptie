@@ -21,7 +21,7 @@ test("Codex and Claude native memory files share one preserved Corptie memory so
     "",
     "- This is Corptie's {{CORPTIE_ENVIRONMENT}} environment.",
     "",
-    "# Git worktree isolation",
+    "# Authoritative Work Session workspace",
     "",
     "Bundled worktree rule.",
     ""

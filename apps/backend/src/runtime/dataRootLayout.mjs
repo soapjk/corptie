@@ -37,6 +37,7 @@ export function resolveDataRootLayout(dataRoot, environment = "production") {
     logsDirectory: join(environmentRoot, "logs"),
     artifactsDirectory: join(environmentRoot, "artifacts"),
     runtimeDirectory: join(environmentRoot, "runtimes"),
+    worktreesDirectory: join(environmentRoot, "worktrees"),
     backupsDirectory: join(environmentRoot, "backups"),
     stateDirectory: join(environmentRoot, "state")
   });
@@ -51,6 +52,7 @@ export async function ensureDataRootLayout(layout) {
     layout.logsDirectory,
     layout.artifactsDirectory,
     layout.runtimeDirectory,
+    layout.worktreesDirectory,
     layout.backupsDirectory,
     layout.stateDirectory
   ]) {

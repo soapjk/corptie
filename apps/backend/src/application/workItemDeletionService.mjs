@@ -38,7 +38,8 @@ export class WorkItemDeletionService {
       return deletionPlan(item, { status: "removed", worktree: null }, [], [], associatedSessionCount);
     }
     const activeStart = this.store.selectOne(
-      "SELECT operation_id FROM work_item_start_operations WHERE work_item_id=? AND status='in_progress' LIMIT 1",
+      `SELECT startup_operation_id FROM work_session_startup_operations WHERE work_item_id=?
+       AND state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating') LIMIT 1`,
       [workItemId]
     );
     if (activeStart) {

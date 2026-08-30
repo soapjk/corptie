@@ -32,11 +32,15 @@ const CODEX_APP_SERVER_CAPABILITIES = Object.freeze([
 ]);
 
 export function createAgentProviderRuntimeRegistry(options = {}) {
+  const codexCapabilities = typeof options.codexOperations?.bindWorkspace === "function"
+    && typeof options.codexOperations?.inspectWorkspaceBinding === "function"
+    ? [...CODEX_APP_SERVER_CAPABILITIES, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND]
+    : CODEX_APP_SERVER_CAPABILITIES;
   const providers = [
     requiredProvider(options.claudeProvider, "claudeProvider"),
     createCodexAppServerProvider(options.codexOperations ?? {}, {
       metadata: options.codexMetadata ?? {},
-      capabilities: CODEX_APP_SERVER_CAPABILITIES
+      capabilities: codexCapabilities
     }),
     ...materializeAdditionalProviders(options.additionalProviders, options.providerContext)
   ];

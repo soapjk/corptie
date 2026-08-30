@@ -744,7 +744,20 @@ final class EntityAPIClient: ObservableObject {
                 errorMessage = message
                 return .failure(message: message, code: envelope?.code)
             }
-            let session = try decoder.decode(SessionCreateEnvelope.self, from: data).session
+            let created = try decoder.decode(WorkSessionCreateEnvelope.self, from: data)
+            let startup = created.start
+            guard startup.receipt.workItemId == workItemId,
+                  created.session.workItemId == startup.receipt.workItemId,
+                  created.session.objectiveId == startup.receipt.objectiveId,
+                  created.session.sessionKind == .worker,
+                  (startup.receipt.logicalSessionId.hasPrefix("session:")
+                    || startup.receipt.logicalSessionId.hasPrefix("logical:")) else {
+                throw EntityLaunchError(
+                    message: L10n("Work Session startup receipt is missing or mismatched"),
+                    code: "START_RECEIPT_MISMATCH"
+                )
+            }
+            let session = created.session
             errorMessage = nil
             return .success(session)
         } catch {

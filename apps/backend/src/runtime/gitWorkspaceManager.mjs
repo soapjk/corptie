@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, mkdir, realpath } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 import {
@@ -10,6 +10,27 @@ import {
 } from "./sharedAgentConfiguration.mjs";
 
 const execFileAsync = promisify(execFile);
+
+function pathContains(parent, candidate) {
+  const relation = relative(resolve(parent), resolve(candidate));
+  return relation === "" || (!relation.startsWith(`..${sep}`) && relation !== ".." && !isAbsolute(relation));
+}
+
+async function canonicalFuturePath(path) {
+  let cursor = resolve(path);
+  const missing = [];
+  while (true) {
+    try {
+      return resolve(await realpath(cursor), ...missing.reverse());
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      const parent = dirname(cursor);
+      if (parent === cursor) throw error;
+      missing.push(basename(cursor));
+      cursor = parent;
+    }
+  }
+}
 
 export class GitWorkspaceManager {
   constructor(options) {
@@ -21,6 +42,7 @@ export class GitWorkspaceManager {
     this.inspectionCacheTtlMs = options.inspectionCacheTtlMs ?? 5_000;
     this.now = options.now ?? (() => Date.now());
     this.createSnapshot = options.createSnapshot ?? createGitWorkspaceSnapshot;
+    this.workItemWorktreesRoot = options.workItemWorktreesRoot ?? null;
     this.inspectionCache = new Map();
     this.inspectionsInFlight = new Map();
     this.inspectionMetrics = {
@@ -686,8 +708,20 @@ export class GitWorkspaceManager {
 
     const suffix = workItemWorkspaceSuffix(workItemId);
     const branchName = `workitem/${suffix}`;
-    const worktreesRoot = resolve(main.path, ".corptie", "worktrees");
+    const configuredRoot = typeof this.workItemWorktreesRoot === "function"
+      ? this.workItemWorktreesRoot({ repositoryId, workItemId, mainPath: main.path })
+      : this.workItemWorktreesRoot;
+    const worktreesRoot = configuredRoot
+      ? absolutePath(configuredRoot)
+      : resolve(dirname(main.path), `.corptie-worktrees-${repositoryId.split(":").at(-1)}`);
     const targetPath = resolve(worktreesRoot, suffix);
+    const canonicalTargetPath = await canonicalFuturePath(targetPath);
+    if (snapshot.worktrees.some((worktree) => {
+      const registeredPath = resolve(worktree.canonicalPath || worktree.path);
+      return registeredPath !== canonicalTargetPath && pathContains(registeredPath, canonicalTargetPath);
+    })) {
+      throw new Error("The managed WorkItem Worktree root must not be nested inside another Git Worktree.");
+    }
     const matchingBranch = (worktree) => worktree.branchName === branchName;
     const matchingPath = (worktree) => resolve(worktree.path) === targetPath;
     const resolveExisting = (worktrees) => {
