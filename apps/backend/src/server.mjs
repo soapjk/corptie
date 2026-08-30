@@ -223,7 +223,7 @@ import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.m
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { ProjectCodeSearchApplicationService } from "./project-code/projectCodeApplicationService.mjs";
-import { projectCodeDynamicTools, callProjectCodeDynamicTool } from "./project-code/projectCodeDynamicTools.mjs";
+import { createProjectCodeHostNamespace } from "./project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeIndexStore } from "./project-code/projectCodeIndexStore.mjs";
 import { ProjectCodeSearchService } from "./project-code/projectCodeSearchService.mjs";
 import { RepositorySourceSnapshotBuilder } from "./project-code/projectCodeSnapshot.mjs";
@@ -478,15 +478,10 @@ const hostToolCatalog = new HostToolCatalog([
     tools: workspaceDynamicTools,
     execute: (input) => callWorkspaceDynamicTool(input)
   },
-  {
-    id: "project-code",
-    tools: projectCodeDynamicTools,
-    authorize: ({ metadata }) => metadata?.sessionKind === "worker"
-      && Boolean(metadata?.logicalSessionId)
-      && Boolean(metadata?.workItemId)
-      && Boolean(metadata?.objectiveId),
-    execute: (input) => callProjectCodeHostTool(input)
-  },
+  createProjectCodeHostNamespace({
+    getService: () => projectCodeApplicationService,
+    validateRoute: validateProjectCodeHostRoute
+  }),
   {
     id: "collaboration",
     tools: sessionCollaborationV2Enabled
@@ -3163,7 +3158,7 @@ async function callWorkspaceDynamicTool(params) {
   throw new Error(`Unsupported workspace tool: ${params.tool}`);
 }
 
-async function callProjectCodeHostTool(params) {
+function validateProjectCodeHostRoute(params) {
   const logical = store.getLogicalSessionByProviderThreadId(params.threadId);
   if (!logical || logical.activeThreadId !== params.threadId
     || logical.logicalSessionId !== params.metadata?.logicalSessionId) {
@@ -3172,7 +3167,6 @@ async function callProjectCodeHostTool(params) {
     error.stage = "route_validation";
     throw error;
   }
-  return callProjectCodeDynamicTool(projectCodeApplicationService, params);
 }
 
 function collaborationRuntimeInstructions(agentId) {

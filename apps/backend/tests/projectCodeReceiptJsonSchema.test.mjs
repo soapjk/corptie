@@ -16,7 +16,7 @@ test("bundled approved Snapshot/Search schema has the fixed Artifact bytes and c
   const path = new URL("../src/contracts/project-code-search-receipts.schema.json", import.meta.url);
   const bundled = await readFile(path);
   const artifactBytes = bundled.at(-1) === 0x0a ? bundled.subarray(0, -1) : bundled;
-  assert.equal(artifactBytes.byteLength, 29_671);
+  assert.equal(artifactBytes.byteLength, 29_677);
   assert.equal(sha256Hex(artifactBytes), PROJECT_CODE_SCHEMA_ARTIFACT.contentHash);
   const schema = await loadProjectCodeReceiptSchema();
   assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
