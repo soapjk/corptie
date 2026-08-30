@@ -14,8 +14,14 @@ export const ARTIFACT_RELATIONS = Object.freeze([
 const VISIBILITIES = new Set(ARTIFACT_VISIBILITIES);
 const RELATIONS = new Set(ARTIFACT_RELATIONS);
 const VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
+const DEFAULT_READ_BYTES = 16 * 1024;
 const MAX_READ_BYTES = 64 * 1024;
 const MAX_INDEX_ITEMS = 80;
+const MAX_INDEX_BYTES = 16 * 1024;
+const MAX_INDEX_ESTIMATED_TOKENS = 4096;
+const MAX_INDEX_SUMMARY_BYTES = 1024;
+const MAX_TURN_READ_BYTES = 128 * 1024;
+const MAX_TURN_UNIQUE_PAGES = 16;
 
 export class ArtifactService {
   constructor(options = {}) {
@@ -23,6 +29,7 @@ export class ArtifactService {
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.idFactory = options.idFactory ?? randomUUID;
     this.contentRoot = options.contentRoot ?? null;
+    this.turnPageBudgets = new Map();
     if (!this.store) throw new TypeError("ArtifactService requires a store.");
   }
 
@@ -79,9 +86,12 @@ export class ArtifactService {
       return { kind: "local_user", actorId: input.actorId ?? "local-user", objectiveId, sessionId: null, workItemId: null };
     }
     const actorId = requiredText(input.actorId, "actorId");
-    const agent = this.store.getAgent(actorId);
     const claimedSessionId = optionalText(input.sessionId);
-    const sessionId = claimedSessionId ?? optionalText(agent?.currentSessionId);
+    // Agent.currentSessionId is only a recency/UI pointer. Artifact authority
+    // always comes from the exact authenticated Session binding supplied by
+    // Tool Host or the authenticated MCP transport.
+    const sessionId = claimedSessionId;
+    const agent = this.store.getAgent(actorId);
     const session = sessionId ? this.store.getSession(sessionId) : null;
     if (!agent || !session) throw artifactError("ARTIFACT_SESSION_SCOPE_REQUIRED", "Artifact tools require an authenticated current Session.", 403);
     if ((session.agentId ?? session.agent_id) !== actorId) {
@@ -108,7 +118,11 @@ export class ArtifactService {
         throw artifactError("ARTIFACT_WORK_ITEM_FORBIDDEN", "Worker Session has an invalid WorkItem binding.", 403);
       }
     }
-    return { kind, actorId, objectiveId, sessionId, workItemId };
+    return {
+      kind, actorId, objectiveId, sessionId, workItemId,
+      providerBindingId: optionalText(input.providerBindingId),
+      turnId: optionalText(input.turnId)
+    };
   }
 
   list(contextInput, options = {}) {
@@ -125,8 +139,25 @@ export class ArtifactService {
     const artifact = this.#readableArtifact(context, artifactId);
     const selected = this.#selectedVersion(context, artifact, options.version);
     if (!selected) throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "Artifact version not found.", 404);
+    if (context.kind === "worker" && context.providerBindingId) {
+      if (!Number.isInteger(options.version)
+        || !optionalText(options.contentHash)
+        || !Number.isInteger(options.offset)
+        || !Number.isInteger(options.limit)
+        || options.format !== "text") {
+        throw artifactError(
+          "ARTIFACT_PINNED_READ_REQUIRED",
+          "Worker Artifact reads require exact version, contentHash, offset, limit, and format.",
+          400
+        );
+      }
+      if (selected.contentHash !== options.contentHash) {
+        throw artifactError("ARTIFACT_PINNED_HASH_MISMATCH", "Artifact content hash does not match the pinned Reference.", 409);
+      }
+    }
     const offset = boundedInteger(options.offset, 0, Number.MAX_SAFE_INTEGER, 0, "offset");
-    const limit = boundedInteger(options.limit, 1, MAX_READ_BYTES, MAX_READ_BYTES, "limit");
+    const limit = boundedInteger(options.limit, 1, MAX_READ_BYTES, DEFAULT_READ_BYTES, "limit");
+    this.#admitTurnPage(context, artifact, selected, offset, limit, options.format ?? "text");
     let content = null;
     let nextOffset = null;
     if (selected.storageKey) {
@@ -605,19 +636,46 @@ export class ArtifactService {
     const relatedWorkItemIds = this.#relatedWorkItemIds(context);
     const all = this.store.listArtifactsByObjective(objectiveId)
       .filter((artifact) => this.#canRead(context, artifact, relatedWorkItemIds));
-    const items = all.slice(0, MAX_INDEX_ITEMS).map((artifact) => {
+    const items = [];
+    for (const artifact of all.slice(0, MAX_INDEX_ITEMS)) {
       const version = this.#selectedVersion(context, artifact, null, relatedWorkItemIds);
       const references = this.#matchingReferences(context, artifact, relatedWorkItemIds);
-      return {
-        artifactId: artifact.artifactId, title: artifact.title, summary: artifact.summary,
+      const candidate = {
+        artifactId: artifact.artifactId, title: artifact.title,
+        summary: truncateUtf8(artifact.summary, MAX_INDEX_SUMMARY_BYTES),
         visibility: artifact.visibility, version: version?.version ?? 0,
         contentHash: version?.contentHash ?? null,
         required: references.some((reference) => reference.required),
         relations: [...new Set(references.map((reference) => reference.relation))],
         pendingUpdate: references.some((reference) => reference.pendingVersion != null)
       };
-    });
+      const encoded = Buffer.byteLength(JSON.stringify({ artifacts: [...items, candidate] }));
+      if (encoded > MAX_INDEX_BYTES || Math.ceil(encoded / 4) > MAX_INDEX_ESTIMATED_TOKENS) break;
+      items.push(candidate);
+    }
     return { items, omittedCount: Math.max(0, all.length - items.length) };
+  }
+
+  #admitTurnPage(context, artifact, version, offset, limit, format) {
+    if (context.kind !== "worker" || !context.providerBindingId || !context.turnId) return;
+    const budgetKey = `${context.sessionId}\0${context.providerBindingId}\0${context.turnId}`;
+    const pageKey = [
+      context.sessionId, context.providerBindingId, context.turnId, artifact.artifactId,
+      version.version, version.contentHash, offset, limit, format
+    ].join("\0");
+    const budget = this.turnPageBudgets.get(budgetKey) ?? { pages: new Set(), bytes: 0, updatedAt: Date.now() };
+    if (budget.pages.has(pageKey)) return;
+    if (budget.pages.size >= MAX_TURN_UNIQUE_PAGES || budget.bytes + limit > MAX_TURN_READ_BYTES) {
+      throw artifactError("ARTIFACT_TURN_READ_BUDGET_EXCEEDED", "Artifact read budget for this Turn was exceeded.", 429);
+    }
+    budget.pages.add(pageKey);
+    budget.bytes += limit;
+    budget.updatedAt = Date.now();
+    this.turnPageBudgets.set(budgetKey, budget);
+    if (this.turnPageBudgets.size > 512) {
+      const oldest = [...this.turnPageBudgets].sort((left, right) => left[1].updatedAt - right[1].updatedAt).slice(0, 128);
+      for (const [key] of oldest) this.turnPageBudgets.delete(key);
+    }
   }
 
   present(artifact) {
@@ -1179,6 +1237,13 @@ function contentBuffer(value) {
   if (Buffer.isBuffer(value)) return value;
   if (typeof value !== "string") throw artifactError("ARTIFACT_CONTENT_REQUIRED", "Artifact content is required.", 400);
   return Buffer.from(value, "utf8");
+}
+function truncateUtf8(value, maxBytes) {
+  const text = String(value ?? "");
+  if (Buffer.byteLength(text) <= maxBytes) return text;
+  let end = Math.min(text.length, maxBytes);
+  while (end > 0 && Buffer.byteLength(text.slice(0, end)) > maxBytes - 3) end -= 1;
+  return `${text.slice(0, end)}…`;
 }
 function optionalText(value) { const text = typeof value === "string" ? value.trim() : ""; return text || null; }
 function requiredText(value, field) { const text = optionalText(value); if (!text) throw artifactError("ARTIFACT_INVALID_INPUT", `${field} is required.`, 400); return text; }

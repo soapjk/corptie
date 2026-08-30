@@ -455,7 +455,27 @@ export class ClaudeAgentManager {
 
   async reconnect(id, options = {}) {
     if (this.get(id)) {
-      return this.toSessionSummary(this.get(id));
+      const session = this.get(id);
+      if (options.runtimeOptions) {
+        const nextRuntimeOptions = normalizeClaudeRuntimeOptions(options.runtimeOptions);
+        if (JSON.stringify(session.runtimeOptions ?? {}) !== JSON.stringify(nextRuntimeOptions)) {
+          if (session.turnState !== "idle" || session.currentTurnId) {
+            const error = new Error("Claude Tool configuration cannot refresh during an active Turn.");
+            error.code = "PROVIDER_TOOL_REFRESH_DURING_TURN";
+            throw error;
+          }
+          const previousQuery = session.query;
+          const previousQueryTask = session.queryTask;
+          session.queryClosed = true;
+          await previousQuery?.close?.();
+          if (previousQueryTask) await previousQueryTask.catch(() => {});
+          if (session.query === previousQuery) session.query = null;
+          if (session.queryTask === previousQueryTask) session.queryTask = null;
+          session.runtimeOptions = nextRuntimeOptions;
+        }
+        if (options.startQuery !== false) await this.ensureQueryStarted(session);
+      }
+      return this.toSessionSummary(session);
     }
     const stored = this.store?.getSession(id);
     if (!stored || stored.external?.provider !== "claude-sdk") {

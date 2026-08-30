@@ -30,6 +30,7 @@ import {
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
+import { appliedToolMaterializationReceipt } from "./agent-provider/toolSchemaCapabilities.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
@@ -70,6 +71,11 @@ import { ArtifactService } from "./application/artifactService.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
+import { ToolMaterializationPort } from "./application/toolMaterializationPort.mjs";
+import {
+  RegistryToolMaterializationPort,
+  ToolHostMaterializationCoordinator
+} from "./application/toolHostMaterializationCoordinator.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import { OpenClackyManager } from "./adapters/openClackyManager.mjs";
@@ -568,7 +574,7 @@ const codexRuntime = createCodexProviderRuntime({
   onDynamicToolCall: (params) => toolHostService.execute({
     ...params,
     actorId: params.agentId,
-    metadata: params.metadata
+    metadata: resolveDynamicToolCallMetadata(params)
   })
 });
 const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
@@ -783,6 +789,7 @@ const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitComm
 const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
 const openClackyProvider = createOpenClackyProvider(openClackyManager, {
   attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
+  applyToolPlanAtTurnBoundary: applyOpenClackyToolPlanAtTurnBoundary,
   prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
   readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null
 });
@@ -822,6 +829,23 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
         attachment.metadata
       )
     ),
+    applyToolPlanAtTurnBoundary: async (binding, plan, request) => {
+      const confirmation = codexRuntime.confirmThreadToolPlan(
+        binding.providerSessionId,
+        plan.providerDefinitions
+      );
+      return appliedToolMaterializationReceipt({
+        providerBindingId: binding.providerBindingId,
+        providerCapabilityRevision: request.capabilityRevision,
+        requestedVersion: request.requestedVersion,
+        appliedCatalogVersion: request.catalogVersion,
+        appliedDomains: request.appliedDomains,
+        appliedExposurePlanHash: plan.exposurePlanHash,
+        refreshMode: plan.refreshMode,
+        providerRevision: confirmation.providerRevision,
+        receiptId: `codex-tool-confirmation:${binding.providerBindingId}:${request.requestedVersion}`
+      });
+    },
     runBackgroundPrompt: (input) => codexRuntime.runEphemeralPrompt({
       cwd: input.cwd,
       runtimeWorkspaceRoots: input.allowedRoots,
@@ -839,9 +863,32 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   },
   additionalProviders: [openClackyProvider]
 });
+const providerToolMaterializationPort = new RegistryToolMaterializationPort({
+  registry: agentProviderRegistry
+});
+const toolHostMaterializationCoordinator = new ToolHostMaterializationCoordinator({
+  store,
+  catalog: hostToolCatalog,
+  providerPort: providerToolMaterializationPort,
+  resolveBinding: (logicalSessionId, providerBindingId) => resolveToolHostBinding(
+    logicalSessionId,
+    providerBindingId
+  ),
+  onEvent: (type, payload) => emitEvent("ToolHostMaterializationObserved", { type, ...payload })
+});
+const publicToolMaterializationPort = new ToolMaterializationPort({
+  coordinator: toolHostMaterializationCoordinator,
+  resolveCurrentBinding: (logicalSessionId) => {
+    const logical = store.getLogicalSession(logicalSessionId);
+    const bindingId = logical?.activeBinding?.bindingId ?? null;
+    return bindingId ? resolveToolHostBinding(logicalSessionId, bindingId) : null;
+  }
+});
 toolHostService = new ToolHostService({
   registry: agentProviderRegistry,
   catalog: hostToolCatalog,
+  coordinator: toolHostMaterializationCoordinator,
+  materializationPort: publicToolMaterializationPort,
   resolveMcpServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId),
   recordRuntimeEvent: (event) => store.recordSkillRuntimeEvent(event)
 });
@@ -852,10 +899,42 @@ toolHostService = new ToolHostService({
 openClackyManager.onProbe = () => {
   agentProviderRegistry.refreshProvider(createOpenClackyProvider(openClackyManager, {
     attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
+    applyToolPlanAtTurnBoundary: applyOpenClackyToolPlanAtTurnBoundary,
     prepareWorkspaceTransition: (reference, input = {}) => switchOpenClackyProviderWorkspace(reference, input),
     readSessionUsage: async (reference) => store.getSessionUsageSnapshot(reference.sessionId)?.context ?? null
   }));
 };
+
+async function applyOpenClackyToolPlanAtTurnBoundary(binding, plan, request) {
+  const metadata = {
+    logicalSessionId: binding.logicalSessionId,
+    providerBindingId: binding.providerBindingId,
+    sessionId: binding.sessionId,
+    sessionKind: binding.sessionKind,
+    objectiveId: binding.objectiveId,
+    workItemId: binding.workItemId
+  };
+  const providerAttachment = openClackyToolHostAttachment({
+    actorId: binding.agentId,
+    tools: plan.providerDefinitions,
+    metadata
+  });
+  const confirmation = await openClackyManager.applyConfirmedToolHost(
+    binding.providerSessionId,
+    { actorId: binding.agentId, metadata, providerAttachment }
+  );
+  return appliedToolMaterializationReceipt({
+    providerBindingId: binding.providerBindingId,
+    providerCapabilityRevision: request.capabilityRevision,
+    requestedVersion: request.requestedVersion,
+    appliedCatalogVersion: request.catalogVersion,
+    appliedDomains: request.appliedDomains,
+    appliedExposurePlanHash: plan.exposurePlanHash,
+    refreshMode: plan.refreshMode,
+    providerRevision: confirmation.providerRevision,
+    receiptId: confirmation.receiptId
+  });
+}
 const sessionBindingRepository = new SessionBindingRepository({
   store,
   normalizeLegacySessionId: normalizeSessionId,
@@ -2776,10 +2855,10 @@ function ensureCollaborationAgentForSession(session, preferredAgentId = null) {
 
 function collaborationThreadOptions(agentId) {
   if (!agentId) return {};
-  return codexToolHostAttachment({
-    actorId: agentId,
-    tools: hostToolCatalog.definitions({ actorId: agentId })
-  }, collaborationProviderRuntimeOptions(agentId));
+  // Tool definitions are attached only through ToolHostService after a
+  // capability probe. This fallback carries runtime instructions but never
+  // recreates an eager, Provider-specific catalog.
+  return collaborationProviderRuntimeOptions(agentId);
 }
 
 // 会话创建专用：在静态协作协议基础上，追加 Agent 身份 + systemPrompt + per-agent 记忆。
@@ -2934,7 +3013,44 @@ function sessionToolMetadata(session) {
     objectiveId: session?.objectiveId ?? null,
     workItemId: session?.workItemId ?? null,
     sessionId: session?.id ?? null,
-    logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null
+    logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
+    providerBindingId: logical?.activeBinding?.bindingId ?? null
+  };
+}
+
+function resolveDynamicToolCallMetadata(params = {}) {
+  const logical = params.threadId
+    ? store.getLogicalSessionByProviderThreadId(params.threadId)
+    : null;
+  const session = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
+  return session ? sessionToolMetadata(session) : (params.metadata ?? null);
+}
+
+function resolveToolHostBinding(logicalSessionId, providerBindingId) {
+  const logical = store.getLogicalSession(logicalSessionId);
+  const active = logical?.activeBinding ?? null;
+  if (!logical || !active || active.bindingId !== providerBindingId) return null;
+  const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
+  const workItem = session?.workItemId ? store.getWorkItem(session.workItemId) : null;
+  return {
+    logicalSessionId: logical.logicalSessionId,
+    providerBindingId: active.bindingId,
+    providerId: active.providerId,
+    providerSessionId: active.providerSessionId,
+    routingVersion: active.routingVersion,
+    state: active.state,
+    isCurrent: logical.activeThreadId === active.providerThreadId,
+    tombstoned: session?.deletedAt != null,
+    sessionId: session?.id ?? null,
+    sessionKind: session?.sessionKind ?? "legacy",
+    objectiveId: session?.objectiveId ?? null,
+    workItemId: session?.workItemId ?? null,
+    currentWorkItemSessionId: workItem?.current_session_id ?? null,
+    agentId: session?.agentId ?? null,
+    authorizationRevision: Math.max(
+      Number(logical.routingVersion ?? 1),
+      Number(workItem?.resource_version ?? 1)
+    )
   };
 }
 
@@ -7089,12 +7205,17 @@ function route(request, response) {
         const sessionId = typeof request.headers["x-corptie-session-id"] === "string"
           ? request.headers["x-corptie-session-id"].trim()
           : "";
+        const providerBindingId = typeof request.headers["x-corptie-provider-binding-id"] === "string"
+          ? request.headers["x-corptie-provider-binding-id"].trim()
+          : "";
         const session = sessionId ? store.getSession(sessionId) : null;
+        const metadata = sessionToolMetadata(session);
         const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
         const actorMatches = session && (session.agentId === actorId || boundAgent?.agentId === actorId);
         const platformScope = session?.sessionKind === "assistantChat"
           && isPlatformAssistant(store.getAgent(actorId));
-        if (!actorId || !session || (!platformScope && !["objectiveChat", "worker"].includes(session.sessionKind))
+        if (!actorId || !session || !providerBindingId || providerBindingId !== metadata.providerBindingId
+          || (!platformScope && !["objectiveChat", "worker"].includes(session.sessionKind))
           || !actorMatches) {
           const error = new Error("Session Tool scope is invalid or no longer active.");
           error.code = "SESSION_TOOL_SCOPE_REQUIRED";
@@ -7102,13 +7223,45 @@ function route(request, response) {
         }
         const result = await toolHostService.execute({
           actorId, tool: input.tool, arguments: input.arguments ?? {},
-          metadata: sessionToolMetadata(session)
+          metadata
         });
         sendJson(response, 200, result);
       })
       .catch((error) => sendJson(response, errorStatus(error, 403), {
         error: error.message, code: error.code ?? "SESSION_TOOL_FAILED"
       }));
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/internal/session/tool/catalog") {
+    try {
+      const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
+        ? request.headers["x-corptie-agent-id"].trim() : "";
+      const sessionId = typeof request.headers["x-corptie-session-id"] === "string"
+        ? request.headers["x-corptie-session-id"].trim() : "";
+      const providerBindingId = typeof request.headers["x-corptie-provider-binding-id"] === "string"
+        ? request.headers["x-corptie-provider-binding-id"].trim() : "";
+      const session = sessionId ? store.getSession(sessionId) : null;
+      const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
+      const metadata = sessionToolMetadata(session);
+      if (!actorId || !session || !providerBindingId || providerBindingId !== metadata.providerBindingId
+        || (session.agentId !== actorId && boundAgent?.agentId !== actorId)) {
+        const error = new Error("Session Tool catalog scope is invalid or no longer active.");
+        error.code = "SESSION_TOOL_SCOPE_REQUIRED";
+        throw error;
+      }
+      toolHostService.observeGeneratedMcpToolsList({
+        actorId,
+        metadata,
+        desiredVersion: url.searchParams.get("desiredVersion") ?? undefined,
+        observationId: url.searchParams.get("observationId") ?? ""
+      }).then((result) => sendJson(response, 200, result))
+        .catch((error) => sendJson(response, errorStatus(error, 403), {
+          error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED"
+        }));
+    } catch (error) {
+      sendJson(response, errorStatus(error, 403), { error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED" });
+    }
     return;
   }
 

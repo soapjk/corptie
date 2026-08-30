@@ -13,9 +13,11 @@ export const artifactDynamicTools = Object.freeze([
     include_revoked: { type: "boolean", description: "Objective Chat only. Include revoked audit records." }
   }),
   tool("corptie_artifact_get", "Read one authorized Artifact version on demand. Content is paged and every read records artifactId, version, hash, Session, and byte range.", {
-    artifact_id: artifactId, version, offset: { type: "integer", minimum: 0 },
-    limit: { type: "integer", minimum: 1, maximum: 65536 }
-  }, ["artifact_id"]),
+    artifact_id: artifactId, version, content_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    offset: { type: "integer", minimum: 0 },
+    limit: { type: "integer", minimum: 1, maximum: 65536 },
+    format: { type: "string", enum: ["text"] }
+  }, ["artifact_id", "version", "content_hash", "offset", "limit", "format"]),
   tool("corptie_artifact_search", "Search metadata and bounded local private content across only Artifacts authorized for the authenticated Session.", {
     query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 }
   }, ["query"]),
@@ -50,11 +52,16 @@ export async function callArtifactDynamicTool(service, input = {}) {
     actorId: input.actorId,
     sessionId: input.metadata?.sessionId,
     objectiveId: input.metadata?.objectiveId,
-    workItemId: input.metadata?.workItemId
+    workItemId: input.metadata?.workItemId,
+    providerBindingId: input.metadata?.providerBindingId,
+    turnId: input.metadata?.turnId
   };
   switch (input.tool) {
     case "corptie_artifact_list": return { artifacts: service.list(context, { includeRevoked: args.include_revoked }) };
-    case "corptie_artifact_get": return service.get(context, args.artifact_id, { version: args.version, offset: args.offset, limit: args.limit });
+    case "corptie_artifact_get": return service.get(context, args.artifact_id, {
+      version: args.version, contentHash: args.content_hash, offset: args.offset,
+      limit: args.limit, format: args.format
+    });
     case "corptie_artifact_search": return service.search(context, args.query, { limit: args.limit });
     case "corptie_artifact_create": return service.create(context, {
       title: args.title, summary: args.summary, content: args.content, visibility: args.visibility,
