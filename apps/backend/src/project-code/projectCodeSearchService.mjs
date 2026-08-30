@@ -214,7 +214,7 @@ export class ProjectCodeSearchService {
   async #runL0(query, scope, options) {
     if (scope.length === 0) return { results: [], candidateCount: 0, indexHit: false, isolationRequired: false };
     const args = ["--json", "--fixed-strings", "--line-number", "--color", "never", "--no-follow", "--hidden", "--max-filesize", "8M",
-      "-g", "!.git/**", "-g", "!.corptie/worktrees/**", "-g", "!node_modules/**", "-g", "!vendor/**",
+      "-g", "!.git/**", "-g", "!.corptie/**", "-g", "!node_modules/**", "-g", "!vendor/**",
       "-g", "!Pods/**", "-g", "!Carthage/**", "-g", "!.gradle/**", "-g", "!target/**", "-g", "!coverage/**",
       "-g", "!.build/**", "-g", "!build/**", "-g", "!DerivedData/**", "-g", "!dist/**", "-g", "!out/**"];
     if (!options.allowGenerated) args.push("-g", "!generated/**", "-g", "!codegen/**");

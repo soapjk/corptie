@@ -98,7 +98,16 @@ export class RunIsolationService {
     const child=spawn(descriptor.executable,descriptor.args??[],{cwd:descriptor.cwd,env:environment,detached:true,stdio:["ignore",log.fd,log.fd,run.runContext.backendListenFD]});
     const childCompletion=new Promise((resolve)=>{let settled=false;const complete=(value)=>{if(settled)return;settled=true;resolve(value)};child.once("error",(error)=>complete({kind:"error",error}));child.once("close",(code,signal)=>complete({kind:"exit",code,signal}))});
     await log.close();
-    const identity=await this.processSupervisor.identity(child.pid,{runToken,fencingToken:run.fencingToken,pgid:child.pid});
+    let identity=null;let identityError=null;let terminalBeforeIdentity=false;
+    for(let attempt=0;attempt<10&&!identity&&!terminalBeforeIdentity;attempt+=1){
+      try{identity=await this.processSupervisor.identity(child.pid,{runToken,fencingToken:run.fencingToken,pgid:child.pid});identityError=null}catch(error){identityError=error}
+      if(!identity){const completion=await Promise.race([childCompletion,new Promise(resolve=>setTimeout(()=>resolve(null),20))]);terminalBeforeIdentity=completion!==null}
+    }
+    if(!identity&&!terminalBeforeIdentity&&identityError)throw identityError;
+    // Very short commands can exit before ps observes a stable identity. The
+    // exact child handle still provides terminal evidence; wait for it before
+    // publishing the ready/running transition when no live identity exists.
+    if(!identity)await childCompletion;
     const processLease=identity?this.store.createLease({leaseId:`lease:${this.uuid()}`,runId:run.runId,kind:"process",resourceKey:`pid:${child.pid}:${identity.kernelStartTime}`,ownerNonce:run.ownerNonce,fence:run.fencingToken,expiresAt:new Date(this.clock().getTime()+30_000).toISOString()}):null;
     if(identity){this.store.recordProcess({runId:run.runId,role:descriptor.role??"worker",generation:run.generation,pid:child.pid,kernelStartTime:identity.kernelStartTime,pgid:child.pid,
       executableHash:identity.executableRealpathHash,runTokenHash:identity.runTokenHash,serverHandleId:run.runContext.serverHandleId,observedAt:this.clock().toISOString()});
@@ -155,6 +164,10 @@ export class RunIsolationService {
 
   async #completeExecution(runId,completion,session){
     let run=this.#authorize(runId,session);if(run.state!=="running")return this.store.latestRunReceipt(runId);
+    // A close event from the exact child handle is authoritative evidence that
+    // this process generation exited. Do not reclassify an in-place exec (for
+    // example swift -> swift-driver) as a foreign PID during terminal cleanup.
+    const execution=this.executions.get(runId);if(completion.kind==="exit"&&execution?.process)this.store.exitProcess(execution.process.runId,execution.process.role,execution.process.generation,this.clock().toISOString());
     const requested=completion.requestedOutcome??this.executions.get(runId)?.requestedOutcome;
     const outcome=requested??(completion.kind==="error"||completion.signal?"infrastructure_failed":completion.code===0?"passed":"failed");
     const terminalState=outcome==="passed"?"completed":outcome==="cancelled"?"cancelled":"failed";
@@ -163,7 +176,7 @@ export class RunIsolationService {
     this.store.appendEvent(runId,"RunStopping",{outcome,code:completion.code??null,signal:completion.signal??null});
     const reconciliation=await this.#stopProcesses(run);if(!["matchedExited","esrch"].includes(reconciliation))throw contractError("RUN_PROCESS_IDENTITY_INDETERMINATE","Process completion could not be reconciled safely.");
     await this.portBroker.release(run.runContext.serverHandleId);this.runtimeSecrets.delete(runId);this.store.releaseRunResourceLeases(runId,run.fencingToken);
-    const execution=this.executions.get(runId);if(execution?.captureOutput){const output=await readFile(execution.logPath,"utf8").catch(()=>"");this.commandOutputs.set(runId,output.length>4*1024*1024?output.slice(-4*1024*1024):output)}
+    if(execution?.captureOutput){const output=await readFile(execution.logPath,"utf8").catch(()=>"");this.commandOutputs.set(runId,output.length>4*1024*1024?output.slice(-4*1024*1024):output)}
     const completedAt=this.clock().toISOString();run=this.store.updateRun(runId,{expectedVersion:run.resourceVersion,fencingToken:run.fencingToken,fromStates:["stopping"],state:"cleaning",patch:{outcome,phaseTimestamps:{...run.phaseTimestamps,stoppedAt:completedAt,completedAt},error:terminalError}});
     const receipt=this.#runReceipt(run,terminalState,terminalError);this.store.saveRunReceipt(runId,receipt);this.store.appendEvent(runId,"RunCompleted",{state:terminalState,outcome,reconciliation});
     const policy=outcome==="passed"?"success_default":outcome==="cancelled"?"cancelled_ttl":outcome==="infrastructure_failed"?"infrastructure_ttl":"failure_ttl";

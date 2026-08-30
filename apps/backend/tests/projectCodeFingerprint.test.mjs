@@ -3,6 +3,7 @@ import { mkdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { hashCanonical } from "../src/project-code/projectCodeContracts.mjs";
+import { defaultExclusionReason } from "../src/project-code/projectCodePaths.mjs";
 import { RepositorySourceSnapshotBuilder } from "../src/project-code/projectCodeSnapshot.mjs";
 import { createProjectCodeFixture, git } from "./helpers/projectCodeTestFixture.mjs";
 
@@ -71,6 +72,22 @@ test("same tree and overlay remain distinct across authoritative Worktrees", asy
     assert.notEqual(firstSnapshot.receipt.sourceFingerprint, secondSnapshot.receipt.sourceFingerprint);
   } finally {
     await git(fixture.directory, ["worktree", "remove", "--force", linked]).catch(() => {});
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
+test("Toolset-owned .corptie state cannot invalidate its authoritative source fingerprint", async () => {
+  const fixture = await createProjectCodeFixture({ files: { "Package.swift": "// source\n" } });
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const before = await builder.build(fixture);
+    await mkdir(join(fixture.directory, ".corptie/project-toolset/generated"), { recursive: true });
+    await writeFile(join(fixture.directory, ".corptie/project-toolset/active.json"), '{"receiptId":"toolset_validation_receipt:test"}\n');
+    await writeFile(join(fixture.directory, ".corptie/project-toolset/generated/candidate.json"), "{}\n");
+    const after = await builder.build(fixture);
+    assert.equal(after.receipt.sourceFingerprint, before.receipt.sourceFingerprint);
+    assert.equal(defaultExclusionReason(".corptie/project-toolset/active.json"), "DEFAULT_EXCLUDED_SPACE");
+  } finally {
     await rm(fixture.directory, { recursive: true, force: true });
   }
 });
