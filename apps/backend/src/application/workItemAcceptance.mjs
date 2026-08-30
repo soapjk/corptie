@@ -233,10 +233,7 @@ export function workItemExecutionPatch(workItem, sessionStatus) {
   }[sessionStatus];
   if (!executionStatus) return null;
 
-  const patch = { executionStatus };
-  const terminal = ["done", "complete", "completed"].includes(workItem?.status);
-  if (!terminal && ["running", "blocked"].includes(sessionStatus)) {
-    patch.status = "in_progress";
-  }
-  return patch;
+  // Session/Turn lifecycle is execution evidence only. WorkItem review state is
+  // advanced by WorkItem start/review workflows, never by Provider projection.
+  return { executionStatus };
 }

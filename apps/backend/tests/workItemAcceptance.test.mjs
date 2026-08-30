@@ -174,8 +174,7 @@ test("Session lifecycle states update execution only and never prove WorkItem ac
 test("a paused Session can continue without creating or preserving an unsupported review", () => {
   assert.deepEqual(workItemExecutionPatch(workItem, "paused"), { executionStatus: "paused" });
   assert.deepEqual(workItemExecutionPatch(workItem, "running"), {
-    executionStatus: "running",
-    status: "in_progress"
+    executionStatus: "running"
   });
   assert.deepEqual(workItemExecutionPatch({ ...workItem, status: "review" }, "paused"), {
     executionStatus: "paused"
