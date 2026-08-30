@@ -443,52 +443,6 @@
         "artifactRef"
       ]
     },
-    "ToolsetValidationReceiptRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "receiptId": {
-          "type": "string",
-          "pattern": "^toolset_validation_receipt:[A-Za-z0-9_-]+$"
-        },
-        "receiptHash": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
-        "schemaVersion": {
-          "const": 2
-        },
-        "resourceVersion": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "artifactRef": {
-          "$ref": "#/$defs/ToolsetValidationContractArtifactRef"
-        },
-        "toolsetVersion": {
-          "type": "string",
-          "pattern": "^ptv1:[0-9a-f]{64}$"
-        },
-        "validationPlanIdentity": {
-          "type": "string",
-          "pattern": "^vp1:[0-9a-f]{64}$"
-        },
-        "sourceFingerprint": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      },
-      "required": [
-        "receiptId",
-        "receiptHash",
-        "schemaVersion",
-        "resourceVersion",
-        "artifactRef",
-        "toolsetVersion",
-        "validationPlanIdentity",
-        "sourceFingerprint"
-      ]
-    },
     "LeaseRef": {
       "type": "object",
       "additionalProperties": false,
@@ -654,29 +608,6 @@
         "noActiveCredentialLease",
         "serverHandleClosed",
         "targetBoundary"
-      ]
-    },
-    "ToolsetValidationContractArtifactRef": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "artifactId": {
-          "type": "string",
-          "pattern": "^artifact:[0-9a-f-]+$"
-        },
-        "version": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "contentHash": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        }
-      },
-      "required": [
-        "artifactId",
-        "version",
-        "contentHash"
       ]
     }
   },

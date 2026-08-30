@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://corptie.local/contracts/project-code-search-receipts/v3-run-v5",
-  "title": "Corptie Project Code Search Receipt Contracts — RunReceipt v5 Convergence",
-  "description": "Approved fixed successor to artifact:619de450-ff1f-4506-b06e-24c015317422@1 (49deb38e337da1af7067dc458fb552cae2d33e20531124d3c7143060615b957e). RepositorySourceSnapshotReceipt and SearchReceipt remain closed and unchanged except the minimum RunReceipt v5 / CleanupReceipt v4 authority convergence. No v4 Run compatibility, conversion, alias, or dual contract.",
+  "$id": "https://corptie.local/contracts/project-code-search-receipts/v4-run-v6",
+  "title": "Corptie Project Code Search Receipt Contracts — Approved RunReceipt v6",
+  "description": "Approved fixed successor to artifact:aa6c9c01-7a1a-45bb-9a2d-51b3ffca1516@1 (03e5985fcd33abc95c4d805b3e023390db48b18391a4e49cfb20c758fe2703cc). Only RunReceipt authority/schemaVersion is converged to the approved v6 contract; CleanupReceipt remains schemaVersion 4. RepositorySourceSnapshotReceipt, SearchReceipt, sourceFingerprint ownership, Startup/Snapshot fields, closed shapes, and the acyclic stage chain are unchanged.",
   "oneOf": [
     {
       "$ref": "#/$defs/RepositorySourceSnapshotReceipt"
@@ -344,13 +344,13 @@
       ],
       "properties": {
         "artifactId": {
-          "const": "artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef"
+          "const": "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f"
         },
         "version": {
           "const": 1
         },
         "contentHash": {
-          "const": "81b374c134fa74e0eb89673b2599eeb7d7d66f6ef7df0710289c6dc379b67184"
+          "const": "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951"
         },
         "relation": {
           "const": "implementation_spec"
@@ -359,7 +359,7 @@
           "const": "RunReceipt"
         },
         "schemaVersion": {
-          "const": 5
+          "const": 6
         }
       }
     },
@@ -376,13 +376,13 @@
       ],
       "properties": {
         "artifactId": {
-          "const": "artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef"
+          "const": "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f"
         },
         "version": {
           "const": 1
         },
         "contentHash": {
-          "const": "81b374c134fa74e0eb89673b2599eeb7d7d66f6ef7df0710289c6dc379b67184"
+          "const": "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951"
         },
         "relation": {
           "const": "implementation_spec"
@@ -417,7 +417,7 @@
           "pattern": "^[0-9a-f]{64}$"
         },
         "schemaVersion": {
-          "const": 5
+          "const": 6
         },
         "resourceVersion": {
           "type": "integer",
@@ -1209,5 +1209,5 @@
       ]
     }
   },
-  "$comment": "Supersedes artifact:619de450-ff1f-4506-b06e-24c015317422@1. RunReceipt authority is artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef@1; RunReceipt schemaVersion=5; CleanupReceipt schemaVersion=4. Toolset canonical contract is not modified by this Artifact."
+  "$comment": "Supersedes artifact:aa6c9c01-7a1a-45bb-9a2d-51b3ffca1516@1. RunReceipt/CleanupReceipt authority is artifact:42cd149b-e230-4347-b4ff-b816c18cf25f@1. No previous Run authority or schema is accepted."
 }

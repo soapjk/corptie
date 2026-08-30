@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
 import { ProjectCodeSearchApplicationService } from "../src/project-code/projectCodeApplicationService.mjs";
-import { projectCodeDynamicTools, callProjectCodeDynamicTool } from "../src/project-code/projectCodeDynamicTools.mjs";
+import { createProjectCodeHostNamespace } from "../src/project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeIndexStore } from "../src/project-code/projectCodeIndexStore.mjs";
 import { ProjectCodeSearchService } from "../src/project-code/projectCodeSearchService.mjs";
 import { RepositorySourceSnapshotBuilder } from "../src/project-code/projectCodeSnapshot.mjs";
@@ -21,12 +21,16 @@ test("Project Tool Host production entry persists authoritative L0-L3 Snapshot/S
   const builder = new RepositorySourceSnapshotBuilder();
   const indexStore = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
   let application = applicationFor({ store, fixture, builder, indexStore });
-  const catalog = new HostToolCatalog([{
-    id: "project-code",
-    tools: projectCodeDynamicTools,
-    authorize: ({ metadata }) => metadata?.sessionKind === "worker" && Boolean(metadata?.logicalSessionId),
-    execute: (input) => callProjectCodeDynamicTool(application, input)
-  }]);
+  const catalog = new HostToolCatalog([createProjectCodeHostNamespace({
+    getService: () => application,
+    validateRoute: ({ metadata: routed }) => {
+      if (routed?.logicalSessionId !== fixture.sessionContext.logicalSessionId) {
+        const error = new Error("stale project-code route");
+        error.code = "PROJECT_CODE_SESSION_ROUTE_STALE";
+        throw error;
+      }
+    }
+  })]);
   const metadata = {
     logicalSessionId: fixture.sessionContext.logicalSessionId,
     sessionKind: "worker",
@@ -36,6 +40,13 @@ test("Project Tool Host production entry persists authoritative L0-L3 Snapshot/S
   try {
     const snap = await catalog.execute({ tool: "corptie_project_code_snapshot", metadata });
     assert.equal(receipts.get(snap.receipt.receiptId).receiptType, "RepositorySourceSnapshotReceipt");
+    await assert.rejects(
+      () => catalog.execute({
+        tool: "corptie_project_code_snapshot",
+        metadata: { ...metadata, logicalSessionId: "logical:stale" }
+      }),
+      (error) => error.code === "PROJECT_CODE_SESSION_ROUTE_STALE"
+    );
 
     const l0 = await catalog.execute({
       tool: "corptie_project_code_search", metadata,
@@ -44,6 +55,10 @@ test("Project Tool Host production entry persists authoritative L0-L3 Snapshot/S
     assert.equal(l0.searchReceipt.layers[0].layer, "L0");
     assert.equal(indexStore.stats.opens, 0);
     assert.equal(receipts.get(l0.searchReceipt.receiptId).receiptType, "SearchReceipt");
+    assert.equal(
+      store.getProjectCodeReceipt(l0.searchReceipt.receiptId, metadata.logicalSessionId).receipt.receiptHash,
+      l0.searchReceipt.receiptHash
+    );
 
     const l2 = await catalog.execute({
       tool: "corptie_project_code_search", metadata,
@@ -65,7 +80,7 @@ test("Project Tool Host production entry persists authoritative L0-L3 Snapshot/S
       arguments: { snapshot_receipt_id: snap.receipt.receiptId, query: "coordination concept", mode: "semantic" }
     });
     assert.deepEqual(isolation.calls.map(([name]) => name), ["prepare", "commandDescriptor", "execute", "cleanup"]);
-    assert.equal(l3.searchReceipt.runIsolationReceiptRef.schemaVersion, 5);
+    assert.equal(l3.searchReceipt.runIsolationReceiptRef.schemaVersion, 6);
     assert.equal(l3.searchReceipt.cleanupReceiptRef.schemaVersion, 4);
     assert.equal(JSON.stringify(receipts.get(l3.searchReceipt.receiptId).receipt).includes("not persisted"), false);
   } finally {

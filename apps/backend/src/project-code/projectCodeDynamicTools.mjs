@@ -46,6 +46,24 @@ export const projectCodeDynamicTools = Object.freeze([
   )
 ]);
 
+export function createProjectCodeHostNamespace(options = {}) {
+  if (typeof options.getService !== "function") {
+    throw new TypeError("Project-code Host namespace requires getService().");
+  }
+  return Object.freeze({
+    id: "project-code",
+    tools: projectCodeDynamicTools,
+    authorize: ({ metadata }) => metadata?.sessionKind === "worker"
+      && Boolean(metadata?.logicalSessionId)
+      && Boolean(metadata?.workItemId)
+      && Boolean(metadata?.objectiveId),
+    execute: async (input) => {
+      await options.validateRoute?.(input);
+      return callProjectCodeDynamicTool(options.getService(), input);
+    }
+  });
+}
+
 export async function callProjectCodeDynamicTool(service, input = {}) {
   if (!service) throw coded("PROJECT_CODE_SEARCH_UNAVAILABLE", "Project-code search service is unavailable.");
   const logicalSessionId = input.metadata?.logicalSessionId;
