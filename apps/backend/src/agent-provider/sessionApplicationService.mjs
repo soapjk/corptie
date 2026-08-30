@@ -96,6 +96,7 @@ export class SessionApplicationService {
       actorId,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId ?? null,
+      ...(reference.bindingId ? { providerBindingId: reference.bindingId } : {}),
       sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
       objectiveId: context.objectiveId ?? null,
       workItemId: context.workItemId ?? null
@@ -108,6 +109,9 @@ export class SessionApplicationService {
         reference,
         toolHost ? { ...finalizationContext, toolHost } : finalizationContext
       );
+      if (toolHost?.materialization?.status === "applying") {
+        await this.toolHostService.confirmPreparedSession(toolHost);
+      }
     } catch (cause) {
       const error = new Error(`Session Tool Host finalization failed: ${cause?.message ?? cause}`);
       error.code = "SESSION_TOOL_MATERIALIZATION_FAILED";
@@ -137,6 +141,8 @@ export class SessionApplicationService {
       purpose: "session-resume",
       actorId,
       sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId ?? null,
+      providerBindingId: reference.bindingId ?? null,
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
       workItemId: storedSession?.workItemId ?? context.workItemId ?? null
@@ -150,6 +156,9 @@ export class SessionApplicationService {
       reference,
       toolHost ? { ...resumeContext, toolHost } : resumeContext
     );
+    if (toolHost?.materialization?.status === "applying") {
+      await this.toolHostService.confirmPreparedSession(toolHost);
+    }
     return this.decorateLifecycleSession(reference.providerId, session, reference);
   }
 
@@ -167,7 +176,9 @@ export class SessionApplicationService {
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
       workItemId: storedSession?.workItemId ?? context.workItemId ?? null,
-      sessionId: reference.sessionId
+      sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId ?? null,
+      providerBindingId: reference.bindingId ?? null
     };
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, materializationContext)

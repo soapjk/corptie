@@ -100,7 +100,7 @@ test("Artifact Host Tool authorization gives Workers create/read but no Objectiv
   }), { ok: true });
   for (const tool of ["corptie_artifact_publish_version", "corptie_artifact_reference", "corptie_artifact_revoke_reference"]) {
     await assert.rejects(() => catalog.execute({ ...worker, tool }), {
-      code: "AGENT_TOOL_FORBIDDEN"
+      code: "SESSION_TOOL_FORBIDDEN"
     });
   }
   assert.deepEqual(catalog.definitions({
@@ -176,7 +176,13 @@ test("Tool Host rejects a Provider that attaches host tools but does not adverti
 test("Host Tool Catalog dispatches by tool name without Provider knowledge", async () => {
   const catalog = new HostToolCatalog([{
     id: "collaboration",
-    tools: [{ name: "corptie_agents_discover" }],
+    tools: [{
+      name: "corptie_agents_discover",
+      inputSchema: {
+        type: "object", properties: { status: { type: "string" } },
+        additionalProperties: false
+      }
+    }],
     execute: (input) => ({ actorId: input.actorId, arguments: input.arguments })
   }]);
   assert.deepEqual(await catalog.execute({
@@ -207,7 +213,7 @@ test("Host Tool Catalog hides and rejects actor-restricted tools at both authori
   ]);
   await assert.rejects(
     () => catalog.execute({ actorId: "ordinary-agent", tool: "corptie_platform_agents_list" }),
-    (error) => error.code === "AGENT_TOOL_FORBIDDEN"
+    (error) => error.code === "SESSION_TOOL_FORBIDDEN"
   );
   assert.deepEqual(
     await catalog.execute({ actorId: "assistant", tool: "corptie_platform_agents_list" }),
