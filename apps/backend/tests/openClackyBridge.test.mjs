@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { OpenClackyManager, probeRuntimeResult } from "../src/adapters/openClackyManager.mjs";
+import { OpenClackyManager, openClackyPreDispatchRecoveryError, probeRuntimeResult } from "../src/adapters/openClackyManager.mjs";
 import { createOpenClackyProvider, openClackyCapabilities } from "../src/agent-provider/providers/openClackyProvider.mjs";
 import { validateAgentProvider, AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 
@@ -189,4 +189,19 @@ test("send rejects a failed OpenClacky Session with the provider initialization 
       && error?.statusCode === 409
       && /Operation not permitted.*AGENTS\.md/.test(error.message)
   );
+});
+
+test("a deleted OpenClacky Session is safely recoverable only before realtime dispatch", async () => {
+  const manager = new OpenClackyManager({
+    fetch: async () => Response.json({ error: "not found" }, { status: 404 }),
+    WebSocket: class { constructor() { this.readyState = 1; } addEventListener() {} send() { throw new Error("must not send"); } }
+  });
+  await assert.rejects(
+    () => manager.send("deleted-session", "Hello"),
+    (error) => error?.code === "PROVIDER_SESSION_UNAVAILABLE"
+      && error?.dispatchState === "not_sent"
+      && error?.recoveryAction === "replace_provider_binding"
+  );
+  const uncertain = new Error("socket closed");
+  assert.equal(openClackyPreDispatchRecoveryError(uncertain, "session"), uncertain);
 });

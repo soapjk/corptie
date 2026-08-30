@@ -403,6 +403,30 @@ test("unusable replacement cleanup removes the local Session even when the Provi
   ]]);
 });
 
+test("Provider deletion and product binding removal remain separate lifecycle steps", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "delete-boundary",
+    displayName: "Delete Boundary",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE]
+  }, {
+    deleteSession: async () => { calls.push("provider-delete"); return true; }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:delete-boundary", logicalSessionId: "logical:delete-boundary",
+      bindingId: "binding:delete-boundary", providerId: "delete-boundary",
+      providerSessionId: "native:delete-boundary", routingVersion: 1
+    }),
+    removeSessionBinding: async () => { calls.push("product-binding-delete"); }
+  });
+
+  await service.deleteSession("logical:delete-boundary");
+  assert.deepEqual(calls, ["provider-delete", "product-binding-delete"]);
+});
+
 test("Session recovery rebuilds and passes the Provider-neutral Tool Host attachment", async () => {
   const calls = [];
   const provider = new CallbackAgentProvider({

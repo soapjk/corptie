@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
 import {
+  codexPreDispatchRecoveryError,
   mapCodexThreadToLegacyTimelineItems,
   mapCodexThreadToSession
 } from "./adapters/codexAppServer.mjs";
@@ -1038,6 +1039,7 @@ const sessionApplicationService = new SessionApplicationService({
       logicalSessionId: reference.logicalSessionId,
       providerId: reference.providerId,
       idempotencyKey: `message-recovery:${context.idempotencyKey}`,
+      triggerDeliveryId: context.idempotencyKey,
       reason: error?.replacementReason ?? error?.code ?? "provider-session-unavailable"
     });
     const recoveredReference = requireSessionReference(sessionId);
@@ -4751,6 +4753,12 @@ async function resumeCodexProviderSession(reference, context = {}) {
     // Its dynamic contracts were installed during thread/start; only their
     // trusted Session scope must be rebound after Corptie persists the route.
     codexRuntime.bindThreadToolContext(reference.providerSessionId, runtimeOptions);
+  } else if (context.purpose === "session-recovery-validation") {
+    // A replacement Codex thread is intentionally empty until the recovered
+    // Delivery is dispatched. Fresh empty threads have no rollout file yet, so
+    // thread/resume would falsely report them missing. ensureThreadResumed
+    // validates the live app-server identity without creating a Turn.
+    await codexRuntime.ensureThreadResumed(reference.providerSessionId, runtimeOptions);
   } else {
     await codexRuntime.resumeThread(reference.providerSessionId, runtimeOptions);
   }
@@ -4826,9 +4834,11 @@ function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
 async function deleteCodexProviderSession(reference) {
   await codexRuntime.deleteThread(reference.providerSessionId);
   workspaceRoutePreparationCache.invalidate(reference.logicalSessionId);
-  const existed = Boolean(store.getSession(reference.sessionId));
-  store.deleteSession(reference.sessionId);
-  return existed;
+  // Product Session deletion belongs to SessionApplicationService's common
+  // removeSessionBinding hook. Keeping it out of the concrete Adapter is also
+  // essential for recovery rollback, whose unbound replacement reference uses
+  // the stable legacy Session id and must never delete that Corptie projection.
+  return true;
 }
 
 async function renameCodexProviderSession(reference, title) {
@@ -5158,15 +5168,20 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   });
   const resumeStartedAt = Date.now();
   logSessionMessageLatency(latencyTrace, "thread_resume_started");
-  const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
-    cwd: activeCwd,
-    runtimeWorkspaceRoots,
-    ...(conflictResolutionSession ? {
-      sandbox: "danger-full-access",
-      approvalPolicy: "never"
-    } : {}),
-    ...threadOptions
-  });
+  let resumeResult;
+  try {
+    resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
+      cwd: activeCwd,
+      runtimeWorkspaceRoots,
+      ...(conflictResolutionSession ? {
+        sandbox: "danger-full-access",
+        approvalPolicy: "never"
+      } : {}),
+      ...threadOptions
+    });
+  } catch (error) {
+    throw codexPreDispatchRecoveryError(error);
+  }
   logSessionMessageLatency(latencyTrace, "thread_resume_completed", {
     durationMs: Date.now() - resumeStartedAt,
     skipped: resumeResult?.alreadyLoaded === true

@@ -120,6 +120,31 @@ test("planner selects full replay, checkpoint tail, restricted handoff, and manu
   assert.equal(manual.strategy, "manual_required");
 });
 
+test("planner maps real persisted Timeline payloads without duplicating Provider user echoes", () => {
+  const plan = planReplay({
+    attempt: attemptFixture({ boundarySequence: 4 }),
+    timelineEvents: [
+      { sequence: 1, type: "SessionUserMessageCreated", payload: { message: { text: "persisted user text" } } },
+      { sequence: 2, type: "user.message.accepted", payload: { item: { text: "persisted user text" }, turnId: "turn:1" } },
+      { sequence: 3, type: "assistant.message.completed", payload: { item: { text: "persisted assistant text", turnId: "turn:1" }, turnId: "turn:1" } },
+      { sequence: 4, type: "turn.completed", payload: { items: [] } }
+    ],
+    capabilities: recoveryCapabilities()
+  });
+  assert.deepEqual(plan.manifest.entries.map((entry) => ({ kind: entry.kind, content: entry.content })), [
+    { kind: "user_message", content: "persisted user text" },
+    { kind: "assistant_message", content: "persisted assistant text" }
+  ]);
+});
+
+test("planner fails closed instead of silently replaying a missing message body", () => {
+  assert.throws(() => planReplay({
+    attempt: attemptFixture({ boundarySequence: 1 }),
+    timelineEvents: [{ sequence: 1, type: "SessionUserMessageCreated", payload: { message: {} } }],
+    capabilities: recoveryCapabilities()
+  }), { code: "RECOVERY_TIMELINE_MESSAGE_INVALID" });
+});
+
 test("recovery freezes Timeline, validates no-side-effect replay, commits binding by CAS, and is idempotent", async () => {
   const fixture = await storeFixture();
   const calls = [];
@@ -158,6 +183,45 @@ test("recovery freezes Timeline, validates no-side-effect replay, commits bindin
     const replayed = await coordinator.recover(input);
     assert.equal(replayed.attemptId, committed.attemptId);
     assert.equal(calls.filter((call) => call === "create").length, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("automatic Message recovery freezes before the triggering unsent delivery", async () => {
+  const fixture = await storeFixture();
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "remember me" } });
+    fixture.store.appendSessionEvent({
+      eventId: "event:trigger-message",
+      sessionId: "session:recovery",
+      type: "SessionUserMessageCreated",
+      source: { type: "desktop", deliveryId: "delivery:trigger" },
+      payload: { deliveryId: "delivery:trigger", message: { text: "send after recovery" } },
+      surface: true
+    });
+    fixture.store.appendSessionEvent({
+      eventId: "event:trigger-queued",
+      sessionId: "session:recovery",
+      type: "AgentWorkQueued",
+      source: { type: "desktop", deliveryId: "delivery:trigger" },
+      payload: { deliveryId: "delivery:trigger" },
+      surface: true
+    });
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort([], fixture.store),
+      resolveProviderDescriptor: () => capabilityDescriptor
+    });
+    const committed = await coordinator.recover({
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: "message-recovery:delivery:trigger",
+      triggerDeliveryId: "delivery:trigger"
+    });
+    assert.equal(committed.boundarySequence, 1);
+    assert.equal(committed.triggerDeliveryId, "delivery:trigger");
+    assert.deepEqual(committed.manifest.entries.map((entry) => entry.content), ["remember me"]);
   } finally {
     await fixture.close();
   }
