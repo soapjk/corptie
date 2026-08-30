@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -103,6 +103,30 @@ test("search and point-read reject a stale dirty overlay instead of silently ref
     assert.equal(result.receipt.errorCode, "SOURCE_SNAPSHOT_STALE");
     await assert.rejects(() => service.pointRead({ snapshot, sessionContext: fixture.sessionContext, path: "Sources/App.swift" }),
       (error) => error.code === "SOURCE_SNAPSHOT_STALE");
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
+});
+
+test("warm freshness rejects a new ignore source outside declared search paths", async () => {
+  const fixture = await createProjectCodeFixture();
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build({ ...fixture, sourceDeclarations: [{ path: "Sources", language: "swift" }] });
+    await mkdir(join(fixture.directory, "Other"));
+    await writeFile(join(fixture.directory, "Other/.gitignore"), "secret.txt\n");
+    await assert.rejects(() => builder.assertCurrent(snapshot), (error) => error.code === "SOURCE_SNAPSHOT_STALE");
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
+});
+
+test("warm freshness revalidates the exact Git marker identity without trusting the cached anchor", async () => {
+  const fixture = await createProjectCodeFixture();
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build(fixture);
+    const mismatched = {
+      ...snapshot,
+      workspaceIdentity: { ...snapshot.workspaceIdentity, gitDirCanonicalPath: join(fixture.directory, ".git-other") }
+    };
+    await assert.rejects(() => builder.assertCurrent(mismatched), (error) => error.code === "STARTUP_BINDING_MISMATCH");
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 

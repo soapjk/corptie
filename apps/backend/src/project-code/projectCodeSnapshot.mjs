@@ -40,35 +40,28 @@ export class StartupBindingReceiptConsumer {
   }
 
   async verify(receipt, binding, sessionContext, options = {}) {
-    assertExactStartupShape(receipt);
-    verifyReceiptHash(receipt, "STARTUP_RECEIPT_HASH_MISMATCH");
-    if (receipt.schemaVersion !== 2 || receipt.status !== "ready" || receipt.error !== null) {
-      throw contractError("STARTUP_BINDING_MISMATCH", "Startup binding is not an approved ready schemaVersion 2 receipt.");
-    }
-    for (const field of ["objectiveId", "workItemId", "logicalSessionId"]) {
-      if (receipt[field] !== sessionContext?.[field]) throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} does not match the authenticated Session binding.`);
-    }
+    assertStartupAuthority(receipt, binding, sessionContext);
     const checked = await this.inspectWorkspace(receipt.canonicalWorktreePath, options);
-    if (checked.repositoryId !== receipt.repositoryId || checked.worktreeId !== receipt.worktreeId
-      || resolve(checked.canonicalPath) !== resolve(receipt.canonicalWorktreePath)) {
-      throw contractError("STARTUP_BINDING_MISMATCH", "Startup Worktree identity no longer matches Git inventory.");
-    }
-    const bindingFields = ["repositoryId", "worktreeId", "providerBindingId", "bindingGeneration",
-      "repositoryInventoryVersion", "workspaceResourceVersion", "resourceVersion"];
-    for (const field of bindingFields) {
-      if (binding && receipt[field] !== binding[field]) throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} is stale.`);
-    }
-    if (binding?.canonicalWorktreePath && resolve(binding.canonicalWorktreePath) !== resolve(receipt.canonicalWorktreePath)) {
-      throw contractError("STARTUP_BINDING_MISMATCH", "Startup canonical Worktree path is stale.");
-    }
-    const [commitOid, treeOid] = await Promise.all([
-      this.runGit(receipt.canonicalWorktreePath, ["rev-parse", "HEAD"], options),
-      this.runGit(receipt.canonicalWorktreePath, ["rev-parse", "HEAD^{tree}"], options)
-    ]);
+    assertWorkspaceIdentity(receipt, checked);
+    const [commitOid, treeOid] = parseSourceIdentity(await this.runGit(
+      receipt.canonicalWorktreePath, ["rev-parse", "HEAD", "HEAD^{tree}"], options
+    ));
     if (commitOid !== receipt.sourceCommitOid || treeOid !== receipt.sourceTreeOid) {
       throw contractError("STARTUP_SOURCE_CHANGED", "The authoritative Worktree HEAD changed after StartupBindingReceipt was issued.");
     }
     return Object.freeze({ receipt, workspace: checked, commitOid, treeOid });
+  }
+
+  async verifyCurrent(receipt, binding, sessionContext, workspace, options = {}) {
+    assertStartupAuthority(receipt, binding, sessionContext);
+    await assertKnownWorkspaceIdentity(receipt, workspace);
+    const [commitOid, treeOid] = parseSourceIdentity(await this.runGit(
+      receipt.canonicalWorktreePath, ["rev-parse", "HEAD", "HEAD^{tree}"], options
+    ));
+    if (commitOid !== receipt.sourceCommitOid || treeOid !== receipt.sourceTreeOid) {
+      throw contractError("STARTUP_SOURCE_CHANGED", "The authoritative Worktree HEAD changed after StartupBindingReceipt was issued.");
+    }
+    return true;
   }
 }
 
@@ -143,6 +136,8 @@ export class RepositorySourceSnapshotBuilder {
       fingerprintPayload,
       canonicalWorktreePath: root,
       declarations,
+      workspaceIdentity: Object.freeze({ ...verified.workspace }),
+      ignoreConfigSources: ignoreConfig.localSources,
       startupReceipt: input.startupReceipt,
       binding: input.binding,
       sessionContext: input.sessionContext
@@ -150,12 +145,15 @@ export class RepositorySourceSnapshotBuilder {
   }
 
   async assertCurrent(snapshot, options = {}) {
-    await this.startupConsumer.verify(snapshot.startupReceipt, snapshot.binding, snapshot.sessionContext, { signal: options.signal });
-    const [overlay, ignoreConfig] = await Promise.all([
+    const [, overlay, ignoreConfig] = await Promise.all([
+      this.startupConsumer.verifyCurrent(
+        snapshot.startupReceipt, snapshot.binding, snapshot.sessionContext, snapshot.workspaceIdentity, { signal: options.signal }
+      ).then(() => null),
       collectDirtyOverlay(snapshot.canonicalWorktreePath, { runGit: this.runGit, signal: options.signal, declarations: snapshot.declarations }),
-      collectIgnoreConfigRevision(snapshot.canonicalWorktreePath, { runGit: this.runGit, signal: options.signal, declarations: snapshot.declarations })
+      collectCurrentIgnoreConfigRevision(snapshot.ignoreConfigSources, snapshot.declarations)
     ]);
     if (hashCanonical(overlay.entries) !== snapshot.receipt.dirtyOverlayRef.manifestHash
+      || overlay.ignoreConfigChanges.some((path) => !snapshot.ignoreConfigSources.some((source) => source.relativePath === path))
       || hashCanonical(ignoreConfig.payload) !== snapshot.receipt.ignoreConfigRevisionRef.revisionHash) {
       throw contractError("SOURCE_SNAPSHOT_STALE", "Worktree overlay or project-code configuration changed after Snapshot preflight.");
     }
@@ -202,6 +200,8 @@ export async function resolveCandidateCatalog(root, options = {}) {
 export async function collectDirtyOverlay(root, options = {}) {
   const raw = await options.runGit(root, ["status", "--porcelain=v2", "-z", "--untracked-files=all", "--renames"], options);
   const parsed = parsePorcelainV2(raw);
+  const ignoreConfigChanges = [...new Set(parsed.flatMap((item) => [item.path, item.oldPath])
+    .filter((path) => path && (path === ".gitignore" || path.endsWith("/.gitignore"))))].sort(compareUtf8);
   const entries = [];
   const rejectedPaths = [];
   for (const item of parsed) {
@@ -225,31 +225,60 @@ export async function collectDirtyOverlay(root, options = {}) {
     }
   }
   entries.sort((left, right) => compareUtf8(left.path, right.path));
-  return { entries: Object.freeze(entries), rejectedPaths: Object.freeze(rejectedPaths) };
+  return {
+    entries: Object.freeze(entries),
+    rejectedPaths: Object.freeze(rejectedPaths),
+    ignoreConfigChanges: Object.freeze(ignoreConfigChanges)
+  };
 }
 
 export async function collectIgnoreConfigRevision(root, options = {}) {
   const raw = await options.runGit(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.gitignore", ".gitignore"], options);
   const names = raw.split("\0").filter(Boolean).sort(compareUtf8);
   const sources = [];
+  const localSources = [];
   for (const name of names) {
+    const path = join(root, name);
+    localSources.push(Object.freeze({ kind: "gitignore", relativePath: name, absolutePath: path }));
     try {
-      const content = await readStableFile(join(root, name));
+      const content = await readStableFile(path);
       sources.push({ kind: "gitignore", pathHash: sha256Hex(Buffer.from(name.normalize("NFC"))), contentHash: sha256Hex(content) });
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
   }
   const gitDir = await options.runGit(root, ["rev-parse", "--git-path", "info/exclude"], options);
+  const path = resolve(root, gitDir);
+  localSources.push(Object.freeze({ kind: "repository_exclude", relativePath: "git/info/exclude", absolutePath: path }));
   try {
-    const content = await readStableFile(resolve(root, gitDir));
+    const content = await readStableFile(path);
     sources.push({ kind: "repository_exclude", pathHash: sha256Hex(Buffer.from("git/info/exclude")), contentHash: sha256Hex(content) });
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
   }
   const declarationsHash = hashCanonical(options.declarations ?? []);
   const payload = { schemaVersion: PROJECT_CODE_EXCLUSION_REVISION, sources, declarationsHash };
-  return { payload, sources };
+  return { payload, sources, localSources: Object.freeze(localSources) };
+}
+
+async function collectCurrentIgnoreConfigRevision(localSources = [], declarations = []) {
+  const sources = [];
+  for (const source of localSources) {
+    try {
+      const content = await readStableFile(source.absolutePath);
+      sources.push({
+        kind: source.kind,
+        pathHash: sha256Hex(Buffer.from(source.relativePath.normalize("NFC"))),
+        contentHash: sha256Hex(content)
+      });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+  return {
+    payload: { schemaVersion: PROJECT_CODE_EXCLUSION_REVISION, sources, declarationsHash: hashCanonical(declarations) },
+    sources
+  };
 }
 
 export function parsePorcelainV2(raw) {
@@ -348,6 +377,80 @@ function assertExactStartupShape(receipt) {
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(receipt.sourceCommitOid) || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(receipt.sourceTreeOid)) {
     throw contractError("STARTUP_BINDING_MISMATCH", "Startup source identity is invalid.");
   }
+}
+
+function assertStartupAuthority(receipt, binding, sessionContext) {
+  assertExactStartupShape(receipt);
+  verifyReceiptHash(receipt, "STARTUP_RECEIPT_HASH_MISMATCH");
+  if (receipt.schemaVersion !== 2 || receipt.status !== "ready" || receipt.error !== null) {
+    throw contractError("STARTUP_BINDING_MISMATCH", "Startup binding is not an approved ready schemaVersion 2 receipt.");
+  }
+  for (const field of ["objectiveId", "workItemId", "logicalSessionId"]) {
+    if (receipt[field] !== sessionContext?.[field]) {
+      throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} does not match the authenticated Session binding.`);
+    }
+  }
+  for (const field of ["repositoryId", "worktreeId", "providerBindingId", "bindingGeneration",
+    "repositoryInventoryVersion", "workspaceResourceVersion", "resourceVersion"]) {
+    if (binding && receipt[field] !== binding[field]) {
+      throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} is stale.`);
+    }
+  }
+  if (binding?.canonicalWorktreePath && resolve(binding.canonicalWorktreePath) !== resolve(receipt.canonicalWorktreePath)) {
+    throw contractError("STARTUP_BINDING_MISMATCH", "Startup canonical Worktree path is stale.");
+  }
+}
+
+function assertWorkspaceIdentity(receipt, workspace) {
+  if (!workspace || workspace.repositoryId !== receipt.repositoryId || workspace.worktreeId !== receipt.worktreeId
+    || resolve(workspace.canonicalPath) !== resolve(receipt.canonicalWorktreePath)) {
+    throw contractError("STARTUP_BINDING_MISMATCH", "Startup Worktree identity no longer matches Git inventory.");
+  }
+}
+
+async function assertKnownWorkspaceIdentity(receipt, workspace) {
+  assertWorkspaceIdentity(receipt, workspace);
+  let canonicalPath;
+  let gitDirCanonicalPath;
+  let commonGitDirCanonicalPath;
+  try {
+    canonicalPath = await realpath(receipt.canonicalWorktreePath);
+    const markerPath = join(canonicalPath, ".git");
+    const marker = await lstat(markerPath);
+    if (marker.isDirectory()) {
+      gitDirCanonicalPath = await realpath(markerPath);
+    } else if (marker.isFile()) {
+      const content = String(await readFile(markerPath, "utf8"));
+      const match = content.match(/^gitdir:\s*(.+?)\s*$/m);
+      if (!match?.[1]) throw new Error("invalid .git marker");
+      gitDirCanonicalPath = await realpath(resolve(dirname(markerPath), match[1]));
+    } else {
+      throw new Error("unsupported .git marker");
+    }
+    try {
+      const common = String(await readFile(join(gitDirCanonicalPath, "commondir"), "utf8")).trim();
+      if (!common) throw new Error("empty commondir");
+      commonGitDirCanonicalPath = await realpath(resolve(gitDirCanonicalPath, common));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      commonGitDirCanonicalPath = gitDirCanonicalPath;
+    }
+  } catch {
+    throw contractError("STARTUP_BINDING_MISMATCH", "Startup Worktree identity is no longer readable from its authoritative Git marker.");
+  }
+  if (resolve(canonicalPath) !== resolve(workspace.canonicalPath)
+    || resolve(gitDirCanonicalPath) !== resolve(workspace.gitDirCanonicalPath)
+    || resolve(commonGitDirCanonicalPath) !== resolve(workspace.commonGitDirCanonicalPath)) {
+    throw contractError("STARTUP_BINDING_MISMATCH", "Startup Worktree Git identity changed after Snapshot preflight.");
+  }
+}
+
+function parseSourceIdentity(raw) {
+  const values = String(raw).split(/\r?\n/).filter(Boolean);
+  if (values.length !== 2 || values.some((value) => !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(value))) {
+    throw contractError("STARTUP_SOURCE_CHANGED", "Git returned an invalid authoritative HEAD/tree identity.");
+  }
+  return values;
 }
 
 async function runGit(root, args, options = {}) {

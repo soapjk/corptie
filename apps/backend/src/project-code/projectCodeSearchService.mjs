@@ -60,11 +60,13 @@ export class ProjectCodeSearchService {
       const queueStarted = performance.now();
       release = await this.limiter.acquire(input.sessionContext?.logicalSessionId, controller.signal);
       state.latency.queueMs = elapsed(queueStarted);
-      const verifyStarted = performance.now();
+      const bindingStarted = performance.now();
       await validateProjectCodeReceipt(input.snapshot.receipt, "RepositorySourceSnapshotReceipt");
-      await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: controller.signal });
-      state.latency.snapshotVerifyMs = elapsed(verifyStarted);
       assertReceiptIdentity(input.snapshot.receipt, input.sessionContext);
+      state.latency.bindingVerifyMs = elapsed(bindingStarted);
+      const freshnessStarted = performance.now();
+      await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: controller.signal });
+      state.latency.snapshotVerifyMs = elapsed(freshnessStarted);
       const toolsetStarted = performance.now();
       toolsetPointer = await verifyToolsetEcho(input.toolsetValidationReceipt, input.snapshot.receipt, input.toolsetRequired === true);
       state.latency.toolsetVerifyMs = elapsed(toolsetStarted);
