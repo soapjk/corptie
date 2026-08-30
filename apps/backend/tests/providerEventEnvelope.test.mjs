@@ -124,3 +124,23 @@ test("OpenClacky assistant events map to the same final-answer item contract", (
   assert.equal(envelope.payload.item.presentationRole, "final_answer");
   assert.equal(envelope.providerId, "openclacky");
 });
+
+test("OpenClacky adapter-normalized ids are preserved for Timeline projection", () => {
+  const envelope = mapOpenClackyProviderChange({
+    binding: bindings.openClacky,
+    change: {
+      event: {
+        event_id: "openclacky:event:stable",
+        item_id: "openclacky:event:stable",
+        type: "assistant_message",
+        session_id: "open-session",
+        turn_id: "turn:open",
+        content: "recovered context answer"
+      }
+    }
+  });
+  assert.equal(envelope.providerEventId, "openclacky:event:stable");
+  assert.equal(envelope.itemId, "openclacky:event:stable");
+  assert.equal(envelope.payload.item.id, "openclacky:event:stable");
+  assert.equal(envelope.payload.item.turnId, "turn:open");
+});

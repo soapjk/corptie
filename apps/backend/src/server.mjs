@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { startup } from "@anthropic-ai/claude-agent-sdk";
 import {
+  codexPreDispatchRecoveryError,
   mapCodexThreadToLegacyTimelineItems,
   mapCodexThreadToSession
 } from "./adapters/codexAppServer.mjs";
@@ -88,7 +89,7 @@ import {
 } from "./application/toolHostMaterializationCoordinator.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
-import { OpenClackyManager } from "./adapters/openClackyManager.mjs";
+import { OpenClackyManager, mergeOpenClackyRuntimeInstructions } from "./adapters/openClackyManager.mjs";
 import { createOpenClackyProvider } from "./agent-provider/providers/openClackyProvider.mjs";
 import { openClackyToolHostAttachment } from "./agent-provider/providers/openClackyToolHostAttachment.mjs";
 import { OpenClackyWorkspaceTransitionPort } from "./agent-provider/adapters/openClackyWorkspaceTransitionPort.mjs";
@@ -151,6 +152,12 @@ import { ProviderEventIngestionService } from "./application/providerEventIngest
 import { ProviderNeutralCodeTaskExecutionService } from "./application/providerNeutralCodeTaskExecutionService.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
 import { LegacySessionHistoryRepairService } from "./application/legacySessionHistoryRepairService.mjs";
+import {
+  ProviderSessionRecoveryPort,
+  SessionRecoveryCoordinator,
+  renderReplayManifestForProvider,
+  stableRecoveryHash
+} from "./application/sessionRecovery.mjs";
 import {
   mapClaudeProviderEvent,
   mapClaudeTurnSettled,
@@ -303,6 +310,7 @@ let sessionWorkspaceOperations = null;
 let projectCodeApplicationService = null;
 let projectCodeStartupReceipts = null;
 let workSessionStartupCoordinator = null;
+let sessionRecoveryCoordinator = null;
 let projectToolsetProduction = null;
 let projectToolsetInitializer = null;
 const sessionEventListeners = new Set();
@@ -684,7 +692,13 @@ const openClackyManager = new OpenClackyManager({
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
     const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
     const agentContext = actorId ? await collaborationAgentContextInstructions(actorId, metadata) : "";
-    const runtimeInstructions = actorId ? collaborationRuntimeInstructions(actorId) : "";
+    // The Adapter places a recovery ReplayManifest in input.runtimeInstructions.
+    // Preserve it alongside the ordinary Session instructions so OpenClacky can
+    // rebuild context through initialization injection without a replay API.
+    const runtimeInstructions = mergeOpenClackyRuntimeInstructions(
+      actorId ? collaborationRuntimeInstructions(actorId) : null,
+      input.runtimeInstructions
+    );
     const systemPrompt = [agentContext].filter(Boolean).join("\n\n") || null;
     return {
       body: {
@@ -735,6 +749,13 @@ const openClackyManager = new OpenClackyManager({
         });
         if (envelope) {
           const ingestion = providerEventIngestion.ingest(envelope);
+          if (ingestion.status === "applied") {
+            handleCommittedProviderTerminalLifecycle({
+              event: ingestion.event,
+              projection: ingestion.projection,
+              logicalRoute: logical
+            });
+          }
           if (sessionId && providerEventType === "task_finished") {
             sessionStateDiagnostics.record(sessionId, "persisted", {
               status: store.getSession(sessionId)?.status ?? null,
@@ -1022,10 +1043,17 @@ const sessionApplicationService = new SessionApplicationService({
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
   recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {
-    await sessionApplicationService.restartSession(sessionId, {
-      transitionId: `provider-recovery:${context.idempotencyKey ?? randomUUID()}`,
-      replacementReason: error?.replacementReason ?? null,
-      preserveContext: true
+    if (!reference.logicalSessionId || !context.idempotencyKey) {
+      const recoveryError = new Error("Automatic recovery requires a logical Session and stable message idempotency key.");
+      recoveryError.code = "SESSION_RECOVERY_IDEMPOTENCY_REQUIRED";
+      throw recoveryError;
+    }
+    await sessionRecoveryCoordinator.recover({
+      logicalSessionId: reference.logicalSessionId,
+      providerId: reference.providerId,
+      idempotencyKey: `message-recovery:${context.idempotencyKey}`,
+      triggerDeliveryId: context.idempotencyKey,
+      reason: error?.replacementReason ?? error?.code ?? "provider-session-unavailable"
     });
     const recoveredReference = requireSessionReference(sessionId);
     if (context.idempotencyKey) {
@@ -1137,6 +1165,110 @@ const sessionApplicationService = new SessionApplicationService({
       logicalSessionId: reference.logicalSessionId,
       provider: reference.providerId
     }, { detachedSession: true });
+  }
+});
+sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
+  store,
+  resolveProviderDescriptor: (providerId) => agentProviderRegistry.get(providerId).descriptor,
+  providerPort: new ProviderSessionRecoveryPort({
+    createReplacement: async ({ attempt, manifest }) => {
+      const storedSession = store.getSession(attempt.sessionId);
+      const created = await sessionApplicationService.createSessionForRouteTransition(attempt.providerId, {
+        title: storedSession?.title ?? "Recovered Session",
+        cwd: attempt.boundCwd,
+        runtimeWorkspaceRoots: [attempt.boundCwd],
+        sessionKind: storedSession?.sessionKind ?? "legacy",
+        sandbox: attempt.permissionSnapshot?.sandbox,
+        approvalPolicy: attempt.permissionSnapshot?.approvalPolicy,
+        recoveryContext: renderReplayManifestForProvider(manifest),
+        instructionSources: attempt.instructionSources,
+        metadata: {
+          logicalSessionId: attempt.logicalSessionId,
+          recoveryAttemptId: attempt.attemptId,
+          replayManifestHash: stableRecoveryHash(manifest)
+        }
+      }, {
+        purpose: "session-recovery",
+        actorId: storedSession?.agentId ?? null,
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        sessionKind: storedSession?.sessionKind ?? "legacy",
+        objectiveId: attempt.objectiveId,
+        workItemId: attempt.workItemId,
+        deferSessionBinding: true
+      });
+      const providerThreadId = created?.external?.threadId ?? created?.external?.sessionId ?? created?.id;
+      const providerSessionId = created?.external?.sessionId ?? created?.external?.threadId ?? created?.id;
+      if (!providerThreadId || !providerSessionId || created?.status === "failed") {
+        const creationError = new Error("Provider did not create a usable replacement Session.");
+        creationError.code = "RECOVERY_REPLACEMENT_INVALID";
+        throw creationError;
+      }
+      return {
+        providerThreadId,
+        providerSessionId,
+        bindingId: `binding:${randomUUID()}`,
+        sessionProjection: created
+      };
+    },
+    attachToolHost: async ({ attempt }) => ({
+      catalogHash: stableRecoveryHash(attempt.toolCatalog),
+      catalogGeneration: attempt.toolCatalog?.appliedCatalogVersion ?? null,
+      domains: attempt.toolCatalog?.appliedDomains ?? []
+    }),
+    applyInstructions: async ({ attempt }) => ({
+      sourcesHash: stableRecoveryHash(attempt.instructionSources)
+    }),
+    replayContext: async ({ manifestHash }) => ({
+      manifestHash,
+      acknowledged: false,
+      sideEffectsObserved: false,
+      mode: "trusted_system_context_injection"
+    }),
+    validateReplacement: async ({ attempt, replacement }) => {
+      const reference = {
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        bindingId: replacement.bindingId,
+        providerId: attempt.providerId,
+        providerSessionId: replacement.providerSessionId,
+        routingVersion: attempt.sourceRoutingVersion + 1,
+        metadata: { session: replacement.sessionProjection }
+      };
+      const resumed = await agentProviderRegistry.invoke(
+        attempt.providerId,
+        AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+        reference,
+        { purpose: "session-recovery-validation", actorId: store.getSession(attempt.sessionId)?.agentId ?? null }
+      );
+      return {
+        readable: Boolean(resumed),
+        writable: replacement.sessionProjection?.capabilities?.canSend !== false,
+        logicalSessionId: attempt.logicalSessionId,
+        boundCwd: replacement.sessionProjection?.external?.cwd ?? attempt.boundCwd,
+        worktreeId: attempt.worktreeId,
+        permissionSnapshotHash: stableRecoveryHash(attempt.permissionSnapshot),
+        artifactReferencesHash: stableRecoveryHash(attempt.artifactReferences)
+      };
+    },
+    cancelReplacement: async ({ attempt, replacement }) => agentProviderRegistry.invoke(
+      attempt.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+      {
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        bindingId: replacement.bindingId,
+        providerId: attempt.providerId,
+        providerSessionId: replacement.providerSessionId,
+        routingVersion: attempt.sourceRoutingVersion + 1,
+        metadata: { session: replacement.sessionProjection }
+      },
+      { purpose: "session-recovery-rollback" }
+    )
+  }),
+  observe: ({ type, ...payload }) => {
+    console.info(`[session-recovery] ${JSON.stringify({ type, ...payload })}`);
+    emitEvent(type, payload, { sessionId: payload.attempt?.sessionId ?? null });
   }
 });
 platformOperationService = new PlatformOperationService({
@@ -4309,7 +4441,7 @@ async function launchWorkItemSession({
 // cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir（仅同一 Assistant 的会话共享）；
 // 目录缺失时在此幂等创建。独立贡献者必须走权威 Work Session startup coordinator，
 // 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
-async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt }) {
+async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt, model }) {
   if (agent.role !== "assistant") {
     const error = new Error("只有 Assistant 才能创建 Assistant Chat Session。");
     error.code = "AGENT_NOT_ASSISTANT";
@@ -4329,6 +4461,7 @@ async function launchAgentSession({ agent, providerId: requestedProviderId, titl
       title,
       defaultTitle: defaultSessionTitleForAgent(agent.name),
       prompt,
+      model,
       agent: agent.name,
       sessionKind: "assistantChat"
     },
@@ -4591,16 +4724,19 @@ async function createCodexProviderSession(input = {}) {
       sandbox: normalizeCodexSandbox(input.sandbox),
       approvalPolicy: normalizeCodexApprovalPolicy(input.approvalPolicy)
     };
+    const providerThreadOptions = input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(
+      collaborationAgentId,
+      input.toolHost?.metadata
+    );
     const started = await codexRuntime.startThread({
       cwd: input.cwd,
       ...permissions,
       runtimeWorkspaceRoots: input.runtimeWorkspaceRoots,
       model: runtime.model,
       modelProvider: input.modelProvider,
-      ...(input.toolHost?.providerAttachment ?? await collaborationThreadOptionsWithAgentContext(
-        collaborationAgentId,
-        input.toolHost?.metadata
-      ))
+      ...providerThreadOptions,
+      developerInstructions: [providerThreadOptions.developerInstructions, input.recoveryContext]
+        .filter(Boolean).join("\n\n") || undefined
     });
     const session = withCodexSessionPermissions({
       ...mapCodexThreadToSession({
@@ -4642,6 +4778,12 @@ async function resumeCodexProviderSession(reference, context = {}) {
     // Its dynamic contracts were installed during thread/start; only their
     // trusted Session scope must be rebound after Corptie persists the route.
     codexRuntime.bindThreadToolContext(reference.providerSessionId, runtimeOptions);
+  } else if (context.purpose === "session-recovery-validation") {
+    // A replacement Codex thread is intentionally empty until the recovered
+    // Delivery is dispatched. Fresh empty threads have no rollout file yet, so
+    // thread/resume would falsely report them missing. ensureThreadResumed
+    // validates the live app-server identity without creating a Turn.
+    await codexRuntime.ensureThreadResumed(reference.providerSessionId, runtimeOptions);
   } else {
     await codexRuntime.resumeThread(reference.providerSessionId, runtimeOptions);
   }
@@ -4717,9 +4859,11 @@ function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
 async function deleteCodexProviderSession(reference) {
   await codexRuntime.deleteThread(reference.providerSessionId);
   workspaceRoutePreparationCache.invalidate(reference.logicalSessionId);
-  const existed = Boolean(store.getSession(reference.sessionId));
-  store.deleteSession(reference.sessionId);
-  return existed;
+  // Product Session deletion belongs to SessionApplicationService's common
+  // removeSessionBinding hook. Keeping it out of the concrete Adapter is also
+  // essential for recovery rollback, whose unbound replacement reference uses
+  // the stable legacy Session id and must never delete that Corptie projection.
+  return true;
 }
 
 async function renameCodexProviderSession(reference, title) {
@@ -5049,15 +5193,20 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   });
   const resumeStartedAt = Date.now();
   logSessionMessageLatency(latencyTrace, "thread_resume_started");
-  const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
-    cwd: activeCwd,
-    runtimeWorkspaceRoots,
-    ...(conflictResolutionSession ? {
-      sandbox: "danger-full-access",
-      approvalPolicy: "never"
-    } : {}),
-    ...threadOptions
-  });
+  let resumeResult;
+  try {
+    resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
+      cwd: activeCwd,
+      runtimeWorkspaceRoots,
+      ...(conflictResolutionSession ? {
+        sandbox: "danger-full-access",
+        approvalPolicy: "never"
+      } : {}),
+      ...threadOptions
+    });
+  } catch (error) {
+    throw codexPreDispatchRecoveryError(error);
+  }
   logSessionMessageLatency(latencyTrace, "thread_resume_completed", {
     durationMs: Date.now() - resumeStartedAt,
     skipped: resumeResult?.alreadyLoaded === true
@@ -5376,9 +5525,30 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     }
     throw error;
   }
+  const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
+  const routedDelivery = delivery ? store.getMessageDelivery(deliveryId) ?? delivery : null;
+  const dispatchBindingId = routedDelivery?.bindingId ?? reference.bindingId;
+  const dispatchBinding = dispatchBindingId ? store.getAgentSessionBinding(dispatchBindingId) : null;
+  // Command acceptance is a durable Provider-neutral execution fact. Persist a
+  // running Turn before returning so orphan reconciliation cannot cancel work
+  // merely because a Provider's first realtime lifecycle event is delayed.
+  // Native events may already have won the race; never overwrite a settled Turn.
+  // Recovery may have atomically rebound the durable Delivery while sendMessage
+  // was in flight, so prefer that post-CAS binding over the pre-dispatch reference.
+  if (providerTurnId && dispatchBindingId
+    && !store.getSessionTurn(routedSessionId, dispatchBindingId, providerTurnId)) {
+    const timestamp = now();
+    store.upsertSessionTurn({
+      sessionId: routedSessionId,
+      bindingId: dispatchBindingId,
+      routingVersion: dispatchBinding?.routingVersion ?? reference.routingVersion,
+      turnId: providerTurnId,
+      executionStatus: "running",
+      startedAt: timestamp,
+      updatedAt: timestamp
+    });
+  }
   if (delivery) {
-    const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
-    const routedDelivery = store.getMessageDelivery(deliveryId) ?? delivery;
     const alreadySettledTurn = providerTurnId
       ? store.getSessionTurn(routedSessionId, routedDelivery.bindingId, providerTurnId)
       : null;
@@ -8711,6 +8881,49 @@ function route(request, response) {
     return;
   }
 
+  const sessionRecoveryMatch = url.pathname.match(/^\/sessions\/([^/]+)\/recovery$/);
+  const sessionRecoveryCancelMatch = url.pathname.match(/^\/session-recovery\/([^/]+)\/cancel$/);
+  if (request.method === "GET" && sessionRecoveryMatch) {
+    try {
+      const reference = requireSessionReference(decodeURIComponent(sessionRecoveryMatch[1]));
+      if (!reference.logicalSessionId) throw Object.assign(new Error("Logical Session recovery is unavailable."), { code: "LOGICAL_SESSION_REQUIRED" });
+      sendJson(response, 200, {
+        attempts: store.listSessionRecoveryAttempts(reference.logicalSessionId),
+        limitations: [
+          "Provider hidden reasoning and KV cache are not recoverable.",
+          "Provider-private compression and undisclosed state are not recoverable.",
+          "Unpersisted events and uncertain in-flight operations are not recoverable.",
+          "Provider-only attachments without a Corptie-local copy are not recoverable."
+        ]
+      });
+    } catch (error) {
+      sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "SESSION_RECOVERY_READ_FAILED" });
+    }
+    return;
+  }
+  if (request.method === "POST" && sessionRecoveryMatch) {
+    readJson(request).then(async (input) => {
+      const unknown = Object.keys(input).filter((field) => !["idempotencyKey", "reason"].includes(field));
+      if (unknown.length > 0) throw Object.assign(new Error("Recovery request contains unknown fields."), { code: "RECOVERY_UNKNOWN_FIELD" });
+      const reference = requireSessionReference(decodeURIComponent(sessionRecoveryMatch[1]));
+      if (!reference.logicalSessionId) throw Object.assign(new Error("Logical Session recovery is unavailable."), { code: "LOGICAL_SESSION_REQUIRED" });
+      return sessionRecoveryCoordinator.recover({
+        logicalSessionId: reference.logicalSessionId,
+        providerId: reference.providerId,
+        idempotencyKey: String(input.idempotencyKey ?? "").trim(),
+        reason: String(input.reason ?? "manual-provider-session-recovery").trim()
+      });
+    }).then((attempt) => sendJson(response, attempt.state === "committed" ? 200 : 409, { attempt }))
+      .catch((error) => sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "SESSION_RECOVERY_FAILED" }));
+    return;
+  }
+  if (request.method === "POST" && sessionRecoveryCancelMatch) {
+    sessionRecoveryCoordinator.cancel(decodeURIComponent(sessionRecoveryCancelMatch[1]))
+      .then((attempt) => sendJson(response, attempt ? 200 : 404, { attempt }))
+      .catch((error) => sendJson(response, errorStatus(error, 409), { error: error.message, code: error.code ?? "SESSION_RECOVERY_CANCEL_FAILED" }));
+    return;
+  }
+
   const sessionDeleteMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
   const sessionDeletionPlanMatch = url.pathname.match(/^\/sessions\/([^/]+)\/deletion-plan$/);
   const sessionProjectToolsetMatch = url.pathname.match(
@@ -9440,6 +9653,16 @@ store.setStateDirtyListener(scheduleStateSyncPublish);
 store.setTimelineDirtyListener(scheduleTimelineChangePublish);
 await ensureCorptieOpenClackyRuntime({ environmentName });
 openClackyManager.start();
+for (const attempt of store.listResumableSessionRecoveryAttempts()) {
+  sessionRecoveryCoordinator.recover({
+    logicalSessionId: attempt.logicalSessionId,
+    providerId: attempt.providerId,
+    idempotencyKey: attempt.idempotencyKey,
+    attemptId: attempt.attemptId
+  }).catch((error) => {
+    console.warn(`[session-recovery] startup resume failed attempt=${attempt.attemptId} code=${error.code ?? "SESSION_RECOVERY_FAILED"}`);
+  });
+}
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
   store,

@@ -352,7 +352,8 @@ export function handleEntityHttpRequest({
             agent,
             providerId,
             title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
-            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
+            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined,
+            model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : undefined
           });
           return sendJson(response, 201, { session });
         }

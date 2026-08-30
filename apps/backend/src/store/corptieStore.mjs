@@ -453,6 +453,70 @@ export class CorptieStore {
     });
   }
 
+  migrateSessionRecoverySchema() {
+    this.ensureColumn("provider_thread_bindings", "binding_generation", "INTEGER NOT NULL DEFAULT 1");
+    this.ensureColumn("provider_thread_bindings", "capability_revision", "TEXT NOT NULL DEFAULT 'legacy:unknown'");
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS session_recovery_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        logical_session_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN (
+          'frozen', 'replacement_created', 'replaying', 'validated', 'committed',
+          'cancel_requested', 'cancelled', 'failed', 'manual_required'
+        )),
+        snapshot_json TEXT NOT NULL,
+        manifest_json TEXT,
+        manifest_hash TEXT,
+        replacement_json TEXT,
+        metrics_json TEXT NOT NULL DEFAULT '{}',
+        error_code TEXT,
+        error_message TEXT,
+        cancel_requested INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        UNIQUE (logical_session_id, idempotency_key),
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_recovery_resume
+      ON session_recovery_attempts(state, updated_at);
+
+      CREATE TABLE IF NOT EXISTS session_recovery_binding_audit (
+        audit_id TEXT PRIMARY KEY,
+        attempt_id TEXT NOT NULL UNIQUE,
+        logical_session_id TEXT NOT NULL,
+        old_binding_id TEXT NOT NULL,
+        new_binding_id TEXT NOT NULL,
+        old_provider_session_id TEXT NOT NULL,
+        new_provider_session_id TEXT NOT NULL,
+        old_routing_version INTEGER NOT NULL,
+        new_routing_version INTEGER NOT NULL,
+        old_binding_generation INTEGER NOT NULL,
+        new_binding_generation INTEGER NOT NULL,
+        capability_revision TEXT NOT NULL,
+        manifest_hash TEXT NOT NULL,
+        committed_at TEXT NOT NULL,
+        FOREIGN KEY (attempt_id) REFERENCES session_recovery_attempts(attempt_id) ON DELETE RESTRICT,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE RESTRICT
+      );
+
+      CREATE TRIGGER IF NOT EXISTS session_recovery_snapshot_immutable
+      BEFORE UPDATE OF snapshot_json, logical_session_id, idempotency_key, created_at
+      ON session_recovery_attempts
+      BEGIN SELECT RAISE(ABORT, 'SESSION_RECOVERY_SNAPSHOT_IMMUTABLE'); END;
+
+      CREATE TRIGGER IF NOT EXISTS session_recovery_audit_immutable_update
+      BEFORE UPDATE ON session_recovery_binding_audit
+      BEGIN SELECT RAISE(ABORT, 'SESSION_RECOVERY_AUDIT_IMMUTABLE'); END;
+
+      CREATE TRIGGER IF NOT EXISTS session_recovery_audit_immutable_delete
+      BEFORE DELETE ON session_recovery_binding_audit
+      BEGIN SELECT RAISE(ABORT, 'SESSION_RECOVERY_AUDIT_IMMUTABLE'); END;
+    `);
+  }
+
   runDataMigrationOnce(migrationId, operation) {
     if (this.selectOne(
       "SELECT migration_id FROM data_migrations WHERE migration_id = ?",
@@ -2864,6 +2928,7 @@ export class CorptieStore {
     this.ensureColumn("provider_thread_bindings", "provider_session_id", "TEXT");
     this.ensureColumn("provider_thread_bindings", "parent_binding_id", "TEXT");
     this.ensureColumn("provider_thread_bindings", "provider_metadata_json", "TEXT NOT NULL DEFAULT '{}'");
+    this.migrateSessionRecoverySchema();
     this.migrateSessionProviderBindings();
     this.migrateWorkspaceTransitionsForDirectoryTargets();
     this.ensureColumn("workspace_transitions", "resume_goal_after_transition", "INTEGER NOT NULL DEFAULT 0");
@@ -5153,6 +5218,385 @@ export class CorptieStore {
     ).map((row) => row.provider_session_id);
   }
 
+  getSessionRecoveryAttempt(attemptId) {
+    const row = this.selectOne(
+      "SELECT * FROM session_recovery_attempts WHERE attempt_id = ?",
+      [attemptId]
+    );
+    return row ? sessionRecoveryAttemptFromRow(row) : null;
+  }
+
+  getSessionRecoveryAttemptByIdempotency(logicalSessionId, idempotencyKey) {
+    const row = this.selectOne(
+      `SELECT * FROM session_recovery_attempts
+       WHERE logical_session_id = ? AND idempotency_key = ?`,
+      [logicalSessionId, idempotencyKey]
+    );
+    return row ? sessionRecoveryAttemptFromRow(row) : null;
+  }
+
+  listSessionRecoveryAttempts(logicalSessionId, limit = 50) {
+    return this.selectAll(
+      `SELECT * FROM session_recovery_attempts WHERE logical_session_id = ?
+       ORDER BY created_at DESC LIMIT ?`,
+      [logicalSessionId, Math.max(1, Math.min(200, Number(limit) || 50))]
+    ).map(sessionRecoveryAttemptFromRow);
+  }
+
+  listResumableSessionRecoveryAttempts(limit = 100) {
+    return this.selectAll(
+      `SELECT * FROM session_recovery_attempts
+       WHERE state IN ('frozen','replacement_created','replaying','validated')
+         AND cancel_requested=0 ORDER BY created_at LIMIT ?`,
+      [Math.max(1, Math.min(500, Number(limit) || 100))]
+    ).map(sessionRecoveryAttemptFromRow);
+  }
+
+  freezeSessionRecoveryAttempt(input) {
+    const logicalSessionId = requiredText(input.logicalSessionId, "logicalSessionId");
+    const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
+    const existing = this.getSessionRecoveryAttemptByIdempotency(logicalSessionId, idempotencyKey);
+    if (existing) return existing;
+    const attemptId = requiredText(input.attemptId, "attemptId");
+    const timestamp = input.createdAt ?? createdAtFromOrNow();
+    return this.runInTransaction(() => {
+      const logical = this.getLogicalSession(logicalSessionId);
+      const binding = logical?.activeBinding;
+      const session = logical?.legacySessionId ? this.getSession(logical.legacySessionId) : null;
+      if (!logical || !binding || !session) {
+        const error = new Error("The logical Session has no complete active Provider binding.");
+        error.code = "RECOVERY_BINDING_MISSING";
+        throw error;
+      }
+      this.assertLogicalSessionRoute(logicalSessionId);
+      const workBinding = this.assertLogicalWorkSessionBinding(logicalSessionId);
+      const triggerDeliveryId = input.triggerDeliveryId == null
+        ? null
+        : requiredText(input.triggerDeliveryId, "triggerDeliveryId");
+      const triggerEvent = triggerDeliveryId
+        ? this.selectOne(
+          `SELECT sequence FROM session_events
+           WHERE session_id = ? AND (
+             json_extract(source_json, '$.deliveryId') = ?
+             OR json_extract(payload_json, '$.deliveryId') = ?
+           ) ORDER BY sequence ASC LIMIT 1`,
+          [session.id, triggerDeliveryId, triggerDeliveryId]
+        )
+        : null;
+      if (triggerDeliveryId && !triggerEvent) {
+        const error = new Error("The recovery-triggering Message Delivery is not present in the authoritative Timeline.");
+        error.code = "RECOVERY_TRIGGER_DELIVERY_MISSING";
+        throw error;
+      }
+      const boundary = triggerEvent
+        ? this.selectOne(
+          `SELECT sequence, payload_json FROM session_events
+           WHERE session_id = ? AND sequence < ? ORDER BY sequence DESC LIMIT 1`,
+          [session.id, Number(triggerEvent.sequence)]
+        )
+        : this.selectOne(
+          `SELECT sequence, payload_json FROM session_events
+           WHERE session_id = ? ORDER BY sequence DESC LIMIT 1`,
+          [session.id]
+        );
+      const toolCatalog = this.getSessionToolCatalogMaterialization(logicalSessionId, binding.bindingId);
+      const artifactReferences = [
+        ...this.listArtifactReferences({ sessionId: session.id }),
+        ...(session.workItemId ? this.listArtifactReferences({ workItemId: session.workItemId }) : [])
+      ].filter((reference, index, all) => all.findIndex((candidate) => candidate.referenceId === reference.referenceId) === index)
+        .sort((left, right) => left.referenceId.localeCompare(right.referenceId));
+      const boundaryPayload = parseJson(boundary?.payload_json, {});
+      const snapshot = {
+        attemptId,
+        idempotencyKey,
+        logicalSessionId,
+        sessionId: session.id,
+        providerId: binding.providerId,
+        sourceBindingId: binding.bindingId,
+        sourceProviderSessionId: binding.providerSessionId,
+        sourceRoutingVersion: logical.routingVersion,
+        sourceBindingGeneration: binding.bindingGeneration,
+        targetBindingGeneration: binding.bindingGeneration + 1,
+        capabilityRevision: requiredText(input.capabilityRevision, "capabilityRevision"),
+        triggerDeliveryId,
+        boundarySequence: Number(boundary?.sequence ?? 0),
+        boundaryTurnId: boundaryPayload.turnId ?? null,
+        repositoryId: logical.repositoryId ?? null,
+        workspaceId: logical.activeWorkspaceId ?? null,
+        worktreeId: binding.worktreeId ?? null,
+        boundCwd: binding.boundCwd,
+        objectiveId: workBinding.objectiveId ?? session.objectiveId ?? null,
+        workItemId: workBinding.workItemId ?? session.workItemId ?? null,
+        instructionSources: binding.instructionSources ?? [],
+        permissionSnapshot: binding.permissionSnapshot ?? {},
+        toolCatalog: toolCatalog ? {
+          desiredVersion: toolCatalog.desiredVersion,
+          appliedVersion: toolCatalog.appliedVersion,
+          desiredCatalogVersion: toolCatalog.desiredCatalogVersion,
+          appliedCatalogVersion: toolCatalog.appliedCatalogVersion,
+          appliedDomains: toolCatalog.appliedDomains,
+          exposurePlan: toolCatalog.exposurePlan,
+          resourceVersion: toolCatalog.resourceVersion,
+          status: toolCatalog.status
+        } : {},
+        artifactReferences,
+        contextReferences: this.listSessionContextReferences(session.id),
+        strategy: null,
+        manifestHash: null,
+        state: "frozen",
+        cancelRequested: false,
+        replacement: null,
+        error: null,
+        metrics: {},
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: null
+      };
+      this.db.run(
+        `INSERT INTO session_recovery_attempts (
+          attempt_id, logical_session_id, idempotency_key, state, snapshot_json,
+          metrics_json, cancel_requested, created_at, updated_at
+        ) VALUES (?, ?, ?, 'frozen', ?, '{}', 0, ?, ?)`,
+        [attemptId, logicalSessionId, idempotencyKey, JSON.stringify(snapshot), timestamp, timestamp]
+      );
+      return this.getSessionRecoveryAttempt(attemptId);
+    });
+  }
+
+  listSessionEventsThrough(sessionId, boundarySequence) {
+    const boundary = Number(boundarySequence);
+    if (!Number.isSafeInteger(boundary) || boundary < 0) throw new TypeError("boundarySequence must be non-negative.");
+    return this.selectAll(
+      `SELECT event_id, session_id, log_id, sequence, type, producer, surface,
+              source_event_seqs_json, call_id, source_json, payload_json, created_at
+       FROM session_events WHERE session_id = ? AND sequence <= ? ORDER BY sequence ASC`,
+      [sessionId, boundary]
+    ).map(sessionEventFromRow);
+  }
+
+  saveSessionRecoveryManifest(attemptId, manifest, manifestHash) {
+    const attempt = this.getSessionRecoveryAttempt(attemptId);
+    if (!attempt) return null;
+    if (attempt.manifestHash && attempt.manifestHash !== manifestHash) {
+      const error = new Error("The recovery idempotency key produced a different ReplayManifest.");
+      error.code = "RECOVERY_HASH_MISMATCH";
+      throw error;
+    }
+    const timestamp = createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_recovery_attempts SET manifest_json = ?, manifest_hash = ?,
+         state = CASE WHEN state='frozen' THEN 'replaying' ELSE state END, updated_at = ?
+       WHERE attempt_id = ? AND state IN ('frozen', 'replacement_created', 'replaying')`,
+      [JSON.stringify(manifest), manifestHash, timestamp, attemptId]
+    );
+    this.scheduleSave();
+    return this.getSessionRecoveryAttempt(attemptId);
+  }
+
+  recordSessionRecoveryReplacement(attemptId, replacement) {
+    const attempt = this.getSessionRecoveryAttempt(attemptId);
+    if (!attempt) return null;
+    if (attempt.replacement?.providerSessionId
+      && attempt.replacement.providerSessionId !== replacement.providerSessionId) {
+      const error = new Error("Recovery attempt already owns a different replacement Session.");
+      error.code = "RECOVERY_REPLACEMENT_CONFLICT";
+      throw error;
+    }
+    const timestamp = createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_recovery_attempts SET replacement_json = ?, state='replacement_created', updated_at=?
+       WHERE attempt_id=? AND state IN ('frozen','replaying','replacement_created')`,
+      [JSON.stringify(replacement), timestamp, attemptId]
+    );
+    this.scheduleSave();
+    return this.getSessionRecoveryAttempt(attemptId);
+  }
+
+  requestSessionRecoveryCancellation(attemptId) {
+    const timestamp = createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_recovery_attempts SET cancel_requested=1, state='cancel_requested', updated_at=?
+       WHERE attempt_id=? AND state NOT IN ('committed','cancelled','failed','manual_required')`,
+      [timestamp, attemptId]
+    );
+    this.scheduleSave();
+    return this.getSessionRecoveryAttempt(attemptId);
+  }
+
+  cancelSessionRecoveryAttempt(attemptId) {
+    const timestamp = createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_recovery_attempts SET state='cancelled', cancel_requested=1,
+         completed_at=?, updated_at=? WHERE attempt_id=? AND state <> 'committed'`,
+      [timestamp, timestamp, attemptId]
+    );
+    this.scheduleSave();
+    return this.getSessionRecoveryAttempt(attemptId);
+  }
+
+  failSessionRecoveryAttempt(attemptId, code, message) {
+    const timestamp = createdAtFromOrNow();
+    const state = code === "RECOVERY_MANUAL_REQUIRED" ? "manual_required" : "failed";
+    this.db.run(
+      `UPDATE session_recovery_attempts SET state=?, error_code=?, error_message=?,
+         completed_at=?, updated_at=?
+       WHERE attempt_id=? AND state NOT IN ('committed','cancelled','manual_required')`,
+      [state, requiredText(code, "code"), String(message ?? "Session recovery failed.").slice(0, 500), timestamp, timestamp, attemptId]
+    );
+    this.scheduleSave();
+    return this.getSessionRecoveryAttempt(attemptId);
+  }
+
+  commitSessionRecoveryBinding(input) {
+    const attempt = this.getSessionRecoveryAttempt(input.attemptId);
+    if (!attempt) {
+      const error = new Error("Session recovery attempt was not found.");
+      error.code = "RECOVERY_ATTEMPT_NOT_FOUND";
+      throw error;
+    }
+    if (attempt.state === "committed") return attempt;
+    if (attempt.cancelRequested) {
+      const error = new Error("Session recovery was cancelled before binding commit.");
+      error.code = "SESSION_RECOVERY_CANCELLED";
+      throw error;
+    }
+    if (attempt.manifestHash !== input.manifestHash || attempt.capabilityRevision !== input.capabilityRevision) {
+      const error = new Error("Recovery Manifest or capability revision changed before binding commit.");
+      error.code = "RECOVERY_HASH_MISMATCH";
+      throw error;
+    }
+    const replacement = input.replacement ?? {};
+    const providerThreadId = requiredText(replacement.providerThreadId, "replacement.providerThreadId");
+    const providerSessionId = requiredText(replacement.providerSessionId, "replacement.providerSessionId");
+    const bindingId = requiredText(replacement.bindingId, "replacement.bindingId");
+    const timestamp = input.committedAt ?? createdAtFromOrNow();
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      const logical = this.selectOne(
+        "SELECT * FROM logical_sessions WHERE logical_session_id = ?",
+        [attempt.logicalSessionId]
+      );
+      const oldBinding = this.selectOne(
+        "SELECT * FROM provider_thread_bindings WHERE binding_id = ? AND state = 'active'",
+        [attempt.sourceBindingId]
+      );
+      if (!logical || !oldBinding
+        || logical.active_thread_id !== oldBinding.provider_thread_id
+        || Number(logical.routing_version) !== Number(input.expectedRoutingVersion)
+        || Number(oldBinding.binding_generation) !== Number(input.expectedBindingGeneration)
+        || oldBinding.binding_id !== input.expectedSourceBindingId) {
+        const error = new Error("The active Provider binding changed before recovery commit.");
+        error.code = "RECOVERY_CAS_CONFLICT";
+        throw error;
+      }
+      const currentArtifacts = [
+        ...this.listArtifactReferences({ sessionId: attempt.sessionId }),
+        ...(attempt.workItemId ? this.listArtifactReferences({ workItemId: attempt.workItemId }) : [])
+      ].filter((reference, index, all) => all.findIndex((candidate) => candidate.referenceId === reference.referenceId) === index)
+        .sort((left, right) => left.referenceId.localeCompare(right.referenceId));
+      if (recoveryStableJson(currentArtifacts) !== recoveryStableJson(attempt.artifactReferences)) {
+        const error = new Error("Artifact References changed after the recovery boundary was frozen.");
+        error.code = "RECOVERY_ARTIFACT_REFERENCE_STALE";
+        throw error;
+      }
+      if (recoveryStableJson(this.listSessionContextReferences(attempt.sessionId)) !== recoveryStableJson(attempt.contextReferences)) {
+        const error = new Error("Session Context References changed after the recovery boundary was frozen.");
+        error.code = "RECOVERY_CONTEXT_REFERENCE_STALE";
+        throw error;
+      }
+      const currentCatalog = this.getSessionToolCatalogMaterialization(attempt.logicalSessionId, attempt.sourceBindingId);
+      const catalogSnapshot = currentCatalog ? {
+        desiredVersion: currentCatalog.desiredVersion,
+        appliedVersion: currentCatalog.appliedVersion,
+        desiredCatalogVersion: currentCatalog.desiredCatalogVersion,
+        appliedCatalogVersion: currentCatalog.appliedCatalogVersion,
+        appliedDomains: currentCatalog.appliedDomains,
+        exposurePlan: currentCatalog.exposurePlan,
+        resourceVersion: currentCatalog.resourceVersion,
+        status: currentCatalog.status
+      } : {};
+      if (recoveryStableJson(catalogSnapshot) !== recoveryStableJson(attempt.toolCatalog)) {
+        const error = new Error("Tool Host catalog generation changed after the recovery boundary was frozen.");
+        error.code = "RECOVERY_CATALOG_STALE";
+        throw error;
+      }
+      this.db.run(
+        "UPDATE provider_thread_bindings SET state='superseded', updated_at=? WHERE binding_id=? AND state='active'",
+        [timestamp, attempt.sourceBindingId]
+      );
+      this.db.run(
+        `INSERT INTO provider_thread_bindings (
+          provider_thread_id, binding_id, provider_id, provider_session_id, logical_session_id,
+          worktree_id, bound_cwd, parent_thread_id, parent_binding_id, forked_at_turn_id,
+          instruction_sources_json, permission_snapshot_json, provider_metadata_json,
+          routing_version, binding_generation, capability_revision, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        [providerThreadId, bindingId, attempt.providerId, providerSessionId, attempt.logicalSessionId,
+          attempt.worktreeId, attempt.boundCwd, oldBinding.provider_thread_id, attempt.sourceBindingId,
+          attempt.boundaryTurnId, JSON.stringify(attempt.instructionSources), JSON.stringify(attempt.permissionSnapshot),
+          JSON.stringify({ recoveryAttemptId: attempt.attemptId, replayManifestHash: input.manifestHash }),
+          attempt.sourceRoutingVersion + 1, attempt.targetBindingGeneration, input.capabilityRevision, timestamp, timestamp]
+      );
+      this.db.run(
+        `UPDATE logical_sessions SET active_thread_id=?, routing_version=routing_version+1,
+           transition_state=NULL, updated_at=?
+         WHERE logical_session_id=? AND active_thread_id=? AND routing_version=?`,
+        [providerThreadId, timestamp, attempt.logicalSessionId, oldBinding.provider_thread_id, attempt.sourceRoutingVersion]
+      );
+      if (this.db.getRowsModified() !== 1) {
+        const error = new Error("The logical Session route lost its compare-and-swap race.");
+        error.code = "RECOVERY_CAS_CONFLICT";
+        throw error;
+      }
+      const storedSessionRow = this.selectOne("SELECT raw_json FROM sessions WHERE id=?", [attempt.sessionId]);
+      const storedRaw = parseJson(storedSessionRow?.raw_json, {});
+      this.db.run(
+        `UPDATE sessions SET raw_json=?, updated_at=? WHERE id=?`,
+        [JSON.stringify({
+          ...storedRaw,
+          provider: attempt.providerId,
+          threadId: providerThreadId,
+          sessionId: providerSessionId,
+          logicalSessionId: attempt.logicalSessionId,
+          routingVersion: attempt.sourceRoutingVersion + 1,
+          bindingGeneration: attempt.targetBindingGeneration,
+          recoveryAttemptId: attempt.attemptId
+        }), timestamp, attempt.sessionId]
+      );
+      this.db.run(
+        `INSERT INTO session_recovery_binding_audit (
+          audit_id, attempt_id, logical_session_id, old_binding_id, new_binding_id,
+          old_provider_session_id, new_provider_session_id, old_routing_version, new_routing_version,
+          old_binding_generation, new_binding_generation, capability_revision, manifest_hash, committed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [`session_recovery_audit:${randomUUID()}`, attempt.attemptId, attempt.logicalSessionId,
+          attempt.sourceBindingId, bindingId, attempt.sourceProviderSessionId, providerSessionId,
+          attempt.sourceRoutingVersion, attempt.sourceRoutingVersion + 1, attempt.sourceBindingGeneration,
+          attempt.targetBindingGeneration, input.capabilityRevision, input.manifestHash, timestamp]
+      );
+      this.db.run(
+        `UPDATE session_recovery_attempts SET state='committed', replacement_json=?, metrics_json=?,
+           error_code=NULL, error_message=NULL, completed_at=?, updated_at=? WHERE attempt_id=?`,
+        [JSON.stringify(replacement), JSON.stringify(input.metrics ?? {}), timestamp, timestamp, attempt.attemptId]
+      );
+      this.assertLogicalSessionRoute(attempt.logicalSessionId);
+      this.assertLogicalWorkSessionBinding(attempt.logicalSessionId);
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    }
+    this.scheduleSave();
+    return this.getSessionRecoveryAttempt(attempt.attemptId);
+  }
+
+  listSessionRecoveryBindingAudit(logicalSessionId) {
+    return this.selectAll(
+      `SELECT * FROM session_recovery_binding_audit WHERE logical_session_id=? ORDER BY committed_at`,
+      [logicalSessionId]
+    );
+  }
+
   recordProviderThreadBinding(input) {
     const providerThreadId = requiredText(input?.providerThreadId, "providerThreadId");
     const providerId = requiredText(input?.providerId ?? "codex-app-server", "providerId");
@@ -5421,8 +5865,8 @@ export class CorptieStore {
           logical_session_id, worktree_id, bound_cwd,
           parent_thread_id, parent_binding_id, forked_at_turn_id, instruction_sources_json,
           permission_snapshot_json, provider_metadata_json,
-          routing_version, state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+          routing_version, binding_generation, capability_revision, state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
         [
           newThreadId,
           bindingId,
@@ -5438,6 +5882,8 @@ export class CorptieStore {
           JSON.stringify(binding.permissionSnapshot ?? {}),
           JSON.stringify(binding.providerMetadata ?? {}),
           Number(logical.routing_version) + 1,
+          Number(sourceBinding?.bindingGeneration ?? 1) + 1,
+          binding.capabilityRevision ?? sourceBinding?.capabilityRevision ?? "legacy:unknown",
           timestamp,
           timestamp
         ]
@@ -8155,7 +8601,9 @@ export class CorptieStore {
     return this.runInTransaction(() => {
       const current = this.getMessageDelivery(deliveryId);
       if (!current) return null;
-      if (!["queued", "dispatching"].includes(current.status) || current.providerTurnId) {
+      if (!["queued", "dispatching"].includes(current.status)
+        || current.providerTurnId
+        || current.providerAcknowledgedAt) {
         const error = new Error(`Message Delivery ${deliveryId} is no longer safe to reroute.`);
         error.code = "MESSAGE_DELIVERY_REROUTE_UNSAFE";
         throw error;
@@ -11829,10 +12277,38 @@ function providerThreadBindingFromRow(row) {
     permissionSnapshot: parseJson(row.permission_snapshot_json, {}),
     providerMetadata: parseJson(row.provider_metadata_json, {}),
     routingVersion: Number(row.routing_version ?? 1),
+    bindingGeneration: Number(row.binding_generation ?? 1),
+    capabilityRevision: row.capability_revision ?? "legacy:unknown",
     state: row.state,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function sessionRecoveryAttemptFromRow(row) {
+  const snapshot = parseJson(row.snapshot_json, {});
+  return {
+    ...snapshot,
+    state: row.state,
+    strategy: parseJson(row.manifest_json, null)?.strategy ?? snapshot.strategy ?? null,
+    manifest: parseJson(row.manifest_json, null),
+    manifestHash: row.manifest_hash ?? snapshot.manifestHash ?? null,
+    replacement: parseJson(row.replacement_json, snapshot.replacement ?? null),
+    metrics: parseJson(row.metrics_json, {}),
+    error: row.error_code ? { code: row.error_code, message: row.error_message } : null,
+    cancelRequested: Boolean(row.cancel_requested),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    completedAt: row.completed_at ?? null
+  };
+}
+
+function recoveryStableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(recoveryStableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${recoveryStableJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function sessionToolCatalogMaterializationFromRow(row) {
