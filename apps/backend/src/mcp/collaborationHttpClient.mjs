@@ -40,6 +40,7 @@ export class CollaborationHttpClient {
           ...init.headers,
           "x-corptie-agent-id": this.agentId,
           ...(this.sessionScope.sessionId ? { "x-corptie-session-id": this.sessionScope.sessionId } : {}),
+          ...(this.sessionScope.providerBindingId ? { "x-corptie-provider-binding-id": this.sessionScope.providerBindingId } : {}),
           ...(this.sessionScope.objectiveId ? { "x-corptie-objective-id": this.sessionScope.objectiveId } : {}),
           ...(this.sessionScope.workItemId ? { "x-corptie-work-item-id": this.sessionScope.workItemId } : {})
         }

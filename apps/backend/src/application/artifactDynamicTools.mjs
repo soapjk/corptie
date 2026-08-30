@@ -58,10 +58,10 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
     actorId: input.actorId,
     sessionId: input.metadata?.sessionId,
     logicalSessionId: input.metadata?.logicalSessionId,
-    providerBindingId: input.metadata?.providerBindingId,
     turnExecutionId: input.turnExecutionId ?? input.turnId ?? input.metadata?.turnExecutionId,
     objectiveId: input.metadata?.objectiveId,
-    workItemId: input.metadata?.workItemId
+    workItemId: input.metadata?.workItemId,
+    providerBindingId: input.metadata?.providerBindingId
   };
   switch (input.tool) {
     case "corptie_artifact_list": return { artifacts: service.list(context, { includeRevoked: args.include_revoked }) };

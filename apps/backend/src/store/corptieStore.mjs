@@ -1692,6 +1692,35 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_provider_thread_bindings_worktree
       ON provider_thread_bindings(worktree_id, state);
 
+      CREATE TABLE IF NOT EXISTS session_tool_catalog_materializations (
+        logical_session_id TEXT NOT NULL,
+        provider_binding_id TEXT NOT NULL,
+        desired_version TEXT NOT NULL,
+        applied_version TEXT,
+        desired_catalog_version TEXT NOT NULL,
+        applied_catalog_version TEXT,
+        desired_domains_json TEXT NOT NULL DEFAULT '[]',
+        applied_domains_json TEXT NOT NULL DEFAULT '[]',
+        exposure_plan_json TEXT NOT NULL DEFAULT '{}',
+        provider_receipt_json TEXT,
+        status TEXT NOT NULL
+          CHECK (status IN ('uninitialized', 'stale', 'refreshing', 'applied', 'error', 'canceled')),
+        attempt INTEGER NOT NULL DEFAULT 0,
+        last_error_code TEXT,
+        last_error_summary TEXT,
+        refresh_requested_at TEXT,
+        refresh_started_at TEXT,
+        applied_at TEXT,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (logical_session_id, provider_binding_id),
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_tool_catalog_materializations_status
+      ON session_tool_catalog_materializations(status, updated_at);
+
       CREATE TABLE IF NOT EXISTS provider_thread_lineage (
         child_thread_id TEXT PRIMARY KEY,
         parent_thread_id TEXT NOT NULL,
@@ -4709,6 +4738,158 @@ export class CorptieStore {
       [providerThreadId]
     );
     return row ? providerThreadBindingFromRow(row) : null;
+  }
+
+  getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId) {
+    const row = this.selectOne(
+      `SELECT * FROM session_tool_catalog_materializations
+       WHERE logical_session_id = ? AND provider_binding_id = ?`,
+      [logicalSessionId, providerBindingId]
+    );
+    return row ? sessionToolCatalogMaterializationFromRow(row) : null;
+  }
+
+  listSessionToolCatalogMaterializations(logicalSessionId = null) {
+    const rows = logicalSessionId
+      ? this.selectAll(
+        `SELECT * FROM session_tool_catalog_materializations
+         WHERE logical_session_id = ? ORDER BY created_at, provider_binding_id`,
+        [logicalSessionId]
+      )
+      : this.selectAll(
+        `SELECT * FROM session_tool_catalog_materializations
+         ORDER BY logical_session_id, created_at, provider_binding_id`,
+        []
+      );
+    return rows.map(sessionToolCatalogMaterializationFromRow);
+  }
+
+  writeSessionToolCatalogDesired(input, expectedResourceVersion = null) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    const existing = this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+    if (!existing) {
+      if (expectedResourceVersion != null) return null;
+      this.db.run(
+        `INSERT INTO session_tool_catalog_materializations (
+          logical_session_id, provider_binding_id, desired_version, applied_version,
+          desired_catalog_version, applied_catalog_version, desired_domains_json,
+          applied_domains_json, exposure_plan_json, provider_receipt_json, status,
+          attempt, refresh_requested_at, resource_version, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, NULL, ?, '[]', ?, NULL, 'stale', 0, ?, 1, ?, ?)`,
+        [
+          input.logicalSessionId, input.providerBindingId, input.desiredVersion,
+          input.desiredCatalogVersion, JSON.stringify(input.desiredDomains ?? []),
+          JSON.stringify(input.exposurePlan ?? {}), now, now, now
+        ]
+      );
+      this.scheduleSave();
+      return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+    }
+    const expected = expectedResourceVersion ?? existing.resourceVersion;
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         desired_version = ?, desired_catalog_version = ?, desired_domains_json = ?,
+         exposure_plan_json = ?, status = CASE
+           WHEN desired_version = ? AND applied_version = ? THEN status ELSE 'stale' END,
+         refresh_requested_at = ?, last_error_code = NULL, last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ?
+         AND resource_version = ? AND status <> 'canceled'`,
+      [
+        input.desiredVersion, input.desiredCatalogVersion, JSON.stringify(input.desiredDomains ?? []),
+        JSON.stringify(input.exposurePlan ?? {}), input.desiredVersion, input.desiredVersion,
+        now, now, input.logicalSessionId, input.providerBindingId, expected
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  beginSessionToolCatalogRefresh(logicalSessionId, providerBindingId, expectedResourceVersion, now = createdAtFromOrNow()) {
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         status = 'refreshing', attempt = attempt + 1, refresh_started_at = ?,
+         last_error_code = NULL, last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status IN ('stale', 'error', 'uninitialized')`,
+      [now, now, logicalSessionId, providerBindingId, expectedResourceVersion]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
+  }
+
+  applySessionToolCatalogReceipt(input, expectedResourceVersion) {
+    const now = input.appliedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         applied_version = ?, applied_catalog_version = ?, applied_domains_json = ?,
+         provider_receipt_json = ?, status = 'applied', applied_at = ?,
+         last_error_code = NULL, last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status = 'refreshing' AND desired_version = ?`,
+      [
+        input.appliedVersion, input.appliedCatalogVersion, JSON.stringify(input.appliedDomains ?? []),
+        JSON.stringify(input.providerReceipt), now, now, input.logicalSessionId,
+        input.providerBindingId, expectedResourceVersion, input.appliedVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  failSessionToolCatalogRefresh(input, expectedResourceVersion) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         status = 'error', last_error_code = ?, last_error_summary = ?,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status = 'refreshing'`,
+      [
+        input.errorCode, String(input.errorSummary ?? "").slice(0, 500), now,
+        input.logicalSessionId, input.providerBindingId, expectedResourceVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  recordSessionToolCatalogPendingReceipt(input, expectedResourceVersion) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET provider_receipt_json = ?,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status = 'refreshing'`,
+      [
+        JSON.stringify(input.providerReceipt), now, input.logicalSessionId,
+        input.providerBindingId, expectedResourceVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  cancelSessionToolCatalogMaterialization(logicalSessionId, providerBindingId, expectedResourceVersion = null) {
+    const now = createdAtFromOrNow();
+    const versionClause = expectedResourceVersion == null ? "" : " AND resource_version = ?";
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET status = 'canceled',
+         last_error_code = 'SESSION_BINDING_TOMBSTONED', last_error_summary = NULL,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND status <> 'canceled'${versionClause}`,
+      [now, logicalSessionId, providerBindingId, ...(expectedResourceVersion == null ? [] : [expectedResourceVersion])]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
   }
 
   getAgentSessionBinding(bindingId) {
@@ -11563,6 +11744,31 @@ function providerThreadBindingFromRow(row) {
     providerMetadata: parseJson(row.provider_metadata_json, {}),
     routingVersion: Number(row.routing_version ?? 1),
     state: row.state,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function sessionToolCatalogMaterializationFromRow(row) {
+  return {
+    logicalSessionId: row.logical_session_id,
+    providerBindingId: row.provider_binding_id,
+    desiredVersion: row.desired_version,
+    appliedVersion: row.applied_version ?? null,
+    desiredCatalogVersion: row.desired_catalog_version,
+    appliedCatalogVersion: row.applied_catalog_version ?? null,
+    desiredDomains: parseJson(row.desired_domains_json, []),
+    appliedDomains: parseJson(row.applied_domains_json, []),
+    exposurePlan: parseJson(row.exposure_plan_json, {}),
+    providerReceipt: row.provider_receipt_json ? parseJson(row.provider_receipt_json, null) : null,
+    status: row.status,
+    attempt: Number(row.attempt ?? 0),
+    lastErrorCode: row.last_error_code ?? null,
+    lastErrorSummary: row.last_error_summary ?? null,
+    refreshRequestedAt: row.refresh_requested_at ?? null,
+    refreshStartedAt: row.refresh_started_at ?? null,
+    appliedAt: row.applied_at ?? null,
+    resourceVersion: Number(row.resource_version),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

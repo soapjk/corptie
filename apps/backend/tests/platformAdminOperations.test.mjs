@@ -120,7 +120,7 @@ test("Tool Host advertises platform tools only to the protected Assistant and ex
     const catalog = new HostToolCatalog([{ id: "platform", tools: platformDynamicTools, authorize: ({ actorId }) => actorId === "assistant", execute: (input) => callPlatformDynamicTool(f.service, input) }]);
     assert.ok(catalog.definitions({ actorId: "assistant" }).some((tool) => tool.name === "corptie_platform_artifacts_manage"));
     assert.equal(catalog.definitions({ actorId: ordinary.agentId }).length, 0);
-    await assert.rejects(() => catalog.execute({ actorId: ordinary.agentId, tool: "corptie_platform_collaboration_manage", metadata: { sessionId: "provider:ordinary", sessionKind: "assistantChat" }, arguments: { action: "discover_sessions" } }), { code: "AGENT_TOOL_FORBIDDEN" });
+    await assert.rejects(() => catalog.execute({ actorId: ordinary.agentId, tool: "corptie_platform_collaboration_manage", metadata: { sessionId: "provider:ordinary", sessionKind: "assistantChat" }, arguments: { action: "discover_sessions" } }), { code: "SESSION_TOOL_FORBIDDEN" });
     await assert.rejects(() => catalog.execute({ actorId: "assistant", tool: "corptie_platform_collaboration_manage", metadata: { sessionId: "provider:ordinary", sessionKind: "assistantChat" }, arguments: { action: "discover_sessions" } }), { code: "PLATFORM_ADMIN_SESSION_REQUIRED" });
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
