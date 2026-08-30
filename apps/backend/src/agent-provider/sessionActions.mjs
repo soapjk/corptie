@@ -27,6 +27,13 @@ export function withSessionActions(session, providerOrDescriptor) {
   return { ...session, actions };
 }
 
+export function withResolvedSessionActions(session, registry) {
+  if (!session || typeof session !== "object") return session;
+  const providerIdentity = session.external?.provider ?? session.provider ?? null;
+  const providerId = providerIdentity ? registry?.resolveId?.(providerIdentity) : null;
+  return providerId ? registry.decorateSession(providerId, session) : session;
+}
+
 export function sessionActionAvailability(action, session, providerOrDescriptor, capability = ACTION_CAPABILITIES[action]) {
   if (action === "switchProvider") {
     // Provider switching is a backend session-level operation (fork to a target
