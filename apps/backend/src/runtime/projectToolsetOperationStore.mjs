@@ -94,6 +94,10 @@ export class SqliteProjectToolsetStore {
     return this.database.prepare("SELECT operation_json FROM project_toolset_operations WHERE state NOT IN ('ready','failed') ORDER BY updated_at").all().map((row) => JSON.parse(row.operation_json));
   }
 
+  async latestForRepository(repositoryId) {
+    return parse(this.database.prepare("SELECT operation_json FROM project_toolset_operations WHERE repository_id=? ORDER BY updated_at DESC LIMIT 1").get(repositoryId)?.operation_json);
+  }
+
   async put(receipt) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
