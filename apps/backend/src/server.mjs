@@ -4417,7 +4417,7 @@ async function launchWorkItemSession({
 // cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir（仅同一 Assistant 的会话共享）；
 // 目录缺失时在此幂等创建。独立贡献者必须走权威 Work Session startup coordinator，
 // 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
-async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt }) {
+async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt, model }) {
   if (agent.role !== "assistant") {
     const error = new Error("只有 Assistant 才能创建 Assistant Chat Session。");
     error.code = "AGENT_NOT_ASSISTANT";
@@ -4437,6 +4437,7 @@ async function launchAgentSession({ agent, providerId: requestedProviderId, titl
       title,
       defaultTitle: defaultSessionTitleForAgent(agent.name),
       prompt,
+      model,
       agent: agent.name,
       sessionKind: "assistantChat"
     },
