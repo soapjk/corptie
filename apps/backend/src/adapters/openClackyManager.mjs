@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
 
 const DEFAULT_BASE_URL = "http://127.0.0.1:7070";
@@ -44,6 +44,15 @@ export class OpenClackyManager {
     this.sockets = new Map();
     this.eventCursors = new Map();
     this.deliveryAcks = new Map();
+    // OpenClacky 1.x does not consistently echo Corptie's turn_id or native
+    // event/item ids. Keep the last locally dispatched Turn at the protocol
+    // boundary so realtime events can still be projected through the shared
+    // Provider event contract. A new dispatch replaces this entry.
+    this.activeTurns = new Map();
+    // Older OpenClacky runtimes ignore runtime_instructions during Session
+    // creation. Retain the trusted recovery handoff until the replacement's
+    // first message and inject it as non-executable context exactly once.
+    this.pendingRecoveryContexts = new Map();
     this.toolHosts = new Map();
     this.connectionErrorMessage = null;
     // Runtime probe results. Null until the first successful probe.
@@ -70,6 +79,9 @@ export class OpenClackyManager {
     this.ownedSessionIds.clear();
     for (const socket of this.sockets.values()) socket.close?.();
     this.sockets.clear();
+    this.activeTurns.clear();
+    this.pendingRecoveryContexts.clear();
+    this.deliveryAcks.clear();
     this.stopRuntime?.();
   }
 
@@ -154,6 +166,8 @@ export class OpenClackyManager {
     const row = payload?.session ?? payload;
     const summary = openClackySessionSummary(row, { bootstrap: bootstrap?.summary ?? null });
     const sessionId = summary.external.sessionId;
+    const recoveryContext = optionalText(input.recoveryContext);
+    if (recoveryContext) this.pendingRecoveryContexts.set(sessionId, recoveryContext);
     if (toolHost) this.toolHosts.set(sessionId, toolHost.context);
     this.ownedSessionIds.add(sessionId);
     this.sessions.set(sessionId, summary);
@@ -247,6 +261,9 @@ export class OpenClackyManager {
     this.ownedSessionIds.delete(sessionId);
     this.sessions.delete(sessionId);
     this.eventCursors.delete(sessionId);
+    this.activeTurns.delete(sessionId);
+    this.pendingRecoveryContexts.delete(sessionId);
+    this.deliveryAcks.delete(sessionId);
     this.toolHosts.delete(sessionId);
     this.onSessionChanged?.({ type: "deleted", sessionId });
     return true;
@@ -274,9 +291,14 @@ export class OpenClackyManager {
       throw openClackyPreDispatchRecoveryError(error, sessionId);
     }
     assertOpenClackySessionRunnable(session);
-    const contextPrompt = optionalText(context.sessionContext?.prompt);
+    const recoveryContext = this.pendingRecoveryContexts.get(sessionId) ?? null;
+    const contextPrompt = mergeOpenClackyRuntimeInstructions(
+      recoveryContext,
+      context.sessionContext?.prompt
+    );
     const turnId = context.turnId ?? `openclacky:turn:${randomUUID()}`;
     const content = providerMessageWithSessionContext(userMessage, contextPrompt);
+    this.activeTurns.set(sessionId, { turnId, hasAgentMessage: false });
     const socket = this.ensureSocket(sessionId);
     const accepted = this.sendSocket(sessionId, {
       type: "message",
@@ -284,6 +306,9 @@ export class OpenClackyManager {
       turn_id: turnId,
       content
     });
+    // The socket owns this queued message even when it has not opened yet. Do
+    // not inject the frozen recovery handoff into any later user Turn.
+    if (recoveryContext) this.pendingRecoveryContexts.delete(sessionId);
     const result = accepted
       ? { queued: true, turn: { id: turnId }, turnId, delivery: "accepted" }
       : { queued: false, turn: { id: turnId }, turnId, delivery: "unknown" };
@@ -463,6 +488,7 @@ export class OpenClackyManager {
       void this.handleBridgeToolCall(sessionId, event);
       return;
     }
+    event = this.normalizeRealtimeEvent(sessionId, event);
     // Acknowledged delivery: when the provider echoes a turn id or a user message
     // with our turn id, mark the delivery as confirmed.
     this.confirmDelivery(sessionId, event);
@@ -495,12 +521,12 @@ export class OpenClackyManager {
     }
     const id = stableEventId(event);
     if (id) this.eventCursors.set(sessionId, id);
+    const activeTurn = this.activeTurns.get(sessionId);
+    if (event.type === "assistant_message" && activeTurn && event.turn_id === activeTurn.turnId) {
+      activeTurn.hasAgentMessage = Boolean(optionalText(event.content)) || activeTurn.hasAgentMessage;
+    }
     const hasAgentMessage = event.type === "task_finished"
-      && Boolean(nextDetail?.items?.findLast?.((item) =>
-        item.type === "agentMessage"
-        && typeof item.text === "string"
-        && item.text.trim().length > 0
-      ));
+      && Boolean(activeTurn && activeTurn.turnId === event.turn_id && activeTurn.hasAgentMessage);
     this.onSessionChanged?.({
       type: "event",
       sessionId,
@@ -509,6 +535,31 @@ export class OpenClackyManager {
       session: this.sessions.get(sessionId),
       hasAgentMessage
     });
+  }
+
+  normalizeRealtimeEvent(sessionId, event) {
+    if (!OPENCLACKY_TURN_EVENT_TYPES.has(event.type)) return event;
+    const active = this.activeTurns.get(sessionId);
+    const nativeTurnId = optionalText(event.turn_id ?? event.turnId ?? event.ack_turn_id);
+    const turnId = nativeTurnId ?? active?.turnId ?? null;
+    if (nativeTurnId && (!active || event.type === "task_started")) {
+      this.activeTurns.set(sessionId, {
+        turnId: nativeTurnId,
+        hasAgentMessage: active?.turnId === nativeTurnId && active.hasAgentMessage === true
+      });
+    }
+    const normalized = {
+      ...event,
+      session_id: optionalText(event.session_id) ?? sessionId,
+      ...(turnId ? { turn_id: turnId } : {})
+    };
+    const eventId = stableEventId(normalized);
+    if (!optionalText(normalized.id ?? normalized.event_id) && eventId) normalized.event_id = eventId;
+    if (OPENCLACKY_ITEM_EVENT_TYPES.has(normalized.type)
+      && !optionalText(normalized.item_id ?? normalized.call_id)) {
+      normalized.item_id = normalized.event_id;
+    }
+    return normalized;
   }
 
   async handleBridgeToolCall(sessionId, event) {
@@ -625,16 +676,45 @@ export function probeRuntimeResult(version, bridgeProtocol, bridgeHealthy, flags
   };
 }
 
-// Stable event id: prefer the upstream id; otherwise derive a deterministic id from
-// a stable key (session + index + type + created_at) so replay/dedup is reliable.
+export function mergeOpenClackyRuntimeInstructions(...values) {
+  return values.map(optionalText).filter(Boolean).join("\n\n") || null;
+}
+
+const OPENCLACKY_TURN_EVENT_TYPES = new Set([
+  "task_started", "task_finished", "task_failed", "task_cancelled",
+  "user_message", "assistant_message", "tool_started", "tool_progress",
+  "tool_finished", "tool_failed", "request_feedback", "feedback_received",
+  "token_usage", "error"
+]);
+
+const OPENCLACKY_ITEM_EVENT_TYPES = new Set([
+  "user_message", "assistant_message", "tool_started", "tool_progress",
+  "tool_finished", "tool_failed", "request_feedback", "feedback_received"
+]);
+
+// Stable event id: prefer the upstream id; otherwise hash only normalized event
+// evidence. This makes reconnect duplicates idempotent without inventing an
+// executable historical tool request.
 function stableEventId(event, fallbackIndex = 0) {
   const upstream = optionalText(event?.id ?? event?.event_id);
   if (upstream) return upstream;
-  const sessionId = optionalText(event?.session_id);
-  const createdAt = optionalText(event?.created_at);
-  const type = String(event?.type ?? "event");
-  const turnId = optionalText(event?.turn_id);
-  return [sessionId, turnId, type, createdAt, fallbackIndex].filter(Boolean).join(":");
+  const evidence = JSON.stringify({
+    sessionId: optionalText(event?.session_id),
+    turnId: optionalText(event?.turn_id),
+    type: String(event?.type ?? "event"),
+    createdAt: optionalText(event?.created_at ?? event?.occurred_at),
+    itemId: optionalText(event?.item_id),
+    callId: optionalText(event?.call_id),
+    content: event?.content ?? null,
+    question: event?.question ?? null,
+    name: event?.name ?? event?.tool ?? null,
+    status: event?.status ?? null,
+    usage: event?.usage ?? event?.token_usage ?? event?.tokenUsage ?? null,
+    result: event?.result ?? null,
+    error: event?.error ?? null,
+    fallbackIndex
+  });
+  return `openclacky:event:${createHash("sha256").update(evidence).digest("hex")}`;
 }
 
 export function openClackySessionSummary(row = {}, options = {}) {

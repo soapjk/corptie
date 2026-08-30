@@ -89,7 +89,7 @@ import {
 } from "./application/toolHostMaterializationCoordinator.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
-import { OpenClackyManager } from "./adapters/openClackyManager.mjs";
+import { OpenClackyManager, mergeOpenClackyRuntimeInstructions } from "./adapters/openClackyManager.mjs";
 import { createOpenClackyProvider } from "./agent-provider/providers/openClackyProvider.mjs";
 import { openClackyToolHostAttachment } from "./agent-provider/providers/openClackyToolHostAttachment.mjs";
 import { OpenClackyWorkspaceTransitionPort } from "./agent-provider/adapters/openClackyWorkspaceTransitionPort.mjs";
@@ -692,7 +692,13 @@ const openClackyManager = new OpenClackyManager({
     const actorId = input.toolHost?.actorId ?? input.actorId ?? null;
     const metadata = input.toolHost?.metadata ?? input.metadata ?? null;
     const agentContext = actorId ? await collaborationAgentContextInstructions(actorId, metadata) : "";
-    const runtimeInstructions = actorId ? collaborationRuntimeInstructions(actorId) : "";
+    // The Adapter places a recovery ReplayManifest in input.runtimeInstructions.
+    // Preserve it alongside the ordinary Session instructions so OpenClacky can
+    // rebuild context through initialization injection without a replay API.
+    const runtimeInstructions = mergeOpenClackyRuntimeInstructions(
+      actorId ? collaborationRuntimeInstructions(actorId) : null,
+      input.runtimeInstructions
+    );
     const systemPrompt = [agentContext].filter(Boolean).join("\n\n") || null;
     return {
       body: {
@@ -743,6 +749,13 @@ const openClackyManager = new OpenClackyManager({
         });
         if (envelope) {
           const ingestion = providerEventIngestion.ingest(envelope);
+          if (ingestion.status === "applied") {
+            handleCommittedProviderTerminalLifecycle({
+              event: ingestion.event,
+              projection: ingestion.projection,
+              logicalRoute: logical
+            });
+          }
           if (sessionId && providerEventType === "task_finished") {
             sessionStateDiagnostics.record(sessionId, "persisted", {
               status: store.getSession(sessionId)?.status ?? null,
@@ -5501,9 +5514,30 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     }
     throw error;
   }
+  const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
+  const routedDelivery = delivery ? store.getMessageDelivery(deliveryId) ?? delivery : null;
+  const dispatchBindingId = routedDelivery?.bindingId ?? reference.bindingId;
+  const dispatchBinding = dispatchBindingId ? store.getAgentSessionBinding(dispatchBindingId) : null;
+  // Command acceptance is a durable Provider-neutral execution fact. Persist a
+  // running Turn before returning so orphan reconciliation cannot cancel work
+  // merely because a Provider's first realtime lifecycle event is delayed.
+  // Native events may already have won the race; never overwrite a settled Turn.
+  // Recovery may have atomically rebound the durable Delivery while sendMessage
+  // was in flight, so prefer that post-CAS binding over the pre-dispatch reference.
+  if (providerTurnId && dispatchBindingId
+    && !store.getSessionTurn(routedSessionId, dispatchBindingId, providerTurnId)) {
+    const timestamp = now();
+    store.upsertSessionTurn({
+      sessionId: routedSessionId,
+      bindingId: dispatchBindingId,
+      routingVersion: dispatchBinding?.routingVersion ?? reference.routingVersion,
+      turnId: providerTurnId,
+      executionStatus: "running",
+      startedAt: timestamp,
+      updatedAt: timestamp
+    });
+  }
   if (delivery) {
-    const providerTurnId = result?.turn?.id ?? result?.turnId ?? null;
-    const routedDelivery = store.getMessageDelivery(deliveryId) ?? delivery;
     const alreadySettledTurn = providerTurnId
       ? store.getSessionTurn(routedSessionId, routedDelivery.bindingId, providerTurnId)
       : null;
