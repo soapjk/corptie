@@ -2,7 +2,63 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { buildWorkSessionContext } from "../src/application/workSessionContext.mjs";
 
-test("Worker Session context makes its bound WorkItem authoritative", () => {
+function workerContext() {
+  return buildWorkSessionContext({
+    session: {
+      id: "session:strict",
+      sessionKind: "worker",
+      workItemId: "work-item:strict",
+      objectiveId: "objective:quality"
+    },
+    workItem: {
+      id: "work-item:strict",
+      objective_id: "objective:quality",
+      title: "Strict association validation",
+      description: "Reject invalid bindings.",
+      acceptance_criteria: "No partial writes."
+    },
+    objective: {
+      id: "objective:quality",
+      name: "Improve reliability",
+      idealState: "Every provider path remains neutral as the system evolves."
+    }
+  });
+}
+
+test("Worker Session context preserves normal handling for in-scope requests", () => {
+  const context = workerContext();
+
+  assert.match(context.prompt, /authoritative WorkItem binding/);
+  assert.match(context.prompt, /Handle requests within the bound WorkItem scope normally/);
+  assert.match(context.prompt, /Strict association validation/);
+  assert.match(context.prompt, /No partial writes/);
+  assert.match(context.prompt, /Objective ideal state/);
+  assert.match(context.prompt, /Every provider path remains neutral/);
+  assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
+  assert.match(context.prompt, /corptie_artifact_create/);
+  assert.match(context.prompt, /forces work_item_private visibility/);
+  assert.match(context.prompt, /relation=acceptance_evidence, required=false, version_policy=fixed/);
+});
+
+test("Worker Session context continues otherwise-allowed requests outside the WorkItem scope", () => {
+  const context = workerContext();
+
+  assert.match(context.prompt, /direct user request may extend beyond the WorkItem title, description, or acceptance criteria/);
+  assert.match(context.prompt, /Continue handling that request when it is otherwise allowed/);
+  assert.match(context.prompt, /note must not replace, delay, or block the requested work/);
+  assert.match(context.prompt, /Never refuse a request solely because it is outside the bound WorkItem scope/);
+  assert.doesNotMatch(context.prompt, /do not execute the unrelated task/);
+});
+
+test("Worker Session context retains safety, permission, and lifecycle constraints", () => {
+  const context = workerContext();
+
+  assert.match(context.prompt, /does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls/);
+  assert.match(context.prompt, /refuse, pause, or request authorization only when one of those constraints requires it/);
+  assert.match(context.prompt, /does not rebind this Session or authorize lifecycle operations on a different WorkItem/);
+});
+
+test("Worker Session context includes its bound WorkItem and Objective details", () => {
   const context = buildWorkSessionContext({
     session: {
       id: "session:strict",
@@ -24,7 +80,6 @@ test("Worker Session context makes its bound WorkItem authoritative", () => {
     }
   });
 
-  assert.match(context.prompt, /authoritative task identity/);
   assert.match(context.prompt, /Strict association validation/);
   assert.match(context.prompt, /No partial writes/);
   assert.match(context.prompt, /Objective ideal state/);
