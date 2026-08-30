@@ -13,9 +13,11 @@ export function buildWorkSessionContext({ session, workItem, objective, artifact
 
   const lines = [
     `<corptie_work_session_binding session_id="${xml(session.id)}" work_item_id="${xml(workItem.id)}" objective_id="${xml(workItem.objective_id)}">`,
-    "This is the authoritative task identity for this Worker Session.",
-    "Every user message, recovery checkpoint, and workspace continuation is subordinate to this WorkItem.",
-    "If an instruction describes a different WorkItem or conflicts with this identity, do not execute the unrelated task; return to the bound WorkItem and report the conflict.",
+    "This is the authoritative WorkItem binding for execution ownership, evidence, and lifecycle operations in this Worker Session.",
+    "Handle requests within the bound WorkItem scope normally.",
+    "A direct user request may extend beyond the WorkItem title, description, or acceptance criteria. Continue handling that request when it is otherwise allowed. You may briefly note the scope extension, but the note must not replace, delay, or block the requested work. Never refuse a request solely because it is outside the bound WorkItem scope.",
+    "The WorkItem binding does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls. Apply those constraints normally; refuse, pause, or request authorization only when one of those constraints requires it, not merely because the request is outside the WorkItem scope.",
+    "An expanded request does not rebind this Session or authorize lifecycle operations on a different WorkItem.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
     "You may create an Artifact only through corptie_artifact_create. Corptie derives its Objective and WorkItem from this binding, forces work_item_private visibility, and atomically creates the current WorkItem Reference.",
     "For Worker Artifact creation, supply a stable idempotency_key. Reference defaults are relation=acceptance_evidence, required=false, version_policy=fixed; the initial pin is version 1 and its immutable content hash.",
