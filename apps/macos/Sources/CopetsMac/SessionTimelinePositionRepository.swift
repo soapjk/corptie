@@ -24,16 +24,8 @@ enum SessionTimelinePositionRepositoryError: Error, Equatable {
 actor SessionTimelinePositionRepository {
     @MainActor
     static let shared: SessionTimelinePositionRepository = {
-        let support = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        let directory = support.appendingPathComponent(
-            CorptieAppEnvironment.appSupportFolderName,
-            isDirectory: true
-        )
         return SessionTimelinePositionRepository(
-            databaseURL: directory.appendingPathComponent("presentation.sqlite3")
+            databaseURL: CorptieAppEnvironment.presentationDatabaseURL
         )
     }()
 
