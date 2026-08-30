@@ -21,8 +21,44 @@ export const STARTUP_BINDING_ARTIFACT = Object.freeze({
   contentHash: "472b8c34180f2c1e7f7b59d7e2c8fc620ec515971a56e5f8ecae6fe69a0aced2"
 });
 
+export const RUN_RECEIPT_ARTIFACT = Object.freeze({
+  artifactId: "artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef",
+  version: 1,
+  contentHash: "81b374c134fa74e0eb89673b2599eeb7d7d66f6ef7df0710289c6dc379b67184",
+  relation: "implementation_spec",
+  schemaVersion: 5
+});
+
+export const CLEANUP_RECEIPT_ARTIFACT = Object.freeze({
+  ...RUN_RECEIPT_ARTIFACT,
+  schemaVersion: 4
+});
+
+export const TOOLSET_VALIDATION_ARTIFACT = Object.freeze({
+  artifactId: "artifact:f665b81c-aeae-496d-9157-a880588e7005",
+  version: 1,
+  contentHash: "b54ce2c5d36d2d5b31aa024b1c2ad40267fd1650b67a9545b6fc6062fac70df5",
+  schemaVersion: 2
+});
+
+export const PROJECT_TOOLSET_ARTIFACT = Object.freeze({
+  artifactId: "artifact:172b9f2e-a2d1-451c-a3e4-d52ba3d95850",
+  version: 1,
+  contentHash: "c203f2fd99d24064c46ab46e17f016a9494d643ab2b64e95c3f363fc8af00e62"
+});
+
 const schemaPath = new URL("../contracts/project-code-search-receipts.schema.json", import.meta.url);
+const toolsetSchemaPath = new URL("../contracts/toolset-validation-receipt-v2.schema.json", import.meta.url);
+const runReceiptSchemaPath = new URL("../contracts/run-receipt-v5.schema.json", import.meta.url);
+const cleanupReceiptSchemaPath = new URL("../contracts/cleanup-receipt-v4.schema.json", import.meta.url);
 let cachedSchema = null;
+let cachedToolsetSchema = null;
+const runIsolationSchemas = new Map();
+
+const RUN_ISOLATION_SCHEMA_HASHES = Object.freeze({
+  RunReceipt: "1f3f91c1f73352d90a98289e2d73112175f470f518fca5f6066ab8c4768012df",
+  CleanupReceipt: "fac1c7b7f1906dcd80bc0bc8d01eef0da60a30fcaa2860b83a6c0f5d731b8adf"
+});
 
 export async function loadProjectCodeReceiptSchema() {
   if (cachedSchema) return cachedSchema;
@@ -78,6 +114,106 @@ export function snapshotArtifactRef() {
   });
 }
 
+export function searchArtifactRef() {
+  return Object.freeze({
+    ...PROJECT_CODE_RECEIPT_ARTIFACT,
+    receiptType: "SearchReceipt",
+    schemaVersion: 1
+  });
+}
+
+export async function validateToolsetValidationReceipt(receipt) {
+  const schema = await loadToolsetValidationReceiptSchema();
+  const errors = [];
+  validateSchemaNode(receipt, schema, schema, "$", errors);
+  try { verifyReceiptHash(receipt, "TOOLSET_RECEIPT_HASH_MISMATCH"); } catch (error) { errors.push(error.message); }
+  const artifactRef = receipt?.artifactRef;
+  if (artifactRef?.artifactId !== PROJECT_TOOLSET_ARTIFACT.artifactId
+    || artifactRef?.version !== PROJECT_TOOLSET_ARTIFACT.version
+    || artifactRef?.contentHash !== PROJECT_TOOLSET_ARTIFACT.contentHash) {
+    errors.push("$.artifactRef must point to the approved Project Toolset Artifact");
+  }
+  if (errors.length > 0) {
+    const error = contractError("TOOLSET_VALIDATION_RECEIPT_INVALID", `Invalid ToolsetValidationReceipt: ${errors.slice(0, 8).join("; ")}`);
+    error.validationErrors = errors;
+    throw error;
+  }
+  return receipt;
+}
+
+export async function validateRunIsolationReceiptSchema(receipt, receiptType) {
+  const schema = await loadRunIsolationReceiptSchema(receiptType);
+  const errors = [];
+  validateSchemaNode(receipt, schema, schema, "$", errors);
+  if (errors.length > 0) {
+    const error = contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", `Invalid ${receiptType}: ${errors.slice(0, 8).join("; ")}`);
+    error.validationErrors = errors;
+    throw error;
+  }
+  return receipt;
+}
+
+export async function loadRunIsolationReceiptSchema(receiptType) {
+  if (!Object.hasOwn(RUN_ISOLATION_SCHEMA_HASHES, receiptType)) {
+    throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", `Unknown RunIsolation receipt type: ${receiptType}`);
+  }
+  if (runIsolationSchemas.has(receiptType)) return runIsolationSchemas.get(receiptType);
+  const path = receiptType === "RunReceipt" ? runReceiptSchemaPath : cleanupReceiptSchemaPath;
+  const bytes = await readFile(path);
+  if (sha256Hex(bytes) !== RUN_ISOLATION_SCHEMA_HASHES[receiptType]) {
+    throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", `${receiptType} schema bytes do not match the approved RunIsolation Artifact section.`);
+  }
+  const schema = JSON.parse(bytes.toString("utf8"));
+  assertClosedObjectSchemas(schema);
+  runIsolationSchemas.set(receiptType, Object.freeze(schema));
+  return runIsolationSchemas.get(receiptType);
+}
+
+export function projectToolsetReceiptRef(receipt, sourceFingerprint) {
+  if (receipt?.snapshotRef?.sourceFingerprint !== sourceFingerprint) {
+    throw contractError("RUN_SOURCE_FINGERPRINT_MISMATCH", "Toolset and Repository Snapshot source fingerprints differ.");
+  }
+  return Object.freeze({
+    receiptId: receipt.receiptId,
+    receiptHash: receipt.receiptHash,
+    schemaVersion: receipt.schemaVersion,
+    resourceVersion: receipt.resourceVersion,
+    artifactRef: receipt.artifactRef,
+    toolsetVersion: receipt.toolsetVersion,
+    validationPlanIdentity: receipt.validationPlanIdentity,
+    sourceFingerprint
+  });
+}
+
+export function toolsetValidationReceiptRef(receipt) {
+  return Object.freeze({
+    receiptId: receipt.receiptId,
+    receiptHash: receipt.receiptHash,
+    schemaVersion: receipt.schemaVersion,
+    resourceVersion: receipt.resourceVersion,
+    artifactRef: Object.freeze({
+      artifactId: TOOLSET_VALIDATION_ARTIFACT.artifactId,
+      version: TOOLSET_VALIDATION_ARTIFACT.version,
+      contentHash: TOOLSET_VALIDATION_ARTIFACT.contentHash,
+      relation: "implementation_spec",
+      receiptType: "ToolsetValidationReceipt",
+      schemaVersion: TOOLSET_VALIDATION_ARTIFACT.schemaVersion
+    })
+  });
+}
+
+async function loadToolsetValidationReceiptSchema() {
+  if (cachedToolsetSchema) return cachedToolsetSchema;
+  const bytes = await readFile(toolsetSchemaPath);
+  if (sha256Hex(bytes) !== TOOLSET_VALIDATION_ARTIFACT.contentHash) {
+    throw contractError("TOOLSET_DEPENDENCY_CONTRACT_MISMATCH", "Bundled Toolset receipt schema does not match its approved fixed Artifact hash.");
+  }
+  const schema = JSON.parse(bytes.toString("utf8"));
+  assertClosedObjectSchemas(schema);
+  cachedToolsetSchema = Object.freeze(schema);
+  return cachedToolsetSchema;
+}
+
 export function startupBindingRef(receipt) {
   return Object.freeze({
     artifactId: STARTUP_BINDING_ARTIFACT.artifactId,
@@ -85,6 +221,21 @@ export function startupBindingRef(receipt) {
     artifactContentHash: STARTUP_BINDING_ARTIFACT.contentHash,
     startupOperationId: receipt.startupOperationId,
     startupReceiptHash: receipt.receiptHash
+  });
+}
+
+export function runStartupBindingReceiptRef(receipt) {
+  return Object.freeze({
+    startupOperationId: receipt.startupOperationId,
+    receiptHash: receipt.receiptHash,
+    schemaVersion: receipt.schemaVersion,
+    resourceVersion: receipt.resourceVersion,
+    artifactRef: Object.freeze({
+      ...STARTUP_BINDING_ARTIFACT,
+      relation: "implementation_spec",
+      receiptType: "StartupBindingReceipt",
+      schemaVersion: 2
+    })
   });
 }
 

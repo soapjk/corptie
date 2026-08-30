@@ -1,0 +1,835 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.corptie.local/project-toolset/toolset-validation-receipt-v2.schema.json",
+  "title": "ToolsetValidationReceipt v2 — Cross-Contract Closed Revision",
+  "description": "Approved fixed revision. Supersedes artifact:a8312599-44fb-4e1a-8c1a-263526f90a09@1. StartupBindingRef, RepositorySourceSnapshotReceiptRef, RunReceiptRef and CleanupReceiptRef are exact closed copies of fixed upstream contracts; semantic validation dereferences upstream receipts and does not extend their schemas. receiptHash removes only the top-level receiptHash, RFC8785 canonicalizes the remaining object, and SHA-256 hashes its UTF-8 bytes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receiptId",
+    "receiptHash",
+    "schemaVersion",
+    "resourceVersion",
+    "artifactRef",
+    "identity",
+    "snapshotRef",
+    "toolsetVersion",
+    "validationPlanIdentity",
+    "validationCacheKey",
+    "actionReceipts",
+    "assertionReceipts",
+    "cacheDisposition",
+    "outcome",
+    "startedAt",
+    "finishedAt",
+    "expiresAt",
+    "error"
+  ],
+  "properties": {
+    "receiptId": {
+      "type": "string",
+      "pattern": "^toolset_validation_receipt:[A-Za-z0-9_-]+$"
+    },
+    "receiptHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "schemaVersion": {
+      "const": 2
+    },
+    "resourceVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logicalSessionId",
+        "objectiveId",
+        "workItemId",
+        "repositoryId",
+        "worktreeId",
+        "startupBindingRef"
+      ],
+      "properties": {
+        "logicalSessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "objectiveId": {
+          "type": "string",
+          "pattern": "^objective:[0-9a-f-]+$"
+        },
+        "workItemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "repositoryId": {
+          "type": "string",
+          "pattern": "^repository:[0-9a-f]+$"
+        },
+        "worktreeId": {
+          "type": "string",
+          "pattern": "^worktree:[0-9a-f]+$"
+        },
+        "startupBindingRef": {
+          "$ref": "#/$defs/StartupBindingRef"
+        }
+      }
+    },
+    "snapshotRef": {
+      "$ref": "#/$defs/RepositorySourceSnapshotReceiptRef"
+    },
+    "toolsetVersion": {
+      "type": "string",
+      "pattern": "^ptv1:[0-9a-f]{64}$"
+    },
+    "validationPlanIdentity": {
+      "type": "string",
+      "pattern": "^vp1:[0-9a-f]{64}$"
+    },
+    "validationCacheKey": {
+      "type": "string",
+      "pattern": "^tvck1:[0-9a-f]{64}$"
+    },
+    "actionReceipts": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/ActionReceipt"
+      }
+    },
+    "assertionReceipts": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/AssertionReceipt"
+      }
+    },
+    "cacheDisposition": {
+      "enum": [
+        "stored",
+        "reused",
+        "bypassed",
+        "miss",
+        "rejected",
+        "invalidated"
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "unsupported",
+        "needs_configuration",
+        "cancelled",
+        "unknown",
+        "stale",
+        "mismatch"
+      ]
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BusinessError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "LowercaseHex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "ArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "BusinessError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "details"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,127}$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "actionId",
+                "assertionId",
+                "phase"
+              ],
+              "properties": {
+                "actionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "assertionId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "phase": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "detect",
+                        "plan",
+                        "generate",
+                        "update",
+                        "validate",
+                        "cache"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "StartupBindingRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "artifactVersion",
+        "artifactContentHash",
+        "startupOperationId",
+        "startupReceiptHash"
+      ],
+      "properties": {
+        "artifactId": {
+          "const": "artifact:7f26689a-5b9a-4b32-ad86-ad93c0be2949"
+        },
+        "artifactVersion": {
+          "const": 1
+        },
+        "artifactContentHash": {
+          "const": "472b8c34180f2c1e7f7b59d7e2c8fc620ec515971a56e5f8ecae6fe69a0aced2"
+        },
+        "startupOperationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "startupReceiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "RepositorySourceSnapshotContractArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "const": "RepositorySourceSnapshotReceipt"
+        },
+        "schemaVersion": {
+          "const": 1
+        }
+      }
+    },
+    "RepositorySourceSnapshotReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "sourceFingerprint",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/RepositorySourceSnapshotContractArtifactRef"
+        }
+      }
+    },
+    "ApprovedRunReceiptArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "const": "artifact:a4e25781-d3fc-4e84-b268-a8f5deebae73"
+        },
+        "version": {
+          "const": 1
+        },
+        "contentHash": {
+          "const": "ad71ee6619d01da05d5b40d228bd30e94c47b51024519a0aea54adf070eb0959"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "const": "RunReceipt"
+        },
+        "schemaVersion": {
+          "const": 4
+        }
+      }
+    },
+    "ApprovedCleanupReceiptArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "const": "artifact:a4e25781-d3fc-4e84-b268-a8f5deebae73"
+        },
+        "version": {
+          "const": 1
+        },
+        "contentHash": {
+          "const": "ad71ee6619d01da05d5b40d228bd30e94c47b51024519a0aea54adf070eb0959"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "const": "CleanupReceipt"
+        },
+        "schemaVersion": {
+          "const": 4
+        }
+      }
+    },
+    "RunReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef",
+        "runId"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 4
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ApprovedRunReceiptArtifactRef"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "CleanupReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef",
+        "runId"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 4
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ApprovedCleanupReceiptArtifactRef"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "ActionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "ordinal",
+        "executionDisposition",
+        "outcome",
+        "runReceiptRef",
+        "cleanupReceiptRef",
+        "startedAt",
+        "finishedAt",
+        "evidenceHash",
+        "error"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "failed",
+            "unsupported",
+            "needs_configuration",
+            "cancelled",
+            "unknown",
+            "stale",
+            "mismatch"
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidenceHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BusinessError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "build",
+            "test",
+            "lint",
+            "typecheck",
+            "service_validation"
+          ]
+        },
+        "ordinal": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "executionDisposition": {
+          "enum": [
+            "not_started",
+            "executed"
+          ]
+        },
+        "runReceiptRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunReceiptRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleanupReceiptRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CleanupReceiptRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "executionDisposition": {
+                "const": "not_started"
+              }
+            },
+            "required": [
+              "executionDisposition"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runReceiptRef": {
+                "const": null
+              },
+              "cleanupReceiptRef": {
+                "const": null
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "executionDisposition": {
+                "const": "executed"
+              }
+            },
+            "required": [
+              "executionDisposition"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runReceiptRef": {
+                "$ref": "#/$defs/RunReceiptRef"
+              },
+              "cleanupReceiptRef": {
+                "$ref": "#/$defs/CleanupReceiptRef"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "passed"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "executionDisposition": {
+                "const": "executed"
+              },
+              "runReceiptRef": {
+                "$ref": "#/$defs/RunReceiptRef"
+              },
+              "cleanupReceiptRef": {
+                "$ref": "#/$defs/CleanupReceiptRef"
+              },
+              "error": {
+                "const": null
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AssertionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "actionId",
+        "assertionType",
+        "outcome",
+        "startedAt",
+        "finishedAt",
+        "evidenceHash",
+        "error"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "failed",
+            "unsupported",
+            "needs_configuration",
+            "cancelled",
+            "unknown",
+            "stale",
+            "mismatch"
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "evidenceHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BusinessError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "assertionType": {
+          "enum": [
+            "exit_code",
+            "output_schema",
+            "artifact_exists",
+            "service_health",
+            "diagnostic_absence",
+            "custom_declarative"
+          ]
+        }
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "outcome": {
+          "const": "passed"
+        },
+        "error": {
+          "const": null
+        }
+      },
+      "required": [
+        "outcome",
+        "error"
+      ]
+    },
+    {
+      "properties": {
+        "outcome": {
+          "enum": [
+            "failed",
+            "unsupported",
+            "needs_configuration",
+            "cancelled",
+            "unknown",
+            "stale",
+            "mismatch"
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/BusinessError"
+        }
+      },
+      "required": [
+        "outcome",
+        "error"
+      ]
+    }
+  ]
+}
