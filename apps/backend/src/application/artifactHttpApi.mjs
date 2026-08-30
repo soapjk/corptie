@@ -56,7 +56,11 @@ export function handleArtifactHttpRequest({ request, response, url, service }) {
       const context = localContext(artifact.objectiveId);
       if (request.method === "GET") {
         return sendJson(response, 200, await service.get(context, artifactId, {
-          version: numberParam(url, "version"), offset: numberParam(url, "offset"), limit: numberParam(url, "limit")
+          version: numberParam(url, "version"), contentHash: url.searchParams.get("contentHash"),
+          referenceId: url.searchParams.get("referenceId"),
+          offset: numberParam(url, "offset"), limit: numberParam(url, "limit"),
+          format: url.searchParams.get("format") ?? undefined,
+          turnExecutionId: url.searchParams.get("turnExecutionId") ?? `macos-artifact-read:${Date.now()}`
         }));
       }
       if (request.method === "PATCH") {
@@ -117,7 +121,11 @@ export function handleArtifactHttpRequest({ request, response, url, service }) {
       return sendJson(response, 200, await service.localFile(
         localContext(artifact.objectiveId),
         artifactId,
-        { version: numberParam(url, "version") }
+        {
+          version: numberParam(url, "version"),
+          contentHash: url.searchParams.get("contentHash"),
+          referenceId: url.searchParams.get("referenceId")
+        }
       ));
     }
 
@@ -127,7 +135,8 @@ export function handleArtifactHttpRequest({ request, response, url, service }) {
       const artifact = requiredArtifact(service, artifactId);
       const input = await readJson(request);
       return sendJson(response, 200, await service.exportArtifact(localContext(artifact.objectiveId), artifactId, {
-        destinationPath: input.destinationPath, version: input.version, confirmed: input.confirmed,
+        destinationPath: input.destinationPath, version: input.version,
+        contentHash: input.contentHash, referenceId: input.referenceId, confirmed: input.confirmed,
         confirmedRepositoryWrite: input.confirmedRepositoryWrite, confirmedOverwrite: input.confirmedOverwrite
       }));
     }

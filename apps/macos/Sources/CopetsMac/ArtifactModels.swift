@@ -87,13 +87,37 @@ struct ArtifactAuditEvent: Identifiable, Codable, Hashable, Sendable {
 struct ArtifactListEnvelope: Codable, Sendable { let artifacts: [ObjectiveArtifact] }
 
 struct ArtifactDetailEnvelope: Codable, Sendable {
-    let artifact: ObjectiveArtifact
-    let version: ArtifactVersion
+    let artifactId: String
+    let version: Int
+    let contentHash: String
+    let mimeType: String
+    let totalBytes: Int
+    let encoding: String?
     let content: String?
+    let range: ArtifactReadRange
+    let complete: Bool
+    let pendingUpdate: ArtifactPendingUpdate?
+    let readReceiptId: String
+    let deduplicated: Bool
+    let turnBudget: ArtifactTurnReadBudget
+}
+
+struct ArtifactReadRange: Codable, Sendable {
     let offset: Int
+    let byteLength: Int
     let nextOffset: Int?
-    let truncated: Bool
-    let references: [ArtifactReference]
+}
+
+struct ArtifactPendingUpdate: Codable, Sendable {
+    let version: Int
+    let contentHash: String
+}
+
+struct ArtifactTurnReadBudget: Codable, Sendable {
+    let uniqueBytesUsed: Int
+    let uniqueBytesLimit: Int
+    let uniquePagesUsed: Int
+    let uniquePagesLimit: Int
 }
 
 struct ArtifactImportReceipt: Codable, Sendable {

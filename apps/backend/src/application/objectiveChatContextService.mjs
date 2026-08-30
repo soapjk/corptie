@@ -1,5 +1,12 @@
-const DEFAULT_CHARACTER_BUDGET = 32_000;
+import {
+  ARTIFACT_CONTEXT_DEFAULT_LIMITS,
+  ArtifactContextBudgetPolicy,
+  estimateArtifactTokens
+} from "./artifactContextBudgetPolicy.mjs";
+
+const DEFAULT_CHARACTER_BUDGET = 32_768;
 const MAX_WORK_ITEMS = 80;
+const encoder = new TextEncoder();
 
 export const OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE = Object.freeze([
   "Objective Chat code/repository change boundary:",
@@ -15,61 +22,77 @@ export class ObjectiveChatContextService {
     this.store = options.store;
     this.artifactService = options.artifactService ?? null;
     this.characterBudget = options.characterBudget ?? DEFAULT_CHARACTER_BUDGET;
+    this.budgetPolicy = options.budgetPolicy ?? new ArtifactContextBudgetPolicy();
     if (!this.store) throw new TypeError("ObjectiveChatContextService requires a store.");
   }
 
-  build(objectiveId) {
+  build(objectiveId, session = null) {
     const objective = this.store.getObjective(requiredText(objectiveId, "objectiveId"));
     if (!objective) throw serviceError("OBJECTIVE_NOT_FOUND", `Objective not found: ${objectiveId}`);
     const workItems = this.store.listWorkItemsByObjective(objective.id).slice(0, MAX_WORK_ITEMS);
-    const workspaceRows = objective.workspaceIds.map((id) => ({
+    const workspaceIds = objective.workspaceIds.slice(0, 80);
+    const contributorAgentIds = objective.contributorAgentIds.slice(0, 80);
+    const workspaceRows = workspaceIds.map((id) => ({
       id,
-      path: this.store.resolveWorkspacePath(id)
+      path: boundedText(this.store.resolveWorkspacePath(id), 1_024)
     }));
-    const agents = objective.contributorAgentIds
+    const agents = contributorAgentIds
       .map((id) => this.store.getAgent(id))
       .filter(Boolean)
       .map((agent) => ({
         agentId: agent.agentId,
-        name: agent.name,
-        role: agent.role,
-        description: agent.description
+        name: boundedText(agent.name, 256),
+        role: boundedText(agent.role, 256),
+        description: boundedText(agent.description, 1_024)
       }));
-    const artifactIndex = this.artifactService?.indexForSession({
-      id: `objective-context:${objective.id}`,
-      sessionKind: "objectiveChat",
-      objectiveId: objective.id
-    }) ?? { items: [], omittedCount: 0 };
+    const objectiveSession = session ?? this.store.getObjectiveChatSession(objective.id);
+    const artifactIndex = objectiveSession
+      ? this.artifactService?.indexForSession(objectiveSession)
+      : null;
+    const workItemCandidates = workItems.map((item) => ({
+      id: item.id,
+      title: boundedText(item.title, 512),
+      description: boundedText(item.description, 2_048),
+      acceptanceCriteria: boundedText(item.acceptance_criteria, 2_048),
+      priority: item.priority,
+      status: item.status,
+      mainWorkspaceId: item.main_workspace_id,
+      mainAgentId: item.main_agent_id,
+      currentSessionId: item.current_session_id
+    }));
+    const packedWorkItems = this.budgetPolicy.measureAndPack({
+      section: "objectiveActiveWorkItems",
+      candidates: workItemCandidates,
+      limits: { maxEstimatedTokens: 4_096, maxUtf8Bytes: 16_384, maxItems: MAX_WORK_ITEMS },
+      stableOrder: (left, right) => left.id.localeCompare(right.id)
+    });
     const snapshot = {
       generatedAt: new Date().toISOString(),
       objective: {
         id: objective.id,
-        name: objective.name,
-        description: objective.description,
-        idealState: objective.idealState,
+        name: boundedText(objective.name, 512),
+        description: boundedText(objective.description, 2_048),
+        idealState: boundedText(objective.idealState, 2_048),
         status: objective.status,
         priority: objective.priority,
         targetDate: objective.targetDate,
-        tags: objective.tags,
-        workspaceIds: objective.workspaceIds,
-        contributorAgentIds: objective.contributorAgentIds
+        tags: (objective.tags ?? []).slice(0, 40).map((tag) => boundedText(tag, 128)),
+        workspaceIds,
+        contributorAgentIds
       },
       workspaces: workspaceRows,
       contributors: agents,
-      workItems: workItems.map((item) => ({
-        id: item.id,
-        title: item.title,
-        description: item.description,
-        acceptanceCriteria: item.acceptance_criteria,
-        priority: item.priority,
-        status: item.status,
-        mainWorkspaceId: item.main_workspace_id,
-        mainAgentId: item.main_agent_id,
-        currentSessionId: item.current_session_id
-      })),
-      artifacts: artifactIndex.items,
-      omittedArtifactCount: artifactIndex.omittedCount,
-      omittedWorkItemCount: Math.max(0, this.store.listWorkItemsByObjective(objective.id).length - MAX_WORK_ITEMS)
+      workItems: [...packedWorkItems.items],
+      artifacts: [...(artifactIndex?.items ?? [])],
+      omissions: {
+        artifacts: artifactIndex?.omittedArtifactCount ?? 0,
+        artifactReasons: artifactIndex?.omissionReasons ?? {},
+        workItems: workItemCandidates.length - packedWorkItems.items.length,
+        workItemReasons: packedWorkItems.omissionReasons,
+        workspaces: Math.max(0, objective.workspaceIds.length - workspaceIds.length),
+        contributors: Math.max(0, objective.contributorAgentIds.length - contributorAgentIds.length),
+        objectiveTextTruncated: false
+      }
     };
     const header = [
       "You are in a Corptie Objective Chat.",
@@ -80,21 +103,108 @@ export class ObjectiveChatContextService {
       "The snapshot is regenerated by Corptie and may be truncated; use scoped tools to obtain current authoritative state.",
       "Artifact entries contain only bounded metadata, summaries, pinned version/hash, and required flags. Read private bodies on demand with Artifact tools."
     ].join("\n");
-    const raw = JSON.stringify(snapshot, null, 2);
-    const available = Math.max(0, this.characterBudget - header.length - 32);
-    const truncated = raw.length > available;
-    const prompt = `${header}\n\nObjective snapshot:\n${raw.slice(0, available)}${truncated ? "\n[Snapshot truncated by Corptie context budget.]" : ""}`;
+    const prefix = `${header}\n\nObjective snapshot:\n`;
+    const totalLimits = ARTIFACT_CONTEXT_DEFAULT_LIMITS.objectiveChatSnapshot;
+    // Compact JSON materially reduces both serialization work and context
+    // bytes at the 80/80 boundary; structure, not indentation, is the contract.
+    let raw = JSON.stringify(snapshot);
+    const omittedForTotal = { artifacts: 0, workItems: 0, contributors: 0, workspaces: 0 };
+    for (const [field, omissionField] of [
+      ["workItems", "workItems"], ["artifacts", "artifacts"],
+      ["contributors", "contributors"], ["workspaces", "workspaces"]
+    ]) {
+      if (snapshotFits(prefix, raw, totalLimits, this.characterBudget)) break;
+      const original = snapshot[field];
+      const kept = maximumFittingPrefix(snapshot, field, original, prefix, totalLimits, this.characterBudget);
+      const omitted = original.length - kept.length;
+      snapshot[field] = kept;
+      snapshot.omissions[omissionField] += omitted;
+      omittedForTotal[omissionField] += omitted;
+      raw = JSON.stringify(snapshot);
+    }
+    while (!snapshotFits(prefix, raw, totalLimits, this.characterBudget)) {
+      if (!shrinkObjective(snapshot.objective)) {
+        throw serviceError("OBJECTIVE_CONTEXT_BUDGET_TOO_SMALL", "Objective Chat context header exceeds the configured hard budget.");
+      }
+      snapshot.omissions.objectiveTextTruncated = true;
+      raw = JSON.stringify(snapshot);
+    }
+    const prompt = `${prefix}${raw}`;
+    const truncated = Object.values(snapshot.omissions).some((value) =>
+      typeof value === "number" ? value > 0 : value === true
+    );
     return {
       prompt,
       objectiveId: objective.id,
       generatedAt: snapshot.generatedAt,
       characterBudget: this.characterBudget,
       characters: prompt.length,
-      estimatedTokens: Math.ceil(prompt.length / 4),
+      utf8Bytes: encoder.encode(prompt).byteLength,
+      estimatedTokens: estimateArtifactTokens(prompt),
       truncated,
-      counts: { workItems: workItems.length, omittedWorkItems: snapshot.omittedWorkItemCount }
+      counts: {
+        workItems: snapshot.workItems.length,
+        artifacts: snapshot.artifacts.length,
+        omittedWorkItems: snapshot.omissions.workItems,
+        omittedArtifacts: snapshot.omissions.artifacts,
+        omittedForTotal
+      }
     };
   }
+}
+
+function boundedText(value, maxCodePoints) {
+  const source = String(value ?? "");
+  if (source.length <= maxCodePoints) return source;
+  const prefix = source.slice(0, maxCodePoints + 1);
+  if (!/[\uD800-\uDFFF]/.test(prefix)) return source.slice(0, maxCodePoints);
+  const bounded = [];
+  for (const point of source) {
+    if (bounded.length >= maxCodePoints) break;
+    bounded.push(point);
+  }
+  return bounded.join("");
+}
+
+function shrinkObjective(objective) {
+  for (const field of ["description", "idealState", "name"]) {
+    const points = Array.from(String(objective[field] ?? ""));
+    if (points.length > 32) {
+      objective[field] = points.slice(0, Math.max(32, Math.floor(points.length / 2))).join("");
+      return true;
+    }
+  }
+  if ((objective.tags ?? []).length > 0) { objective.tags.pop(); return true; }
+  if ((objective.workspaceIds ?? []).length > 0) { objective.workspaceIds.pop(); return true; }
+  if ((objective.contributorAgentIds ?? []).length > 0) { objective.contributorAgentIds.pop(); return true; }
+  return false;
+}
+
+function maximumFittingPrefix(snapshot, field, original, prefix, limits, characterBudget) {
+  let lower = 0;
+  let upper = original.length;
+  let best = 0;
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    snapshot[field] = original.slice(0, middle);
+    const raw = JSON.stringify(snapshot);
+    if (snapshotFits(prefix, raw, limits, characterBudget)) {
+      best = middle;
+      lower = middle + 1;
+    } else {
+      upper = middle - 1;
+    }
+  }
+  snapshot[field] = original;
+  return original.slice(0, best);
+}
+
+function snapshotFits(prefix, raw, limits, characterBudget) {
+  const prompt = prefix + raw;
+  const bytes = encoder.encode(prompt).byteLength;
+  return prompt.length <= characterBudget
+    && bytes <= limits.maxUtf8Bytes
+    && estimateArtifactTokens(prompt, bytes) <= limits.maxEstimatedTokens;
 }
 
 function requiredText(value, field) {

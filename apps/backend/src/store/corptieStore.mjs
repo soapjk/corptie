@@ -1971,6 +1971,9 @@ export class CorptieStore {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_versions_storage
       ON artifact_versions(artifact_id, content_hash);
 
+      CREATE INDEX IF NOT EXISTS idx_artifact_versions_pinned_read
+      ON artifact_versions(artifact_id, version, content_hash);
+
       CREATE TABLE IF NOT EXISTS artifact_references (
         reference_id TEXT PRIMARY KEY,
         artifact_id TEXT NOT NULL,
@@ -2002,6 +2005,12 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_artifact_references_work_item
       ON artifact_references(work_item_id, revoked_at, required, relation);
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_references_objective_work_item
+      ON artifact_references(objective_id, work_item_id, revoked_at);
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_references_objective_session
+      ON artifact_references(objective_id, session_id, revoked_at);
 
       CREATE TABLE IF NOT EXISTS work_item_file_references (
         reference_id TEXT PRIMARY KEY,
@@ -2097,6 +2106,39 @@ export class CorptieStore {
         FOREIGN KEY (artifact_id, version)
           REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT
       );
+
+      CREATE TABLE IF NOT EXISTS artifact_read_receipts (
+        read_receipt_id TEXT PRIMARY KEY,
+        logical_session_id TEXT NOT NULL,
+        provider_binding_id TEXT NOT NULL,
+        turn_execution_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        byte_offset INTEGER NOT NULL,
+        byte_length INTEGER NOT NULL,
+        format TEXT NOT NULL CHECK (format IN ('text', 'base64')),
+        reference_id TEXT NOT NULL,
+        authorization_revision TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (artifact_id, version)
+          REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT,
+        FOREIGN KEY (reference_id) REFERENCES artifact_references(reference_id) ON DELETE RESTRICT
+      );
+
+      CREATE TABLE IF NOT EXISTS artifact_turn_read_usage (
+        logical_session_id TEXT NOT NULL,
+        provider_binding_id TEXT NOT NULL,
+        turn_execution_id TEXT NOT NULL,
+        unique_bytes INTEGER NOT NULL DEFAULT 0,
+        unique_pages INTEGER NOT NULL DEFAULT 0,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (logical_session_id, provider_binding_id, turn_execution_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_read_receipts_boundary
+      ON artifact_read_receipts(logical_session_id, artifact_id, version, content_hash, byte_offset, byte_length);
 
       CREATE INDEX IF NOT EXISTS idx_work_items_objective_id ON work_items(objective_id);
       CREATE INDEX IF NOT EXISTS idx_work_items_status ON work_items(status);
@@ -9325,6 +9367,134 @@ export class CorptieStore {
     );
   }
 
+  getArtifactTurnReadUsage(logicalSessionId, providerBindingId, turnExecutionId) {
+    const row = this.selectOne(
+      `SELECT * FROM artifact_turn_read_usage
+       WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=?`,
+      [logicalSessionId, providerBindingId, turnExecutionId]
+    );
+    return row ? {
+      logicalSessionId: row.logical_session_id,
+      providerBindingId: row.provider_binding_id,
+      turnExecutionId: row.turn_execution_id,
+      uniqueBytes: Number(row.unique_bytes),
+      uniquePages: Number(row.unique_pages),
+      resourceVersion: Number(row.resource_version),
+      updatedAt: row.updated_at
+    } : null;
+  }
+
+  reserveArtifactTurnRead(input) {
+    const current = this.getArtifactTurnReadUsage(
+      input.logicalSessionId, input.providerBindingId, input.turnExecutionId
+    );
+    const uniqueBytes = (current?.uniqueBytes ?? 0) + input.byteLength;
+    const uniquePages = (current?.uniquePages ?? 0) + 1;
+    if (uniqueBytes > input.uniqueBytesLimit || uniquePages > input.uniquePagesLimit) return null;
+    if (current) {
+      this.db.run(
+        `UPDATE artifact_turn_read_usage
+         SET unique_bytes=?, unique_pages=?, resource_version=resource_version+1, updated_at=?
+         WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=? AND resource_version=?`,
+        [uniqueBytes, uniquePages, input.updatedAt, input.logicalSessionId, input.providerBindingId,
+          input.turnExecutionId, current.resourceVersion]
+      );
+      if (this.db.getRowsModified() !== 1) return null;
+    } else {
+      this.db.run(
+        `INSERT INTO artifact_turn_read_usage (
+           logical_session_id, provider_binding_id, turn_execution_id,
+           unique_bytes, unique_pages, resource_version, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 1, ?)`,
+        [input.logicalSessionId, input.providerBindingId, input.turnExecutionId,
+          uniqueBytes, uniquePages, input.updatedAt]
+      );
+    }
+    this.scheduleSave();
+    return this.getArtifactTurnReadUsage(input.logicalSessionId, input.providerBindingId, input.turnExecutionId);
+  }
+
+  adjustArtifactTurnReadReservation(input) {
+    const current = this.getArtifactTurnReadUsage(
+      input.logicalSessionId, input.providerBindingId, input.turnExecutionId
+    );
+    if (!current) return null;
+    const uniqueBytes = Math.max(0, current.uniqueBytes + input.byteDelta);
+    const uniquePages = Math.max(0, current.uniquePages + input.pageDelta);
+    this.db.run(
+      `UPDATE artifact_turn_read_usage
+       SET unique_bytes=?, unique_pages=?, resource_version=resource_version+1, updated_at=?
+       WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=?`,
+      [uniqueBytes, uniquePages, input.updatedAt, input.logicalSessionId,
+        input.providerBindingId, input.turnExecutionId]
+    );
+    this.scheduleSave();
+    return this.getArtifactTurnReadUsage(input.logicalSessionId, input.providerBindingId, input.turnExecutionId);
+  }
+
+  createArtifactReadReceipt(input) {
+    this.db.run(
+      `INSERT OR IGNORE INTO artifact_read_receipts (
+         read_receipt_id, logical_session_id, provider_binding_id, turn_execution_id,
+         artifact_id, version, content_hash, byte_offset, byte_length, format,
+         reference_id, authorization_revision, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [input.readReceiptId, input.logicalSessionId, input.providerBindingId, input.turnExecutionId,
+        input.artifactId, input.version, input.contentHash, input.byteOffset, input.byteLength,
+        input.format, input.referenceId, input.authorizationRevision, input.createdAt]
+    );
+    const row = this.selectOne(
+      "SELECT * FROM artifact_read_receipts WHERE read_receipt_id=?",
+      [input.readReceiptId]
+    );
+    this.scheduleSave();
+    return artifactReadReceiptFromRow(row);
+  }
+
+  getArtifactReadReceipt(readReceiptId) {
+    return artifactReadReceiptFromRow(this.selectOne(
+      "SELECT * FROM artifact_read_receipts WHERE read_receipt_id=?",
+      [readReceiptId]
+    ));
+  }
+
+  hasArtifactTextReadBoundary(input) {
+    if (input.offset === 0) return true;
+    return Boolean(this.selectOne(
+      `SELECT 1 FROM artifact_read_receipts
+       WHERE logical_session_id=? AND provider_binding_id=? AND turn_execution_id=?
+         AND artifact_id=? AND version=? AND content_hash=?
+         AND reference_id=? AND authorization_revision=?
+         AND format='text' AND byte_offset + byte_length = ? LIMIT 1`,
+      [input.logicalSessionId, input.providerBindingId, input.turnExecutionId,
+        input.artifactId, input.version, input.contentHash,
+        input.referenceId, input.authorizationRevision, input.offset]
+    ));
+  }
+
+  reconcileArtifactTurnReadUsage(updatedAt = createdAtFromOrNow()) {
+    this.db.run(
+      `UPDATE artifact_turn_read_usage
+       SET unique_bytes=COALESCE((
+             SELECT SUM(byte_length) FROM artifact_read_receipts receipt
+             WHERE receipt.logical_session_id=artifact_turn_read_usage.logical_session_id
+               AND receipt.provider_binding_id=artifact_turn_read_usage.provider_binding_id
+               AND receipt.turn_execution_id=artifact_turn_read_usage.turn_execution_id
+           ), 0),
+           unique_pages=COALESCE((
+             SELECT COUNT(*) FROM artifact_read_receipts receipt
+             WHERE receipt.logical_session_id=artifact_turn_read_usage.logical_session_id
+               AND receipt.provider_binding_id=artifact_turn_read_usage.provider_binding_id
+               AND receipt.turn_execution_id=artifact_turn_read_usage.turn_execution_id
+           ), 0),
+           resource_version=resource_version+1,
+           updated_at=?`,
+      [updatedAt]
+    );
+    this.scheduleSave();
+    return Number(this.db.getRowsModified());
+  }
+
   appendArtifactStorageAudit(input) {
     this.db.run(
       `INSERT OR IGNORE INTO artifact_storage_audit_events (
@@ -11877,6 +12047,25 @@ function artifactAuditFromRow(row) {
     fromVersion: row.from_version == null ? null : Number(row.from_version),
     toVersion: row.to_version == null ? null : Number(row.to_version),
     details: parseJson(row.details_json, {}),
+    createdAt: row.created_at
+  };
+}
+
+function artifactReadReceiptFromRow(row) {
+  if (!row) return null;
+  return {
+    readReceiptId: row.read_receipt_id,
+    logicalSessionId: row.logical_session_id,
+    providerBindingId: row.provider_binding_id,
+    turnExecutionId: row.turn_execution_id,
+    artifactId: row.artifact_id,
+    version: Number(row.version),
+    contentHash: row.content_hash,
+    byteOffset: Number(row.byte_offset),
+    byteLength: Number(row.byte_length),
+    format: row.format,
+    referenceId: row.reference_id,
+    authorizationRevision: row.authorization_revision,
     createdAt: row.created_at
   };
 }

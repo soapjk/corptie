@@ -70,6 +70,8 @@ import { ArtifactService } from "./application/artifactService.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
+import { composeArtifactToolMaterializationPort } from "./application/toolMaterializationPort.mjs";
+import { ArtifactDomainRequirements } from "./application/artifactDomainRequirements.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import { OpenClackyManager } from "./adapters/openClackyManager.mjs";
@@ -453,6 +455,7 @@ const scheduledSessionTaskService = new ScheduledSessionTaskService({
   })
 });
 let platformOperationService = null;
+let toolMaterializationPort = null;
 const platformConfirmationService = new PlatformConfirmationService({ store });
 const hostToolCatalog = new HostToolCatalog([
   {
@@ -464,7 +467,7 @@ const hostToolCatalog = new HostToolCatalog([
     id: "artifacts",
     tools: artifactDynamicTools,
     authorize: authorizeArtifactDynamicTool,
-    execute: (input) => callArtifactDynamicTool(artifactService, input)
+    execute: (input) => callArtifactDynamicTool(artifactService, input, { toolMaterializationPort })
   },
   {
     id: "workspace",
@@ -845,6 +848,10 @@ toolHostService = new ToolHostService({
   resolveMcpServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId),
   recordRuntimeEvent: (event) => store.recordSkillRuntimeEvent(event)
 });
+// Unique pending integration point: ToolHostService must expose the two
+// approved positional methods. There is intentionally no fallback or adapter
+// to a coordinator/object signature here.
+toolMaterializationPort = composeArtifactToolMaterializationPort(toolHostService);
 // Re-register the OpenClacky Provider after its runtime probe produces a fresh,
 // honest capability snapshot. This is how the bridge handshake gates TOOL_HOST_ATTACH
 // and WORKSPACE_TRANSITION: they are only declared after a healthy bridge confirms
@@ -874,6 +881,10 @@ const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService(
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
   toolHostService,
+  toolMaterializationPort,
+  resolveRequiredToolDomains: (context) => ArtifactDomainRequirements
+    .forSessionRole({ sessionKind: context.sessionKind, roleCapabilities: context.roleCapabilities ?? [] })
+    .requiredBeforeFirstTurn.map((requirement) => requirement.domainId),
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
   recoverUnavailableSession: async ({ sessionId, reference, context }) => {
@@ -891,7 +902,7 @@ const sessionApplicationService = new SessionApplicationService({
     const session = store.getSession(reference.sessionId);
     let baseContext = null;
     if (session?.sessionKind === "objectiveChat" && session.objectiveId) {
-      baseContext = objectiveChatContextService.build(session.objectiveId);
+      baseContext = objectiveChatContextService.build(session.objectiveId, session);
     } else if (session?.sessionKind === "assistantChat") {
       baseContext = await sessionContextReferenceService.resolve(reference.sessionId);
     } else if (session?.sessionKind === "worker") {
@@ -2934,13 +2945,14 @@ function sessionToolMetadata(session) {
     objectiveId: session?.objectiveId ?? null,
     workItemId: session?.workItemId ?? null,
     sessionId: session?.id ?? null,
-    logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null
+    logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
+    providerBindingId: logical?.activeBinding?.bindingId ?? null
   };
 }
 
 function objectiveChatInstructions(metadata) {
   return metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
-    ? objectiveChatContextService.build(metadata.objectiveId).prompt
+    ? objectiveChatContextService.build(metadata.objectiveId, metadata.sessionId ? store.getSession(metadata.sessionId) : null).prompt
     : "";
 }
 
