@@ -23,6 +23,7 @@ test("collaboration MCP environment preserves authenticated Session scope", () =
     environmentName: "production",
     metadata: {
       sessionId: "codex:thread-one",
+      providerBindingId: "binding:thread-one",
       sessionKind: "objectiveChat",
       objectiveId: "objective:one",
       workItemId: null
@@ -32,6 +33,7 @@ test("collaboration MCP environment preserves authenticated Session scope", () =
     CORPTIE_BACKEND_URL: "http://127.0.0.1:47321",
     CORPTIE_ENV: "production",
     CORPTIE_SESSION_ID: "codex:thread-one",
+    CORPTIE_PROVIDER_BINDING_ID: "binding:thread-one",
     CORPTIE_SESSION_KIND: "objectiveChat",
     CORPTIE_OBJECTIVE_ID: "objective:one",
     CORPTIE_WORK_ITEM_ID: "",

@@ -246,6 +246,13 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
   });
   const service = new SessionApplicationService({
     registry: new AgentProviderRegistry([provider]),
+    resolveRequiredToolDomains: (context) => context.sessionKind === "worker" ? ["artifacts"] : [],
+    toolMaterializationPort: {
+      async ensureDomainsApplied(logicalSessionId, domains, boundary) {
+        calls.push(["ensure", logicalSessionId, domains, boundary]);
+        return { appliedDomains: domains };
+      }
+    },
     toolHostService: {
       async prepareSession(_providerId, context) {
         toolHostContexts.push(context);
@@ -263,6 +270,7 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
       return {
         sessionId: session.id,
         logicalSessionId: "logical:new",
+        bindingId: "binding:new",
         providerId: "tool-host-provider",
         providerSessionId: "native:new"
       };
@@ -284,6 +292,10 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
   assert.deepEqual(calls, [
     ["create", "bootstrap"],
     ["bind", "session:new"],
+    ["ensure", "logical:new", ["artifacts"], {
+      turnExecutionId: null,
+      purpose: "session-create-finalization"
+    }],
     ["finalize", "session:new", "authenticated"]
   ]);
   assert.equal(toolHostContexts[0].purpose, "session-bootstrap");
@@ -295,7 +307,8 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
     sessionKind: "worker",
     purpose: "session-create-finalization",
     sessionId: "session:new",
-    logicalSessionId: "logical:new"
+    logicalSessionId: "logical:new",
+    providerBindingId: "binding:new"
   });
 });
 

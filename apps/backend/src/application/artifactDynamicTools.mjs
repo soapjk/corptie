@@ -7,16 +7,20 @@ function tool(name, description, properties = {}, required = []) {
 
 const artifactId = { type: "string", pattern: "^artifact:", description: "Stable Objective-scoped Artifact identity." };
 const version = { type: "integer", minimum: 1 };
+const contentHash = { type: "string", pattern: "^[a-f0-9]{64}$", description: "Exact SHA-256 pinned by the active Artifact Reference." };
 
 export const artifactDynamicTools = Object.freeze([
-  tool("corptie_artifact_list", "List active Artifacts readable by the authenticated current Objective Chat or Worker Session across all Objectives. Read access is inherent to Work Sessions and does not require an Artifact Reference.", {
+  tool("corptie_artifact_list", "List only Artifacts authorized for the authenticated current Objective Chat or Worker Session. The authorization scope is derived by Corptie and cannot be supplied by the model.", {
     include_revoked: { type: "boolean", description: "Objective Chat only. Include revoked audit records." }
   }),
-  tool("corptie_artifact_get", "Read one active Artifact version on demand across Objectives without an Artifact Reference. Content is paged and every read records artifactId, version, hash, Session, and byte range.", {
-    artifact_id: artifactId, version, offset: { type: "integer", minimum: 0 },
-    limit: { type: "integer", minimum: 1, maximum: 65536 }
-  }, ["artifact_id"]),
-  tool("corptie_artifact_search", "Search metadata and bounded local private content across active Artifacts readable by the authenticated Work Session in all Objectives.", {
+  tool("corptie_artifact_get", "Read one explicitly referenced immutable Artifact pin. artifact_id, version, and content_hash are mandatory; raw-byte pages never drift to a pending version.", {
+    artifact_id: artifactId, version, content_hash: contentHash,
+    reference_id: { type: "string", pattern: "^artifact_reference:", description: "Exact active Reference authorizing this body read." },
+    offset: { type: "integer", minimum: 0 },
+    limit: { type: "integer", minimum: 1, maximum: 65536 },
+    format: { type: "string", enum: ["text", "base64"] }
+  }, ["artifact_id", "version", "content_hash", "reference_id"]),
+  tool("corptie_artifact_search", "Search bounded Artifact metadata across only Artifacts authorized for the authenticated Session. Private bodies remain available only through fixed get pages.", {
     query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 }
   }, ["query"]),
   tool("corptie_artifact_create", "Create an Objective Artifact in Corptie's private application data. Objective Chat retains full creation controls. A Worker Session is server-scoped to one work_item_private Artifact plus one Reference for its authoritative current WorkItem; idempotency_key is required for Workers. Worker defaults are relation=acceptance_evidence, required=false, version_policy=fixed, with pinned_version=1 and pinned_hash equal to the immutable initial content hash.", {
@@ -44,17 +48,28 @@ export const artifactDynamicTools = Object.freeze([
   }, ["reference_id", "reason"])
 ]);
 
-export async function callArtifactDynamicTool(service, input = {}) {
+export async function callArtifactDynamicTool(service, input = {}, options = {}) {
   const args = input.arguments ?? {};
+  const logicalSessionId = input.metadata?.logicalSessionId ?? input.metadata?.sessionId;
+  if (options.toolMaterializationPort) {
+    await options.toolMaterializationPort.assertCanonicalToolApplied(logicalSessionId, input.tool);
+  }
   const context = {
     actorId: input.actorId,
     sessionId: input.metadata?.sessionId,
+    logicalSessionId: input.metadata?.logicalSessionId,
+    turnExecutionId: input.turnExecutionId ?? input.turnId ?? input.metadata?.turnExecutionId,
     objectiveId: input.metadata?.objectiveId,
-    workItemId: input.metadata?.workItemId
+    workItemId: input.metadata?.workItemId,
+    providerBindingId: input.metadata?.providerBindingId
   };
   switch (input.tool) {
     case "corptie_artifact_list": return { artifacts: service.list(context, { includeRevoked: args.include_revoked }) };
-    case "corptie_artifact_get": return service.get(context, args.artifact_id, { version: args.version, offset: args.offset, limit: args.limit });
+    case "corptie_artifact_get": return service.get(context, args.artifact_id, {
+      version: args.version, contentHash: args.content_hash, offset: args.offset,
+      referenceId: args.reference_id, limit: args.limit, format: args.format,
+      turnExecutionId: context.turnExecutionId
+    });
     case "corptie_artifact_search": return service.search(context, args.query, { limit: args.limit });
     case "corptie_artifact_create": return service.create(context, {
       title: args.title, summary: args.summary, content: args.content, visibility: args.visibility,

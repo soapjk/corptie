@@ -168,6 +168,40 @@ test("Claude reconnect clears a stale running state left by a backend restart", 
   assert.equal(manager.get("claude-stale-running").turnState, "idle");
 });
 
+test("Claude generated MCP refresh closes the old Query before starting the replacement generation", async () => {
+  const queries = [];
+  const manager = new ClaudeAgentManager({
+    query: ({ options }) => {
+      let finish;
+      const finished = new Promise((resolve) => { finish = resolve; });
+      const query = {
+        options,
+        closed: false,
+        close() { this.closed = true; finish(); },
+        async *[Symbol.asyncIterator]() { await finished; }
+      };
+      queries.push(query);
+      return query;
+    }
+  });
+  manager.start({
+    id: "claude-mcp-refresh", cwd: "/tmp/project",
+    toolHost: { providerAttachment: { mcpServers: { corptie: { type: "stdio", command: "old" } } } }
+  });
+  const session = manager.get("claude-mcp-refresh");
+  await manager.ensureQueryStarted(session);
+
+  await manager.reconnect("claude-mcp-refresh", {
+    runtimeOptions: { mcpServers: { corptie: { type: "stdio", command: "new" } } }
+  });
+
+  assert.equal(queries.length, 2);
+  assert.equal(queries[0].closed, true);
+  assert.equal(queries[1].options.mcpServers.corptie.command, "new");
+  assert.equal(session.query, queries[1]);
+  queries[1].close();
+});
+
 test("reading a persisted Claude session restores history without starting a Query", async () => {
   const manager = new ClaudeAgentManager();
   let reconnectOptions = null;

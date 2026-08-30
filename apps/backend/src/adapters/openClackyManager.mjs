@@ -212,6 +212,31 @@ export class OpenClackyManager {
     };
   }
 
+  async applyConfirmedToolHost(sessionId, toolHost) {
+    const prepared = await this.prepareToolHost(toolHost);
+    if (!prepared) {
+      const error = new Error("OpenClacky Tool Host application requires a complete trusted attachment.");
+      error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+      throw error;
+    }
+    const payload = await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/corptie/tool-host`, {
+      method: "POST",
+      body: prepared.manifest
+    });
+    const confirmation = payload?.tool_host_receipt ?? payload?.receipt ?? payload;
+    const generation = confirmation?.generation ?? confirmation?.revision ?? null;
+    if (confirmation?.applied !== true || generation == null) {
+      const error = new Error("OpenClacky bridge did not return an applied Tool Host generation receipt.");
+      error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+      throw error;
+    }
+    this.toolHosts.set(sessionId, prepared.context);
+    return {
+      providerRevision: String(generation),
+      receiptId: String(confirmation.receipt_id ?? confirmation.receiptId ?? `openclacky:${sessionId}:${generation}`)
+    };
+  }
+
   async delete(sessionId) {
     await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
     this.sockets.get(sessionId)?.close?.();

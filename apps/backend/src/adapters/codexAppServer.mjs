@@ -37,6 +37,7 @@ export class CodexAppServerClient {
     this.recentApprovedCommands = new Map();
     this.dynamicToolAgentsByThread = new Map();
     this.dynamicToolMetadataByThread = new Map();
+    this.confirmedToolSchemasByThread = new Map();
     this.threadResumeFingerprints = new Map();
     this.threadResumePromises = new Map();
     // thread/start creates an in-memory thread before Codex has written its
@@ -76,6 +77,7 @@ export class CodexAppServerClient {
       this.threadResumeFingerprints.clear();
       this.threadResumePromises.clear();
       this.freshThreadIds.clear();
+      this.confirmedToolSchemasByThread.clear();
     });
 
     this.readline = createInterface({
@@ -133,6 +135,7 @@ export class CodexAppServerClient {
       this.threadResumeFingerprints.delete(threadId);
       this.threadResumePromises.delete(threadId);
       this.freshThreadIds.delete(threadId);
+      this.confirmedToolSchemasByThread.delete(threadId);
     }
   }
 
@@ -159,8 +162,22 @@ export class CodexAppServerClient {
     if (result?.thread?.id) {
       this.threadResumeFingerprints.set(result.thread.id, threadResumeFingerprint(options));
       this.freshThreadIds.add(result.thread.id);
+      this.confirmedToolSchemasByThread.set(result.thread.id, {
+        schema: JSON.stringify(options.dynamicTools ?? []),
+        providerRevision: `thread-start:${result.thread.id}:${result.thread.updatedAt ?? result.thread.createdAt ?? "confirmed"}`
+      });
     }
     return result;
+  }
+
+  confirmThreadToolPlan(threadId, definitions = []) {
+    const confirmed = this.confirmedToolSchemasByThread.get(threadId);
+    if (!confirmed || confirmed.schema !== JSON.stringify(definitions)) {
+      const error = new Error("Codex did not confirm this Tool schema on thread/start.");
+      error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+      throw error;
+    }
+    return { ...confirmed, threadId };
   }
 
   async resumeThread(threadId, options = {}) {

@@ -198,6 +198,7 @@ private struct ArtifactDetailView: View {
     @State private var showRepositoryExportConfirm = false
     @State private var isOpeningInSystemApplication = false
     @State private var openError: String?
+    @State private var readTurnExecutionId = UUID().uuidString
 
     init(artifact: ObjectiveArtifact, onChanged: @escaping () -> Void) {
         self.artifact = artifact
@@ -241,7 +242,14 @@ private struct ArtifactDetailView: View {
                 .padding(16)
         }
         .frame(width: 720, height: 680)
-        .task(id: "\(selectedVersion):\(offset)") { detail = await client.detail(artifactId: artifact.artifactId, version: selectedVersion, offset: offset) }
+        .task(id: "\(selectedVersion):\(offset)") {
+            detail = await client.detail(
+                artifact: artifact,
+                version: selectedVersion,
+                offset: offset,
+                turnExecutionId: readTurnExecutionId
+            )
+        }
         .sheet(isPresented: $showPublish) { ArtifactPublishView(artifact: artifact) { showPublish = false; onChanged(); dismiss() } }
         .confirmationDialog(L10n("Mark this Artifact superseded?"), isPresented: $showSupersede) {
             Button(L10n("Mark Superseded"), role: .destructive) { Task { if await client.markSuperseded(artifactId: artifact.artifactId) { onChanged(); dismiss() } } }
@@ -274,8 +282,8 @@ private struct ArtifactDetailView: View {
     private var metadata: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(artifact.summary.isEmpty ? L10n("No summary") : artifact.summary)
-            if let version = detail?.version {
-                Text("SHA-256 \(version.contentHash) · \(version.byteLength) bytes · source \(version.sourceSessionId ?? "local user")")
+            if let detail {
+                Text("SHA-256 \(detail.contentHash) · \(detail.totalBytes) bytes")
                     .font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
             }
         }
@@ -308,8 +316,8 @@ private struct ArtifactDetailView: View {
                 Spacer()
                 Button(L10n("Previous")) { if let previous = ArtifactContentPagingPolicy.previousOffset(currentOffset: offset) { offset = previous } }
                     .disabled(offset == 0)
-                Button(L10n("Next")) { if let next = detail?.nextOffset { offset = next } }
-                    .disabled(detail?.nextOffset == nil)
+                Button(L10n("Next")) { if let next = detail?.range.nextOffset { offset = next } }
+                    .disabled(detail?.range.nextOffset == nil)
             }
             ArtifactContentPreview(
                 content: detail?.content
@@ -341,7 +349,7 @@ private struct ArtifactDetailView: View {
     private func exportConfirmed() {
         guard let exportTarget else { return }
         Task {
-            let outcome = await client.export(artifactId: artifact.artifactId, version: selectedVersion, destinationURL: exportTarget, confirmRepositoryWrite: false, confirmOverwrite: true)
+            let outcome = await client.export(artifact: artifact, version: selectedVersion, destinationURL: exportTarget, confirmRepositoryWrite: false, confirmOverwrite: true)
             if outcome == .repositoryConfirmationRequired {
                 showRepositoryExportConfirm = true
             } else {
@@ -353,7 +361,7 @@ private struct ArtifactDetailView: View {
     private func repositoryExportConfirmed() {
         guard let exportTarget else { return }
         Task {
-            _ = await client.export(artifactId: artifact.artifactId, version: selectedVersion, destinationURL: exportTarget, confirmRepositoryWrite: true, confirmOverwrite: true)
+            _ = await client.export(artifact: artifact, version: selectedVersion, destinationURL: exportTarget, confirmRepositoryWrite: true, confirmOverwrite: true)
             self.exportTarget = nil
         }
     }
@@ -365,7 +373,7 @@ private struct ArtifactDetailView: View {
             defer { isOpeningInSystemApplication = false }
             do {
                 let receipt = try await client.localFile(
-                    artifactId: artifact.artifactId,
+                    artifact: artifact,
                     version: selectedVersion
                 )
                 openError = await ArtifactSystemApplicationOpener.open(receipt)
