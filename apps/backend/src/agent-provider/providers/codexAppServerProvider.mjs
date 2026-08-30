@@ -27,6 +27,9 @@ export function createCodexAppServerProvider(operations, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
       AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION,
+      ...(typeof operations.bindWorkspace === "function" && typeof operations.inspectWorkspaceBinding === "function"
+        ? [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND]
+        : []),
       AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT,
       AGENT_PROVIDER_CAPABILITIES.ACCOUNT_USAGE_READ,
       AGENT_PROVIDER_CAPABILITIES.SESSION_USAGE_READ,
