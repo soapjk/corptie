@@ -147,6 +147,25 @@ export class ArtifactService {
     };
   }
 
+  async readPinnedEvidence(contextInput, artifactId, options = {}) {
+    const context = this.context(contextInput);
+    const artifact = this.#readableArtifact(context, artifactId);
+    const selected = this.#selectedVersion(context, artifact, options.version);
+    if (!selected?.storageKey) throw artifactError("ARTIFACT_PINNED_READ_UNAVAILABLE", "Pinned Artifact content is unavailable.", 404);
+    const buffer = await readFile(this.#safeStoragePath(selected.storageKey));
+    if (buffer.byteLength !== selected.byteLength || sha256(buffer) !== selected.contentHash) throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Artifact content failed hash or length verification.", 409);
+    const readReceiptId = this.#recordUsage(context, artifact, selected, "get", 0, buffer.byteLength);
+    if (!readReceiptId) throw artifactError("ARTIFACT_READ_RECEIPT_UNAVAILABLE", "Pinned Artifact reads require a Session-scoped read receipt.", 409);
+    const references = this.store.listArtifactReferences({ artifactId: artifact.artifactId, includeRevoked: context.kind !== "worker" });
+    const reference = references.find((item) => item.relation === "implementation_spec" && item.versionPolicy === "fixed" && item.pinnedVersion === selected.version && !item.revokedAt);
+    return {
+      artifactId: artifact.artifactId, version: selected.version, contentHash: selected.contentHash,
+      approvalStatus: selected.approvalStatus, relation: reference?.relation ?? null,
+      versionPolicy: reference?.versionPolicy ?? null, complete: true,
+      content: buffer.toString("utf8"), readReceiptId, byteLength: buffer.byteLength
+    };
+  }
+
   async search(contextInput, queryValue, options = {}) {
     const context = this.context(contextInput);
     const relatedWorkItemIds = this.#relatedWorkItemIds(context);
@@ -1148,13 +1167,15 @@ export class ArtifactService {
   }
 
   #recordUsage(context, artifact, version, operation, byteOffset, byteLength) {
-    if (!context.sessionId) return;
+    if (!context.sessionId) return null;
+    const usageId = `artifact_usage:${this.idFactory()}`;
     this.store.recordArtifactUsage({
-      usageId: `artifact_usage:${this.idFactory()}`, artifactId: artifact.artifactId,
+      usageId, artifactId: artifact.artifactId,
       version: version.version, contentHash: version.contentHash, actorId: context.actorId,
       sessionId: context.sessionId, workItemId: context.workItemId, operation,
       byteOffset, byteLength, createdAt: this.clock()
     });
+    return usageId;
   }
 
   #audit(context, artifactId, action, details, fromVersion = null, toVersion = null) {

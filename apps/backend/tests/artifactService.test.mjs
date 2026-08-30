@@ -56,6 +56,24 @@ test("Objective private content is hashed, atomically stored outside repositorie
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+test("Benchmark pinned evidence performs one complete authority read with fixed Reference provenance", async () => {
+  const f = await fixture();
+  try {
+    const content = "完整 fixed implementation specification 🧪";
+    const artifact = await f.service.create(managerContext(f), { title: "Fixed spec", visibility: "objective_private", content, approvalStatus: "approved" });
+    f.service.createReference(managerContext(f), artifact.artifactId, { workItemId: "work_item:one", relation: "implementation_spec", required: true, versionPolicy: "fixed", version: 1 });
+    const evidence = await f.service.readPinnedEvidence(workerContext(f), artifact.artifactId, { version: 1 });
+    assert.equal(evidence.content, content);
+    assert.equal(evidence.byteLength, Buffer.byteLength(content));
+    assert.equal(evidence.contentHash, artifact.versions[0].contentHash);
+    assert.equal(evidence.approvalStatus, "approved");
+    assert.equal(evidence.relation, "implementation_spec");
+    assert.equal(evidence.versionPolicy, "fixed");
+    assert.match(evidence.readReceiptId, /^artifact_usage:/);
+    assert.deepEqual(f.store.selectOne("SELECT byte_offset, byte_length, operation FROM artifact_usage_events WHERE usage_id=?", [evidence.readReceiptId]), { byte_offset: 0, byte_length: Buffer.byteLength(content), operation: "get" });
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test("local file lookup reuses the stored Artifact object without reading or materializing another file", async () => {
   const f = await fixture();
   try {
