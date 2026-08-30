@@ -9096,6 +9096,13 @@ export class CorptieStore {
     return row ? artifactFromRow(row) : null;
   }
 
+  listArtifacts({ includeRevoked = false } = {}) {
+    return this.selectAll(
+      `SELECT * FROM artifacts ${includeRevoked ? "" : "WHERE status <> 'revoked'"}
+       ORDER BY updated_at DESC, artifact_id`
+    ).map(artifactFromRow);
+  }
+
   listArtifactsByObjective(objectiveId, { includeRevoked = false } = {}) {
     return this.selectAll(
       `SELECT * FROM artifacts WHERE objective_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}
