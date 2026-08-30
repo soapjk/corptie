@@ -114,7 +114,7 @@ export class ArtifactService {
   list(contextInput, options = {}) {
     const context = this.context(contextInput);
     const relatedWorkItemIds = this.#relatedWorkItemIds(context);
-    const artifacts = this.store.listArtifactsByObjective(context.objectiveId, {
+    const artifacts = this.#readCandidates(context, {
       includeRevoked: options.includeRevoked === true && context.kind !== "worker"
     });
     return artifacts.filter((artifact) => this.#canRead(context, artifact, relatedWorkItemIds)).map((artifact) => this.present(artifact));
@@ -153,7 +153,7 @@ export class ArtifactService {
     const query = requiredText(queryValue, "query").toLocaleLowerCase();
     const limit = boundedInteger(options.limit, 1, 50, 20, "limit");
     const results = [];
-    for (const artifact of this.store.listArtifactsByObjective(context.objectiveId)) {
+    for (const artifact of this.#readCandidates(context)) {
       if (!this.#canRead(context, artifact, relatedWorkItemIds)) continue;
       const metadata = `${artifact.title}\n${artifact.summary}`.toLocaleLowerCase();
       let match = metadata.includes(query);
@@ -462,7 +462,10 @@ export class ArtifactService {
 
   prepareWorkItemCreationReference(contextInput, artifactId, input = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#readableArtifact(context, artifactId);
+    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    if (!this.#canAuthorizeReference(context, artifact)) {
+      throw artifactError("ARTIFACT_READ_FORBIDDEN", "Artifact is not authorized for this Session to reference.", 403);
+    }
     const relation = enumValue(
       input.relation ?? "implementation_spec",
       RELATIONS,
@@ -603,7 +606,7 @@ export class ArtifactService {
       workItemId: session.workItemId ?? session.work_item_id ?? null
     };
     const relatedWorkItemIds = this.#relatedWorkItemIds(context);
-    const all = this.store.listArtifactsByObjective(objectiveId)
+    const all = this.#readCandidates(context)
       .filter((artifact) => this.#canRead(context, artifact, relatedWorkItemIds));
     const items = all.slice(0, MAX_INDEX_ITEMS).map((artifact) => {
       const version = this.#selectedVersion(context, artifact, null, relatedWorkItemIds);
@@ -942,18 +945,33 @@ export class ArtifactService {
   }
 
   #readableArtifact(context, artifactId) {
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.store.getArtifact(requiredText(artifactId, "artifactId"));
+    if (!artifact) throw artifactError("ARTIFACT_NOT_FOUND", "Artifact not found.", 404);
     if (!this.#canRead(context, artifact)) throw artifactError("ARTIFACT_READ_FORBIDDEN", "Artifact is not authorized for this Session.", 403);
     if (artifact.status === "revoked") throw artifactError("ARTIFACT_REVOKED", "Artifact access has been revoked.", 403);
     return artifact;
   }
 
   #canRead(context, artifact, relatedWorkItemIds = null) {
-    if (artifact.objectiveId !== context.objectiveId || artifact.status === "revoked") return false;
+    if (artifact.status === "revoked") return false;
+    if (["objectiveChat", "worker"].includes(context.kind)) return true;
+    return ["local_user", "platform_admin"].includes(context.kind)
+      && artifact.objectiveId === context.objectiveId;
+  }
+
+  #readCandidates(context, options = {}) {
+    if (["objectiveChat", "worker"].includes(context.kind)) {
+      return this.store.listArtifacts(options);
+    }
+    return this.store.listArtifactsByObjective(context.objectiveId, options);
+  }
+
+  #canAuthorizeReference(context, artifact) {
+    if (artifact.status === "revoked") return false;
     if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return true;
     if (context.kind !== "worker") return false;
     if (artifact.visibility === "session_private" && artifact.boundSessionId === context.sessionId) return true;
-    return this.#matchingReferences(context, artifact, relatedWorkItemIds).length > 0;
+    return this.#matchingReferences(context, artifact).length > 0;
   }
 
   #matchingReferences(context, artifact, relatedWorkItemIds = null) {
@@ -1012,10 +1030,7 @@ export class ArtifactService {
     let version = requestedVersion == null ? null : boundedInteger(requestedVersion, 1, artifact.currentVersion, null, "version");
     if (context.kind === "worker") {
       const references = this.#matchingReferences(context, artifact, relatedWorkItemIds);
-      const allowed = new Set(references.map((reference) => reference.pinnedVersion));
-      if (artifact.visibility === "session_private" && artifact.boundSessionId === context.sessionId) allowed.add(artifact.approvedVersion ?? artifact.currentVersion);
       version ??= references[0]?.pinnedVersion ?? artifact.approvedVersion ?? artifact.currentVersion;
-      if (!allowed.has(version)) throw artifactError("ARTIFACT_VERSION_FORBIDDEN", "Requested version is not pinned for this Worker Session.", 403);
     } else {
       version ??= artifact.approvedVersion ?? artifact.currentVersion;
     }

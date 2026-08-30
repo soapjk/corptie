@@ -9,14 +9,14 @@ const artifactId = { type: "string", pattern: "^artifact:", description: "Stable
 const version = { type: "integer", minimum: 1 };
 
 export const artifactDynamicTools = Object.freeze([
-  tool("corptie_artifact_list", "List only Artifacts authorized for the authenticated current Objective Chat or Worker Session. The authorization scope is derived by Corptie and cannot be supplied by the model.", {
+  tool("corptie_artifact_list", "List active Artifacts readable by the authenticated current Objective Chat or Worker Session across all Objectives. Read access is inherent to Work Sessions and does not require an Artifact Reference.", {
     include_revoked: { type: "boolean", description: "Objective Chat only. Include revoked audit records." }
   }),
-  tool("corptie_artifact_get", "Read one authorized Artifact version on demand. Content is paged and every read records artifactId, version, hash, Session, and byte range.", {
+  tool("corptie_artifact_get", "Read one active Artifact version on demand across Objectives without an Artifact Reference. Content is paged and every read records artifactId, version, hash, Session, and byte range.", {
     artifact_id: artifactId, version, offset: { type: "integer", minimum: 0 },
     limit: { type: "integer", minimum: 1, maximum: 65536 }
   }, ["artifact_id"]),
-  tool("corptie_artifact_search", "Search metadata and bounded local private content across only Artifacts authorized for the authenticated Session.", {
+  tool("corptie_artifact_search", "Search metadata and bounded local private content across active Artifacts readable by the authenticated Work Session in all Objectives.", {
     query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 }
   }, ["query"]),
   tool("corptie_artifact_create", "Create an Objective Artifact in Corptie's private application data. Objective Chat retains full creation controls. A Worker Session is server-scoped to one work_item_private Artifact plus one Reference for its authoritative current WorkItem; idempotency_key is required for Workers. Worker defaults are relation=acceptance_evidence, required=false, version_policy=fixed, with pinned_version=1 and pinned_hash equal to the immutable initial content hash.", {

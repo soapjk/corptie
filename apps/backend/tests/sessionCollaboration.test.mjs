@@ -807,7 +807,7 @@ test("WorkItem creation validates Workspace file authority and returns durable f
   }
 });
 
-test("related WorkItems automatically read owned Artifacts without receiving write or transitive sharing authority", async () => {
+test("WorkItems inherently read active Artifacts without receiving write or transitive sharing authority", async () => {
   const f = await fixture();
   try {
     const agentA = f.store.createAgent({ id: "agent:share-a", name: "Share A", role: "independentContributor" });
@@ -848,7 +848,7 @@ test("related WorkItems automatically read owned Artifacts without receiving wri
     assert.equal((await f.artifactService.get(contextB, artifactA.artifactId)).content, "read-only from A");
     assert.ok(f.artifactService.list(contextB).some((artifact) => artifact.artifactId === artifactA.artifactId));
     assert.equal((await f.artifactService.search(contextB, "read-only from A")).results[0].artifact.artifactId, artifactA.artifactId);
-    await assert.rejects(() => f.artifactService.get(contextU, artifactA.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
+    assert.equal((await f.artifactService.get(contextU, artifactA.artifactId)).content, "read-only from A");
     const sharedA = f.service.shareArtifact({ sessionId: "provider:share-a" }, agentA.agentId, {
       workItemId: workB.id, artifactId: artifactA.artifactId,
       relation: "handoff", required: true, versionPolicy: "fixed"
@@ -878,7 +878,7 @@ test("related WorkItems automatically read owned Artifacts without receiving wri
     });
     assert.equal((await f.artifactService.get(contextA, artifactB.artifactId)).content, "read-only from B");
     f.store.removeWorkItemDependency(workB.id, workA.id);
-    await assert.rejects(() => f.artifactService.get(contextA, artifactB.artifactId), { code: "ARTIFACT_READ_FORBIDDEN" });
+    assert.equal((await f.artifactService.get(contextA, artifactB.artifactId)).content, "read-only from B");
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
