@@ -4,9 +4,12 @@ export const TOOL_HOST_CONTRACT_REVISION = "th2";
 export const TOOL_CATALOG_SEARCH = "corptie_tool_catalog_search";
 export const TOOL_DOMAIN_LOAD = "corptie_tool_domain_load";
 export const TOOL_RESTRICTED_GATEWAY = "corptie_tool_call";
+export const TOOL_HOST_BOOTSTRAP_ABI_REVISION = "tool-host-bootstrap:1";
 export const TOOL_DELIVERY_SURFACES = Object.freeze([
   "native_dynamic", "generated_authenticated_mcp", "restricted_gateway"
 ]);
+
+const INTERNAL_BOOTSTRAP_NAMESPACE = "tool-catalog-bootstrap";
 
 const BOOTSTRAP_TOOLS = Object.freeze([
   Object.freeze({
@@ -29,14 +32,40 @@ const BOOTSTRAP_TOOLS = Object.freeze([
   })
 ]);
 
+export const RESTRICTED_GATEWAY_DEFINITION = Object.freeze({
+  name: TOOL_RESTRICTED_GATEWAY,
+  description: "Call one Tool Host canonical tool from an applied authorized domain.",
+  inputSchema: Object.freeze({
+    type: "object",
+    properties: Object.freeze({
+      tool: { type: "string", minLength: 1, maxLength: 300 },
+      arguments: { type: "object", additionalProperties: true },
+      expected_catalog_version: { type: "string", minLength: 1, maxLength: 200 }
+    }),
+    required: Object.freeze(["tool", "arguments", "expected_catalog_version"]),
+    additionalProperties: false
+  }),
+  deferLoading: false
+});
+
+export const TOOL_HOST_BOOTSTRAP_ABI_DEFINITIONS = Object.freeze([
+  ...BOOTSTRAP_TOOLS,
+  RESTRICTED_GATEWAY_DEFINITION
+]);
+
+// Changing this value is a deliberate Provider bootstrap ABI migration. CI
+// recomputes it from the three entry definitions so ordinary Tool additions
+// cannot silently force every existing Provider binding to be replaced.
+export const TOOL_HOST_BOOTSTRAP_SCHEMA_HASH = "b57c8ea168bd12a45b3b3f1d832c450027fdf7587d86d0add42654b4531f502f";
+
 export class HostToolCatalog {
   constructor(namespaces = [], options = {}) {
     this.hostToolContractRevision = normalizedText(options.hostToolContractRevision)
       ?? TOOL_HOST_CONTRACT_REVISION;
     this.toolsByName = new Map();
     this.names = new Map();
-    this.register({
-      id: "tool-catalog-bootstrap",
+    this.#register({
+      id: INTERNAL_BOOTSTRAP_NAMESPACE,
       domainId: "tool-catalog",
       domainRevision: this.hostToolContractRevision,
       exposure: "bootstrap",
@@ -45,11 +74,16 @@ export class HostToolCatalog {
       execute: () => {
         throw catalogError("TOOL_HOST_BOOTSTRAP_DISPATCH_REQUIRED", "Bootstrap tools require ToolHostService dispatch.");
       }
-    });
+    }, true);
+    assertBootstrapAbi();
     for (const namespace of namespaces) this.register(namespace);
   }
 
   register(namespace) {
+    return this.#register(namespace, false);
+  }
+
+  #register(namespace, allowBootstrap) {
     const id = requiredText(namespace?.id, "namespace.id");
     const domainId = requiredText(namespace?.domainId ?? id, "namespace.domainId");
     const domainRevision = requiredText(namespace?.domainRevision ?? "1", "namespace.domainRevision");
@@ -58,6 +92,13 @@ export class HostToolCatalog {
     const eligibleSurfaces = normalizedSurfaces(namespace?.eligibleSurfaces ?? TOOL_DELIVERY_SURFACES);
     if (!Array.isArray(namespace?.tools) || typeof namespace?.execute !== "function") {
       throw new TypeError(`Host tool namespace ${id} requires tools and execute().`);
+    }
+    if (!allowBootstrap && (exposure === "bootstrap"
+      || namespace.tools.some((tool) => tool?.exposure === "bootstrap"))) {
+      throw catalogError(
+        "TOOL_BOOTSTRAP_ABI_LOCKED",
+        "Only the Tool Host may define bootstrap tools; capability namespaces must remain deferred."
+      );
     }
     for (const rawDefinition of namespace.tools) {
       const definition = normalizedDefinition(rawDefinition);
@@ -159,6 +200,8 @@ export class HostToolCatalog {
     return Object.freeze({
       catalogVersion,
       hostToolContractRevision: this.hostToolContractRevision,
+      bootstrapAbiRevision: TOOL_HOST_BOOTSTRAP_ABI_REVISION,
+      bootstrapSchemaHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
       generatedAt: new Date().toISOString(),
       bootstrap: Object.freeze([TOOL_CATALOG_SEARCH, TOOL_DOMAIN_LOAD]),
       domains: Object.freeze(domains)
@@ -226,6 +269,22 @@ export function stableStringify(value) {
 
 export function schemaHash(definition) {
   return sha256(stableStringify(definition));
+}
+
+export function computedToolHostBootstrapSchemaHash() {
+  return sha256(stableStringify(TOOL_HOST_BOOTSTRAP_ABI_DEFINITIONS));
+}
+
+function assertBootstrapAbi() {
+  const actual = computedToolHostBootstrapSchemaHash();
+  if (actual === TOOL_HOST_BOOTSTRAP_SCHEMA_HASH) return;
+  const error = catalogError(
+    "TOOL_BOOTSTRAP_ABI_DRIFT",
+    `Tool Host bootstrap ABI ${TOOL_HOST_BOOTSTRAP_ABI_REVISION} changed without an explicit hash migration.`
+  );
+  error.expectedHash = TOOL_HOST_BOOTSTRAP_SCHEMA_HASH;
+  error.actualHash = actual;
+  throw error;
 }
 
 function normalizedDefinition(input) {
