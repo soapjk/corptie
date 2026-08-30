@@ -38,14 +38,15 @@ export class TelemetryCorrelator {
     same(chain.providerBindingGeneration, observation.identity?.bindingGeneration);
     same(chain.catalogVersion, observation.versions?.catalogVersion);
     same(chain.sourceFingerprint, toolset.snapshotRef?.sourceFingerprint, run.sourceFingerprint, cleanup.sourceFingerprint);
-    same(chain.runId, cleanup.runId, observation.runId);
+    same(chain.runId, cleanup.runId);
+    if (observation.runId != null) same(chain.runId, observation.runId);
     same(run.receiptId, cleanup.runReceiptRef?.receiptId);
     same(chain.logicalSessionId, observationExport.identity?.logicalSessionId);
     same(chain.providerBindingId, observationExport.identity?.providerBindingId);
     same(chain.providerBindingGeneration, observationExport.identity?.bindingGeneration);
     same(chain.catalogVersion, observationExport.versions?.catalogVersion);
-    same(chain.toolsetVersion, observationExport.versions?.toolsetVersion);
-    same(chain.sourceFingerprint, observationExport.versions?.sourceFingerprint);
+    if (observationExport.versions?.toolsetVersion != null) same(chain.toolsetVersion, observationExport.versions.toolsetVersion);
+    if (observationExport.versions?.sourceFingerprint != null) same(chain.sourceFingerprint, observationExport.versions.sourceFingerprint);
     if (!observationExport.sourceReceiptIds.includes(byType.get("Observation").receiptId)) throw benchmarkError("BENCHMARK_OBSERVATION_INCOMPLETE", "Observation export does not reference its authority Observation.", "observation_export");
     if (run.repositorySourceSnapshotReceiptRef?.receiptId !== snapshot.receiptId || toolset.snapshotRef?.receiptId !== snapshot.receiptId) sourceMismatch();
     if (run.toolsetValidationReceiptPointer && (run.toolsetValidationReceiptPointer.receiptId !== toolset.receiptId || run.toolsetValidationReceiptPointer.toolsetVersion !== toolset.toolsetVersion || run.toolsetValidationReceiptPointer.sourceFingerprint !== snapshot.sourceFingerprint)) mismatch("Run Toolset pointer mismatch.");

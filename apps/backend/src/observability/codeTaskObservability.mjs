@@ -180,6 +180,54 @@ export class CodeTaskObservabilityService {
     return rows.map((row) => { this.#authorize(row, context, false); return executionProjection(row); });
   }
 
+  executionReceiptForTurn(logicalSessionId, turnId, context = {}) {
+    const row = this.store.selectOne(
+      `SELECT * FROM observation_turn_executions WHERE logical_session_id=? AND turn_id=?
+       ORDER BY created_at DESC,turn_execution_id DESC LIMIT 1`, [logicalSessionId, turnId]
+    );
+    if (!row) return null;
+    this.#authorize(row, context, false);
+    return this.#executionReceipt(row);
+  }
+
+  executionReceipt(turnExecutionId, context = {}) {
+    const row = this.#executionRow(turnExecutionId);
+    this.#authorize(row, context, false);
+    return this.#executionReceipt(row);
+  }
+
+  terminalObservation(turnExecutionId, context = {}) {
+    const row = this.#executionRow(turnExecutionId);
+    this.#authorize(row, context, true);
+    return this.#readObservations(row).findLast((item) => TERMINAL_EVENTS.has(item.eventType)) ?? null;
+  }
+
+  exportReceipt(turnExecutionId, context = {}) {
+    const exported = this.export(turnExecutionId, "corptie-json-v4", context);
+    const terminal = exported.timeline.findLast((item) => item.kind === "event" && TERMINAL_EVENTS.has(item.eventType));
+    if (!terminal) throw codedError("OBSERVATION_TERMINAL_MISSING", "A terminal authoritative Observation is required.", 409);
+    const report = exported.report;
+    const wallClockMs = report.wall?.wallClockMs;
+    const unattributedMs = report.unattributed?.durationMs ?? null;
+    const payload = {
+      schemaVersion: 4, analysisVersion: report.analysisVersion, identity: report.identity,
+      sourceIdentity: report.sourceIdentity, versions: report.versions, wall: report.wall,
+      wallPartition: report.wallPartition,
+      inclusive: { ...report.inclusive,
+        modelInclusiveMs: report.inclusive?.["provider.model_sampling"] ?? null,
+        toolInclusiveMs: report.inclusive?.["tool.execute"] ?? null,
+        modelInvocationCount: 0, samplingCount: 0, toolCallCount: 0 },
+      unattributed: { unattributedMs, ratio: wallClockMs ? unattributedMs / wallClockMs : 0 },
+      contextGrowth: report.contextGrowth, completeness: report.completeness,
+      diagnostics: report.diagnostics,
+      samplePolicy: { ...report.samplePolicy, observabilityLevel: "event-stream" },
+      sourceReceiptIds: [terminal.observationId], summaryHash: null
+    };
+    const { summaryHash: _, ...unsigned } = payload;
+    payload.summaryHash = sha256(stableStringify(unsigned));
+    return Object.freeze(payload);
+  }
+
   timeline(turnExecutionId, { cursor, limit = 200, context = {} } = {}) {
     const row = this.#executionRow(turnExecutionId);
     this.#authorize(row, context, true);
@@ -230,6 +278,17 @@ export class CodeTaskObservabilityService {
   cleanup() {
     const raw = this.rawStore ? this.rawStore.cleanup() : { deleted: 0, status: "data_root_unavailable" };
     return { raw, compactDeleted: this.cleanupCompactSummaries() };
+  }
+
+  #executionReceipt(row) {
+    const observations = this.#readObservations(row);
+    const ref = observations.flatMap((item) => item.receiptRefs ?? [])
+      .find((item) => item.kind === "turn_execution");
+    if (!ref?.receiptId) throw codedError("OBSERVATION_EXECUTION_RECEIPT_MISSING", "Turn execution receipt is unavailable.", 409);
+    return { schemaVersion: 1, receiptId: ref.receiptId, turnExecutionId: row.turn_execution_id,
+      turnId: row.turn_id, logicalSessionId: row.logical_session_id,
+      providerBindingId: row.provider_binding_id, bindingGeneration: Number(row.binding_generation),
+      status: row.status, projectionState: row.projection_state };
   }
 
   cleanupCompactSummaries() {
@@ -474,7 +533,13 @@ export function authoritativeProviderReceipts({ event, binding, sessionEvent } =
   if (startup.schemaVersion !== 2 || startup.status !== "ready" || !startup.startupOperationId || !startup.receiptHash) {
     return { ok: false, reason: "startup_binding_receipt_invalid" };
   }
-  if (startup.logicalSessionId !== binding.logicalSessionId || startup.providerBindingId !== binding.bindingId
+  const mapping = binding?.providerMetadata?.startupProviderBindingMapping ?? null;
+  const mappingValid = mapping?.startupProviderBindingId === startup.providerBindingId
+    && mapping?.providerBindingId === binding.bindingId
+    && mapping?.startupBindingGeneration === startup.bindingGeneration
+    && mapping?.providerBindingGeneration === binding.routingVersion;
+  if (startup.logicalSessionId !== binding.logicalSessionId
+    || (!mappingValid && startup.providerBindingId !== binding.bindingId)
     || nullable(startup.worktreeId) !== nullable(binding.worktreeId)) {
     return { ok: false, reason: "startup_binding_receipt_scope_mismatch" };
   }
