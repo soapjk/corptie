@@ -130,7 +130,12 @@ export class PlatformOperationService {
 
   async #sessions(args, binding) {
     assertKnown(args, ["action", "session_id", "agent_id", "provider_id", "work_item_id", "title", "prompt", "message", "archived", "pinned", "include_archived", "approval", "turn_id", "change_action", "model_id", "reasoning_level", "permissions", "idempotency_key"]);
-    const context = { source: "platform-assistant", actorId: binding.agent.agentId, actorSessionId: binding.actorSessionId };
+    const context = {
+      source: "platform-assistant",
+      actorId: binding.agent.agentId,
+      actorSessionId: binding.actorSessionId,
+      idempotencyKey: optional(args.idempotency_key)
+    };
     switch (required(args.action, "action")) {
       case "list": { const active = await this.listSessions({ archived: false }); if (args.include_archived !== true) return active; const archived = await this.listSessions({ archived: true }); return [...new Map([...active, ...archived].map((item) => [item.id, item])).values()]; }
       case "get": return this.#storedSession(required(args.session_id, "session_id"));

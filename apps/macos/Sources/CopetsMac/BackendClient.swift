@@ -3550,6 +3550,10 @@ final class BackendClient: ObservableObject {
                 sendStatusMessage = L10n("Restarting session…")
                 var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/restart"))
                 request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONSerialization.data(withJSONObject: [
+                    "idempotencyKey": "session-restart:\(UUID().uuidString.lowercased())"
+                ])
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
                     throw URLError(.badServerResponse)
