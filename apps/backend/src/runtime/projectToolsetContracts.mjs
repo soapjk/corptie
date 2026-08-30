@@ -48,6 +48,7 @@ export const CAPABILITY_CLASSES = Object.freeze(["none", "run_isolation_only", "
 const SNAPSHOT_FIELDS = ["receiptId", "receiptHash", "sourceFingerprint", "schemaVersion", "resourceVersion", "artifactRef"];
 const STARTUP_RECEIPT_REF_FIELDS = ["startupOperationId", "receiptHash", "schemaVersion", "resourceVersion", "artifactRef"];
 const TOOLSET_POINTER_FIELDS = ["receiptId", "receiptHash", "resourceVersion", "toolsetVersion", "validationPlanIdentity", "sourceFingerprint"];
+const RESOLVED_RECEIPT_REF_FIELDS = ["receiptId", "receiptHash", "schemaVersion", "issuer", "resourceVersion", "artifactRef"];
 const CONTRACT_REF_FIELDS = ["artifactId", "version", "contentHash", "relation", "receiptType", "schemaVersion"];
 const RUN_REF_FIELDS = ["receiptId", "receiptHash", "schemaVersion", "resourceVersion", "artifactRef", "runId"];
 const ERROR_FIELDS = ["code", "message", "retryable", "details"];
@@ -140,13 +141,20 @@ export function validateCleanupReceipt(receipt, context, runReceipt) {
   requireClosedObject(receipt, CLEANUP_RECEIPT_FIELDS, "CleanupReceipt v4");
   if (receipt.schemaVersion !== 4) fail("RECEIPT_INVALID");
   validateResolvedReceipt(receipt, context, "CleanupReceipt");
-  validateRunReceiptRef(receipt.runReceiptRef, "Run");
+  validateResolvedRunReceiptRef(receipt.runReceiptRef);
   if (receipt.runId !== runReceipt.runId || receipt.runReceiptRef?.receiptId !== runReceipt.receiptId
     || receipt.runReceiptRef?.receiptHash !== runReceipt.receiptHash || receipt.runReceiptRef?.resourceVersion !== runReceipt.resourceVersion) fail("RECEIPT_INVALID");
   if (receipt.outcome !== "cleaned") fail("CLEANUP_UNKNOWN");
   if (!plain(receipt.safetyChecks) || canonicalJson(Object.keys(receipt.safetyChecks).sort()) !== canonicalJson([...CLEANUP_SAFETY_CHECKS].sort())
     || Object.values(receipt.safetyChecks).some((check) => check?.status !== "passed")) fail("CLEANUP_UNKNOWN");
   return receipt;
+}
+
+function validateResolvedRunReceiptRef(value) {
+  requireClosedObject(value, RESOLVED_RECEIPT_REF_FIELDS, "CleanupReceipt.runReceiptRef");
+  boundedString(value.receiptId, 512, "receiptId"); requireHash(value.receiptHash, "receiptHash");
+  if (value.schemaVersion !== 6 || value.issuer !== "run_isolation" || !Number.isInteger(value.resourceVersion) || value.resourceVersion < 1) fail("RECEIPT_INVALID");
+  validateContractArtifactRef(value.artifactRef, "RunReceipt", 6, RUN_CONTRACT);
 }
 
 export function resolvedRunReceiptRef(receipt, type) {

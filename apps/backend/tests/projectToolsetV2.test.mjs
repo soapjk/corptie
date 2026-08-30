@@ -19,6 +19,10 @@ import {
 } from "../src/runtime/projectToolsetOrchestrator.mjs";
 import { SqliteProjectToolsetStore } from "../src/runtime/projectToolsetOperationStore.mjs";
 import { ProjectToolsetAuthorityResolver } from "../src/application/projectToolsetService.mjs";
+import {
+  ProjectToolsetAuthorizationPort, ProjectToolsetCommandDescriptorPort,
+  ProjectToolsetRunIsolationPort, ProjectToolsetValidationPlanPort
+} from "../src/application/projectToolsetProductionPorts.mjs";
 
 const externalTestRoot = "/Volumes/T9/.corptie/test-tmp";
 
@@ -223,8 +227,52 @@ test("SQLite Store persists CAS state, cancellation, recovery and immutable auth
     const receipt = makeReceiptShape(); await store.put(receipt);
     assert.equal((await store.getReceipt(receipt.receiptId)).receiptHash, receipt.receiptHash);
     await assert.rejects(() => store.put({ ...receipt, receiptHash: "f".repeat(64) }), /cannot be overwritten/);
+    const plans = new ProjectToolsetValidationPlanPort({ store });
+    const planIdentity = `vp1:${"a".repeat(64)}`;
+    const planValue = { plan: { schemaVersion: 1 }, validationPlanIdentity: planIdentity, identity: { repositoryId: "repository:aa" } };
+    assert.equal((await plans.register(planValue)).testPlanId, `project_toolset_plan:${"a".repeat(64)}`);
+    assert.deepEqual(await store.getValidationPlan(planIdentity), { plan: planValue.plan, identity: planValue.identity });
+    await assert.rejects(() => plans.register({ ...planValue, plan: { schemaVersion: 2 } }), { code: "TOOLSET_CAS_CONFLICT" });
     store.close();
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("production Ports keep descriptors single-use, consume coordinator receipts authoritatively and reject client capabilities", async () => {
+  const commands = new ProjectToolsetCommandDescriptorPort();
+  const contexts = new Map(); const runs = new Map(); const cleanups = new Map();
+  const coordinator = {
+    service: { store: {
+      latestRunReceipt(runId) { return runs.get(runId) ?? null; },
+      latestCleanupReceipt(runId) { return cleanups.get(runId) ?? null; }
+    } },
+    async prepareRun(prepare, session) {
+      assert.equal(prepare.sourceAware, true); assert.equal(prepare.toolsetRequired, false);
+      assert.deepEqual(Object.keys(session).sort(), ["logicalSessionId", "repositoryId", "workItemId", "worktreeId"]);
+      const context = { runId: "run:production", resourceVersion: 1, fencingToken: 7, runToken: "opaque" };
+      contexts.set(context.runId, context); return { context, receipt: null, replay: false };
+    },
+    async execute({ runContext, descriptor }) {
+      assert.equal(runContext.runToken, "opaque"); assert.equal(descriptor.executable, "swift");
+      const receipt = { runId: runContext.runId, receiptHash: "b".repeat(64) }; runs.set(runContext.runId, receipt); return receipt;
+    },
+    async cancel(request) { return { runId: request.runId, receiptHash: "c".repeat(64) }; },
+    async cleanup(request) { const receipt = { runId: request.runId, receiptHash: "d".repeat(64) }; cleanups.set(request.runId, receipt); return receipt; }
+  };
+  const port = new ProjectToolsetRunIsolationPort({ coordinator, commandDescriptors: commands });
+  const session = { logicalSessionId: "logical:one", workItemId: "work_item:one", repositoryId: "repository:aa", worktreeId: "worktree:bb" };
+  const prepared = await port.prepareRun({ startupBindingReceiptRef: startupReceiptRef(), repositorySourceSnapshotReceiptRef: snapshotRef("1".repeat(64)), toolsetValidationReceiptPointer: null, idempotencyKey: "prepare", testPlanRef: null, fixtureRef: null, quotaClass: "small" }, session);
+  const descriptor = await commands.register({ action: makeDeclaration(["build"]).actions[0], validationPlanIdentity: `vp1:${"e".repeat(64)}`, projectRoot: "/project" });
+  const run = await port.execute({ runId: prepared.context.runId, preparedResourceVersion: 1, fencingToken: 7, commandDescriptorRef: descriptor, idempotencyKey: "execute" }, session);
+  await assert.rejects(() => port.execute({ runId: prepared.context.runId, preparedResourceVersion: 1, fencingToken: 7, commandDescriptorRef: descriptor, idempotencyKey: "execute-again" }, session), /absent or expired/);
+  assert.equal((await port.getRunReceipt({ runId: run.runId, receiptHash: run.receiptHash })).receiptHash, run.receiptHash);
+  assert.equal(await port.getRunReceipt({ runId: run.runId, receiptHash: "0".repeat(64) }), null);
+  const cleanup = await port.cleanup({ runId: run.runId }, session);
+  assert.equal((await port.getCleanupReceipt({ runId: run.runId, receiptHash: cleanup.receiptHash })).receiptHash, cleanup.receiptHash);
+
+  const authority = { ...session, objectiveId: "objective:one", capabilityClass: "full_required" };
+  const authorization = new ProjectToolsetAuthorizationPort({ resolveAuthority: async () => authority });
+  assert.equal((await authorization.assertProjectToolsetAccess(authority)).capabilityClass, "full_required");
+  await assert.rejects(() => authorization.assertProjectToolsetAccess({ ...authority, capabilityClass: "run_isolation_only" }), { code: "TOOLSET_PERMISSION_DENIED" });
 });
 
 test("authoritative resolver binds Session, Startup, Snapshot and Toolset pointer without client identity", async () => {
@@ -249,7 +297,7 @@ function makePorts() {
   const declarationStore = new ProjectToolsetDeclarationStore(); const operationStore = new InMemoryToolsetOperationStore(); const cache = new Map(); const receipts = new Map(); let sequence = 0;
   const runIsolationPort = {
     executeCount: 0, cleanupCount: 0, runs: new Map(), cleanups: new Map(),
-    async prepareRun(input, session) { assert.deepEqual(Object.keys(session).sort(), ["logicalSessionId", "workItemId"]); assert.equal(Object.hasOwn(input, "sourceFingerprint"), false); assert.equal(input.toolsetValidationReceiptPointer, null); const runId = `run:${++sequence}`; return { context: { runId, resourceVersion: 1, fencingToken: 1 } }; },
+    async prepareRun(input, session) { assert.deepEqual(Object.keys(session).sort(), ["logicalSessionId", "repositoryId", "workItemId", "worktreeId"]); assert.equal(Object.hasOwn(input, "sourceFingerprint"), false); assert.equal(input.toolsetValidationReceiptPointer, null); const runId = `run:${++sequence}`; return { context: { runId, resourceVersion: 1, fencingToken: 1 } }; },
     async execute(request) { assert.deepEqual(Object.keys(request).sort(), ["commandDescriptorRef", "fencingToken", "idempotencyKey", "preparedResourceVersion", "runId", "toolsetValidationReceiptPointer"]); assert.equal(request.toolsetValidationReceiptPointer, null); this.executeCount += 1; const receipt = fullRunReceipt(request.runId, 2, "passed"); this.runs.set(receipt.receiptHash, receipt); return receipt; },
     async cancel(request) { const receipt = fullRunReceipt(request.runId, 2, "cancelled"); this.runs.set(receipt.receiptHash, receipt); return receipt; },
     async cleanup(request) { this.cleanupCount += 1; const run = [...this.runs.values()].find((value) => value.runId === request.runId); const receipt = fullCleanupReceipt(run, ++sequence); this.cleanups.set(receipt.receiptHash, receipt); return receipt; },
@@ -290,6 +338,6 @@ function fullRunReceipt(runId, resourceVersion, outcome) {
 }
 function fullCleanupReceipt(run, sequence) {
   const names = ["canonicalRoot", "runMarker", "identity", "leaseOwner", "fence", "noSymlink", "noHardlinkEscape", "noMountCrossing", "noActiveProcess", "noActivePort", "noActiveDataLease", "noActiveCredentialLease", "serverHandleClosed", "targetBoundary"];
-  const receipt = { schemaVersion: 4, receiptId: `cleanup_receipt:${sequence}`, receiptHash: "0".repeat(64), cleanupOperationId: `cleanup:${sequence}`, runId: run.runId, runReceiptRef: { receiptId: run.receiptId, receiptHash: run.receiptHash, schemaVersion: 6, resourceVersion: run.resourceVersion, artifactRef: { artifactId: RUN_CONTRACT.artifactId, version: 1, contentHash: RUN_CONTRACT.contentHash, relation: "implementation_spec", receiptType: "RunReceipt", schemaVersion: 6 }, runId: run.runId }, logicalSessionId: "logical:one", workItemId: "work_item:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", sourceFingerprint: "1".repeat(64), outcome: "cleaned", policy: "success_default", ownerSessionId: "logical:one", retentionReason: null, retentionPolicyVersion: "run-retention-v1", retainUntil: null, quotaBytes: 1024, observedBytes: 0, fencingToken: 1, resourceVersion: run.resourceVersion, dataRootBindingId: "data-root:test", sourceIdentityHash: "b".repeat(64), trashIdentityHash: "c".repeat(64), safetyChecks: Object.fromEntries(names.map((name) => [name, { status: "passed", errorCode: null, evidenceHash: "d".repeat(64) }])), processReconciliation: "matchedExited", bytesReclaimed: 0, filesRemoved: 0, eventRefs: [], startedAt: "2026-08-30T00:00:03.000Z", finishedAt: "2026-08-30T00:00:04.000Z", error: null };
+  const receipt = { schemaVersion: 4, receiptId: `cleanup_receipt:${sequence}`, receiptHash: "0".repeat(64), cleanupOperationId: `cleanup:${sequence}`, runId: run.runId, runReceiptRef: { receiptId: run.receiptId, receiptHash: run.receiptHash, schemaVersion: 6, issuer: "run_isolation", resourceVersion: run.resourceVersion, artifactRef: { artifactId: RUN_CONTRACT.artifactId, version: 1, contentHash: RUN_CONTRACT.contentHash, relation: "implementation_spec", receiptType: "RunReceipt", schemaVersion: 6 } }, logicalSessionId: "logical:one", workItemId: "work_item:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", sourceFingerprint: "1".repeat(64), outcome: "cleaned", policy: "success_default", ownerSessionId: "logical:one", retentionReason: null, retentionPolicyVersion: "run-retention-v1", retainUntil: null, quotaBytes: 1024, observedBytes: 0, fencingToken: 1, resourceVersion: run.resourceVersion, dataRootBindingId: "data-root:test", sourceIdentityHash: "b".repeat(64), trashIdentityHash: "c".repeat(64), safetyChecks: Object.fromEntries(names.map((name) => [name, { status: "passed", errorCode: null, evidenceHash: "d".repeat(64) }])), processReconciliation: "matchedExited", bytesReclaimed: 0, filesRemoved: 0, eventRefs: [], startedAt: "2026-08-30T00:00:03.000Z", finishedAt: "2026-08-30T00:00:04.000Z", error: null };
   receipt.receiptHash = validationReceiptHash(receipt); return receipt;
 }
