@@ -1,0 +1,1213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corptie.local/contracts/project-code-search-receipts/v3-run-v5",
+  "title": "Corptie Project Code Search Receipt Contracts — RunReceipt v5 Convergence",
+  "description": "Approved fixed successor to artifact:619de450-ff1f-4506-b06e-24c015317422@1 (49deb38e337da1af7067dc458fb552cae2d33e20531124d3c7143060615b957e). RepositorySourceSnapshotReceipt and SearchReceipt remain closed and unchanged except the minimum RunReceipt v5 / CleanupReceipt v4 authority convergence. No v4 Run compatibility, conversion, alias, or dual contract.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RepositorySourceSnapshotReceipt"
+    },
+    {
+      "$ref": "#/$defs/SearchReceipt"
+    }
+  ],
+  "$defs": {
+    "LowercaseHex64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "GenericContractArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "type": "string",
+          "enum": [
+            "RepositorySourceSnapshotReceipt",
+            "SearchReceipt",
+            "ToolsetValidationReceipt",
+            "RunReceipt",
+            "CleanupReceipt"
+          ]
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "RepositorySourceSnapshotContractArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f-]+$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "const": "RepositorySourceSnapshotReceipt"
+        },
+        "schemaVersion": {
+          "const": 1
+        }
+      }
+    },
+    "StartupBindingRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "artifactVersion",
+        "artifactContentHash",
+        "startupOperationId",
+        "startupReceiptHash"
+      ],
+      "properties": {
+        "artifactId": {
+          "const": "artifact:7f26689a-5b9a-4b32-ad86-ad93c0be2949"
+        },
+        "artifactVersion": {
+          "const": 1
+        },
+        "artifactContentHash": {
+          "const": "472b8c34180f2c1e7f7b59d7e2c8fc620ec515971a56e5f8ecae6fe69a0aced2"
+        },
+        "startupOperationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "startupReceiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "DirtyOverlayRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "manifestHash",
+        "entryCount",
+        "tombstoneCount",
+        "opaqueLocalLocatorHash"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "manifestHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "entryCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tombstoneCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "opaqueLocalLocatorHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "IgnoreConfigRevisionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "revisionHash",
+        "sourceCount",
+        "opaqueLocalLocatorHash"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "revisionHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sourceCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "opaqueLocalLocatorHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "RepositorySourceSnapshotReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef",
+        "startupBindingRef",
+        "objectiveId",
+        "workItemId",
+        "logicalSessionId",
+        "repositoryId",
+        "worktreeId",
+        "sourceCommitOid",
+        "sourceTreeOid",
+        "dirtyOverlayRef",
+        "ignoreConfigRevisionRef",
+        "scopeRootHash",
+        "sourceFingerprint",
+        "createdAt",
+        "receiptHash"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/RepositorySourceSnapshotContractArtifactRef"
+        },
+        "startupBindingRef": {
+          "$ref": "#/$defs/StartupBindingRef"
+        },
+        "objectiveId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "workItemId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "logicalSessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "repositoryId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "worktreeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sourceCommitOid": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+            },
+            {
+              "const": "UNBORN_COMMIT"
+            }
+          ]
+        },
+        "sourceTreeOid": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+            },
+            {
+              "const": "EMPTY_TREE"
+            }
+          ]
+        },
+        "dirtyOverlayRef": {
+          "$ref": "#/$defs/DirtyOverlayRef"
+        },
+        "ignoreConfigRevisionRef": {
+          "$ref": "#/$defs/IgnoreConfigRevisionRef"
+        },
+        "scopeRootHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "$comment": "receiptHash is lowercase hex SHA-256 of RFC 8785 canonical JSON of this object with receiptHash omitted. sourceFingerprint is lowercase hex SHA-256 of the separately frozen source-fingerprint/v2 RFC 8785 payload. artifactRef identifies this approved supporting implementation_spec as pinned by the consuming DependencyContractManifest."
+    },
+    "GenericReceiptPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/GenericContractArtifactRef"
+        }
+      }
+    },
+    "ApprovedRunReceiptArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "const": "artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef"
+        },
+        "version": {
+          "const": 1
+        },
+        "contentHash": {
+          "const": "81b374c134fa74e0eb89673b2599eeb7d7d66f6ef7df0710289c6dc379b67184"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "const": "RunReceipt"
+        },
+        "schemaVersion": {
+          "const": 5
+        }
+      }
+    },
+    "ApprovedCleanupReceiptArtifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactId",
+        "version",
+        "contentHash",
+        "relation",
+        "receiptType",
+        "schemaVersion"
+      ],
+      "properties": {
+        "artifactId": {
+          "const": "artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef"
+        },
+        "version": {
+          "const": 1
+        },
+        "contentHash": {
+          "const": "81b374c134fa74e0eb89673b2599eeb7d7d66f6ef7df0710289c6dc379b67184"
+        },
+        "relation": {
+          "const": "implementation_spec"
+        },
+        "receiptType": {
+          "const": "CleanupReceipt"
+        },
+        "schemaVersion": {
+          "const": 4
+        }
+      }
+    },
+    "RunReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef",
+        "runId"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 5
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ApprovedRunReceiptArtifactRef"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "CleanupReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef",
+        "runId"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 4
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/ApprovedCleanupReceiptArtifactRef"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "RepositorySourceSnapshotReceiptRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "receiptHash",
+        "sourceFingerprint",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "$ref": "#/$defs/RepositorySourceSnapshotContractArtifactRef"
+        }
+      }
+    },
+    "IndexVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalogSchema",
+        "textSymbolSchema",
+        "semanticSchema",
+        "generationHashes"
+      ],
+      "properties": {
+        "catalogSchema": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "textSymbolSchema": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "semanticSchema": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generationHashes": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "LayerFact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layer",
+        "status",
+        "skippedReason",
+        "degradedReason",
+        "candidateCount",
+        "resultCount",
+        "latencyMs",
+        "indexHit",
+        "isolationRequired"
+      ],
+      "properties": {
+        "layer": {
+          "enum": [
+            "L0",
+            "L1",
+            "L2",
+            "L3"
+          ]
+        },
+        "status": {
+          "enum": [
+            "executed",
+            "skipped",
+            "degraded",
+            "failed"
+          ]
+        },
+        "skippedReason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "degradedReason": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "candidateCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resultCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "latencyMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "indexHit": {
+          "type": "boolean"
+        },
+        "isolationRequired": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalMs",
+        "bindingVerifyMs",
+        "snapshotVerifyMs",
+        "toolsetVerifyMs",
+        "isolationPrepareMs",
+        "queueMs",
+        "layerMs",
+        "fusionMs",
+        "cleanupMs"
+      ],
+      "properties": {
+        "totalMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "bindingVerifyMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "snapshotVerifyMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "toolsetVerifyMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "isolationPrepareMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "queueMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "layerMs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "L0",
+            "L1",
+            "L2",
+            "L3"
+          ],
+          "properties": {
+            "L0": {
+              "type": "number",
+              "minimum": 0
+            },
+            "L1": {
+              "type": "number",
+              "minimum": 0
+            },
+            "L2": {
+              "type": "number",
+              "minimum": 0
+            },
+            "L3": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "fusionMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cleanupMs": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "ResultSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "truncated",
+        "kindCounts",
+        "topScoreBand",
+        "resultDigest"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "kindCounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "file": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "text": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "class": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "struct": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "enum": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "protocol": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "function": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "method": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "property": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "import": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "call": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "test": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "semantic": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "topScoreBand": {
+          "anyOf": [
+            {
+              "enum": [
+                "none",
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resultDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "Cancellation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested",
+        "observed",
+        "stage",
+        "reasonCode"
+      ],
+      "properties": {
+        "requested": {
+          "type": "boolean"
+        },
+        "observed": {
+          "type": "boolean"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "enum": [
+                "queue",
+                "planning",
+                "prepareRun",
+                "execute",
+                "cleanup",
+                "fusion"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reasonCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Timeout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "budgetMs",
+        "timedOut",
+        "stage"
+      ],
+      "properties": {
+        "budgetMs": {
+          "type": "integer",
+          "minimum": 250,
+          "maximum": 10000
+        },
+        "timedOut": {
+          "type": "boolean"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "enum": [
+                "queue",
+                "planning",
+                "prepareRun",
+                "execute",
+                "cleanup",
+                "fusion"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "RejectedPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relativePath",
+        "pathHash",
+        "reasonCode"
+      ],
+      "properties": {
+        "relativePath": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 1024
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pathHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "reasonCode": {
+          "type": "string",
+          "maxLength": 128
+        }
+      }
+    },
+    "EvidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "locatorHash",
+        "contentHash"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "artifact",
+            "command",
+            "test",
+            "local_result"
+          ]
+        },
+        "locatorHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contentHash": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "SearchReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receiptId",
+        "schemaVersion",
+        "resourceVersion",
+        "artifactRef",
+        "createdAt",
+        "searchScenarioId",
+        "startupBindingRef",
+        "snapshotReceiptRef",
+        "sourceFingerprint",
+        "toolsetValidationReceiptRef",
+        "runIsolationReceiptRef",
+        "runId",
+        "cleanupReceiptRef",
+        "queryHash",
+        "scopeHash",
+        "indexVersion",
+        "candidateCategories",
+        "layers",
+        "latency",
+        "resultSummary",
+        "cancellation",
+        "timeout",
+        "rejectedPaths",
+        "rejectedPathOverflowCount",
+        "evidenceRefs",
+        "outcome",
+        "errorCode",
+        "receiptHash"
+      ],
+      "properties": {
+        "receiptId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "schemaVersion": {
+          "const": 1
+        },
+        "resourceVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "artifactRef": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/GenericContractArtifactRef"
+            },
+            {
+              "properties": {
+                "receiptType": {
+                  "const": "SearchReceipt"
+                },
+                "schemaVersion": {
+                  "const": 1
+                }
+              }
+            }
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "searchScenarioId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "startupBindingRef": {
+          "$ref": "#/$defs/StartupBindingRef"
+        },
+        "snapshotReceiptRef": {
+          "$ref": "#/$defs/RepositorySourceSnapshotReceiptRef"
+        },
+        "sourceFingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "toolsetValidationReceiptRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GenericReceiptPointer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runIsolationReceiptRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunReceiptRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cleanupReceiptRef": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CleanupReceiptRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "queryHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "scopeHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "indexVersion": {
+          "$ref": "#/$defs/IndexVersion"
+        },
+        "candidateCategories": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "tracked_baseline",
+              "dirty_added",
+              "dirty_modified",
+              "dirty_deleted",
+              "dirty_renamed",
+              "language_catalog",
+              "text_posting",
+              "symbol",
+              "semantic"
+            ]
+          }
+        },
+        "layers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/LayerFact"
+          }
+        },
+        "latency": {
+          "$ref": "#/$defs/Latency"
+        },
+        "resultSummary": {
+          "$ref": "#/$defs/ResultSummary"
+        },
+        "cancellation": {
+          "$ref": "#/$defs/Cancellation"
+        },
+        "timeout": {
+          "$ref": "#/$defs/Timeout"
+        },
+        "rejectedPaths": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/RejectedPath"
+          }
+        },
+        "rejectedPathOverflowCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          }
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "degraded",
+            "cancelled",
+            "timeout",
+            "rejected",
+            "failed"
+          ]
+        },
+        "errorCode": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "receiptHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "runId": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "runId"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runIsolationReceiptRef": {
+                "type": "null"
+              },
+              "cleanupReceiptRef": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "runIsolationReceiptRef": {
+                "$ref": "#/$defs/RunReceiptRef"
+              },
+              "cleanupReceiptRef": {
+                "$ref": "#/$defs/CleanupReceiptRef"
+              }
+            }
+          }
+        }
+      ],
+      "$comment": "receiptHash is lowercase hex SHA-256 of RFC 8785 canonical JSON with receiptHash omitted. sourceFingerprint MUST equal snapshotReceiptRef.sourceFingerprint byte-for-byte. There is no serialized snapshotReceiptId field: any product presentation named snapshotReceiptId is a one-to-one display alias of snapshotReceiptRef.receiptId and never a second identifier. If isolation is used, SearchReceipt.runId, runIsolationReceiptRef.runId, and cleanupReceiptRef.runId MUST be equal. Telemetry must not persist raw query, snippet, symbol, absolute/private path, source body, or embedding.",
+      "x-corptie-invariants": [
+        "sourceFingerprint == snapshotReceiptRef.sourceFingerprint",
+        "runId == null iff runIsolationReceiptRef == null and cleanupReceiptRef == null",
+        "when runId != null: runId == runIsolationReceiptRef.runId == cleanupReceiptRef.runId",
+        "toolsetValidationReceiptRef is null only for execution surfaces explicitly not requiring Project Toolset; Project Toolset integration remains blocked until its contract artifact is pinned",
+        "rejectedPaths.relativePath is null for out-of-scope absolute paths; pathHash remains required"
+      ]
+    }
+  },
+  "$comment": "Supersedes artifact:619de450-ff1f-4506-b06e-24c015317422@1. RunReceipt authority is artifact:ce3c7e2f-13a5-4c29-be40-368489fe87ef@1; RunReceipt schemaVersion=5; CleanupReceipt schemaVersion=4. Toolset canonical contract is not modified by this Artifact."
+}
