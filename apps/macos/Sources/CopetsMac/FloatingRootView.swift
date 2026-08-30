@@ -3684,6 +3684,8 @@ struct DetailView: View {
                 onToggleExpansion: toggleNativeProcessExpansion,
                 onAction: performNativeTimelineAction,
                 onNearTop: loadEarlierMessagesIfNeeded,
+                hasMoreHistory: selectedSession != nil && displayedDetail?.hasMoreHistory == true,
+                onUnderfilledHistory: loadEarlierMessagesForUnderfilledViewport,
                 initialPosition: effectiveInitialTimelinePosition,
                 onPositionChange: onTimelinePositionChange,
                 scrollToTurnID: scrollTargetTurnID,
@@ -4089,11 +4091,21 @@ struct DetailView: View {
 
     // 微信/Discord 式「上滑到顶自动加载」：先展开已加载窗口，窗口耗尽后再补拉。
     private func loadEarlierMessagesIfNeeded() {
+        loadEarlierMessages(preservingLatestFollow: false)
+    }
+
+    private func loadEarlierMessagesForUnderfilledViewport() {
+        loadEarlierMessages(preservingLatestFollow: true)
+    }
+
+    private func loadEarlierMessages(preservingLatestFollow: Bool) {
         guard backendClient.selectedSession?.id == sessionId,
               let detail = displayedDetail else { return }
         let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
         let hiddenCount = max(0, cachedTotalDisplayEntryCount - visibleWeight)
-        isFollowingLatest = false
+        if !preservingLatestFollow {
+            isFollowingLatest = false
+        }
         if hiddenCount > 0 {
             ChatPerformanceRecorder.shared.increment(.historyPrepends)
             ChatPerformanceTrace.event("timeline.history.prepend", value: min(100, hiddenCount))

@@ -739,6 +739,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     let onToggleExpansion: (String) -> Void
     var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
     var onNearTop: () -> Void = {}
+    var hasMoreHistory: Bool = false
+    var onUnderfilledHistory: () -> Void = {}
     var initialPosition: AppKitChatTimelinePosition? = nil
     var onPositionChange: (AppKitChatTimelinePosition) -> Void = { _ in }
     var scrollToTurnID: String? = nil
@@ -759,6 +761,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             onToggleExpansion: onToggleExpansion,
             onAction: onAction,
             onNearTop: onNearTop,
+            hasMoreHistory: hasMoreHistory,
+            onUnderfilledHistory: onUnderfilledHistory,
             onPositionChange: onPositionChange
         )
     }
@@ -836,6 +840,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         context.coordinator.onToggleExpansion = onToggleExpansion
         context.coordinator.onAction = onAction
         context.coordinator.onNearTop = onNearTop
+        context.coordinator.onUnderfilledHistory = onUnderfilledHistory
+        context.coordinator.updateHistoryAvailability(hasMoreHistory)
         context.coordinator.onPositionChange = onPositionChange
         context.coordinator.apply(rows: rows, animated: context.transaction.animation != nil)
         if let initialPosition {
@@ -864,6 +870,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         var onToggleExpansion: (String) -> Void
         var onAction: (AppKitChatTimelineRow.Action) -> Void
         var onNearTop: () -> Void
+        var onUnderfilledHistory: () -> Void
         var onPositionChange: (AppKitChatTimelinePosition) -> Void
         private var representedSessionID: String
         private var baseDirectory: String?
@@ -883,6 +890,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         var lastHistoryRequestEpoch = Int.min
         var followsLatest = true
         private var nearTopTriggered = false
+        private var hasMoreHistory = false
+        private var underfilledHistoryRequestCount = 0
+        private var lastUnderfilledHistoryRequestSignature: String?
+        private var underfilledHistoryEvaluationGeneration = 0
         private var positionPublishWorkItem: DispatchWorkItem?
         private var lastPublishedPosition: AppKitChatTimelinePosition?
         private var pendingRestorePosition: AppKitChatTimelinePosition?
@@ -937,6 +948,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             onToggleExpansion: @escaping (String) -> Void,
             onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
             onNearTop: @escaping () -> Void = {},
+            hasMoreHistory: Bool = false,
+            onUnderfilledHistory: @escaping () -> Void = {},
             onPositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
         ) {
             self.representedSessionID = sessionID
@@ -945,6 +958,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             self.onToggleExpansion = onToggleExpansion
             self.onAction = onAction
             self.onNearTop = onNearTop
+            self.hasMoreHistory = hasMoreHistory
+            self.onUnderfilledHistory = onUnderfilledHistory
             self.onPositionChange = onPositionChange
         }
 
@@ -972,6 +987,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             deferredEmptyProjectionViewport = nil
             userOwnsViewport = false
             nearTopTriggered = false
+            underfilledHistoryRequestCount = 0
+            lastUnderfilledHistoryRequestSignature = nil
+            underfilledHistoryEvaluationGeneration &+= 1
             isAwaitingSessionRows = true
             tableView?.reloadData()
             if let initialPosition, !initialPosition.followsLatest {
@@ -1324,8 +1342,46 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             let contentHeight = rows.isEmpty
                 ? 0
                 : tableView.rect(ofRow: rows.count - 1).maxY
-            guard abs(tableView.frame.height - contentHeight) >= 0.5 else { return }
-            tableView.setFrameSize(NSSize(width: tableView.frame.width, height: contentHeight))
+            if abs(tableView.frame.height - contentHeight) >= 0.5 {
+                tableView.setFrameSize(NSSize(width: tableView.frame.width, height: contentHeight))
+            }
+            scheduleUnderfilledHistoryEvaluation()
+        }
+
+        func updateHistoryAvailability(_ hasMoreHistory: Bool) {
+            let becameAvailable = hasMoreHistory && !self.hasMoreHistory
+            self.hasMoreHistory = hasMoreHistory
+            if becameAvailable {
+                scheduleUnderfilledHistoryEvaluation()
+            }
+        }
+
+        /// A raw-event page can collapse to only one or two semantic chat
+        /// rows. In that case the document has no scroll range, so an active
+        /// wheel/scrollbar gesture can never reach `onNearTop`. Bootstrap a
+        /// bounded number of additional pages from actual geometry while
+        /// keeping ordinary programmatic bounds changes ineligible for the
+        /// user-driven history path.
+        private func scheduleUnderfilledHistoryEvaluation() {
+            underfilledHistoryEvaluationGeneration &+= 1
+            let generation = underfilledHistoryEvaluationGeneration
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.underfilledHistoryEvaluationGeneration == generation,
+                      self.hasMoreHistory,
+                      self.underfilledHistoryRequestCount < 4,
+                      let tableView = self.tableView,
+                      let clipView = self.scrollView?.contentView,
+                      !self.rows.isEmpty,
+                      clipView.bounds.height > 1 else { return }
+                let contentHeight = tableView.rect(ofRow: self.rows.count - 1).maxY
+                guard contentHeight <= clipView.bounds.height + 0.5 else { return }
+                let signature = "\(self.representedSessionID)|\(self.rows.map(\.id).joined(separator: ","))"
+                guard signature != self.lastUnderfilledHistoryRequestSignature else { return }
+                self.lastUnderfilledHistoryRequestSignature = signature
+                self.underfilledHistoryRequestCount += 1
+                self.onUnderfilledHistory()
+            }
         }
 
         func scrollToBottom() {
@@ -1469,6 +1525,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         @objc private func containerFrameDidChange(_ notification: Notification) {
             synchronizeTableWidth()
+            scheduleUnderfilledHistoryEvaluation()
         }
 
         @objc private func capturePositionForTermination(_ notification: Notification) {
