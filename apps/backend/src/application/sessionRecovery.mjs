@@ -421,7 +421,7 @@ export class SessionRecoveryCoordinator {
         const attempt = logicalSessionId && idempotencyKey
           ? this.store.getSessionRecoveryAttemptByIdempotency(logicalSessionId, idempotencyKey)
           : null;
-        if (attempt && !["committed", "cancelled", "manual_required"].includes(attempt.state)) {
+        if (attempt && !["committed", "cancelled", "failed", "manual_required"].includes(attempt.state)) {
           const persisted = recoveryPersistence(error);
           this.store.failSessionRecoveryAttempt(attempt.attemptId, persisted.code, persisted.message);
         }
@@ -435,7 +435,10 @@ export class SessionRecoveryCoordinator {
 
   async #recover(input) {
     const idempotencyKey = requiredString(input.idempotencyKey, "idempotencyKey");
-    const existing = this.store.getSessionRecoveryAttemptByIdempotency(input.logicalSessionId, idempotencyKey);
+    let existing = this.store.getSessionRecoveryAttemptByIdempotency(input.logicalSessionId, idempotencyKey);
+    if (existing?.state === "failed") {
+      existing = this.store.retryUnstartedSessionRecoveryAttempt(existing.attemptId) ?? existing;
+    }
     if (existing?.state === "committed") return existing;
     const descriptor = this.resolveProviderDescriptor(input.providerId);
     const capabilities = recoveryCapabilitySnapshot(descriptor);
@@ -604,7 +607,7 @@ export function mapSessionRecoveryError(error) {
   const safeCodes = new Set([
     "SESSION_RECOVERY_CANCELLED", "RECOVERY_CAS_CONFLICT", "RECOVERY_BINDING_STALE",
     "RECOVERY_CAPABILITY_STALE", "RECOVERY_HASH_MISMATCH", "RECOVERY_MANUAL_REQUIRED",
-    "SESSION_BUSY", "RECOVERY_REPLACEMENT_CAS_CONFLICT"
+    "SESSION_BUSY", "RECOVERY_REPLACEMENT_CAS_CONFLICT", "RECOVERY_ATTEMPT_STATE_INVALID"
   ]);
   if (safeCodes.has(error?.code)) return recoveryError(error.code, error.message);
   const mapped = recoveryError(
