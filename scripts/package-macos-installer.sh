@@ -166,9 +166,9 @@ cat > "${APP_DIR}/Contents/Resources/com.corptie.backend.plist" <<PLIST
       <string>${APP_BUNDLE_PATH}/Contents/Resources/corptie-backend-launch.sh</string>
     </array>
     <key>RunAtLoad</key>
-    <true/>
+    <false/>
     <key>KeepAlive</key>
-    <true/>
+    <false/>
     <key>EnvironmentVariables</key>
     <dict>
       <key>CORPTIE_ENV</key>
