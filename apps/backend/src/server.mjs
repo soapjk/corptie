@@ -275,8 +275,7 @@ import { RunIsolationAuthorityResolver, RunIsolationExecutionCoordinator } from 
 import {
   DEFAULT_SESSION_HISTORY_WINDOW,
   MAX_SESSION_HISTORY_PAGE,
-  normalizeSessionHistoryLimit,
-  windowSessionItems
+  normalizeSessionHistoryLimit
 } from "./application/sessionHistoryWindow.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
@@ -4903,7 +4902,12 @@ async function getUnifiedSessionSnapshot(sessionId) {
 async function getStoredSessionSnapshot(sessionId) {
   const reference = requireSessionReference(sessionId);
   const summary = reference.metadata.session;
-  const stored = store.getDetail(reference.sessionId) ?? {};
+  const stored = store.getDetail(reference.sessionId, { includeItems: false }) ?? {};
+  const provider = summary.external?.provider ?? stored.source ?? "";
+  const timelineWindow = store.getLatestTimelineItemWindow(reference.sessionId, {
+    limit: DEFAULT_SESSION_HISTORY_WINDOW,
+    provider
+  });
   const detail = {
     ...stored,
     ...summary,
@@ -4916,20 +4920,18 @@ async function getStoredSessionSnapshot(sessionId) {
     connectionStatus: summary.external?.connectionStatus ?? stored.connectionStatus ?? null,
     canSend: summary.capabilities?.canSend ?? stored.canSend ?? false,
     capabilities: summary.capabilities ?? stored.capabilities,
-    items: stored.items ?? []
+    items: timelineWindow.items
   };
   // session_items is the materialized product Timeline. Snapshot reads never
   // scan queues, collaboration state, automation events, or Provider state to
   // repair it. Those domains project into session_items when they mutate.
-  const { items, hasMoreHistory, historyItemsCount } = windowSessionItems(detail.items);
   return {
     ...detail,
     sessionId: reference.sessionId,
     logicalSessionId: reference.logicalSessionId,
     publicSessionId: reference.logicalSessionId ?? reference.sessionId,
-    items,
-    hasMoreHistory,
-    historyItemsCount,
+    hasMoreHistory: timelineWindow.hasEarlier,
+    historyItemsCount: timelineWindow.historyItemsCount,
     lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
     lastAgentMessageSequence: store.lastAgentMessageSequence(reference.sessionId),
     timelineRevision: store.sessionTimelineRevision(reference.sessionId)
