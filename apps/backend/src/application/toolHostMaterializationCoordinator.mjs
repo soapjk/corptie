@@ -330,13 +330,16 @@ export class ToolHostMaterializationCoordinator {
         503,
         error
       );
+      // Provider schema application is a pre-dispatch gate. No user message
+      // has reached turn/start when this path fails, so the durable Delivery
+      // must remain safely retryable instead of being marked ambiguous.
+      failure.dispatchState = "not_sent";
       // A Provider that can only install a Tool schema while creating its
       // physical Session must recover by replacing that binding. This failure
       // occurs before turn/start, so the user's message is safe to retry once
       // after the shared Session route commits the replacement.
       if (state.capability.bindingReplacement === true
         && error?.code === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED") {
-        failure.dispatchState = "not_sent";
         failure.recoveryAction = "replace_provider_binding";
         failure.replacementReason = error.code;
       }
