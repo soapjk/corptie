@@ -1,26 +1,15 @@
 import { createHash } from "node:crypto";
 import {
   TOOL_DELIVERY_SURFACES,
+  TOOL_HOST_BOOTSTRAP_ABI_REVISION,
+  TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
   TOOL_RESTRICTED_GATEWAY,
+  RESTRICTED_GATEWAY_DEFINITION,
   schemaHash,
   stableStringify
 } from "./hostToolCatalog.mjs";
 
-export const RESTRICTED_GATEWAY_DEFINITION = Object.freeze({
-  name: TOOL_RESTRICTED_GATEWAY,
-  description: "Call one Tool Host canonical tool from an applied authorized domain.",
-  inputSchema: Object.freeze({
-    type: "object",
-    properties: Object.freeze({
-      tool: { type: "string", minLength: 1, maxLength: 300 },
-      arguments: { type: "object", additionalProperties: true },
-      expected_catalog_version: { type: "string", minLength: 1, maxLength: 200 }
-    }),
-    required: Object.freeze(["tool", "arguments", "expected_catalog_version"]),
-    additionalProperties: false
-  }),
-  deferLoading: false
-});
+export { RESTRICTED_GATEWAY_DEFINITION } from "./hostToolCatalog.mjs";
 
 export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = [], capabilities, phase = "refresh" }) {
   if (!catalog) throw new TypeError("Tool Exposure Plan requires a Host Tool Catalog.");
@@ -69,6 +58,8 @@ export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = 
   return Object.freeze({
     surface,
     refreshMode: refreshMode(normalizedCapabilities, phase, surface),
+    bootstrapAbiRevision: TOOL_HOST_BOOTSTRAP_ABI_REVISION,
+    bootstrapSchemaHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
     exposurePlanHash,
     ownership: Object.freeze(orderedOwnership),
     providerDefinitions: Object.freeze(providerDefinitions),

@@ -199,6 +199,68 @@ test("failed refresh retries from the persisted error state and applies without 
   }
 });
 
+test("an existing restricted-gateway binding hot-loads a newly registered deferred domain without Provider schema drift", async () => {
+  const providerPlans = [];
+  const value = await fixture({
+    capability: {
+      bootstrapAttach: true, appendInPlace: false, replaceAtTurnBoundary: false,
+      generatedMcpRefresh: false, restrictedGateway: true, bindingReplacement: true,
+      capabilityRevision: "fake:restricted-gateway:1"
+    },
+    apply: async (input) => {
+      providerPlans.push(input.plan.providerDefinitions);
+      return receipt(input);
+    }
+  });
+  try {
+    const initialBindingId = value.binding.providerBindingId;
+    const initial = await value.coordinator.ensureApplied({
+      logicalSessionId: "logical:worker",
+      providerBindingId: initialBindingId,
+      desiredDomains: ["artifacts"]
+    });
+    const initialCatalogVersion = initial.snapshot.catalogVersion;
+
+    value.catalog.register({
+      id: "project-code-next",
+      domainId: "project-code-next",
+      tools: [{
+        name: "corptie_project_code_next_search",
+        description: "A newly installed deferred project-code capability.",
+        inputSchema: { type: "object" }
+      }],
+      execute: () => null
+    });
+    const search = await value.coordinator.search({
+      logicalSessionId: "logical:worker",
+      providerBindingId: initialBindingId,
+      intent: "newly installed deferred project-code"
+    });
+    assert.notEqual(search.catalogVersion, initialCatalogVersion);
+    assert.equal(search.domains.some((domain) => domain.domainId === "project-code-next"), true);
+
+    const loaded = await value.coordinator.loadDomain({
+      logicalSessionId: "logical:worker",
+      providerBindingId: initialBindingId,
+      domainId: "project-code-next",
+      expectedCatalogVersion: search.catalogVersion,
+      activeTurn: true
+    });
+    assert.equal(loaded.status, "applied");
+    assert.equal(loaded.plan.refreshMode, "restricted_gateway");
+    assert.deepEqual(providerPlans[1], providerPlans[0]);
+    assert.equal(
+      value.store.getLogicalSession("logical:worker").activeBinding.bindingId,
+      initialBindingId
+    );
+    assert.equal(loaded.record.appliedDomains.some((domain) => domain.domainId === "project-code-next"), true);
+    assert.equal(value.applyCount, 2);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("unconfirmed bootstrap-only Tool schema is marked safe for one binding replacement before dispatch", async () => {
   const value = await fixture({
     capability: {
