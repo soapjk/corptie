@@ -330,15 +330,42 @@ test("a turn-scoped Provider error fails only the Turn and keeps the Session ret
     });
 
     assert.equal(providerError.session.status, "running");
-    assert.notEqual(providerError.session.capabilities.canSend, false);
+    assert.equal(providerError.session.capabilities.canSend, true);
     assert.equal(providerError.session.sendUnavailableReason, null);
     assert.equal(settled.session.status, "failed");
-    assert.notEqual(settled.session.capabilities.canSend, false);
+    assert.equal(settled.session.capabilities.canSend, true);
     assert.equal(settled.session.sendUnavailableReason, null);
     assert.equal(
       store.getSessionTurn(binding.sessionId, binding.bindingId, "turn:one").execution_status,
       "failed"
     );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a new Turn clears a stale Session-level send failure from an earlier Provider error", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const failed = projector.project({
+      event: event("provider.error", {
+        turnId: null,
+        payload: {
+          error: "Selected model is at capacity. Please try a different model.",
+          willRetry: false
+        }
+      }),
+      binding
+    });
+    assert.equal(failed.session.capabilities.canSend, false);
+    assert.match(failed.session.sendUnavailableReason, /capacity/);
+
+    const recovered = projector.project({ event: event("turn.started"), binding });
+
+    assert.equal(recovered.session.status, "running");
+    assert.equal(recovered.session.capabilities.canSend, true);
+    assert.equal(recovered.session.sendUnavailableReason, null);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
