@@ -297,7 +297,7 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
         let code = audit.last(where: { $0.code != nil })?.code
         return WorktreeIntegrationRecoveryPolicy.requiresRepreflight(status: status, phase: phase, auditCode: code)
     }
-    var canStopAndRepreflight: Bool {
+    var canCancel: Bool {
         ["awaiting_confirmation", "queued", "running", "paused"].contains(status)
             && currentConflictResolution?.status != "running"
     }
