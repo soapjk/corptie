@@ -3,6 +3,8 @@ import os from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 
 const ENVIRONMENT_PLACEHOLDER = "{{CORPTIE_ENVIRONMENT}}";
+const AUTHORITATIVE_WORKSPACE_HEADING = "# Authoritative Work Session workspace";
+const LEGACY_WORKSPACE_HEADING = "# Git worktree isolation";
 const LEGACY_CODEX_CONTEXT = /# Corptie runtime context\n\n- You are running inside Corptie, an Agent client powered by the official Codex runtime\.\n- This is Corptie's (production|development) environment\.\n- The active Codex configuration and state directory \(`CODEX_HOME`\) is `[^`]+`\.\n- Treat that directory as authoritative for this session\. Do not assume or modify the native Codex home at `~\/\.codex` unless the user explicitly asks\./;
 
 export function resolveCorptieAgentMemoryPaths(options = {}) {
@@ -27,10 +29,11 @@ export async function ensureCorptieAgentMemory(options = {}) {
   }
 
   const sourcePath = options.legacyMemoryPath ? resolve(options.legacyMemoryPath) : null;
+  const bundled = renderBundledMemory(await readFile(bundledMemoryPath, "utf8"), paths.environmentName);
   let created = false;
   let migratedLegacyMemory = false;
+  let updatedManagedWorkspaceRules = false;
   if (!await isFile(paths.sharedMemoryPath)) {
-    const bundled = renderBundledMemory(await readFile(bundledMemoryPath, "utf8"), paths.environmentName);
     let content = bundled;
     if (sourcePath && await isFile(sourcePath)) {
       content = migrateLegacyCodexContext(await readFile(sourcePath, "utf8"), bundled);
@@ -39,7 +42,14 @@ export async function ensureCorptieAgentMemory(options = {}) {
     await atomicWrite(paths.sharedMemoryPath, content, 0o600);
     created = true;
   } else {
-    await chmod(paths.sharedMemoryPath, 0o600);
+    const existing = await readFile(paths.sharedMemoryPath, "utf8");
+    const reconciled = reconcileManagedWorkspaceRules(existing, bundled);
+    if (reconciled !== existing) {
+      await atomicWrite(paths.sharedMemoryPath, reconciled, 0o600);
+      updatedManagedWorkspaceRules = true;
+    } else {
+      await chmod(paths.sharedMemoryPath, 0o600);
+    }
   }
 
   return {
@@ -47,6 +57,7 @@ export async function ensureCorptieAgentMemory(options = {}) {
     bundledMemoryPath,
     created,
     migratedLegacyMemory,
+    updatedManagedWorkspaceRules,
     available: await isFile(paths.sharedMemoryPath)
   };
 }
@@ -83,6 +94,52 @@ function migrateLegacyCodexContext(content, bundled) {
   if (!LEGACY_CODEX_CONTEXT.test(content)) return content;
   const neutralContext = bundled.split(/\n# (?:Authoritative Work Session workspace|Git worktree isolation)/, 1)[0].trimEnd();
   return content.replace(LEGACY_CODEX_CONTEXT, neutralContext);
+}
+
+function reconcileManagedWorkspaceRules(existing, bundled) {
+  const replacement = topLevelSection(bundled, AUTHORITATIVE_WORKSPACE_HEADING);
+  if (!replacement) {
+    // Custom/test distributions predating the managed Workspace section keep
+    // their existing memory verbatim. Official Corptie bundles are covered by
+    // a contract test and always provide this section.
+    return existing;
+  }
+
+  for (const heading of [AUTHORITATIVE_WORKSPACE_HEADING, LEGACY_WORKSPACE_HEADING]) {
+    const range = topLevelSectionRange(existing, heading);
+    if (!range) continue;
+    return [
+      existing.slice(0, range.start).trimEnd(),
+      replacement,
+      existing.slice(range.end).trim()
+    ].filter(Boolean).join("\n\n").concat("\n");
+  }
+
+  const externalActions = topLevelSectionRange(existing, "# External actions: local-only by default");
+  if (externalActions) {
+    return [
+      existing.slice(0, externalActions.start).trimEnd(),
+      replacement,
+      existing.slice(externalActions.start).trim()
+    ].filter(Boolean).join("\n\n").concat("\n");
+  }
+  return `${existing.trimEnd()}\n\n${replacement}\n`;
+}
+
+function topLevelSection(content, heading) {
+  const range = topLevelSectionRange(content, heading);
+  return range ? content.slice(range.start, range.end).trim() : null;
+}
+
+function topLevelSectionRange(content, heading) {
+  const marker = `${heading}\n`;
+  const start = content.indexOf(marker);
+  if (start < 0) return null;
+  const nextHeading = content.indexOf("\n# ", start + marker.length);
+  return {
+    start,
+    end: nextHeading < 0 ? content.length : nextHeading + 1
+  };
 }
 
 async function atomicWrite(path, content, mode) {
