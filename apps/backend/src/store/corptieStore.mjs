@@ -9863,12 +9863,16 @@ export class CorptieStore {
   }
 
   listWorkItems() {
-    return this.selectAll(`SELECT * FROM work_items ORDER BY created_at ASC`);
+    return this.selectAll(
+      `SELECT * FROM work_items WHERE COALESCE(deletion_status, '') <> 'deleted' ORDER BY created_at ASC`
+    );
   }
 
   listWorkItemsByObjective(objectiveId) {
     return this.selectAll(
-      `SELECT * FROM work_items WHERE objective_id = ? ORDER BY created_at ASC`,
+      `SELECT * FROM work_items
+       WHERE objective_id = ? AND COALESCE(deletion_status, '') <> 'deleted'
+       ORDER BY created_at ASC`,
       [objectiveId]
     );
   }
@@ -10478,13 +10482,17 @@ export class CorptieStore {
   }
 
   getWorkItem(id) {
-    return this.selectOne(`SELECT * FROM work_items WHERE id = ?`, [id]);
+    return this.selectOne(
+      `SELECT * FROM work_items WHERE id = ? AND COALESCE(deletion_status, '') <> 'deleted'`,
+      [id]
+    );
   }
 
   // 按当前活跃 session 反查其绑定的实体 WorkItem（session 落定时推进状态用）。
   getWorkItemBySessionId(sessionId) {
     return this.selectOne(
-      `SELECT * FROM work_items WHERE current_session_id = ?`,
+      `SELECT * FROM work_items
+       WHERE current_session_id = ? AND COALESCE(deletion_status, '') <> 'deleted'`,
       [sessionId]
     );
   }
@@ -11228,7 +11236,16 @@ export class CorptieStore {
       this.db.run(`UPDATE collaboration_tasks SET source_work_item_id=NULL WHERE source_work_item_id=?`, [id]);
       this.db.run(`UPDATE collaboration_tasks SET work_item_id=NULL WHERE work_item_id=?`, [id]);
       this.db.run(`UPDATE project_integration_runs SET conflict_work_item_id=NULL WHERE conflict_work_item_id=?`, [id]);
-      this.db.run(`DELETE FROM work_items WHERE id=?`, [id]);
+      // Completion, cancellation, startup, and repair records are immutable
+      // audit evidence with RESTRICT references to the WorkItem identity. A
+      // user-visible deletion therefore retires the live resource while
+      // preserving the minimum parent identity required by those receipts.
+      this.db.run(
+        `UPDATE work_items SET deletion_status='deleted', deletion_error=NULL,
+           current_session_id=NULL, main_workspace_id=NULL, main_agent_id=NULL,
+           resource_version=resource_version+1, updated_at=? WHERE id=?`,
+        [createdAtFromOrNow(), id]
+      );
     });
     this.scheduleSave();
     return {

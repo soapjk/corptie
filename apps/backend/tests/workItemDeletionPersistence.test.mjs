@@ -117,3 +117,41 @@ test("deletion removes associated Worker Session history instead of detaching it
     await rm(f.directory, { recursive: true, force: true });
   }
 });
+
+test("deletion retires a canceled WorkItem while preserving its immutable cancellation audit", async () => {
+  const f = await fixture();
+  try {
+    const cancellation = f.store.cancelWorkItem({
+      workItemId: "work_item:delete",
+      sourceType: "test",
+      idempotencyKey: "cancel-before-delete",
+      reason: "No longer required",
+      authorityType: "user",
+      authorityId: localUser.id
+    });
+
+    const result = await f.deletion.delete("work_item:delete", { mode: "safe" }, localUser);
+
+    assert.equal(result.ok, true);
+    assert.equal(f.store.getWorkItem("work_item:delete"), null);
+    assert.equal(f.store.listWorkItems().some((item) => item.id === "work_item:delete"), false);
+    assert.equal(
+      f.store.selectOne("SELECT deletion_status FROM work_items WHERE id=?", ["work_item:delete"]).deletion_status,
+      "deleted"
+    );
+    assert.equal(
+      f.store.getWorkItemCancellationOperation(cancellation.operation.operation_id).reason,
+      "No longer required"
+    );
+    assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"), []);
+
+    await f.store.close();
+    f.store = new CorptieStore({ dbPath: f.dbPath, configPath: f.configPath });
+    await f.store.initialize();
+    assert.equal(f.store.getWorkItem("work_item:delete"), null);
+    assert.ok(f.store.getWorkItemCancellationOperation(cancellation.operation.operation_id));
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
