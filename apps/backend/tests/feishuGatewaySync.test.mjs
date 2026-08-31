@@ -332,10 +332,9 @@ test("a queued message also uses only Typing and sends no queue card", async () 
   assert.deepEqual(reactions, [{ messageId: "message-a", emojiType: "Typing" }]);
 });
 
-test("concurrent Feishu requests reply once and replace the reaction on their exact source messages", async () => {
+test("concurrent Feishu requests reply once and remove Typing on their exact source messages without adding DONE", async () => {
   const replies = [];
   const deletedReactions = [];
-  const addedReactions = [];
   const items = [
     { id: "message-a", type: "userMessage", turnId: "turn-a", text: "Question A", status: "running" },
     { id: "commentary-a", type: "agentMessage", turnId: "turn-a", text: "Thinking A", presentationRole: "commentary", turnStatus: "completed" },
@@ -375,10 +374,7 @@ test("concurrent Feishu requests reply once and replace the reaction on their ex
     deletedReactions.push(path);
     return {};
   };
-  manager.addReaction = async (_botId, messageId, emojiType) => {
-    addedReactions.push({ messageId, emojiType });
-    return `done-${messageId}`;
-  };
+  manager.addReaction = async () => assert.fail("a completed request must not add a DONE reaction");
 
   await manager.syncBot("bot-a");
 
@@ -389,10 +385,6 @@ test("concurrent Feishu requests reply once and replace the reaction on their ex
   assert.deepEqual(deletedReactions, [
     "/open-apis/im/v1/messages/message-a/reactions/typing-a",
     "/open-apis/im/v1/messages/message-b/reactions/typing-b"
-  ]);
-  assert.deepEqual(addedReactions, [
-    { messageId: "message-a", emojiType: "DONE" },
-    { messageId: "message-b", emojiType: "DONE" }
   ]);
   assert.deepEqual(manager.botRuntime.get("bot-a").pendingFeishuRequests, []);
   assert.equal(manager.botRuntime.get("bot-a").seenItems.has("commentary-a"), true);
@@ -731,7 +723,8 @@ test("unknown message card types are sent by default and process-only types are 
         status: "running",
         items: [
           { id: "notice-a", type: "futureMessageCard", text: "A future card type" },
-          { id: "reasoning-a", type: "reasoning", text: "private process detail" }
+          { id: "reasoning-a", type: "reasoning", text: "private process detail" },
+          { id: "compaction-a", type: "contextCompaction", title: "contextCompaction", text: "must stay local" }
         ]
       };
     }
@@ -743,6 +736,7 @@ test("unknown message card types are sent by default and process-only types are 
 
   assert.equal(cards.length, 1);
   assert.equal(cards[0].body.elements[0].content, "A future card type");
+  assert.equal(manager.botRuntime.get("bot-a").seenItems.has("compaction-a"), true);
 });
 
 test("approval card callbacks are forwarded only for the currently assigned session", async () => {
