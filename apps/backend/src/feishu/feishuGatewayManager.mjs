@@ -520,7 +520,7 @@ export class FeishuGatewayManager {
     try {
       await this.handleCommand(botId, binding, event);
     } catch (error) {
-      await this.clearTyping(botId).catch(() => {});
+      await this.clearPendingRequest(botId, event.messageId).catch(() => {});
       await this.sendText(botId, event.chatId, `操作失败：${error.message}`);
       throw error;
     }
@@ -746,28 +746,35 @@ export class FeishuGatewayManager {
       await this.sendText(botId, event.chatId, "已清空上下文，可以开始新的对话。");
       return;
     }
+    const messageId = optionalText(event.messageId);
+    if (!messageId) {
+      const error = new Error("Feishu message ID is required before forwarding a message.");
+      error.code = "FEISHU_MESSAGE_ID_REQUIRED";
+      throw error;
+    }
     const runtime = this.botRuntime.get(botId) ?? { lastStatus: null, seenItems: new Set() };
-    runtime.pendingFeishuInputs = [...(runtime.pendingFeishuInputs ?? []), text];
+    const request = {
+      messageId,
+      chatId: event.chatId,
+      sessionId: assignment.sessionId,
+      text,
+      typingReactionId: null,
+      finalDelivered: false
+    };
+    runtime.pendingFeishuRequests = [...(runtime.pendingFeishuRequests ?? []), request];
     this.botRuntime.set(botId, runtime);
-    const typingPromise = this.showTyping(botId, event.messageId).catch((error) => {
+    request.typingPromise = this.addReaction(botId, messageId, "Typing").then((reactionId) => {
+      request.typingReactionId = reactionId;
+      return reactionId;
+    }).catch((error) => {
       console.log(`[feishu] bot=${botId} typing reaction unavailable: ${error.message}`);
+      return null;
     });
-    const sendResult = await this.sendMessage(assignment.sessionId, text, feishuSource(botId, event));
-    if (sendResult?.queued) {
-      await typingPromise;
-      await this.clearTyping(botId).catch(() => {});
-      await this.sendText(botId, event.chatId, `已加入队列，前面还有 ${Math.max(0, sendResult.queuePosition - 1)} 条消息。`, {
-        sessionStatus: "queued"
-      });
-    } else {
-      const sentCards = await this.sendText(botId, event.chatId, "已发送，正在处理……");
-      runtime.processingAcknowledgementCards = [
-        ...(runtime.processingAcknowledgementCards ?? []),
-        ...(sentCards ?? [])
-          .map(({ result }) => ({ messageId: sentMessageId(result) }))
-          .filter((card) => card.messageId)
-      ];
-      this.botRuntime.set(botId, runtime);
+    try {
+      await this.sendMessage(assignment.sessionId, text, feishuSource(botId, event));
+    } catch (error) {
+      await this.clearPendingRequest(botId, messageId).catch(() => {});
+      throw error;
     }
   }
 
@@ -931,21 +938,6 @@ export class FeishuGatewayManager {
     }
     if (snapshot.status !== runtime.lastStatus) {
       runtime.lastStatus = snapshot.status;
-      if (!isProcessingStatus(snapshot.status)) {
-        await this.clearTyping(botId).catch(() => {});
-      }
-    }
-    if (!isProcessingStatus(snapshot.status) && runtime.processingAcknowledgementCards?.length) {
-      const remainingCards = [];
-      for (const card of runtime.processingAcknowledgementCards) {
-        try {
-          await this.deleteSentMessage(botId, card.messageId);
-        } catch (error) {
-          remainingCards.push(card);
-          console.log(`[feishu] bot=${botId} processing acknowledgement cleanup failed: ${error.message}`);
-        }
-      }
-      runtime.processingAcknowledgementCards = remainingCards;
     }
     runtime.collaborationConfirmationCards ??= [];
     for (const sent of runtime.collaborationConfirmationCards) {
@@ -1001,9 +993,9 @@ export class FeishuGatewayManager {
           item
         }));
       } else if (projection === "user") {
-        const pendingIndex = (runtime.pendingFeishuInputs ?? []).findIndex((text) => text === item.text);
+        const pendingIndex = (runtime.pendingFeishuRequests ?? []).findIndex((request) => request.messageId === item.id);
         if (pendingIndex >= 0) {
-          runtime.pendingFeishuInputs.splice(pendingIndex, 1);
+          runtime.pendingFeishuRequests[pendingIndex].userItemSeen = true;
         } else {
           await this.sendText(botId, chatId, `电脑端：${item.text}`, {
             sessionTitle: snapshot.title,
@@ -1011,19 +1003,32 @@ export class FeishuGatewayManager {
           });
         }
       } else if (projection === "assistant") {
-        const sentCards = await this.sendText(botId, chatId, item.text, {
-          sessionTitle: snapshot.title,
-          sessionStatus: snapshot.status
-        });
+        const request = pendingRequestForFinalItem(runtime, snapshot.items, item);
+        const sentCards = request
+          ? [await this.sendFinalReply(botId, request.messageId, item.text, {
+              sessionTitle: snapshot.title,
+              sessionStatus: snapshot.status
+            })]
+          : await this.sendText(botId, chatId, item.text, {
+              sessionTitle: snapshot.title,
+              sessionStatus: snapshot.status
+            });
         runtime.lastAssistantCards = (sentCards ?? [])
-          .map(({ text, result }) => ({
+          .map((sent) => ({
             itemId: item.id,
-            messageId: sentMessageId(result),
-            text,
+            messageId: sentMessageId(sent.result),
+            text: sent.text,
             sessionTitle: snapshot.title,
             sessionStatus: snapshot.status
           }))
           .filter((card) => card.messageId);
+        if (request) {
+          request.finalDelivered = true;
+          request.finalItemId = item.id;
+          await this.finishPendingRequest(botId, request).catch((error) => {
+            console.log(`[feishu] bot=${botId} done reaction unavailable: ${error.message}`);
+          });
+        }
       } else {
         await this.sendCard(botId, chatId, buildSessionItemCard(item, {
           sessionTitle: snapshot.title,
@@ -1031,6 +1036,18 @@ export class FeishuGatewayManager {
         }));
       }
       runtime.seenItems.add(item.id);
+    }
+    for (const request of [...(runtime.pendingFeishuRequests ?? [])].filter((item) => item.finalDelivered)) {
+      await this.finishPendingRequest(botId, request).catch((error) => {
+        console.log(`[feishu] bot=${botId} done reaction retry failed: ${error.message}`);
+      });
+    }
+    if (isTerminalSessionStatus(snapshot.status)) {
+      for (const request of [...(runtime.pendingFeishuRequests ?? [])].filter((item) => !item.finalDelivered)) {
+        await this.clearPendingRequest(botId, request.messageId).catch((error) => {
+          console.log(`[feishu] bot=${botId} unfinished reaction cleanup failed: ${error.message}`);
+        });
+      }
     }
     if (runtime.lastAssistantCards?.some((card) => card.sessionStatus !== snapshot.status)) {
       for (const card of runtime.lastAssistantCards) {
@@ -1067,6 +1084,26 @@ export class FeishuGatewayManager {
       sentCards.push({ text: chunk, result });
     }
     return sentCards;
+  }
+
+  async sendFinalReply(botId, sourceMessageId, text, options = {}) {
+    let sessionTitle = optionalText(options.sessionTitle);
+    let sessionStatus = optionalText(options.sessionStatus);
+    if (!sessionTitle || !sessionStatus) {
+      const context = await this.resolveSessionContext(botId);
+      sessionTitle ||= context.title;
+      sessionStatus ||= context.status;
+    }
+    const result = await this.callApi(
+      botId,
+      "POST",
+      `/open-apis/im/v1/messages/${encodeURIComponent(sourceMessageId)}/reply`,
+      {
+        msg_type: "interactive",
+        content: JSON.stringify(buildMessageCard(text, { sessionTitle, sessionStatus }))
+      }
+    );
+    return { text, result };
   }
 
   async resolveSessionContext(botId) {
@@ -1125,27 +1162,46 @@ export class FeishuGatewayManager {
     );
   }
 
-  async showTyping(botId, messageId) {
-    if (!messageId) return;
+  async addReaction(botId, messageId, emojiType) {
     const result = await this.callApi(botId, "POST", `/open-apis/im/v1/messages/${encodeURIComponent(messageId)}/reactions`, {
-      reaction_type: { emoji_type: "Typing" }
+      reaction_type: { emoji_type: emojiType }
     });
-    const runtime = this.botRuntime.get(botId) ?? { lastStatus: null, seenItems: new Set() };
-    runtime.typingMessageId = messageId;
-    runtime.typingReactionId = result.data?.reaction_id ?? result.data?.reaction?.reaction_id ?? null;
-    this.botRuntime.set(botId, runtime);
+    return result.data?.reaction_id ?? result.data?.reaction?.reaction_id ?? null;
   }
 
-  async clearTyping(botId) {
+  async finishPendingRequest(botId, request) {
+    await request.typingPromise;
+    if (request.typingReactionId) {
+      await this.callApi(
+        botId,
+        "DELETE",
+        `/open-apis/im/v1/messages/${encodeURIComponent(request.messageId)}/reactions/${encodeURIComponent(request.typingReactionId)}`
+      );
+      request.typingReactionId = null;
+    }
+    await this.addReaction(botId, request.messageId, "DONE");
+    this.removePendingRequest(botId, request.messageId);
+  }
+
+  async clearPendingRequest(botId, messageId) {
     const runtime = this.botRuntime.get(botId);
-    if (!runtime?.typingMessageId || !runtime.typingReactionId) return;
-    await this.callApi(
-      botId,
-      "DELETE",
-      `/open-apis/im/v1/messages/${encodeURIComponent(runtime.typingMessageId)}/reactions/${encodeURIComponent(runtime.typingReactionId)}`
-    );
-    runtime.typingMessageId = null;
-    runtime.typingReactionId = null;
+    const request = runtime?.pendingFeishuRequests?.find((item) => item.messageId === messageId);
+    if (!request) return;
+    await request.typingPromise;
+    if (request.typingReactionId) {
+      await this.callApi(
+        botId,
+        "DELETE",
+        `/open-apis/im/v1/messages/${encodeURIComponent(request.messageId)}/reactions/${encodeURIComponent(request.typingReactionId)}`
+      );
+    }
+    this.removePendingRequest(botId, messageId);
+  }
+
+  removePendingRequest(botId, messageId) {
+    const runtime = this.botRuntime.get(botId);
+    if (!runtime?.pendingFeishuRequests) return;
+    runtime.pendingFeishuRequests = runtime.pendingFeishuRequests.filter((item) => item.messageId !== messageId);
   }
 
   async callApi(botId, method, path, data = null) {
@@ -1998,8 +2054,9 @@ function displayStatus(status) {
   })[status] ?? status ?? "未知";
 }
 
-function isProcessingStatus(status) {
-  return ["running", "queued", "processing"].includes(status);
+function isTerminalSessionStatus(status) {
+  return ["complete", "completed", "failed", "cancelled", "canceled", "interrupted"]
+    .includes(optionalText(status).toLowerCase());
 }
 
 function isPendingApprovalItem(item) {
@@ -2058,12 +2115,39 @@ function feishuProjectionForSessionItem(item) {
     const status = optionalText(item.status).toLowerCase();
     const isStillGenerating = ["inprogress", "in_progress", "running", "streaming", "pending", "started"]
       .includes(status);
-    return optionalText(item.text) && !isStillGenerating ? "assistant" : "deferred";
+    if (!optionalText(item.text) || isStillGenerating) return "deferred";
+    return isFinalAssistantItem(item) ? "assistant" : "hidden";
   }
 
   // Session message cards are remote-visible by default. Types that should
   // remain local must opt out above or set feishuVisibility=hidden.
   return "generic";
+}
+
+function isFinalAssistantItem(item) {
+  const turnStatus = optionalText(item?.turnStatus).toLowerCase();
+  if (["failed", "cancelled", "canceled", "interrupted"].includes(turnStatus)) return false;
+  const presentationRole = optionalText(item?.presentationRole).toLowerCase();
+  if (presentationRole) return presentationRole === "final_answer";
+  if (optionalText(item?.status).toLowerCase() === "final_answer") return true;
+  if (turnStatus) return ["completed", "complete", "succeeded", "success"].includes(turnStatus);
+  // Old stored sessions predate presentationRole and turnStatus. Their single
+  // unphased assistant item is already a completed reply, not a live stream.
+  return true;
+}
+
+function pendingRequestForFinalItem(runtime, items = [], finalItem) {
+  const requests = runtime.pendingFeishuRequests ?? [];
+  if (!requests.length) return null;
+  const finalIndex = items.findIndex((item) => item.id === finalItem.id);
+  if (finalIndex < 0) return null;
+  const preceding = items.slice(0, finalIndex);
+  const turnId = optionalText(finalItem.turnId);
+  const userItem = turnId
+    ? preceding.findLast((item) => item.type === "userMessage" && optionalText(item.turnId) === turnId)
+    : preceding.findLast((item) => item.type === "userMessage");
+  if (!userItem?.id) return null;
+  return requests.find((request) => request.messageId === userItem.id && request.sessionId) ?? null;
 }
 
 function collaborationConfirmationStatus(item) {
