@@ -100,6 +100,31 @@ test("Provider bootstrap accepts external Provider factories without knowing the
   ]);
 });
 
+test("Codex runtime bootstrap keeps a failed Session sendable for binding recovery", () => {
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: recordingCodexOperations()
+  });
+  const session = registry.decorateSession("codex-app-server", {
+    id: "session:capacity",
+    status: "failed",
+    sendUnavailableReason: "Selected model is at capacity. Please try a different model.",
+    capabilities: { canSend: false }
+  });
+
+  assert.equal(
+    registry.get("codex-app-server").descriptor.capabilities.includes(
+      AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY
+    ),
+    true
+  );
+  assert.deepEqual(session.actions.send, {
+    available: true,
+    reason: null,
+    retryable: false
+  });
+});
+
 function recordingCodexOperations() {
   return {
     listSessions: () => [],
