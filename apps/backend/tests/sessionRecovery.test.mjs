@@ -416,6 +416,96 @@ test("same-attempt recovery is single-flight and post-commit observer failures c
   }
 });
 
+test("different recovery triggers coalesce at the same logical Session route boundary", async () => {
+  const fixture = await storeFixture();
+  const calls = [];
+  let releaseReplay;
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "coalesce" } });
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort(calls, fixture.store, {
+        replayBarrier: new Promise((resolve) => { releaseReplay = resolve; })
+      }),
+      resolveProviderDescriptor: () => capabilityDescriptor
+    });
+    const bootstrap = coordinator.recover({
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: "tool-bootstrap:schema-5"
+    });
+    while (fixture.store.listSessionRecoveryAttempts("logical:recovery")[0]?.state !== "replacement_created") {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    const delivery = coordinator.recover({
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: "message-recovery:delivery:1",
+      triggerDeliveryId: "delivery:1"
+    });
+    releaseReplay();
+    const [bootstrapAttempt, deliveryAttempt] = await Promise.all([bootstrap, delivery]);
+    assert.equal(deliveryAttempt.attemptId, bootstrapAttempt.attemptId);
+    assert.equal(calls.filter((call) => call === "create").length, 1);
+    assert.equal(fixture.store.listSessionRecoveryAttempts("logical:recovery").length, 1);
+  } finally {
+    releaseReplay?.();
+    await fixture.close();
+  }
+});
+
+test("message recovery preserves not-sent dispatch state and the safe dependency cause", async () => {
+  const fixture = await storeFixture();
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "retry safely" } });
+    fixture.store.appendSessionEvent({
+      eventId: "event:failed-trigger-message",
+      sessionId: "session:recovery",
+      type: "SessionUserMessageCreated",
+      source: { type: "desktop", deliveryId: "delivery:failed" },
+      payload: { deliveryId: "delivery:failed", message: { text: "send after recovery" } },
+      surface: true
+    });
+    fixture.store.appendSessionEvent({
+      eventId: "event:failed-trigger-queued",
+      sessionId: "session:recovery",
+      type: "AgentWorkQueued",
+      source: { type: "desktop", deliveryId: "delivery:failed" },
+      payload: { deliveryId: "delivery:failed" },
+      surface: true
+    });
+    const cause = Object.assign(new Error("Another Codex thread is being created."), {
+      code: "SESSION_CREATION_IN_PROGRESS"
+    });
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort([], fixture.store, { createError: cause }),
+      resolveProviderDescriptor: () => capabilityDescriptor
+    });
+    await assert.rejects(
+      coordinator.recover({
+        logicalSessionId: "logical:recovery",
+        providerId: "test-provider",
+        idempotencyKey: "message-recovery:delivery:failed",
+        triggerDeliveryId: "delivery:failed"
+      }),
+      (error) => {
+        assert.equal(error.code, "SESSION_RECOVERY_FAILED");
+        assert.equal(error.dispatchState, "not_sent");
+        assert.equal(error.details.causeCode, "SESSION_CREATION_IN_PROGRESS");
+        return true;
+      }
+    );
+    const attempt = fixture.store.listSessionRecoveryAttempts("logical:recovery")[0];
+    assert.deepEqual(attempt.error, {
+      code: "SESSION_CREATION_IN_PROGRESS",
+      message: "Another Codex thread is being created."
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("binding commit rejects a replacement superseded in the recovery journal", async () => {
   const fixture = await storeFixture();
   try {
@@ -628,6 +718,7 @@ function recoveryPort(calls, store, options = {}) {
   return new ProviderSessionRecoveryPort({
     createReplacement: async () => {
       calls.push("create");
+      if (options.createError) throw options.createError;
       if (options.createFailure) throw new Error("native Provider storage is missing");
       return { providerThreadId: "thread:replacement", providerSessionId: "native:replacement", bindingId: "binding:replacement" };
     },
