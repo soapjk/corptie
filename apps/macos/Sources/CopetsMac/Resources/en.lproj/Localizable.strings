@@ -663,6 +663,11 @@
 "Re-preflight" = "Re-preflight";
 "Generate a reviewable local-only integration plan before anything is changed." = "Generate a reviewable local-only integration plan before anything is changed.";
 "Generate Integration Plan" = "Generate Integration Plan";
+"Merge All into main" = "Merge All into main";
+"Clean Up Orphaned Worktrees" = "Clean Up Orphaned Worktrees";
+"Preparing Worktree merge…" = "Preparing Worktree merge…";
+"The integration state changed. Cancel this operation and start again." = "The integration state changed. Cancel this operation and start again.";
+"Could not restore main while canceling" = "Could not restore main while canceling";
 "Stop this task and generate a new integration plan?" = "Stop this task and generate a new integration plan?";
 "Stop and Re-preflight" = "Stop and Re-preflight";
 "Remaining steps stop at the next safe boundary. If this task left a merge conflict in main, Corptie aborts only that merge and verifies main is clean before generating a new plan. Completed commits and earlier merges are kept." = "Remaining steps stop at the next safe boundary. If this task left a merge conflict in main, Corptie aborts only that merge and verifies main is clean before generating a new plan. Completed commits and earlier merges are kept.";

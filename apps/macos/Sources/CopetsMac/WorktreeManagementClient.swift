@@ -10,6 +10,7 @@ final class WorktreeManagementClient: ObservableObject {
     @Published var selection = WorktreeManagementSelection()
     @Published private(set) var isLoading = false
     @Published private(set) var isMutating = false
+    @Published private(set) var isPreparingPlan = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var listLoadState: WorktreeListLoadState = .idle
     @Published private(set) var lastLoadMetrics: WorktreeLoadMetrics?
@@ -24,6 +25,7 @@ final class WorktreeManagementClient: ObservableObject {
     private let cacheLifetime: TimeInterval
     private let now: () -> Date
     private var detailGeneration = 0
+    private var planPreparationId: UUID?
     private var detailCache: [String: CachedRepositoryDetail] = [:]
     private var repositoryListMilliseconds = 0
     private let logger = Logger(subsystem: "com.corptie.mac", category: "WorktreeLoad")
@@ -364,20 +366,54 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
-    func createPreflight() async {
+    func prepareFreshPlan() async {
         guard let repositoryId = selection.repositoryId else { return }
-        await mutate {
+        let preparationId = UUID()
+        planPreparationId = preparationId
+        isPreparingPlan = true
+        errorMessage = nil
+        do {
+            if let existing = job, existing.status == "awaiting_confirmation" {
+                let canceled: WorktreeIntegrationJobEnvelope = try await post(
+                    "worktree-management/jobs/\(existing.id)/cancel",
+                    body: ["replan": false]
+                )
+                if planPreparationId == preparationId { job = canceled.job }
+            }
+            guard planPreparationId == preparationId else { return }
             let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
                 "worktree-management/repositories/\(repositoryId)/integration-plans",
                 body: [:]
             )
-            self.job = envelope.job
+            guard planPreparationId == preparationId else {
+                let _: WorktreeIntegrationJobEnvelope = try await post(
+                    "worktree-management/jobs/\(envelope.job.id)/cancel",
+                    body: ["replan": false]
+                )
+                return
+            }
+            job = envelope.job
+        } catch {
+            guard planPreparationId == preparationId else { return }
+            errorMessage = error.localizedDescription
+        }
+        if planPreparationId == preparationId {
+            planPreparationId = nil
+            isPreparingPlan = false
         }
     }
 
-    func confirmPlan(commitProtectionDecisions: [WorktreeCommitProtectionDecision] = []) async {
-        guard let job, job.status == "awaiting_confirmation" else { return }
-        await mutate {
+    func cancelPlanPreparation() {
+        planPreparationId = nil
+        isPreparingPlan = false
+    }
+
+    @discardableResult
+    func confirmPlan(commitProtectionDecisions: [WorktreeCommitProtectionDecision] = []) async -> Bool {
+        guard let job, job.status == "awaiting_confirmation" else { return false }
+        isMutating = true
+        defer { isMutating = false }
+        do {
             let decisions = commitProtectionDecisions.map { decision in
                 [
                     "worktreeId": decision.worktreeId,
@@ -392,6 +428,22 @@ final class WorktreeManagementClient: ObservableObject {
                     "planFingerprint": job.planFingerprint,
                     "commitProtectionDecisions": decisions
                 ]
+            )
+            self.job = envelope.job
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func cancelIntegration() async {
+        guard let job, job.canCancel else { return }
+        await mutate {
+            let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
+                "worktree-management/jobs/\(job.id)/cancel",
+                body: ["replan": false]
             )
             self.job = envelope.job
         }
@@ -424,38 +476,6 @@ final class WorktreeManagementClient: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
             await refreshSelected()
-        }
-    }
-
-    @discardableResult
-    func regeneratePlan() async -> Bool {
-        guard let staleJob = job,
-              staleJob.requiresPlanRegeneration,
-              selection.repositoryId != nil else { return false }
-        isMutating = true
-        defer { isMutating = false }
-        do {
-            let fresh: WorktreeIntegrationJobEnvelope = try await post(
-                "worktree-management/jobs/\(staleJob.id)/cancel",
-                body: ["replan": true]
-            )
-            job = fresh.job
-            errorMessage = nil
-            return fresh.job.status == "awaiting_confirmation"
-        } catch {
-            errorMessage = error.localizedDescription
-            return false
-        }
-    }
-
-    func stopAndRepreflight() async {
-        guard let job, job.canStopAndRepreflight else { return }
-        await mutate {
-            let envelope: WorktreeIntegrationJobEnvelope = try await self.post(
-                "worktree-management/jobs/\(job.id)/cancel",
-                body: ["replan": true]
-            )
-            self.job = envelope.job
         }
     }
 

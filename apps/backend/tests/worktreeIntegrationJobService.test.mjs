@@ -526,6 +526,38 @@ test("stop and re-preflight aborts the task-owned main merge before creating a r
   assert.ok(canceled.details.audit.some((entry) => entry.event === "replacement_preflight_ready"));
 });
 
+test("cancel aborts the task-owned main merge without creating a replacement plan", async () => {
+  const { service, store, calls } = memoryFixture({ conflictOnce: true });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  const canceled = await service.cancel(paused.id, { replan: false });
+
+  assert.equal(canceled.status, "canceled");
+  assert.equal(canceled.phase, "canceled");
+  assert.deepEqual(calls.slice(-1), ["abort-merge:feature:1:commit"]);
+  assert.equal(store.listWorktreeIntegrationJobs("repository:1").length, 1);
+  assert.ok(canceled.audit.some((entry) => entry.event === "conflict_merge_aborted"));
+});
+
+test("cancel stays paused when the task-owned main merge cannot be restored", async () => {
+  const restoreError = new Error("main did not return to its recorded clean state");
+  restoreError.code = "MAIN_NOT_RESTORED";
+  const { service, store, calls } = memoryFixture({ conflictOnce: true, abortMergeError: restoreError });
+  const plan = await service.preflight("repository:1");
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const paused = await waitForJob(service, plan.id, "paused");
+
+  const failed = await service.cancel(paused.id, { replan: false });
+
+  assert.equal(failed.status, "paused");
+  assert.equal(failed.phase, "cancellation_cleanup_failed");
+  assert.equal(failed.error, restoreError.message);
+  assert.deepEqual(calls.slice(-1), ["abort-merge:feature:1:commit"]);
+  assert.equal(store.listWorktreeIntegrationJobs("repository:1").length, 1);
+});
+
 test("stop and re-preflight never creates a replacement plan when main cannot be restored", async () => {
   const restoreError = new Error("Git aborted the merge, but main did not return to its recorded clean state.");
   restoreError.code = "MAIN_NOT_RESTORED";
