@@ -2732,6 +2732,29 @@ export class CorptieStore {
     this.ensureColumn("work_items", "completion_operation_id", "TEXT");
     this.ensureColumn("work_items", "completion_source_type", "TEXT");
     this.ensureColumn("work_items", "cancellation_operation_id", "TEXT");
+    this.runDataMigrationOnce("work-item-three-state-model-v1", () => {
+      // A previous model exposed canceled/blocked as WorkItem lifecycle
+      // states. Deletion attempts are retired; other legacy rows return to
+      // the nearest valid live state without discarding their audit history.
+      this.db.run(`UPDATE work_items SET deletion_status='deleted', deletion_error=NULL,
+        current_session_id=NULL, main_workspace_id=NULL, main_agent_id=NULL, updated_at=?
+        WHERE status='canceled' AND deletion_status IN ('deleting', 'delete_failed')`, [createdAtFromOrNow()]);
+      this.db.run(`UPDATE work_items SET status=CASE
+          WHEN current_session_id IS NOT NULL OR EXISTS (
+            SELECT 1 FROM sessions WHERE sessions.work_item_id=work_items.id
+          ) THEN 'in_progress' ELSE 'todo' END,
+        canceled_at=NULL, cancel_reason=NULL, cancellation_operation_id=NULL,
+        resource_version=resource_version+1, updated_at=?
+        WHERE status IN ('canceled', 'blocked') AND COALESCE(deletion_status, '') <> 'deleted'`,
+      [createdAtFromOrNow()]);
+      this.db.run(`UPDATE work_items SET status=CASE
+          WHEN status IN ('complete', 'completed') THEN 'done'
+          WHEN status IN ('doing', 'running') THEN 'in_progress'
+          ELSE 'todo' END,
+        resource_version=resource_version+1, updated_at=?
+        WHERE status NOT IN ('todo', 'in_progress', 'done')
+          AND COALESCE(deletion_status, '') <> 'deleted'`, [createdAtFromOrNow()]);
+    });
     this.ensureColumn("git_worktrees", "dedicated", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("git_worktrees", "created_by_startup_operation_id", "TEXT");
     this.ensureColumn("git_worktrees", "resource_version", "INTEGER NOT NULL DEFAULT 1");
@@ -2766,32 +2789,14 @@ export class CorptieStore {
     this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_completion_audit_immutable_delete
       BEFORE DELETE ON work_item_completion_operations
       BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_COMPLETION_AUDIT_IMMUTABLE'); END`);
-    this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_cancellation_guard
-      BEFORE UPDATE OF status ON work_items
-      WHEN LOWER(TRIM(NEW.status)) = 'canceled'
-       AND LOWER(TRIM(OLD.status)) <> 'canceled'
-       AND (
-         NEW.canceled_at IS NULL
-         OR NEW.cancel_reason IS NULL
-         OR TRIM(NEW.cancel_reason) = ''
-         OR NOT EXISTS (
-           SELECT 1 FROM work_item_cancellation_operations operation
-           WHERE operation.operation_id = NEW.cancellation_operation_id
-             AND operation.work_item_id = NEW.id
-             AND operation.objective_id = NEW.objective_id
-             AND operation.reason = NEW.cancel_reason
-             AND operation.canceled_at = NEW.canceled_at
-         )
-       )
-      BEGIN
-        SELECT RAISE(ABORT, 'WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED');
-      END`);
-    this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_canceled_insert_guard
-      BEFORE INSERT ON work_items
-      WHEN LOWER(TRIM(NEW.status)) = 'canceled'
-      BEGIN
-        SELECT RAISE(ABORT, 'WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED');
-      END`);
+    this.db.run("DROP TRIGGER IF EXISTS work_item_cancellation_guard");
+    this.db.run("DROP TRIGGER IF EXISTS work_item_canceled_insert_guard");
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_status_insert_guard
+      BEFORE INSERT ON work_items WHEN NEW.status NOT IN ('todo', 'in_progress', 'done')
+      BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_STATUS_INVALID'); END`);
+    this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_status_update_guard
+      BEFORE UPDATE OF status ON work_items WHEN NEW.status NOT IN ('todo', 'in_progress', 'done')
+      BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_STATUS_INVALID'); END`);
     this.db.run(`CREATE TRIGGER IF NOT EXISTS work_item_cancellation_audit_immutable_update
       BEFORE UPDATE ON work_item_cancellation_operations
       BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_CANCELLATION_AUDIT_IMMUTABLE'); END`);
@@ -9818,13 +9823,6 @@ export class CorptieStore {
 
   createWorkItem(input = {}) {
     const normalized = validateWorkItemInput(input, "create");
-    if (normalized.status === "canceled") {
-      throw storeDomainError(
-        "WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED",
-        "A WorkItem can only enter canceled through the dedicated cancellation workflow.",
-        403
-      );
-    }
     if (["done", "complete", "completed"].includes(String(normalized.status ?? "").toLowerCase())) {
       const error = new Error("A completed WorkItem cannot be created without direct-user-intent authorization.");
       error.code = "WORK_ITEM_COMPLETION_INTENT_REQUIRED";
@@ -10704,113 +10702,6 @@ export class CorptieStore {
     );
   }
 
-  getWorkItemCancellationOperation(operationId) {
-    return this.selectOne(
-      "SELECT * FROM work_item_cancellation_operations WHERE operation_id = ?",
-      [operationId]
-    );
-  }
-
-  listWorkItemCancellationOperations(workItemId, limit = 100) {
-    return this.selectAll(
-      `SELECT * FROM work_item_cancellation_operations WHERE work_item_id = ?
-       ORDER BY created_at DESC, operation_id DESC LIMIT ?`,
-      [workItemId, Math.max(1, Math.min(500, Number(limit) || 100))]
-    );
-  }
-
-  cancelWorkItem(input = {}) {
-    const workItemId = requiredText(input.workItemId, "workItemId").trim();
-    const sourceType = requiredText(input.sourceType, "sourceType").trim();
-    const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey").trim();
-    const reason = requiredText(input.reason, "reason").trim();
-    const actorSessionId = optionalStoredText(input.actorSessionId);
-    const authorityType = requiredText(input.authorityType, "authorityType").trim();
-    const authorityId = optionalStoredText(input.authorityId);
-    const fingerprint = createHash("sha256").update(JSON.stringify({
-      workItemId, reason, actorSessionId, authorityType, authorityId
-    })).digest("hex");
-
-    const result = this.runInTransaction(() => {
-      const existing = this.selectOne(
-        `SELECT * FROM work_item_cancellation_operations
-         WHERE source_type = ? AND idempotency_key = ?`,
-        [sourceType, idempotencyKey]
-      );
-      if (existing) {
-        if (existing.input_fingerprint !== fingerprint) {
-          throw storeDomainError(
-            "CANCELLATION_IDEMPOTENCY_CONFLICT",
-            "The cancellation idempotency key is already bound to different input.",
-            409
-          );
-        }
-        return {
-          operation: existing,
-          workItem: this.getWorkItem(existing.work_item_id),
-          idempotentReplay: true
-        };
-      }
-
-      const workItem = this.getWorkItem(workItemId);
-      if (!workItem) throw storeDomainError("WORK_ITEM_NOT_FOUND", `WorkItem not found: ${workItemId}`, 404);
-      if (String(workItem.status).toLowerCase() === "canceled") {
-        throw storeDomainError(
-          "WORK_ITEM_ALREADY_CANCELED",
-          `WorkItem ${workItemId} was canceled by another operation.`,
-          409
-        );
-      }
-      if (["done", "complete", "completed"].includes(String(workItem.status).toLowerCase())) {
-        throw storeDomainError("WORK_ITEM_TERMINAL", `WorkItem ${workItemId} is already complete.`, 409);
-      }
-      if (input.expectedResourceVersion != null
-        && String(input.expectedResourceVersion) !== String(workItem.resource_version ?? 1)) {
-        throw storeDomainError(
-          "RESOURCE_VERSION_CONFLICT",
-          `Expected WorkItem version ${input.expectedResourceVersion}, current version is ${workItem.resource_version ?? 1}.`,
-          409
-        );
-      }
-
-      const timestamp = optionalStoredText(input.canceledAt) ?? createdAtFromOrNow();
-      const operationId = optionalStoredText(input.operationId) ?? `work_item_cancellation:${randomUUID()}`;
-      const versionBefore = Number(workItem.resource_version ?? 1);
-      this.db.run(
-        `INSERT INTO work_item_cancellation_operations (
-           operation_id, work_item_id, objective_id, source_type, actor_session_id, authority_type, authority_id,
-           reason, idempotency_key, input_fingerprint, resource_version_before,
-           resource_version_after, canceled_at, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          operationId, workItem.id, workItem.objective_id, sourceType, actorSessionId, authorityType, authorityId,
-          reason, idempotencyKey, fingerprint, versionBefore, versionBefore + 1, timestamp, timestamp
-        ]
-      );
-      this.db.run(
-        `UPDATE work_items SET status='canceled', execution_status='cancelled',
-         canceled_at=?, cancel_reason=?, cancellation_operation_id=?,
-         resource_version=resource_version+1, updated_at=?
-         WHERE id=? AND resource_version=? AND status<>'canceled'`,
-        [timestamp, reason, operationId, timestamp, workItem.id, versionBefore]
-      );
-      if (this.db.getRowsModified() !== 1) {
-        throw storeDomainError(
-          "RESOURCE_VERSION_CONFLICT",
-          "WorkItem changed while cancellation was being committed.",
-          409
-        );
-      }
-      return {
-        operation: this.getWorkItemCancellationOperation(operationId),
-        workItem: this.getWorkItem(workItem.id),
-        idempotentReplay: false
-      };
-    });
-    this.scheduleSave();
-    return result;
-  }
-
   reconcileLegacyCollaborationWorkItemStatusPollution({
     limit = 500,
     repairedAt,
@@ -10993,14 +10884,6 @@ export class CorptieStore {
   updateWorkItem(id, patch = {}) {
     const current = this.getWorkItem(id);
     if (!current) return null;
-    if (String(patch.status ?? "").toLowerCase() === "canceled"
-      && String(current.status ?? "").toLowerCase() !== "canceled") {
-      throw storeDomainError(
-        "WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED",
-        "A WorkItem can only enter canceled through the dedicated cancellation workflow.",
-        403
-      );
-    }
     if (["done", "complete", "completed"].includes(String(patch.status ?? "").toLowerCase())
       && !["done", "complete", "completed"].includes(String(current.status ?? "").toLowerCase())) {
       this.recordRejectedWorkItemCompletionBypass(current, "store.updateWorkItem");

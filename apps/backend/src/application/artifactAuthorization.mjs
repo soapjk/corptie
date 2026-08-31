@@ -1,7 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
-const INVALID_WORK_ITEM_STATUSES = new Set(["canceled"]);
-
 export class SessionAuthorizationResolver {
   constructor({ store } = {}) {
     if (!store) throw new TypeError("SessionAuthorizationResolver requires a store.");
@@ -34,7 +32,6 @@ export class SessionAuthorizationResolver {
       workItem = session.workItemId ? this.store.getWorkItem(session.workItemId) : null;
       if (!workItem || workItem.objective_id !== objective.id
         || workItem.current_session_id !== session.id
-        || INVALID_WORK_ITEM_STATUSES.has(workItem.status)
         || workItem.deletion_status === "deleting") {
         throw bindingError("Worker Session no longer owns its exact WorkItem binding.");
       }

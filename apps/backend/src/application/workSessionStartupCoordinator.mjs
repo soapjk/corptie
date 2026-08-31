@@ -120,31 +120,6 @@ export class WorkSessionStartupCoordinator {
     return rows.length;
   }
 
-  cancel(workItemId, reason = "Canceled by user") {
-    const id = namespaced(workItemId, "work_item:", "workItemId");
-    const workItem = this.store.getWorkItem(id);
-    if (!workItem) throw coded("START_REFERENCE_INVALID", "WorkItem was not found.", 404, false);
-    const active = this.store.selectOne(
-      `SELECT startup_operation_id FROM work_session_startup_operations
-       WHERE work_item_id=? AND state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating') LIMIT 1`,
-      [id]
-    );
-    if (active) throw coded("START_ALREADY_IN_PROGRESS", "Active startup must settle or compensate before cancellation.", 409, true, {
-      startupOperationId: active.startup_operation_id
-    });
-    if (workItem.current_session_id) throw coded("WORK_ITEM_ALREADY_RUNNING", "Interrupt the bound Worker Session instead.", 409, false);
-    return this.store.cancelWorkItem({
-      workItemId: id,
-      sourceType: "work_session_start_cancel",
-      idempotencyKey: `startup-cancel:${id}`,
-      reason: safeSummary(reason),
-      actorSessionId: null,
-      authorityType: "local_user_action",
-      expectedResourceVersion: workItem.resource_version ?? 1,
-      canceledAt: this.clock()
-    }).workItem;
-  }
-
   acceptProviderProof(proof) {
     const providerBindingId = requiredText(proof?.providerBindingId, "providerBindingId");
     const binding = this.store.selectOne(

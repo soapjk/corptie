@@ -767,17 +767,6 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    @discardableResult
-    func cancelWorkItemStart(workItemId: String, reason: String = "Canceled by user") async -> WorkItem? {
-        var request = URLRequest(
-            url: baseURL.appending(path: "work-items/\(workItemId)/actions/cancel-start")
-        )
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["reason": reason])
-        return await performEntityMutation(request, as: WorkItem.self)
-    }
-
     // Assistant Chat Session：仅凭 Assistant 开聊，不绑定 WorkItem。
     @discardableResult
     func startAgentSession(

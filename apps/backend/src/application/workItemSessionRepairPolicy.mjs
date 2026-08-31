@@ -1,5 +1,5 @@
 const TERMINAL_WORK_ITEM_STATUSES = new Set([
-  "done", "complete", "completed", "canceled", "cancelled"
+  "done"
 ]);
 
 // Keep recovery bounded while leaving one upgrade-time attempt for legacy

@@ -29,7 +29,6 @@ export function handleEntityHttpRequest({
   beginWorkItemExecution,
   getWorkItemStartup,
   getSessionStartupBinding,
-  cancelWorkItemStart,
   launchAgentSession,
   launchObjectiveChatSession,
   createSession,
@@ -823,17 +822,6 @@ export function handleEntityHttpRequest({
       if (request.method === "GET" && sessionStartupMatch) {
         if (typeof getSessionStartupBinding !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
         return sendJson(response, 200, getSessionStartupBinding(decodeURIComponent(sessionStartupMatch[1])));
-      }
-
-      const cancelStartMatch = path.match(/^\/work-items\/([^/]+)\/actions\/cancel-start$/);
-      if (request.method === "POST" && cancelStartMatch) {
-        if (typeof cancelWorkItemStart !== "function") throw apiError("INTERNAL", "cancelWorkItemStart is not configured.", 500);
-        const id = decodeURIComponent(cancelStartMatch[1]);
-        const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["reason"]));
-        return sendJson(response, 200, presentWorkItemAcceptance(
-          cancelWorkItemStart(id, typeof input.reason === "string" ? input.reason : undefined)
-        ));
       }
 
       const dependencyMatch = path.match(/^\/work-items\/([^/]+)\/dependencies$/);

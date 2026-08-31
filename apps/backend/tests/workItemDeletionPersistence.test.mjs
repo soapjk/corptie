@@ -118,17 +118,16 @@ test("deletion removes associated Worker Session history instead of detaching it
   }
 });
 
-test("deletion retires a canceled WorkItem while preserving its immutable cancellation audit", async () => {
+test("deletion retires a WorkItem while preserving a legacy immutable cancellation audit", async () => {
   const f = await fixture();
   try {
-    const cancellation = f.store.cancelWorkItem({
-      workItemId: "work_item:delete",
-      sourceType: "test",
-      idempotencyKey: "cancel-before-delete",
-      reason: "No longer required",
-      authorityType: "user",
-      authorityId: localUser.id
-    });
+    f.store.db.run(`INSERT INTO work_item_cancellation_operations (
+      operation_id, work_item_id, objective_id, source_type, actor_session_id,
+      authority_type, authority_id, reason, idempotency_key, input_fingerprint,
+      resource_version_before, resource_version_after, canceled_at, created_at
+    ) VALUES ('legacy-cancellation', 'work_item:delete', 'objective:delete', 'legacy', NULL,
+      'user', 'user:local-macos', 'Legacy audit', 'legacy-cancellation', 'fingerprint',
+      1, 2, '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z')`);
 
     const result = await f.deletion.delete("work_item:delete", { mode: "safe" }, localUser);
 
@@ -140,8 +139,8 @@ test("deletion retires a canceled WorkItem while preserving its immutable cancel
       "deleted"
     );
     assert.equal(
-      f.store.getWorkItemCancellationOperation(cancellation.operation.operation_id).reason,
-      "No longer required"
+      f.store.selectOne("SELECT reason FROM work_item_cancellation_operations WHERE operation_id='legacy-cancellation'").reason,
+      "Legacy audit"
     );
     assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"), []);
 
@@ -149,7 +148,38 @@ test("deletion retires a canceled WorkItem while preserving its immutable cancel
     f.store = new CorptieStore({ dbPath: f.dbPath, configPath: f.configPath });
     await f.store.initialize();
     assert.equal(f.store.getWorkItem("work_item:delete"), null);
-    assert.ok(f.store.getWorkItemCancellationOperation(cancellation.operation.operation_id));
+    assert.ok(f.store.selectOne("SELECT operation_id FROM work_item_cancellation_operations WHERE operation_id='legacy-cancellation'"));
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("startup migration removes failed canceled deletions and normalizes every other legacy status", async () => {
+  const f = await fixture();
+  try {
+    f.store.createWorkItem({ id: "work_item:legacy-blocked", objectiveId: "objective:delete", title: "Legacy blocked" });
+    f.store.db.run("DROP TRIGGER work_item_status_insert_guard");
+    f.store.db.run("DROP TRIGGER work_item_status_update_guard");
+    f.store.db.run("UPDATE work_items SET status='canceled', deletion_status='delete_failed' WHERE id='work_item:delete'");
+    f.store.db.run("UPDATE work_items SET status='blocked' WHERE id='work_item:legacy-blocked'");
+    f.store.db.run("DELETE FROM data_migrations WHERE migration_id='work-item-three-state-model-v1'");
+
+    await f.store.close();
+    f.store = new CorptieStore({ dbPath: f.dbPath, configPath: f.configPath });
+    await f.store.initialize();
+
+    assert.equal(f.store.getWorkItem("work_item:delete"), null);
+    assert.equal(
+      f.store.selectOne("SELECT deletion_status FROM work_items WHERE id='work_item:delete'").deletion_status,
+      "deleted"
+    );
+    assert.equal(f.store.getWorkItem("work_item:legacy-blocked").status, "todo");
+    assert.deepEqual(new Set(f.store.listWorkItems().map((item) => item.status)), new Set(["todo"]));
+    assert.throws(
+      () => f.store.db.run("UPDATE work_items SET status='canceled' WHERE id='work_item:legacy-blocked'"),
+      /WORK_ITEM_STATUS_INVALID/
+    );
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

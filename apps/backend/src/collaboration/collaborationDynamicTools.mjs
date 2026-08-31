@@ -125,11 +125,6 @@ export const collaborationDynamicTools = Object.freeze([
     resource_version: { type: "string", minLength: 1 },
     idempotency_key: { type: "string", minLength: 1 }
   }, ["work_item_id", "resource_version", "idempotency_key"]),
-  tool("corptie_collaboration_work_items_cancel", "Safely cancel an authorized collaboration WorkItem while preserving its audit record; physical deletion is unavailable.", {
-    work_item_id: workItemIdSchema,
-    reason: { type: "string", minLength: 1 },
-    resource_version: { type: "string", minLength: 1 }
-  }, ["work_item_id", "reason", "resource_version"]),
   tool("corptie_agents_discover", "Discover registered peer Agents and their capabilities.", {
     status: { type: "string", enum: ["available", "unavailable"] }
   }),
@@ -249,9 +244,6 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     corptie_collaboration_work_items_start: () => client.post(`/internal/collaboration/work-items/${encodeURIComponent(input.work_item_id)}/start`, compact({
       agentId: input.agent_id, title: input.title, resourceVersion: input.resource_version, idempotencyKey: input.idempotency_key
     })),
-    corptie_collaboration_work_items_cancel: () => client.post(`/internal/collaboration/work-items/${encodeURIComponent(input.work_item_id)}/cancel`, {
-      reason: input.reason, resourceVersion: input.resource_version
-    }),
     corptie_agents_discover: () => client.get("/internal/collaboration/agents", { status: input.status }),
     corptie_agents_get: () => client.get(`/internal/collaboration/agents/${encodeURIComponent(input.agent_id)}`),
     corptie_services_list: () => client.get("/internal/collaboration/services", {

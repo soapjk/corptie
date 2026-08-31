@@ -1,5 +1,5 @@
 export const WORK_ITEM_PRIORITIES = Object.freeze(["low", "medium", "high", "urgent"]);
-export const WORK_ITEM_STATUSES = Object.freeze(["todo", "in_progress", "blocked", "done", "canceled"]);
+export const WORK_ITEM_STATUSES = Object.freeze(["todo", "in_progress", "done"]);
 export const COLLABORATION_RELATION_TYPES = Object.freeze([
   "delegated_subtask", "depends_on", "blocks", "review_of"
 ]);
