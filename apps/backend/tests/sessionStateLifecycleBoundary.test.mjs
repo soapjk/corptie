@@ -10,6 +10,11 @@ test("authoritative Session projection is callback-owned and never snapshot-read
   assert.equal(source.includes("reconcileActiveSessionProviderProjections"), false);
   assert.equal(source.includes("startActiveSessionReconciliation"), false);
   assert.match(source, /function controlPlaneSnapshot\(\)[\s\S]*visibleStoredSessionProjections/);
+  assert.match(
+    source,
+    /function controlPlaneSnapshot\(\)[\s\S]*withResolvedSessionActions\(session, agentProviderRegistry\)/,
+    "State Sync must publish the same Provider-backed Session action availability as GET /sessions"
+  );
   const snapshotBegin = source.indexOf("async function getUnifiedSessionSnapshot");
   const snapshotEnd = source.indexOf("async function getStoredSessionSnapshot", snapshotBegin);
   const snapshotBody = source.slice(snapshotBegin, snapshotEnd);
