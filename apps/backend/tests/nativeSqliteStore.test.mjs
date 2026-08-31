@@ -793,11 +793,13 @@ test("restart repairs a terminal Provider turn regressed by a late item event", 
   }
 });
 
-test("terminal turn startup repair stays indexed with a production-sized Provider inbox", async () => {
+test("terminal turn startup repair avoids a blocking index build with a production-sized Provider inbox", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-terminal-turn-repair-scale-"));
-  const store = new CorptieStore({
-    dbPath: join(directory, "corptie.sqlite"),
-    configPath: join(directory, "config.json")
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  let store = new CorptieStore({
+    dbPath,
+    configPath
   });
   await store.initialize();
   try {
@@ -857,45 +859,28 @@ test("terminal turn startup repair stays indexed with a production-sized Provide
       { status: "applied", appliedAt: terminalEvent.receivedAt }
     );
 
-    const queryPlan = store.selectAll(`
-      EXPLAIN QUERY PLAN
-      SELECT turns.session_id, turns.binding_id, turns.turn_id,
-             inbox.event_type, inbox.occurred_at, inbox.received_at,
-             inbox.provider_event_id
-      FROM session_turns turns
-      JOIN provider_event_inbox inbox
-        ON inbox.rowid = (
-          SELECT terminal.rowid
-          FROM provider_event_inbox terminal
-          WHERE terminal.binding_id = turns.binding_id
-            AND terminal.turn_id = turns.turn_id
-            AND terminal.status = 'applied'
-            AND terminal.event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
-          ORDER BY terminal.received_at DESC, terminal.provider_event_id DESC
-          LIMIT 1
-        )
-      WHERE turns.execution_status IN ('idle', 'running', 'blocked')
-    `);
-    const planDetails = queryPlan.map((row) => row.detail).join("\n");
-    assert.match(planDetails, /idx_session_turns_repair_active/);
-    assert.match(planDetails, /idx_provider_event_inbox_terminal_turn/);
-    assert.doesNotMatch(planDetails, /USE TEMP B-TREE/);
-
+    assert.equal(
+      store.selectOne(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_provider_event_inbox_terminal_turn'"
+      ),
+      null
+    );
+    await store.close();
+    store = new CorptieStore({ dbPath, configPath });
     const startedAt = performance.now();
-    const repaired = store.repairRegressedTerminalSessionTurns();
+    await store.initialize();
     const elapsedMilliseconds = performance.now() - startedAt;
     console.log(
-      `[perf] terminal turn startup repair (120k inbox events, 200 active turns) ` +
+      `[perf] terminal turn startup without index build (120k inbox events, 200 active turns) ` +
       `${elapsedMilliseconds.toFixed(2)}ms`
     );
-    assert.equal(repaired, 1);
     assert.equal(
       store.getSessionTurn("repair-scale-session", "active:1", "turn:1").execution_status,
       "completed"
     );
     assert.ok(
-      elapsedMilliseconds < 250,
-      `terminal turn startup repair took ${elapsedMilliseconds.toFixed(2)}ms`
+      elapsedMilliseconds < 1_500,
+      `terminal turn startup took ${elapsedMilliseconds.toFixed(2)}ms`
     );
   } finally {
     await store.close();

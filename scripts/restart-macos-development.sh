@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 APP_BIN="${ROOT_DIR}/apps/macos/.build/debug/CorptieMac"
 EXTERNAL_RUNTIME_ROOT="${CORPTIE_DEVELOPMENT_RUNTIME_ROOT:-/Volumes/T9/CorptieData/development-launcher}"
 if [[ "${EXTERNAL_RUNTIME_ROOT}" != /Volumes/* ]]; then
