@@ -4,7 +4,8 @@ export function workspaceTransitionBlocksWork(logicalSession) {
     "preflighting",
     "forking",
     "validatingInstructions",
-    "committingRoute"
+    "committingRoute",
+    "sessionRecovery"
   ]).has(logicalSession?.transitionState);
 }
 

@@ -150,6 +150,29 @@ test("Session application service resolves stable logical ids before Provider ca
   ]]);
 });
 
+test("Session application service rejects dispatch while the shared route boundary is recovering", async () => {
+  const { calls, registry } = fixture();
+  const service = new SessionApplicationService({
+    registry,
+    resolveSessionReference: async () => ({
+      sessionId: "legacy-a",
+      logicalSessionId: "logical-a",
+      providerId: "fake.provider",
+      providerSessionId: "native-a"
+    }),
+    assertMessageDispatchAllowed: () => {
+      const error = new Error("The Session is recovering.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+  });
+  await assert.rejects(
+    service.sendMessage("logical-a", "must not dispatch"),
+    { code: "SESSION_BUSY" }
+  );
+  assert.deepEqual(calls, []);
+});
+
 test("Session application service prepares execution through the Provider-neutral contract", async () => {
   const { calls, service } = fixture();
   const preparation = await service.prepareExecution("logical-a", { source: "session-selection" });

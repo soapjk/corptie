@@ -16,6 +16,7 @@ export class CodexProviderRuntime {
   ensureThreadResumed(...args) { return this.client.ensureThreadResumed(...args); }
   forkThread(...args) { return this.client.forkThread(...args); }
   interruptTurn(...args) { return this.client.interruptTurn(...args); }
+  inspectEmptyThreadForRouteCommit(...args) { return this.client.inspectEmptyThreadForRouteCommit(...args); }
   liveItemsForThread(...args) { return this.client.liveItemsForThread(...args); }
   readAccountRateLimits(...args) { return this.client.readAccountRateLimits(...args); }
   readThreadForLegacyHistoryRepair(...args) { return this.client.readThreadForLegacyHistoryRepair(...args); }

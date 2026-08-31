@@ -18,6 +18,7 @@ export class SessionApplicationService {
     this.removeSessionBinding = options.removeSessionBinding ?? null;
     this.persistRenamedSession = options.persistRenamedSession ?? null;
     this.resolveMessageContext = options.resolveMessageContext ?? null;
+    this.assertMessageDispatchAllowed = options.assertMessageDispatchAllowed ?? null;
     this.recoverUnavailableSession = options.recoverUnavailableSession ?? null;
     this.toolHostService = options.toolHostService ?? null;
     this.toolMaterializationPort = options.toolMaterializationPort ?? null;
@@ -71,9 +72,15 @@ export class SessionApplicationService {
     const preparedInput = typeof provider.prepareSessionInput === "function"
       ? await provider.prepareSessionInput(input, context)
       : input;
-    const toolHost = this.toolHostService
-      ? await this.toolHostService.prepareSession(providerId, { purpose: "session-bootstrap", ...context })
-      : null;
+    const hasPreparedToolHost = Object.prototype.hasOwnProperty.call(context, "preparedToolHost");
+    if (hasPreparedToolHost && context.deferSessionBinding !== true) {
+      throw new TypeError("A prepared Tool Host attachment is only valid for an internal route transition.");
+    }
+    const toolHost = hasPreparedToolHost
+      ? context.preparedToolHost
+      : this.toolHostService
+        ? await this.toolHostService.prepareSession(providerId, { purpose: "session-bootstrap", ...context })
+        : null;
     const session = await this.registry.invoke(
       providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
@@ -323,6 +330,7 @@ export class SessionApplicationService {
   async sendMessage(sessionId, message, context = {}) {
     let reference = await this.referenceFor(sessionId);
     const dispatch = async () => {
+      await this.assertMessageDispatchAllowed?.(reference, context);
       const sessionContext = this.resolveMessageContext
         ? await this.resolveMessageContext(reference, { ...context, message })
         : null;

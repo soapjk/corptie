@@ -54,6 +54,7 @@ function fixture(options = {}) {
       }
     },
     isSessionBusy: (session) => session.status === "running",
+    isAppliedProofCurrent: options.isAppliedProofCurrent,
     recoverBinding: async (input) => {
       recoveries.push(input);
       if (options.recoverBinding) return options.recoverBinding(input);
@@ -81,6 +82,24 @@ test("startup preflight hot-applies only stale idle bindings and preserves desir
     phase: "refresh"
   });
   assert.equal(value.recoveries.length, 0);
+});
+
+test("startup preflight does not skip a claimed applied record with obsolete Provider proof", async () => {
+  const value = fixture({
+    isAppliedProofCurrent: ({ record }) => !String(record.providerReceipt?.providerRevision ?? "")
+      .startsWith("thread-fork:")
+  });
+  const current = value.service.store.getSessionToolCatalogMaterialization("logical:1", "binding:1");
+  current.providerReceipt = { providerRevision: "thread-fork:provider-thread:claimed" };
+
+  const result = await value.service.run();
+  assert.equal(result.scanned, 2);
+  assert.equal(result.hotApplied, 1);
+  assert.equal(result.recovered, 1);
+  assert.equal(value.calls.length, 1);
+  assert.equal(value.recoveries.length, 1);
+  assert.equal(value.recoveries[0].logicalSessionId, "logical:1");
+  assert.equal(value.recoveries[0].sourceBindingId, "binding:1");
 });
 
 test("startup preflight replaces a binding only for the exact not-sent unconfirmed proof", async () => {

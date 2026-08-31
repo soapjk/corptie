@@ -13,6 +13,7 @@ function threadResumeFingerprint(options = {}) {
     config: options.config ?? null,
     developerInstructions: options.developerInstructions ?? null,
     dynamicTools: options.dynamicTools ?? null,
+    dynamicToolConfirmation: options.dynamicToolConfirmation ?? null,
     dynamicToolAgentId: options.dynamicToolAgentId ?? null,
     dynamicToolMetadata: options.dynamicToolMetadata ?? null
   });
@@ -23,6 +24,7 @@ export class CodexAppServerClient {
     this.command = options.command ?? "codex";
     this.args = options.args ?? ["app-server", "--listen", "stdio://"];
     this.env = options.env ?? process.env;
+    this.spawnProcess = options.spawnProcess ?? spawn;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
     this.onNotification = typeof options.onNotification === "function" ? options.onNotification : null;
     this.onDynamicToolCall = typeof options.onDynamicToolCall === "function" ? options.onDynamicToolCall : null;
@@ -46,64 +48,94 @@ export class CodexAppServerClient {
     // process, but thread/resume is invalid until the first turn exists.
     this.freshThreadIds = new Set();
     this.initialized = false;
+    this.initializePromise = null;
+    this.processGeneration = 0;
+    this.activeProcessGeneration = 0;
   }
 
   async initialize() {
-    if (this.initialized) {
-      return;
-    }
+    if (this.initialized && this.process) return;
+    if (this.initializePromise) return this.initializePromise;
 
+    const generation = ++this.processGeneration;
+    const initializing = this.#initializeProcess(generation);
+    this.initializePromise = initializing;
+    try {
+      await initializing;
+    } finally {
+      if (this.initializePromise === initializing) this.initializePromise = null;
+    }
+  }
+
+  async #initializeProcess(generation) {
     const env = typeof this.env === "function" ? this.env() : this.env;
-    this.process = spawn(this.command, this.args, {
+    const child = this.spawnProcess(this.command, this.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env
     });
+    this.process = child;
+    this.activeProcessGeneration = generation;
 
-    this.process.stderr.setEncoding("utf8");
-    this.process.stderr.on("data", (chunk) => {
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => {
+      if (this.activeProcessGeneration !== generation || this.process !== child) return;
       this.notifications.push({
         method: "stderr",
         params: { chunk, createdAt: nowIso() }
       });
     });
 
-    this.process.on("exit", (code, signal) => {
-      for (const pending of this.pending.values()) {
-        pending.reject(new Error(`Codex app-server exited before response (${code ?? signal})`));
-      }
-      this.pending.clear();
-      this.initialized = false;
-      this.process = null;
-      this.readline = null;
-      this.threadResumeFingerprints.clear();
-      this.threadResumePromises.clear();
-      this.freshThreadIds.clear();
-      this.confirmedToolSchemasByThread.clear();
+    child.on("exit", (code, signal) => {
+      this.#clearProcessGeneration(
+        generation,
+        child,
+        new Error(`Codex app-server exited before response (${code ?? signal})`)
+      );
+    });
+    child.on("error", (cause) => {
+      this.#clearProcessGeneration(
+        generation,
+        child,
+        new Error(`Codex app-server failed to start: ${cause?.message ?? cause}`, { cause })
+      );
     });
 
-    this.readline = createInterface({
-      input: this.process.stdout,
+    const lineReader = createInterface({
+      input: child.stdout,
       crlfDelay: Infinity
     });
+    this.readline = lineReader;
 
-    this.readline.on("line", (line) => {
+    lineReader.on("line", (line) => {
+      if (this.activeProcessGeneration !== generation || this.process !== child) return;
       this.handleLine(line);
     });
 
-    await this.request("initialize", {
-      clientInfo: {
-        name: "corptie",
-        title: "Corptie",
-        version: "0.5.4"
-      },
-      capabilities: {
-        experimentalApi: true,
-        requestAttestation: false,
-        optOutNotificationMethods: []
+    try {
+      await this.request("initialize", {
+        clientInfo: {
+          name: "corptie",
+          title: "Corptie",
+          version: "0.5.4"
+        },
+        capabilities: {
+          experimentalApi: true,
+          requestAttestation: false,
+          optOutNotificationMethods: []
+        }
+      });
+      if (this.activeProcessGeneration !== generation || this.process !== child) {
+        throw new Error("Codex app-server initialization was superseded by a newer process generation.");
       }
-    });
-
-    this.initialized = true;
+      this.initialized = true;
+    } catch (error) {
+      if (this.activeProcessGeneration === generation && this.process === child) {
+        child.kill("SIGTERM");
+        lineReader.close();
+        this.#clearProcessGeneration(generation, child, error);
+      }
+      throw error;
+    }
   }
 
   async setThreadName(threadId, name) {
@@ -120,6 +152,30 @@ export class CodexAppServerClient {
       threadId,
       includeTurns: true
     });
+  }
+
+  // A Provider-switch target may have been created immediately before the
+  // backend crashed. Verify that exact empty thread without calling
+  // thread/resume (which requires a rollout) or starting a model Turn.
+  async inspectEmptyThreadForRouteCommit(threadId, options = {}) {
+    await this.initialize();
+    this.requireThreadToolPlanConfirmation(threadId, options);
+    const result = await this.request("thread/read", {
+      threadId,
+      includeTurns: true
+    }, options.requestTimeoutMs ?? 30000);
+    if (result?.thread?.id !== threadId) {
+      const error = new Error("Codex returned a different thread during route recovery.");
+      error.code = "PROVIDER_SWITCH_TARGET_MISMATCH";
+      throw error;
+    }
+    if (!Array.isArray(result.thread.turns) || result.thread.turns.length !== 0) {
+      const error = new Error("The uncommitted Provider-switch target is not an empty thread.");
+      error.code = "PROVIDER_SWITCH_TARGET_NOT_EMPTY";
+      throw error;
+    }
+    this.bindThreadToolContext(threadId, options);
+    return result;
   }
 
   async deleteThread(threadId) {
@@ -161,10 +217,14 @@ export class CodexAppServerClient {
       this.dynamicToolMetadataByThread.set(result.thread.id, options.dynamicToolMetadata ?? null);
     }
     if (result?.thread?.id) {
+      const definitions = options.dynamicTools ?? [];
       this.threadResumeFingerprints.set(result.thread.id, threadResumeFingerprint(options));
       this.freshThreadIds.add(result.thread.id);
       this.confirmedToolSchemasByThread.set(result.thread.id, {
-        schema: JSON.stringify(options.dynamicTools ?? []),
+        schema: JSON.stringify(definitions),
+        providerDefinitionsHash: hashToolDefinitions(definitions),
+        providerDefinitionsCount: definitions.length,
+        observationKind: "thread_start_accepted",
         providerRevision: `thread-start:${result.thread.id}:${result.thread.updatedAt ?? result.thread.createdAt ?? "confirmed"}`
       });
     }
@@ -184,11 +244,16 @@ export class CodexAppServerClient {
   restoreThreadToolPlanConfirmation(threadId, definitions = [], proof = {}) {
     const providerRevision = typeof proof.providerRevision === "string" ? proof.providerRevision.trim() : "";
     const revisionMatchesThread = providerRevision.startsWith(`thread-start:${threadId}:`)
-      || providerRevision.startsWith(`thread-fork:${threadId}:`);
+      || providerRevision.startsWith(`thread-fork-inherited:${threadId}:`);
     const definitionsHash = hashToolDefinitions(definitions);
     const hasExactHash = typeof proof.providerDefinitionsHash === "string"
       && proof.providerDefinitionsHash === definitionsHash;
-    if (!revisionMatchesThread || (!hasExactHash && proof.allowLegacyRestrictedGateway !== true)) {
+    const observationKind = providerRevision.startsWith(`thread-start:${threadId}:`)
+      ? "thread_start_accepted"
+      : "thread_fork_inherited";
+    const hasExactCount = proof.providerDefinitionsCount === definitions.length;
+    const hasExactObservation = proof.providerObservationKind === observationKind;
+    if (!revisionMatchesThread || !hasExactHash || !hasExactCount || !hasExactObservation) {
       const error = new Error("Persisted Codex Tool confirmation did not match this thread and Tool schema.");
       error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
       throw error;
@@ -197,6 +262,8 @@ export class CodexAppServerClient {
       schema: JSON.stringify(definitions),
       providerRevision,
       providerDefinitionsHash: definitionsHash,
+      providerDefinitionsCount: definitions.length,
+      observationKind,
       restored: true
     };
     this.confirmedToolSchemasByThread.set(threadId, confirmation);
@@ -205,6 +272,7 @@ export class CodexAppServerClient {
 
   async resumeThread(threadId, options = {}) {
     await this.initialize();
+    this.requireThreadToolPlanConfirmation(threadId, options);
     const result = await this.request("thread/resume", {
       threadId,
       cwd: options.cwd ?? undefined,
@@ -229,6 +297,7 @@ export class CodexAppServerClient {
   }
 
   bindThreadToolContext(threadId, options = {}) {
+    this.requireThreadToolPlanConfirmation(threadId, options);
     if (options.dynamicToolAgentId) {
       this.dynamicToolAgentsByThread.set(threadId, options.dynamicToolAgentId);
       this.dynamicToolMetadataByThread.set(threadId, options.dynamicToolMetadata ?? null);
@@ -239,6 +308,7 @@ export class CodexAppServerClient {
 
   async ensureThreadResumed(threadId, options = {}) {
     await this.initialize();
+    this.requireThreadToolPlanConfirmation(threadId, options);
     const fingerprint = threadResumeFingerprint(options);
     if (this.freshThreadIds.has(threadId)) {
       if (options.dynamicToolAgentId) {
@@ -277,6 +347,9 @@ export class CodexAppServerClient {
 
   async forkThread(threadId, options = {}) {
     await this.initialize();
+    const sourceConfirmation = this.requireThreadToolPlanConfirmation(threadId, options, {
+      mismatchCode: "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED"
+    });
     const result = await this.request("thread/fork", {
       threadId,
       lastTurnId: options.lastTurnId ?? undefined,
@@ -291,7 +364,6 @@ export class CodexAppServerClient {
       modelProvider: options.modelProvider ?? undefined,
       config: options.config ?? undefined,
       developerInstructions: options.developerInstructions ?? undefined,
-      dynamicTools: options.dynamicTools ?? undefined,
       threadSource: options.threadSource ?? "user",
       ephemeral: options.ephemeral ?? false,
       excludeTurns: options.excludeTurns ?? false,
@@ -304,12 +376,35 @@ export class CodexAppServerClient {
     if (result?.thread?.id) {
       this.threadResumeFingerprints.set(result.thread.id, threadResumeFingerprint(options));
       this.freshThreadIds.add(result.thread.id);
-      this.confirmedToolSchemasByThread.set(result.thread.id, {
-        schema: JSON.stringify(options.dynamicTools ?? []),
-        providerRevision: `thread-fork:${result.thread.id}:${result.thread.updatedAt ?? result.thread.createdAt ?? "confirmed"}`
-      });
+      if (sourceConfirmation) {
+        this.confirmedToolSchemasByThread.set(result.thread.id, {
+          schema: sourceConfirmation.schema,
+          providerDefinitionsHash: sourceConfirmation.providerDefinitionsHash,
+          providerDefinitionsCount: sourceConfirmation.providerDefinitionsCount,
+          observationKind: "thread_fork_inherited",
+          providerRevision: `thread-fork-inherited:${result.thread.id}:${threadId}:${result.thread.updatedAt ?? result.thread.createdAt ?? "confirmed"}`
+        });
+      }
     }
     return result;
+  }
+
+  requireThreadToolPlanConfirmation(threadId, options = {}, overrides = {}) {
+    if (!Array.isArray(options.dynamicTools)) return null;
+    const definitions = options.dynamicTools;
+    let confirmed = this.confirmedToolSchemasByThread.get(threadId) ?? null;
+    if (!confirmed && options.dynamicToolConfirmation) {
+      try {
+        this.restoreThreadToolPlanConfirmation(threadId, definitions, options.dynamicToolConfirmation);
+        confirmed = this.confirmedToolSchemasByThread.get(threadId) ?? null;
+      } catch (error) {
+        throw toolPlanConfirmationError(error, overrides.mismatchCode);
+      }
+    }
+    if (!confirmed || confirmed.schema !== JSON.stringify(definitions)) {
+      throw toolPlanConfirmationError(null, overrides.mismatchCode);
+    }
+    return confirmed;
   }
 
   async updateThreadSettings(threadId, options = {}) {
@@ -548,18 +643,39 @@ export class CodexAppServerClient {
   }
 
   async close() {
-    if (!this.process) {
-      return;
-    }
+    const child = this.process;
+    const generation = this.activeProcessGeneration;
+    if (!child) return;
 
-    this.process.kill("SIGTERM");
+    // Allow a later initialize() to create a new generation immediately. The
+    // old process may emit exit asynchronously; its callback must not tear down
+    // that newer generation.
+    this.initializePromise = null;
+    this.#clearProcessGeneration(
+      generation,
+      child,
+      new Error("Codex app-server was closed before response.")
+    );
+    child.kill("SIGTERM");
+  }
+
+  #clearProcessGeneration(generation, child, error) {
+    if (this.activeProcessGeneration !== generation || this.process !== child) return false;
+    for (const [id, pending] of this.pending) {
+      if (pending.generation !== generation) continue;
+      this.pending.delete(id);
+      pending.reject(error);
+    }
+    this.initialized = false;
     this.process = null;
     this.readline?.close();
     this.readline = null;
-    this.initialized = false;
+    this.activeProcessGeneration = 0;
     this.threadResumeFingerprints.clear();
     this.threadResumePromises.clear();
     this.freshThreadIds.clear();
+    this.confirmedToolSchemasByThread.clear();
+    return true;
   }
 
   liveItemsForThread(threadId) {
@@ -603,7 +719,9 @@ export class CodexAppServerClient {
   }
 
   request(method, params, timeoutMs = this.requestTimeoutMs) {
-    if (!this.process || !this.process.stdin.writable) {
+    const child = this.process;
+    const generation = this.activeProcessGeneration;
+    if (!child || !generation || !child.stdin.writable) {
       return Promise.reject(new Error("Codex app-server is not running"));
     }
 
@@ -612,11 +730,12 @@ export class CodexAppServerClient {
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
+        if (this.pending.get(id)?.generation === generation) this.pending.delete(id);
         reject(new Error(`Codex app-server request timed out: ${method}`));
       }, timeoutMs);
 
       this.pending.set(id, {
+        generation,
         resolve: (value) => {
           clearTimeout(timer);
           resolve(value);
@@ -627,7 +746,7 @@ export class CodexAppServerClient {
         }
       });
 
-      this.process.stdin.write(`${JSON.stringify(message)}\n`);
+      child.stdin.write(`${JSON.stringify(message)}\n`);
     });
   }
 
@@ -903,6 +1022,13 @@ export function codexResponseError(payload) {
   if (/^(?:no rollout found for thread id\b|thread not found:|failed to resolve rollout path\b.*\bfile does not exist$)/i.test(message)) {
     error.code = "PROVIDER_SESSION_UNAVAILABLE";
     error.safeToRetry = true;
+  } else if (/^(?:thread not loaded:|invalid paginated history lineage\b.*\bmissing source rollout$)/i.test(message)) {
+    // thread/start is intentionally pre-Turn. If the app-server process dies
+    // before Corptie commits the route, that empty in-memory thread has no
+    // rollout and cannot be recovered in a new process. No user Delivery was
+    // dispatched, so the coordinator may replace only this exact empty target.
+    error.code = "PROVIDER_EMPTY_THREAD_UNRECOVERABLE";
+    error.safeToRecreate = true;
   }
   return error;
 }
@@ -912,10 +1038,24 @@ export function codexResponseError(payload) {
 // Keep this annotation at that pre-dispatch boundary; applying it to arbitrary
 // app-server failures would make an ambiguous in-flight turn unsafe to retry.
 export function codexPreDispatchRecoveryError(error) {
-  if (error?.code !== "PROVIDER_SESSION_UNAVAILABLE" || error?.safeToRetry !== true) return error;
+  const sessionUnavailable = error?.code === "PROVIDER_SESSION_UNAVAILABLE" && error?.safeToRetry === true;
+  const toolSchemaUnconfirmed = error?.code === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+  if (!sessionUnavailable && !toolSchemaUnconfirmed) return error;
   error.dispatchState = "not_sent";
   error.recoveryAction = "replace_provider_binding";
-  error.replacementReason = "PROVIDER_SESSION_UNAVAILABLE";
+  error.replacementReason = error.code;
+  return error;
+}
+
+function toolPlanConfirmationError(cause = null, code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED") {
+  const error = new Error(
+    code === "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED"
+      ? "Codex thread/fork cannot replace the source thread Tool schema; create a fresh thread instead."
+      : "Codex did not confirm the Tool schema installed on this thread.",
+    cause ? { cause } : undefined
+  );
+  error.code = code;
+  error.safeToRetry = true;
   return error;
 }
 

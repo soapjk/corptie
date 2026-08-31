@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -100,6 +101,22 @@ test("workspace transition waits for an active turn then atomically routes a for
 test("a Git workspace session restarts its thread while preserving context", async () => {
   const fixture = await createFixture("restart");
   const calls = [];
+  const materializations = [];
+  const committedBindings = [];
+  const transitionUpdates = [];
+  const dynamicTools = [{ name: "corptie_tool_gateway" }];
+  const sourceProof = toolProof("thread-source", dynamicTools, "thread-start");
+  const childProof = toolProof("thread-restarted", dynamicTools, "thread-fork-inherited");
+  const commitWorkspaceTransition = fixture.store.commitWorkspaceTransition.bind(fixture.store);
+  fixture.store.commitWorkspaceTransition = (transitionId, binding) => {
+    committedBindings.push(binding);
+    return commitWorkspaceTransition(transitionId, { ...binding, toolMaterialization: null });
+  };
+  const updateWorkspaceTransition = fixture.store.updateWorkspaceTransition.bind(fixture.store);
+  fixture.store.updateWorkspaceTransition = (transitionId, update) => {
+    transitionUpdates.push(update);
+    return updateWorkspaceTransition(transitionId, update);
+  };
   const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
     providerPort: {
@@ -115,6 +132,15 @@ test("a Git workspace session restarts its thread while preserving context", asy
         };
       }
     },
+    confirmToolSchema: async ({ threadId, dynamicTools: definitions }) => {
+      assert.equal(threadId, "thread-restarted");
+      assert.deepEqual(definitions, dynamicTools);
+      return childProof;
+    },
+    prepareToolMaterialization: async (input) => {
+      materializations.push(input);
+      return { status: "applied", providerReceipt: input.dynamicToolConfirmation };
+    },
     requiredInstructionSources: async () => [
       fixture.rootInstructions,
       fixture.sourceInstructions
@@ -126,7 +152,8 @@ test("a Git workspace session restarts its thread while preserving context", asy
       transitionId: "transition:restart",
       logicalSessionId: "logical:one",
       lastCompletedTurnId: "turn-7",
-      dynamicTools: [{ name: "corptie_tool_gateway" }],
+      dynamicTools,
+      dynamicToolConfirmation: sourceProof,
       dynamicToolAgentId: "agent:one",
       dynamicToolMetadata: { sessionId: "session:one" }
     });
@@ -138,9 +165,29 @@ test("a Git workspace session restarts its thread while preserving context", asy
     assert.equal(calls[0].options.lastTurnId, "turn-7");
     assert.equal(calls[0].options.cwd, fixture.main);
     assert.equal(calls[0].options.deferGoalContinuation, true);
-    assert.deepEqual(calls[0].options.dynamicTools, [{ name: "corptie_tool_gateway" }]);
+    assert.deepEqual(calls[0].options.dynamicTools, dynamicTools);
+    assert.deepEqual(calls[0].options.dynamicToolConfirmation, sourceProof);
     assert.equal(calls[0].options.dynamicToolAgentId, "agent:one");
-    assert.deepEqual(calls[0].options.dynamicToolMetadata, { sessionId: "session:one" });
+    assert.equal(calls[0].options.dynamicToolMetadata.sessionId, "session:one");
+    assert.equal(calls[0].options.dynamicToolMetadata.providerBindingId, committedBindings[0].bindingId);
+    assert.equal(calls[0].options.dynamicToolMetadata.routingVersion, 2);
+    assert.equal(calls[0].options.dynamicToolMetadata.bindingGeneration, 2);
+    assert.equal(materializations.length, 1);
+    assert.equal(materializations[0].binding.providerThreadId, "thread-restarted");
+    assert.equal(materializations[0].binding.bindingId, committedBindings[0].bindingId);
+    assert.deepEqual(materializations[0].dynamicToolConfirmation, {
+      ...childProof,
+      providerDefinitionsCount: 1,
+      providerObservationKind: "thread_fork_inherited"
+    });
+    assert.deepEqual(committedBindings[0].toolMaterialization, {
+      status: "applied",
+      providerReceipt: materializations[0].dynamicToolConfirmation
+    });
+    assert.ok(transitionUpdates.some((update) => (
+      update.newThreadId === "thread-restarted"
+      && update.toolConfirmation?.providerRevision === childProof.providerRevision
+    )));
     assert.equal(result.transition.resumeGoalAfterTransition, false);
   } finally {
     await fixture.close();
@@ -189,6 +236,9 @@ test("a session in a regular directory restarts without a Git worktree", async (
 
 test("invalid fork instruction sources preserve the original route and retain an invalid child binding", async () => {
   const fixture = await createFixture("invalid");
+  const dynamicTools = [{ name: "corptie_tool_call" }];
+  const sourceProof = toolProof("thread-source", dynamicTools, "thread-start");
+  const childProof = toolProof("thread-invalid", dynamicTools, "thread-fork-inherited");
   const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
     providerPort: {
@@ -203,6 +253,7 @@ test("invalid fork instruction sources preserve the original route and retain an
         };
       }
     },
+    confirmToolSchema: async () => childProof,
     requiredInstructionSources: async () => [fixture.featureInstructions]
   });
 
@@ -212,7 +263,9 @@ test("invalid fork instruction sources preserve the original route and retain an
         transitionId: "transition:invalid",
         logicalSessionId: "logical:one",
         targetWorktreeId: "worktree:feature",
-        lastCompletedTurnId: "turn-7"
+        lastCompletedTurnId: "turn-7",
+        dynamicTools,
+        dynamicToolConfirmation: sourceProof
       }),
       /invalid workspace instruction sources/
     );
@@ -221,7 +274,9 @@ test("invalid fork instruction sources preserve the original route and retain an
     assert.equal(logical.activeWorkspaceId, "worktree:main");
     assert.equal(logical.routingVersion, 1);
     assert.equal(logical.transitionState, null);
-    assert.equal(fixture.store.getWorkspaceTransition("transition:invalid").phase, "failed");
+    const failed = fixture.store.getWorkspaceTransition("transition:invalid");
+    assert.equal(failed.phase, "failed");
+    assert.deepEqual(failed.toolConfirmation, childProof);
     assert.equal(fixture.store.getProviderThreadBinding("thread-invalid").state, "invalid");
   } finally {
     await fixture.close();
@@ -331,6 +386,72 @@ test("an unsupported fork falls back to a new thread with a bounded local handof
   }
 });
 
+test("an incorrect source Tool proof fails before native fork and uses a confirmed handoff", async () => {
+  const fixture = await createFixture("tool-proof-handoff");
+  const dynamicTools = [{ name: "corptie_tool_call", inputSchema: { type: "object" } }];
+  const calls = [];
+  const manager = new ForkingWorkspaceTransitionManager({
+    store: fixture.store,
+    providerPort: {
+      async forkThread() {
+        assert.fail("an invalid Tool proof must fail before Provider fork mutation");
+      },
+      async startThread(options) {
+        calls.push({ method: "startThread", options });
+        return {
+          thread: { id: "thread-tool-handoff", cwd: fixture.feature },
+          cwd: fixture.feature,
+          instructionSources: [fixture.rootInstructions, fixture.featureInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
+        };
+      },
+      async startTurn() {
+        calls.push({ method: "startTurn" });
+        return { turn: { id: "turn-tool-handoff" } };
+      }
+    },
+    confirmToolSchema: async ({ threadId }) => (
+      toolProof(threadId, dynamicTools, "thread-start")
+    ),
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.featureInstructions
+    ]
+  });
+
+  try {
+    const result = await manager.switchWorkspace({
+      transitionId: "transition:tool-proof-handoff",
+      logicalSessionId: "logical:one",
+      targetWorktreeId: "worktree:feature",
+      lastCompletedTurnId: "turn-7",
+      dynamicTools,
+      dynamicToolConfirmation: {
+        providerRevision: "thread-start:thread-source:stale",
+        providerDefinitionsHash: toolProof(
+          "thread-source",
+          dynamicTools,
+          "thread-start"
+        ).providerDefinitionsHash
+      },
+      dynamicToolMetadata: {
+        sessionId: "session:one",
+        providerBindingId: "binding:source"
+      }
+    });
+    assert.equal(result.status, "committed");
+    assert.equal(result.event.strategy, "handoff");
+    assert.deepEqual(calls.map((call) => call.method), ["startThread", "startTurn"]);
+    assert.deepEqual(calls[0].options.dynamicTools, dynamicTools);
+    assert.notEqual(calls[0].options.dynamicToolMetadata.providerBindingId, "binding:source");
+    assert.equal(calls[0].options.dynamicToolMetadata.providerBindingId,
+      result.logicalSession.activeBinding.bindingId);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a cross-repository switch uses handoff without attempting a fork", async () => {
   const fixture = await createFixture("cross-repository");
   const other = join(fixture.directory, "other repository");
@@ -393,6 +514,9 @@ test("a cross-repository switch uses handoff without attempting a fork", async (
 
 test("fork fallback detection and handoff prompt are conservative", () => {
   assert.equal(isForkUnsupported(Object.assign(new Error("missing"), { code: -32601 })), true);
+  assert.equal(isForkUnsupported(Object.assign(new Error("schema inherited"), {
+    code: "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED"
+  })), true);
   assert.equal(isForkUnsupported(new Error("thread/fork unsupported by server")), true);
   assert.equal(isForkUnsupported(new Error("thread/fork timed out")), false);
   const prompt = workspaceHandoffPrompt([
@@ -434,6 +558,8 @@ test("a moved worktree path is rebound in place with updated sandbox roots and i
   });
   const calls = [];
   const events = [];
+  const dynamicTools = [{ name: "corptie_tool_catalog_load" }];
+  const toolConfirmation = toolProof("thread-source", dynamicTools, "thread-start");
   const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
     providerPort: {
@@ -453,12 +579,21 @@ test("a moved worktree path is rebound in place with updated sandbox roots and i
         };
       }
     },
+    confirmToolSchema: async ({ threadId }) => {
+      assert.equal(threadId, "thread-source");
+      return toolConfirmation;
+    },
     requiredInstructionSources: async () => [fixture.rootInstructions, movedInstructions],
     onRouteCommitted: async (event) => events.push(event)
   });
 
   try {
-    const result = await manager.reconcileActiveWorkspacePath("logical:one");
+    const result = await manager.reconcileActiveWorkspacePath("logical:one", {
+      dynamicTools,
+      dynamicToolConfirmation: toolConfirmation,
+      dynamicToolAgentId: "agent:one",
+      dynamicToolMetadata: { sessionId: "session:one" }
+    });
     assert.equal(result.status, "rebound");
     assert.equal(result.logicalSession.activeThreadId, "thread-source");
     assert.equal(result.logicalSession.activeBinding.boundCwd, moved);
@@ -467,7 +602,11 @@ test("a moved worktree path is rebound in place with updated sandbox roots and i
     assert.deepEqual(calls[0].options.sandboxPolicy.writableRoots, [moved]);
     assert.equal(calls[1].method, "resume");
     assert.deepEqual(calls[1].options.runtimeWorkspaceRoots, [moved]);
+    assert.deepEqual(calls[1].options.dynamicTools, dynamicTools);
+    assert.deepEqual(calls[1].options.dynamicToolConfirmation, toolConfirmation);
+    assert.deepEqual(calls[1].options.dynamicToolMetadata, { sessionId: "session:one" });
     assert.equal(events[0].strategy, "settingsUpdate");
+    assert.equal(events[0].toolConfirmation.providerDefinitionsHash, toolConfirmation.providerDefinitionsHash);
     assert.equal(events[0].previousCwd, fixture.main);
   } finally {
     await fixture.close();
@@ -584,6 +723,121 @@ test("restart recovery resumes a validated fork and commits the stored transitio
   }
 });
 
+test("backend restart recovers a native fork only with its persisted child Tool proof", async () => {
+  const fixture = await createFixture("recover-tool-proof");
+  const dynamicTools = [{ name: "corptie_tool_catalog_search" }];
+  const childProof = toolProof("thread-recovered-tools", dynamicTools, "thread-fork-inherited");
+  fixture.store.beginWorkspaceTransition({
+    transitionId: "transition:recover-tool-proof",
+    logicalSessionId: "logical:one",
+    targetWorktreeId: "worktree:feature",
+    sourceRoutingVersion: 1,
+    lastCompletedTurnId: "turn-7",
+    phase: "forking"
+  });
+  fixture.store.updateWorkspaceTransition("transition:recover-tool-proof", {
+    phase: "validatingInstructions",
+    newThreadId: "thread-recovered-tools"
+  });
+  const getWorkspaceTransition = fixture.store.getWorkspaceTransition.bind(fixture.store);
+  fixture.store.getWorkspaceTransition = (transitionId) => {
+    const transition = getWorkspaceTransition(transitionId);
+    return transitionId === "transition:recover-tool-proof" && transition
+      ? { ...transition, toolConfirmation: childProof }
+      : transition;
+  };
+  const calls = [];
+  const manager = new ForkingWorkspaceTransitionManager({
+    store: fixture.store,
+    providerPort: {
+      async resumeThread(threadId, options) {
+        calls.push({ threadId, options });
+        return {
+          thread: { id: threadId, cwd: fixture.feature },
+          cwd: fixture.feature,
+          instructionSources: [fixture.rootInstructions, fixture.featureInstructions],
+          approvalPolicy: "on-request",
+          sandbox: { type: "workspaceWrite", writableRoots: [fixture.feature] }
+        };
+      }
+    },
+    confirmToolSchema: async ({ threadId }) => {
+      assert.equal(threadId, "thread-recovered-tools");
+      return childProof;
+    },
+    prepareToolMaterialization: async (input) => {
+      assert.equal(input.recovered, true);
+      assert.equal(input.binding.providerThreadId, "thread-recovered-tools");
+      assert.equal(input.dynamicToolMetadata.sessionId, "session:one");
+      return null;
+    },
+    requiredInstructionSources: async () => [
+      fixture.rootInstructions,
+      fixture.featureInstructions
+    ]
+  });
+
+  try {
+    const result = await manager.recoverWorkspaceTransition("transition:recover-tool-proof", {
+      dynamicTools,
+      dynamicToolAgentId: "agent:one",
+      dynamicToolMetadata: { sessionId: "session:one" },
+      // A caller proof is deliberately stale: the persisted child proof is authoritative.
+      dynamicToolConfirmation: toolProof("thread-source", dynamicTools, "thread-start")
+    });
+    assert.equal(result.status, "committed");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].options.dynamicTools, dynamicTools);
+    assert.equal(calls[0].options.dynamicToolConfirmation.providerRevision, childProof.providerRevision);
+    assert.equal(calls[0].options.dynamicToolAgentId, "agent:one");
+    assert.equal(calls[0].options.dynamicToolMetadata.sessionId, "session:one");
+    assert.equal(calls[0].options.dynamicToolMetadata.providerBindingId,
+      result.logicalSession.activeBinding.bindingId);
+    assert.equal(calls[0].options.dynamicToolMetadata.routingVersion, 2);
+    assert.equal(calls[0].options.dynamicToolMetadata.bindingGeneration, 2);
+    assert.equal(result.event.newBindingId, result.logicalSession.activeBinding.bindingId);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("crash recovery rejects dynamic Tools when the child proof was not durably journaled", async () => {
+  const fixture = await createFixture("recover-tool-proof-missing");
+  fixture.store.beginWorkspaceTransition({
+    transitionId: "transition:recover-tool-proof-missing",
+    logicalSessionId: "logical:one",
+    targetWorktreeId: "worktree:feature",
+    sourceRoutingVersion: 1,
+    lastCompletedTurnId: "turn-7",
+    phase: "forking"
+  });
+  fixture.store.updateWorkspaceTransition("transition:recover-tool-proof-missing", {
+    phase: "validatingInstructions",
+    newThreadId: "thread-unproven"
+  });
+  let resumes = 0;
+  const manager = new ForkingWorkspaceTransitionManager({
+    store: fixture.store,
+    providerPort: {
+      async resumeThread() {
+        resumes += 1;
+        assert.fail("recovery must reject the missing proof before Provider resume");
+      }
+    }
+  });
+
+  try {
+    await assert.rejects(() => manager.recoverWorkspaceTransition(
+      "transition:recover-tool-proof-missing",
+      { dynamicTools: [{ name: "corptie_tool_call" }] }
+    ), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+    assert.equal(resumes, 0);
+    assert.equal(fixture.store.getWorkspaceTransition("transition:recover-tool-proof-missing").phase, "failed");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("restart recovery starts a missing handoff turn before committing its route", async () => {
   const fixture = await createFixture("recover-handoff");
   fixture.store.beginWorkspaceTransition({
@@ -688,7 +942,7 @@ async function createFixture(label) {
     id: "session:one",
     title: "Fixture session",
     agent: "Agent",
-    provider: "codex-app-server",
+    provider: "test-provider",
     status: "idle"
   });
   store.upsertGitWorkspaceSnapshot({
@@ -715,6 +969,7 @@ async function createFixture(label) {
     logicalSessionId: "logical:one",
     legacySessionId: "session:one",
     providerThreadId: "thread-source",
+    providerId: "test-provider",
     repositoryId: "repository:one",
     worktreeId: "worktree:main",
     boundCwd: main,
@@ -753,6 +1008,7 @@ async function createDirectoryFixture(label) {
   store.createLogicalSessionRoute({
     logicalSessionId: "logical:directory",
     providerThreadId: "thread-source",
+    providerId: "test-provider",
     boundCwd: workspace,
     instructionSources: [instructions],
     permissionSnapshot: {
@@ -789,4 +1045,30 @@ function workspaceRecord(worktreeId, path, gitDirCanonicalPath, isMain, branchNa
     isPrunable: false,
     pruneReason: null
   };
+}
+
+function toolProof(threadId, definitions, kind) {
+  const providerObservationKind = kind === "thread-start"
+    ? "thread_start_accepted"
+    : "thread_fork_inherited";
+  return {
+    providerRevision: kind === "thread-start"
+      ? `thread-start:${threadId}:confirmed`
+      : `thread-fork-inherited:${threadId}:thread-source:confirmed`,
+    providerDefinitionsHash: createHash("sha256")
+      .update(stableToolDefinitions(definitions))
+      .digest("hex"),
+    providerDefinitionsCount: definitions.length,
+    providerObservationKind
+  };
+}
+
+function stableToolDefinitions(value) {
+  if (Array.isArray(value)) return `[${value.map(stableToolDefinitions).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableToolDefinitions(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

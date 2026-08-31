@@ -943,3 +943,4 @@
 "Background Memory tasks" = "Background Memory tasks";
 "Background choice tasks" = "Background choice tasks";
 "Affected Artifact: %@ v%lld" = "Affected Artifact: %@ v%lld";
+"Session recovery is in progress. Sending messages is temporarily unavailable." = "Session recovery is in progress. Sending messages is temporarily unavailable.";
