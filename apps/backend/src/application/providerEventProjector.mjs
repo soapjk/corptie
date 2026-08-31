@@ -210,12 +210,18 @@ export class ProviderEventProjector {
       && event.payload?.failureScope !== "turn"
       ? normalizeProviderFailure(event.payload?.error)
       : null;
+    const restoresSendAvailability = binding.isCurrentRoute !== false && (
+      event.type === "turn.started"
+      || TERMINAL_EVENT_STATUS.has(event.type)
+      || (event.type === "provider.error" && event.payload?.failureScope === "turn")
+    );
     const next = {
       ...session,
       status,
       progress: status === "running" || status === "blocked" ? 0.5 : 1,
       summary: latestAgentItem?.text || providerFailure?.message || session.summary,
-      sendUnavailableReason: providerFailure?.message ?? session.sendUnavailableReason ?? null,
+      sendUnavailableReason: providerFailure?.message
+        ?? (restoresSendAvailability ? null : session.sendUnavailableReason ?? null),
       activityStatus,
       suggestedOptions: event.type === "approval.requested"
         ? event.payload?.item?.options ?? session.suggestedOptions
@@ -226,7 +232,9 @@ export class ProviderEventProjector {
       updatedAt: event.receivedAt,
       capabilities: {
         ...(session.capabilities ?? {}),
-        ...(providerFailure ? { canSend: false } : {}),
+        ...(providerFailure
+          ? { canSend: false }
+          : (restoresSendAvailability ? { canSend: true } : {})),
         canInterrupt: unsettled.length > 0
       },
       external: {
