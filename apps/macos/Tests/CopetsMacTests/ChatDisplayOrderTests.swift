@@ -40,7 +40,7 @@ final class ChatDisplayOrderTests: XCTestCase {
         XCTAssertEqual(underlyingItemIDs(in: entries), items.map(\.id))
     }
 
-    func testVisibleWindowKeepsLatestRecoveredTurnTogetherInOrder() {
+    func testVisibleWindowBudgetsConversationMessagesWithoutProcessRowsEvictingThem() {
         let items = [
             item(id: "user-1", type: "userMessage", turnId: "legacy-turn"),
             item(id: "agent-1", type: "agentMessage", turnId: "legacy-turn"),
@@ -54,7 +54,31 @@ final class ChatDisplayOrderTests: XCTestCase {
             limit: 3
         )
 
-        XCTAssertEqual(underlyingItemIDs(in: visible), ["user-2", "tool-2", "agent-2"])
+        XCTAssertEqual(underlyingItemIDs(in: visible), ["agent-1", "user-2", "tool-2", "agent-2"])
+        XCTAssertEqual(visible.filter { !$0.isProcessGroup }.count, 3)
+    }
+
+    func testProcessHeavyTailStillShowsRequestedNumberOfMessages() {
+        let items = [
+            item(id: "user-1", type: "userMessage", turnId: "turn-1"),
+            item(id: "tool-1", type: "commandExecution", turnId: "turn-1"),
+            item(id: "agent-1", type: "agentMessage", turnId: "turn-1"),
+            item(id: "user-2", type: "userMessage", turnId: "turn-2"),
+            item(id: "tool-2", type: "commandExecution", turnId: "turn-2"),
+            item(id: "user-3", type: "userMessage", turnId: "queued"),
+            item(id: "tool-3", type: "commandExecution", turnId: "turn-2")
+        ]
+
+        let visible = visibleDetailEntries(
+            from: makeChatDisplayEntries(from: items),
+            limit: 3
+        )
+
+        XCTAssertEqual(
+            visible.filter { !$0.isProcessGroup }.map(\.id),
+            ["message:agent-1", "message:user-2", "message:user-3"]
+        )
+        XCTAssertTrue(visible.contains(where: \.isProcessGroup))
     }
 
     func testMessagesAreOrderedByTimestampAcrossTurns() {
