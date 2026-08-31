@@ -91,16 +91,13 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_work_items_get", "Read one WorkItem visible to this Session.", {
     work_item_id: workItemIdSchema
   }, ["work_item_id"]),
-  tool("corptie_collaboration_work_items_create", "Create an Objective-scoped collaboration WorkItem. Objective Chat may create top-level or child work; Worker requires an explicit allowed relation to its bound WorkItem. Actor/Objectives/source Session are runtime-derived.", {
+  tool("corptie_collaboration_work_items_create", "Create an independent Objective-scoped WorkItem and record this Session as its creation origin. Creation never makes it a child or subtask of another WorkItem.", {
     title: { type: "string", minLength: 1 },
     description: workItemFieldsSchema.description,
     acceptance_criteria: workItemFieldsSchema.acceptance_criteria,
     priority: workItemFieldsSchema.priority,
     agent_id: agentIdSchema,
     main_workspace_id: repositoryIdSchema,
-    parent_work_item_id: workItemIdSchema,
-    source_work_item_id: workItemIdSchema,
-    relationship: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] },
     artifact_reference: artifactReferenceSchema,
     file_reference: fileReferenceSchema,
     idempotency_key: { type: "string", minLength: 1 }
@@ -138,60 +135,36 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_services_describe", "Describe a service, its owner, endpoint, version, metadata, and consumers.", {
     service_id: { type: "string", minLength: 1 }
   }, ["service_id"]),
-  tool("corptie_collaboration_request", "Create a Session-to-Session question or change request. The first request over an exact Session route requires deterministic user confirmation; a previously confirmed exact route may send immediately. Supply an existing recipient Session, or the Objective and Agent resources Corptie must use to create a WorkItem and target Session before the task exists.", {
+  tool("corptie_collaboration_channel_open", "Open or reuse a durable, user-authorized, bidirectional Channel between two exact logical Sessions and send its first message. If the target Session does not exist, one confirmation may authorize target WorkItem creation, target Session creation, Channel activation, and delivery.", {
     recipient_session_name: { type: "string", minLength: 1 },
     recipient_session_id: sessionIdSchema,
-    session_agent_id: { ...agentIdSchema, description: "Agent resource used to configure a newly created target Worker Session. This is never the message recipient." },
-    service_id: { type: "string", minLength: 1 },
-    target_objective_id: { type: "string", minLength: 1, description: "Target Objective. Defaults to the recipient's current Objective or compatibility Objective." },
-    work_item_id: { type: "string", minLength: 1, description: "Existing target-Objective WorkItem to use instead of creating one." },
-    type: { type: "string", enum: ["question", "change_request"] },
+    session_agent_id: { ...agentIdSchema, description: "Agent resource used only when Corptie must create the target Worker Session." },
+    target_objective_id: objectiveIdSchema,
+    work_item_id: workItemIdSchema,
     title: { type: "string", minLength: 1 },
-    summary: { type: "string", minLength: 1 },
-    acceptance_criteria: { type: "array", items: { type: "string", minLength: 1 } },
-    evidence: evidenceSchema,
-    resource_version: { type: "string", minLength: 1 },
-    max_iterations: { type: "integer", minimum: 1, maximum: 3 },
+    body: { type: "string", minLength: 1 },
+    message_kind: { type: "string", enum: ["message", "question", "update"] },
     idempotency_key: { type: "string", minLength: 1 }
-  }, ["type", "title", "summary"]),
-  tool("corptie_collaboration_accept", "Accept a proposed task or resume requested revisions and begin working.", {
-    task_id: { type: "string", minLength: 1 }
-  }, ["task_id"]),
-  tool("corptie_collaboration_reject", "Reject a proposed task with a concrete reason.", {
-    task_id: { type: "string", minLength: 1 },
-    reason: { type: "string", minLength: 1 }
-  }, ["task_id", "reason"]),
-  tool("corptie_collaboration_ask", "Ask the initiator for information required to decide or proceed.", messageProperties, ["task_id", "body"]),
-  tool("corptie_collaboration_reply", "Reply within the exact scope of an existing task. Never use this tool for a new user instruction or changed acceptance criteria.", messageProperties, ["task_id", "body"]),
-  tool("corptie_collaboration_submit_result", "Submit a formal result Artifact to the initiator for verification.", {
-    ...messageProperties,
-    artifact: {
-      type: "object",
-      properties: {
-        artifact_id: { type: "string", minLength: 1 },
-        type: { type: "string", minLength: 1 },
-        name: { type: "string", minLength: 1 },
-        uri: { type: "string", minLength: 1 },
-        metadata: { type: "object", additionalProperties: true }
-      },
-      required: ["type", "name", "uri"],
-      additionalProperties: false
-    }
-  }, ["task_id", "body", "artifact"]),
-  tool("corptie_collaboration_request_revision", "Report failed verification and request another iteration; Corptie escalates after iteration three.", messageProperties, ["task_id", "body"]),
-  tool("corptie_collaboration_complete", "Confirm that the delivered result meets the acceptance criteria and complete the task.", messageProperties, ["task_id", "body"]),
-  tool("corptie_collaboration_cancel", "Cancel a non-terminal task initiated by this exact authenticated Session.", {
-    task_id: { type: "string", minLength: 1 },
-    reason: { type: "string", minLength: 1 }
-  }, ["task_id", "reason"]),
-  tool("corptie_collaboration_get_task", "Read compact context for the current task action. Request full history only for audit or debugging.", {
-    task_id: { type: "string", minLength: 1 },
-    include_history: { type: "boolean", description: "Include every message, Artifact, and event. Defaults to false." }
-  }, ["task_id"]),
-  tool("corptie_collaboration_list_inbox", "List collaboration tasks addressed to this exact authenticated Session.", {
-    status: { type: "array", items: { type: "string", enum: taskStatuses } },
+  }, ["body", "idempotency_key"]),
+  tool("corptie_collaboration_channels_list", "List long-lived Channels containing this exact authenticated Session.", {
+    status: { type: "array", items: { type: "string", enum: ["active", "revoked", "legacy_unresolved"] } },
     limit: { type: "integer", minimum: 1, maximum: 500 }
-  })
+  }),
+  tool("corptie_collaboration_channel_get", "Get one Channel and its recent messages.", {
+    channel_id: { type: "string", minLength: 1 },
+    limit: { type: "integer", minimum: 1, maximum: 500 }
+  }, ["channel_id"]),
+  tool("corptie_collaboration_message_send", "Send a bidirectional message over an active Channel without creating task state or acceptance workflow.", {
+    channel_id: { type: "string", minLength: 1 },
+    body: { type: "string", minLength: 1 },
+    message_kind: { type: "string", enum: ["message", "question", "update"] },
+    in_reply_to_message_id: { type: "string", minLength: 1 },
+    idempotency_key: { type: "string", minLength: 1 }
+  }, ["channel_id", "body", "idempotency_key"]),
+  tool("corptie_collaboration_channel_revoke", "Revoke a Channel for both Session endpoints while preserving its history.", {
+    channel_id: { type: "string", minLength: 1 },
+    reason: { type: "string", minLength: 1 }
+  }, ["channel_id", "reason"])
 ]);
 
 export async function callCollaborationDynamicTool(client, name, input = {}) {
@@ -211,9 +184,6 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       priority: input.priority,
       agentId: input.agent_id,
       mainWorkspaceId: input.main_workspace_id,
-      parentWorkItemId: input.parent_work_item_id,
-      sourceWorkItemId: input.source_work_item_id,
-      relationship: input.relationship,
       artifactReference: input.artifact_reference ? {
         artifactId: input.artifact_reference.artifact_id,
         relation: input.artifact_reference.relation,
@@ -251,46 +221,33 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       status: input.status
     }),
     corptie_services_describe: () => client.get(`/internal/collaboration/services/${encodeURIComponent(input.service_id)}`),
-    corptie_collaboration_request: () => client.post("/internal/collaboration/task-confirmations", compact({
+    corptie_collaboration_channel_open: () => client.post("/internal/collaboration/channel-requests", compact({
       sessionAgentId: input.session_agent_id,
       recipientSessionName: input.recipient_session_name,
       recipientSessionId: input.recipient_session_id,
-      serviceId: input.service_id,
       targetObjectiveId: input.target_objective_id,
       workItemId: input.work_item_id,
-      type: input.type,
       title: input.title,
-      summary: input.summary,
-      acceptanceCriteria: input.acceptance_criteria ?? [],
-      evidence: input.evidence,
-      resourceVersion: input.resource_version,
-      maxIterations: input.max_iterations ?? 3,
+      body: input.body,
+      messageKind: input.message_kind,
       idempotencyKey: input.idempotency_key
     })),
-    corptie_collaboration_accept: () => action(client, input, "accept"),
-    corptie_collaboration_reject: () => action(client, input, "reject"),
-    corptie_collaboration_ask: () => action(client, input, "ask"),
-    corptie_collaboration_reply: () => action(client, input, "reply"),
-    corptie_collaboration_submit_result: () => action(client, input, "submit-result", {
-      artifact: {
-        artifactId: input.artifact?.artifact_id,
-        type: input.artifact?.type,
-        name: input.artifact?.name,
-        uri: input.artifact?.uri,
-        metadata: input.artifact?.metadata
-      }
+    corptie_collaboration_channels_list: () => client.get("/internal/collaboration/channels", {
+      status: input.status, limit: input.limit ?? 100
     }),
-    corptie_collaboration_request_revision: () => action(client, input, "request-revision"),
-    corptie_collaboration_complete: () => action(client, input, "complete"),
-    corptie_collaboration_cancel: () => action(client, input, "cancel"),
-    corptie_collaboration_get_task: () => client.get(
-      `/internal/collaboration/tasks/${encodeURIComponent(input.task_id)}`,
-      { includeHistory: input.include_history ? "true" : undefined }
+    corptie_collaboration_channel_get: () => client.get(
+      `/internal/collaboration/channels/${encodeURIComponent(input.channel_id)}`,
+      { limit: input.limit ?? 100 }
     ),
-    corptie_collaboration_list_inbox: () => client.get("/internal/collaboration/inbox", {
-      status: input.status,
-      limit: input.limit ?? 100
-    })
+    corptie_collaboration_message_send: () => client.post(
+      `/internal/collaboration/channels/${encodeURIComponent(input.channel_id)}/messages`,
+      compact({ body: input.body, messageKind: input.message_kind,
+        inReplyToMessageId: input.in_reply_to_message_id, idempotencyKey: input.idempotency_key })
+    ),
+    corptie_collaboration_channel_revoke: () => client.post(
+      `/internal/collaboration/channels/${encodeURIComponent(input.channel_id)}/revoke`,
+      { reason: input.reason }
+    )
   };
   const handler = handlers[name];
   if (!handler) {
@@ -299,9 +256,8 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     throw error;
   }
   const value = await handler();
-  if (name === "corptie_collaboration_request") requireCollaborationRequestReceipt(value);
-  const pendingConfirmation = Boolean(value?.confirmation)
-    && value.confirmation.status !== "confirmed";
+  if (name === "corptie_collaboration_channel_open") requireChannelRequestReceipt(value);
+  const pendingConfirmation = value?.request?.status === "pending";
   return afterSendToolNames.has(name)
     ? {
         ...value,
@@ -317,34 +273,18 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
     : value;
 }
 
-function requireCollaborationRequestReceipt(value) {
-  if (typeof value?.confirmation?.confirmationId === "string" && value.confirmation.confirmationId.trim()) return value;
-  const error = new Error("Corptie collaboration request did not return a confirmation receipt ID.");
-  error.code = "COLLABORATION_REQUEST_EMPTY_RESPONSE";
+function requireChannelRequestReceipt(value) {
+  if (value?.request?.status === "sent" && value.request.channel?.channelId) return value;
+  if (typeof value?.request?.requestId === "string" && value.request.requestId.trim()) return value;
+  const error = new Error("Corptie Channel request did not return a durable receipt.");
+  error.code = "CHANNEL_REQUEST_EMPTY_RESPONSE";
   throw error;
 }
 
 const afterSendToolNames = new Set([
-  "corptie_collaboration_request",
-  "corptie_collaboration_ask",
-  "corptie_collaboration_reply",
-  "corptie_collaboration_submit_result",
-  "corptie_collaboration_request_revision",
-  "corptie_collaboration_complete"
+  "corptie_collaboration_channel_open",
+  "corptie_collaboration_message_send"
 ]);
-
-function action(client, input, actionName, extra = {}) {
-  const { task_id, resource_version, idempotency_key, artifact: _artifact, ...body } = input;
-  return client.post(
-    `/internal/collaboration/tasks/${encodeURIComponent(task_id)}/actions/${actionName}`,
-    compact({
-      ...body,
-      ...extra,
-      resourceVersion: resource_version,
-      idempotencyKey: idempotency_key
-    })
-  );
-}
 
 function compact(value) {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));

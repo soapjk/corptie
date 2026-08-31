@@ -1222,6 +1222,10 @@ struct WorkItemDetailView: View {
             HStack(spacing: 7) {
                 compactStatusBadge(workItem.status)
                 metadataPill(priorityLabel, systemImage: "flag")
+                if let origin = workItem.creationOrigin {
+                    metadataPill(creationOriginLabel(origin), systemImage: "arrow.turn.down.right")
+                        .help(creationOriginHelp(origin))
+                }
             }
 
 
@@ -1269,6 +1273,22 @@ struct WorkItemDetailView: View {
                 }
             }
         }
+    }
+
+    private func creationOriginLabel(_ origin: WorkItemCreationOrigin) -> String {
+        switch origin.originType {
+        case "direct_user": L10n("用户创建")
+        case "session": L10n("Session 创建")
+        case "system": L10n("系统创建")
+        default: L10n("历史来源未知")
+        }
+    }
+
+    private func creationOriginHelp(_ origin: WorkItemCreationOrigin) -> String {
+        guard origin.originType == "session", let sessionID = origin.creatorSessionId else {
+            return creationOriginLabel(origin)
+        }
+        return L10nFormat("创建 Session：%@；仅为来源记录，不构成父子或协作关系", sessionID)
     }
 
     private func detailTextSection(title: String, systemImage: String, text: String) -> some View {

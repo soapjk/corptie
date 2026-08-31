@@ -45,6 +45,7 @@ struct WorkItem: Identifiable, Codable, Hashable {
     var acceptanceAssessment: WorkItemAcceptanceAssessment?
     var completionSuggestion: WorkItemCompletionSuggestion?
     var completionSource: WorkItemCompletionSource? = nil
+    var creationOrigin: WorkItemCreationOrigin? = nil
     var resourceVersion: Int = 1
     var createdAt: String
     var updatedAt: String
@@ -52,7 +53,7 @@ struct WorkItem: Identifiable, Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case id, objectiveId, title, description, acceptanceCriteria, priority, status
         case mainWorkspaceId, mainAgentId, currentSessionId, executionStatus
-        case acceptanceAssessment, completionSuggestion, completionSource
+        case acceptanceAssessment, completionSuggestion, completionSource, creationOrigin
         case resourceVersion
         case createdAt, updatedAt
     }
@@ -80,10 +81,21 @@ extension WorkItem {
         acceptanceAssessment = (try? container.decodeIfPresent(WorkItemAcceptanceAssessment.self, forKey: .acceptanceAssessment)) ?? nil
         completionSuggestion = (try? container.decodeIfPresent(WorkItemCompletionSuggestion.self, forKey: .completionSuggestion)) ?? nil
         completionSource = (try? container.decodeIfPresent(WorkItemCompletionSource.self, forKey: .completionSource)) ?? nil
+        creationOrigin = (try? container.decodeIfPresent(WorkItemCreationOrigin.self, forKey: .creationOrigin)) ?? nil
         resourceVersion = try container.decodeIfPresent(Int.self, forKey: .resourceVersion) ?? 1
         createdAt = try container.decode(String.self, forKey: .createdAt)
         updatedAt = try container.decode(String.self, forKey: .updatedAt)
     }
+}
+
+struct WorkItemCreationOrigin: Codable, Hashable {
+    let workItemId: String
+    let originType: String
+    let creatorSessionId: String?
+    let creationContextWorkItemId: String?
+    let creationContextMessageId: String?
+    let operationId: String?
+    let createdAt: String
 }
 
 struct WorkItemCompletionSource: Codable, Hashable {
