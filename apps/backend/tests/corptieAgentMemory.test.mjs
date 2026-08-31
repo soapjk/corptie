@@ -133,10 +133,11 @@ test("bundled Provider memories forbid autonomous Worktree creation and switchin
     "../resources/agent/global-instructions.production.md"
   ]) {
     const content = await readFile(new URL(relativePath, import.meta.url), "utf8");
-    assert.match(content, /programmatically creates, inventories, and binds the dedicated Worktree/u);
-    assert.match(content, /Do not create, select, or switch a Worktree on your own/u);
-    assert.match(content, /only when the direct user explicitly asks/u);
-    assert.match(content, /development task or as a recovery shortcut/u);
+    assert.match(content, /programmatically creates and binds the WorkItem Worktree/u);
+    assert.match(content, /Stay in that bound Workspace/u);
+    assert.match(content, /only when the direct user explicitly requests it/u);
+    assert.match(content, /Ordinary development work is not authorization/u);
     assert.doesNotMatch(content, /user does not need to explicitly request/u);
+    assert.equal(content.match(/create or switch Worktrees/gu)?.length, 1);
   }
 });

@@ -21,7 +21,7 @@ export const workspaceDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_create_worktree",
-    "Create a validated Git worktree for the active repository only when the direct user explicitly requests Worktree creation. Ordinary development work is not authorization. By default, Corptie schedules the logical Session to switch after the current turn completes.",
+    "Create a validated Git worktree only when the direct user explicitly requests it; ordinary development work is not authorization.",
     {
       target_path: {
         type: "string",
@@ -70,7 +70,7 @@ export const workspaceDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_switch_workspace",
-    "Schedule the active logical Session to switch to an existing registered worktree after the current turn completes, only when the direct user explicitly requests that Workspace switch.",
+    "Switch to a registered Worktree after the current turn, only when the direct user explicitly requests it.",
     {
       target_worktree_id: {
         type: "string",

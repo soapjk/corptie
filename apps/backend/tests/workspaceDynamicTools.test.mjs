@@ -34,13 +34,12 @@ test("mutating workspace tools require an explicit direct-user request", () => {
   const create = workspaceDynamicTools.find((definition) => definition.name === "corptie_create_worktree");
   const switchWorkspace = workspaceDynamicTools.find((definition) => definition.name === "corptie_switch_workspace");
   assert.match(create.description, /only when the direct user explicitly requests/u);
-  assert.match(create.description, /Ordinary development work is not authorization/u);
+  assert.match(create.description, /ordinary development work is not authorization/u);
   assert.match(switchWorkspace.description, /only when the direct user explicitly requests/u);
 });
 
 test("Session runtime instructions default to the programmatically bound Workspace", async () => {
   const serverSource = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
-  assert.match(serverSource, /Continue in the active bound Workspace by default/u);
-  assert.match(serverSource, /never create, select, or switch a Worktree on your own/u);
-  assert.match(serverSource, /ordinary development, fixing, testing, committing, or inspection is not implicit authorization/u);
+  assert.match(serverSource, /Stay in it; create or switch Worktrees only when the direct user explicitly requests it/u);
+  assert.match(serverSource, /Ordinary development is not authorization/u);
 });
