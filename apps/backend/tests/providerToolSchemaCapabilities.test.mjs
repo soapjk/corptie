@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import {
   CODEX_TOOL_SCHEMA_CAPABILITIES,
   createCodexAppServerProvider
@@ -25,6 +26,12 @@ test("Codex reports create attach but never claims thread/resume dynamic append"
   assert.equal(capabilities.replaceAtTurnBoundary, false);
   assert.equal(capabilities.restrictedGateway, true);
   assert.equal(capabilities.bindingReplacement, true);
+  assert.equal(
+    provider.descriptor.capabilities.includes(
+      AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY
+    ),
+    true
+  );
 });
 
 test("Claude exposes only catalog-backed authenticated MCP refresh", async () => {

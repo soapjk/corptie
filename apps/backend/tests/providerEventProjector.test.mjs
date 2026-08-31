@@ -300,6 +300,51 @@ test("a non-retryable Provider error persists an actionable send failure", async
   }
 });
 
+test("a turn-scoped Provider error fails only the Turn and keeps the Session retryable", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ event: event("turn.started"), binding });
+    const providerError = projector.project({
+      event: event("provider.error", {
+        payload: {
+          error: {
+            message: "Selected model is at capacity. Please try a different model.",
+            code: "serverOverloaded"
+          },
+          failureScope: "turn",
+          willRetry: false
+        }
+      }),
+      binding
+    });
+    const settled = projector.project({
+      event: event("turn.failed", {
+        payload: {
+          error: {
+            message: "Selected model is at capacity. Please try a different model.",
+            code: "serverOverloaded"
+          }
+        }
+      }),
+      binding
+    });
+
+    assert.equal(providerError.session.status, "running");
+    assert.notEqual(providerError.session.capabilities.canSend, false);
+    assert.equal(providerError.session.sendUnavailableReason, null);
+    assert.equal(settled.session.status, "failed");
+    assert.notEqual(settled.session.capabilities.canSend, false);
+    assert.equal(settled.session.sendUnavailableReason, null);
+    assert.equal(
+      store.getSessionTurn(binding.sessionId, binding.bindingId, "turn:one").execution_status,
+      "failed"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a pending collaboration confirmation is a successful turn handoff even after an earlier tool failure", async () => {
   const { directory, store, projector } = await fixture();
   try {
