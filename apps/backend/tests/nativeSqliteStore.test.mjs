@@ -248,6 +248,7 @@ test("stored Session detail reads its complete local timeline without Provider a
     const detail = store.getDetail("offline-session");
     assert.equal(detail.connectionStatus, "disconnected");
     assert.deepEqual(detail.items.map((item) => item.id), ["stored-message"]);
+    assert.deepEqual(store.getDetail("offline-session", { includeItems: false }).items, []);
     assert.deepEqual(store.getLatestTimelineItemWindow("offline-session", { limit: 50 }).items.map((item) => item.id), ["stored-message"]);
     assert.deepEqual(
       store.listSessionEvents("offline-session").map((event) => event.eventId),
