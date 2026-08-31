@@ -5653,10 +5653,13 @@ export class CorptieStore {
       const triggerEvent = triggerDeliveryId
         ? this.selectOne(
           `SELECT sequence FROM session_events
-           WHERE session_id = ? AND (
-             json_extract(source_json, '$.deliveryId') = ?
-             OR json_extract(payload_json, '$.deliveryId') = ?
-           ) ORDER BY sequence ASC LIMIT 1`,
+           WHERE session_id = ?
+             AND type = 'SessionUserMessageCreated'
+             AND (
+               json_extract(source_json, '$.deliveryId') = ?
+               OR json_extract(payload_json, '$.deliveryId') = ?
+             )
+           ORDER BY sequence DESC LIMIT 1`,
           [session.id, triggerDeliveryId, triggerDeliveryId]
         )
         : null;
@@ -5792,6 +5795,26 @@ export class CorptieStore {
       return this.getSessionRecoveryAttempt(attemptId);
     });
     this.scheduleSave();
+    return result;
+  }
+
+  retryUnstartedSessionRecoveryAttempt(attemptId) {
+    const timestamp = createdAtFromOrNow();
+    const result = this.runInTransaction(() => {
+      this.db.run(
+        `UPDATE session_recovery_attempts
+         SET state='frozen', error_code=NULL, error_message=NULL,
+             completed_at=NULL, updated_at=?
+         WHERE attempt_id=? AND state='failed'
+           AND manifest_hash IS NULL AND replacement_json IS NULL
+           AND error_code IN ('SESSION_BUSY','RECOVERY_ATTEMPT_STATE_INVALID')`,
+        [timestamp, requiredText(attemptId, "attemptId")]
+      );
+      return this.db.getRowsModified() === 1
+        ? this.getSessionRecoveryAttempt(attemptId)
+        : null;
+    });
+    if (result) this.scheduleSave();
     return result;
   }
 
