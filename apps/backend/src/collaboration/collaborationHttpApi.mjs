@@ -6,8 +6,12 @@ export function handleCollaborationHttpRequest({
   url,
   core,
   sessionCollaborationService,
+  sessionChannelService,
   onConfirmationStaged,
   onConfirmationResolved,
+  onChannelRequestStaged,
+  onChannelRequestResolved,
+  onChannelMessageCreated,
   onListWorkspaces,
   onCreateWorktree,
   onSwitchWorkspace,
@@ -19,6 +23,8 @@ export function handleCollaborationHttpRequest({
 }) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
+    || url.pathname.startsWith("/collaboration/channels/")
+    || url.pathname.startsWith("/collaboration/channel-requests/")
     || url.pathname.startsWith("/collaboration/tasks/")
     || url.pathname.startsWith("/collaboration/confirmations/")
     || url.pathname === "/collaboration/services"
@@ -29,7 +35,8 @@ export function handleCollaborationHttpRequest({
   Promise.resolve()
     .then(async () => {
       if (isProductApi) {
-        return handleProductRequest({ request, response, url, core, onConfirmationResolved });
+        return handleProductRequest({ request, response, url, core, sessionChannelService,
+          onConfirmationResolved, onChannelRequestResolved, onChannelMessageCreated });
       }
       const actorAgentId = requiredActor(request, core);
       const sessionMetadata = memoryMetadata(request);
@@ -236,6 +243,96 @@ export function handleCollaborationHttpRequest({
         });
       }
 
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/channels") {
+        if (!sessionChannelService) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Session Channels are unavailable.", 503);
+        const statuses = url.searchParams.getAll("status");
+        return sendJson(response, 200, { channels: sessionChannelService.listChannels(
+          sessionMetadata.sessionId,
+          { statuses: statuses.length ? statuses : undefined, limit: url.searchParams.get("limit") }
+        ) });
+      }
+
+      const channelMatch = url.pathname.match(/^\/internal\/collaboration\/channels\/([^/]+)$/);
+      if (request.method === "GET" && channelMatch) {
+        if (!sessionChannelService) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Session Channels are unavailable.", 503);
+        const channelId = decodeURIComponent(channelMatch[1]);
+        const channels = sessionChannelService.listChannels(sessionMetadata.sessionId, {
+          statuses: ["active", "revoked", "legacy_unresolved"], limit: 500
+        });
+        const channel = channels.find((candidate) => candidate.channelId === channelId);
+        if (!channel) throw apiError("CHANNEL_NOT_FOUND", "Channel was not found in this Session scope.", 404);
+        return sendJson(response, 200, {
+          channel,
+          messages: sessionChannelService.listMessages(channelId, sessionMetadata.sessionId, {
+            limit: url.searchParams.get("limit")
+          })
+        });
+      }
+
+      const channelMessagesMatch = url.pathname.match(/^\/internal\/collaboration\/channels\/([^/]+)\/messages$/);
+      if (request.method === "POST" && channelMessagesMatch) {
+        if (!sessionChannelService) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Session Channels are unavailable.", 503);
+        const input = await readJson(request);
+        const result = sessionChannelService.sendMessage({
+          channelId: decodeURIComponent(channelMessagesMatch[1]),
+          senderSessionId: sessionMetadata.sessionId,
+          ...input
+        });
+        await onChannelMessageCreated?.(result);
+        return sendJson(response, 201, result);
+      }
+
+      const channelRevokeMatch = url.pathname.match(/^\/internal\/collaboration\/channels\/([^/]+)\/revoke$/);
+      if (request.method === "POST" && channelRevokeMatch) {
+        if (!sessionChannelService) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Session Channels are unavailable.", 503);
+        const input = await readJson(request);
+        return sendJson(response, 200, { channel: sessionChannelService.revokeChannel(
+          decodeURIComponent(channelRevokeMatch[1]), sessionMetadata.sessionId, input.reason,
+          { type: "authenticated_session" }
+        ) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/channel-requests") {
+        if (!sessionChannelService || !sessionCollaborationService) {
+          throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Session Channel creation is unavailable.", 503);
+        }
+        const input = await readJson(request);
+        const sourceCapabilities = sessionCollaborationService.capabilities(
+          sessionMetadata, actorAgentId, { validateContext: true }
+        );
+        let recipientSessionId = input.recipientSessionId ?? null;
+        if (!recipientSessionId && input.recipientSessionName) {
+          recipientSessionId = core.store.getLogicalSessionByName(input.recipientSessionName)?.logicalSessionId ?? null;
+        }
+        if (recipientSessionId) {
+          recipientSessionId = resolveRecipientSession(sessionCollaborationService, sessionMetadata, actorAgentId, {
+            ...input, recipientSessionId
+          }).sessionId;
+        } else if (!input.targetObjectiveId || !input.sessionAgentId) {
+          throw apiError(
+            "SESSION_CREATION_RESOURCES_REQUIRED",
+            "Supply an exact recipient Session, or targetObjectiveId plus sessionAgentId so Corptie can create the target WorkItem and Session.",
+            400
+          );
+        }
+        const channelRequest = sessionChannelService.requestChannel({
+          ...input,
+          requestingSessionId: sourceCapabilities.sourceSessionId,
+          recipientSessionId
+        });
+        if (channelRequest.status === "sent") {
+          await onChannelMessageCreated?.(channelRequest);
+          return sendJson(response, 201, { request: channelRequest });
+        }
+        try {
+          await onChannelRequestStaged?.(channelRequest);
+        } catch (error) {
+          sessionChannelService.failRequest(channelRequest.requestId, error);
+          throw error;
+        }
+        return sendJson(response, 201, { request: channelRequest });
+      }
+
       if (request.method === "POST" && url.pathname === "/internal/collaboration/task-confirmations") {
         const input = await readJson(request);
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session-scoped collaboration is unavailable.", 503);
@@ -418,16 +515,61 @@ function headerText(request, name) {
   return normalized || null;
 }
 
-async function handleProductRequest({ request, response, url, core, onConfirmationResolved }) {
+async function handleProductRequest({ request, response, url, core, sessionChannelService,
+  onConfirmationResolved, onChannelRequestResolved, onChannelMessageCreated }) {
   if (request.method === "GET" && url.pathname === "/collaboration/overview") {
     return sendJson(response, 200, {
       agents: core.listAgents(),
       services: core.listServices(),
-      tasks: core.listTasks({
-        status: url.searchParams.getAll("status").length ? url.searchParams.getAll("status") : undefined,
-        limit: url.searchParams.get("limit")
-      })
+      channels: sessionChannelService
+        ? core.store.selectAll("SELECT * FROM session_collaboration_channels ORDER BY updated_at DESC LIMIT 500")
+          .map((row) => sessionChannelService.getChannel(row.channel_id))
+        : []
     });
+  }
+
+  const channelRequestMatch = url.pathname.match(/^\/collaboration\/channel-requests\/([^/]+)\/(confirm|reject)$/);
+  if (request.method === "POST" && channelRequestMatch) {
+    if (!onChannelRequestResolved) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Channel confirmation is unavailable.", 503);
+    const resolved = await onChannelRequestResolved(
+      decodeURIComponent(channelRequestMatch[1]), channelRequestMatch[2] === "confirm", { type: "desktop" }
+    );
+    return sendJson(response, 200, { request: resolved });
+  }
+
+  const compatibilityConfirmationMatch = url.pathname.match(/^\/collaboration\/confirmations\/([^/]+)\/(confirm|reject)$/);
+  if (request.method === "POST" && compatibilityConfirmationMatch && sessionChannelService) {
+    const requestId = decodeURIComponent(compatibilityConfirmationMatch[1]);
+    if (sessionChannelService.getRequest(requestId)) {
+      if (!onChannelRequestResolved) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Channel confirmation is unavailable.", 503);
+      const resolved = await onChannelRequestResolved(
+        requestId, compatibilityConfirmationMatch[2] === "confirm", { type: "desktop" }
+      );
+      return sendJson(response, 200, { request: resolved });
+    }
+  }
+
+  const productChannelMatch = url.pathname.match(/^\/collaboration\/channels\/([^/]+)$/);
+  if (request.method === "GET" && productChannelMatch) {
+    if (!sessionChannelService) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Session Channels are unavailable.", 503);
+    const channelId = decodeURIComponent(productChannelMatch[1]);
+    const channel = sessionChannelService.getChannel(channelId);
+    if (!channel) throw apiError("CHANNEL_NOT_FOUND", "Channel was not found.", 404);
+    return sendJson(response, 200, {
+      channel,
+      messages: sessionChannelService.listMessages(channelId, channel.sessionAId, { limit: 500 })
+    });
+  }
+
+  const productChannelMessageMatch = url.pathname.match(/^\/collaboration\/channels\/([^/]+)\/messages$/);
+  if (request.method === "POST" && productChannelMessageMatch) {
+    if (!sessionChannelService) throw apiError("SESSION_CHANNEL_UNAVAILABLE", "Session Channels are unavailable.", 503);
+    const input = await readJson(request);
+    const result = sessionChannelService.sendMessage({
+      channelId: decodeURIComponent(productChannelMessageMatch[1]), ...input
+    });
+    await onChannelMessageCreated?.(result);
+    return sendJson(response, 201, result);
   }
 
   if (request.method === "POST" && url.pathname === "/collaboration/services") {

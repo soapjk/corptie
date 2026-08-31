@@ -2,6 +2,46 @@ import XCTest
 @testable import CorptieMac
 
 final class CollaborationProtocolModelTests: XCTestCase {
+    func testSessionChannelDecodesEqualParticipantsAndBidirectionalMessages() throws {
+        let data = Data(#"""
+        {
+          "channel": {
+            "channelId": "channel:1",
+            "sessionAId": "session:a",
+            "sessionBId": "session:b",
+            "status": "active",
+            "requestedBySessionId": "session:a",
+            "authorizedAt": "2026-08-31T00:00:00.000Z",
+            "revokedAt": null,
+            "revocationReason": null,
+            "resourceVersion": 1,
+            "createdAt": "2026-08-31T00:00:00.000Z",
+            "updatedAt": "2026-08-31T00:01:00.000Z"
+          },
+          "messages": [
+            {
+              "messageId": "channel_message:1",
+              "channelId": "channel:1",
+              "senderSessionId": "session:b",
+              "recipientSessionId": "session:a",
+              "messageKind": "message",
+              "body": "Proactive reply",
+              "inReplyToMessageId": null,
+              "resourceContext": {},
+              "idempotencyKey": "reply:1",
+              "createdAt": "2026-08-31T00:01:00.000Z"
+            }
+          ]
+        }
+        """#.utf8)
+
+        let response = try JSONDecoder().decode(SessionCollaborationChannelResponse.self, from: data)
+        XCTAssertEqual(response.channel.sessionAId, "session:a")
+        XCTAssertEqual(response.channel.sessionBId, "session:b")
+        XCTAssertEqual(response.messages.first?.senderSessionId, "session:b")
+        XCTAssertEqual(response.messages.first?.recipientSessionId, "session:a")
+    }
+
     func testTaskC4471174DecodesHistoricalInitiatorSnapshotAndStableIdentities() throws {
         let data = Data(#"""
         {

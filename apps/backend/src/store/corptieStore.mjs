@@ -1489,6 +1489,145 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_collaboration_channels_sessions
       ON collaboration_channels(status, initiator_session_id, recipient_session_id);
 
+      -- Session collaboration v4. A Channel is a durable, bidirectional user
+      -- authorization between two exact logical Sessions. It is deliberately
+      -- independent from WorkItem and from the retired Collaboration Task
+      -- lifecycle above.
+      CREATE TABLE IF NOT EXISTS session_collaboration_channels (
+        channel_id TEXT PRIMARY KEY,
+        session_a_id TEXT NOT NULL,
+        session_b_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending_authorization'
+          CHECK (status IN ('pending_authorization', 'active', 'revoked', 'legacy_unresolved')),
+        requested_by_session_id TEXT NOT NULL,
+        authorized_at TEXT,
+        revoked_at TEXT,
+        revocation_reason TEXT,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (session_a_id < session_b_id),
+        CHECK (requested_by_session_id IN (session_a_id, session_b_id))
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_session_collaboration_channels_pair_active
+      ON session_collaboration_channels(session_a_id, session_b_id)
+      WHERE status IN ('pending_authorization', 'active');
+
+      CREATE INDEX IF NOT EXISTS idx_session_collaboration_channels_a
+      ON session_collaboration_channels(session_a_id, status, updated_at DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_session_collaboration_channels_b
+      ON session_collaboration_channels(session_b_id, status, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS session_collaboration_channel_requests (
+        request_id TEXT PRIMARY KEY,
+        channel_id TEXT,
+        requesting_session_id TEXT NOT NULL,
+        requested_recipient_session_id TEXT,
+        request_json TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'confirmed', 'rejected', 'failed')),
+        idempotency_key TEXT NOT NULL,
+        first_message_id TEXT,
+        failure_json TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        UNIQUE (requesting_session_id, idempotency_key),
+        FOREIGN KEY (channel_id) REFERENCES session_collaboration_channels(channel_id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_collaboration_channel_requests_session
+      ON session_collaboration_channel_requests(requesting_session_id, status, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS session_collaboration_channel_authorizations (
+        authorization_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        channel_id TEXT,
+        requesting_session_id TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK (decision IN ('confirmed', 'rejected', 'revoked')),
+        evidence_json TEXT NOT NULL DEFAULT '{}',
+        decided_at TEXT NOT NULL,
+        FOREIGN KEY (request_id) REFERENCES session_collaboration_channel_requests(request_id) ON DELETE RESTRICT,
+        FOREIGN KEY (channel_id) REFERENCES session_collaboration_channels(channel_id) ON DELETE RESTRICT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_session_collaboration_channel_authorizations_request_decision
+      ON session_collaboration_channel_authorizations(request_id, decision);
+
+      CREATE INDEX IF NOT EXISTS idx_session_collaboration_channel_authorizations_channel
+      ON session_collaboration_channel_authorizations(channel_id, decided_at ASC);
+
+      CREATE TRIGGER IF NOT EXISTS session_collaboration_channel_authorizations_immutable_update
+      BEFORE UPDATE ON session_collaboration_channel_authorizations
+      BEGIN SELECT RAISE(ABORT, 'CHANNEL_AUTHORIZATION_AUDIT_IMMUTABLE'); END;
+
+      CREATE TRIGGER IF NOT EXISTS session_collaboration_channel_authorizations_immutable_delete
+      BEFORE DELETE ON session_collaboration_channel_authorizations
+      BEGIN SELECT RAISE(ABORT, 'CHANNEL_AUTHORIZATION_AUDIT_IMMUTABLE'); END;
+
+      CREATE TABLE IF NOT EXISTS session_collaboration_messages (
+        message_id TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        sender_session_id TEXT NOT NULL,
+        recipient_session_id TEXT NOT NULL,
+        message_kind TEXT NOT NULL DEFAULT 'message'
+          CHECK (message_kind IN ('message', 'question', 'update')),
+        body TEXT NOT NULL,
+        in_reply_to_message_id TEXT,
+        resource_context_json TEXT NOT NULL DEFAULT '{}',
+        idempotency_key TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (sender_session_id, idempotency_key),
+        FOREIGN KEY (channel_id) REFERENCES session_collaboration_channels(channel_id) ON DELETE RESTRICT,
+        FOREIGN KEY (in_reply_to_message_id) REFERENCES session_collaboration_messages(message_id) ON DELETE SET NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_collaboration_messages_channel
+      ON session_collaboration_messages(channel_id, created_at ASC, message_id ASC);
+
+      CREATE TABLE IF NOT EXISTS session_collaboration_deliveries (
+        delivery_id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL UNIQUE,
+        recipient_session_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending', 'queued', 'delivering', 'delivered', 'failed')),
+        attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        next_attempt_at TEXT,
+        delivered_at TEXT,
+        target_turn_id TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (message_id) REFERENCES session_collaboration_messages(message_id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_collaboration_deliveries_pending
+      ON session_collaboration_deliveries(status, next_attempt_at, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS work_item_creation_origins (
+        work_item_id TEXT PRIMARY KEY,
+        origin_type TEXT NOT NULL
+          CHECK (origin_type IN ('direct_user', 'session', 'system', 'legacy_unattributed')),
+        creator_session_id TEXT,
+        creation_context_work_item_id TEXT,
+        creation_context_message_id TEXT,
+        operation_id TEXT,
+        created_at TEXT NOT NULL,
+        CHECK ((origin_type = 'session' AND creator_session_id IS NOT NULL)
+          OR (origin_type <> 'session' AND creator_session_id IS NULL)),
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE
+      );
+
+      CREATE TRIGGER IF NOT EXISTS work_item_creation_origins_immutable_update
+      BEFORE UPDATE ON work_item_creation_origins
+      BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_CREATION_ORIGIN_IMMUTABLE'); END;
+
+      CREATE TRIGGER IF NOT EXISTS work_item_creation_origins_immutable_delete
+      BEFORE DELETE ON work_item_creation_origins
+      WHEN EXISTS (SELECT 1 FROM work_items WHERE id = OLD.work_item_id)
+      BEGIN SELECT RAISE(ABORT, 'WORK_ITEM_CREATION_ORIGIN_IMMUTABLE'); END;
+
       CREATE TABLE IF NOT EXISTS agent_work_items (
         work_item_id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
@@ -2732,6 +2871,22 @@ export class CorptieStore {
     this.ensureColumn("work_items", "completion_operation_id", "TEXT");
     this.ensureColumn("work_items", "completion_source_type", "TEXT");
     this.ensureColumn("work_items", "cancellation_operation_id", "TEXT");
+    this.runDataMigrationOnce("work-item-creation-origins-v1", () => {
+      this.db.run(
+        `INSERT OR IGNORE INTO work_item_creation_origins (
+           work_item_id, origin_type, creator_session_id, creation_context_work_item_id,
+           creation_context_message_id, operation_id, created_at
+         )
+         SELECT id,
+           CASE WHEN created_by_session_id IS NOT NULL THEN 'session' ELSE 'legacy_unattributed' END,
+           created_by_session_id,
+           CASE WHEN created_by_session_id IS NOT NULL THEN source_work_item_id ELSE NULL END,
+           NULL,
+           idempotency_key,
+           created_at
+         FROM work_items`
+      );
+    });
     this.ensureColumn("git_worktrees", "dedicated", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("git_worktrees", "created_by_startup_operation_id", "TEXT");
     this.ensureColumn("git_worktrees", "resource_version", "INTEGER NOT NULL DEFAULT 1");
@@ -9816,7 +9971,7 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
-  createWorkItem(input = {}) {
+  createWorkItem(input = {}, creationOrigin = {}) {
     const normalized = validateWorkItemInput(input, "create");
     if (normalized.status === "canceled") {
       throw storeDomainError(
@@ -9841,25 +9996,52 @@ export class CorptieStore {
     this.assertWorkItemAssociations(normalized, objective);
     const id = normalized.id ?? `work_item:${randomUUID()}`;
     const now = createdAtFromOrNow();
-    this.db.run(
-      `INSERT INTO work_items (id, objective_id, title, description, acceptance_criteria, priority, status, main_workspace_id, main_agent_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        normalized.objectiveId,
-        normalized.title,
-        normalized.description ?? "",
-        normalized.acceptanceCriteria ?? "",
-        normalized.priority ?? "medium",
-        normalized.status ?? "todo",
-        normalized.mainWorkspaceId ?? null,
-        normalized.mainAgentId ?? null,
-        now,
-        now,
-      ]
-    );
+    const origin = normalizeWorkItemCreationOrigin(creationOrigin);
+    this.runInTransaction(() => {
+      this.db.run(
+        `INSERT INTO work_items (id, objective_id, title, description, acceptance_criteria, priority, status, main_workspace_id, main_agent_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          normalized.objectiveId,
+          normalized.title,
+          normalized.description ?? "",
+          normalized.acceptanceCriteria ?? "",
+          normalized.priority ?? "medium",
+          normalized.status ?? "todo",
+          normalized.mainWorkspaceId ?? null,
+          normalized.mainAgentId ?? null,
+          now,
+          now,
+        ]
+      );
+      this.db.run(
+        `INSERT INTO work_item_creation_origins (
+           work_item_id, origin_type, creator_session_id, creation_context_work_item_id,
+           creation_context_message_id, operation_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [id, origin.originType, origin.creatorSessionId, origin.creationContextWorkItemId,
+          origin.creationContextMessageId, origin.operationId, now]
+      );
+    });
     this.scheduleSave();
     return this.getWorkItem(id);
+  }
+
+  getWorkItemCreationOrigin(workItemId) {
+    const row = this.selectOne(
+      "SELECT * FROM work_item_creation_origins WHERE work_item_id=?",
+      [workItemId]
+    );
+    return row ? {
+      workItemId: row.work_item_id,
+      originType: row.origin_type,
+      creatorSessionId: row.creator_session_id ?? null,
+      creationContextWorkItemId: row.creation_context_work_item_id ?? null,
+      creationContextMessageId: row.creation_context_message_id ?? null,
+      operationId: row.operation_id ?? null,
+      createdAt: row.created_at
+    } : null;
   }
 
   listWorkItems() {
@@ -12705,6 +12887,27 @@ function legacyHistoryRepairStatus(value) {
 
 function optionalStoredText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeWorkItemCreationOrigin(input = {}) {
+  const originType = optionalStoredText(input.originType) ?? "system";
+  if (!["direct_user", "session", "system", "legacy_unattributed"].includes(originType)) {
+    throw storeDomainError("INVALID_WORK_ITEM_CREATION_ORIGIN", `Unsupported WorkItem creation origin: ${originType}.`);
+  }
+  const creatorSessionId = optionalStoredText(input.creatorSessionId);
+  if (originType === "session" && !creatorSessionId) {
+    throw storeDomainError("WORK_ITEM_CREATOR_SESSION_REQUIRED", "Session-created WorkItems require creatorSessionId.");
+  }
+  if (originType !== "session" && creatorSessionId) {
+    throw storeDomainError("WORK_ITEM_CREATOR_SESSION_FORBIDDEN", `${originType} WorkItems cannot name a creator Session.`);
+  }
+  return {
+    originType,
+    creatorSessionId,
+    creationContextWorkItemId: optionalStoredText(input.creationContextWorkItemId),
+    creationContextMessageId: optionalStoredText(input.creationContextMessageId),
+    operationId: optionalStoredText(input.operationId)
+  };
 }
 
 function nonNegativeInteger(value) {

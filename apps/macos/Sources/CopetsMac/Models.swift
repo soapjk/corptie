@@ -709,7 +709,41 @@ struct SessionCollectionPatchEnvelope: Decodable, Sendable {
 struct CollaborationOverviewResponse: Decodable {
     let agents: [CollaborationAgent]
     let services: [CollaborationService]
-    let tasks: [CollaborationTask]
+    let channels: [SessionCollaborationChannel]
+}
+
+struct SessionCollaborationChannelResponse: Decodable {
+    let channel: SessionCollaborationChannel
+    let messages: [SessionCollaborationMessage]
+}
+
+struct SessionCollaborationChannel: Identifiable, Decodable, Equatable {
+    var id: String { channelId }
+    let channelId: String
+    let sessionAId: String
+    let sessionBId: String
+    let status: String
+    let requestedBySessionId: String
+    let authorizedAt: String?
+    let revokedAt: String?
+    let revocationReason: String?
+    let resourceVersion: Int
+    let createdAt: String?
+    let updatedAt: String?
+}
+
+struct SessionCollaborationMessage: Identifiable, Decodable, Equatable {
+    var id: String { messageId }
+    let messageId: String
+    let channelId: String
+    let senderSessionId: String
+    let recipientSessionId: String
+    let messageKind: String
+    let body: String
+    let inReplyToMessageId: String?
+    let resourceContext: [String: JSONValue]?
+    let idempotencyKey: String
+    let createdAt: String
 }
 
 struct CollaborationTaskResponse: Decodable {
@@ -1358,6 +1392,8 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationProcessingStatus: String? = nil
     var collaborationConfirmationId: String? = nil
     var collaborationConfirmationStatus: String? = nil
+    var collaborationAuthorizationKind: String? = nil
+    var collaborationChannelId: String? = nil
     var collaborationAcceptanceCriteria: [String]? = nil
     var automationId: String? = nil
     var automationName: String? = nil

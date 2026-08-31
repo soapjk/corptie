@@ -7,10 +7,11 @@ import {
 
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
-  assert.equal(names.length, 25);
+  assert.equal(names.length, 19);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("corptie_agents_discover"));
-  assert.ok(names.includes("corptie_collaboration_request"));
+  assert.ok(names.includes("corptie_collaboration_channel_open"));
+  assert.ok(names.includes("corptie_collaboration_message_send"));
   assert.ok(names.includes("corptie_sessions_discover"));
   assert.ok(names.includes("corptie_collaboration_work_items_create"));
   assert.ok(names.includes("corptie_collaboration_work_items_share_artifact"));
@@ -22,10 +23,10 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
     assert.equal(entry.inputSchema.type, "object");
     assert.equal(entry.inputSchema.additionalProperties, false);
   }
-  const request = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_request");
-  assert.equal(Object.hasOwn(request.inputSchema.properties, "parent_task_id"), false);
-  assert.equal(Object.hasOwn(request.inputSchema.properties, "context_id"), false);
+  assert.equal(names.some((name) => name.includes("task")), false);
   const createWorkItem = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_work_items_create");
+  assert.equal(Object.hasOwn(createWorkItem.inputSchema.properties, "parent_work_item_id"), false);
+  assert.equal(Object.hasOwn(createWorkItem.inputSchema.properties, "source_work_item_id"), false);
   assert.equal(createWorkItem.inputSchema.properties.artifact_reference.required[0], "artifact_id");
   assert.equal(createWorkItem.inputSchema.properties.file_reference.required[0], "path");
 });
@@ -77,70 +78,63 @@ test("dynamic WorkItem creation maps Artifact and file reference contracts witho
   assert.equal(calls[0].body.fileReference.relation, "test_plan");
 });
 
-test("dynamic request maps tool input to the authenticated collaboration HTTP contract", async () => {
+test("dynamic Channel open maps tool input to the authenticated collaboration HTTP contract", async () => {
   const calls = [];
   const client = {
     post: async (path, body) => {
       calls.push({ path, body });
-      return { confirmation: { confirmationId: "confirmation-a" } };
+      return { request: { requestId: "channel-request-a", status: "pending" } };
     }
   };
 
-  const result = await callCollaborationDynamicTool(client, "corptie_collaboration_request", {
+  const result = await callCollaborationDynamicTool(client, "corptie_collaboration_channel_open", {
     session_agent_id: "agent-b",
-    type: "change_request",
-    title: "Update API",
-    summary: "Add the endpoint",
-    parent_task_id: "work_item:wrong-parent",
-    context_id: "work_item:wrong-context"
+    target_objective_id: "objective-b",
+    title: "Peer Session",
+    body: "Add the endpoint",
+    message_kind: "question",
+    idempotency_key: "open-a"
   });
 
   assert.deepEqual(calls, [{
-    path: "/internal/collaboration/task-confirmations",
+    path: "/internal/collaboration/channel-requests",
     body: {
       sessionAgentId: "agent-b",
-      type: "change_request",
-      title: "Update API",
-      summary: "Add the endpoint",
-      acceptanceCriteria: [],
-      maxIterations: 3
+      targetObjectiveId: "objective-b",
+      title: "Peer Session",
+      body: "Add the endpoint",
+      messageKind: "question",
+      idempotencyKey: "open-a"
     }
   }]);
   assert.equal(result.coordination.delivery, "awaiting_user_confirmation");
   assert.equal(result.coordination.nextAction, "end_current_turn");
 });
 
-test("dynamic request rejects an empty success response instead of reporting coordination success", async () => {
+test("dynamic Channel open rejects an empty success response instead of reporting coordination success", async () => {
   await assert.rejects(
-    callCollaborationDynamicTool({ post: async () => ({}) }, "corptie_collaboration_request", {
+    callCollaborationDynamicTool({ post: async () => ({}) }, "corptie_collaboration_channel_open", {
       session_agent_id: "agent-b",
-      type: "change_request",
-      title: "Update API",
-      summary: "Add the endpoint"
+      target_objective_id: "objective-b",
+      body: "Add the endpoint",
+      idempotency_key: "open-empty"
     }),
-    (error) => error.code === "COLLABORATION_REQUEST_EMPTY_RESPONSE"
+    (error) => error.code === "CHANNEL_REQUEST_EMPTY_RESPONSE"
   );
 });
 
-test("dynamic request reports an already confirmed exact Session route as sent", async () => {
+test("dynamic Channel open reports an active exact Session route as sent", async () => {
   const result = await callCollaborationDynamicTool({
     post: async () => ({
-      confirmation: {
-        confirmationId: "confirmation-trusted",
-        status: "confirmed",
-        taskId: "task-trusted"
-      },
-      routeAuthorization: "trusted_session_pair"
+      request: { status: "sent", channel: { channelId: "channel:trusted" } }
     })
-  }, "corptie_collaboration_request", {
+  }, "corptie_collaboration_channel_open", {
     recipient_session_id: "session:target",
-    type: "question",
-    title: "Follow up",
-    summary: "Use the previously confirmed exact Session route."
+    body: "Use the active exact Session Channel.",
+    idempotency_key: "follow-up"
   });
 
-  assert.equal(result.confirmation.status, "confirmed");
-  assert.equal(result.routeAuthorization, "trusted_session_pair");
+  assert.equal(result.request.status, "sent");
   assert.equal(result.coordination.delivery, "push");
   assert.equal(result.coordination.nextAction, "end_current_turn");
 });

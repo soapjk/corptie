@@ -148,7 +148,7 @@ export class ObjectiveApplicationService {
 
   // ---- WorkItem ----
 
-  createWorkItem(input = {}) {
+  createWorkItem(input = {}, options = {}) {
     const normalized = validateWorkItemInput(input, "create");
     if (normalized.id) {
       const existing = this.store.getWorkItem(normalized.id);
@@ -159,7 +159,11 @@ export class ObjectiveApplicationService {
         return existing;
       }
     }
-    return this.emit("WorkItemChanged", this.store.createWorkItem(normalized), "created");
+    return this.emit(
+      "WorkItemChanged",
+      this.store.createWorkItem(normalized, options.creationOrigin ?? {}),
+      "created"
+    );
   }
 
   listWorkItems() {
