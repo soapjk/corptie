@@ -3500,12 +3500,6 @@ export class CorptieStore {
       ON provider_event_inbox(binding_id, provider_sequence);
       CREATE INDEX IF NOT EXISTS idx_provider_event_inbox_status
       ON provider_event_inbox(status, received_at);
-      CREATE INDEX IF NOT EXISTS idx_provider_event_inbox_terminal_turn
-      ON provider_event_inbox(
-        binding_id, turn_id, received_at DESC, provider_event_id DESC
-      )
-      WHERE status = 'applied'
-        AND event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled');
 
       CREATE TABLE IF NOT EXISTS provider_binding_cursors (
         binding_id TEXT PRIMARY KEY,
@@ -3617,24 +3611,62 @@ export class CorptieStore {
       "turn.failed": "failed",
       "turn.cancelled": "cancelled"
     };
-    const terminalEvents = this.selectAll(
-      `SELECT turns.session_id, turns.binding_id, turns.turn_id,
-              inbox.event_type, inbox.occurred_at, inbox.received_at,
-              inbox.provider_event_id
-       FROM session_turns turns
-       JOIN provider_event_inbox inbox
-         ON inbox.rowid = (
-           SELECT terminal.rowid
-           FROM provider_event_inbox terminal
-           WHERE terminal.binding_id = turns.binding_id
-             AND terminal.turn_id = turns.turn_id
-             AND terminal.status = 'applied'
-             AND terminal.event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
-           ORDER BY terminal.received_at DESC, terminal.provider_event_id DESC
-           LIMIT 1
-         )
-       WHERE turns.execution_status IN ('idle', 'running', 'blocked')`
+    const activeTurns = this.selectAll(
+      `SELECT session_id, binding_id, turn_id
+       FROM session_turns
+       WHERE execution_status IN ('idle', 'running', 'blocked')`
     );
+    if (activeTurns.length === 0) return 0;
+
+    const hasTerminalTurnIndex = Boolean(this.selectOne(
+      `SELECT 1 FROM sqlite_master
+       WHERE type = 'index' AND name = 'idx_provider_event_inbox_terminal_turn'`
+    ));
+    const terminalEvents = hasTerminalTurnIndex
+      ? this.selectAll(
+        `SELECT turns.session_id, turns.binding_id, turns.turn_id,
+                inbox.event_type, inbox.occurred_at, inbox.received_at,
+                inbox.provider_event_id
+         FROM session_turns turns
+         JOIN provider_event_inbox inbox
+           ON inbox.rowid = (
+             SELECT terminal.rowid
+             FROM provider_event_inbox terminal
+             WHERE terminal.binding_id = turns.binding_id
+               AND terminal.turn_id = turns.turn_id
+               AND terminal.status = 'applied'
+               AND terminal.event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
+             ORDER BY terminal.received_at DESC, terminal.provider_event_id DESC
+             LIMIT 1
+           )
+         WHERE turns.execution_status IN ('idle', 'running', 'blocked')`
+      )
+      : activeTurns.flatMap((turn) => {
+        // Older databases do not have the terminal-turn partial index. Building
+        // it synchronously scans the large payload table before the HTTP server
+        // can listen. The regression being repaired is caused by an item event
+        // arriving immediately after a terminal event, so inspect only the
+        // bounded tail of this exact Provider binding during the one-time
+        // compatibility path.
+        const event = this.selectOne(
+          `SELECT event_type, occurred_at, received_at, provider_event_id
+           FROM (
+             SELECT rowid, turn_id, event_type, occurred_at, received_at,
+                    provider_event_id, status
+             FROM provider_event_inbox INDEXED BY idx_provider_event_inbox_binding_sequence
+             WHERE binding_id = ?
+             ORDER BY provider_sequence DESC, rowid DESC
+             LIMIT 512
+           ) recent
+           WHERE turn_id = ?
+             AND status = 'applied'
+             AND event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
+           ORDER BY received_at DESC, provider_event_id DESC
+           LIMIT 1`,
+          [turn.binding_id, turn.turn_id]
+        );
+        return event ? [{ ...turn, ...event }] : [];
+      });
     const repairedSessions = new Set();
     const repairedTurns = new Set();
     for (const event of terminalEvents) {

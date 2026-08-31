@@ -36,6 +36,7 @@ test("development launcher starts one detached App without a process guardian", 
   assert.doesNotMatch(contents, /\bnohup\b/u);
   assert.doesNotMatch(contents, /\bopen -n -F/u);
   assert.match(contents, /launch-development-detached\.py/u);
+  assert.match(contents, /pwd -P/u);
   assert.match(contents, /CORPTIE_DEVELOPMENT_BACKEND_LAUNCHER=/u);
   assert.match(contents, /CORPTIE_DEVELOPMENT_BACKEND_LOG=/u);
   assert.match(detachedLauncher, /os\.setsid\(\)/u);
