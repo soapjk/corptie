@@ -609,14 +609,16 @@ export function handleEntityHttpRequest({
       if (request.method === "GET" && objectiveWorkItemsMatch) {
         const id = decodeURIComponent(objectiveWorkItemsMatch[1]);
         return sendJson(response, 200, {
-          workItems: objectiveService.listWorkItemsByObjective(id).map(presentWorkItemAcceptance)
+          workItems: objectiveService.listWorkItemsByObjective(id)
+            .map((item) => presentWorkItemWithOrigin(objectiveService, item))
         });
       }
 
       // ---- WorkItem ----
       if (request.method === "GET" && path === "/work-items") {
         return sendJson(response, 200, {
-          workItems: objectiveService.listWorkItems().map(presentWorkItemAcceptance)
+          workItems: objectiveService.listWorkItems()
+            .map((item) => presentWorkItemWithOrigin(objectiveService, item))
         });
       }
       if (request.method === "POST" && path === "/work-items") {
@@ -626,7 +628,9 @@ export function handleEntityHttpRequest({
         timing.workItemId = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
         timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         phaseStartedAt = performance.now();
-        const created = presentWorkItemAcceptance(objectiveService.createWorkItem(input));
+        const created = presentWorkItemWithOrigin(objectiveService, objectiveService.createWorkItem(input, {
+          creationOrigin: { originType: "direct_user" }
+        }));
         timing.workItemId = created.id;
         timing.phases.validateAndPersistMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         const result = sendJson(response, 201, created);
@@ -638,7 +642,7 @@ export function handleEntityHttpRequest({
       if (workItemMatch) {
         const id = decodeURIComponent(workItemMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, presentWorkItemAcceptance(objectiveService.getWorkItem(id)));
+          return sendJson(response, 200, presentWorkItemWithOrigin(objectiveService, objectiveService.getWorkItem(id)));
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
@@ -649,7 +653,7 @@ export function handleEntityHttpRequest({
           return sendJson(
             response,
             200,
-            presentWorkItemAcceptance(objectiveService.updateWorkItem(id, input))
+            presentWorkItemWithOrigin(objectiveService, objectiveService.updateWorkItem(id, input))
           );
         }
         if (request.method === "DELETE") {
@@ -1420,6 +1424,13 @@ function validateGeneratedFormEnums(fields, schema) {
       throw apiError("INVALID_GENERATED_DRAFT", "Generated priority is invalid.", 502);
     }
   }
+}
+
+function presentWorkItemWithOrigin(objectiveService, workItem) {
+  return {
+    ...presentWorkItemAcceptance(workItem),
+    creationOrigin: objectiveService.store.getWorkItemCreationOrigin(workItem.id)
+  };
 }
 
 async function readJson(request) {

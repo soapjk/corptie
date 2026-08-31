@@ -666,7 +666,7 @@ test("a formal task rejects a replaced broken Worker without silently changing i
   }
 });
 
-test("Worker creation requires an explicit relation, is Objective-scoped, and retries idempotently", async () => {
+test("Worker creates an independent WorkItem with Session provenance and retries idempotently", async () => {
   const f = await fixture();
   try {
     const agent = f.store.createAgent({ id: "agent:worker", name: "Worker", role: "independentContributor" });
@@ -675,20 +675,26 @@ test("Worker creation requires an explicit relation, is Objective-scoped, and re
     session(f.store, f.core, { providerSessionId: "provider:worker", logicalSessionId: "session:worker", agentId: agent.agentId, kind: "worker", objectiveId: objective.id, workItemId: source.id, cwd: f.directory });
     const metadata = { sessionId: "provider:worker" };
 
-    assert.throws(() => f.service.createWorkItem(metadata, agent.agentId, {
-      title: "Unrelated", idempotencyKey: "create:bad"
-    }), { code: "WORKER_RELATION_REQUIRED" });
     const created = f.service.createWorkItem(metadata, agent.agentId, {
-      title: "Delegated", acceptanceCriteria: "Has evidence", relationship: "delegated_subtask",
-      idempotencyKey: "create:delegated"
+      title: "Independent", acceptanceCriteria: "Has evidence",
+      idempotencyKey: "create:independent"
     });
     const replay = f.service.createWorkItem(metadata, agent.agentId, {
-      title: "Delegated", acceptanceCriteria: "Has evidence", relationship: "delegated_subtask",
-      idempotencyKey: "create:delegated"
+      title: "Independent", acceptanceCriteria: "Has evidence",
+      idempotencyKey: "create:independent"
     });
     assert.equal(replay.workItem.id, created.workItem.id);
     assert.equal(replay.idempotentReplay, true);
-    assert.equal(f.store.listWorkItemDependencies(created.workItem.id)[0].target_work_item_id, source.id);
+    assert.deepEqual(f.store.listWorkItemDependencies(created.workItem.id), []);
+    assert.equal(created.workItem.parentWorkItemId, undefined);
+    assert.equal(f.store.getWorkItem(created.workItem.id).parent_work_item_id, null);
+    assert.equal(f.store.getWorkItem(created.workItem.id).source_work_item_id, null);
+    const origin = f.store.getWorkItemCreationOrigin(created.workItem.id);
+    assert.equal(origin.creatorSessionId, "session:worker");
+    assert.equal(origin.creationContextWorkItemId, source.id);
+    assert.throws(() => f.service.createWorkItem(metadata, agent.agentId, {
+      title: "Deprecated hierarchy", relationship: "depends_on", idempotencyKey: "create:deprecated"
+    }), { code: "UNKNOWN_FIELD" });
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -760,7 +766,7 @@ test("WorkItem creation validates, persists, and returns an existing Artifact re
     });
     f.store.db.run("UPDATE work_items SET current_session_id=? WHERE id=?", ["provider:artifact-worker", source.id]);
     assert.throws(() => f.service.createWorkItem({ sessionId: "provider:artifact-worker" }, workerAgent.agentId, {
-      title: "Unauthorized Artifact propagation", relationship: "delegated_subtask",
+      title: "Unauthorized Artifact propagation",
       idempotencyKey: "create:unauthorized-artifact",
       artifactReference: { artifactId: artifact.artifactId }
     }), { code: "ARTIFACT_READ_FORBIDDEN" });

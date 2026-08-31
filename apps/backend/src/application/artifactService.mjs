@@ -1031,12 +1031,6 @@ export class ArtifactService {
     const first = this.store.getWorkItem(firstWorkItemId);
     const second = this.store.getWorkItem(secondWorkItemId);
     if (!first || !second || first.objective_id !== second.objective_id) return false;
-    if (first.source_work_item_id === secondWorkItemId
-      || first.parent_work_item_id === secondWorkItemId
-      || second.source_work_item_id === firstWorkItemId
-      || second.parent_work_item_id === firstWorkItemId) {
-      return true;
-    }
     return this.store.listWorkItemDependencies(firstWorkItemId)
       .some((edge) => edge.target_work_item_id === secondWorkItemId)
       || this.store.listWorkItemDependents(firstWorkItemId)
@@ -1048,15 +1042,8 @@ export class ArtifactService {
     const related = new Set([context.workItemId]);
     const current = this.store.getWorkItem(context.workItemId);
     if (!current) return related;
-    if (current.source_work_item_id) related.add(current.source_work_item_id);
-    if (current.parent_work_item_id) related.add(current.parent_work_item_id);
     for (const edge of this.store.listWorkItemDependencies(context.workItemId)) related.add(edge.target_work_item_id);
     for (const edge of this.store.listWorkItemDependents(context.workItemId)) related.add(edge.work_item_id);
-    for (const candidate of this.store.listWorkItemsByObjective(context.objectiveId)) {
-      if (candidate.source_work_item_id === context.workItemId || candidate.parent_work_item_id === context.workItemId) {
-        related.add(candidate.id);
-      }
-    }
     return related;
   }
 
