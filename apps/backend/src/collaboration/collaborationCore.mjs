@@ -1918,8 +1918,7 @@ export class CollaborationCore {
       `SELECT * FROM collaboration_tasks
        WHERE protocol_version = '1.0' OR source_objective_id IS NULL OR target_objective_id IS NULL OR work_item_id IS NULL`
     );
-    this.store.db.run("BEGIN IMMEDIATE TRANSACTION");
-    try {
+    return this.store.runInTransaction(() => {
       for (const row of rows) {
         const initiator = this.#requireAgent(row.initiator_agent_id);
         const recipient = this.#requireAgent(row.recipient_agent_id);
@@ -1984,13 +1983,9 @@ export class CollaborationCore {
         "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
         [migrationId, new Date().toISOString()]
       );
-      this.store.db.run("COMMIT");
       this.store.scheduleSave();
       return { status: "applied", migrationId, migratedTaskCount: rows.length };
-    } catch (error) {
-      this.store.db.run("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   #migrateSessionActorProtocol() {
@@ -2005,8 +2000,7 @@ export class CollaborationCore {
          AND recipient_session_id IS NOT NULL AND TRIM(recipient_session_id) <> ''
          AND initiator_session_id <> recipient_session_id`
     );
-    this.store.db.run("BEGIN IMMEDIATE TRANSACTION");
-    try {
+    return this.store.runInTransaction(() => {
       for (const row of rows) {
         this.store.db.run("UPDATE collaboration_tasks SET protocol_version='3.0' WHERE task_id=?", [row.task_id]);
         this.store.db.run(
@@ -2017,13 +2011,9 @@ export class CollaborationCore {
         );
       }
       this.store.db.run("INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)", [migrationId, this.clock()]);
-      this.store.db.run("COMMIT");
       this.store.scheduleSave();
       return { status: "applied", migrationId, migratedTaskCount: rows.length };
-    } catch (error) {
-      this.store.db.run("ROLLBACK");
-      throw error;
-    }
+    });
   }
 
   #recordChannelSchemaMigration() {
@@ -2096,16 +2086,11 @@ export class CollaborationCore {
   }
 
   #transaction(run) {
-    this.store.db.run("BEGIN IMMEDIATE TRANSACTION");
-    try {
+    return this.store.runInTransaction(() => {
       const result = run();
-      this.store.db.run("COMMIT");
       this.store.scheduleSave();
       return result;
-    } catch (error) {
-      this.store.db.run("ROLLBACK");
-      throw error;
-    }
+    });
   }
 }
 

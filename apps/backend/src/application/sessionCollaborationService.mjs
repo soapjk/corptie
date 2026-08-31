@@ -78,7 +78,7 @@ export class SessionCollaborationService {
         && this.#isVisibleSession(scope, target, { explicitPeerLookup: true, includeArchived: true })) {
         throw coded(
           "RECIPIENT_SESSION_UNAVAILABLE",
-          `The target Session is archived and cannot receive a new collaboration task: ${target.archiveReason ?? "session_archived"}.`,
+          `The target Session is archived and cannot join a new communication Channel: ${target.archiveReason ?? "session_archived"}.`,
           409
         );
       }
@@ -104,29 +104,11 @@ export class SessionCollaborationService {
 
   createWorkItem(metadata, actorId, input = {}) {
     assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId", "mainWorkspaceId",
-      "parentWorkItemId", "sourceWorkItemId", "relationship", "artifactReference", "fileReference", "idempotencyKey"]);
+      "artifactReference", "fileReference", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const kind = scope.session.sessionKind;
     if (!scope.session.objectiveId || !["objectiveChat", "worker"].includes(kind)) {
       throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Objective Chat or Worker Session is required to create a collaboration WorkItem.");
-    }
-    const relationship = optional(input.relationship);
-    const sourceWorkItemId = optional(input.sourceWorkItemId) ?? scope.session.workItemId;
-    if (kind === "worker" && (!sourceWorkItemId || !RELATIONS.has(relationship))) {
-      throw coded("WORKER_RELATION_REQUIRED", "Worker Sessions must create a WorkItem with delegated_subtask, depends_on, blocks, or review_of relation to their current WorkItem.");
-    }
-    if (relationship && !RELATIONS.has(relationship)) throw coded("INVALID_RELATION", `Unsupported WorkItem relation: ${relationship}`);
-    if (sourceWorkItemId) {
-      const source = this.objectiveService.getWorkItem(sourceWorkItemId);
-      if (source.objective_id !== scope.session.objectiveId) throw coded("CROSS_OBJECTIVE_FORBIDDEN", "Source WorkItem must belong to the authenticated Objective.");
-      if (kind === "worker" && source.id !== scope.session.workItemId) {
-        throw coded("SOURCE_WORK_ITEM_FORBIDDEN", "A Worker Session may only delegate from its bound WorkItem.");
-      }
-    }
-    const parentWorkItemId = optional(input.parentWorkItemId);
-    if (parentWorkItemId) {
-      const parent = this.objectiveService.getWorkItem(parentWorkItemId);
-      if (parent.objective_id !== scope.session.objectiveId) throw coded("CROSS_OBJECTIVE_FORBIDDEN", "Parent WorkItem must belong to the authenticated Objective.");
     }
     const targetAgentId = optional(input.agentId);
     if (targetAgentId) this.#requireContributor(scope.session.objectiveId, targetAgentId);
@@ -167,14 +149,19 @@ export class SessionCollaborationService {
         status: "todo",
         mainWorkspaceId: workspaceId,
         mainAgentId: targetAgentId
+      }, {
+        creationOrigin: {
+          originType: "session",
+          creatorSessionId: scope.logicalSessionId,
+          creationContextWorkItemId: scope.session.workItemId,
+          operationId: idempotencyKey
+        }
       });
       this.store.db.run(
-        `UPDATE work_items SET created_by_session_id=?, source_work_item_id=?, parent_work_item_id=?,
-         collaboration_relation=?, idempotency_key=?, creation_reference_fingerprint=?, resource_version=1 WHERE id=?`,
-        [scope.logicalSessionId, sourceWorkItemId, parentWorkItemId, relationship, idempotencyKey,
-          creationReferenceFingerprint, item.id]
+        `UPDATE work_items SET created_by_session_id=?, idempotency_key=?,
+         creation_reference_fingerprint=?, resource_version=1 WHERE id=?`,
+        [scope.logicalSessionId, idempotencyKey, creationReferenceFingerprint, item.id]
       );
-      if (sourceWorkItemId && relationship) this.#relate(item.id, sourceWorkItemId, relationship);
       if (artifactReference) this.artifactService.createPreparedWorkItemReference(artifactReference, item.id);
       if (fileReference) this.store.createWorkItemFileReference({
         referenceId: `work_item_file_reference:${randomUUID()}`,
@@ -252,6 +239,7 @@ export class SessionCollaborationService {
   #presentWorkItem(item) {
     return {
       ...item,
+      creationOrigin: this.store.getWorkItemCreationOrigin(item.id),
       references: {
         artifacts: this.store.listArtifactReferences({ workItemId: item.id }),
         files: this.store.listWorkItemFileReferences(item.id)
@@ -520,6 +508,77 @@ export class SessionCollaborationService {
     };
   }
 
+  async prepareChannelRequestTarget(channelRequest) {
+    if (!channelRequest?.requestId || channelRequest.status !== "pending") {
+      throw coded("CHANNEL_REQUEST_REQUIRED", "A pending Channel request is required before preparing its target Session.");
+    }
+    if (channelRequest.requestedRecipientSessionId) {
+      const session = this.#resolveSession(channelRequest.requestedRecipientSessionId);
+      const eligibility = collaborationSessionEligibility(this.store, session);
+      if (!eligibility.active) {
+        throw coded("RECIPIENT_SESSION_UNAVAILABLE", `The selected target Session is unavailable: ${eligibility.reasons.join(", ")}.`, 409);
+      }
+      return {
+        recipientSessionId: eligibility.logicalSessionId,
+        workItemId: session.workItemId,
+        created: false
+      };
+    }
+
+    const request = channelRequest.request ?? {};
+    const targetObjectiveId = required(request.targetObjectiveId, "target_objective_id");
+    const agent = this.#requireContributor(targetObjectiveId, required(request.sessionAgentId, "session_agent_id"));
+    const objective = this.objectiveService.getObjective(targetObjectiveId);
+    const workItemId = request.workItemId ?? `work_item:channel:${channelRequest.requestId}`;
+    let workItem = this.store.getWorkItem(workItemId);
+    if (!workItem) {
+      const repositoryId = (objective.workspaceIds ?? [])
+        .find((candidate) => this.store.getGitRepository(candidate)) ?? null;
+      workItem = this.objectiveService.createWorkItem({
+        id: workItemId,
+        objectiveId: targetObjectiveId,
+        title: optional(request.title) ?? "Session Channel",
+        description: request.summary ?? request.body ?? "",
+        acceptanceCriteria: "",
+        priority: "medium",
+        status: "todo",
+        mainWorkspaceId: repositoryId,
+        mainAgentId: agent.agentId
+      }, {
+        creationOrigin: {
+          originType: "session",
+          creatorSessionId: channelRequest.requestingSessionId,
+          creationContextWorkItemId: request.sourceContext?.workItemId ?? null,
+          operationId: `channel-request:${channelRequest.requestId}`
+        }
+      });
+    }
+    if (workItem.objective_id !== targetObjectiveId || workItem.main_agent_id !== agent.agentId) {
+      throw coded("CHANNEL_TARGET_RESOURCE_MISMATCH", "The prepared WorkItem does not match the target Objective and Agent resource.", 409);
+    }
+    let session = workItem.current_session_id ? this.#resolveSession(workItem.current_session_id) : null;
+    let eligibility = session ? collaborationSessionEligibility(this.store, session) : null;
+    if (!eligibility?.active) {
+      const launched = await this.launchWorkItem({
+        workItem,
+        agent,
+        title: optional(request.title),
+        autoUniqueTitle: true,
+        source: "session_channel_confirmation"
+      });
+      session = this.#resolveSession(launched?.id ?? launched?.sessionId ?? this.store.getWorkItem(workItem.id)?.current_session_id);
+      eligibility = collaborationSessionEligibility(this.store, session);
+    }
+    if (!eligibility?.active) {
+      throw coded("CREATED_SESSION_NOT_ACTIVE", `The target Worker Session was not created successfully: ${eligibility?.reasons.join(", ") || "unresolved"}.`, 503);
+    }
+    return {
+      recipientSessionId: eligibility.logicalSessionId,
+      workItemId: workItem.id,
+      created: true
+    };
+  }
+
   async prepareTaskConfirmationTarget(confirmation) {
     if (!confirmation?.confirmationId || confirmation.status !== "pending") {
       throw coded("COLLABORATION_CONFIRMATION_REQUIRED", "A pending collaboration confirmation is required before preparing its target Session.");
@@ -565,17 +624,19 @@ export class SessionCollaborationService {
         status: "todo",
         mainWorkspaceId: repositoryId,
         mainAgentId: agent.agentId
+      }, {
+        creationOrigin: {
+          originType: "session",
+          creatorSessionId: confirmation.initiatorSessionId,
+          creationContextWorkItemId: request.sourceWorkItemId ?? null,
+          operationId: `legacy-collaboration-confirmation:${confirmation.confirmationId}`
+        }
       });
       this.store.db.run(
-        `UPDATE work_items SET created_by_session_id=?, source_work_item_id=?, collaboration_relation=?,
-         idempotency_key=?, resource_version=1 WHERE id=?`,
-        [confirmation.initiatorSessionId, request.sourceWorkItemId ?? null,
-          request.sourceWorkItemId ? "delegated_subtask" : null,
+        `UPDATE work_items SET created_by_session_id=?, idempotency_key=?, resource_version=1 WHERE id=?`,
+        [confirmation.initiatorSessionId,
           `collaboration-confirmation:${confirmation.confirmationId}`, workItem.id]
       );
-      if (request.sourceWorkItemId && this.store.getWorkItem(request.sourceWorkItemId)?.objective_id === targetObjectiveId) {
-        this.#relate(workItem.id, request.sourceWorkItemId, "delegated_subtask");
-      }
     }
     if (workItem.objective_id !== targetObjectiveId || workItem.main_agent_id !== agent.agentId) {
       throw coded("COLLABORATION_TARGET_RESOURCE_MISMATCH", "The prepared WorkItem does not match the target Objective and Agent resource.", 409);
@@ -774,9 +835,8 @@ export class SessionCollaborationService {
     if (scope.session.sessionKind === "objectiveChat") return true;
     if (scope.session.sessionKind !== "worker") return false;
     if (item.id === scope.session.workItemId) return true;
-    return item.source_work_item_id === scope.session.workItemId
-      || item.parent_work_item_id === scope.session.workItemId
-      || this.store.listWorkItemDependencies(item.id).some((edge) => edge.target_work_item_id === scope.session.workItemId)
+    if (item.created_by_session_id === scope.logicalSessionId) return true;
+    return this.store.listWorkItemDependencies(item.id).some((edge) => edge.target_work_item_id === scope.session.workItemId)
       || this.store.listWorkItemDependents(item.id).some((edge) => edge.work_item_id === scope.session.workItemId);
   }
 

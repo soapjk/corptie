@@ -8691,10 +8691,10 @@ struct ThreadItemView: View {
                         .font(.system(size: 8.5, weight: .bold))
                         .frame(width: 10)
                         .foregroundStyle(CorptiePalette.secondaryText)
-                    Image(systemName: "paperplane.fill")
+                    Image(systemName: isSessionChannelAuthorization ? "bubble.left.and.bubble.right.fill" : "paperplane.fill")
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.softBlue)
-                    Text(L10n("确认发送协作任务"))
+                    Text(L10n(isSessionChannelAuthorization ? "授权 Session 通信渠道" : "确认发送协作任务"))
                         .font(.system(size: 10.5, weight: .bold))
                         .foregroundStyle(CorptiePalette.primaryText)
                     Spacer(minLength: 4)
@@ -8741,6 +8741,12 @@ struct ThreadItemView: View {
                                     workItemId: item.collaborationTargetWorkItemId
                                 )
                             )
+                        } else if isSessionChannelAuthorization {
+                            collaborationConfirmationField(
+                                icon: "person.badge.plus",
+                                label: "目标 Session",
+                                value: L10n("确认后创建目标 WorkItem 与 Session")
+                            )
                         } else {
                             collaborationConfirmationField(
                                 icon: "checklist",
@@ -8765,7 +8771,8 @@ struct ThreadItemView: View {
                         collaborationConfirmationField(icon: "text.alignleft", label: "消息", value: collaborationPresentationText)
                     }
 
-                    if let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
+                    if !isSessionChannelAuthorization,
+                       let criteria = item.collaborationAcceptanceCriteria, !criteria.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(L10n("验收标准"))
                                 .font(.system(size: 9.5, weight: .bold))
@@ -8784,7 +8791,10 @@ struct ThreadItemView: View {
                             Button {
                                 backendClient.respondToCollaborationConfirmation(confirmationId: confirmationId, approve: true)
                             } label: {
-                                Label(L10n("确认发送"), systemImage: "paperplane.fill")
+                                Label(
+                                    L10n(isSessionChannelAuthorization ? "授权并发送" : "确认发送"),
+                                    systemImage: isSessionChannelAuthorization ? "checkmark.shield.fill" : "paperplane.fill"
+                                )
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
@@ -8879,9 +8889,13 @@ struct ThreadItemView: View {
         (item.collaborationConfirmationStatus ?? item.status ?? "pending").lowercased()
     }
 
+    private var isSessionChannelAuthorization: Bool {
+        item.collaborationAuthorizationKind == "session_channel"
+    }
+
     private var collaborationConfirmationStatusLabel: String {
         switch collaborationConfirmationStatus {
-        case "confirmed": "已发送"
+        case "confirmed": isSessionChannelAuthorization ? "已授权" : "已发送"
         case "rejected": "已取消"
         default: "等待确认"
         }

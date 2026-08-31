@@ -1125,6 +1125,8 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
     });
     assert.equal(itemA.statusCode, 201);
     assert.equal(itemA.body.acceptanceAssessment, null);
+    assert.equal(itemA.body.creationOrigin.originType, "direct_user");
+    assert.equal(services.store.getWorkItemCreationOrigin(itemA.body.id).originType, "direct_user");
 
     const listed = await callApi({ method: "GET", pathname: "/work-items", ...services });
     assert.equal(listed.statusCode, 200);

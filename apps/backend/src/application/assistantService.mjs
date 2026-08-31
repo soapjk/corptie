@@ -163,6 +163,8 @@ export class AssistantService {
         const workItem = this.objectiveService.createWorkItem({
           objectiveId: objective.id,
           title: args.title || "未命名"
+        }, {
+          creationOrigin: { originType: "direct_user" }
         });
         return [
           { role: "user", content },
