@@ -161,8 +161,9 @@ test("the /clear command replaces and rebinds an app-server session", async () =
   assert.deepEqual(sent, ["已清空上下文，可以开始新的对话。"]);
 });
 
-test("an immediately started message does not produce a queue notice", async () => {
+test("an immediately started message adds Typing without sending a processing card", async () => {
   const sent = [];
+  const reactions = [];
   const manager = new FeishuGatewayManager({
     store: {
       getFeishuAssignmentForBot() {
@@ -173,11 +174,11 @@ test("an immediately started message does not produce a queue notice", async () 
       return { accepted: true, queued: false, queuePosition: 0 };
     }
   });
-  manager.showTyping = async () => {};
-  manager.sendText = async (_botId, _chatId, text) => {
-    sent.push(text);
-    return [{ text, result: { data: { message_id: "processing-message-a" } } }];
+  manager.addReaction = async (_botId, messageId, emojiType) => {
+    reactions.push({ messageId, emojiType });
+    return "typing-a";
   };
+  manager.sendText = async (_botId, _chatId, text) => sent.push(text);
 
   await manager.handleCommand("bot-a", { id: "binding-a" }, {
     text: "开始处理",
@@ -185,10 +186,9 @@ test("an immediately started message does not produce a queue notice", async () 
     messageId: "message-a"
   });
 
-  assert.deepEqual(sent, ["已发送，正在处理……"]);
-  assert.deepEqual(manager.botRuntime.get("bot-a").processingAcknowledgementCards, [
-    { messageId: "processing-message-a" }
-  ]);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(reactions, [{ messageId: "message-a", emojiType: "Typing" }]);
+  assert.equal(manager.botRuntime.get("bot-a").pendingFeishuRequests[0].messageId, "message-a");
 });
 
 test("a slow typing reaction does not delay handing the message to the Agent", async () => {
@@ -206,8 +206,8 @@ test("a slow typing reaction does not delay handing the message to the Agent", a
       return { accepted: true, queued: false, queuePosition: 0 };
     }
   });
-  manager.showTyping = async () => typingBlocked;
-  manager.sendText = async () => [];
+  manager.addReaction = async () => typingBlocked;
+  manager.sendText = async () => assert.fail("processing cards must not be sent");
 
   const command = manager.handleCommand("bot-a", { id: "binding-a" }, {
     text: "开始处理",
@@ -221,8 +221,8 @@ test("a slow typing reaction does not delay handing the message to the Agent", a
   await command;
 });
 
-test("a processing acknowledgement is removed after the session stops processing", async () => {
-  const deleted = [];
+test("a terminal failure removes Typing and never adds DONE", async () => {
+  const apiCalls = [];
   const manager = new FeishuGatewayManager({
     store: {
       getFeishuAssignmentForBot() {
@@ -235,7 +235,7 @@ test("a processing acknowledgement is removed after the session stops processing
     async getSnapshot() {
       return {
         title: "Session A",
-        status: "complete",
+        status: "failed",
         items: []
       };
     }
@@ -243,18 +243,30 @@ test("a processing acknowledgement is removed after the session stops processing
   manager.botRuntime.set("bot-a", {
     lastStatus: "running",
     seenItems: new Set(),
-    processingAcknowledgementCards: [{ messageId: "processing-message-a" }]
+    pendingFeishuRequests: [{
+      messageId: "message-a",
+      sessionId: "codex:thread-a",
+      typingReactionId: "typing-a",
+      typingPromise: Promise.resolve("typing-a"),
+      finalDelivered: false
+    }]
   });
-  manager.clearTyping = async () => {};
-  manager.deleteSentMessage = async (_botId, messageId) => deleted.push(messageId);
+  manager.callApi = async (_botId, method, path, data = null) => {
+    apiCalls.push({ method, path, data });
+    return {};
+  };
 
   await manager.syncBot("bot-a");
 
-  assert.deepEqual(deleted, ["processing-message-a"]);
-  assert.deepEqual(manager.botRuntime.get("bot-a").processingAcknowledgementCards, []);
+  assert.deepEqual(apiCalls, [{
+    method: "DELETE",
+    path: "/open-apis/im/v1/messages/message-a/reactions/typing-a",
+    data: null
+  }]);
+  assert.deepEqual(manager.botRuntime.get("bot-a").pendingFeishuRequests, []);
 });
 
-test("a processing acknowledgement remains while the session is running", async () => {
+test("a running request keeps its Typing reaction and sends no message", async () => {
   const manager = new FeishuGatewayManager({
     store: {
       getFeishuAssignmentForBot() {
@@ -275,19 +287,25 @@ test("a processing acknowledgement remains while the session is running", async 
   manager.botRuntime.set("bot-a", {
     lastStatus: "running",
     seenItems: new Set(),
-    processingAcknowledgementCards: [{ messageId: "processing-message-a" }]
+    pendingFeishuRequests: [{
+      messageId: "message-a",
+      sessionId: "codex:thread-a",
+      typingReactionId: "typing-a",
+      typingPromise: Promise.resolve("typing-a"),
+      finalDelivered: false
+    }]
   });
-  manager.deleteSentMessage = async () => assert.fail("running acknowledgements must not be deleted");
+  manager.callApi = async () => assert.fail("a running request must not change its reaction");
+  manager.sendText = async () => assert.fail("a running request must not send a message");
 
   await manager.syncBot("bot-a");
 
-  assert.deepEqual(manager.botRuntime.get("bot-a").processingAcknowledgementCards, [
-    { messageId: "processing-message-a" }
-  ]);
+  assert.equal(manager.botRuntime.get("bot-a").pendingFeishuRequests.length, 1);
 });
 
-test("a waiting message still reports its queue position", async () => {
+test("a queued message also uses only Typing and sends no queue card", async () => {
   const sent = [];
+  const reactions = [];
   const manager = new FeishuGatewayManager({
     store: {
       getFeishuAssignmentForBot() {
@@ -298,8 +316,10 @@ test("a waiting message still reports its queue position", async () => {
       return { accepted: true, queued: true, queuePosition: 2 };
     }
   });
-  manager.showTyping = async () => {};
-  manager.clearTyping = async () => {};
+  manager.addReaction = async (_botId, messageId, emojiType) => {
+    reactions.push({ messageId, emojiType });
+    return "typing-a";
+  };
   manager.sendText = async (_botId, _chatId, text) => sent.push(text);
 
   await manager.handleCommand("bot-a", { id: "binding-a" }, {
@@ -308,7 +328,147 @@ test("a waiting message still reports its queue position", async () => {
     messageId: "message-a"
   });
 
-  assert.deepEqual(sent, ["已加入队列，前面还有 1 条消息。"]);
+  assert.deepEqual(sent, []);
+  assert.deepEqual(reactions, [{ messageId: "message-a", emojiType: "Typing" }]);
+});
+
+test("concurrent Feishu requests reply once and replace the reaction on their exact source messages", async () => {
+  const replies = [];
+  const deletedReactions = [];
+  const addedReactions = [];
+  const items = [
+    { id: "message-a", type: "userMessage", turnId: "turn-a", text: "Question A", status: "running" },
+    { id: "commentary-a", type: "agentMessage", turnId: "turn-a", text: "Thinking A", presentationRole: "commentary", turnStatus: "completed" },
+    { id: "final-a", type: "agentMessage", turnId: "turn-a", text: "Answer A", presentationRole: "final_answer", turnStatus: "completed" },
+    { id: "message-b", type: "userMessage", turnId: "turn-b", text: "Question B", status: "running" },
+    { id: "reasoning-b", type: "reasoning", turnId: "turn-b", text: "Private reasoning B" },
+    { id: "final-b", type: "agentMessage", turnId: "turn-b", text: "Answer B", presentationRole: "final_answer", turnStatus: "completed" }
+  ];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "session-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return { title: "Session A", status: "complete", items };
+    }
+  });
+  manager.botRuntime.set("bot-a", {
+    lastStatus: "running",
+    seenItems: new Set(),
+    pendingFeishuRequests: [
+      { messageId: "message-a", sessionId: "session-a", typingReactionId: "typing-a", typingPromise: Promise.resolve("typing-a"), finalDelivered: false },
+      { messageId: "message-b", sessionId: "session-a", typingReactionId: "typing-b", typingPromise: Promise.resolve("typing-b"), finalDelivered: false }
+    ]
+  });
+  manager.sendText = async () => assert.fail("Feishu final answers must use the source-message reply endpoint");
+  manager.sendFinalReply = async (_botId, messageId, text) => {
+    replies.push({ messageId, text });
+    return { text, result: { data: { message_id: `reply-${messageId}` } } };
+  };
+  manager.callApi = async (_botId, method, path) => {
+    assert.equal(method, "DELETE");
+    deletedReactions.push(path);
+    return {};
+  };
+  manager.addReaction = async (_botId, messageId, emojiType) => {
+    addedReactions.push({ messageId, emojiType });
+    return `done-${messageId}`;
+  };
+
+  await manager.syncBot("bot-a");
+
+  assert.deepEqual(replies, [
+    { messageId: "message-a", text: "Answer A" },
+    { messageId: "message-b", text: "Answer B" }
+  ]);
+  assert.deepEqual(deletedReactions, [
+    "/open-apis/im/v1/messages/message-a/reactions/typing-a",
+    "/open-apis/im/v1/messages/message-b/reactions/typing-b"
+  ]);
+  assert.deepEqual(addedReactions, [
+    { messageId: "message-a", emojiType: "DONE" },
+    { messageId: "message-b", emojiType: "DONE" }
+  ]);
+  assert.deepEqual(manager.botRuntime.get("bot-a").pendingFeishuRequests, []);
+  assert.equal(manager.botRuntime.get("bot-a").seenItems.has("commentary-a"), true);
+  assert.equal(manager.botRuntime.get("bot-a").seenItems.has("reasoning-b"), true);
+});
+
+test("a final answer uses exactly one reply API call even when it exceeds the old chunk size", async () => {
+  const calls = [];
+  const longAnswer = "A".repeat(7000);
+  const manager = new FeishuGatewayManager({ store: {} });
+  manager.callApi = async (botId, method, path, data) => {
+    calls.push({ botId, method, path, data });
+    return { data: { message_id: "reply-a" } };
+  };
+
+  const sent = await manager.sendFinalReply("bot-a", "message/a", longAnswer, {
+    sessionTitle: "Session A",
+    sessionStatus: "complete"
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "POST");
+  assert.equal(calls[0].path, "/open-apis/im/v1/messages/message%2Fa/reply");
+  const card = JSON.parse(calls[0].data.content);
+  assert.equal(card.body.elements[0].content, longAnswer);
+  assert.equal(sent.result.data.message_id, "reply-a");
+});
+
+test("a failed turn with partial assistant text sends no reply and is never marked DONE", async () => {
+  const apiCalls = [];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId: "bot-a", sessionId: "session-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return {
+        title: "Session A",
+        status: "failed",
+        items: [
+          { id: "message-a", type: "userMessage", turnId: "turn-a", text: "Question", status: "failed" },
+          { id: "partial-a", type: "agentMessage", turnId: "turn-a", text: "Partial", presentationRole: "final_answer", turnStatus: "failed" }
+        ]
+      };
+    }
+  });
+  manager.botRuntime.set("bot-a", {
+    lastStatus: "running",
+    seenItems: new Set(),
+    pendingFeishuRequests: [{
+      messageId: "message-a",
+      sessionId: "session-a",
+      typingReactionId: "typing-a",
+      typingPromise: Promise.resolve("typing-a"),
+      finalDelivered: false
+    }]
+  });
+  manager.sendText = async () => assert.fail("failed partial text must not be sent");
+  manager.sendFinalReply = async () => assert.fail("failed partial text must not be sent");
+  manager.callApi = async (_botId, method, path, data = null) => {
+    apiCalls.push({ method, path, data });
+    return {};
+  };
+  manager.addReaction = async () => assert.fail("failed turns must never add DONE");
+
+  await manager.syncBot("bot-a");
+
+  assert.deepEqual(apiCalls, [{
+    method: "DELETE",
+    path: "/open-apis/im/v1/messages/message-a/reactions/typing-a",
+    data: null
+  }]);
 });
 
 test("connecting an existing session immediately replays only its latest formal agent reply", async () => {
