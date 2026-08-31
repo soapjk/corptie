@@ -256,9 +256,7 @@ export function planReplay({ attempt, timelineEvents, capabilities, thresholds =
       || event.payload?.sourceContentHash == null
       || event.payload.sourceContentHash !== stableRecoveryHash(content);
   });
-  const entries = frozen.flatMap((event) => checkpointIntegrityInvalid && /(?:checkpoint)/i.test(String(event.type ?? ""))
-    ? []
-    : eventToReplayEntries(event));
+  const entries = replayEntriesFromTimeline(frozen, { checkpointIntegrityInvalid });
   const unknown = frozen.find((event) => event?.payload?.recoveryUnknownFields === true);
   if (unknown) throw recoveryError("RECOVERY_TIMELINE_UNKNOWN_FIELD", "Timeline contains recovery data with unknown fields.");
 
@@ -521,10 +519,37 @@ function eventToReplayEntries(event) {
     if (content == null) throw recoveryError("RECOVERY_TIMELINE_MESSAGE_INVALID", "Persisted user message content is missing or invalid.");
     return [normalizeReplayEntry({ kind: "user_message", sequence, turnId: payload.turnId ?? payload.message?.turnId, role: "user", content, metadata: { executable: false } })];
   }
-  if (/^(?:assistant\/message|assistant\.message\.completed|AgentTurnCompleted|CodexThreadCompleted)$/i.test(type)) {
+  if (isDirectAssistantMessageType(type)) {
     const content = recoveryMessageText(payload.item?.text, payload.text, payload.message, payload.summary);
     if (content == null) throw recoveryError("RECOVERY_TIMELINE_MESSAGE_INVALID", "Persisted assistant message content is missing or invalid.");
     return [normalizeReplayEntry({ kind: "assistant_message", sequence, turnId: payload.turnId ?? payload.item?.turnId, role: "assistant", content, metadata: { executable: false } })];
+  }
+  if (isTurnCompletionType(type)) {
+    const explicitlyMessageFree = payload.hasAgentMessage === false || payload.hasAgentMessage === 0;
+    if (explicitlyMessageFree) return [];
+    const finalItem = recoveryFinalAssistantItem(payload);
+    const content = recoveryMessageText(
+      finalItem?.text,
+      payload.item?.text,
+      payload.text,
+      payload.message,
+      payload.summary,
+      payload.session?.summary
+    );
+    if (content == null) {
+      if (payload.hasAgentMessage === true || payload.hasAgentMessage === 1) {
+        throw recoveryError("RECOVERY_TIMELINE_MESSAGE_INVALID", "Persisted assistant message content is missing or invalid.");
+      }
+      return [];
+    }
+    return [normalizeReplayEntry({
+      kind: "assistant_message",
+      sequence,
+      turnId: payload.turnId ?? finalItem?.turnId ?? payload.item?.turnId,
+      role: "assistant",
+      content,
+      metadata: { executable: false }
+    })];
   }
   if (/(?:tool\.completed|tool\/result)/i.test(type)) {
     return [normalizeReplayEntry({ kind: "tool_result_summary", sequence, turnId: payload.turnId, content: payload.summary ?? payload.text ?? "Historical tool result retained as evidence summary.", metadata: { toolName: payload.toolName ?? null, executable: false } })];
@@ -543,6 +568,52 @@ function eventToReplayEntries(event) {
     return [normalizeReplayEntry({ kind: "artifact_reference", sequence, referenceId: payload.artifactId, referenceVersion: payload.version, content: payload.title ?? "Artifact Reference", metadata: { executable: false } })];
   }
   return [];
+}
+
+function replayEntriesFromTimeline(events, { checkpointIntegrityInvalid = false } = {}) {
+  const collected = [];
+  for (const event of events) {
+    const type = String(event?.type ?? "");
+    const mapped = checkpointIntegrityInvalid && /(?:checkpoint)/i.test(type)
+      ? []
+      : eventToReplayEntries(event);
+    for (const entry of mapped) {
+      const previous = collected.at(-1);
+      if (isTurnCompletionType(type)
+        && previous
+        && isDirectAssistantMessageType(previous.sourceType)
+        && duplicateAssistantCompletion(previous.entry, entry)) {
+        continue;
+      }
+      collected.push({ entry, sourceType: type });
+    }
+  }
+  return collected.map(({ entry }) => entry);
+}
+
+function duplicateAssistantCompletion(previous, completion) {
+  if (previous.kind !== "assistant_message" || completion.kind !== "assistant_message") return false;
+  if (previous.contentHash !== completion.contentHash) return false;
+  return !previous.turnId || !completion.turnId || previous.turnId === completion.turnId;
+}
+
+function isDirectAssistantMessageType(type) {
+  return /^(?:assistant\/message|assistant\.message\.completed)$/i.test(type);
+}
+
+function isTurnCompletionType(type) {
+  return /^(?:AgentTurnCompleted|CodexThreadCompleted|turn\.completed)$/i.test(type);
+}
+
+function recoveryFinalAssistantItem(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  const targetTurnId = optionalString(payload?.turnId);
+  return [...items].reverse().find((item) =>
+    item?.type === "agentMessage"
+    && item?.presentationRole === "final_answer"
+    && (!targetTurnId || item?.turnId === targetTurnId)
+    && recoveryMessageText(item?.text) != null
+  ) ?? null;
 }
 
 function assertClosedObject(input, allowed, name) {
