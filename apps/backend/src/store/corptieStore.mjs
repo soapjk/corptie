@@ -7855,14 +7855,15 @@ export class CorptieStore {
     // unrelated queue, collaboration, and automation queries per active
     // Session. Empty is data, not a cache miss.
     if (rows.length === 0) {
-      return { items: [], hasEarlier: false, hasLater: false };
+      return { items: [], hasEarlier: false, hasLater: false, historyItemsCount: 0 };
     }
     const first = rows[0];
-    const hasEarlier = Boolean(this.selectOne(
-      `SELECT 1 FROM session_items WHERE session_id = ?
-       AND (created_at < ? OR (created_at = ? AND id < ?)) LIMIT 1`,
+    const history = this.selectOne(
+      `SELECT COUNT(*) AS count FROM session_items WHERE session_id = ?
+       AND (created_at < ? OR (created_at = ? AND id < ?))`,
       [sessionId, first.created_at, first.created_at, first.id]
-    ));
+    );
+    const historyItemsCount = Number(history?.count ?? 0);
     return {
       items: rows.map((row) => normalizeStoredItem({
         id: row.id,
@@ -7879,8 +7880,9 @@ export class CorptieStore {
         status: row.status,
         createdAt: row.created_at
       }, provider)),
-      hasEarlier,
-      hasLater: false
+      hasEarlier: historyItemsCount > 0,
+      hasLater: false,
+      historyItemsCount
     };
   }
 
@@ -7908,7 +7910,7 @@ export class CorptieStore {
     ).map(sessionEventFromRow);
   }
 
-  getDetail(id) {
+  getDetail(id, { includeItems = true } = {}) {
     const session = this.getSession(id);
     if (!session) {
       return null;
@@ -7935,7 +7937,7 @@ export class CorptieStore {
           ? "This Claude Code session is no longer connected. Start a new Claude session to continue."
         : "This session is not currently attached to a running process.",
       turnCount: 1,
-      items: this.getItems(id, 240, session.external?.provider)
+      items: includeItems ? this.getItems(id, 240, session.external?.provider) : []
     };
   }
 

@@ -373,6 +373,7 @@ test("stored latest timeline window is bounded and reports earlier history", asy
     assert.equal(window.items.at(-1).id, "item-0499");
     assert.equal(window.hasEarlier, true);
     assert.equal(window.hasLater, false);
+    assert.equal(window.historyItemsCount, 420);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -433,7 +434,8 @@ test("an empty stored timeline is an authoritative window instead of a legacy fa
     assert.deepEqual(store.getLatestTimelineItemWindow("empty-window"), {
       items: [],
       hasEarlier: false,
-      hasLater: false
+      hasLater: false,
+      historyItemsCount: 0
     });
   } finally {
     await store.close();
