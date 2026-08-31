@@ -884,6 +884,8 @@ struct SessionListRowContent: View {
 }
 
 struct DetailSessionRailRow: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    @State private var isRenaming = false
     @ObservedObject var row: SessionRowModel
     let selectedSessionID: String?
     let select: (TaskSession) -> Void
@@ -917,6 +919,14 @@ struct DetailSessionRailRow: View {
         }
         .buttonStyle(.plain)
         .help("\(session.title)\n\(session.executionTaskStatus.label)")
+        .contextMenu {
+            SessionContextMenuContent(session: session, isRenaming: $isRenaming)
+        }
+        .sheet(isPresented: $isRenaming) {
+            RenameSessionSheet(session: session) { isRenaming = false }
+                .environmentObject(backendClient)
+                .presentationBackground(.clear)
+        }
     }
 }
 
@@ -1135,14 +1145,13 @@ private struct SessionContextMenuContent: View {
             }
         }
 
-        if session.actions?.restart?.available == true {
-            Button {
-                backendClient.restart(session: session)
-            } label: {
-                Label(L10n("Restart Session"), systemImage: "arrow.clockwise")
-            }
-            .disabled(backendClient.restartingSessionIds.contains(session.id))
+        Button {
+            backendClient.restart(session: session)
+        } label: {
+            Label(L10n("Restart Session"), systemImage: "arrow.clockwise")
         }
+        .disabled(session.actions?.restart?.available != true
+            || backendClient.restartingSessionIds.contains(session.id))
 
         Divider()
 

@@ -122,14 +122,27 @@ export class ToolHostMaterializationCoordinator {
     const started = performance.now();
     const binding = await this.#binding(input.logicalSessionId, input.providerBindingId);
     const snapshot = this.catalog.snapshot();
-    const query = String(input.intent ?? "").trim().toLocaleLowerCase();
-    const hint = String(input.domainHint ?? "").trim().toLocaleLowerCase();
+    const query = searchableText(input.intent);
+    const queryTerms = searchTerms(query);
+    const hintTerms = searchTerms(input.domainHint);
     const domains = [];
     for (const [domainId, entries] of this.catalog.domains(catalogContext(binding))) {
-      if (hint && !domainId.toLocaleLowerCase().includes(hint)) continue;
-      const tools = entries.filter((entry) => !query
-        || `${entry.canonicalName} ${entry.definition.description ?? ""} ${domainId}`.toLocaleLowerCase().includes(query));
-      if (query && tools.length === 0) continue;
+      const normalizedDomainId = searchableText(domainId);
+      if (hintTerms.length > 0 && !hintTerms.every((term) => normalizedDomainId.includes(term))) continue;
+      const tools = entries
+        .map((entry) => {
+          const haystack = searchableText(
+            `${entry.canonicalName} ${entry.definition.description ?? ""} ${domainId}`
+          );
+          const matchedTerms = queryTerms.filter((term) => haystack.includes(term));
+          const exactPhrase = query.length > 0 && haystack.includes(query);
+          return { entry, score: exactPhrase ? queryTerms.length + 2 : matchedTerms.length };
+        })
+        .filter(({ score }) => queryTerms.length === 0 || score > 0)
+        .sort((left, right) => right.score - left.score
+          || left.entry.canonicalName.localeCompare(right.entry.canonicalName))
+        .map(({ entry }) => entry);
+      if (queryTerms.length > 0 && tools.length === 0) continue;
       const snapshotDomain = snapshot.domains.find((domain) => domain.domainId === domainId);
       domains.push({
         domainId,
@@ -505,6 +518,20 @@ function catalogContext(binding) {
       providerBindingId: binding.providerBindingId
     }
   };
+}
+
+function searchableText(value) {
+  return String(value ?? "")
+    .normalize("NFKC")
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+function searchTerms(value) {
+  const normalized = searchableText(value);
+  if (!normalized) return [];
+  return [...new Set(normalized.split(/\s+/u).filter((term) => term.length > 1))];
 }
 
 function safeErrorSummary(error) {
