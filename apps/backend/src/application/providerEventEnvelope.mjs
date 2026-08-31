@@ -43,6 +43,7 @@ export function mapCodexProviderNotification({ message, binding, liveItems = [],
       items: method === "turn/completed" ? liveItems.map(normalizeTimelineItem) : undefined,
       turn,
       error: params.error ?? turn?.error,
+      failureScope: type === "provider.error" ? providerFailureScope(turnId) : undefined,
       willRetry: params.willRetry,
       tokenUsage: params.tokenUsage ?? params.usage
     }),
@@ -78,11 +79,12 @@ export function mapClaudeTurnSettled({ event, binding, receivedAt }) {
 
 export function mapClaudeProviderEvent({ event, binding, receivedAt }) {
   if (!event?.type) return null;
+  const turnId = optionalText(event.turnId);
   return providerEnvelope(binding, {
     providerEventId: optionalText(event.providerEventId),
     providerSequence: optionalSequence(event.providerSequence),
     resumeToken: optionalText(event.resumeToken),
-    turnId: optionalText(event.turnId),
+    turnId,
     itemId: optionalText(event.itemId ?? event.item?.id),
     type: event.type,
     occurredAt: optionalText(event.occurredAt),
@@ -91,6 +93,7 @@ export function mapClaudeProviderEvent({ event, binding, receivedAt }) {
       nativeType: event.nativeType ?? event.type,
       item: normalizeTimelineItem(event.item),
       error: event.error ?? null,
+      failureScope: event.type === "provider.error" ? providerFailureScope(turnId) : undefined,
       willRetry: event.willRetry,
       connectionStatus: event.connectionStatus
     }),
@@ -105,11 +108,12 @@ export function mapOpenClackyProviderChange({ change, binding, receivedAt }) {
   if (!type) return null;
   const item = openClackyProjectedItem(event)
     ?? projectedDetailItem(change?.detail, event);
+  const turnId = optionalText(event.turn_id ?? event.turnId);
   return providerEnvelope(binding, {
     providerEventId: optionalText(event.id ?? event.event_id),
     providerSequence: optionalSequence(event.sequence ?? event.seq),
     resumeToken: optionalText(event.resume_token ?? event.cursor),
-    turnId: optionalText(event.turn_id ?? event.turnId),
+    turnId,
     itemId: optionalText(item?.id ?? event.item_id),
     type,
     occurredAt: optionalText(event.created_at ?? event.occurred_at),
@@ -118,6 +122,7 @@ export function mapOpenClackyProviderChange({ change, binding, receivedAt }) {
       item,
       items: type.startsWith("turn.") ? change?.detail?.items ?? undefined : undefined,
       error: change.error ?? event.error,
+      failureScope: type === "provider.error" ? providerFailureScope(turnId) : undefined,
       hasAgentMessage: change.hasAgentMessage === true,
       connectionStatus: type === "provider.connection.changed"
         ? optionalText(event.connection_status ?? event.connectionStatus ?? event.status)
@@ -129,6 +134,10 @@ export function mapOpenClackyProviderChange({ change, binding, receivedAt }) {
     }),
     rawPayload: event
   });
+}
+
+function providerFailureScope(turnId) {
+  return turnId ? "turn" : "session";
 }
 
 function providerEnvelope(binding, event) {
