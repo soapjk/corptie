@@ -915,6 +915,11 @@
 "Preflight" = "预检";
 "Generate a reviewable local-only integration plan before anything is changed." = "在执行任何修改前，先生成一份仅在本地执行、可审阅的集成计划。";
 "Generate Integration Plan" = "生成集成计划";
+"Merge All into main" = "一键合并至 main";
+"Clean Up Orphaned Worktrees" = "清理游离 Worktree";
+"Preparing Worktree merge…" = "正在准备合并 Worktree…";
+"The integration state changed. Cancel this operation and start again." = "Worktree 状态已变化，请取消本次操作后重新开始。";
+"Could not restore main while canceling" = "取消时无法安全恢复 main";
 "Review Plan" = "查看计划";
 "Review Worktree Integration Plan" = "审阅 Worktree 集成计划";
 "Only local commits and merges will be performed. Nothing is pushed, deleted, reset, or force-cleaned." = "只会执行本地提交与合并；不会推送、删除、重置或强制清理任何内容。";

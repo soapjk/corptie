@@ -188,13 +188,14 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("client.commitMainWorktreeChanges("))
         XCTAssertTrue(view.contains("private func confirmAndDismiss()"))
         XCTAssertTrue(view.contains("onClose()\n        Task"))
-        XCTAssertTrue(view.contains("Task { await client.confirmPlan(commitProtectionDecisions: decisions) }"))
+        XCTAssertTrue(view.contains("if await client.confirmPlan(commitProtectionDecisions: decisions)"))
         XCTAssertTrue(view.contains("protectionDecisionBinding(for: item.worktreeId)"))
         XCTAssertTrue(view.contains("item.associations.filter(\\.active)"))
         XCTAssertTrue(view.contains("Retry after Manual Resolution"))
         XCTAssertTrue(view.contains("worktree.integrate.retry-manual-conflict"))
         XCTAssertTrue(view.contains("worktree.integrate.open-plan-conflict-agent"))
-        XCTAssertTrue(view.contains("worktree.integrate.blocked-repreflight"))
+        XCTAssertTrue(view.contains("WorktreeIntegrationFlowSheet"))
+        XCTAssertTrue(view.contains("worktree.integrate.preparing.cancel"))
         XCTAssertTrue(view.contains("worktree.integrate.blocking-risks"))
         XCTAssertTrue(view.contains("if !job.plan.blockingRisks.isEmpty"))
         XCTAssertTrue(view.contains("ForEach(job.plan.blockingRisks.indices"))
@@ -202,7 +203,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("Affected Worktree ID: %@"))
         XCTAssertTrue(view.contains("Conflict files: %@"))
         XCTAssertTrue(view.contains("risk.message != localizedMessage"))
-        XCTAssertTrue(view.contains("private func repreflightAndReview()"))
+        XCTAssertFalse(view.contains("private func repreflightAndReview()"))
+        XCTAssertFalse(view.contains("worktree.integrate.blocked-repreflight"))
         XCTAssertTrue(view.contains("$0.commitStatus != \"not_needed\" || $0.mergeStatus != \"not_needed\""))
         XCTAssertFalse(view.contains("Toggle(L10n(\"Delete this Worktree\")"))
         XCTAssertTrue(client.contains("projects/\\(repositoryId)/workspaces/\\(worktree.worktreeId)/actions/merge"))
@@ -240,9 +242,13 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("WorktreeCleanupConfirmationLayout.preferredHeight(for: worktrees.count)"))
         XCTAssertTrue(view.contains(".scrollIndicators(.automatic)"))
         XCTAssertFalse(view.contains("Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:\\n%@"))
-        XCTAssertTrue(view.contains("Blocked from cleanup (%d)"))
-        XCTAssertTrue(view.contains("worktree.cleanup.blocker.\\(worktree.worktreeId)"))
-        XCTAssertTrue(view.contains("localizedDeletionBlocker(blocker)"))
+        XCTAssertTrue(view.contains("HStack(spacing: 8)"))
+        XCTAssertTrue(view.contains("Merge All into main"))
+        XCTAssertTrue(view.contains("Clean Up Orphaned Worktrees"))
+        XCTAssertFalse(view.contains("Blocked from cleanup (%d)"))
+        XCTAssertFalse(view.contains("worktree.cleanup.blocker.\\(worktree.worktreeId)"))
+        XCTAssertFalse(view.contains("Generate a reviewable local-only integration plan before anything is changed."))
+        XCTAssertFalse(view.contains("Remove merged Worktrees that have no unfinished WorkItem or active Session association."))
         XCTAssertTrue(view.contains("WorktreeCleanupResultView"))
         XCTAssertTrue(view.contains("Removed: %d   Skipped: %d   Failed: %d"))
         XCTAssertTrue(view.contains("worktree.cleanup.progress"))
@@ -278,7 +284,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertFalse(descendants(of: hostingView, matching: NSScrollView.self).isEmpty)
     }
 
-    func testStaleIntegrationPlanCanBeRegeneratedAndMustBeReviewedAgain() throws {
+    func testEveryIntegrationClickBuildsAFreshOneTimePlan() throws {
         let macRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -292,12 +298,13 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(view.contains("job.requiresPlanRegeneration"))
-        XCTAssertTrue(view.contains("worktree.integrate.regenerate"))
-        XCTAssertTrue(view.contains("if await client.regeneratePlan()"))
-        XCTAssertTrue(view.contains("showingPlan = true"))
-        XCTAssertTrue(client.contains("worktree-management/jobs/\\(staleJob.id)/cancel"))
-        XCTAssertTrue(client.contains("body: [\"replan\": true]"))
+        XCTAssertTrue(view.contains("Task { await client.prepareFreshPlan() }"))
+        XCTAssertTrue(view.contains("client.cancelPlanPreparation()"))
+        XCTAssertFalse(view.contains("worktree.integrate.regenerate"))
+        XCTAssertFalse(view.contains("Regenerate Plan"))
+        XCTAssertTrue(client.contains("func prepareFreshPlan() async"))
+        XCTAssertTrue(client.contains("existing.status == \"awaiting_confirmation\""))
+        XCTAssertTrue(client.contains("body: [\"replan\": false]"))
     }
 
     func testStateDriftFailuresRequireRepreflightInsteadOfBlindRetry() {
@@ -314,7 +321,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         ))
     }
 
-    func testRunningIntegrationCanStopSafelyAndAutomaticallyRepreflight() throws {
+    func testRunningIntegrationCanBeCanceledWithoutGeneratingAnotherPlan() throws {
         let macRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -332,14 +339,15 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             encoding: .utf8
         )
 
-        XCTAssertTrue(view.contains("Stop this task and generate a new integration plan?"))
-        XCTAssertTrue(view.contains("worktree.integrate.stop-and-repreflight"))
-        XCTAssertTrue(view.contains("Task { await client.stopAndRepreflight() }"))
-        XCTAssertTrue(view.contains("Corptie aborts only that merge and verifies main is clean"))
+        XCTAssertTrue(view.contains("worktree.integrate.cancel"))
+        XCTAssertTrue(view.contains("Task { await client.cancelIntegration() }"))
+        XCTAssertFalse(view.contains("Stop this task and generate a new integration plan?"))
+        XCTAssertFalse(view.contains("worktree.integrate.stop-and-repreflight"))
+        XCTAssertFalse(view.contains("Stop and Re-preflight"))
         XCTAssertTrue(view.contains("replanning_cleanup_failed"))
         XCTAssertFalse(view.contains("Conflicts are preserved for review"))
-        XCTAssertTrue(client.contains("func stopAndRepreflight() async"))
-        XCTAssertTrue(client.contains("body: [\"replan\": true]"))
+        XCTAssertTrue(client.contains("func cancelIntegration() async"))
+        XCTAssertTrue(client.contains("body: [\"replan\": false]"))
         XCTAssertTrue(models.contains("cancellation_requested"))
         XCTAssertTrue(models.contains("replanning"))
         XCTAssertTrue(models.contains("phase == \"plan_stale\""))
@@ -418,9 +426,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             "\"Protected local files were detected.\" = \"检测到受保护的本地文件。\";",
             "\"Operations run in the displayed order. No remote push or deletion is performed.\" = \"操作将按显示顺序执行；不会远程推送或删除任何内容。\";",
             "\"No Worktree changes require integration.\" = \"没有需要集成的 Worktree 修改。\";",
-            "\"Regenerate Plan\" = \"重新生成计划\";",
-            "\"Generate Integration Plan\" = \"生成集成计划\";",
-            "\"Stop and Re-preflight\" = \"停止并重新生成计划\";",
+            "\"Merge All into main\" = \"一键合并至 main\";",
+            "\"Clean Up Orphaned Worktrees\" = \"清理游离 Worktree\";",
+            "\"Preparing Worktree merge…\" = \"正在准备合并 Worktree…\";",
+            "\"The integration state changed. Cancel this operation and start again.\" = \"Worktree 状态已变化，请取消本次操作后重新开始。\";",
             "\"Stopping at a safe boundary\" = \"正在安全步骤边界停止\";",
             "\"The integration plan is stale. Regenerate and review it before continuing.\" = \"代码状态已变化，当前集成计划已失效。请重新生成并审阅后再继续。\";",
             "\"Let Agent Resolve Conflicts\" = \"让 Agent 一键解决冲突\";",

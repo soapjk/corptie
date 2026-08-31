@@ -18,7 +18,6 @@ struct WorktreeManagementView: View {
     @StateObject private var client = WorktreeManagementClient()
     @State private var showingPlan = false
     @State private var showingSynchronizationConfirmation = false
-    @State private var showingStopAndRepreflightConfirmation = false
     @State private var pendingOperation: ManagedWorktree?
     @State private var pendingDeletion: ManagedWorktree?
     @State private var deletionBlocker: WorktreeDeletionBlockerPresentation?
@@ -73,7 +72,7 @@ struct WorktreeManagementView: View {
             }
         }
         .sheet(isPresented: $showingPlan) {
-            if let job = client.job { WorktreeIntegrationPlanReview(job: job, client: client, isPresented: $showingPlan) }
+            WorktreeIntegrationFlowSheet(client: client, isPresented: $showingPlan)
         }
         .sheet(item: $pendingOperation) { worktree in
             IndividualWorktreeOperationView(
@@ -93,18 +92,6 @@ struct WorktreeManagementView: View {
             Button(L10n("Cancel"), role: .cancel) {}
         } message: {
             Text(L10n("This fast-forwards an already integrated Worktree to the current main revision. Uncommitted or unmerged changes are never overwritten."))
-        }
-        .confirmationDialog(
-            L10n("Stop this task and generate a new integration plan?"),
-            isPresented: $showingStopAndRepreflightConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button(L10n("Stop and Re-preflight"), role: .destructive) {
-                Task { await client.stopAndRepreflight() }
-            }
-            Button(L10n("Cancel"), role: .cancel) {}
-        } message: {
-            Text(L10n("Remaining steps stop at the next safe boundary. If this task left a merge conflict in main, Corptie aborts only that merge and verifies main is clean before generating a new plan. Completed commits and earlier merges are kept."))
         }
         .confirmationDialog(
             L10n("Delete this Worktree?"),
@@ -201,9 +188,10 @@ struct WorktreeManagementView: View {
                 Task { await client.refreshSelected() }
             }
             if let project = client.detail?.project {
-                integrationAction(project)
-                cleanupAction(project)
-                if let job = client.job { jobProgress(job) }
+                worktreeActions(project)
+                if let job = client.job, job.status != "awaiting_confirmation", job.status != "canceled" {
+                    jobProgress(job)
+                }
                 if project.worktrees.isEmpty {
                     ContentUnavailableView(L10n("No Git Worktrees"), systemImage: "arrow.triangle.branch")
                 } else {
@@ -410,77 +398,29 @@ struct WorktreeManagementView: View {
         }
     }
 
-    private func integrationAction(_ project: ManagedGitProject) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(L10n("Integrate all Worktrees into main")).fontWeight(.semibold)
-                Text(L10n("Generate a reviewable local-only integration plan before anything is changed."))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button {
-                if client.job?.status == "awaiting_confirmation" {
-                    showingPlan = true
-                } else {
-                    Task {
-                        await client.createPreflight()
-                        showingPlan = client.job?.status == "awaiting_confirmation"
-                    }
-                }
-            } label: {
-                Label(
-                    L10n(client.job?.status == "awaiting_confirmation" ? "Review Plan" : "Generate Integration Plan"),
-                    systemImage: "checklist"
-                )
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(client.isMutating || client.job?.isActive == true || client.job?.status == "paused")
-            .accessibilityIdentifier("worktree.integrate.preflight")
-        }
-        .padding(12)
-        .background(Color.primary.opacity(0.035))
-    }
-
-    private func cleanupAction(_ project: ManagedGitProject) -> some View {
+    private func worktreeActions(_ project: ManagedGitProject) -> some View {
         let eligible = ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: project.worktrees)
         return VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n("Clean Up Merged Worktrees")).fontWeight(.semibold)
-                    Text(L10n("Remove merged Worktrees that have no unfinished WorkItem or active Session association."))
-                        .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button {
+                    showingPlan = true
+                    Task { await client.prepareFreshPlan() }
+                } label: {
+                    Label(L10n("Merge All into main"), systemImage: "arrow.triangle.merge")
+                        .frame(maxWidth: .infinity)
                 }
-                Spacer()
+                .buttonStyle(.borderedProminent)
+                .disabled(client.isMutating || client.isPreparingPlan || client.job?.isActive == true || client.job?.status == "paused")
+                .accessibilityIdentifier("worktree.integrate.preflight")
+
                 Button {
                     pendingCleanup = WorktreeCleanupRequest(worktrees: eligible)
                 } label: {
-                    Label(L10nFormat("Clean Up (%d)", eligible.count), systemImage: "trash")
+                    Label(L10n("Clean Up Orphaned Worktrees"), systemImage: "trash")
+                        .frame(maxWidth: .infinity)
                 }
                 .disabled(eligible.isEmpty || client.isMutating)
                 .accessibilityIdentifier("worktree.cleanup")
-            }
-            let blocked = project.worktrees.filter {
-                !$0.isMain && ManagedWorktreeDeletionPolicy.blocker(for: $0) != nil
-            }
-            if !blocked.isEmpty {
-                DisclosureGroup(L10nFormat("Blocked from cleanup (%d)", blocked.count)) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        ForEach(blocked) { worktree in
-                            if let blocker = ManagedWorktreeDeletionPolicy.blocker(for: worktree) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(worktree.branchName ?? worktree.path).font(.caption.weight(.semibold))
-                                    Text(localizedDeletionBlocker(blocker))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                        .textSelection(.enabled)
-                                }
-                                .accessibilityIdentifier("worktree.cleanup.blocker.\(worktree.worktreeId)")
-                            }
-                        }
-                    }
-                    .padding(.top, 4)
-                }
-                .font(.caption)
             }
             if let progress = client.cleanupProgress {
                 VStack(alignment: .leading, spacing: 5) {
@@ -532,18 +472,7 @@ struct WorktreeManagementView: View {
                 Text(localizedIntegrationPhase(job.phase)).font(.caption.weight(.semibold))
                 Spacer()
                 Text("\(job.progress.completed)/\(job.progress.total)").font(.caption.monospacedDigit())
-                if job.requiresPlanRegeneration {
-                    Button(L10n("Regenerate Plan")) {
-                        Task {
-                            if await client.regeneratePlan() {
-                                showingPlan = true
-                            }
-                        }
-                    }
-                    .controlSize(.small)
-                    .disabled(client.isMutating)
-                    .accessibilityIdentifier("worktree.integrate.regenerate")
-                } else if job.hasMergeConflict,
+                if job.hasMergeConflict,
                           let resolution = job.currentConflictResolution,
                           let sessionId = resolution.sessionId {
                     Button(L10n("View Agent Session")) { router.openSession(sessionId) }
@@ -578,13 +507,13 @@ struct WorktreeManagementView: View {
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.retry")
                 }
-                if job.canStopAndRepreflight {
-                    Button(L10n("Stop and Re-preflight")) {
-                        showingStopAndRepreflightConfirmation = true
+                if job.canCancel {
+                    Button(L10n("Cancel"), role: .destructive) {
+                        Task { await client.cancelIntegration() }
                     }
                     .controlSize(.small)
                     .disabled(client.isMutating)
-                    .accessibilityIdentifier("worktree.integrate.stop-and-repreflight")
+                    .accessibilityIdentifier("worktree.integrate.cancel")
                 }
             }
             ProgressView(value: job.progress.fraction)
@@ -593,7 +522,7 @@ struct WorktreeManagementView: View {
                 Text(item.branchName ?? item.path).font(.caption).foregroundStyle(.secondary)
             }
             if job.requiresPlanRegeneration {
-                Text(L10n("The integration plan is stale. Regenerate and review it before continuing."))
+                Text(L10n("The integration state changed. Cancel this operation and start again."))
                     .font(.caption)
                     .foregroundStyle(.orange)
             } else if job.conflictAutomation?.status == "blocked" {
@@ -1223,6 +1152,7 @@ private func localizedIntegrationStatus(_ value: String) -> String {
     case "cancellation_requested": L10n("Stopping")
     case "replanning": L10n("Generating a new plan")
     case "replanning_cleanup_failed": L10n("Could not restore main for re-preflight")
+    case "cancellation_cleanup_failed": L10n("Could not restore main while canceling")
     case "replanning_failed": L10n("Could not generate a new plan")
     default: value.replacingOccurrences(of: "_", with: " ")
     }
@@ -1295,6 +1225,44 @@ private func localizedIntegrationRisk(_ risk: WorktreeIntegrationRisk) -> String
     }
 }
 
+private struct WorktreeIntegrationFlowSheet: View {
+    @ObservedObject var client: WorktreeManagementClient
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        Group {
+            if client.isPreparingPlan {
+                VStack(spacing: 18) {
+                    ProgressView()
+                        .controlSize(.large)
+                    Text(L10n("Preparing Worktree merge…"))
+                        .font(.headline)
+                    Button(L10n("Cancel"), role: .cancel) {
+                        client.cancelPlanPreparation()
+                        isPresented = false
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("worktree.integrate.preparing.cancel")
+                }
+                .frame(width: 520, height: 260)
+            } else if let job = client.job, job.status == "awaiting_confirmation" {
+                WorktreeIntegrationPlanReview(job: job, client: client, isPresented: $isPresented)
+            } else {
+                VStack(spacing: 18) {
+                    ContentUnavailableView(
+                        L10n("No Worktree changes require integration."),
+                        systemImage: "checkmark.circle"
+                    )
+                    Button(L10n("Close")) { isPresented = false }
+                        .keyboardShortcut(.cancelAction)
+                }
+                .frame(width: 520, height: 300)
+            }
+        }
+        .interactiveDismissDisabled()
+    }
+}
+
 private struct WorktreeIntegrationPlanReview: View {
     let job: WorktreeIntegrationJob
     @ObservedObject var client: WorktreeManagementClient
@@ -1362,31 +1330,20 @@ private struct WorktreeIntegrationPlanReview: View {
                 }
             }
             .frame(maxHeight: 420)
-            if !job.plan.blockingRisks.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n("Before re-checking: preserve main changes manually, resolve task conflicts, and stop any active Git or Session operation."))
-                    Text(L10n("Success creates a fresh reviewable plan. If detection fails or you cancel, Corptie returns here without changing either main or task Worktrees."))
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
             HStack {
-                Button(L10n("Cancel"), role: .cancel) { isPresented = false }
+                Button(L10n("Cancel"), role: .cancel) {
+                    isPresented = false
+                    Task { await client.cancelIntegration() }
+                }
+                .keyboardShortcut(.cancelAction)
                 Spacer()
                 if job.plan.blockingRisks.isEmpty {
-                    Button(L10n("Confirm and Start")) {
+                    Button(L10n("Confirm")) {
                         confirmAndDismiss()
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(client.isMutating || hasMissingProtectionDecisions)
                     .accessibilityIdentifier("worktree.integrate.confirm")
-                } else {
-                    Button(L10n("Re-preflight")) {
-                        repreflightAndReview()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(client.isMutating)
-                    .accessibilityIdentifier("worktree.integrate.blocked-repreflight")
                 }
             }
         }
@@ -1574,15 +1531,10 @@ private struct WorktreeIntegrationPlanReview: View {
                 neverRemind: neverRemindWorktrees.contains(worktreeId)
             )
         }
-        isPresented = false
-        Task { await client.confirmPlan(commitProtectionDecisions: decisions) }
-    }
-
-    private func repreflightAndReview() {
-        isPresented = false
         Task {
-            await client.stopAndRepreflight()
-            isPresented = client.job?.status == "awaiting_confirmation"
+            if await client.confirmPlan(commitProtectionDecisions: decisions) {
+                isPresented = false
+            }
         }
     }
 }

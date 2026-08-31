@@ -376,7 +376,10 @@ export class WorktreeIntegrationJobService {
   }
 
   async #finishCancellation(job, { replan = false, conflictPreserved = false } = {}) {
-    if (replan) {
+    const conflictItem = job.details.plan.items.find((candidate) =>
+      candidate.worktreeId === job.details.currentWorktreeId);
+    const shouldRestoreTaskOwnedConflict = conflictItem?.mergeStatus === "conflict";
+    if (replan || shouldRestoreTaskOwnedConflict) {
       try {
         const cleanup = await this.#abortConflictMergeForReplan(job);
         if (cleanup) {
@@ -389,7 +392,7 @@ export class WorktreeIntegrationJobService {
       } catch (error) {
         return this.#update(job, {
           status: "paused",
-          phase: "replanning_cleanup_failed",
+          phase: replan ? "replanning_cleanup_failed" : "cancellation_cleanup_failed",
           error: error.message,
           auditEvent: "conflict_merge_cleanup_failed",
           auditData: { code: error.code ?? "MERGE_CLEANUP_FAILED" }
