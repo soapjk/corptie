@@ -3500,6 +3500,12 @@ export class CorptieStore {
       ON provider_event_inbox(binding_id, provider_sequence);
       CREATE INDEX IF NOT EXISTS idx_provider_event_inbox_status
       ON provider_event_inbox(status, received_at);
+      CREATE INDEX IF NOT EXISTS idx_provider_event_inbox_terminal_turn
+      ON provider_event_inbox(
+        binding_id, turn_id, received_at DESC, provider_event_id DESC
+      )
+      WHERE status = 'applied'
+        AND event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled');
 
       CREATE TABLE IF NOT EXISTS provider_binding_cursors (
         binding_id TEXT PRIMARY KEY,
@@ -3539,6 +3545,9 @@ export class CorptieStore {
       );
       CREATE INDEX IF NOT EXISTS idx_session_turns_active
       ON session_turns(session_id, execution_status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_session_turns_repair_active
+      ON session_turns(binding_id, turn_id, session_id)
+      WHERE execution_status IN ('idle', 'running', 'blocked');
 
       CREATE TABLE IF NOT EXISTS event_outbox (
         outbox_id TEXT PRIMARY KEY,
@@ -3614,11 +3623,17 @@ export class CorptieStore {
               inbox.provider_event_id
        FROM session_turns turns
        JOIN provider_event_inbox inbox
-         ON inbox.binding_id = turns.binding_id AND inbox.turn_id = turns.turn_id
-       WHERE turns.execution_status IN ('idle', 'running', 'blocked')
-         AND inbox.status = 'applied'
-         AND inbox.event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
-       ORDER BY inbox.received_at DESC, inbox.provider_event_id DESC`
+         ON inbox.rowid = (
+           SELECT terminal.rowid
+           FROM provider_event_inbox terminal
+           WHERE terminal.binding_id = turns.binding_id
+             AND terminal.turn_id = turns.turn_id
+             AND terminal.status = 'applied'
+             AND terminal.event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
+           ORDER BY terminal.received_at DESC, terminal.provider_event_id DESC
+           LIMIT 1
+         )
+       WHERE turns.execution_status IN ('idle', 'running', 'blocked')`
     );
     const repairedSessions = new Set();
     const repairedTurns = new Set();
