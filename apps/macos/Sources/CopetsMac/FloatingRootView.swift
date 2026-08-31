@@ -4908,7 +4908,12 @@ struct ChatDisplayEntry: Identifiable, Sendable {
     }
 
     var displayWeight: Int {
-        1
+        // The window budget represents visible conversation messages, not
+        // disclosure rows. A process card can contain hundreds of tool events
+        // and long-running turns can be split into multiple process segments;
+        // counting those rows evicted the actual user/assistant conversation
+        // from the initial viewport.
+        isProcessGroup ? 0 : 1
     }
 }
 
