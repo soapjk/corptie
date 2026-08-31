@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
+import { createCodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { confirmOrRestoreCodexToolPlan } from "../src/application/codexToolPlanConfirmation.mjs";
 
 const definitions = [{
@@ -27,6 +28,10 @@ const request = {
   appliedDomains: [{ domainId: "artifacts" }]
 };
 
+function restartedRuntime() {
+  return createCodexProviderRuntime({ client: new CodexAppServerClient() });
+}
+
 function storeWith(patch = {}) {
   return {
     getSessionToolCatalogMaterialization: () => ({
@@ -51,7 +56,7 @@ function storeWith(patch = {}) {
 }
 
 test("a restarted Codex runtime restores an exact legacy restricted-gateway receipt", () => {
-  const runtime = new CodexAppServerClient();
+  const runtime = restartedRuntime();
   const confirmation = confirmOrRestoreCodexToolPlan({
     runtime, store: storeWith(), binding, plan, request
   });
@@ -60,7 +65,7 @@ test("a restarted Codex runtime restores an exact legacy restricted-gateway rece
 });
 
 test("Tool-schema confirmation survives a new authorization materialization generation", () => {
-  const runtime = new CodexAppServerClient();
+  const runtime = restartedRuntime();
   const confirmation = confirmOrRestoreCodexToolPlan({
     runtime,
     store: storeWith({
@@ -84,7 +89,7 @@ test("persisted confirmation recovery fails closed on binding, generation, or sc
     { providerRevision: "thread-start:thread:other:confirmed" }
   ]) {
     assert.throws(() => confirmOrRestoreCodexToolPlan({
-      runtime: new CodexAppServerClient(), store: storeWith(patch), binding, plan, request
+      runtime: restartedRuntime(), store: storeWith(patch), binding, plan, request
     }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
   }
 });
