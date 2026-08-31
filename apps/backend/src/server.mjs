@@ -2921,7 +2921,10 @@ function controlPlaneSnapshot() {
   const sessionsById = new Map(persisted.map((session) => [
     session.id,
     withSessionMessageCursors(
-      withLastMessageTimestamp(session, latestMessageTimes.get(session.id)),
+      withLastMessageTimestamp(
+        withResolvedSessionActions(session, agentProviderRegistry),
+        latestMessageTimes.get(session.id)
+      ),
       messageCursors.get(session.id),
       timelineRevisions.get(session.id)
     )
