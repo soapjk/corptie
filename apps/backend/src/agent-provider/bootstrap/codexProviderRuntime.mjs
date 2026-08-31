@@ -9,6 +9,7 @@ export class CodexProviderRuntime {
 
   bindThreadToolContext(...args) { return this.client.bindThreadToolContext(...args); }
   confirmThreadToolPlan(...args) { return this.client.confirmThreadToolPlan(...args); }
+  restoreThreadToolPlanConfirmation(...args) { return this.client.restoreThreadToolPlanConfirmation(...args); }
   close(...args) { return this.client.close(...args); }
   deleteThread(...args) { return this.client.deleteThread(...args); }
   execResumeThread(...args) { return this.client.execResumeThread(...args); }
