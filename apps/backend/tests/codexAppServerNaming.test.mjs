@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   CodexAppServerClient,
@@ -6,6 +8,91 @@ import {
   codexResponseError,
   mapCodexThreadToSession
 } from "../src/adapters/codexAppServer.mjs";
+import { schemaHash } from "../src/application/hostToolCatalog.mjs";
+
+function persistedToolProof(threadId, definitions, kind = "thread_start_accepted") {
+  return {
+    providerRevision: kind === "thread_start_accepted"
+      ? `thread-start:${threadId}:confirmed`
+      : `thread-fork-inherited:${threadId}:thread-source:confirmed`,
+    providerDefinitionsHash: schemaHash(definitions),
+    providerDefinitionsCount: definitions.length,
+    providerObservationKind: kind
+  };
+}
+
+function fakeCodexProcess() {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.requests = [];
+  child.killed = false;
+  child.kill = () => {
+    child.killed = true;
+    return true;
+  };
+  let buffer = "";
+  child.stdin.setEncoding("utf8");
+  child.stdin.on("data", (chunk) => {
+    buffer += chunk;
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (line) {
+        const request = JSON.parse(line);
+        child.requests.push(request);
+        queueMicrotask(() => child.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`));
+      }
+      newline = buffer.indexOf("\n");
+    }
+  });
+  return child;
+}
+
+test("concurrent Codex initialization shares one app-server process generation", async () => {
+  const children = [];
+  const client = new CodexAppServerClient({
+    spawnProcess: () => {
+      const child = fakeCodexProcess();
+      children.push(child);
+      return child;
+    }
+  });
+
+  await Promise.all(Array.from({ length: 20 }, () => client.initialize()));
+
+  assert.equal(children.length, 1);
+  assert.equal(children[0].requests.filter((request) => request.method === "initialize").length, 1);
+  assert.equal(client.process, children[0]);
+  assert.equal(client.initialized, true);
+  await client.close();
+});
+
+test("a stale Codex process exit cannot tear down a newer initialized generation", async () => {
+  const children = [];
+  const client = new CodexAppServerClient({
+    spawnProcess: () => {
+      const child = fakeCodexProcess();
+      children.push(child);
+      return child;
+    }
+  });
+
+  await client.initialize();
+  const first = children[0];
+  await client.close();
+  await client.initialize();
+  const second = children[1];
+  first.emit("exit", 0, null);
+
+  assert.equal(children.length, 2);
+  assert.equal(client.process, second);
+  assert.equal(client.initialized, true);
+  assert.equal(second.killed, false);
+  await client.close();
+});
 
 test("missing Codex rollout is normalized as a safely replaceable Provider Session", () => {
   const error = codexResponseError({
@@ -39,6 +126,13 @@ test("missing Codex rollout is normalized as a safely replaceable Provider Sessi
   const ambiguous = codexResponseError({ code: -32603, message: "transport closed" });
   assert.equal(ambiguous.code, undefined);
   assert.equal(ambiguous.safeToRetry, undefined);
+
+  const emptyAfterRestart = codexResponseError({
+    code: -32600,
+    message: "thread not loaded: thread-empty"
+  });
+  assert.equal(emptyAfterRestart.code, "PROVIDER_EMPTY_THREAD_UNRECOVERABLE");
+  assert.equal(emptyAfterRestart.safeToRecreate, true);
 });
 
 test("a missing rollout is retryable only when marked at the pre-dispatch resume boundary", () => {
@@ -53,6 +147,13 @@ test("a missing rollout is retryable only when marked at the pre-dispatch resume
   const ambiguous = new Error("transport closed after turn/start");
   ambiguous.code = "PROVIDER_SESSION_UNAVAILABLE";
   assert.equal(codexPreDispatchRecoveryError(ambiguous).dispatchState, undefined);
+
+  const unconfirmed = new Error("tool schema is not installed");
+  unconfirmed.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+  const recoverableToolSchema = codexPreDispatchRecoveryError(unconfirmed);
+  assert.equal(recoverableToolSchema.dispatchState, "not_sent");
+  assert.equal(recoverableToolSchema.recoveryAction, "replace_provider_binding");
+  assert.equal(recoverableToolSchema.replacementReason, "PROVIDER_TOOL_APPLICATION_UNCONFIRMED");
 });
 
 test("setThreadName uses the Codex app-server thread naming method", async () => {
@@ -280,13 +381,19 @@ test("resumeThread restores collaboration MCP config and Agent identity", async 
 
 test("bindThreadToolContext finalizes a fresh thread without an invalid resume", () => {
   const client = new CodexAppServerClient();
+  const dynamicTools = [{ name: "corptie_automations_list" }];
+  client.restoreThreadToolPlanConfirmation(
+    "thread-fresh",
+    dynamicTools,
+    persistedToolProof("thread-fresh", dynamicTools)
+  );
   const result = client.bindThreadToolContext("thread-fresh", {
     dynamicToolAgentId: "agent-a",
     dynamicToolMetadata: {
       sessionId: "session:a",
       logicalSessionId: "logical:a"
     },
-    dynamicTools: [{ name: "corptie_automations_list" }]
+    dynamicTools
   });
 
   assert.equal(result.toolContextBound, true);
@@ -295,6 +402,34 @@ test("bindThreadToolContext finalizes a fresh thread without an invalid resume",
     sessionId: "session:a",
     logicalSessionId: "logical:a"
   });
+});
+
+test("route recovery inspects an empty Codex target without thread/resume or a model Turn", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return { thread: { id: params.threadId, turns: [] } };
+  };
+  const dynamicTools = [{ name: "corptie_tool_call" }];
+  const proof = persistedToolProof("thread-empty", dynamicTools);
+
+  const result = await client.inspectEmptyThreadForRouteCommit("thread-empty", {
+    cwd: "/repo",
+    dynamicTools,
+    dynamicToolConfirmation: proof,
+    dynamicToolAgentId: "agent-a"
+  });
+
+  assert.equal(result.thread.id, "thread-empty");
+  assert.deepEqual(calls, [{
+    method: "thread/read",
+    params: { threadId: "thread-empty", includeTurns: true }
+  }]);
+  assert.equal(client.dynamicToolAgentsByThread.get("thread-empty"), "agent-a");
+  assert.equal(client.confirmThreadToolPlan("thread-empty", dynamicTools).providerRevision,
+    proof.providerRevision);
 });
 
 test("forkThread fixes the forked thread to the target workspace and completed source turn", async () => {
@@ -311,6 +446,12 @@ test("forkThread fixes the forked thread to the target workspace and completed s
     };
   };
 
+  const dynamicTools = [{ name: "corptie_tool_gateway", inputSchema: { type: "object" } }];
+  client.restoreThreadToolPlanConfirmation(
+    "thread-source",
+    dynamicTools,
+    persistedToolProof("thread-source", dynamicTools)
+  );
   const result = await client.forkThread("thread-source", {
     lastTurnId: "turn-complete",
     cwd: "/repo/feature worktree",
@@ -318,7 +459,7 @@ test("forkThread fixes the forked thread to the target workspace and completed s
     approvalPolicy: "on-request",
     sandbox: "workspace-write",
     dynamicToolAgentId: "agent-a",
-    dynamicTools: [{ name: "corptie_tool_gateway", inputSchema: { type: "object" } }]
+    dynamicTools
   });
 
   assert.equal(calls[0].method, "thread/fork");
@@ -328,16 +469,32 @@ test("forkThread fixes the forked thread to the target workspace and completed s
   assert.deepEqual(calls[0].params.runtimeWorkspaceRoots, ["/repo/feature worktree"]);
   assert.equal(calls[0].params.sandbox, "workspace-write");
   assert.equal(calls[0].params.deferGoalContinuation, true);
-  assert.deepEqual(calls[0].params.dynamicTools, [
-    { name: "corptie_tool_gateway", inputSchema: { type: "object" } }
-  ]);
+  assert.equal(Object.prototype.hasOwnProperty.call(calls[0].params, "dynamicTools"), false);
   assert.equal(calls[0].timeoutMs, 30000);
   assert.deepEqual(result.instructionSources, ["/repo/feature worktree/AGENTS.md"]);
   assert.equal(client.dynamicToolAgentsByThread.get("thread-feature"), "agent-a");
   assert.match(
-    client.confirmThreadToolPlan("thread-feature", calls[0].params.dynamicTools).providerRevision,
-    /^thread-fork:thread-feature:/
+    client.confirmThreadToolPlan("thread-feature", dynamicTools).providerRevision,
+    /^thread-fork-inherited:thread-feature:thread-source:/
   );
+});
+
+test("forkThread fails before Provider mutation when the requested Tool schema differs from the source", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  let requests = 0;
+  client.request = async () => { requests += 1; };
+  const sourceTools = [{ name: "legacy_tool" }];
+  client.restoreThreadToolPlanConfirmation(
+    "thread-source",
+    sourceTools,
+    persistedToolProof("thread-source", sourceTools)
+  );
+
+  await assert.rejects(() => client.forkThread("thread-source", {
+    dynamicTools: [{ name: "corptie_tool_call" }]
+  }), { code: "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED" });
+  assert.equal(requests, 0);
 });
 
 test("updateThreadSettings updates cwd and sandbox policy together for recovery", async () => {
@@ -452,16 +609,16 @@ test("a fresh empty thread starts its first turn without an invalid resume", asy
   assert.equal(cached.alreadyLoaded, true);
   assert.deepEqual(calls.map((call) => call.method), ["thread/start"]);
 
-  await client.ensureThreadResumed("thread-a", {
+  await assert.rejects(() => client.ensureThreadResumed("thread-a", {
     ...initial,
     dynamicTools: [{ name: "tool-b" }]
-  });
+  }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
   assert.deepEqual(calls.map((call) => call.method), ["thread/start"]);
 
   await client.startTurn("thread-a", "first instruction");
   await client.ensureThreadResumed("thread-a", {
     ...initial,
-    dynamicTools: [{ name: "tool-c" }]
+    developerInstructions: "updated context"
   });
   assert.equal(client.freshThreadIds.has("thread-a"), false);
   assert.deepEqual(calls.map((call) => call.method), [
@@ -479,12 +636,15 @@ test("a restored thread reloads when runtime context changes", async () => {
     calls.push({ method, params });
     return { thread: { id: params.threadId } };
   };
+  const dynamicTools = [{ name: "tool-b" }];
+  const dynamicToolConfirmation = persistedToolProof("thread-a", dynamicTools);
   client.threadResumeFingerprints.set("thread-a", JSON.stringify({
     cwd: "/repo",
     runtimeWorkspaceRoots: ["/repo"],
     config: null,
     developerInstructions: null,
-    dynamicTools: [{ name: "tool-a" }],
+    dynamicTools,
+    dynamicToolConfirmation,
     dynamicToolAgentId: "agent-a",
     dynamicToolMetadata: null
   }));
@@ -493,7 +653,9 @@ test("a restored thread reloads when runtime context changes", async () => {
     cwd: "/repo",
     runtimeWorkspaceRoots: ["/repo"],
     dynamicToolAgentId: "agent-a",
-    dynamicTools: [{ name: "tool-b" }]
+    dynamicTools,
+    dynamicToolConfirmation,
+    developerInstructions: "updated context"
   });
   assert.deepEqual(calls.map((call) => call.method), ["thread/resume"]);
 });

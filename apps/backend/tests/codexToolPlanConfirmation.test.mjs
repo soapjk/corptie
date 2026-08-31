@@ -3,6 +3,7 @@ import test from "node:test";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
 import { createCodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { confirmOrRestoreCodexToolPlan } from "../src/application/codexToolPlanConfirmation.mjs";
+import { schemaHash } from "../src/application/hostToolCatalog.mjs";
 
 const definitions = [{
   name: "corptie_tool_call",
@@ -16,7 +17,7 @@ const binding = {
 };
 const plan = {
   providerDefinitions: definitions,
-  providerDefinitionsHash: "unused-by-legacy-proof",
+  providerDefinitionsHash: schemaHash(definitions),
   exposurePlanHash: "exposure:one",
   bootstrapSchemaHash: "bootstrap:one",
   refreshMode: "restricted_gateway"
@@ -49,19 +50,32 @@ function storeWith(patch = {}) {
         appliedDomains: request.appliedDomains,
         refreshMode: plan.refreshMode,
         providerRevision: `thread-start:${binding.providerSessionId}:confirmed`,
+        providerDefinitionsHash: plan.providerDefinitionsHash,
+        providerDefinitionsCount: definitions.length,
+        providerObservationKind: "thread_start_accepted",
         ...patch
       }
     })
   };
 }
 
-test("a restarted Codex runtime restores an exact legacy restricted-gateway receipt", () => {
+test("a restarted Codex runtime restores an exact thread-start Tool receipt", () => {
   const runtime = restartedRuntime();
   const confirmation = confirmOrRestoreCodexToolPlan({
     runtime, store: storeWith(), binding, plan, request
   });
   assert.equal(confirmation.restored, true);
   assert.equal(runtime.confirmThreadToolPlan(binding.providerSessionId, definitions).restored, true);
+});
+
+test("persisted legacy thread-fork claims are never restored as Provider confirmation", () => {
+  assert.throws(() => confirmOrRestoreCodexToolPlan({
+    runtime: restartedRuntime(),
+    store: storeWith({ providerRevision: `thread-fork:${binding.providerSessionId}:claimed` }),
+    binding,
+    plan,
+    request
+  }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
 });
 
 test("Tool-schema confirmation survives a new authorization materialization generation", () => {
@@ -85,7 +99,9 @@ test("persisted confirmation recovery fails closed on binding, generation, or sc
   for (const patch of [
     { providerBindingId: "binding:other" },
     { recordAppliedVersion: "materialization:other" },
-    { recordBootstrapSchemaHash: "bootstrap:other" },
+    { providerDefinitionsHash: "definitions:other" },
+    { providerDefinitionsCount: definitions.length + 1 },
+    { providerObservationKind: "thread_fork_inherited" },
     { providerRevision: "thread-start:thread:other:confirmed" }
   ]) {
     assert.throws(() => confirmOrRestoreCodexToolPlan({

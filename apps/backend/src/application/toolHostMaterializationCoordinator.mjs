@@ -91,6 +91,132 @@ export class ToolHostMaterializationCoordinator {
     }
   }
 
+  // Build (but do not persist) the exact applied row for a freshly created
+  // Provider binding. Recovery and workspace-route coordinators call this only
+  // after the Provider has returned an independently verified creation proof;
+  // the Store can then insert the row in the same transaction that switches
+  // the logical Session route.
+  async prepareAppliedReplacement(input = {}) {
+    const { binding, capability, snapshot, plan, domainRecords, desiredVersion } =
+      await this.#prepareReplacementState(input);
+    const confirmation = input.providerConfirmation ?? {};
+    if (typeof confirmation.providerDefinitionsHash !== "string"
+      || !confirmation.providerDefinitionsHash.trim()
+      || !Number.isSafeInteger(confirmation.providerDefinitionsCount)
+      || typeof (confirmation.providerObservationKind ?? confirmation.observationKind) !== "string"
+      || !(confirmation.providerObservationKind ?? confirmation.observationKind).trim()) {
+      throw toolError(
+        "PROVIDER_TOOL_RECEIPT_INVALID",
+        "Replacement Tool materialization requires an exact Provider definition hash, count, and observation proof.",
+        502
+      );
+    }
+    const receipt = appliedToolMaterializationReceipt({
+      providerBindingId: binding.providerBindingId,
+      providerCapabilityRevision: capability.capabilityRevision,
+      requestedVersion: desiredVersion,
+      appliedCatalogVersion: snapshot.catalogVersion,
+      appliedDomains: domainRecords,
+      appliedExposurePlanHash: plan.exposurePlanHash,
+      providerDefinitionsHash: confirmation.providerDefinitionsHash,
+      providerDefinitionsCount: confirmation.providerDefinitionsCount,
+      providerObservationKind: confirmation.providerObservationKind ?? confirmation.observationKind,
+      refreshMode: plan.refreshMode,
+      providerRevision: confirmation.providerRevision,
+      receiptId: confirmation.receiptId
+        ?? `replacement-tool-confirmation:${binding.providerBindingId}:${desiredVersion}`,
+      appliedAt: input.appliedAt ?? this.clock()
+    });
+    validateToolMaterializationReceipt(receipt, {
+      providerBindingId: binding.providerBindingId,
+      providerCapabilityRevision: capability.capabilityRevision,
+      requestedVersion: desiredVersion,
+      catalogVersion: snapshot.catalogVersion,
+      exposurePlanHash: plan.exposurePlanHash,
+      providerDefinitionsHash: plan.providerDefinitionsHash,
+      providerDefinitionsCount: plan.providerDefinitions.length,
+      appliedDomains: domainRecords
+    });
+    return Object.freeze({
+      logicalSessionId: binding.logicalSessionId,
+      providerBindingId: binding.providerBindingId,
+      desiredVersion,
+      appliedVersion: desiredVersion,
+      desiredCatalogVersion: snapshot.catalogVersion,
+      appliedCatalogVersion: snapshot.catalogVersion,
+      desiredDomains: Object.freeze(domainRecords),
+      appliedDomains: Object.freeze(domainRecords),
+      exposurePlan: plan,
+      providerReceipt: receipt,
+      status: "applied",
+      attempt: 1,
+      appliedAt: receipt.appliedAt
+    });
+  }
+
+  // Providers whose schemas can be refreshed after binding still need the
+  // target desired state to move atomically with the logical Session route.
+  // This closed stale row preserves the source desired∪applied domain set while
+  // deliberately making no claim that the target Provider has applied it yet.
+  async prepareDesiredReplacement(input = {}) {
+    const { binding, snapshot, plan, domainRecords, desiredVersion } =
+      await this.#prepareReplacementState(input);
+    return Object.freeze({
+      logicalSessionId: binding.logicalSessionId,
+      providerBindingId: binding.providerBindingId,
+      desiredVersion,
+      appliedVersion: null,
+      desiredCatalogVersion: snapshot.catalogVersion,
+      appliedCatalogVersion: null,
+      desiredDomains: Object.freeze(domainRecords),
+      appliedDomains: Object.freeze([]),
+      exposurePlan: plan,
+      providerReceipt: null,
+      status: "stale",
+      attempt: 0,
+      updatedAt: input.updatedAt ?? this.clock()
+    });
+  }
+
+  async #prepareReplacementState(input = {}) {
+    const binding = input.binding ?? {};
+    if (!binding.logicalSessionId || !binding.providerBindingId
+      || !binding.providerId || !binding.providerSessionId) {
+      throw toolError(
+        "SESSION_BINDING_INCOMPLETE",
+        "Replacement Tool materialization requires a complete prospective Provider binding.",
+        409
+      );
+    }
+    const capability = await this.providerPort.probeToolSchemaCapabilities(binding);
+    const context = catalogContext(binding);
+    const snapshot = this.catalog.snapshot();
+    const desiredDomainIds = desiredDomains(binding, input.desiredDomains, null);
+    const plan = buildToolExposurePlan({
+      catalog: this.catalog,
+      context,
+      desiredDomains: desiredDomainIds,
+      capabilities: capability,
+      phase: "create"
+    });
+    const domainRecords = materializedDomains(
+      this.catalog,
+      context,
+      snapshot,
+      desiredDomainIds,
+      plan.surface
+    );
+    const desiredVersion = desiredMaterializationVersion({
+      catalogVersion: snapshot.catalogVersion,
+      authorizationScopeFingerprint: authorizationScopeFingerprint(binding),
+      providerCapabilityRevision: capability.capabilityRevision,
+      assignedSkillMcpRevision: input.assignedSkillMcpRevision ?? "none",
+      desiredDomains: domainRecords,
+      exposurePlanHash: plan.exposurePlanHash
+    });
+    return { binding, capability, snapshot, plan, domainRecords, desiredVersion };
+  }
+
   async loadDomain(input = {}) {
     const binding = await this.#binding(input.logicalSessionId, input.providerBindingId);
     const snapshot = this.catalog.snapshot();
@@ -360,6 +486,9 @@ export class ToolHostMaterializationCoordinator {
       catalogVersion: current.desiredCatalogVersion,
       exposurePlanHash: current.exposurePlan.exposurePlanHash,
       providerDefinitionsHash: current.exposurePlan.providerDefinitionsHash,
+      providerDefinitionsCount: receipt?.providerDefinitionsCount == null
+        ? null
+        : current.exposurePlan.providerDefinitions?.length,
       appliedDomains: current.desiredDomains
     });
     const applied = this.store.applySessionToolCatalogReceipt({

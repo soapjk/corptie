@@ -7,6 +7,61 @@ import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 
+function codexToolConfirmation(threadId) {
+  return {
+    providerRevision: `thread-start:${threadId}:confirmed`,
+    providerDefinitionsHash: "definitions:native-store-test",
+    providerDefinitionsCount: 1,
+    providerObservationKind: "thread_start_accepted"
+  };
+}
+
+function codexToolMaterialization({ logicalSessionId, bindingId, threadId }) {
+  const appliedAt = "2026-08-31T00:00:00.000Z";
+  const domains = [{
+    domainId: "bootstrap",
+    domainVersion: "domain:bootstrap:1",
+    toolNames: ["corptie_tool_call"]
+  }];
+  const exposurePlan = {
+    capabilityRevision: "codex-app-server:tool-schema:test",
+    exposurePlanHash: "exposure:native-store-test",
+    providerDefinitionsHash: "definitions:native-store-test",
+    providerDefinitions: [{ name: "corptie_tool_call" }],
+    refreshMode: "binding_replacement"
+  };
+  return {
+    logicalSessionId,
+    providerBindingId: bindingId,
+    desiredVersion: "materialization:native-store-test",
+    appliedVersion: "materialization:native-store-test",
+    desiredCatalogVersion: "catalog:native-store-test",
+    appliedCatalogVersion: "catalog:native-store-test",
+    desiredDomains: domains,
+    appliedDomains: domains,
+    exposurePlan,
+    providerReceipt: {
+      providerBindingId: bindingId,
+      providerCapabilityRevision: exposurePlan.capabilityRevision,
+      requestedVersion: "materialization:native-store-test",
+      appliedVersion: "materialization:native-store-test",
+      appliedCatalogVersion: "catalog:native-store-test",
+      appliedDomains: domains,
+      appliedExposurePlanHash: exposurePlan.exposurePlanHash,
+      providerDefinitionsHash: exposurePlan.providerDefinitionsHash,
+      providerDefinitionsCount: exposurePlan.providerDefinitions.length,
+      providerObservationKind: "thread_start_accepted",
+      refreshMode: exposurePlan.refreshMode,
+      providerRevision: `thread-start:${threadId}:confirmed`,
+      receiptId: `receipt:${bindingId}`,
+      appliedAt
+    },
+    status: "applied",
+    attempt: 1,
+    appliedAt
+  };
+}
+
 test("Session activity status survives store restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-activity-status-"));
   const dbPath = join(directory, "corptie.sqlite");
@@ -1131,13 +1186,20 @@ test("workspace route replacement preserves the stable Work Session and WorkItem
     });
     store.updateWorkspaceTransition("transition:worker", {
       phase: "validatingInstructions",
-      newThreadId: "provider:feature"
+      newThreadId: "provider:feature",
+      toolConfirmation: codexToolConfirmation("provider:feature")
     });
     store.commitWorkspaceTransition("transition:worker", {
       providerThreadId: "provider:feature",
       providerSessionId: "provider:feature",
+      bindingId: "binding:provider-feature",
       providerId: "codex-app-server",
-      boundCwd: "/repo/feature"
+      boundCwd: "/repo/feature",
+      toolMaterialization: codexToolMaterialization({
+        logicalSessionId: "logical:worker",
+        bindingId: "binding:provider-feature",
+        threadId: "provider:feature"
+      })
     });
 
     assert.equal(store.getLogicalSession("logical:worker").legacySessionId, "worker-session");
@@ -1222,13 +1284,20 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
     });
     store.updateWorkspaceTransition("transition:restore-retired", {
       phase: "validatingInstructions",
-      newThreadId: "thread:restored"
+      newThreadId: "thread:restored",
+      toolConfirmation: codexToolConfirmation("thread:restored")
     });
     store.commitWorkspaceTransition("transition:restore-retired", {
       providerThreadId: "thread:restored",
       providerSessionId: "thread:restored",
+      bindingId: "binding:thread-restored",
       providerId: "codex-app-server",
-      boundCwd: "/repo/feature worktree"
+      boundCwd: "/repo/feature worktree",
+      toolMaterialization: codexToolMaterialization({
+        logicalSessionId: "logical:retired",
+        bindingId: "binding:thread-restored",
+        threadId: "thread:restored"
+      })
     });
     const restored = store.restoreLogicalSessionWorkspace("logical:retired");
     assert.equal(restored.archived, false);
@@ -1701,16 +1770,23 @@ test("logical session route commits switch the active thread and workspace atomi
     store.updateWorkspaceTransition("transition:one", {
       phase: "validatingInstructions",
       newThreadId: "thread-feature",
+      toolConfirmation: codexToolConfirmation("thread-feature"),
       updatedAt: "2026-07-28T00:02:00.000Z"
     });
     const switched = store.commitWorkspaceTransition("transition:one", {
       providerThreadId: "thread-feature",
+      bindingId: "binding:thread-feature",
       boundCwd: "/repo/feature worktree",
       instructionSources: ["/repo/feature worktree/AGENTS.md"],
       permissionSnapshot: {
         sandbox: "workspaceWrite",
         writableRoots: ["/repo/feature worktree"]
       },
+      toolMaterialization: codexToolMaterialization({
+        logicalSessionId: "logical:one",
+        bindingId: "binding:thread-feature",
+        threadId: "thread-feature"
+      }),
       createdAt: "2026-07-28T00:03:00.000Z"
     });
 
@@ -1753,11 +1829,18 @@ test("logical session route commits switch the active thread and workspace atomi
     store.updateWorkspaceTransition("transition:two", {
       phase: "validatingInstructions",
       newThreadId: "thread-main-again",
+      toolConfirmation: codexToolConfirmation("thread-main-again"),
       updatedAt: "2026-07-28T00:05:00.000Z"
     });
     store.commitWorkspaceTransition("transition:two", {
       providerThreadId: "thread-main-again",
+      bindingId: "binding:thread-main-again",
       boundCwd: "/repo/main",
+      toolMaterialization: codexToolMaterialization({
+        logicalSessionId: "logical:one",
+        bindingId: "binding:thread-main-again",
+        threadId: "thread-main-again"
+      }),
       createdAt: "2026-07-28T00:06:00.000Z"
     });
     store.updateWorkspaceTransitionContinuation("transition:one", {
