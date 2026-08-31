@@ -99,6 +99,70 @@ test("100 concurrent desiredVersion requests single-flight into one Provider app
   }
 });
 
+test("direct ensureApplied calls cannot shrink previously desired or applied Tool domains", async () => {
+  const value = await fixture();
+  try {
+    await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      desiredDomains: ["memory"]
+    });
+    await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      desiredDomains: []
+    });
+    const record = value.store.getSessionToolCatalogMaterialization("logical:worker", "binding:worker");
+    assert.deepEqual(record.desiredDomains.map((domain) => domain.domainId), ["artifacts", "memory"]);
+    assert.deepEqual(record.appliedDomains.map((domain) => domain.domainId), ["artifacts", "memory"]);
+    assert.equal(value.applyCount, 1);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("a previously shrunk error record converges back to the union of its applied domains", async () => {
+  const value = await fixture();
+  try {
+    await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      desiredDomains: ["memory"]
+    });
+    const applied = value.store.getSessionToolCatalogMaterialization("logical:worker", "binding:worker");
+    const shrunk = value.store.writeSessionToolCatalogDesired({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker",
+      desiredVersion: "incorrectly-shrunk-version",
+      desiredCatalogVersion: applied.desiredCatalogVersion,
+      desiredDomains: applied.desiredDomains.filter((domain) => domain.domainId === "artifacts"),
+      exposurePlan: applied.exposurePlan
+    }, applied.resourceVersion);
+    const refreshing = value.store.beginSessionToolCatalogRefresh(
+      "logical:worker", "binding:worker", shrunk.resourceVersion
+    );
+    value.store.failSessionToolCatalogRefresh({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker",
+      errorCode: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED",
+      errorSummary: "simulated process restart"
+    }, refreshing.resourceVersion);
+
+    const result = await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      desiredDomains: []
+    });
+    assert.equal(result.status, "applied");
+    assert.deepEqual(result.record.desiredDomains.map((domain) => domain.domainId), ["artifacts", "memory"]);
+    assert.deepEqual(result.record.appliedDomains.map((domain) => domain.domainId), ["artifacts", "memory"]);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("invalid receipt fails closed and preserves the last applied domains", async () => {
   const value = await fixture({ apply: async (input) => receipt(input, { appliedExposurePlanHash: "wrong" }) });
   try {

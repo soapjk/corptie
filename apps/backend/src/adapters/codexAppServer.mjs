@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { codexPermissionsFromThread } from "../utils/codexPermissions.mjs";
 import { createInterface } from "node:readline";
 import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
@@ -178,6 +179,28 @@ export class CodexAppServerClient {
       throw error;
     }
     return { ...confirmed, threadId };
+  }
+
+  restoreThreadToolPlanConfirmation(threadId, definitions = [], proof = {}) {
+    const providerRevision = typeof proof.providerRevision === "string" ? proof.providerRevision.trim() : "";
+    const revisionMatchesThread = providerRevision.startsWith(`thread-start:${threadId}:`)
+      || providerRevision.startsWith(`thread-fork:${threadId}:`);
+    const definitionsHash = hashToolDefinitions(definitions);
+    const hasExactHash = typeof proof.providerDefinitionsHash === "string"
+      && proof.providerDefinitionsHash === definitionsHash;
+    if (!revisionMatchesThread || (!hasExactHash && proof.allowLegacyRestrictedGateway !== true)) {
+      const error = new Error("Persisted Codex Tool confirmation did not match this thread and Tool schema.");
+      error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+      throw error;
+    }
+    const confirmation = {
+      schema: JSON.stringify(definitions),
+      providerRevision,
+      providerDefinitionsHash: definitionsHash,
+      restored: true
+    };
+    this.confirmedToolSchemasByThread.set(threadId, confirmation);
+    return { ...confirmation, threadId };
   }
 
   async resumeThread(threadId, options = {}) {
@@ -860,6 +883,18 @@ export class CodexAppServerClient {
       });
     }
   }
+}
+
+function hashToolDefinitions(definitions) {
+  return createHash("sha256").update(stableToolDefinitions(definitions)).digest("hex");
+}
+
+function stableToolDefinitions(value) {
+  if (Array.isArray(value)) return `[${value.map(stableToolDefinitions).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableToolDefinitions(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 export function codexResponseError(payload) {
