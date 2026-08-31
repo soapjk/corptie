@@ -28,6 +28,9 @@ export function appliedToolMaterializationReceipt(input = {}) {
     appliedCatalogVersion: required(input.appliedCatalogVersion, "appliedCatalogVersion"),
     appliedDomains: Array.isArray(input.appliedDomains) ? input.appliedDomains.map((domain) => ({ ...domain })) : [],
     appliedExposurePlanHash: required(input.appliedExposurePlanHash, "appliedExposurePlanHash"),
+    ...(input.providerDefinitionsHash == null ? {} : {
+      providerDefinitionsHash: required(input.providerDefinitionsHash, "providerDefinitionsHash")
+    }),
     refreshMode: required(input.refreshMode, "refreshMode"),
     providerRevision: required(input.providerRevision, "providerRevision"),
     receiptId: required(input.receiptId ?? `tool_receipt:${randomUUID()}`, "receiptId"),
@@ -53,6 +56,14 @@ export function validateToolMaterializationReceipt(receipt, expected) {
       error.field = field;
       throw error;
     }
+  }
+  if (receipt?.providerDefinitionsHash != null
+    && receipt.providerDefinitionsHash !== expected.providerDefinitionsHash) {
+    const error = new Error("Provider Tool receipt providerDefinitionsHash did not match the requested materialization.");
+    error.code = "PROVIDER_TOOL_RECEIPT_INVALID";
+    error.statusCode = 502;
+    error.field = "providerDefinitionsHash";
+    throw error;
   }
   const expectedDomains = JSON.stringify(expected.appliedDomains ?? []);
   if (JSON.stringify(receipt.appliedDomains ?? []) !== expectedDomains) {

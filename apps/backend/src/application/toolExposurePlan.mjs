@@ -55,12 +55,14 @@ export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = 
   }
   const orderedOwnership = Object.fromEntries(Object.entries(ownership).sort(([left], [right]) => left.localeCompare(right)));
   const exposurePlanHash = sha256(stableStringify(orderedOwnership));
+  const providerDefinitionsHash = sha256(stableStringify(providerDefinitions));
   return Object.freeze({
     surface,
     refreshMode: refreshMode(normalizedCapabilities, phase, surface),
     bootstrapAbiRevision: TOOL_HOST_BOOTSTRAP_ABI_REVISION,
     bootstrapSchemaHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
     exposurePlanHash,
+    providerDefinitionsHash,
     ownership: Object.freeze(orderedOwnership),
     providerDefinitions: Object.freeze(providerDefinitions),
     desiredDomains: Object.freeze(domainIds),
