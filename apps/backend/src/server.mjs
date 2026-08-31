@@ -32,6 +32,7 @@ import {
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
+import { confirmOrRestoreCodexToolPlan } from "./application/codexToolPlanConfirmation.mjs";
 import { appliedToolMaterializationReceipt } from "./agent-provider/toolSchemaCapabilities.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
@@ -910,10 +911,9 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
       )
     ),
     applyToolPlanAtTurnBoundary: async (binding, plan, request) => {
-      const confirmation = codexRuntime.confirmThreadToolPlan(
-        binding.providerSessionId,
-        plan.providerDefinitions
-      );
+      const confirmation = confirmOrRestoreCodexToolPlan({
+        runtime: codexRuntime, store, binding, plan, request
+      });
       return appliedToolMaterializationReceipt({
         providerBindingId: binding.providerBindingId,
         providerCapabilityRevision: request.capabilityRevision,
@@ -921,6 +921,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
         appliedCatalogVersion: request.catalogVersion,
         appliedDomains: request.appliedDomains,
         appliedExposurePlanHash: plan.exposurePlanHash,
+        providerDefinitionsHash: plan.providerDefinitionsHash,
         refreshMode: plan.refreshMode,
         providerRevision: confirmation.providerRevision,
         receiptId: `codex-tool-confirmation:${binding.providerBindingId}:${request.requestedVersion}`
@@ -1015,11 +1016,13 @@ async function applyOpenClackyToolPlanAtTurnBoundary(binding, plan, request) {
     appliedCatalogVersion: request.catalogVersion,
     appliedDomains: request.appliedDomains,
     appliedExposurePlanHash: plan.exposurePlanHash,
+    providerDefinitionsHash: plan.providerDefinitionsHash,
     refreshMode: plan.refreshMode,
     providerRevision: confirmation.providerRevision,
     receiptId: confirmation.receiptId
   });
 }
+
 const sessionBindingRepository = new SessionBindingRepository({
   store,
   normalizeLegacySessionId: normalizeSessionId,

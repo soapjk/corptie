@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
+import { schemaHash } from "../src/application/hostToolCatalog.mjs";
 import { OpenClackyManager } from "../src/adapters/openClackyManager.mjs";
 
 const toolDefinitions = [{
@@ -29,6 +30,34 @@ test("Codex materialization confirmation is impossible before a successful real 
   assert.throws(() => client.confirmThreadToolPlan("thread:confirmed", []), {
     code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
   });
+});
+
+test("Codex restores an exact persisted Tool confirmation after app-server restart", () => {
+  const client = new CodexAppServerClient();
+  const restored = client.restoreThreadToolPlanConfirmation("thread:restored", toolDefinitions, {
+    providerRevision: "thread-start:thread:restored:2026-08-30T00:00:00.000Z",
+    allowLegacyRestrictedGateway: true
+  });
+  assert.equal(restored.restored, true);
+  assert.deepEqual(client.confirmThreadToolPlan("thread:restored", toolDefinitions), restored);
+  assert.throws(() => client.restoreThreadToolPlanConfirmation("thread:other", toolDefinitions, {
+    providerRevision: restored.providerRevision,
+    allowLegacyRestrictedGateway: true
+  }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+  assert.throws(() => client.restoreThreadToolPlanConfirmation("thread:restored", [], {
+    providerRevision: restored.providerRevision,
+    providerDefinitionsHash: restored.providerDefinitionsHash
+  }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+});
+
+test("Codex accepts an exact durable Tool-definition hash without the legacy exception", () => {
+  const client = new CodexAppServerClient();
+  const confirmation = client.restoreThreadToolPlanConfirmation("thread:hashed", toolDefinitions, {
+    providerRevision: "thread-start:thread:hashed:confirmed",
+    providerDefinitionsHash: schemaHash(toolDefinitions)
+  });
+  assert.equal(confirmation.restored, true);
+  assert.equal(confirmation.providerDefinitionsHash, schemaHash(toolDefinitions));
 });
 
 test("OpenClacky gateway requires an explicit applied generation from the bridge", async () => {

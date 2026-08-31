@@ -26,7 +26,8 @@ export class ToolHostMaterializationCoordinator {
     const binding = await this.#binding(input.logicalSessionId, input.providerBindingId);
     const capability = await this.providerPort.probeToolSchemaCapabilities(binding);
     const context = catalogContext(binding);
-    const desiredDomainIds = desiredDomains(binding, input.desiredDomains);
+    let record = this.store.getSessionToolCatalogMaterialization(binding.logicalSessionId, binding.providerBindingId);
+    const desiredDomainIds = desiredDomains(binding, input.desiredDomains, record);
     const snapshot = this.catalog.snapshot();
     const phase = input.phase ?? "refresh";
     const plan = buildToolExposurePlan({
@@ -51,7 +52,6 @@ export class ToolHostMaterializationCoordinator {
       desiredDomains: domainRecords,
       exposurePlanHash: plan.exposurePlanHash
     });
-    let record = this.store.getSessionToolCatalogMaterialization(binding.logicalSessionId, binding.providerBindingId);
     if (!matchesDesired(record, desiredVersion, snapshot.catalogVersion, domainRecords, plan)) {
       record = this.store.writeSessionToolCatalogDesired({
         logicalSessionId: binding.logicalSessionId,
@@ -228,6 +228,7 @@ export class ToolHostMaterializationCoordinator {
       appliedCatalogVersion: current.desiredCatalogVersion,
       appliedDomains: current.desiredDomains,
       appliedExposurePlanHash: current.exposurePlan.exposurePlanHash,
+      providerDefinitionsHash: current.exposurePlan.providerDefinitionsHash,
       refreshMode: current.exposurePlan.refreshMode,
       providerRevision: `mcp-tools-list:${observationId}`,
       receiptId: `mcp-tools-list:${binding.providerBindingId}:${current.desiredVersion}:${observationId}`
@@ -355,6 +356,7 @@ export class ToolHostMaterializationCoordinator {
       requestedVersion: current.desiredVersion,
       catalogVersion: current.desiredCatalogVersion,
       exposurePlanHash: current.exposurePlan.exposurePlanHash,
+      providerDefinitionsHash: current.exposurePlan.providerDefinitionsHash,
       appliedDomains: current.desiredDomains
     });
     const applied = this.store.applySessionToolCatalogReceipt({
@@ -475,8 +477,10 @@ export function authorizationScopeFingerprint(binding) {
   }));
 }
 
-function desiredDomains(binding, explicit) {
+function desiredDomains(binding, explicit, current = null) {
   const domains = new Set(Array.isArray(explicit) ? explicit : []);
+  for (const domain of current?.desiredDomains ?? []) domains.add(domain.domainId);
+  for (const domain of current?.appliedDomains ?? []) domains.add(domain.domainId);
   if (binding.sessionKind === "worker") domains.add("artifacts");
   return [...domains].sort();
 }
