@@ -729,6 +729,18 @@ test("restart repairs a terminal Provider turn regressed by a late item event", 
       endedAt: "2026-08-26T10:00:00.000Z",
       updatedAt: "2026-08-26T10:00:00.000Z"
     });
+    const staleFailureEvent = {
+      providerId: "provider:test",
+      providerSessionId: "thread:one",
+      providerEventId: "event:stale-turn-failed",
+      bindingId: "binding:one",
+      routingVersion: 1,
+      turnId: "turn:one",
+      type: "turn.failed",
+      occurredAt: "2026-08-26T09:59:59.000Z",
+      receivedAt: "2026-08-26T09:59:59.010Z",
+      payload: {}
+    };
     const terminalEvent = {
       providerId: "provider:test",
       providerSessionId: "thread:one",
@@ -741,6 +753,13 @@ test("restart repairs a terminal Provider turn regressed by a late item event", 
       receivedAt: "2026-08-26T10:00:00.010Z",
       payload: {}
     };
+    store.insertProviderInboxEvent(staleFailureEvent, "regressed-session");
+    store.markProviderInboxEvent(
+      staleFailureEvent.providerId,
+      staleFailureEvent.providerSessionId,
+      staleFailureEvent.providerEventId,
+      { status: "applied", appliedAt: staleFailureEvent.receivedAt }
+    );
     store.insertProviderInboxEvent(terminalEvent, "regressed-session");
     store.markProviderInboxEvent(
       terminalEvent.providerId,
@@ -768,6 +787,116 @@ test("restart repairs a terminal Provider turn regressed by a late item event", 
     assert.equal(session.external.activeTurnId, null);
     assert.equal(session.activityStatus, null);
     assert.equal(session.capabilities.canInterrupt, false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("terminal turn startup repair stays indexed with a production-sized Provider inbox", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-terminal-turn-repair-scale-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  await store.initialize();
+  try {
+    store.upsertSession({
+      id: "repair-scale-session",
+      title: "Repair scale",
+      agent: "Agent",
+      provider: "provider:test",
+      status: "running"
+    });
+    store.db.run(`
+      WITH RECURSIVE active_turns(value) AS (
+        VALUES(1)
+        UNION ALL SELECT value + 1 FROM active_turns WHERE value < 200
+      )
+      INSERT INTO session_turns (
+        session_id, binding_id, routing_version, turn_id,
+        execution_status, sync_health, updated_at
+      )
+      SELECT 'repair-scale-session', 'active:' || value, 1, 'turn:' || value,
+             'running', 'healthy', '2026-08-26T10:00:00.000Z'
+      FROM active_turns
+    `);
+    store.db.run(`
+      WITH RECURSIVE inbox_noise(value) AS (
+        VALUES(1)
+        UNION ALL SELECT value + 1 FROM inbox_noise WHERE value < 120000
+      )
+      INSERT INTO provider_event_inbox (
+        provider_id, provider_session_id, provider_event_id, binding_id,
+        routing_version, provider_sequence, turn_id, event_type,
+        received_at, raw_payload_json, normalized_event_json, status, applied_at
+      )
+      SELECT 'provider:test', 'noise-thread', 'noise:' || value, 'noise:' || value,
+             1, value, 'noise-turn:' || value, 'item.updated',
+             printf('2026-08-26T10:%06dZ', value), '{}', '{}', 'applied',
+             '2026-08-26T10:00:00.000Z'
+      FROM inbox_noise
+    `);
+    const terminalEvent = {
+      providerId: "provider:test",
+      providerSessionId: "repair-thread",
+      providerEventId: "repair-terminal",
+      bindingId: "active:1",
+      routingVersion: 1,
+      turnId: "turn:1",
+      type: "turn.completed",
+      occurredAt: "2026-08-26T10:05:00.000Z",
+      receivedAt: "2026-08-26T10:05:00.010Z",
+      payload: {}
+    };
+    store.insertProviderInboxEvent(terminalEvent, "repair-scale-session");
+    store.markProviderInboxEvent(
+      terminalEvent.providerId,
+      terminalEvent.providerSessionId,
+      terminalEvent.providerEventId,
+      { status: "applied", appliedAt: terminalEvent.receivedAt }
+    );
+
+    const queryPlan = store.selectAll(`
+      EXPLAIN QUERY PLAN
+      SELECT turns.session_id, turns.binding_id, turns.turn_id,
+             inbox.event_type, inbox.occurred_at, inbox.received_at,
+             inbox.provider_event_id
+      FROM session_turns turns
+      JOIN provider_event_inbox inbox
+        ON inbox.rowid = (
+          SELECT terminal.rowid
+          FROM provider_event_inbox terminal
+          WHERE terminal.binding_id = turns.binding_id
+            AND terminal.turn_id = turns.turn_id
+            AND terminal.status = 'applied'
+            AND terminal.event_type IN ('turn.completed', 'turn.failed', 'turn.cancelled')
+          ORDER BY terminal.received_at DESC, terminal.provider_event_id DESC
+          LIMIT 1
+        )
+      WHERE turns.execution_status IN ('idle', 'running', 'blocked')
+    `);
+    const planDetails = queryPlan.map((row) => row.detail).join("\n");
+    assert.match(planDetails, /idx_session_turns_repair_active/);
+    assert.match(planDetails, /idx_provider_event_inbox_terminal_turn/);
+    assert.doesNotMatch(planDetails, /USE TEMP B-TREE/);
+
+    const startedAt = performance.now();
+    const repaired = store.repairRegressedTerminalSessionTurns();
+    const elapsedMilliseconds = performance.now() - startedAt;
+    console.log(
+      `[perf] terminal turn startup repair (120k inbox events, 200 active turns) ` +
+      `${elapsedMilliseconds.toFixed(2)}ms`
+    );
+    assert.equal(repaired, 1);
+    assert.equal(
+      store.getSessionTurn("repair-scale-session", "active:1", "turn:1").execution_status,
+      "completed"
+    );
+    assert.ok(
+      elapsedMilliseconds < 250,
+      `terminal turn startup repair took ${elapsedMilliseconds.toFixed(2)}ms`
+    );
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
