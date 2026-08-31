@@ -506,6 +506,78 @@ test("message recovery preserves not-sent dispatch state and the safe dependency
   }
 });
 
+test("a pre-boundary busy attempt is resumable under the same Delivery idempotency key", async () => {
+  const fixture = await storeFixture();
+  const calls = [];
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "before retry" } });
+    const frozen = fixture.store.freezeSessionRecoveryAttempt({
+      attemptId: "attempt:busy-retry",
+      idempotencyKey: "message-recovery:delivery:busy-retry",
+      logicalSessionId: "logical:recovery",
+      capabilityRevision: capabilityDescriptor.metadata.sessionRecovery.revision
+    });
+    fixture.store.failSessionRecoveryAttempt(
+      frozen.attemptId,
+      "SESSION_BUSY",
+      "The route boundary was temporarily busy."
+    );
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort(calls, fixture.store),
+      resolveProviderDescriptor: () => capabilityDescriptor
+    });
+
+    const committed = await coordinator.recover({
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: frozen.idempotencyKey
+    });
+
+    assert.equal(committed.state, "committed");
+    assert.equal(committed.attemptId, frozen.attemptId);
+    assert.equal(calls.filter((call) => call === "create").length, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("outer recovery reporting never overwrites the first persisted failure cause", async () => {
+  const fixture = await storeFixture();
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "preserve cause" } });
+    const frozen = fixture.store.freezeSessionRecoveryAttempt({
+      attemptId: "attempt:preserve-cause",
+      idempotencyKey: "preserve-cause",
+      logicalSessionId: "logical:recovery",
+      capabilityRevision: capabilityDescriptor.metadata.sessionRecovery.revision
+    });
+    fixture.store.saveSessionRecoveryManifest(frozen.attemptId, manifestFixture(), stableRecoveryHash(manifestFixture()));
+    fixture.store.failSessionRecoveryAttempt(
+      frozen.attemptId,
+      "PROVIDER_TOOL_APPLICATION_UNCONFIRMED",
+      "The Provider did not confirm the replacement Tool schema."
+    );
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort([], fixture.store),
+      resolveProviderDescriptor: () => capabilityDescriptor
+    });
+
+    await assert.rejects(() => coordinator.recover({
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: frozen.idempotencyKey
+    }), { code: "RECOVERY_ATTEMPT_STATE_INVALID" });
+    assert.deepEqual(fixture.store.getSessionRecoveryAttempt(frozen.attemptId).error, {
+      code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED",
+      message: "The Provider did not confirm the replacement Tool schema."
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("binding commit rejects a replacement superseded in the recovery journal", async () => {
   const fixture = await storeFixture();
   try {
