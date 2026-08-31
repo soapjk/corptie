@@ -30,8 +30,8 @@ const request = {
 function storeWith(patch = {}) {
   return {
     getSessionToolCatalogMaterialization: () => ({
-      exposurePlan: { bootstrapSchemaHash: plan.bootstrapSchemaHash },
-      appliedVersion: patch.appliedVersion ?? request.requestedVersion,
+      exposurePlan: { bootstrapSchemaHash: patch.recordBootstrapSchemaHash ?? plan.bootstrapSchemaHash },
+      appliedVersion: patch.recordAppliedVersion ?? patch.appliedVersion ?? request.requestedVersion,
       appliedCatalogVersion: request.catalogVersion,
       appliedDomains: request.appliedDomains,
       providerReceipt: {
@@ -59,11 +59,28 @@ test("a restarted Codex runtime restores an exact legacy restricted-gateway rece
   assert.equal(runtime.confirmThreadToolPlan(binding.providerSessionId, definitions).restored, true);
 });
 
+test("Tool-schema confirmation survives a new authorization materialization generation", () => {
+  const runtime = new CodexAppServerClient();
+  const confirmation = confirmOrRestoreCodexToolPlan({
+    runtime,
+    store: storeWith({
+      requestedVersion: "materialization:previous",
+      appliedVersion: "materialization:previous",
+      appliedExposurePlanHash: "exposure:previous"
+    }),
+    binding,
+    plan,
+    request
+  });
+  assert.equal(confirmation.restored, true);
+  assert.equal(runtime.confirmThreadToolPlan(binding.providerSessionId, definitions).restored, true);
+});
+
 test("persisted confirmation recovery fails closed on binding, generation, or schema drift", () => {
   for (const patch of [
     { providerBindingId: "binding:other" },
-    { requestedVersion: "materialization:stale" },
-    { appliedExposurePlanHash: "exposure:stale" },
+    { recordAppliedVersion: "materialization:other" },
+    { recordBootstrapSchemaHash: "bootstrap:other" },
     { providerRevision: "thread-start:thread:other:confirmed" }
   ]) {
     assert.throws(() => confirmOrRestoreCodexToolPlan({
