@@ -21,6 +21,7 @@ const feishuHiddenSessionItemTypes = new Set([
   "mcpToolCall",
   "dynamicToolCall",
   "webSearch",
+  "contextCompaction",
   "warning",
   "taskComplete"
 ]);
@@ -1025,8 +1026,8 @@ export class FeishuGatewayManager {
         if (request) {
           request.finalDelivered = true;
           request.finalItemId = item.id;
-          await this.finishPendingRequest(botId, request).catch((error) => {
-            console.log(`[feishu] bot=${botId} done reaction unavailable: ${error.message}`);
+          await this.clearPendingRequest(botId, request.messageId).catch((error) => {
+            console.log(`[feishu] bot=${botId} final typing reaction cleanup failed: ${error.message}`);
           });
         }
       } else {
@@ -1038,8 +1039,8 @@ export class FeishuGatewayManager {
       runtime.seenItems.add(item.id);
     }
     for (const request of [...(runtime.pendingFeishuRequests ?? [])].filter((item) => item.finalDelivered)) {
-      await this.finishPendingRequest(botId, request).catch((error) => {
-        console.log(`[feishu] bot=${botId} done reaction retry failed: ${error.message}`);
+      await this.clearPendingRequest(botId, request.messageId).catch((error) => {
+        console.log(`[feishu] bot=${botId} final typing reaction cleanup retry failed: ${error.message}`);
       });
     }
     if (isTerminalSessionStatus(snapshot.status)) {
@@ -1167,20 +1168,6 @@ export class FeishuGatewayManager {
       reaction_type: { emoji_type: emojiType }
     });
     return result.data?.reaction_id ?? result.data?.reaction?.reaction_id ?? null;
-  }
-
-  async finishPendingRequest(botId, request) {
-    await request.typingPromise;
-    if (request.typingReactionId) {
-      await this.callApi(
-        botId,
-        "DELETE",
-        `/open-apis/im/v1/messages/${encodeURIComponent(request.messageId)}/reactions/${encodeURIComponent(request.typingReactionId)}`
-      );
-      request.typingReactionId = null;
-    }
-    await this.addReaction(botId, request.messageId, "DONE");
-    this.removePendingRequest(botId, request.messageId);
   }
 
   async clearPendingRequest(botId, messageId) {
