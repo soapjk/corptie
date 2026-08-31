@@ -357,35 +357,6 @@ export class SessionCollaborationService {
     }
   }
 
-  cancelWorkItem(metadata, actorId, input = {}) {
-    assertKnown(input, ["workItemId", "reason", "resourceVersion"]);
-    const scope = this.#scope(metadata, actorId, { mutation: true });
-    const item = this.getWorkItem(metadata, actorId, input.workItemId);
-    const expectedVersion = required(input.resourceVersion, "resource_version");
-    if (scope.session.sessionKind === "worker" && item.created_by_session_id !== scope.logicalSessionId) {
-      throw coded("CANCEL_FORBIDDEN", "Worker Sessions may only cancel collaboration WorkItems they created.");
-    }
-    const reason = required(input.reason, "reason");
-    const result = this.store.cancelWorkItem({
-      workItemId: item.id,
-      sourceType: "collaboration_work_item_cancel",
-      idempotencyKey: `${scope.logicalSessionId}:${item.id}`,
-      expectedResourceVersion: expectedVersion,
-      reason,
-      actorSessionId: scope.logicalSessionId,
-      authorityType: "session",
-      authorityId: scope.logicalSessionId
-    });
-    return {
-      workItem: result.workItem,
-      cancellationOperation: result.operation,
-      canceled: true,
-      idempotentReplay: result.idempotentReplay,
-      physicallyDeleted: false,
-      auditPreserved: true
-    };
-  }
-
   #scope(metadata, actorId, options = {}) {
     const sourceId = required(metadata?.sessionId, "source session metadata");
     const session = this.#resolveSession(sourceId);

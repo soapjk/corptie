@@ -7824,7 +7824,6 @@ function route(request, response) {
     beginWorkItemExecution: (input) => workSessionStartupCoordinator.begin(input),
     getWorkItemStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
-    cancelWorkItemStart: (workItemId, reason) => workSessionStartupCoordinator.cancel(workItemId, reason),
     launchAgentSession,
     launchObjectiveChatSession,
     createSession: (input) => {

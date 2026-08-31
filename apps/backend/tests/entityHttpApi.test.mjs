@@ -127,7 +127,6 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     beginWorkItemExecution: services.beginWorkItemExecution,
     getWorkItemStartup: services.getWorkItemStartup,
     getSessionStartupBinding: services.getSessionStartupBinding,
-    cancelWorkItemStart: services.cancelWorkItemStart,
     launchAgentSession: services.launchAgentSession,
     launchObjectiveChatSession: services.launchObjectiveChatSession,
     inspectWorkItemWorktree: services.inspectWorkItemWorktree,
@@ -864,14 +863,14 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
     });
     assert.equal(unknownStatus.statusCode, 400);
     assert.equal(unknownStatus.body.code, "INVALID_STATUS");
-    const bypassCancellation = await callApi({
+    const canceledStatus = await callApi({
       method: "PATCH",
       pathname: `/work-items/${workItem.body.id}`,
       body: { status: "canceled" },
       ...services
     });
-    assert.equal(bypassCancellation.statusCode, 403);
-    assert.equal(bypassCancellation.body.code, "WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED");
+    assert.equal(canceledStatus.statusCode, 400);
+    assert.equal(canceledStatus.body.code, "INVALID_STATUS");
     assert.equal(services.store.getWorkItem(workItem.body.id).status, "todo");
   } finally {
     await services.store.close();

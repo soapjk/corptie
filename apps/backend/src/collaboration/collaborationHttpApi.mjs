@@ -91,14 +91,12 @@ export function handleCollaborationHttpRequest({
         ));
       }
 
-      const scopedWorkItemAction = url.pathname.match(/^\/internal\/collaboration\/work-items\/([^/]+)\/(start|cancel)$/);
+      const scopedWorkItemAction = url.pathname.match(/^\/internal\/collaboration\/work-items\/([^/]+)\/start$/);
       if (request.method === "POST" && scopedWorkItemAction) {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
         const input = await readJson(request);
         input.workItemId = decodeURIComponent(scopedWorkItemAction[1]);
-        const result = scopedWorkItemAction[2] === "start"
-          ? await sessionCollaborationService.startWorkItem(sessionMetadata, actorAgentId, input)
-          : sessionCollaborationService.cancelWorkItem(sessionMetadata, actorAgentId, input);
+        const result = await sessionCollaborationService.startWorkItem(sessionMetadata, actorAgentId, input);
         return sendJson(response, 200, result);
       }
 
@@ -649,8 +647,8 @@ function availableActions(task, role) {
 
 function statusForCode(code) {
   if (["AGENT_NOT_FOUND", "SERVICE_NOT_FOUND", "TASK_NOT_FOUND", "DELIVERY_NOT_FOUND", "OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND"].includes(code)) return 404;
-  if (["ACTOR_NOT_AUTHORIZED", "SERVICE_OWNER_REQUIRED", "RECIPIENT_NOT_SERVICE_OWNER", "OBJECTIVE_AGENT_NOT_AUTHORIZED", "MEMORY_SESSION_SCOPE_REQUIRED", "MEMORY_SCOPE_FORBIDDEN", "WORK_ITEM_CANCELLATION_WORKFLOW_REQUIRED"].includes(code)) return 403;
-  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "MEMORY_IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK", "OBJECTIVE_BOUNDARY_REQUIRED", "WORK_ITEM_OBJECTIVE_MISMATCH", "WORK_ITEM_AGENT_MISMATCH", "WORK_ITEM_TERMINAL", "WORK_ITEM_ALREADY_CANCELED", "CANCELLATION_IDEMPOTENCY_CONFLICT", "RESOURCE_VERSION_CONFLICT"].includes(code)) return 409;
+  if (["ACTOR_NOT_AUTHORIZED", "SERVICE_OWNER_REQUIRED", "RECIPIENT_NOT_SERVICE_OWNER", "OBJECTIVE_AGENT_NOT_AUTHORIZED", "MEMORY_SESSION_SCOPE_REQUIRED", "MEMORY_SCOPE_FORBIDDEN"].includes(code)) return 403;
+  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "MEMORY_IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK", "OBJECTIVE_BOUNDARY_REQUIRED", "WORK_ITEM_OBJECTIVE_MISMATCH", "WORK_ITEM_AGENT_MISMATCH", "WORK_ITEM_TERMINAL", "RESOURCE_VERSION_CONFLICT"].includes(code)) return 409;
   if (["MEMORY_PERSISTENCE_FAILED", "MEMORY_IDEMPOTENCY_RECORD_INVALID"].includes(code)) return 500;
   return 400;
 }
