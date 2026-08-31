@@ -6,10 +6,7 @@
 
 # Authoritative Work Session workspace
 
-- Corptie programmatically creates, inventories, and binds the dedicated Worktree and Provider working directory before the first model Turn. Treat the supplied startup receipt and active Workspace as authoritative.
-- Do not run `git status`, current-branch discovery, `git worktree list/add`, checkout/switch, Corptie workspace-switch tools, or shell `cd` merely to initialize or confirm the Session.
-- Git/Worktree diagnostics are allowed only when the user explicitly requests Git inspection or Corptie reports a startup-binding fault that requires evidence. Diagnostics never change the logical Workspace binding.
-- Work only in the bound Worktree. Never checkout, rebase, reset, merge, delete, or otherwise mutate another Worktree, and never create a nested Worktree.
+- Corptie programmatically creates and binds the WorkItem Worktree before the first Turn. Stay in that bound Workspace; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development work is not authorization, and shell `cd` or command `workdir` never changes the logical Workspace.
 
 # External actions: local-only by default
 

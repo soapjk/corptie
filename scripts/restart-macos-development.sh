@@ -10,9 +10,8 @@ if [[ "${EXTERNAL_RUNTIME_ROOT}" != /Volumes/* ]]; then
 fi
 WORKTREE_HASH="$(printf '%s' "${ROOT_DIR}" | shasum -a 256 | awk '{print substr($1,1,24)}')"
 WORKTREE_RUNTIME_ROOT="${EXTERNAL_RUNTIME_ROOT}/worktrees/${WORKTREE_HASH}"
-APP_LAUNCH_LABEL="com.corptie.mac.development.${WORKTREE_HASH}"
-BACKEND_LAUNCH_LABEL="com.corptie.backend.development.${WORKTREE_HASH}"
-BACKEND_TMUX_SESSION="corptie-backend-development-${WORKTREE_HASH}"
+LEGACY_APP_LAUNCH_LABEL="com.corptie.mac.development.${WORKTREE_HASH}"
+LEGACY_BACKEND_LAUNCH_LABEL="com.corptie.backend.development.${WORKTREE_HASH}"
 APP_LOG="${CORPTIE_APP_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/app.log}"
 BACKEND_LOG="${CORPTIE_BACKEND_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/backend.log}"
 DEVELOPMENT_DATA_ROOT="${CORPTIE_DEVELOPMENT_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/backend-data}"
@@ -25,11 +24,8 @@ PRODUCTION_BACKEND_PORT=47321
 
 PRODUCTION_BACKEND_PID_BEFORE="$(lsof -tiTCP:"${PRODUCTION_BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null | head -1 || true)"
 
-mkdir -p "$(dirname "${APP_LOG}")" "${PRESENTATION_DATA_DIR}" "${DEVELOPMENT_DATA_ROOT}" "${RUN_ISOLATION_DATA_ROOT}"
-if ! command -v tmux >/dev/null 2>&1; then
-  echo "tmux is required to supervise external-volume Development processes." >&2
-  exit 1
-fi
+mkdir -p "$(dirname "${APP_LOG}")" "${PRESENTATION_DATA_DIR}" "${DEVELOPMENT_DATA_ROOT}" \
+  "${RUN_ISOLATION_DATA_ROOT}"
 
 stop_pids() {
   local label="$1"
@@ -75,7 +71,10 @@ echo "Building Corptie backend native safety module..."
 npm --prefix "${ROOT_DIR}/apps/backend" run build:native
 
 echo "Stopping existing CorptieMac processes..."
-launchctl remove "${APP_LAUNCH_LABEL}" 2>/dev/null || true
+# One-time cleanup for Development jobs registered by older revisions. Nothing
+# below registers a replacement launchd job.
+launchctl bootout "gui/$(id -u)/${LEGACY_APP_LAUNCH_LABEL}" >/dev/null 2>&1 || true
+launchctl bootout "gui/$(id -u)/${LEGACY_BACKEND_LAUNCH_LABEL}" >/dev/null 2>&1 || true
 app_pids=()
 while IFS= read -r pid; do
   [[ -n "${pid}" ]] || continue
@@ -90,8 +89,6 @@ if (( ${#app_pids[@]} > 0 )); then
 fi
 
 echo "Stopping existing Corptie development backend processes..."
-launchctl remove "${BACKEND_LAUNCH_LABEL}" 2>/dev/null || true
-tmux kill-session -t "${BACKEND_TMUX_SESSION}" 2>/dev/null || true
 backend_pids=()
 while IFS= read -r pid; do
   [[ -n "${pid}" ]] || continue
@@ -113,35 +110,20 @@ fi
 : >"${BACKEND_LOG}"
 : >"${APP_LOG}"
 
-echo "Starting Corptie development backend..."
-backend_command_args=(/usr/bin/env "PATH=${PATH}" CORPTIE_ENV=development "CORPTIE_BACKEND_PORT=${BACKEND_PORT}" \
-  "CORPTIE_DATA_ROOT=${DEVELOPMENT_DATA_ROOT}" \
-  "CORPTIE_RUN_ISOLATION_DATA_ROOT=${RUN_ISOLATION_DATA_ROOT}" \
-  "${ROOT_DIR}/scripts/launch-development-process.sh" "${BACKEND_LOG}" "${ROOT_DIR}/scripts/start-backend-development.sh")
-printf -v backend_command '%q ' "${backend_command_args[@]}"
-tmux new-session -d -s "${BACKEND_TMUX_SESSION}" -c "${ROOT_DIR}/apps/backend" "${backend_command}"
-
-for _ in {1..30}; do
-  if curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.5
-done
-
-if ! curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
-  echo "Backend did not become ready in time. Log:"
-  tail -n 80 "${BACKEND_LOG}" || true
-  exit 1
-fi
-
 echo "Starting CorptieMac..."
-launchctl submit -l "${APP_LAUNCH_LABEL}" -- \
-  /usr/bin/env "PATH=${PATH}" CORPTIE_ENV=development "CORPTIE_BACKEND_PORT=${BACKEND_PORT}" \
-  "CORPTIE_USER_DEFAULTS_SUITE=${USER_DEFAULTS_SUITE}" "CORPTIE_PRESENTATION_DATA_DIR=${PRESENTATION_DATA_DIR}" \
-  "${ROOT_DIR}/scripts/launch-development-process.sh" "${APP_LOG}" "${APP_BIN}"
-APP_PID=""
+/usr/bin/env \
+  PATH="${PATH}" \
+  CORPTIE_ENV=development \
+  CORPTIE_BACKEND_PORT="${BACKEND_PORT}" \
+  CORPTIE_DATA_ROOT="${DEVELOPMENT_DATA_ROOT}" \
+  CORPTIE_RUN_ISOLATION_DATA_ROOT="${RUN_ISOLATION_DATA_ROOT}" \
+  CORPTIE_DEVELOPMENT_BACKEND_LAUNCHER="${ROOT_DIR}/scripts/start-backend-development.sh" \
+  CORPTIE_DEVELOPMENT_BACKEND_LOG="${BACKEND_LOG}" \
+  CORPTIE_USER_DEFAULTS_SUITE="${USER_DEFAULTS_SUITE}" \
+  CORPTIE_PRESENTATION_DATA_DIR="${PRESENTATION_DATA_DIR}" \
+  /usr/bin/python3 "${ROOT_DIR}/scripts/launch-development-detached.py" "${APP_BIN}" "${APP_LOG}" &
+APP_PID="$!"
 for _ in {1..30}; do
-  APP_PID="$(launchctl list | awk -v label="${APP_LAUNCH_LABEL}" '$3 == label && $1 != "-" { print $1; exit }')"
   if [[ -n "${APP_PID}" ]] && kill -0 "${APP_PID}" 2>/dev/null; then
     break
   fi
@@ -150,6 +132,21 @@ done
 if [[ -z "${APP_PID}" ]] || ! kill -0 "${APP_PID}" 2>/dev/null; then
   echo "CorptieMac exited before becoming ready. Log:"
   tail -n 80 "${APP_LOG}" || true
+  exit 1
+fi
+
+# CorptieMac owns the backend as a direct child Process and starts it during
+# applicationDidFinishLaunching.
+for _ in {1..30}; do
+  if curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+
+if ! curl -fsS --max-time 1 "${BACKEND_URL}" >/dev/null 2>&1; then
+  echo "App-owned backend did not become ready in time. Log:"
+  tail -n 80 "${BACKEND_LOG}" || true
   exit 1
 fi
 
@@ -164,4 +161,4 @@ fi
 echo "Corptie backend started with pid ${BACKEND_PID}"
 echo "Backend log: ${BACKEND_LOG}"
 echo "CorptieMac started with pid ${APP_PID}"
-echo "Log: ${APP_LOG}"
+echo "App diagnostics: macOS unified log (process CorptieMac)"

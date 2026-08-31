@@ -45,9 +45,9 @@ cat > "${PLIST}" <<PLIST
     <string>${DEFAULT_WORKSPACE}</string>
   </dict>
   <key>RunAtLoad</key>
-  <true/>
+  <false/>
   <key>KeepAlive</key>
-  <true/>
+  <false/>
   <key>StandardOutPath</key>
   <string>/dev/null</string>
   <key>StandardErrorPath</key>
@@ -58,7 +58,6 @@ PLIST
 
 launchctl bootout "gui/$(id -u)" "${PLIST}" >/dev/null 2>&1 || true
 launchctl bootstrap "gui/$(id -u)" "${PLIST}"
-launchctl kickstart -k "gui/$(id -u)/com.corptie.backend"
 
-echo "Installed and started ${PLIST}"
+echo "Installed ${PLIST}; CorptieMac will start it when the App opens."
 echo "Logs: ${LOG_DIR}/backend.out.log and ${LOG_DIR}/backend.err.log"

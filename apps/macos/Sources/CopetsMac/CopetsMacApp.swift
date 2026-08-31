@@ -562,8 +562,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.setActivationPolicy(.regular)
         configureApplicationIcon()
 
+        // Start the App-owned backend before any first-run UI that can block
+        // this delegate callback. A fresh Development defaults suite may show
+        // a modal welcome prompt, but backend availability must not depend on
+        // dismissing that prompt.
+        CorptieBackendSupervisor.ensureBackendStarted()
         showWelcomePromptIfNeeded()
-        CorptieBackendSupervisor.ensureProductionBackendStarted()
 
         // The production backend is started alongside the app, so the first
         // Entity request can legitimately race its launch. Refresh the Entity
@@ -708,6 +712,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // The App owns its backend lifetime. This is an idempotent final guard
+        // for termination paths that do not pass through the normal Quit menu.
+        CorptieBackendSupervisor.stopDevelopmentBackendBestEffort()
         // Capture the final semantic anchor and flush the sole SQLite viewport
         // authority. There is no UserDefaults rollback copy.
         NotificationCenter.default.post(name: .captureSessionTimelinePositions, object: nil)
@@ -765,9 +772,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // A development executable must never own the production launch agent.
-        // This bundle-level check remains effective even if its environment is
-        // missing or sanitized when the process is terminated externally.
+        if CorptieAppEnvironment.isDevelopment {
+            // Development must always honor Quit. The one-shot backend job is
+            // best-effort stopped and cannot be resurrected by launchd.
+            CorptieBackendSupervisor.stopDevelopmentBackendBestEffort()
+            return .terminateNow
+        }
+        // An unbundled executable must never own the production launch agent.
         guard CorptieAppEnvironment.canManageProductionBackend else {
             return .terminateNow
         }
@@ -1130,6 +1141,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 enum CorptieBackendSupervisor {
     private static let label = "com.corptie.backend"
     private static var developmentBackendProcess: Process?
+    private static var developmentBackendLogHandle: FileHandle?
+
+    static func ensureBackendStarted() {
+        if CorptieAppEnvironment.isDevelopment {
+            startDevelopmentBackendBestEffort()
+        } else {
+            ensureProductionBackendStarted()
+        }
+    }
 
     static func ensureProductionBackendStarted() {
         guard CorptieAppEnvironment.canManageProductionBackend else {
@@ -1165,6 +1185,9 @@ enum CorptieBackendSupervisor {
             if !isLaunchAgentLoaded() {
                 try runLaunchctl(["bootstrap", "gui/\(getuid())", installedPlist.path])
             }
+            // The installed job is deliberately neither RunAtLoad nor
+            // KeepAlive. Opening Corptie is the sole production start signal.
+            try runLaunchctl(["kickstart", "gui/\(getuid())/\(label)"])
         } catch {
             NSLog("Corptie backend startup failed: \(error.localizedDescription)")
         }
@@ -1175,6 +1198,65 @@ enum CorptieBackendSupervisor {
             return
         }
         try runLaunchctl(["bootout", "gui/\(getuid())/\(label)"])
+    }
+
+    static func stopDevelopmentBackendBestEffort() {
+        guard CorptieAppEnvironment.isDevelopment else { return }
+        stopDevelopmentBackend()
+    }
+
+    private static func startDevelopmentBackendBestEffort() {
+        do {
+            try startDevelopmentBackend()
+        } catch {
+            NSLog("Corptie Development backend startup failed: \(error.localizedDescription)")
+        }
+    }
+
+    private static func startDevelopmentBackend() throws {
+        if developmentBackendProcess?.isRunning == true {
+            return
+        }
+        guard let configuration = CorptieAppEnvironment.developmentBackendConfiguration else {
+            throw BackendSupervisorError.developmentConfigurationUnavailable
+        }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: configuration.logURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if !fileManager.fileExists(atPath: configuration.logURL.path) {
+            guard fileManager.createFile(atPath: configuration.logURL.path, contents: nil) else {
+                throw BackendSupervisorError.developmentLogUnavailable
+            }
+        }
+        let logHandle = try FileHandle(forWritingTo: configuration.logURL)
+        try logHandle.seekToEnd()
+
+        let process = Process()
+        process.executableURL = configuration.launcherURL
+        process.environment = ProcessInfo.processInfo.environment
+        process.standardOutput = logHandle
+        process.standardError = logHandle
+        do {
+            try process.run()
+        } catch {
+            try? logHandle.close()
+            throw error
+        }
+        developmentBackendProcess = process
+        developmentBackendLogHandle = logHandle
+    }
+
+    private static func stopDevelopmentBackend() {
+        if let process = developmentBackendProcess, process.isRunning {
+            process.terminate()
+            process.waitUntilExit()
+        }
+        developmentBackendProcess = nil
+        try? developmentBackendLogHandle?.close()
+        developmentBackendLogHandle = nil
     }
 
     static func restartBackendForDataRootMigration() async throws {
@@ -1193,9 +1275,7 @@ enum CorptieBackendSupervisor {
         guard CorptieAppEnvironment.isDevelopment else {
             throw BackendSupervisorError.restartUnavailable
         }
-        try await Task.sleep(for: .milliseconds(800))
-
-        try startDevelopmentBackend()
+        try restartDevelopmentBackend()
     }
 
     static func ensureBackendRunningForPendingDataRootMigration() async throws {
@@ -1206,40 +1286,16 @@ enum CorptieBackendSupervisor {
         guard CorptieAppEnvironment.isDevelopment else {
             throw BackendSupervisorError.restartUnavailable
         }
-        try await Task.sleep(for: .milliseconds(800))
+        try restartDevelopmentBackend()
+    }
+
+    private static func restartDevelopmentBackend() throws {
+        stopDevelopmentBackend()
         try startDevelopmentBackend()
     }
 
-    private static func startDevelopmentBackend() throws {
-        let repositoryRoot = try developmentRepositoryRoot()
-        let process = Process()
-        process.executableURL = repositoryRoot.appendingPathComponent("scripts/start-backend-development.sh")
-        process.currentDirectoryURL = repositoryRoot
-        var environment = ProcessInfo.processInfo.environment
-        environment["CORPTIE_ENV"] = "development"
-        environment["CORPTIE_BACKEND_PORT"] = String(CorptieAppEnvironment.backendPort)
-        process.environment = environment
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        developmentBackendProcess = process
-    }
-
-    private static func developmentRepositoryRoot() throws -> URL {
-        var candidate = Bundle.main.executableURL?.deletingLastPathComponent()
-            ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        for _ in 0..<10 {
-            let launcher = candidate.appendingPathComponent("scripts/start-backend-development.sh")
-            if FileManager.default.isExecutableFile(atPath: launcher.path) {
-                return candidate
-            }
-            candidate.deleteLastPathComponent()
-        }
-        throw BackendSupervisorError.developmentLauncherNotFound
-    }
-
-    private static func isLaunchAgentLoaded() -> Bool {
-        (try? runLaunchctl(["print", "gui/\(getuid())/\(label)"])) != nil
+    private static func isLaunchAgentLoaded(_ serviceLabel: String = label) -> Bool {
+        (try? runLaunchctl(["print", "gui/\(getuid())/\(serviceLabel)"])) != nil
     }
 
     @discardableResult
@@ -1266,7 +1322,8 @@ enum CorptieBackendSupervisor {
         case launchctlFailed(String, String)
         case restartUnavailable
         case restartNotAccepted
-        case developmentLauncherNotFound
+        case developmentConfigurationUnavailable
+        case developmentLogUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -1276,8 +1333,10 @@ enum CorptieBackendSupervisor {
                 return "This Corptie host cannot restart the Backend."
             case .restartNotAccepted:
                 return "The Backend did not accept the controlled restart."
-            case .developmentLauncherNotFound:
-                return "Could not locate scripts/start-backend-development.sh."
+            case .developmentConfigurationUnavailable:
+                return "The App-owned Development backend configuration is unavailable."
+            case .developmentLogUnavailable:
+                return "The App-owned Development backend log is unavailable."
             }
         }
     }

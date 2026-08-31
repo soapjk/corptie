@@ -32,6 +32,13 @@ enum CorptieAppEnvironment {
 
     static let backendBaseURL = URL(string: "http://127.0.0.1:\(backendPort)")!
 
+    static let developmentBackendConfiguration: DevelopmentBackendConfiguration? = {
+        CorptieProcessLifecycle.developmentBackendConfiguration(
+            environment: environment,
+            isDevelopment: isDevelopment
+        )
+    }()
+
     static let userDefaults: UserDefaults = {
         let suite = RunIsolationAppPaths.userDefaultsSuite(
             environment: environment,
@@ -54,6 +61,32 @@ enum CorptieAppEnvironment {
         return support.appendingPathComponent(appSupportFolderName, isDirectory: true)
             .appendingPathComponent("presentation.sqlite3")
     }()
+}
+
+struct DevelopmentBackendConfiguration: Equatable {
+    let launcherURL: URL
+    let logURL: URL
+}
+
+enum CorptieProcessLifecycle {
+    static func developmentBackendConfiguration(
+        environment: [String: String],
+        isDevelopment: Bool
+    ) -> DevelopmentBackendConfiguration? {
+        guard isDevelopment,
+              let launcherPath = environment["CORPTIE_DEVELOPMENT_BACKEND_LAUNCHER"],
+              let logPath = environment["CORPTIE_DEVELOPMENT_BACKEND_LOG"],
+              launcherPath.hasPrefix("/Volumes/"),
+              logPath.hasPrefix("/Volumes/"),
+              URL(fileURLWithPath: launcherPath).standardizedFileURL.path == launcherPath,
+              URL(fileURLWithPath: logPath).standardizedFileURL.path == logPath else {
+            return nil
+        }
+        return DevelopmentBackendConfiguration(
+            launcherURL: URL(fileURLWithPath: launcherPath),
+            logURL: URL(fileURLWithPath: logPath)
+        )
+    }
 }
 
 enum RunIsolationAppPaths {

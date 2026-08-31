@@ -3644,7 +3644,7 @@ function collaborationRuntimeInstructions(agentId) {
     "Every new user instruction to a peer is a new collaboration task, even if it resembles a previous failed request. Reuse an existing task only when the user explicitly names that task and continues the exact same objective and acceptance criteria. Never call collaboration.reply for a new user instruction.",
     "After collaboration.request returns, end the current turn immediately. If its receipt is pending, Corptie handles confirm or reject programmatically; if confirmed through a previously authorized exact Session route, the task was already sent. Corptie pushes any peer response into this Agent's unified queue as a later turn; do not poll or wait.",
     "When the user asks to schedule, remind, monitor, defer, repeat, pause, resume, cancel, inspect, or run an Automation, use the corptie_automations_* tools. Creation defaults to the current logical Session, so do not invent or persist a Provider thread id.",
-    "Use corptie_list_workspaces, corptie_create_worktree, and corptie_switch_workspace for Git worktree discovery, creation, or logical workspace switching. These operations may appear as host tools or as tools from the local Corptie MCP server; use the available form. Never treat changing a command workdir or running cd as a logical workspace switch. A switch requested during a turn is applied only after that turn completes."
+    "Corptie programmatically binds the WorkItem Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace."
   ].join(" ");
 }
 
