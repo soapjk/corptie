@@ -93,6 +93,7 @@ import {
   ToolHostMaterializationCoordinator
 } from "./application/toolHostMaterializationCoordinator.mjs";
 import { ToolBootstrapBindingPreflight } from "./application/toolBootstrapBindingPreflight.mjs";
+import { SerializedOperationQueue } from "./application/serializedOperationQueue.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import { OpenClackyManager, mergeOpenClackyRuntimeInstructions } from "./adapters/openClackyManager.mjs";
@@ -2301,6 +2302,7 @@ const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled
 const drainingAgentWorkSessionIds = new Set();
 let agentWorkQueueInterval = null;
 let activeCodexThreadCreation = null;
+const codexThreadCreationQueue = new SerializedOperationQueue();
 
 function now() {
   return new Date().toISOString();
@@ -5234,11 +5236,10 @@ function reconcileEntityWorkItemsAtStartup() {
 }
 
 async function createCodexProviderSession(input = {}) {
-  if (activeCodexThreadCreation) {
-    const error = new Error("Another Codex session is already being created. Wait for it to finish before trying again.");
-    error.code = "SESSION_CREATION_IN_PROGRESS";
-    throw error;
-  }
+  return codexThreadCreationQueue.run(() => createCodexProviderSessionNow(input));
+}
+
+async function createCodexProviderSessionNow(input = {}) {
   const creationId = randomUUID();
   activeCodexThreadCreation = { creationId, title: input.title, startedAt: Date.now() };
   try {

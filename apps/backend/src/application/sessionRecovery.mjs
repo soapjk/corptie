@@ -380,10 +380,14 @@ export class SessionRecoveryCoordinator {
 
   async recover(input) {
     const logicalSessionId = requiredString(input.logicalSessionId, "logicalSessionId");
-    const idempotencyKey = requiredString(input.idempotencyKey, "idempotencyKey");
-    const key = `${logicalSessionId}:${idempotencyKey}`;
+    requiredString(input.idempotencyKey, "idempotencyKey");
+    // A logical Session has one mutable route boundary. Startup bootstrap,
+    // queued Delivery recovery, and explicit restart can use different
+    // idempotency keys while requesting the same replacement. Coalesce all of
+    // them here so competing recovery attempts cannot race that boundary.
+    const key = logicalSessionId;
     const active = this.inFlight.get(key);
-    if (active) return active;
+    if (active) return this.#joinRecovery(active, input);
     const operation = this.#recoverWithFailureHandling(input);
     this.inFlight.set(key, operation);
     try {
@@ -393,11 +397,24 @@ export class SessionRecoveryCoordinator {
     }
   }
 
+  async #joinRecovery(operation, input) {
+    try {
+      return await operation;
+    } catch (error) {
+      if (input?.triggerDeliveryId) error.dispatchState = "not_sent";
+      throw error;
+    }
+  }
+
   async #recoverWithFailureHandling(input) {
     try {
       return await this.#recover(input);
     } catch (cause) {
       const error = mapSessionRecoveryError(cause);
+      // Message-triggered recovery starts only after the Provider operation
+      // proved that no command was sent. Keep that dispatch fact so a failed
+      // recovery remains safely retryable instead of becoming ambiguous.
+      if (input?.triggerDeliveryId) error.dispatchState = "not_sent";
       try {
         const logicalSessionId = typeof input?.logicalSessionId === "string" ? input.logicalSessionId.trim() : "";
         const idempotencyKey = typeof input?.idempotencyKey === "string" ? input.idempotencyKey.trim() : "";
@@ -405,7 +422,8 @@ export class SessionRecoveryCoordinator {
           ? this.store.getSessionRecoveryAttemptByIdempotency(logicalSessionId, idempotencyKey)
           : null;
         if (attempt && !["committed", "cancelled", "manual_required"].includes(attempt.state)) {
-          this.store.failSessionRecoveryAttempt(attempt.attemptId, error.code, error.message);
+          const persisted = recoveryPersistence(error);
+          this.store.failSessionRecoveryAttempt(attempt.attemptId, persisted.code, persisted.message);
         }
       } catch {
         // Error reporting must never replace the stable business error with a
@@ -527,8 +545,13 @@ export class SessionRecoveryCoordinator {
         await this.providerPort.cancelReplacement({ attempt, replacement, cause }).catch(() => {});
       }
       const error = mapSessionRecoveryError(cause);
-      this.store.failSessionRecoveryAttempt(attempt.attemptId, error.code, error.message);
-      this.observe({ type: "SessionRecoveryFailed", attemptId: attempt.attemptId, error: { code: error.code, message: error.message } });
+      const persisted = recoveryPersistence(error);
+      this.store.failSessionRecoveryAttempt(attempt.attemptId, persisted.code, persisted.message);
+      this.observe({
+        type: "SessionRecoveryFailed",
+        attemptId: attempt.attemptId,
+        error: { code: error.code, message: error.message, ...error.details }
+      });
       throw error;
     }
   }
@@ -584,7 +607,41 @@ export function mapSessionRecoveryError(error) {
     "SESSION_BUSY", "RECOVERY_REPLACEMENT_CAS_CONFLICT"
   ]);
   if (safeCodes.has(error?.code)) return recoveryError(error.code, error.message);
-  return recoveryError("SESSION_RECOVERY_FAILED", "Session recovery failed safely; the original binding and Corptie Timeline were preserved.");
+  const mapped = recoveryError(
+    "SESSION_RECOVERY_FAILED",
+    "Session recovery failed safely; the original binding and Corptie Timeline were preserved.",
+    { safeDetails: {
+      causeCode: safeRecoveryCauseCode(error?.code),
+      causeMessage: safeRecoveryCauseMessage(error?.message)
+    } }
+  );
+  mapped.cause = error;
+  return mapped;
+}
+
+function safeRecoveryCauseCode(value) {
+  const code = typeof value === "string" ? value.trim() : "";
+  return /^(?:RECOVERY|SESSION|PROVIDER|TOOL|MCP)_[A-Z0-9_]+$/.test(code)
+    ? code
+    : "UNEXPECTED_RECOVERY_FAILURE";
+}
+
+function safeRecoveryCauseMessage(value) {
+  const message = typeof value === "string" ? value.trim() : "";
+  if (!message) return "Recovery dependency failed without an error message.";
+  return message.replace(/[\r\n\t]+/g, " ").slice(0, 500);
+}
+
+function recoveryPersistence(error) {
+  if (error?.code === "SESSION_RECOVERY_FAILED"
+    && error?.details?.causeCode
+    && error.details.causeCode !== "UNEXPECTED_RECOVERY_FAILURE") {
+    return {
+      code: error.details.causeCode,
+      message: error.details.causeMessage ?? error.message
+    };
+  }
+  return { code: error.code, message: error.message };
 }
 
 function eventToReplayEntries(event) {
