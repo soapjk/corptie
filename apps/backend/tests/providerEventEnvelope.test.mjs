@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  mapClaudeProviderEvent,
   mapClaudeTurnSettled,
   mapCodexProviderNotification,
   mapOpenClackyProviderChange
@@ -58,6 +59,62 @@ test("Codex maps final item and terminal turn into the shared Provider envelope"
   assert.equal(turnEvent.type, "turn.completed");
   assert.deepEqual(turnEvent.payload.items, [finalItem]);
   assert.equal(turnEvent.providerId, "codex-app-server");
+});
+
+test("Provider errors distinguish a failed Turn from an unavailable Session", () => {
+  const turnError = mapCodexProviderNotification({
+    binding: bindings.codex,
+    message: {
+      method: "error",
+      params: {
+        threadId: "codex-thread",
+        turnId: "turn:capacity",
+        error: {
+          message: "Selected model is at capacity. Please try a different model.",
+          codexErrorInfo: "serverOverloaded"
+        },
+        willRetry: false
+      }
+    },
+    receivedAt: "2026-08-31T07:08:38.415Z"
+  });
+  const sessionError = mapCodexProviderNotification({
+    binding: bindings.codex,
+    message: {
+      method: "error",
+      params: {
+        threadId: "codex-thread",
+        error: { message: "Provider process exited." },
+        willRetry: false
+      }
+    },
+    receivedAt: "2026-08-31T07:09:00.000Z"
+  });
+  const claudeTurnError = mapClaudeProviderEvent({
+    binding: bindings.claude,
+    event: {
+      type: "provider.error",
+      turnId: "claude-turn:capacity",
+      error: "Selected model is at capacity."
+    },
+    receivedAt: "2026-08-31T07:09:01.000Z"
+  });
+  const openClackyTurnError = mapOpenClackyProviderChange({
+    binding: bindings.openClacky,
+    change: {
+      event: {
+        type: "error",
+        turn_id: "openclacky-turn:capacity",
+        error: "Selected model is at capacity."
+      }
+    },
+    receivedAt: "2026-08-31T07:09:02.000Z"
+  });
+
+  assert.equal(turnError.payload.failureScope, "turn");
+  assert.equal(sessionError.payload.failureScope, "session");
+  assert.equal(claudeTurnError.payload.failureScope, "turn");
+  assert.equal(openClackyTurnError.payload.failureScope, "turn");
 });
 
 test("Codex persists the native completed item when its live cache has not caught up", () => {

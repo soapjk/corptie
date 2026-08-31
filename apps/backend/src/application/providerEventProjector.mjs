@@ -205,7 +205,9 @@ export class ProviderEventProjector {
     const activeTurn = unsettled.findLast?.((turn) => turn.binding_id === binding.bindingId)
       ?? unsettled.at(-1)
       ?? null;
-    const providerFailure = event.type === "provider.error" && event.payload?.willRetry !== true
+    const providerFailure = event.type === "provider.error"
+      && event.payload?.willRetry !== true
+      && event.payload?.failureScope !== "turn"
       ? normalizeProviderFailure(event.payload?.error)
       : null;
     const next = {
