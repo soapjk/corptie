@@ -43,15 +43,12 @@ test("development launcher starts one detached App without a process guardian", 
   assert.doesNotMatch(detachedLauncher, /while|for\s+/u);
 });
 
-test("macOS App explicitly starts and stops its owned backend", async () => {
+test("macOS App starts without a modal welcome prompt and owns its backend", async () => {
   const contents = await source("apps/macos/Sources/CopetsMac/CopetsMacApp.swift");
 
   assert.match(contents, /applicationDidFinishLaunching[\s\S]*ensureBackendStarted\(\)/u);
-  assert.ok(
-    contents.indexOf("CorptieBackendSupervisor.ensureBackendStarted()")
-      < contents.indexOf("showWelcomePromptIfNeeded()"),
-    "the backend must start before first-run UI can block launch",
-  );
+  assert.doesNotMatch(contents, /showWelcomePromptIfNeeded|corptie\.hasAcknowledgedWelcomeSetup/u);
+  assert.doesNotMatch(contents, /Welcome to Corptie|Get Started/u);
   assert.match(contents, /startDevelopmentBackend[\s\S]*process\.executableURL = configuration\.launcherURL/u);
   assert.match(contents, /stopDevelopmentBackend[\s\S]*process\.terminate\(\)[\s\S]*process\.waitUntilExit\(\)/u);
   assert.match(contents, /ensureProductionBackendStarted[\s\S]*\["kickstart"/u);
