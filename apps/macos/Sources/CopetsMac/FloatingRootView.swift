@@ -3556,7 +3556,10 @@ struct DetailView: View {
             if backendClient.selectedSession?.id == sessionId
                 && !backendClient.selectedCanSendNow
                 && !backendClient.selectedCanInterruptNow {
-                ReadOnlyComposer(reason: displayedDetail?.sendUnavailableReason)
+                ReadOnlyComposer(
+                    reason: composerUnavailableReason,
+                    isRecovering: backendClient.selectedSession?.transitionState == "sessionRecovery"
+                )
             } else {
                 MessageComposer(
                     sessionId: sessionId,
@@ -3654,6 +3657,14 @@ struct DetailView: View {
             scrollTargetTurnID = turnID
             scrollTargetTurnRevision &+= 1
         }
+    }
+
+    private var composerUnavailableReason: String? {
+        if backendClient.selectedSession?.transitionState == "sessionRecovery" {
+            return L10n("Session recovery is in progress. Sending messages is temporarily unavailable.")
+        }
+        return displayedDetail?.sendUnavailableReason
+            ?? backendClient.selectedSession?.actions?.send.reason
     }
 
     private func appKitCachedDetailMessages() -> some View {
@@ -10748,13 +10759,21 @@ private struct SessionSendFailureView: View {
 
 private struct ReadOnlyComposer: View {
     let reason: String?
+    let isRecovering: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 11, weight: .bold))
-                .frame(width: 28, height: 28)
-                .foregroundStyle(CorptiePalette.secondaryText)
+            Group {
+                if isRecovering {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 11, weight: .bold))
+                }
+            }
+            .frame(width: 28, height: 28)
+            .foregroundStyle(CorptiePalette.secondaryText)
 
             Text(reason ?? "This session is read-only in Corptie.")
                 .font(.system(size: 11, weight: .semibold))

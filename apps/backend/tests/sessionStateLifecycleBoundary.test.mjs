@@ -113,6 +113,83 @@ test("every supported streaming Provider isolates lifecycle callback failures", 
   assert.equal(source.includes("scheduleSessionProviderProjectionReconciliation"), false);
 });
 
+test("Claude turn settlement completes a waiting Provider switch through exactly one route", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const handlerBegin = source.indexOf("async function handleClaudeTurnSettled(event)");
+  const handlerEnd = source.indexOf("async function restartCodexProviderSession", handlerBegin);
+  const handlerBody = source.slice(handlerBegin, handlerEnd);
+
+  assert.notEqual(handlerBegin, -1);
+  assert.notEqual(handlerEnd, -1);
+  assert.equal(
+    handlerBody.match(/continuePendingWorkspaceTransition\(logical, event\.turnId\)/g)?.length,
+    1
+  );
+  assert.equal(
+    handlerBody.match(/continuePendingProviderSwitch\(logical\)/g)?.length,
+    1
+  );
+  assert.doesNotMatch(handlerBody, /claudeWorkspaceTransitionManager\.continueWorkspaceTransition/);
+
+  const workspaceBegin = source.indexOf("function continuePendingWorkspaceTransition");
+  const workspaceEnd = source.indexOf("function continuePendingProviderSwitch", workspaceBegin);
+  const workspaceBody = source.slice(workspaceBegin, workspaceEnd);
+  assert.match(workspaceBody, /transition\.transitionKind === "provider"\) return null/);
+
+  const providerBegin = workspaceEnd;
+  const providerEnd = source.indexOf("function enqueueWorkspaceContinuationSafely", providerBegin);
+  const providerBody = source.slice(providerBegin, providerEnd);
+  assert.match(providerBody, /transition\.transitionKind !== "provider"\) return null/);
+  assert.equal(
+    providerBody.match(/sessionProviderSwitchCoordinator\.completeProviderSwitch/g)?.length,
+    1
+  );
+});
+
+test("startup recovery validates or safely recreates only an empty journaled Codex replacement", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const recoveryBegin = source.indexOf("sessionRecoveryCoordinator = new SessionRecoveryCoordinator");
+  const recoveryEnd = source.indexOf("projectWorktreeIntegrationService", recoveryBegin);
+  const recoveryBody = source.slice(recoveryBegin, recoveryEnd);
+
+  assert.notEqual(recoveryBegin, -1);
+  assert.notEqual(recoveryEnd, -1);
+  assert.match(recoveryBody, /resumeReplacement:\s*async/);
+  assert.match(recoveryBody, /codexRuntime\.inspectEmptyThreadForRouteCommit/);
+  assert.match(recoveryBody, /PROVIDER_EMPTY_THREAD_UNRECOVERABLE/);
+  assert.match(recoveryBody, /error\?\.safeToRecreate !== true/);
+  assert.match(recoveryBody, /sessionRecoveryCoordinator\.providerPort\.createReplacement/);
+});
+
+test("startup recovery waits for every isolated Provider runtime before reconnecting replacements", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const recoveryCall = source.indexOf("await resumeSessionRecoveryAttemptsAtStartup()");
+
+  assert.notEqual(recoveryCall, -1);
+  for (const prerequisite of [
+    "await ensureCorptieOpenClackyRuntime",
+    "openClackyManager.start()",
+    "await ensureCorptieCodexRuntime",
+    "await ensureCorptieClaudeRuntime",
+    "process.env.CODEX_HOME = corptieCodexRuntime.codexHome",
+    "process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir"
+  ]) {
+    const prerequisiteIndex = source.indexOf(prerequisite);
+    assert.notEqual(prerequisiteIndex, -1, `missing startup prerequisite: ${prerequisite}`);
+    assert.ok(
+      prerequisiteIndex < recoveryCall,
+      `${prerequisite} must complete before persisted Session recovery resumes`
+    );
+  }
+
+  const helperBegin = source.indexOf("async function resumeSessionRecoveryAttemptsAtStartup");
+  const helperEnd = source.indexOf("\nawait store.initialize()", helperBegin);
+  const helperBody = source.slice(helperBegin, helperEnd);
+  assert.match(helperBody, /await sessionRecoveryCoordinator\.recover/);
+  assert.match(helperBody, /Math\.min\(2, attempts\.length\)/);
+  assert.doesNotMatch(helperBody, /\.recover\([\s\S]*?\)\.catch/);
+});
+
 test("state publication is mutation-driven and subscriptions own no polling scheduler", async () => {
   const source = await readFile(sourceURL, "utf8");
   assert.match(source, /stateSyncPublishTimer = setTimeout\([\s\S]*?\}, 20\)/);

@@ -10,6 +10,17 @@ const toolDefinitions = [{
   inputSchema: { type: "object", properties: {}, additionalProperties: false }
 }];
 
+function persistedProof(threadId, definitions = toolDefinitions, kind = "thread_start_accepted") {
+  return {
+    providerRevision: kind === "thread_start_accepted"
+      ? `thread-start:${threadId}:confirmed`
+      : `thread-fork-inherited:${threadId}:thread:source:confirmed`,
+    providerDefinitionsHash: schemaHash(definitions),
+    providerDefinitionsCount: definitions.length,
+    providerObservationKind: kind
+  };
+}
+
 test("Codex materialization confirmation is impossible before a successful real thread/start receipt", async () => {
   const client = new CodexAppServerClient();
   client.initialize = async () => {};
@@ -34,28 +45,51 @@ test("Codex materialization confirmation is impossible before a successful real 
 
 test("Codex restores an exact persisted Tool confirmation after app-server restart", () => {
   const client = new CodexAppServerClient();
-  const restored = client.restoreThreadToolPlanConfirmation("thread:restored", toolDefinitions, {
-    providerRevision: "thread-start:thread:restored:2026-08-30T00:00:00.000Z",
-    allowLegacyRestrictedGateway: true
-  });
+  const restored = client.restoreThreadToolPlanConfirmation(
+    "thread:restored",
+    toolDefinitions,
+    persistedProof("thread:restored")
+  );
   assert.equal(restored.restored, true);
   assert.deepEqual(client.confirmThreadToolPlan("thread:restored", toolDefinitions), restored);
   assert.throws(() => client.restoreThreadToolPlanConfirmation("thread:other", toolDefinitions, {
-    providerRevision: restored.providerRevision,
-    allowLegacyRestrictedGateway: true
+    ...persistedProof("thread:restored"),
+    providerRevision: restored.providerRevision
   }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
   assert.throws(() => client.restoreThreadToolPlanConfirmation("thread:restored", [], {
+    ...persistedProof("thread:restored"),
     providerRevision: restored.providerRevision,
     providerDefinitionsHash: restored.providerDefinitionsHash
   }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
 });
 
+test("Codex rejects legacy fork receipts that claimed a requested schema without observing inheritance", () => {
+  const client = new CodexAppServerClient();
+  assert.throws(() => client.restoreThreadToolPlanConfirmation("thread:legacy-fork", toolDefinitions, {
+    ...persistedProof("thread:legacy-fork", toolDefinitions, "thread_fork_inherited"),
+    providerRevision: "thread-fork:thread:legacy-fork:claimed",
+    providerDefinitionsHash: schemaHash(toolDefinitions)
+  }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+});
+
+test("Codex restores only an exact inherited-fork schema proof", () => {
+  const client = new CodexAppServerClient();
+  const restored = client.restoreThreadToolPlanConfirmation(
+    "thread:inherited",
+    toolDefinitions,
+    persistedProof("thread:inherited", toolDefinitions, "thread_fork_inherited")
+  );
+  assert.equal(restored.observationKind, "thread_fork_inherited");
+  assert.equal(restored.providerDefinitionsCount, toolDefinitions.length);
+});
+
 test("Codex accepts an exact durable Tool-definition hash without the legacy exception", () => {
   const client = new CodexAppServerClient();
-  const confirmation = client.restoreThreadToolPlanConfirmation("thread:hashed", toolDefinitions, {
-    providerRevision: "thread-start:thread:hashed:confirmed",
-    providerDefinitionsHash: schemaHash(toolDefinitions)
-  });
+  const confirmation = client.restoreThreadToolPlanConfirmation(
+    "thread:hashed",
+    toolDefinitions,
+    persistedProof("thread:hashed")
+  );
   assert.equal(confirmation.restored, true);
   assert.equal(confirmation.providerDefinitionsHash, schemaHash(toolDefinitions));
 });

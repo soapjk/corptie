@@ -1818,6 +1818,7 @@ export class CorptieStore {
           CHECK (continuation_state IN ('none', 'pending', 'queued', 'running', 'completed', 'failed')),
         continuation_turn_id TEXT,
         handoff_turn_id TEXT,
+        tool_confirmation_json TEXT,
         continuation_error TEXT,
         phase TEXT NOT NULL
           CHECK (phase IN (
@@ -2941,6 +2942,7 @@ export class CorptieStore {
     this.ensureColumn("workspace_transitions", "continuation_state", "TEXT NOT NULL DEFAULT 'none'");
     this.ensureColumn("workspace_transitions", "continuation_turn_id", "TEXT");
     this.ensureColumn("workspace_transitions", "handoff_turn_id", "TEXT");
+    this.ensureColumn("workspace_transitions", "tool_confirmation_json", "TEXT");
     this.db.run(`UPDATE sessions SET agent_id = (
         SELECT bindings.agent_id FROM agent_sessions bindings
         WHERE bindings.session_id = sessions.id
@@ -5200,6 +5202,174 @@ export class CorptieStore {
     return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
   }
 
+  #insertAppliedSessionToolCatalogMaterialization(input, expected = {}) {
+    if (input == null) {
+      if (expected.required) {
+        const error = new Error("The replacement Provider binding is missing its authoritative Tool materialization.");
+        error.code = "PROVIDER_TOOL_MATERIALIZATION_REQUIRED";
+        throw error;
+      }
+      return null;
+    }
+    const invalid = (field, message = null) => {
+      const error = new Error(message ?? `Replacement Tool materialization ${field} is invalid.`);
+      error.code = "PROVIDER_TOOL_MATERIALIZATION_INVALID";
+      error.field = field;
+      throw error;
+    };
+    const logicalSessionId = requiredText(input.logicalSessionId, "toolMaterialization.logicalSessionId");
+    const providerBindingId = requiredText(input.providerBindingId, "toolMaterialization.providerBindingId");
+    if (logicalSessionId !== expected.logicalSessionId) invalid("logicalSessionId");
+    if (providerBindingId !== expected.providerBindingId) invalid("providerBindingId");
+    if (!["applied", "stale"].includes(input.status)) invalid("status");
+    const desiredVersion = requiredText(input.desiredVersion, "toolMaterialization.desiredVersion");
+    const desiredCatalogVersion = requiredText(
+      input.desiredCatalogVersion,
+      "toolMaterialization.desiredCatalogVersion"
+    );
+    if (!Array.isArray(input.desiredDomains)) invalid("desiredDomains");
+    if (!Array.isArray(input.appliedDomains)) invalid("appliedDomains");
+    const desiredDomainIds = new Set(input.desiredDomains.map((domain) => requiredText(
+      domain?.domainId,
+      "toolMaterialization.desiredDomains[].domainId"
+    )));
+    if (desiredDomainIds.size !== input.desiredDomains.length) invalid("desiredDomains");
+    const sourceDesiredDomains = Array.isArray(expected.sourceDesiredDomains) ? expected.sourceDesiredDomains : [];
+    const sourceAppliedDomains = Array.isArray(expected.sourceAppliedDomains) ? expected.sourceAppliedDomains : [];
+    for (const sourceDomain of [...sourceDesiredDomains, ...sourceAppliedDomains]) {
+      if (!desiredDomainIds.has(requiredText(sourceDomain?.domainId, "sourceToolDomain.domainId"))) {
+        invalid("desiredDomains", "Replacement Tool materialization dropped a source binding Tool domain.");
+      }
+    }
+    // Preserve the domain set, not stale serialized schema metadata. A fresh
+    // binding must rematerialize each domain from the current Catalog so a
+    // replacement is exactly where a newer schema can become effective.
+    const exposurePlan = input.exposurePlan;
+    if (!exposurePlan || typeof exposurePlan !== "object" || Array.isArray(exposurePlan)) {
+      invalid("exposurePlan");
+    }
+    const providerCapabilityRevision = requiredText(
+      exposurePlan.capabilityRevision,
+      "toolMaterialization.exposurePlan.capabilityRevision"
+    );
+    const exposurePlanHash = requiredText(
+      exposurePlan.exposurePlanHash,
+      "toolMaterialization.exposurePlan.exposurePlanHash"
+    );
+    const providerDefinitionsHash = requiredText(
+      exposurePlan.providerDefinitionsHash,
+      "toolMaterialization.exposurePlan.providerDefinitionsHash"
+    );
+    const refreshMode = requiredText(exposurePlan.refreshMode, "toolMaterialization.exposurePlan.refreshMode");
+    if (!Array.isArray(exposurePlan.providerDefinitions)) invalid("exposurePlan.providerDefinitions");
+    if (input.status === "stale") {
+      if (input.appliedVersion != null) invalid("appliedVersion");
+      if (input.appliedCatalogVersion != null) invalid("appliedCatalogVersion");
+      if (input.appliedDomains.length !== 0) invalid("appliedDomains");
+      if (input.providerReceipt != null) invalid("providerReceipt");
+      const now = expected.createdAt ?? input.updatedAt ?? createdAtFromOrNow();
+      this.db.run(
+        `INSERT INTO session_tool_catalog_materializations (
+          logical_session_id, provider_binding_id, desired_version, applied_version,
+          desired_catalog_version, applied_catalog_version, desired_domains_json,
+          applied_domains_json, exposure_plan_json, provider_receipt_json, status,
+          attempt, refresh_requested_at, resource_version, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, NULL, ?, '[]', ?, NULL, 'stale', 0, ?, 1, ?, ?)`,
+        [
+          logicalSessionId, providerBindingId, desiredVersion, desiredCatalogVersion,
+          JSON.stringify(input.desiredDomains), JSON.stringify(exposurePlan), now, now, now
+        ]
+      );
+      return this.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
+    }
+    const appliedVersion = requiredText(input.appliedVersion, "toolMaterialization.appliedVersion");
+    if (desiredVersion !== appliedVersion) invalid("appliedVersion");
+    const appliedCatalogVersion = requiredText(
+      input.appliedCatalogVersion,
+      "toolMaterialization.appliedCatalogVersion"
+    );
+    if (desiredCatalogVersion !== appliedCatalogVersion) invalid("appliedCatalogVersion");
+    if (recoveryStableJson(input.desiredDomains) !== recoveryStableJson(input.appliedDomains)) {
+      invalid("appliedDomains", "Replacement Tool materialization must apply every desired domain atomically.");
+    }
+    const providerReceipt = input.providerReceipt;
+    if (!providerReceipt || typeof providerReceipt !== "object" || Array.isArray(providerReceipt)) {
+      invalid("providerReceipt");
+    }
+    const receiptFields = [
+      ["providerBindingId", providerBindingId],
+      ["providerCapabilityRevision", providerCapabilityRevision],
+      ["requestedVersion", desiredVersion],
+      ["appliedVersion", appliedVersion],
+      ["appliedCatalogVersion", appliedCatalogVersion],
+      ["appliedExposurePlanHash", exposurePlanHash],
+      ["providerDefinitionsHash", providerDefinitionsHash],
+      ["refreshMode", refreshMode]
+    ];
+    for (const [field, value] of receiptFields) {
+      if (providerReceipt[field] !== value) invalid(`providerReceipt.${field}`);
+    }
+    if (recoveryStableJson(providerReceipt.appliedDomains ?? []) !== recoveryStableJson(input.appliedDomains)) {
+      invalid("providerReceipt.appliedDomains");
+    }
+    if (providerReceipt.providerDefinitionsCount !== exposurePlan.providerDefinitions.length) {
+      invalid("providerReceipt.providerDefinitionsCount");
+    }
+    const providerObservationKind = requiredText(
+      providerReceipt.providerObservationKind,
+      "toolMaterialization.providerReceipt.providerObservationKind"
+    );
+    const providerRevision = requiredText(
+      providerReceipt.providerRevision,
+      "toolMaterialization.providerReceipt.providerRevision"
+    );
+    requiredText(providerReceipt.receiptId, "toolMaterialization.providerReceipt.receiptId");
+    const appliedAt = requiredText(
+      input.appliedAt ?? providerReceipt.appliedAt,
+      "toolMaterialization.appliedAt"
+    );
+    if (providerReceipt.appliedAt !== appliedAt) invalid("providerReceipt.appliedAt");
+    if (expected.providerId === "codex-app-server") {
+      const providerSessionId = requiredText(expected.providerSessionId, "expected.providerSessionId");
+      const startProof = providerRevision.startsWith(`thread-start:${providerSessionId}:`)
+        && providerObservationKind === "thread_start_accepted";
+      const forkProof = providerRevision.startsWith(`thread-fork-inherited:${providerSessionId}:`)
+        && providerObservationKind === "thread_fork_inherited";
+      if (!startProof && !forkProof) invalid("providerReceipt.providerObservationKind");
+    }
+    if (expected.providerConfirmation) {
+      const confirmationFields = [
+        "providerRevision",
+        "providerDefinitionsHash",
+        "providerDefinitionsCount",
+        "providerObservationKind"
+      ];
+      for (const field of confirmationFields) {
+        if (providerReceipt[field] !== expected.providerConfirmation[field]) {
+          invalid(`providerReceipt.${field}`);
+        }
+      }
+    }
+    const now = expected.createdAt ?? appliedAt;
+    this.db.run(
+      `INSERT INTO session_tool_catalog_materializations (
+        logical_session_id, provider_binding_id, desired_version, applied_version,
+        desired_catalog_version, applied_catalog_version, desired_domains_json,
+        applied_domains_json, exposure_plan_json, provider_receipt_json, status,
+        attempt, refresh_requested_at, refresh_started_at, applied_at,
+        resource_version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?, ?, ?, 1, ?, ?)`,
+      [
+        logicalSessionId, providerBindingId, desiredVersion, appliedVersion,
+        desiredCatalogVersion, appliedCatalogVersion, JSON.stringify(input.desiredDomains),
+        JSON.stringify(input.appliedDomains), JSON.stringify(exposurePlan), JSON.stringify(providerReceipt),
+        Number.isSafeInteger(input.attempt) && input.attempt > 0 ? input.attempt : 1,
+        now, now, appliedAt, now, now
+      ]
+    );
+    return this.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
+  }
+
   recordSessionToolCatalogPendingReceipt(input, expectedResourceVersion) {
     const now = input.updatedAt ?? createdAtFromOrNow();
     this.db.run(
@@ -5386,8 +5556,10 @@ export class CorptieStore {
           appliedVersion: toolCatalog.appliedVersion,
           desiredCatalogVersion: toolCatalog.desiredCatalogVersion,
           appliedCatalogVersion: toolCatalog.appliedCatalogVersion,
+          desiredDomains: toolCatalog.desiredDomains,
           appliedDomains: toolCatalog.appliedDomains,
           exposurePlan: toolCatalog.exposurePlan,
+          providerReceipt: toolCatalog.providerReceipt,
           resourceVersion: toolCatalog.resourceVersion,
           status: toolCatalog.status
         } : {},
@@ -5413,6 +5585,110 @@ export class CorptieStore {
       );
       return this.getSessionRecoveryAttempt(attemptId);
     });
+  }
+
+  claimSessionRecoveryBoundary(attemptId) {
+    const result = this.runInTransaction(() => {
+      const attempt = this.getSessionRecoveryAttempt(attemptId);
+      if (!attempt) {
+        const error = new Error("Session recovery attempt was not found.");
+        error.code = "RECOVERY_ATTEMPT_NOT_FOUND";
+        throw error;
+      }
+      if (!["frozen", "replaying", "replacement_created", "validated"].includes(attempt.state)
+        || attempt.cancelRequested) {
+        const error = new Error("Session recovery attempt is not resumable.");
+        error.code = "RECOVERY_ATTEMPT_STATE_INVALID";
+        throw error;
+      }
+      const owner = this.selectOne(
+        `SELECT attempt_id FROM session_recovery_attempts
+         WHERE logical_session_id=?
+           AND state IN ('frozen','replaying','replacement_created','validated')
+         ORDER BY created_at ASC, attempt_id ASC LIMIT 1`,
+        [attempt.logicalSessionId]
+      );
+      if (owner?.attempt_id !== attempt.attemptId) {
+        const error = new Error("Another Session recovery attempt already owns this route boundary.");
+        error.code = "SESSION_BUSY";
+        throw error;
+      }
+      const logical = this.selectOne(
+        "SELECT transition_state FROM logical_sessions WHERE logical_session_id=?",
+        [attempt.logicalSessionId]
+      );
+      if (!logical || (logical.transition_state && logical.transition_state !== "sessionRecovery")) {
+        const error = new Error("The Session route is already transitioning.");
+        error.code = "SESSION_BUSY";
+        throw error;
+      }
+      this.#assertSessionRecoveryDispatchBoundary(attempt);
+      const timestamp = createdAtFromOrNow();
+      this.db.run(
+        `UPDATE logical_sessions SET transition_state='sessionRecovery', updated_at=?
+         WHERE logical_session_id=? AND (transition_state IS NULL OR transition_state='sessionRecovery')`,
+        [timestamp, attempt.logicalSessionId]
+      );
+      if (this.db.getRowsModified() !== 1) {
+        const error = new Error("The Session route changed before recovery acquired its boundary.");
+        error.code = "SESSION_BUSY";
+        throw error;
+      }
+      return this.getSessionRecoveryAttempt(attemptId);
+    });
+    this.scheduleSave();
+    return result;
+  }
+
+  #assertSessionRecoveryDispatchBoundary(attempt) {
+    const triggerDeliveryId = attempt.triggerDeliveryId ?? null;
+    const activeTurn = this.selectOne(
+      `SELECT turn_id FROM session_turns
+       WHERE session_id=? AND execution_status IN ('running','blocked') LIMIT 1`,
+      [attempt.sessionId]
+    );
+    const activeWork = this.selectOne(
+      `SELECT work_item_id FROM agent_work_items
+       WHERE session_id=? AND status='running'
+         AND NOT (
+           ? IS NOT NULL AND target_turn_id IS NULL
+           AND (delivery_id=? OR json_extract(source_json, '$.deliveryId')=?)
+         )
+       LIMIT 1`,
+      [attempt.sessionId, triggerDeliveryId, triggerDeliveryId, triggerDeliveryId]
+    );
+    const activeDelivery = this.selectOne(
+      `SELECT delivery_id FROM message_deliveries
+       WHERE session_id=?
+         AND status IN ('dispatching','accepted','processing','delivery_unknown')
+         AND NOT (
+           delivery_id=? AND status='dispatching'
+           AND provider_turn_id IS NULL AND provider_acknowledged_at IS NULL
+         )
+       LIMIT 1`,
+      [attempt.sessionId, triggerDeliveryId]
+    );
+    if (activeTurn || activeWork || activeDelivery) {
+      const error = new Error("The Session started Provider work before recovery acquired its route boundary.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+  }
+
+  #releaseSessionRecoveryBoundaryIfIdle(logicalSessionId, timestamp) {
+    const active = this.selectOne(
+      `SELECT attempt_id FROM session_recovery_attempts
+       WHERE logical_session_id=?
+         AND state IN ('frozen','replaying','replacement_created','validated')
+       LIMIT 1`,
+      [logicalSessionId]
+    );
+    if (active) return;
+    this.db.run(
+      `UPDATE logical_sessions SET transition_state=NULL, updated_at=?
+       WHERE logical_session_id=? AND transition_state='sessionRecovery'`,
+      [timestamp, logicalSessionId]
+    );
   }
 
   listSessionEventsThrough(sessionId, boundarySequence) {
@@ -5448,8 +5724,8 @@ export class CorptieStore {
   recordSessionRecoveryReplacement(attemptId, replacement) {
     const attempt = this.getSessionRecoveryAttempt(attemptId);
     if (!attempt) return null;
-    if (attempt.replacement?.providerSessionId
-      && attempt.replacement.providerSessionId !== replacement.providerSessionId) {
+    if (attempt.replacement
+      && recoveryStableJson(attempt.replacement) !== recoveryStableJson(replacement)) {
       const error = new Error("Recovery attempt already owns a different replacement Session.");
       error.code = "RECOVERY_REPLACEMENT_CONFLICT";
       throw error;
@@ -5464,39 +5740,86 @@ export class CorptieStore {
     return this.getSessionRecoveryAttempt(attemptId);
   }
 
-  requestSessionRecoveryCancellation(attemptId) {
+  replaceSessionRecoveryReplacement(attemptId, expectedReplacement, replacement) {
+    const attempt = this.getSessionRecoveryAttempt(attemptId);
+    if (!attempt) return null;
+    if (!attempt.replacement
+      || recoveryStableJson(attempt.replacement) !== recoveryStableJson(expectedReplacement)) {
+      const error = new Error("Recovery replacement changed before its crash-safe journal could be updated.");
+      error.code = "RECOVERY_REPLACEMENT_CAS_CONFLICT";
+      throw error;
+    }
+    if (!replacement?.providerSessionId || !replacement?.providerThreadId || !replacement?.bindingId) {
+      const error = new Error("Replacement Session identity is incomplete.");
+      error.code = "RECOVERY_REPLACEMENT_INVALID";
+      throw error;
+    }
     const timestamp = createdAtFromOrNow();
     this.db.run(
-      `UPDATE session_recovery_attempts SET cancel_requested=1, state='cancel_requested', updated_at=?
-       WHERE attempt_id=? AND state NOT IN ('committed','cancelled','failed','manual_required')`,
-      [timestamp, attemptId]
+      `UPDATE session_recovery_attempts SET replacement_json=?, state='replacement_created', updated_at=?
+       WHERE attempt_id=? AND replacement_json=? AND state IN ('replaying','replacement_created')`,
+      [JSON.stringify(replacement), timestamp, attemptId, JSON.stringify(attempt.replacement)]
     );
+    if (this.db.getRowsModified() !== 1) {
+      const error = new Error("Recovery replacement lost its compare-and-swap race.");
+      error.code = "RECOVERY_REPLACEMENT_CAS_CONFLICT";
+      throw error;
+    }
     this.scheduleSave();
     return this.getSessionRecoveryAttempt(attemptId);
   }
 
+  requestSessionRecoveryCancellation(attemptId) {
+    const timestamp = createdAtFromOrNow();
+    const result = this.runInTransaction(() => {
+      const attempt = this.getSessionRecoveryAttempt(attemptId);
+      if (!attempt) return null;
+      this.db.run(
+        `UPDATE session_recovery_attempts SET cancel_requested=1, state='cancel_requested', updated_at=?
+         WHERE attempt_id=? AND state NOT IN ('committed','cancelled','failed','manual_required')`,
+        [timestamp, attemptId]
+      );
+      this.#releaseSessionRecoveryBoundaryIfIdle(attempt.logicalSessionId, timestamp);
+      return this.getSessionRecoveryAttempt(attemptId);
+    });
+    this.scheduleSave();
+    return result;
+  }
+
   cancelSessionRecoveryAttempt(attemptId) {
     const timestamp = createdAtFromOrNow();
-    this.db.run(
-      `UPDATE session_recovery_attempts SET state='cancelled', cancel_requested=1,
-         completed_at=?, updated_at=? WHERE attempt_id=? AND state <> 'committed'`,
-      [timestamp, timestamp, attemptId]
-    );
+    const result = this.runInTransaction(() => {
+      const attempt = this.getSessionRecoveryAttempt(attemptId);
+      if (!attempt) return null;
+      this.db.run(
+        `UPDATE session_recovery_attempts SET state='cancelled', cancel_requested=1,
+           completed_at=?, updated_at=? WHERE attempt_id=? AND state <> 'committed'`,
+        [timestamp, timestamp, attemptId]
+      );
+      this.#releaseSessionRecoveryBoundaryIfIdle(attempt.logicalSessionId, timestamp);
+      return this.getSessionRecoveryAttempt(attemptId);
+    });
     this.scheduleSave();
-    return this.getSessionRecoveryAttempt(attemptId);
+    return result;
   }
 
   failSessionRecoveryAttempt(attemptId, code, message) {
     const timestamp = createdAtFromOrNow();
     const state = code === "RECOVERY_MANUAL_REQUIRED" ? "manual_required" : "failed";
-    this.db.run(
-      `UPDATE session_recovery_attempts SET state=?, error_code=?, error_message=?,
-         completed_at=?, updated_at=?
-       WHERE attempt_id=? AND state NOT IN ('committed','cancelled','manual_required')`,
-      [state, requiredText(code, "code"), String(message ?? "Session recovery failed.").slice(0, 500), timestamp, timestamp, attemptId]
-    );
+    const result = this.runInTransaction(() => {
+      const attempt = this.getSessionRecoveryAttempt(attemptId);
+      if (!attempt) return null;
+      this.db.run(
+        `UPDATE session_recovery_attempts SET state=?, error_code=?, error_message=?,
+           completed_at=?, updated_at=?
+         WHERE attempt_id=? AND state NOT IN ('committed','cancelled','manual_required')`,
+        [state, requiredText(code, "code"), String(message ?? "Session recovery failed.").slice(0, 500), timestamp, timestamp, attemptId]
+      );
+      this.#releaseSessionRecoveryBoundaryIfIdle(attempt.logicalSessionId, timestamp);
+      return this.getSessionRecoveryAttempt(attemptId);
+    });
     this.scheduleSave();
-    return this.getSessionRecoveryAttempt(attemptId);
+    return result;
   }
 
   commitSessionRecoveryBinding(input) {
@@ -5524,6 +5847,15 @@ export class CorptieStore {
     const timestamp = input.committedAt ?? createdAtFromOrNow();
     this.db.run("BEGIN IMMEDIATE");
     try {
+      const currentAttempt = this.getSessionRecoveryAttempt(input.attemptId);
+      if (!currentAttempt
+        || !["replacement_created", "validated"].includes(currentAttempt.state)
+        || currentAttempt.cancelRequested
+        || recoveryStableJson(currentAttempt.replacement) !== recoveryStableJson(replacement)) {
+        const error = new Error("Recovery replacement changed before binding commit.");
+        error.code = "RECOVERY_REPLACEMENT_CAS_CONFLICT";
+        throw error;
+      }
       const logical = this.selectOne(
         "SELECT * FROM logical_sessions WHERE logical_session_id = ?",
         [attempt.logicalSessionId]
@@ -5532,7 +5864,7 @@ export class CorptieStore {
         "SELECT * FROM provider_thread_bindings WHERE binding_id = ? AND state = 'active'",
         [attempt.sourceBindingId]
       );
-      if (!logical || !oldBinding
+      if (!logical || logical.transition_state !== "sessionRecovery" || !oldBinding
         || logical.active_thread_id !== oldBinding.provider_thread_id
         || Number(logical.routing_version) !== Number(input.expectedRoutingVersion)
         || Number(oldBinding.binding_generation) !== Number(input.expectedBindingGeneration)
@@ -5541,6 +5873,7 @@ export class CorptieStore {
         error.code = "RECOVERY_CAS_CONFLICT";
         throw error;
       }
+      this.#assertSessionRecoveryDispatchBoundary(currentAttempt);
       const currentArtifacts = [
         ...this.listArtifactReferences({ sessionId: attempt.sessionId }),
         ...(attempt.workItemId ? this.listArtifactReferences({ workItemId: attempt.workItemId }) : [])
@@ -5562,8 +5895,10 @@ export class CorptieStore {
         appliedVersion: currentCatalog.appliedVersion,
         desiredCatalogVersion: currentCatalog.desiredCatalogVersion,
         appliedCatalogVersion: currentCatalog.appliedCatalogVersion,
+        desiredDomains: currentCatalog.desiredDomains,
         appliedDomains: currentCatalog.appliedDomains,
         exposurePlan: currentCatalog.exposurePlan,
+        providerReceipt: currentCatalog.providerReceipt,
         resourceVersion: currentCatalog.resourceVersion,
         status: currentCatalog.status
       } : {};
@@ -5589,10 +5924,22 @@ export class CorptieStore {
           JSON.stringify({ recoveryAttemptId: attempt.attemptId, replayManifestHash: input.manifestHash }),
           attempt.sourceRoutingVersion + 1, attempt.targetBindingGeneration, input.capabilityRevision, timestamp, timestamp]
       );
+      this.#insertAppliedSessionToolCatalogMaterialization(input.toolMaterialization, {
+        required: attempt.providerId === "codex-app-server" || Boolean(currentCatalog),
+        logicalSessionId: attempt.logicalSessionId,
+        providerBindingId: bindingId,
+        providerId: attempt.providerId,
+        providerSessionId,
+        providerConfirmation: replacement.toolConfirmation ?? null,
+        sourceDesiredDomains: currentCatalog?.desiredDomains ?? [],
+        sourceAppliedDomains: currentCatalog?.appliedDomains ?? [],
+        createdAt: timestamp
+      });
       this.db.run(
         `UPDATE logical_sessions SET active_thread_id=?, routing_version=routing_version+1,
            transition_state=NULL, updated_at=?
-         WHERE logical_session_id=? AND active_thread_id=? AND routing_version=?`,
+         WHERE logical_session_id=? AND active_thread_id=? AND routing_version=?
+           AND transition_state='sessionRecovery'`,
         [providerThreadId, timestamp, attempt.logicalSessionId, oldBinding.provider_thread_id, attempt.sourceRoutingVersion]
       );
       if (this.db.getRowsModified() !== 1) {
@@ -5821,6 +6168,7 @@ export class CorptieStore {
       this.db.run(
         `UPDATE workspace_transitions
          SET phase = ?, strategy = ?, last_completed_turn_id = ?, new_thread_id = ?, handoff_turn_id = ?,
+             tool_confirmation_json = ?,
              error_json = ?,
              continuation_state = CASE
                WHEN ? = 'failed' AND continuation_state = 'pending' THEN 'failed'
@@ -5838,6 +6186,9 @@ export class CorptieStore {
           update.lastCompletedTurnId ?? transition.lastCompletedTurnId,
           update.newThreadId ?? transition.newThreadId,
           update.handoffTurnId ?? transition.handoffTurnId,
+          Object.hasOwn(update, "toolConfirmation")
+            ? (update.toolConfirmation == null ? null : JSON.stringify(update.toolConfirmation))
+            : (transition.toolConfirmation == null ? null : JSON.stringify(transition.toolConfirmation)),
           update.error === undefined ? (transition.error ? JSON.stringify(transition.error) : null) : JSON.stringify(update.error),
           update.phase,
           update.phase,
@@ -5906,6 +6257,9 @@ export class CorptieStore {
         || Number(logical.routing_version) !== transition.sourceRoutingVersion) {
         throw new Error("The logical session route changed before the workspace transition committed.");
       }
+      const sourceToolMaterialization = sourceBinding?.bindingId
+        ? this.getSessionToolCatalogMaterialization(transition.logicalSessionId, sourceBinding.bindingId)
+        : null;
       this.db.run(
         `UPDATE provider_thread_bindings SET state = 'superseded', updated_at = ?
          WHERE provider_thread_id = ? AND state = 'active'`,
@@ -5940,6 +6294,17 @@ export class CorptieStore {
           timestamp
         ]
       );
+      this.#insertAppliedSessionToolCatalogMaterialization(binding.toolMaterialization, {
+        required: providerId === "codex-app-server" || Boolean(sourceToolMaterialization),
+        logicalSessionId: transition.logicalSessionId,
+        providerBindingId: bindingId,
+        providerId,
+        providerSessionId,
+        providerConfirmation: transition.toolConfirmation ?? null,
+        sourceDesiredDomains: sourceToolMaterialization?.desiredDomains ?? [],
+        sourceAppliedDomains: sourceToolMaterialization?.appliedDomains ?? [],
+        createdAt: timestamp
+      });
       this.db.run(
         `INSERT INTO provider_thread_lineage (
           child_thread_id, parent_thread_id, logical_session_id, transition_id, created_at
@@ -7553,8 +7918,12 @@ export class CorptieStore {
          AND NOT EXISTS (
            SELECT 1 FROM agent_work_items running
            WHERE running.session_id = ? AND running.status = 'running'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM logical_sessions logical
+           WHERE logical.legacy_session_id = ? AND logical.transition_state IS NOT NULL
          )`,
-      [timestamp, timestamp, workItemId, item.sessionId]
+      [timestamp, timestamp, workItemId, item.sessionId, item.sessionId]
     );
     if (this.db.getRowsModified() === 0) return null;
     this.scheduleSave();
@@ -11986,10 +12355,11 @@ export class CorptieStore {
     const logicalIdentity = Object.hasOwn(row, "projection_logical_session_id")
       ? {
           logical_session_id: row.projection_logical_session_id,
-          session_name: row.projection_session_name
+          session_name: row.projection_session_name,
+          transition_state: row.projection_transition_state
         }
       : this.selectOne(
-        `SELECT logical_session_id, session_name
+        `SELECT logical_session_id, session_name, transition_state
          FROM logical_sessions WHERE legacy_session_id = ?`,
         [row.id]
       );
@@ -12020,6 +12390,7 @@ export class CorptieStore {
       title: logicalIdentity?.session_name || row.title,
       sessionName: logicalIdentity?.session_name || row.title,
       logicalSessionId: logicalIdentity?.logical_session_id ?? null,
+      transitionState: logicalIdentity?.transition_state ?? null,
       agent: row.agent,
       agentId: row.agent_id ?? agentIdentity?.agent_id ?? null,
       sessionKind,
@@ -12030,7 +12401,10 @@ export class CorptieStore {
       syncHealth,
       progress: displayStatus === "running" || displayStatus === "blocked" ? Number(row.progress) : 1,
       summary: row.summary,
-      sendUnavailableReason: rawStatus.sendUnavailableReason ?? null,
+      canSend: logicalIdentity?.transition_state === "sessionRecovery" ? false : undefined,
+      sendUnavailableReason: logicalIdentity?.transition_state === "sessionRecovery"
+        ? "Session recovery is in progress. Sending messages is temporarily unavailable."
+        : rawStatus.sendUnavailableReason ?? null,
       activityStatus: rawStatus.activityStatus ?? null,
       suggestedOptions,
       updatedAt: row.updated_at,
@@ -12042,11 +12416,10 @@ export class CorptieStore {
       sortOrder: Number(row.sort_order ?? 0),
       objectiveId: row.objective_id ?? null,
       workItemId: row.work_item_id ?? null,
-      capabilities: normalizedStoredProviderCapabilities(
-        row.provider,
-        displayStatus,
-        rawStatus.capabilities
-      ),
+      capabilities: {
+        ...normalizedStoredProviderCapabilities(row.provider, displayStatus, rawStatus.capabilities),
+        ...(logicalIdentity?.transition_state === "sessionRecovery" ? { canSend: false } : {})
+      },
       rawStatus,
       external: {
         provider: row.provider,
@@ -12312,6 +12685,8 @@ function sessionProjectionSelectSQL() {
      WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_logical_session_id,
     (SELECT session_name FROM logical_sessions
      WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_session_name,
+    (SELECT transition_state FROM logical_sessions
+     WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_transition_state,
     (SELECT bindings.agent_id FROM agent_sessions bindings
      WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
      LIMIT 1) AS projection_binding_agent_id,
@@ -12522,6 +12897,7 @@ function workspaceTransitionFromRow(row) {
     continuationState: row.continuation_state || "none",
     continuationTurnId: row.continuation_turn_id || null,
     handoffTurnId: row.handoff_turn_id || null,
+    toolConfirmation: parseJson(row.tool_confirmation_json, null),
     continuationError: row.continuation_error || null,
     phase: row.phase,
     strategy: row.strategy,
