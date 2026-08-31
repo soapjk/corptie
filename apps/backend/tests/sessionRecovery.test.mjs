@@ -137,6 +137,80 @@ test("planner maps real persisted Timeline payloads without duplicating Provider
   ]);
 });
 
+test("planner recovers legacy completion summaries and canonical Provider final messages without duplicates", () => {
+  const plan = planReplay({
+    attempt: attemptFixture({ boundarySequence: 6 }),
+    timelineEvents: [
+      { sequence: 1, type: "SessionUserMessageCreated", payload: { message: { text: "legacy prompt" } } },
+      {
+        sequence: 2,
+        type: "CodexThreadCompleted",
+        payload: {
+          hasAgentMessage: true,
+          session: { summary: "legacy persisted answer" }
+        }
+      },
+      { sequence: 3, type: "SessionUserMessageCreated", payload: { message: { text: "canonical prompt" } } },
+      {
+        sequence: 4,
+        type: "assistant.message.completed",
+        payload: { turnId: "turn:canonical", item: { turnId: "turn:canonical", text: "canonical persisted answer" } }
+      },
+      {
+        sequence: 5,
+        type: "turn.completed",
+        payload: {
+          turnId: "turn:canonical",
+          items: [{
+            type: "agentMessage",
+            turnId: "turn:canonical",
+            presentationRole: "final_answer",
+            text: "canonical persisted answer"
+          }]
+        }
+      },
+      {
+        sequence: 6,
+        type: "AgentTurnCompleted",
+        payload: { hasAgentMessage: false, summary: "stale lifecycle summary" }
+      }
+    ],
+    capabilities: recoveryCapabilities()
+  });
+
+  assert.deepEqual(plan.manifest.entries.map((entry) => ({
+    kind: entry.kind,
+    turnId: entry.turnId,
+    content: entry.content
+  })), [
+    { kind: "user_message", turnId: null, content: "legacy prompt" },
+    { kind: "assistant_message", turnId: null, content: "legacy persisted answer" },
+    { kind: "user_message", turnId: null, content: "canonical prompt" },
+    { kind: "assistant_message", turnId: "turn:canonical", content: "canonical persisted answer" }
+  ]);
+});
+
+test("planner ignores message-free completion envelopes but rejects claimed assistant messages without content", () => {
+  const ignored = planReplay({
+    attempt: attemptFixture({ boundarySequence: 1 }),
+    timelineEvents: [{ sequence: 1, type: "turn.completed", payload: { items: [] } }],
+    capabilities: recoveryCapabilities()
+  });
+  assert.deepEqual(ignored.manifest.entries, []);
+
+  assert.throws(() => planReplay({
+    attempt: attemptFixture({ boundarySequence: 1 }),
+    timelineEvents: [{ sequence: 1, type: "CodexThreadCompleted", payload: { hasAgentMessage: true, session: {} } }],
+    capabilities: recoveryCapabilities()
+  }), { code: "RECOVERY_TIMELINE_MESSAGE_INVALID" });
+
+  assert.throws(() => planReplay({
+    attempt: attemptFixture({ boundarySequence: 1 }),
+    timelineEvents: [{ sequence: 1, type: "assistant.message.completed", payload: { item: {} } }],
+    capabilities: recoveryCapabilities()
+  }), { code: "RECOVERY_TIMELINE_MESSAGE_INVALID" });
+});
+
 test("planner fails closed instead of silently replaying a missing message body", () => {
   assert.throws(() => planReplay({
     attempt: attemptFixture({ boundarySequence: 1 }),
