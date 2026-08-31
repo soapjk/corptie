@@ -76,6 +76,9 @@ export class ProviderSessionRecoveryPort {
       }
     }
     Object.assign(this, operations);
+    this.resumeReplacement = typeof operations.resumeReplacement === "function"
+      ? operations.resumeReplacement
+      : async ({ replacement }) => replacement;
   }
 }
 
@@ -359,7 +362,10 @@ export function planReplay({ attempt, timelineEvents, capabilities, thresholds =
 
 export class SessionRecoveryCoordinator {
   constructor({ store, providerPort, resolveProviderDescriptor, clock = () => new Date(), observe = () => {} }) {
-    if (!store?.freezeSessionRecoveryAttempt || !store?.commitSessionRecoveryBinding) {
+    if (!store?.freezeSessionRecoveryAttempt
+      || !store?.claimSessionRecoveryBoundary
+      || !store?.replaceSessionRecoveryReplacement
+      || !store?.commitSessionRecoveryBinding) {
       throw new TypeError("SessionRecoveryCoordinator requires a recovery-capable Store.");
     }
     if (!(providerPort instanceof ProviderSessionRecoveryPort)) {
@@ -371,9 +377,25 @@ export class SessionRecoveryCoordinator {
     this.resolveProviderDescriptor = resolveProviderDescriptor;
     this.clock = clock;
     this.observe = observe;
+    this.inFlight = new Map();
   }
 
   async recover(input) {
+    const logicalSessionId = requiredString(input.logicalSessionId, "logicalSessionId");
+    const idempotencyKey = requiredString(input.idempotencyKey, "idempotencyKey");
+    const key = `${logicalSessionId}:${idempotencyKey}`;
+    const active = this.inFlight.get(key);
+    if (active) return active;
+    const operation = this.#recoverWithFailureHandling(input);
+    this.inFlight.set(key, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.inFlight.get(key) === operation) this.inFlight.delete(key);
+    }
+  }
+
+  async #recoverWithFailureHandling(input) {
     try {
       return await this.#recover(input);
     } catch (cause) {
@@ -417,6 +439,9 @@ export class SessionRecoveryCoordinator {
     if (attempt.capabilityRevision !== capabilities.revision) {
       throw recoveryError("RECOVERY_CAPABILITY_STALE", "Provider recovery capabilities changed after the boundary was frozen.");
     }
+    attempt = normalizeSessionRecoveryAttempt(
+      this.store.claimSessionRecoveryBoundary(attempt.attemptId)
+    );
     const timelineEvents = this.store.listSessionEventsThrough(attempt.sessionId, attempt.boundarySequence);
     const planStarted = performance.now();
     const plan = planReplay({ attempt, timelineEvents, capabilities });
@@ -426,10 +451,42 @@ export class SessionRecoveryCoordinator {
     this.store.saveSessionRecoveryManifest(attempt.attemptId, plan.manifest, plan.manifestHash);
     this.#assertNotCancelled(attempt.attemptId);
     let replacement = attempt.replacement?.providerSessionId ? attempt.replacement : null;
+    let committed = null;
     const started = performance.now();
     try {
-      replacement ??= await this.providerPort.createReplacement({ attempt, manifest: plan.manifest, manifestHash: plan.manifestHash });
-      this.store.recordSessionRecoveryReplacement(attempt.attemptId, replacement);
+      if (replacement) {
+        const previousReplacement = replacement;
+        replacement = await this.providerPort.resumeReplacement({
+          attempt,
+          replacement,
+          manifest: plan.manifest,
+          manifestHash: plan.manifestHash
+        });
+        if (replacement?.providerThreadId !== previousReplacement.providerThreadId
+          || replacement?.providerSessionId !== previousReplacement.providerSessionId
+          || replacement?.bindingId !== previousReplacement.bindingId) {
+          this.store.replaceSessionRecoveryReplacement(
+            attempt.attemptId,
+            previousReplacement,
+            replacement
+          );
+          await this.providerPort.cancelReplacement({
+            attempt,
+            replacement: previousReplacement,
+            cause: recoveryError(
+              "RECOVERY_EMPTY_TARGET_REPLACED",
+              "The uncommitted empty Provider Session could not survive the Provider process restart."
+            )
+          }).catch(() => {});
+        }
+      } else {
+        replacement = await this.providerPort.createReplacement({
+          attempt,
+          manifest: plan.manifest,
+          manifestHash: plan.manifestHash
+        });
+        this.store.recordSessionRecoveryReplacement(attempt.attemptId, replacement);
+      }
       this.#assertNotCancelled(attempt.attemptId);
       const toolReceipt = await this.providerPort.attachToolHost({ attempt, replacement });
       const instructionReceipt = await this.providerPort.applyInstructions({ attempt, replacement });
@@ -443,9 +500,10 @@ export class SessionRecoveryCoordinator {
       });
       validateRecoveryReceipts({ attempt, replacement, capabilities, plan, toolReceipt, instructionReceipt, replayReceipt, validation });
       this.#assertNotCancelled(attempt.attemptId);
-      const committed = this.store.commitSessionRecoveryBinding({
+      committed = this.store.commitSessionRecoveryBinding({
         attemptId: attempt.attemptId,
         replacement,
+        toolMaterialization: toolReceipt.materialization,
         manifestHash: plan.manifestHash,
         capabilityRevision: capabilities.revision,
         expectedSourceBindingId: attempt.sourceBindingId,
@@ -459,10 +517,17 @@ export class SessionRecoveryCoordinator {
           entryCount: plan.manifest.entries.length
         }
       });
-      this.observe({ type: "SessionRecoveryCommitted", attempt: committed });
+      try {
+        this.observe({ type: "SessionRecoveryCommitted", attempt: committed });
+      } catch {
+        // Observability is post-commit and must never roll back or cancel the
+        // Provider Session that now owns the authoritative route.
+      }
       return committed;
     } catch (cause) {
-      if (replacement) await this.providerPort.cancelReplacement({ attempt, replacement, cause }).catch(() => {});
+      if (!committed && replacement) {
+        await this.providerPort.cancelReplacement({ attempt, replacement, cause }).catch(() => {});
+      }
       const error = mapSessionRecoveryError(cause);
       this.store.failSessionRecoveryAttempt(attempt.attemptId, error.code, error.message);
       this.observe({ type: "SessionRecoveryFailed", attemptId: attempt.attemptId, error: { code: error.code, message: error.message } });
@@ -493,6 +558,18 @@ export function validateRecoveryReceipts({ attempt, replacement, capabilities, p
   fail(validation?.permissionSnapshotHash === stableRecoveryHash(attempt.permissionSnapshot), "RECOVERY_PERMISSION_MISMATCH", "Replacement permission snapshot does not match.");
   fail(instructionReceipt?.sourcesHash === stableRecoveryHash(attempt.instructionSources), "RECOVERY_INSTRUCTION_MISMATCH", "Replacement instruction sources do not match.");
   fail(toolReceipt?.catalogHash === stableRecoveryHash(attempt.toolCatalog), "RECOVERY_TOOL_CATALOG_MISMATCH", "Replacement Tool Host catalog does not match.");
+  if (replacement.toolConfirmation) {
+    fail(toolReceipt?.materialization?.logicalSessionId === attempt.logicalSessionId
+      && toolReceipt?.materialization?.providerBindingId === replacement.bindingId
+      && toolReceipt?.materialization?.status === "applied"
+      && toolReceipt?.materialization?.desiredVersion === toolReceipt?.materialization?.appliedVersion,
+    "RECOVERY_TOOL_MATERIALIZATION_INVALID", "Replacement Tool Host materialization is incomplete or not applied.");
+    fail(toolReceipt?.providerRevision === replacement.toolConfirmation.providerRevision
+      && toolReceipt?.providerDefinitionsHash === replacement.toolConfirmation.providerDefinitionsHash
+      && toolReceipt?.providerDefinitionsCount === replacement.toolConfirmation.providerDefinitionsCount
+      && toolReceipt?.providerObservationKind === replacement.toolConfirmation.providerObservationKind,
+    "RECOVERY_TOOL_CONFIRMATION_MISMATCH", "Replacement Tool schema proof changed before route commit.");
+  }
   fail(validation?.artifactReferencesHash === stableRecoveryHash(attempt.artifactReferences), "RECOVERY_ARTIFACT_REFERENCE_MISMATCH", "Replacement Artifact References do not match.");
   fail(replayReceipt?.manifestHash === plan.manifestHash, "RECOVERY_REPLAY_HASH_MISMATCH", "Provider replay acknowledgement hash does not match.");
   fail(replayReceipt?.sideEffectsObserved === false, "RECOVERY_SIDE_EFFECT_DETECTED", "Replay reported a historical side effect.");
@@ -505,7 +582,8 @@ export function mapSessionRecoveryError(error) {
   if (error instanceof SessionRecoveryError) return error;
   const safeCodes = new Set([
     "SESSION_RECOVERY_CANCELLED", "RECOVERY_CAS_CONFLICT", "RECOVERY_BINDING_STALE",
-    "RECOVERY_CAPABILITY_STALE", "RECOVERY_HASH_MISMATCH", "RECOVERY_MANUAL_REQUIRED"
+    "RECOVERY_CAPABILITY_STALE", "RECOVERY_HASH_MISMATCH", "RECOVERY_MANUAL_REQUIRED",
+    "SESSION_BUSY", "RECOVERY_REPLACEMENT_CAS_CONFLICT"
   ]);
   if (safeCodes.has(error?.code)) return recoveryError(error.code, error.message);
   return recoveryError("SESSION_RECOVERY_FAILED", "Session recovery failed safely; the original binding and Corptie Timeline were preserved.");

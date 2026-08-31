@@ -31,6 +31,12 @@ export function appliedToolMaterializationReceipt(input = {}) {
     ...(input.providerDefinitionsHash == null ? {} : {
       providerDefinitionsHash: required(input.providerDefinitionsHash, "providerDefinitionsHash")
     }),
+    ...(input.providerDefinitionsCount == null ? {} : {
+      providerDefinitionsCount: nonNegativeInteger(input.providerDefinitionsCount, "providerDefinitionsCount")
+    }),
+    ...(input.providerObservationKind == null ? {} : {
+      providerObservationKind: required(input.providerObservationKind, "providerObservationKind")
+    }),
     refreshMode: required(input.refreshMode, "refreshMode"),
     providerRevision: required(input.providerRevision, "providerRevision"),
     receiptId: required(input.receiptId ?? `tool_receipt:${randomUUID()}`, "receiptId"),
@@ -65,6 +71,14 @@ export function validateToolMaterializationReceipt(receipt, expected) {
     error.field = "providerDefinitionsHash";
     throw error;
   }
+  if (expected.providerDefinitionsCount != null
+    && receipt?.providerDefinitionsCount !== expected.providerDefinitionsCount) {
+    const error = new Error("Provider Tool receipt providerDefinitionsCount did not match the requested materialization.");
+    error.code = "PROVIDER_TOOL_RECEIPT_INVALID";
+    error.statusCode = 502;
+    error.field = "providerDefinitionsCount";
+    throw error;
+  }
   const expectedDomains = JSON.stringify(expected.appliedDomains ?? []);
   if (JSON.stringify(receipt.appliedDomains ?? []) !== expectedDomains) {
     const error = new Error("Provider Tool receipt appliedDomains did not match the requested materialization.");
@@ -88,5 +102,13 @@ function capabilityHash(descriptor, declared) {
 function required(value, field) {
   const normalized = typeof value === "string" ? value.trim() : "";
   if (!normalized) throw new TypeError(`Tool Materialization receipt ${field} is required.`);
+  return normalized;
+}
+
+function nonNegativeInteger(value, field) {
+  const normalized = Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < 0) {
+    throw new TypeError(`Tool Materialization receipt ${field} must be a non-negative integer.`);
+  }
   return normalized;
 }

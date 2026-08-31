@@ -122,6 +122,96 @@ test("direct ensureApplied calls cannot shrink previously desired or applied Too
   }
 });
 
+test("prospective replacement materialization is exact, applied, and remains unpersisted until route commit", async () => {
+  const value = await fixture();
+  try {
+    const source = await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      desiredDomains: ["memory"]
+    });
+    const prospectiveBinding = {
+      ...value.binding,
+      providerBindingId: "binding:replacement",
+      providerSessionId: "thread:replacement",
+      routingVersion: 2,
+      authorizationRevision: 2
+    };
+    const confirmation = {
+      providerRevision: "thread-start:thread:replacement:confirmed",
+      providerDefinitionsHash: source.plan.providerDefinitionsHash,
+      providerDefinitionsCount: source.plan.providerDefinitions.length,
+      providerObservationKind: "thread_start_accepted"
+    };
+    const prepared = await value.coordinator.prepareAppliedReplacement({
+      binding: prospectiveBinding,
+      desiredDomains: ["artifacts", "memory"],
+      providerConfirmation: confirmation
+    });
+
+    assert.equal(prepared.status, "applied");
+    assert.equal(prepared.providerBindingId, "binding:replacement");
+    assert.equal(prepared.desiredVersion, prepared.appliedVersion);
+    assert.equal(prepared.desiredCatalogVersion, prepared.appliedCatalogVersion);
+    assert.deepEqual(prepared.appliedDomains.map((domain) => domain.domainId), ["artifacts", "memory"]);
+    assert.equal(prepared.providerReceipt.providerDefinitionsHash, confirmation.providerDefinitionsHash);
+    assert.equal(prepared.providerReceipt.providerDefinitionsCount, confirmation.providerDefinitionsCount);
+    assert.equal(prepared.providerReceipt.providerObservationKind, confirmation.providerObservationKind);
+    assert.equal(
+      value.store.getSessionToolCatalogMaterialization("logical:worker", "binding:replacement"),
+      null
+    );
+
+    await assert.rejects(() => value.coordinator.prepareAppliedReplacement({
+      binding: { ...prospectiveBinding, providerBindingId: "binding:wrong-proof" },
+      desiredDomains: ["artifacts", "memory"],
+      providerConfirmation: { ...confirmation, providerDefinitionsHash: "0".repeat(64) }
+    }), { code: "PROVIDER_TOOL_RECEIPT_INVALID" });
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+for (const providerId of ["claude-sdk", "openclacky"]) {
+  test(`${providerId} prospective workspace replacement is desired-only and preserves the requested domain union`, async () => {
+    const value = await fixture();
+    try {
+      const prepared = await value.coordinator.prepareDesiredReplacement({
+        binding: {
+          ...value.binding,
+          providerBindingId: `binding:${providerId}:replacement`,
+          providerId,
+          providerSessionId: `${providerId}:session:replacement`,
+          routingVersion: 2,
+          authorizationRevision: 2
+        },
+        desiredDomains: ["artifacts", "memory"]
+      });
+      assert.equal(prepared.status, "stale");
+      assert.equal(prepared.appliedVersion, null);
+      assert.equal(prepared.appliedCatalogVersion, null);
+      assert.deepEqual(prepared.appliedDomains, []);
+      assert.equal(prepared.providerReceipt, null);
+      assert.deepEqual(
+        prepared.desiredDomains.map((domain) => domain.domainId),
+        ["artifacts", "memory"]
+      );
+      assert.equal(
+        value.store.getSessionToolCatalogMaterialization(
+          "logical:worker",
+          `binding:${providerId}:replacement`
+        ),
+        null,
+        "preparation must remain side-effect free until the route transaction"
+      );
+    } finally {
+      value.store.close();
+      await rm(value.directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test("a previously shrunk error record converges back to the union of its applied domains", async () => {
   const value = await fixture();
   try {

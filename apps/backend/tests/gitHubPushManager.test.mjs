@@ -328,7 +328,7 @@ async function createFixture() {
     repository,
     remote,
     async close() {
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   };
 }

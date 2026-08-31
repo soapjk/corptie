@@ -106,6 +106,7 @@ final class BackendResponseDecoderTests: XCTestCase {
                   "status": "running",
                   "progress": 0.5,
                   "summary": "Working",
+                  "transitionState": "sessionRecovery",
                   "updatedAt": "2026-08-08T00:00:00.000Z",
                   "accent": "cyan",
                   "capabilities": { "canSend": false, "canInterrupt": false },
@@ -149,6 +150,7 @@ final class BackendResponseDecoderTests: XCTestCase {
         )
 
         let sessions = try await BackendResponseDecoder.sessions(from: data)
+        XCTAssertEqual(sessions.first?.transitionState, "sessionRecovery")
         XCTAssertEqual(sessions.map(\.canSendNow), [true, true])
         XCTAssertEqual(sessions.map(\.canPrepareExecutionNow), [true, true])
         XCTAssertEqual(sessions.map(\.canInterruptNow), [true, true])

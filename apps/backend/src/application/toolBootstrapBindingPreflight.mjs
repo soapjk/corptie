@@ -8,6 +8,7 @@ export class ToolBootstrapBindingPreflight {
     this.coordinator = options.coordinator;
     this.recoverBinding = options.recoverBinding;
     this.isSessionBusy = options.isSessionBusy ?? (() => false);
+    this.isAppliedProofCurrent = options.isAppliedProofCurrent ?? (() => true);
     this.maxCandidates = positiveInteger(options.maxCandidates ?? 32, "maxCandidates");
     this.concurrency = positiveInteger(options.concurrency ?? 2, "concurrency");
     this.bootstrapSchemaHash = options.bootstrapSchemaHash ?? TOOL_HOST_BOOTSTRAP_SCHEMA_HASH;
@@ -33,12 +34,21 @@ export class ToolBootstrapBindingPreflight {
         logical.logicalSessionId,
         binding.bindingId
       );
-      if (record?.status === "applied"
+      const claimsCurrentBootstrap = record?.status === "applied"
         && record.appliedVersion === record.desiredVersion
-        && record.exposurePlan?.bootstrapSchemaHash === this.bootstrapSchemaHash) {
+        && record.exposurePlan?.bootstrapSchemaHash === this.bootstrapSchemaHash;
+      const appliedProofCurrent = claimsCurrentBootstrap
+        && this.isAppliedProofCurrent({ session, logical, binding, record });
+      if (appliedProofCurrent) {
         continue;
       }
-      candidates.push(Object.freeze({ session, logical, binding, record }));
+      candidates.push(Object.freeze({
+        session,
+        logical,
+        binding,
+        record,
+        untrustedAppliedProof: claimsCurrentBootstrap && !appliedProofCurrent
+      }));
       if (candidates.length >= this.maxCandidates) break;
     }
     return candidates;
@@ -76,6 +86,14 @@ export class ToolBootstrapBindingPreflight {
       activeTurn: false,
       phase: "refresh"
     };
+    // A record that merely claims the current desired generation cannot pass
+    // back through ensureApplied(): the Coordinator's ordinary applied fast
+    // path deliberately trusts durable receipts. Once the Provider-specific
+    // proof predicate rejects that receipt, replace the pre-dispatch binding
+    // directly instead of accidentally promoting the same false proof again.
+    if (candidate.untrustedAppliedProof) {
+      return this.#recover(candidate, input);
+    }
     try {
       const result = await this.coordinator.ensureApplied(input);
       return Object.freeze({
@@ -93,32 +111,36 @@ export class ToolBootstrapBindingPreflight {
           code: error?.code ?? "TOOL_BOOTSTRAP_PREFLIGHT_FAILED"
         });
       }
-      try {
-        await this.recoverBinding({
-          logicalSessionId: input.logicalSessionId,
-          providerId: candidate.binding.providerId,
-          idempotencyKey: [
-            "tool-bootstrap-upgrade",
-            this.bootstrapSchemaHash,
-            input.providerBindingId
-          ].join(":"),
-          sourceBindingId: input.providerBindingId,
-          reason: REPLACEMENT_ERROR
-        });
-        return Object.freeze({
-          logicalSessionId: input.logicalSessionId,
-          sourceBindingId: input.providerBindingId,
-          status: "recovered",
-          code: REPLACEMENT_ERROR
-        });
-      } catch (recoveryError) {
-        return Object.freeze({
-          logicalSessionId: input.logicalSessionId,
-          sourceBindingId: input.providerBindingId,
-          status: "failed",
-          code: recoveryError?.code ?? "SESSION_RECOVERY_FAILED"
-        });
-      }
+      return this.#recover(candidate, input);
+    }
+  }
+
+  async #recover(candidate, input) {
+    try {
+      await this.recoverBinding({
+        logicalSessionId: input.logicalSessionId,
+        providerId: candidate.binding.providerId,
+        idempotencyKey: [
+          "tool-bootstrap-upgrade",
+          this.bootstrapSchemaHash,
+          input.providerBindingId
+        ].join(":"),
+        sourceBindingId: input.providerBindingId,
+        reason: REPLACEMENT_ERROR
+      });
+      return Object.freeze({
+        logicalSessionId: input.logicalSessionId,
+        sourceBindingId: input.providerBindingId,
+        status: "recovered",
+        code: REPLACEMENT_ERROR
+      });
+    } catch (recoveryError) {
+      return Object.freeze({
+        logicalSessionId: input.logicalSessionId,
+        sourceBindingId: input.providerBindingId,
+        status: "failed",
+        code: recoveryError?.code ?? "SESSION_RECOVERY_FAILED"
+      });
     }
   }
 }

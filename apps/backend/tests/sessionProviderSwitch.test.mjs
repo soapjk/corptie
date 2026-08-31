@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,17 +12,19 @@ import { SessionBindingRepository } from "../src/agent-provider/sessionBindingRe
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { withSessionActions } from "../src/agent-provider/sessionActions.mjs";
 
-function providerSession(store) {
+function providerSession(store, options = {}) {
+  const providerId = options.providerId ?? "codex-app-server";
+  const providerThreadId = options.providerThreadId ?? "thread:codex-a";
   store.upsertSession({
     id: "codex:provider-switch",
     title: "Corptie开发工程师_Session",
-    agent: "Codex",
-    provider: "codex-app-server",
+    agent: options.agent ?? "Codex",
+    provider: providerId,
     status: "complete",
     external: {
-      provider: "codex-app-server",
-      threadId: "thread:codex-a",
-      sessionId: "thread:codex-a",
+      provider: providerId,
+      threadId: providerThreadId,
+      sessionId: providerThreadId,
       currentModel: "source-provider-model",
       currentReasoningLevel: "high"
     }
@@ -29,13 +32,151 @@ function providerSession(store) {
   store.createLogicalSessionRoute({
     logicalSessionId: "logical:provider-switch",
     legacySessionId: "codex:provider-switch",
-    providerThreadId: "thread:codex-a",
-    providerSessionId: "thread:codex-a",
-    providerId: "codex-app-server",
+    providerThreadId,
+    providerSessionId: providerThreadId,
+    providerId,
     boundCwd: "/repo/main",
     title: "Corptie开发工程师_Session"
   });
   return store.getLogicalSession("logical:provider-switch");
+}
+
+const PROVIDER_SWITCH_TOOLS = Object.freeze([
+  {
+    name: "corptie_tool_catalog_search",
+    description: "Search the authoritative Corptie Tool catalog.",
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "corptie_tool_call",
+    description: "Call one authorized Tool through the restricted gateway.",
+    inputSchema: {
+      type: "object",
+      properties: { tool: { type: "string" } },
+      required: ["tool"],
+      additionalProperties: false
+    }
+  }
+]);
+
+function codexRegistry(...providerIds) {
+  const ids = new Set(["codex-app-server", ...providerIds]);
+  return {
+    resolveId(providerId) {
+      return ids.has(providerId) ? providerId : null;
+    },
+    get(providerId) {
+      if (!ids.has(providerId)) throw new Error(`Unknown Provider ${providerId}`);
+      return {
+        descriptor: {
+          id: providerId,
+          metadata: {
+            toolSchemaCapabilities: {
+              bindingReplacement: providerId === "codex-app-server"
+            }
+          }
+        }
+      };
+    }
+  };
+}
+
+function toolDefinitionsHash(definitions) {
+  return createHash("sha256").update(stableValue(definitions)).digest("hex");
+}
+
+function stableValue(value) {
+  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableValue(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function exactToolProof(threadId, definitions = PROVIDER_SWITCH_TOOLS) {
+  return {
+    providerRevision: `thread-start:${threadId}:confirmed`,
+    providerDefinitionsHash: toolDefinitionsHash(definitions),
+    providerDefinitionsCount: definitions.length,
+    providerObservationKind: "thread_start_accepted"
+  };
+}
+
+function appliedToolMaterialization({ logicalSessionId, binding, confirmation }) {
+  const domains = [{
+    domainId: "tool-catalog",
+    domainVersion: "domain:tool-catalog:1",
+    toolNames: PROVIDER_SWITCH_TOOLS.map((tool) => tool.name)
+  }];
+  const exposurePlan = {
+    capabilityRevision: "codex-app-server:tool-schema:5",
+    exposurePlanHash: "plan:provider-switch",
+    providerDefinitionsHash: confirmation.providerDefinitionsHash,
+    providerDefinitions: PROVIDER_SWITCH_TOOLS,
+    refreshMode: "binding_replacement"
+  };
+  const appliedAt = "2026-08-31T08:00:00.000Z";
+  return {
+    logicalSessionId,
+    providerBindingId: binding.bindingId,
+    desiredVersion: "desired:provider-switch",
+    appliedVersion: "desired:provider-switch",
+    desiredCatalogVersion: "catalog:provider-switch",
+    appliedCatalogVersion: "catalog:provider-switch",
+    desiredDomains: domains,
+    appliedDomains: domains,
+    exposurePlan,
+    providerReceipt: {
+      providerBindingId: binding.bindingId,
+      providerCapabilityRevision: exposurePlan.capabilityRevision,
+      requestedVersion: "desired:provider-switch",
+      appliedVersion: "desired:provider-switch",
+      appliedCatalogVersion: "catalog:provider-switch",
+      appliedDomains: domains,
+      appliedExposurePlanHash: exposurePlan.exposurePlanHash,
+      providerDefinitionsHash: confirmation.providerDefinitionsHash,
+      providerDefinitionsCount: confirmation.providerDefinitionsCount,
+      providerObservationKind: confirmation.providerObservationKind,
+      refreshMode: exposurePlan.refreshMode,
+      providerRevision: confirmation.providerRevision,
+      receiptId: `receipt:${binding.bindingId}`,
+      appliedAt
+    },
+    status: "applied",
+    attempt: 1,
+    appliedAt
+  };
+}
+
+function staleToolMaterialization({ logicalSessionId, binding, domains }) {
+  return {
+    logicalSessionId,
+    providerBindingId: binding.bindingId,
+    desiredVersion: "desired:openclacky-switch",
+    appliedVersion: null,
+    desiredCatalogVersion: "catalog:provider-switch",
+    appliedCatalogVersion: null,
+    desiredDomains: domains,
+    appliedDomains: [],
+    exposurePlan: {
+      capabilityRevision: "openclacky:tool-schema:3:test:gateway",
+      exposurePlanHash: "plan:openclacky-switch",
+      providerDefinitionsHash: "definitions:openclacky-switch",
+      providerDefinitions: [],
+      refreshMode: "restricted_gateway"
+    },
+    providerReceipt: null,
+    status: "stale",
+    attempt: 0,
+    updatedAt: "2026-08-31T08:00:00.000Z"
+  };
 }
 
 test("workspace_transitions gains transition_kind during migration without rewriting rows", async () => {
@@ -279,6 +420,400 @@ test("provider switch coordinator preserves Session kind and rejects a stale rou
   }
 });
 
+test("Claude to Codex provider switch commits the exact thread proof and applied Tool materialization atomically", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-codex-tools-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store, {
+      providerId: "claude-sdk",
+      providerThreadId: "thread:claude-source",
+      agent: "Claude"
+    });
+    const reference = {
+      sessionId: "codex:provider-switch",
+      logicalSessionId: logical.logicalSessionId,
+      providerId: "claude-sdk",
+      providerSessionId: "thread:claude-source",
+      metadata: { session: { sessionKind: "assistantChat" } }
+    };
+    let createdInput = null;
+    let preparedInput = null;
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: codexRegistry("claude-sdk"),
+      resolveSessionReference: async () => reference,
+      resolveTargetContext: async () => ({
+        agentId: "agent:developer",
+        sessionKind: "assistantChat",
+        dynamicTools: PROVIDER_SWITCH_TOOLS,
+        dynamicToolAgentId: "agent:developer",
+        dynamicToolMetadata: { catalogVersion: "catalog:provider-switch" }
+      }),
+      createTargetSession: async (input) => {
+        createdInput = input;
+        return {
+          providerThreadId: "thread:codex-target",
+          providerSessionId: "thread:codex-target",
+          sessionProjection: {
+            status: "complete",
+            external: {
+              provider: "codex-app-server",
+              threadId: "thread:codex-target",
+              sessionId: "thread:codex-target"
+            }
+          }
+        };
+      },
+      confirmToolSchema: async (input) => {
+        assert.equal(input.providerThreadId, "thread:codex-target");
+        assert.deepEqual(input.dynamicTools, PROVIDER_SWITCH_TOOLS);
+        return exactToolProof(input.providerThreadId, input.dynamicTools);
+      },
+      prepareToolMaterialization: async (input) => {
+        preparedInput = input;
+        return appliedToolMaterialization({
+          logicalSessionId: input.logicalSessionId,
+          binding: input.binding,
+          confirmation: input.dynamicToolConfirmation
+        });
+      }
+    });
+
+    const result = await coordinator.switchProvider(reference.sessionId, {
+      providerId: "codex-app-server",
+      expectedRoutingVersion: logical.routingVersion,
+      transitionId: "transition:claude-to-codex-tools"
+    });
+
+    assert.equal(result.status, "committed");
+    assert.equal(result.logicalSession.activeBinding.providerId, "codex-app-server");
+    assert.equal(result.logicalSession.activeBinding.providerSessionId, "thread:codex-target");
+    assert.deepEqual(createdInput.dynamicTools, PROVIDER_SWITCH_TOOLS);
+    assert.equal(preparedInput.binding.providerSessionId, "thread:codex-target");
+    assert.equal(preparedInput.binding.routingVersion, logical.routingVersion + 1);
+    assert.equal(preparedInput.binding.bindingGeneration,
+      Number(logical.activeBinding.bindingGeneration) + 1);
+    assert.deepEqual(
+      store.getWorkspaceTransition("transition:claude-to-codex-tools").toolConfirmation,
+      exactToolProof("thread:codex-target")
+    );
+    const materialization = store.getSessionToolCatalogMaterialization(
+      logical.logicalSessionId,
+      result.logicalSession.activeBinding.bindingId
+    );
+    assert.equal(materialization.status, "applied");
+    assert.equal(materialization.providerReceipt.providerRevision,
+      "thread-start:thread:codex-target:confirmed");
+    assert.equal(materialization.providerReceipt.providerDefinitionsHash,
+      toolDefinitionsHash(PROVIDER_SWITCH_TOOLS));
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("crash recovery reuses the journaled Codex target and proof instead of creating another session", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-codex-recovery-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store, {
+      providerId: "claude-sdk",
+      providerThreadId: "thread:claude-source",
+      agent: "Claude"
+    });
+    const transitionId = "transition:codex-crash-recovery";
+    const targetThreadId = "thread:codex-journaled";
+    const proof = exactToolProof(targetThreadId);
+    store.beginWorkspaceTransition({
+      transitionId,
+      logicalSessionId: logical.logicalSessionId,
+      transitionKind: "provider",
+      targetProviderId: "codex-app-server",
+      targetCwd: logical.activeBinding.boundCwd,
+      sourceRoutingVersion: logical.routingVersion,
+      phase: "forking",
+      strategy: "fork"
+    });
+    store.updateWorkspaceTransition(transitionId, {
+      phase: "committingRoute",
+      newThreadId: targetThreadId,
+      toolConfirmation: proof
+    });
+    const reference = {
+      sessionId: "codex:provider-switch",
+      logicalSessionId: logical.logicalSessionId,
+      providerId: "claude-sdk",
+      providerSessionId: "thread:claude-source",
+      metadata: { session: { sessionKind: "assistantChat" } }
+    };
+    let createCalls = 0;
+    let resumeCalls = 0;
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: codexRegistry("claude-sdk"),
+      resolveSessionReference: async () => reference,
+      resolveTargetContext: async () => ({ dynamicTools: PROVIDER_SWITCH_TOOLS }),
+      createTargetSession: async () => {
+        createCalls += 1;
+        throw new Error("must not create a second target");
+      },
+      resumeTargetSession: async (input) => {
+        resumeCalls += 1;
+        assert.equal(input.providerThreadId, targetThreadId);
+        assert.deepEqual(input.dynamicToolConfirmation, proof);
+        return {
+          providerThreadId: targetThreadId,
+          providerSessionId: targetThreadId,
+          sessionProjection: {
+            status: "complete",
+            external: {
+              provider: "codex-app-server",
+              threadId: targetThreadId,
+              sessionId: targetThreadId
+            }
+          }
+        };
+      },
+      confirmToolSchema: async () => proof,
+      prepareToolMaterialization: async (input) => appliedToolMaterialization({
+        logicalSessionId: input.logicalSessionId,
+        binding: input.binding,
+        confirmation: input.dynamicToolConfirmation
+      })
+    });
+
+    const result = await coordinator.completeProviderSwitch(
+      transitionId,
+      "codex-app-server",
+      reference,
+      logical
+    );
+
+    assert.equal(result.status, "committed");
+    assert.equal(createCalls, 0);
+    assert.equal(resumeCalls, 1);
+    assert.equal(result.logicalSession.activeThreadId, targetThreadId);
+    assert.equal(result.logicalSession.routingVersion, logical.routingVersion + 1);
+    assert.equal(store.getWorkspaceTransition(transitionId).phase, "committed");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("crash recovery fails closed when a journaled target cannot be resumed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-codex-recovery-unavailable-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store, {
+      providerId: "openclacky",
+      providerThreadId: "thread:clacky-source",
+      agent: "OpenClacky"
+    });
+    const transitionId = "transition:codex-crash-recovery-unavailable";
+    const targetThreadId = "thread:codex-journaled-unavailable";
+    store.beginWorkspaceTransition({
+      transitionId,
+      logicalSessionId: logical.logicalSessionId,
+      transitionKind: "provider",
+      targetProviderId: "codex-app-server",
+      targetCwd: logical.activeBinding.boundCwd,
+      sourceRoutingVersion: logical.routingVersion,
+      phase: "forking",
+      strategy: "fork"
+    });
+    store.updateWorkspaceTransition(transitionId, {
+      phase: "committingRoute",
+      newThreadId: targetThreadId,
+      toolConfirmation: exactToolProof(targetThreadId)
+    });
+    const reference = {
+      sessionId: "codex:provider-switch",
+      logicalSessionId: logical.logicalSessionId,
+      providerId: "openclacky",
+      providerSessionId: "thread:clacky-source",
+      metadata: { session: { sessionKind: "assistantChat" } }
+    };
+    let createCalls = 0;
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: codexRegistry("openclacky"),
+      resolveSessionReference: async () => reference,
+      resolveTargetContext: async () => ({ dynamicTools: PROVIDER_SWITCH_TOOLS }),
+      createTargetSession: async () => {
+        createCalls += 1;
+        return null;
+      }
+    });
+
+    await assert.rejects(
+      () => coordinator.completeProviderSwitch(
+        transitionId,
+        "codex-app-server",
+        reference,
+        logical
+      ),
+      (error) => error?.code === "PROVIDER_SWITCH_TARGET_RECOVERY_UNAVAILABLE"
+    );
+
+    const after = store.getLogicalSession(logical.logicalSessionId);
+    assert.equal(createCalls, 0);
+    assert.equal(after.activeThreadId, "thread:clacky-source");
+    assert.equal(after.routingVersion, logical.routingVersion);
+    assert.equal(store.getWorkspaceTransition(transitionId).phase, "failed");
+    assert.equal(
+      store.listProviderThreadBindings(logical.logicalSessionId)
+        .find((binding) => binding.providerThreadId === targetThreadId)?.state,
+      "invalid"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("OpenClacky to Codex provider switch fails closed when the exact Tool proof is missing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-codex-proof-missing-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store, {
+      providerId: "openclacky",
+      providerThreadId: "thread:clacky-source",
+      agent: "OpenClacky"
+    });
+    const reference = {
+      sessionId: "codex:provider-switch",
+      logicalSessionId: logical.logicalSessionId,
+      providerId: "openclacky",
+      providerSessionId: "thread:clacky-source",
+      metadata: { session: { sessionKind: "assistantChat" } }
+    };
+    let prepareCalled = false;
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: codexRegistry("openclacky"),
+      resolveSessionReference: async () => reference,
+      resolveTargetContext: async () => ({ dynamicTools: PROVIDER_SWITCH_TOOLS }),
+      createTargetSession: async () => ({
+        providerThreadId: "thread:codex-unconfirmed",
+        providerSessionId: "thread:codex-unconfirmed",
+        sessionProjection: { status: "complete" }
+      }),
+      confirmToolSchema: async () => null,
+      prepareToolMaterialization: async () => {
+        prepareCalled = true;
+        return null;
+      }
+    });
+
+    await assert.rejects(
+      () => coordinator.switchProvider(reference.sessionId, {
+        providerId: "codex-app-server",
+        expectedRoutingVersion: logical.routingVersion,
+        transitionId: "transition:codex-proof-missing"
+      }),
+      (error) => error?.code === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
+    );
+
+    const after = store.getLogicalSession(logical.logicalSessionId);
+    assert.equal(after.activeBinding.providerId, "openclacky");
+    assert.equal(after.activeThreadId, "thread:clacky-source");
+    assert.equal(after.routingVersion, logical.routingVersion);
+    assert.equal(prepareCalled, false);
+    assert.equal(store.getWorkspaceTransition("transition:codex-proof-missing").phase, "failed");
+    assert.equal(
+      store.listProviderThreadBindings(logical.logicalSessionId)
+        .find((binding) => binding.providerSessionId === "thread:codex-unconfirmed")?.state,
+      "invalid"
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Claude to Codex provider switch fails closed when prospective Tool materialization is missing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-codex-materialization-missing-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store, {
+      providerId: "claude-sdk",
+      providerThreadId: "thread:claude-source",
+      agent: "Claude"
+    });
+    const reference = {
+      sessionId: "codex:provider-switch",
+      logicalSessionId: logical.logicalSessionId,
+      providerId: "claude-sdk",
+      providerSessionId: "thread:claude-source",
+      metadata: { session: { sessionKind: "assistantChat" } }
+    };
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: codexRegistry("claude-sdk"),
+      resolveSessionReference: async () => reference,
+      resolveTargetContext: async () => ({ dynamicTools: PROVIDER_SWITCH_TOOLS }),
+      createTargetSession: async () => ({
+        providerThreadId: "thread:codex-without-materialization",
+        providerSessionId: "thread:codex-without-materialization",
+        sessionProjection: { status: "complete" }
+      }),
+      confirmToolSchema: async ({ providerThreadId, dynamicTools }) => (
+        exactToolProof(providerThreadId, dynamicTools)
+      ),
+      prepareToolMaterialization: async () => null
+    });
+
+    await assert.rejects(
+      () => coordinator.switchProvider(reference.sessionId, {
+        providerId: "codex-app-server",
+        expectedRoutingVersion: logical.routingVersion,
+        transitionId: "transition:codex-materialization-missing"
+      }),
+      (error) => error?.code === "PROVIDER_TOOL_MATERIALIZATION_REQUIRED"
+    );
+
+    const after = store.getLogicalSession(logical.logicalSessionId);
+    assert.equal(after.activeBinding.providerId, "claude-sdk");
+    assert.equal(after.activeThreadId, "thread:claude-source");
+    assert.equal(after.routingVersion, logical.routingVersion);
+    assert.deepEqual(
+      store.getWorkspaceTransition("transition:codex-materialization-missing").toolConfirmation,
+      exactToolProof("thread:codex-without-materialization")
+    );
+    assert.equal(
+      store.getSessionToolCatalogMaterialization(
+        logical.logicalSessionId,
+        after.activeBinding.bindingId
+      ),
+      null
+    );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("provider switch rejects a failed OpenClacky initialization and keeps the Codex route active", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-init-failure-"));
   const store = new CorptieStore({
@@ -451,6 +986,82 @@ test("Corptie开发工程师_Session switches from CodeX to OpenClacky, routes t
       store.getSessionItem("codex:provider-switch", "history:codex-answer").text,
       "Historical answer remains available."
     );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Codex to OpenClacky switch atomically preserves every source desired Tool domain as stale target state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-domain-union-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const logical = providerSession(store);
+    const sourceDomains = [
+      { domainId: "artifacts", domainRevision: "artifacts:1", canonicalToolNames: ["corptie_artifact_get"] },
+      { domainId: "collaboration", domainRevision: "collaboration:1", canonicalToolNames: ["corptie_collaboration_request"] }
+    ];
+    store.writeSessionToolCatalogDesired({
+      logicalSessionId: logical.logicalSessionId,
+      providerBindingId: logical.activeBinding.bindingId,
+      desiredVersion: "desired:source-union",
+      desiredCatalogVersion: "catalog:source",
+      desiredDomains: sourceDomains,
+      exposurePlan: {
+        capabilityRevision: "codex-app-server:tool-schema:5",
+        exposurePlanHash: "plan:source",
+        providerDefinitionsHash: "definitions:source",
+        providerDefinitions: [],
+        refreshMode: "binding_replacement"
+      }
+    });
+    const bindings = new SessionBindingRepository({ store });
+    let prepared = null;
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: codexRegistry("openclacky"),
+      resolveSessionReference: (sessionId) => bindings.resolve(sessionId),
+      resolveTargetContext: async () => ({
+        sessionKind: "assistantChat",
+        agentId: "agent:one",
+        desiredToolDomains: ["artifacts", "collaboration"]
+      }),
+      createTargetSession: async () => ({
+        providerThreadId: "clacky-with-union",
+        providerSessionId: "clacky-with-union",
+        sessionProjection: { status: "complete" }
+      }),
+      prepareToolMaterialization: async (input) => {
+        prepared = input;
+        return staleToolMaterialization({
+          logicalSessionId: input.logicalSessionId,
+          binding: input.binding,
+          domains: sourceDomains
+        });
+      }
+    });
+
+    const result = await coordinator.switchProvider("codex:provider-switch", {
+      providerId: "openclacky",
+      expectedRoutingVersion: logical.routingVersion,
+      transitionId: "transition:preserve-domain-union"
+    });
+
+    assert.equal(prepared.requiresApplied, false);
+    const target = store.getSessionToolCatalogMaterialization(
+      logical.logicalSessionId,
+      result.logicalSession.activeBinding.bindingId
+    );
+    assert.equal(target.status, "stale");
+    assert.deepEqual(target.desiredDomains.map((domain) => domain.domainId).sort(), [
+      "artifacts", "collaboration"
+    ]);
+    assert.deepEqual(target.appliedDomains, []);
+    assert.equal(target.providerReceipt, null);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

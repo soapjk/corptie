@@ -176,6 +176,7 @@ test("recovery freezes Timeline, validates no-side-effect replay, commits bindin
     assert.equal(logical.routingVersion, 2);
     assert.equal(logical.activeBinding.bindingGeneration, 2);
     assert.equal(logical.activeBinding.parentBindingId, "binding:source");
+    assert.equal(logical.transitionState, null);
     assert.equal(fixture.store.getSession("session:recovery").external.sessionId, "native:replacement");
     assert.equal(fixture.store.listProviderThreadBindings("logical:recovery")[0].state, "superseded");
     assert.equal(fixture.store.listSessionRecoveryBindingAudit("logical:recovery").length, 1);
@@ -268,6 +269,10 @@ test("recovery cancellation is durable and does not commit a replacement", async
     while (fixture.store.listSessionRecoveryAttempts("logical:recovery")[0]?.state !== "replacement_created") {
       await new Promise((resolve) => setImmediate(resolve));
     }
+    const recoveringSession = fixture.store.getSession("session:recovery");
+    assert.equal(recoveringSession.transitionState, "sessionRecovery");
+    assert.equal(recoveringSession.capabilities.canSend, false);
+    assert.match(recoveringSession.sendUnavailableReason, /recovery is in progress/i);
     const attempt = fixture.store.listSessionRecoveryAttempts("logical:recovery")[0];
     const cancellation = coordinator.cancel(attempt.attemptId);
     release();
@@ -275,6 +280,8 @@ test("recovery cancellation is durable and does not commit a replacement", async
     await assert.rejects(recovery, { code: "SESSION_RECOVERY_CANCELLED" });
     assert.equal(fixture.store.getLogicalSession("logical:recovery").activeBinding.bindingId, "binding:source");
     assert.equal(fixture.store.getSessionRecoveryAttempt(attempt.attemptId).state, "cancelled");
+    assert.equal(fixture.store.getLogicalSession("logical:recovery").transitionState, null);
+    assert.equal(fixture.store.getSession("session:recovery").transitionState, null);
   } finally {
     release?.();
     await fixture.close();
@@ -300,9 +307,82 @@ test("recovery fails closed for replacement creation, Tool Host, and Workspace v
       }), { code: expectedCode });
       assert.equal(fixture.store.getLogicalSession("logical:recovery").activeBinding.bindingId, "binding:source");
       assert.equal(fixture.store.listSessionRecoveryAttempts("logical:recovery")[0].state, "failed");
+      assert.equal(fixture.store.getLogicalSession("logical:recovery").transitionState, null);
     } finally {
       await fixture.close();
     }
+  }
+});
+
+test("same-attempt recovery is single-flight and post-commit observer failures cannot cancel the active route", async () => {
+  const fixture = await storeFixture();
+  const calls = [];
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "single flight" } });
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort(calls, fixture.store),
+      resolveProviderDescriptor: () => capabilityDescriptor,
+      observe: ({ type }) => {
+        if (type === "SessionRecoveryCommitted") throw new Error("observer unavailable");
+      }
+    });
+    const input = {
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: "single-flight"
+    };
+    const results = await Promise.all(Array.from({ length: 20 }, () => coordinator.recover(input)));
+    assert.equal(results.every((attempt) => attempt.state === "committed"), true);
+    assert.equal(calls.filter((call) => call === "create").length, 1);
+    assert.equal(calls.includes("cancel-replacement"), false);
+    assert.equal(fixture.store.getLogicalSession("logical:recovery").activeBinding.bindingId, "binding:replacement");
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("binding commit rejects a replacement superseded in the recovery journal", async () => {
+  const fixture = await storeFixture();
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "replacement CAS" } });
+    const attempt = fixture.store.freezeSessionRecoveryAttempt({
+      attemptId: "attempt:replacement-cas",
+      idempotencyKey: "replacement-cas",
+      logicalSessionId: "logical:recovery",
+      capabilityRevision: capabilityDescriptor.metadata.sessionRecovery.revision
+    });
+    fixture.store.claimSessionRecoveryBoundary(attempt.attemptId);
+    const plan = planReplay({
+      attempt,
+      timelineEvents: fixture.store.listSessionEventsThrough(attempt.sessionId, attempt.boundarySequence),
+      capabilities: recoveryCapabilities()
+    });
+    fixture.store.saveSessionRecoveryManifest(attempt.attemptId, plan.manifest, plan.manifestHash);
+    const replacementA = {
+      providerThreadId: "thread:replacement-a",
+      providerSessionId: "native:replacement-a",
+      bindingId: "binding:replacement-a"
+    };
+    const replacementB = {
+      providerThreadId: "thread:replacement-b",
+      providerSessionId: "native:replacement-b",
+      bindingId: "binding:replacement-b"
+    };
+    fixture.store.recordSessionRecoveryReplacement(attempt.attemptId, replacementA);
+    fixture.store.replaceSessionRecoveryReplacement(attempt.attemptId, replacementA, replacementB);
+    assert.throws(() => fixture.store.commitSessionRecoveryBinding({
+      attemptId: attempt.attemptId,
+      replacement: replacementA,
+      manifestHash: plan.manifestHash,
+      capabilityRevision: capabilityDescriptor.metadata.sessionRecovery.revision,
+      expectedSourceBindingId: attempt.sourceBindingId,
+      expectedRoutingVersion: attempt.sourceRoutingVersion,
+      expectedBindingGeneration: attempt.sourceBindingGeneration
+    }), { code: "RECOVERY_REPLACEMENT_CAS_CONFLICT" });
+    assert.equal(fixture.store.getLogicalSession("logical:recovery").activeBinding.bindingId, "binding:source");
+  } finally {
+    await fixture.close();
   }
 });
 
@@ -389,6 +469,43 @@ test("a crash after replacement creation resumes the same replacement without du
   }
 });
 
+test("a crash-safe recovery replaces only an explicitly unrecoverable empty target before route commit", async () => {
+  const fixture = await storeFixture();
+  const calls = [];
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "replace empty" } });
+    const attempt = fixture.store.freezeSessionRecoveryAttempt({
+      attemptId: "attempt:replace-empty", idempotencyKey: "replace-empty", logicalSessionId: "logical:recovery",
+      capabilityRevision: capabilityDescriptor.metadata.sessionRecovery.revision
+    });
+    const oldReplacement = {
+      providerThreadId: "thread:lost-empty", providerSessionId: "native:lost-empty",
+      bindingId: "binding:lost-empty", sessionProjection: { capabilities: { canSend: true }, external: { cwd: attempt.boundCwd } }
+    };
+    const newReplacement = {
+      providerThreadId: "thread:new-empty", providerSessionId: "native:new-empty",
+      bindingId: "binding:new-empty", sessionProjection: { capabilities: { canSend: true }, external: { cwd: attempt.boundCwd } }
+    };
+    fixture.store.recordSessionRecoveryReplacement(attempt.attemptId, oldReplacement);
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort(calls, fixture.store, { resumedReplacement: newReplacement }),
+      resolveProviderDescriptor: () => capabilityDescriptor
+    });
+    const committed = await coordinator.recover({
+      logicalSessionId: "logical:recovery", providerId: "test-provider", idempotencyKey: "replace-empty"
+    });
+    assert.equal(committed.state, "committed");
+    assert.equal(committed.replacement.providerThreadId, "thread:new-empty");
+    assert.equal(fixture.store.getLogicalSession("logical:recovery").activeBinding.bindingId, "binding:new-empty");
+    assert.equal(calls.includes("create"), false);
+    assert.equal(calls.includes("resume"), true);
+    assert.equal(calls.includes("cancel-replacement"), true);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("late events from a superseded binding generation are quarantined", async () => {
   const fixture = await storeFixture();
   try {
@@ -439,6 +556,10 @@ function recoveryPort(calls, store, options = {}) {
       calls.push("create");
       if (options.createFailure) throw new Error("native Provider storage is missing");
       return { providerThreadId: "thread:replacement", providerSessionId: "native:replacement", bindingId: "binding:replacement" };
+    },
+    resumeReplacement: async ({ replacement }) => {
+      calls.push("resume");
+      return options.resumedReplacement ?? replacement;
     },
     attachToolHost: async ({ attempt }) => {
       calls.push("tools");

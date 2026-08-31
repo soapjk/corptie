@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   permissionSnapshotFromAppServerResponse,
   validateWorkspaceInstructionSources,
@@ -16,6 +16,8 @@ export class ForkingWorkspaceTransitionManager {
       ?? (async () => []);
     this.sourceTimelineItems = options.sourceTimelineItems
       ?? (async () => []);
+    this.confirmToolSchema = options.confirmToolSchema ?? null;
+    this.prepareToolMaterialization = options.prepareToolMaterialization ?? null;
     this.onRouteCommitted = options.onRouteCommitted ?? null;
   }
 
@@ -95,6 +97,7 @@ export class ForkingWorkspaceTransitionManager {
     let candidateResponse = null;
     let instructionValidation = null;
     let handoffTurnId = null;
+    let toolConfirmation = null;
     const transition = this.store.getWorkspaceTransition(transitionId);
     if (!transition) throw new Error(`Workspace transition ${transitionId} was not found.`);
     if (transition.phase === "committed") {
@@ -119,6 +122,7 @@ export class ForkingWorkspaceTransitionManager {
     }
     const target = this.resolveTransitionTarget(transition);
     const targetCwd = target.canonicalPath || target.path;
+    const newBindingId = `binding:${randomUUID()}`;
     try {
       this.store.updateWorkspaceTransition(transitionId, {
         phase: "preflighting",
@@ -142,8 +146,14 @@ export class ForkingWorkspaceTransitionManager {
           ?? "workspace-write",
         permissions: input.permissions,
         dynamicTools: input.dynamicTools,
+        dynamicToolConfirmation: input.dynamicToolConfirmation,
         dynamicToolAgentId: input.dynamicToolAgentId,
-        dynamicToolMetadata: input.dynamicToolMetadata,
+        dynamicToolMetadata: replacementDynamicToolMetadata(
+          input.dynamicToolMetadata,
+          newBindingId,
+          transition.sourceRoutingVersion + 1,
+          Number(logical.activeBinding.bindingGeneration ?? 1) + 1
+        ),
         config: input.config,
         developerInstructions: input.developerInstructions,
         threadSource: "user",
@@ -153,6 +163,11 @@ export class ForkingWorkspaceTransitionManager {
       let strategy = transition.strategy;
       if (strategy === "fork") {
         try {
+          requireExactDynamicToolConfirmation(
+            transition.sourceThreadId,
+            threadOptions,
+            "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED"
+          );
           candidateResponse = await this.providerPort.forkThread(transition.sourceThreadId, {
             ...threadOptions,
             lastTurnId: lastCompletedTurnId,
@@ -176,9 +191,11 @@ export class ForkingWorkspaceTransitionManager {
       if (!newThreadId) {
         throw new Error(`Codex ${strategy === "handoff" ? "thread/start" : "thread/fork"} returned no thread id.`);
       }
+      toolConfirmation = await this.confirmCandidateToolSchema(newThreadId, threadOptions);
       this.store.updateWorkspaceTransition(transitionId, {
         phase: "validatingInstructions",
-        newThreadId
+        newThreadId,
+        toolConfirmation
       });
       if (candidateResponse.cwd !== targetCwd && candidateResponse.thread?.cwd !== targetCwd) {
         throw new Error(`The ${strategy === "handoff" ? "new" : "forked"} Codex thread did not bind to the target workspace.`);
@@ -237,7 +254,8 @@ export class ForkingWorkspaceTransitionManager {
         this.store.updateWorkspaceTransition(transitionId, {
           phase: "validatingInstructions",
           newThreadId,
-          handoffTurnId
+          handoffTurnId,
+          toolConfirmation
         });
       }
       this.store.updateWorkspaceTransition(transitionId, {
@@ -246,14 +264,29 @@ export class ForkingWorkspaceTransitionManager {
       });
       const permissionSnapshot = permissionSnapshotFromAppServerResponse(candidateResponse);
       if (input.sandboxPolicy) permissionSnapshot.sandboxPolicy = input.sandboxPolicy;
+      const toolMaterialization = await this.prepareBindingToolMaterialization({
+        bindingId: newBindingId,
+        logical,
+        transition,
+        target,
+        targetCwd,
+        candidateResponse,
+        newThreadId,
+        threadOptions,
+        toolConfirmation,
+        strategy,
+        recovered: false
+      });
       const switched = this.store.commitWorkspaceTransition(transitionId, {
+        bindingId: newBindingId,
         providerThreadId: newThreadId,
         providerId: candidateResponse.providerId,
         providerSessionId: candidateResponse.providerSessionId,
         boundCwd: targetCwd,
         forkedAtTurnId: lastCompletedTurnId,
         instructionSources: instructionValidation.instructionSources,
-        permissionSnapshot
+        permissionSnapshot,
+        toolMaterialization
       });
       const sourceThreadDeletion = await this.deleteSupersededThread(transition.sourceThreadId);
       const event = {
@@ -266,6 +299,8 @@ export class ForkingWorkspaceTransitionManager {
         repositoryId: switched.repositoryId,
         cwd: targetCwd,
         routingVersion: switched.routingVersion,
+        newBindingId,
+        toolConfirmation,
         transitionId,
         strategy,
         handoffTurnId,
@@ -303,6 +338,7 @@ export class ForkingWorkspaceTransitionManager {
       this.store.updateWorkspaceTransition(transitionId, {
         phase: "failed",
         newThreadId,
+        toolConfirmation,
         error: {
           message: error.message,
           instructionValidation
@@ -358,17 +394,30 @@ export class ForkingWorkspaceTransitionManager {
     const logical = this.store.getLogicalSession(transition.logicalSessionId);
     const target = this.resolveTransitionTarget(transition);
     const targetCwd = target.canonicalPath || target.path;
+    const newBindingId = `binding:${randomUUID()}`;
     let response = null;
     let validation = null;
     let handoffTurnId = null;
+    let toolConfirmation = null;
     try {
-      response = await this.providerPort.resumeThread(transition.newThreadId, {
+      const threadOptions = {
         cwd: targetCwd,
         runtimeWorkspaceRoots: [targetCwd],
+        dynamicTools: input.dynamicTools,
+        dynamicToolConfirmation: transition.toolConfirmation ?? input.dynamicToolConfirmation,
         dynamicToolAgentId: input.dynamicToolAgentId,
+        dynamicToolMetadata: replacementDynamicToolMetadata(
+          input.dynamicToolMetadata,
+          newBindingId,
+          transition.sourceRoutingVersion + 1,
+          Number(logical.activeBinding.bindingGeneration ?? 1) + 1
+        ),
         config: input.config,
         developerInstructions: input.developerInstructions
-      });
+      };
+      requireExactDynamicToolConfirmation(transition.newThreadId, threadOptions);
+      response = await this.providerPort.resumeThread(transition.newThreadId, threadOptions);
+      toolConfirmation = await this.confirmCandidateToolSchema(transition.newThreadId, threadOptions);
       if (response.cwd !== targetCwd && response.thread?.cwd !== targetCwd) {
         throw new Error("The recovered Codex thread is not bound to the target workspace.");
       }
@@ -421,22 +470,39 @@ export class ForkingWorkspaceTransitionManager {
           this.store.updateWorkspaceTransition(transitionId, {
             phase: "validatingInstructions",
             newThreadId: transition.newThreadId,
-            handoffTurnId
+            handoffTurnId,
+            toolConfirmation
           });
         }
       }
       this.store.updateWorkspaceTransition(transitionId, {
         phase: "committingRoute",
-        newThreadId: transition.newThreadId
+        newThreadId: transition.newThreadId,
+        toolConfirmation
+      });
+      const toolMaterialization = await this.prepareBindingToolMaterialization({
+        bindingId: newBindingId,
+        logical,
+        transition,
+        target,
+        targetCwd,
+        candidateResponse: response,
+        newThreadId: transition.newThreadId,
+        threadOptions,
+        toolConfirmation,
+        strategy: transition.strategy,
+        recovered: true
       });
       const switched = this.store.commitWorkspaceTransition(transitionId, {
+        bindingId: newBindingId,
         providerThreadId: transition.newThreadId,
         providerId: response.providerId,
         providerSessionId: response.providerSessionId,
         boundCwd: targetCwd,
         forkedAtTurnId: transition.lastCompletedTurnId,
         instructionSources: validation.instructionSources,
-        permissionSnapshot: permissionSnapshotFromAppServerResponse(response)
+        permissionSnapshot: permissionSnapshotFromAppServerResponse(response),
+        toolMaterialization
       });
       const sourceThreadDeletion = await this.deleteSupersededThread(transition.sourceThreadId);
       const event = {
@@ -449,6 +515,8 @@ export class ForkingWorkspaceTransitionManager {
         repositoryId: switched.repositoryId,
         cwd: targetCwd,
         routingVersion: switched.routingVersion,
+        newBindingId,
+        toolConfirmation,
         transitionId,
         strategy: transition.strategy,
         handoffTurnId,
@@ -482,6 +550,7 @@ export class ForkingWorkspaceTransitionManager {
       this.store.updateWorkspaceTransition(transitionId, {
         phase: "failed",
         newThreadId: transition.newThreadId,
+        toolConfirmation: toolConfirmation ?? transition.toolConfirmation,
         error: { message: error.message, instructionValidation: validation }
       });
       throw error;
@@ -525,22 +594,28 @@ export class ForkingWorkspaceTransitionManager {
       sourceCwd,
       targetCwd
     );
+    const threadOptions = {
+      cwd: targetCwd,
+      runtimeWorkspaceRoots: [targetCwd],
+      approvalPolicy: input.approvalPolicy ?? permission.approvalPolicy,
+      sandbox: coarseSandboxMode(sandboxPolicy),
+      permissions: input.permissions,
+      dynamicTools: input.dynamicTools,
+      dynamicToolConfirmation: input.dynamicToolConfirmation,
+      dynamicToolAgentId: input.dynamicToolAgentId,
+      dynamicToolMetadata: input.dynamicToolMetadata,
+      config: input.config,
+      developerInstructions: input.developerInstructions
+    };
+    requireExactDynamicToolConfirmation(logical.activeThreadId, threadOptions);
     await this.providerPort.updateThreadSettings(logical.activeThreadId, {
       cwd: targetCwd,
       approvalPolicy: input.approvalPolicy ?? permission.approvalPolicy,
       sandboxPolicy,
       permissions: input.permissions
     });
-    const response = await this.providerPort.resumeThread(logical.activeThreadId, {
-      cwd: targetCwd,
-      runtimeWorkspaceRoots: [targetCwd],
-      approvalPolicy: input.approvalPolicy ?? permission.approvalPolicy,
-      sandbox: coarseSandboxMode(sandboxPolicy),
-      permissions: input.permissions,
-      dynamicToolAgentId: input.dynamicToolAgentId,
-      config: input.config,
-      developerInstructions: input.developerInstructions
-    });
+    const response = await this.providerPort.resumeThread(logical.activeThreadId, threadOptions);
+    const toolConfirmation = await this.confirmCandidateToolSchema(logical.activeThreadId, threadOptions);
     if (response.cwd !== targetCwd && response.thread?.cwd !== targetCwd) {
       throw new Error("The updated Codex thread did not bind to the moved workspace path.");
     }
@@ -580,6 +655,8 @@ export class ForkingWorkspaceTransitionManager {
       repositoryId: switched.repositoryId,
       cwd: targetCwd,
       routingVersion: switched.routingVersion,
+      newBindingId: switched.activeBinding?.bindingId ?? null,
+      toolConfirmation,
       strategy: "settingsUpdate",
       previousCwd: sourceCwd,
       transitionContext: workspaceTransitionContext({
@@ -590,6 +667,65 @@ export class ForkingWorkspaceTransitionManager {
     };
     await this.onRouteCommitted?.(event);
     return { status: "rebound", logicalSession: switched, event };
+  }
+
+  async confirmCandidateToolSchema(threadId, threadOptions) {
+    if (!Array.isArray(threadOptions.dynamicTools)) return null;
+    const confirm = this.confirmToolSchema
+      ?? (typeof this.providerPort.confirmThreadToolPlan === "function"
+        ? ({ threadId: candidateThreadId, dynamicTools }) => (
+            this.providerPort.confirmThreadToolPlan(candidateThreadId, dynamicTools)
+          )
+        : null);
+    if (!confirm) {
+      throw dynamicToolConfirmationError(
+        "The Provider did not expose a Tool schema confirmation boundary."
+      );
+    }
+    const proof = await confirm({
+      threadId,
+      dynamicTools: threadOptions.dynamicTools,
+      dynamicToolAgentId: threadOptions.dynamicToolAgentId,
+      dynamicToolMetadata: threadOptions.dynamicToolMetadata
+    });
+    return requireExactDynamicToolConfirmation(threadId, {
+      ...threadOptions,
+      dynamicToolConfirmation: normalizeDynamicToolConfirmation(proof)
+    });
+  }
+
+  async prepareBindingToolMaterialization(input) {
+    if (!this.prepareToolMaterialization) return null;
+    const sourceBinding = input.logical.activeBinding;
+    const providerId = input.candidateResponse?.providerId
+      ?? sourceBinding?.providerId
+      ?? "codex-app-server";
+    const providerSessionId = input.candidateResponse?.providerSessionId
+      ?? input.newThreadId;
+    return this.prepareToolMaterialization({
+      transitionId: input.transition.transitionId,
+      logicalSessionId: input.logical.logicalSessionId,
+      sessionId: input.logical.legacySessionId ?? null,
+      sourceBinding,
+      binding: {
+        bindingId: input.bindingId,
+        providerThreadId: input.newThreadId,
+        providerId,
+        providerSessionId,
+        logicalSessionId: input.logical.logicalSessionId,
+        worktreeId: input.target.worktreeId,
+        repositoryId: input.target.repositoryId,
+        boundCwd: input.targetCwd,
+        routingVersion: input.transition.sourceRoutingVersion + 1,
+        bindingGeneration: Number(sourceBinding?.bindingGeneration ?? 1) + 1
+      },
+      dynamicTools: input.threadOptions.dynamicTools,
+      dynamicToolConfirmation: input.toolConfirmation,
+      dynamicToolAgentId: input.threadOptions.dynamicToolAgentId,
+      dynamicToolMetadata: input.threadOptions.dynamicToolMetadata,
+      strategy: input.strategy,
+      recovered: input.recovered
+    });
   }
 
   requireAvailableTarget(worktreeId) {
@@ -630,6 +766,92 @@ export function workspaceContinuationPrompt(value = null, transitionId = null) {
   ].filter(Boolean).join("\n\n");
 }
 
+function requireExactDynamicToolConfirmation(threadId, options = {}, errorCode = null) {
+  if (!Array.isArray(options.dynamicTools)) return null;
+  const proof = normalizeDynamicToolConfirmation(options.dynamicToolConfirmation);
+  const expectedHash = hashDynamicToolDefinitions(options.dynamicTools);
+  const providerRevision = proof?.providerRevision ?? "";
+  const exactThreadRevision = providerRevision.startsWith(`thread-start:${threadId}:`)
+    || providerRevision.startsWith(`thread-fork-inherited:${threadId}:`);
+  const exactCount = proof?.providerDefinitionsCount === options.dynamicTools.length;
+  if (!proof
+    || !exactThreadRevision
+    || proof.providerDefinitionsHash !== expectedHash
+    || !exactCount) {
+    throw dynamicToolConfirmationError(
+      "The Tool schema proof did not match the Provider thread and exact Tool definitions.",
+      errorCode
+    );
+  }
+  const providerObservationKind = providerRevision.startsWith(`thread-start:${threadId}:`)
+    ? "thread_start_accepted"
+    : "thread_fork_inherited";
+  if (proof.providerObservationKind !== providerObservationKind) {
+    throw dynamicToolConfirmationError(
+      "The Tool schema proof observation did not match its Provider revision.",
+      errorCode
+    );
+  }
+  return {
+    providerRevision,
+    providerDefinitionsHash: expectedHash,
+    providerDefinitionsCount: options.dynamicTools.length,
+    providerObservationKind
+  };
+}
+
+function normalizeDynamicToolConfirmation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    providerRevision: typeof value.providerRevision === "string"
+      ? value.providerRevision.trim()
+      : "",
+    providerDefinitionsHash: typeof value.providerDefinitionsHash === "string"
+      ? value.providerDefinitionsHash.trim()
+      : "",
+    providerDefinitionsCount: value.providerDefinitionsCount == null
+      ? null
+      : Number(value.providerDefinitionsCount),
+    providerObservationKind: typeof value.providerObservationKind === "string"
+      ? value.providerObservationKind.trim()
+      : (typeof value.observationKind === "string" ? value.observationKind.trim() : "")
+  };
+}
+
+function hashDynamicToolDefinitions(definitions) {
+  return createHash("sha256")
+    .update(stableDynamicToolDefinitions(definitions))
+    .digest("hex");
+}
+
+function stableDynamicToolDefinitions(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableDynamicToolDefinitions).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => (
+      `${JSON.stringify(key)}:${stableDynamicToolDefinitions(value[key])}`
+    )).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function replacementDynamicToolMetadata(value, providerBindingId, routingVersion, bindingGeneration) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return {
+    ...value,
+    providerBindingId,
+    routingVersion,
+    bindingGeneration
+  };
+}
+
+function dynamicToolConfirmationError(message, code = null) {
+  const error = new Error(message);
+  error.code = code ?? "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+  return error;
+}
+
 function coarseSandboxMode(sandboxPolicy) {
   const type = typeof sandboxPolicy === "string" ? sandboxPolicy : sandboxPolicy?.type;
   return new Map([
@@ -644,7 +866,12 @@ function coarseSandboxMode(sandboxPolicy) {
 
 export function isForkUnsupported(error) {
   const code = error?.code ?? error?.rpcCode ?? error?.data?.code;
-  if (code === -32601 || ["METHOD_NOT_FOUND", "UNSUPPORTED_METHOD", "NOT_IMPLEMENTED"].includes(code)) {
+  if (code === -32601 || [
+    "METHOD_NOT_FOUND",
+    "UNSUPPORTED_METHOD",
+    "NOT_IMPLEMENTED",
+    "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED"
+  ].includes(code)) {
     return true;
   }
   return /(thread\/fork|fork).*(not found|unsupported|not implemented|unknown method)/i

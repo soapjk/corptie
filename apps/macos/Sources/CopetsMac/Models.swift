@@ -72,6 +72,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var deliveryStatus: String? = nil
     var providerConnectionStatus: String? = nil
     var syncHealth: String? = nil
+    var transitionState: String? = nil
     let progress: Double
     let summary: String
     let suggestedOptions: [CodexApprovalOption]?
@@ -1122,6 +1123,7 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
     let updatedAt: String
     let canSend: Bool?
     let sendUnavailableReason: String?
+    var transitionState: String? = nil
     let capabilities: SessionCapabilities?
     let turnCount: Int
     let items: [CodexThreadItem]
@@ -1181,6 +1183,7 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
               lhs.updatedAt == rhs.updatedAt,
               lhs.canSend == rhs.canSend,
               lhs.sendUnavailableReason == rhs.sendUnavailableReason,
+              lhs.transitionState == rhs.transitionState,
               lhs.capabilities == rhs.capabilities,
               lhs.turnCount == rhs.turnCount,
               lhs.lastAgentMessageSequence == rhs.lastAgentMessageSequence,

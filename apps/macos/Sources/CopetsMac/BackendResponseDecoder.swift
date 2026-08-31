@@ -33,6 +33,7 @@ enum BackendResponseDecoder {
                 updatedAt: snapshot.updatedAt,
                 canSend: snapshot.canSend,
                 sendUnavailableReason: snapshot.sendUnavailableReason,
+                transitionState: snapshot.transitionState,
                 capabilities: snapshot.capabilities,
                 turnCount: snapshot.turnCount,
                 items: snapshot.items,

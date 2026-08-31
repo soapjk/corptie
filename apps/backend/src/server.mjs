@@ -52,6 +52,7 @@ import {
   callObjectiveChatDynamicTool
 } from "./application/objectiveChatDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
+import { resolveWorkspaceTransitionRuntime } from "./application/workspaceTransitionRuntimeRouting.mjs";
 import { assertManualSessionArchiveAllowed } from "./domain/sessionArchivePolicy.mjs";
 import { resolveConflictResolutionAgentContext } from "./application/conflictResolutionAgentContext.mjs";
 import { SessionProviderSwitchCoordinator } from "./application/sessionProviderSwitchCoordinator.mjs";
@@ -95,6 +96,7 @@ import { SessionBindingRepository } from "./agent-provider/sessionBindingReposit
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import { OpenClackyManager, mergeOpenClackyRuntimeInstructions } from "./adapters/openClackyManager.mjs";
 import { createOpenClackyProvider } from "./agent-provider/providers/openClackyProvider.mjs";
+import { CODEX_TOOL_SCHEMA_CAPABILITIES } from "./agent-provider/providers/codexAppServerProvider.mjs";
 import { openClackyToolHostAttachment } from "./agent-provider/providers/openClackyToolHostAttachment.mjs";
 import { OpenClackyWorkspaceTransitionPort } from "./agent-provider/adapters/openClackyWorkspaceTransitionPort.mjs";
 import { ClaudeWorkspaceTransitionPort } from "./agent-provider/adapters/claudeWorkspaceTransitionPort.mjs";
@@ -657,6 +659,26 @@ const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   sourceTimelineItems: storedTransitionTimelineItems,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
+  confirmToolSchema: ({ threadId, dynamicTools }) => (
+    codexRuntime.confirmThreadToolPlan(threadId, dynamicTools)
+  ),
+  prepareToolMaterialization: async ({
+    logicalSessionId,
+    sessionId,
+    sourceBinding,
+    binding,
+    dynamicToolConfirmation
+  }) => {
+    const session = sessionId ? store.getSession(sessionId) : null;
+    const source = sourceBinding?.bindingId
+      ? store.getSessionToolCatalogMaterialization(logicalSessionId, sourceBinding.bindingId)
+      : null;
+    return toolHostMaterializationCoordinator.prepareAppliedReplacement({
+      binding: prospectiveToolHostBinding({ logicalSessionId, binding, session }),
+      desiredDomains: desiredToolDomainIds(source),
+      providerConfirmation: dynamicToolConfirmation
+    });
+  },
   onRouteCommitted: async (event) => {
     await commitManagedCodexWorkspaceRoute(event);
     enqueueWorkspaceContinuationSafely(event.transitionId);
@@ -819,6 +841,7 @@ const openClackyWorkspaceTransitionManager = new ForkingWorkspaceTransitionManag
   sourceTimelineItems: storedTransitionTimelineItems,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
+  prepareToolMaterialization: prepareDesiredWorkspaceToolMaterialization,
   onRouteCommitted: async (event) => {
     const logical = store.getLogicalSession(event.logicalSessionId);
     const sessionId = logical?.legacySessionId;
@@ -843,6 +866,7 @@ const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
   sourceTimelineItems: storedTransitionTimelineItems,
   requiredInstructionSources: ({ cwd }) => requiredWorkspaceInstructionSources(cwd),
   globalInstructionSources: () => knownGlobalInstructionSources(),
+  prepareToolMaterialization: prepareDesiredWorkspaceToolMaterialization,
   onRouteCommitted: async (event) => {
     await commitManagedClaudeWorkspaceRoute(event);
     enqueueWorkspaceContinuationSafely(event.transitionId);
@@ -923,6 +947,8 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
         appliedDomains: request.appliedDomains,
         appliedExposurePlanHash: plan.exposurePlanHash,
         providerDefinitionsHash: plan.providerDefinitionsHash,
+        providerDefinitionsCount: confirmation.providerDefinitionsCount,
+        providerObservationKind: confirmation.observationKind,
         refreshMode: plan.refreshMode,
         providerRevision: confirmation.providerRevision,
         receiptId: `codex-tool-confirmation:${binding.providerBindingId}:${request.requestedVersion}`
@@ -1048,6 +1074,7 @@ const sessionApplicationService = new SessionApplicationService({
     .requiredBeforeFirstTurn.map((requirement) => requirement.domainId),
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
+  assertMessageDispatchAllowed: (reference) => assertSessionRecoveryMessageBoundary(reference),
   recoverUnavailableSession: async ({ sessionId, reference, error, context }) => {
     if (!reference.logicalSessionId || !context.idempotencyKey) {
       const recoveryError = new Error("Automatic recovery requires a logical Session and stable message idempotency key.");
@@ -1063,6 +1090,18 @@ const sessionApplicationService = new SessionApplicationService({
       reason: error?.replacementReason ?? error?.code ?? "provider-session-unavailable"
     });
     const recoveredReference = requireSessionReference(sessionId);
+    const recoveredSession = store.getSession(sessionId);
+    await sessionApplicationService.resumeSession(sessionId, {
+      purpose: "session-create-finalization",
+      actorId: recoveredSession?.agentId ?? null,
+      sessionId,
+      logicalSessionId: recoveredReference.logicalSessionId,
+      providerBindingId: recoveredReference.bindingId,
+      sessionKind: recoveredSession?.sessionKind ?? "legacy",
+      objectiveId: recoveredSession?.objectiveId ?? null,
+      workItemId: recoveredSession?.workItemId ?? null,
+      desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+    });
     if (recoveryKind === "message") {
       store.rerouteUnsentMessageDelivery(context.idempotencyKey, recoveredReference);
     }
@@ -1180,6 +1219,17 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
   providerPort: new ProviderSessionRecoveryPort({
     createReplacement: async ({ attempt, manifest }) => {
       const storedSession = store.getSession(attempt.sessionId);
+      const recoveryToolContext = {
+        purpose: "session-recovery",
+        actorId: storedSession?.agentId ?? null,
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        sessionKind: storedSession?.sessionKind ?? "legacy",
+        objectiveId: attempt.objectiveId,
+        workItemId: attempt.workItemId,
+        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+      };
+      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
       const created = await sessionApplicationService.createSessionForRouteTransition(attempt.providerId, {
         title: storedSession?.title ?? "Recovered Session",
         cwd: attempt.boundCwd,
@@ -1195,14 +1245,9 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
           replayManifestHash: stableRecoveryHash(manifest)
         }
       }, {
-        purpose: "session-recovery",
-        actorId: storedSession?.agentId ?? null,
-        sessionId: attempt.sessionId,
-        logicalSessionId: attempt.logicalSessionId,
-        sessionKind: storedSession?.sessionKind ?? "legacy",
-        objectiveId: attempt.objectiveId,
-        workItemId: attempt.workItemId,
-        deferSessionBinding: true
+        ...recoveryToolContext,
+        deferSessionBinding: true,
+        preparedToolHost
       });
       const providerThreadId = created?.external?.threadId ?? created?.external?.sessionId ?? created?.id;
       const providerSessionId = created?.external?.sessionId ?? created?.external?.threadId ?? created?.id;
@@ -1211,18 +1256,151 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         creationError.code = "RECOVERY_REPLACEMENT_INVALID";
         throw creationError;
       }
+      let toolConfirmation = null;
+      if (attempt.providerId === "codex-app-server") {
+        const definitions = preparedToolHost?.providerAttachment?.dynamicTools;
+        if (!Array.isArray(definitions)) {
+          const confirmationError = new Error("Replacement Codex Session has no prospective Tool schema.");
+          confirmationError.code = "RECOVERY_TOOL_CONFIRMATION_MISSING";
+          throw confirmationError;
+        }
+        const confirmed = codexRuntime.confirmThreadToolPlan(providerThreadId, definitions);
+        toolConfirmation = {
+          providerRevision: confirmed.providerRevision,
+          providerDefinitionsHash: confirmed.providerDefinitionsHash,
+          providerDefinitionsCount: confirmed.providerDefinitionsCount,
+          providerObservationKind: confirmed.observationKind
+        };
+      }
       return {
         providerThreadId,
         providerSessionId,
         bindingId: `binding:${randomUUID()}`,
-        sessionProjection: created
+        sessionProjection: created,
+        toolConfirmation
       };
     },
-    attachToolHost: async ({ attempt }) => ({
-      catalogHash: stableRecoveryHash(attempt.toolCatalog),
-      catalogGeneration: attempt.toolCatalog?.appliedCatalogVersion ?? null,
-      domains: attempt.toolCatalog?.appliedDomains ?? []
-    }),
+    resumeReplacement: async ({ attempt, replacement, manifest, manifestHash }) => {
+      if (attempt.providerId !== "codex-app-server") return replacement;
+      const storedSession = store.getSession(attempt.sessionId);
+      const recoveryToolContext = {
+        purpose: "session-recovery-resume-empty-target",
+        actorId: storedSession?.agentId ?? null,
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        sessionKind: storedSession?.sessionKind ?? "legacy",
+        objectiveId: attempt.objectiveId,
+        workItemId: attempt.workItemId,
+        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+      };
+      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
+      const expected = replacement.toolConfirmation;
+      if (!expected || !Array.isArray(preparedToolHost?.providerAttachment?.dynamicTools)) {
+        const confirmationError = new Error("Journaled Codex recovery target has no exact Tool schema proof.");
+        confirmationError.code = "RECOVERY_TOOL_CONFIRMATION_MISSING";
+        throw confirmationError;
+      }
+      const providerAttachment = {
+        ...preparedToolHost.providerAttachment,
+        dynamicToolConfirmation: {
+          providerRevision: expected.providerRevision,
+          providerDefinitionsHash: expected.providerDefinitionsHash,
+          providerDefinitionsCount: expected.providerDefinitionsCount,
+          providerObservationKind: expected.providerObservationKind
+        }
+      };
+      try {
+        await codexRuntime.inspectEmptyThreadForRouteCommit(replacement.providerThreadId, {
+          cwd: attempt.boundCwd,
+          runtimeWorkspaceRoots: [attempt.boundCwd],
+          ...providerAttachment
+        });
+        return replacement;
+      } catch (error) {
+        if (error?.code !== "PROVIDER_EMPTY_THREAD_UNRECOVERABLE" || error?.safeToRecreate !== true) {
+          throw error;
+        }
+        return sessionRecoveryCoordinator.providerPort.createReplacement({
+          attempt,
+          manifest,
+          manifestHash
+        });
+      }
+    },
+    attachToolHost: async ({ attempt, replacement }) => {
+      const storedSession = store.getSession(attempt.sessionId);
+      const prepared = await toolHostService.prepareSession(attempt.providerId, {
+        purpose: "session-recovery-validation",
+        actorId: storedSession?.agentId ?? null,
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        sessionKind: storedSession?.sessionKind ?? "legacy",
+        objectiveId: attempt.objectiveId,
+        workItemId: attempt.workItemId,
+        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+      });
+      let confirmed = null;
+      if (attempt.providerId === "codex-app-server") {
+        const definitions = prepared?.providerAttachment?.dynamicTools;
+        const expected = replacement.toolConfirmation;
+        if (Array.isArray(definitions)) {
+          try {
+            confirmed = codexRuntime.confirmThreadToolPlan(replacement.providerThreadId, definitions);
+          } catch (error) {
+            if (error?.code !== "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" || !expected) throw error;
+            confirmed = codexRuntime.restoreThreadToolPlanConfirmation(
+              replacement.providerThreadId,
+              definitions,
+              expected
+            );
+          }
+        }
+        if (!confirmed || !expected
+          || confirmed.providerRevision !== expected.providerRevision
+          || confirmed.providerDefinitionsHash !== expected.providerDefinitionsHash
+          || confirmed.providerDefinitionsCount !== expected.providerDefinitionsCount
+          || confirmed.observationKind !== expected.providerObservationKind) {
+          const confirmationError = new Error("Replacement Codex Tool schema confirmation changed before recovery validation.");
+          confirmationError.code = "RECOVERY_TOOL_CONFIRMATION_MISMATCH";
+          throw confirmationError;
+        }
+      }
+      const prospectiveBinding = prospectiveToolHostBinding({
+        logicalSessionId: attempt.logicalSessionId,
+        binding: {
+          bindingId: replacement.bindingId,
+          providerThreadId: replacement.providerThreadId,
+          providerId: attempt.providerId,
+          providerSessionId: replacement.providerSessionId,
+          worktreeId: attempt.worktreeId,
+          repositoryId: attempt.repositoryId,
+          boundCwd: attempt.boundCwd,
+          routingVersion: attempt.sourceRoutingVersion + 1,
+          bindingGeneration: attempt.targetBindingGeneration
+        },
+        session: storedSession
+      });
+      const replacementInput = {
+        binding: prospectiveBinding,
+        desiredDomains: desiredToolDomainIds(attempt.toolCatalog)
+      };
+      const materialization = attempt.providerId === "codex-app-server"
+        ? await toolHostMaterializationCoordinator.prepareAppliedReplacement({
+            ...replacementInput,
+            providerConfirmation: replacement.toolConfirmation
+          })
+        : await toolHostMaterializationCoordinator.prepareDesiredReplacement(replacementInput);
+      return {
+        catalogHash: stableRecoveryHash(attempt.toolCatalog),
+        catalogGeneration: attempt.toolCatalog?.appliedCatalogVersion ?? null,
+        domains: materialization?.appliedDomains ?? attempt.toolCatalog?.appliedDomains ?? [],
+        providerRevision: replacement.toolConfirmation?.providerRevision ?? null,
+        providerDefinitionsHash: replacement.toolConfirmation?.providerDefinitionsHash ?? null,
+        providerDefinitionsCount: replacement.toolConfirmation?.providerDefinitionsCount ?? null,
+        providerObservationKind: replacement.toolConfirmation?.providerObservationKind ?? null,
+        materialization
+      };
+    },
     applyInstructions: async ({ attempt }) => ({
       sourcesHash: stableRecoveryHash(attempt.instructionSources)
     }),
@@ -1233,6 +1411,29 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
       mode: "trusted_system_context_injection"
     }),
     validateReplacement: async ({ attempt, replacement }) => {
+      const storedSession = store.getSession(attempt.sessionId);
+      const recoveryToolContext = {
+        purpose: "session-recovery-validation",
+        actorId: storedSession?.agentId ?? null,
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        sessionKind: storedSession?.sessionKind ?? "legacy",
+        objectiveId: attempt.objectiveId,
+        workItemId: attempt.workItemId,
+        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+      };
+      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
+      const providerAttachment = replacement.toolConfirmation
+        ? {
+            ...(preparedToolHost?.providerAttachment ?? {}),
+            dynamicToolConfirmation: {
+              providerRevision: replacement.toolConfirmation.providerRevision,
+              providerDefinitionsHash: replacement.toolConfirmation.providerDefinitionsHash,
+              providerDefinitionsCount: replacement.toolConfirmation.providerDefinitionsCount,
+              providerObservationKind: replacement.toolConfirmation.providerObservationKind
+            }
+          }
+        : preparedToolHost?.providerAttachment;
       const reference = {
         sessionId: attempt.sessionId,
         logicalSessionId: attempt.logicalSessionId,
@@ -1246,7 +1447,12 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         attempt.providerId,
         AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
         reference,
-        { purpose: "session-recovery-validation", actorId: store.getSession(attempt.sessionId)?.agentId ?? null }
+        {
+          ...recoveryToolContext,
+          toolHost: preparedToolHost
+            ? { ...preparedToolHost, providerAttachment }
+            : null
+        }
       );
       return {
         readable: Boolean(resumed),
@@ -1282,7 +1488,30 @@ const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
   store,
   coordinator: toolHostMaterializationCoordinator,
   isSessionBusy: (session) => sessionHasActiveRun(session),
-  recoverBinding: (input) => sessionRecoveryCoordinator.recover(input),
+  isAppliedProofCurrent: ({ binding, record }) => codexAppliedToolProofIsCurrent(binding, record),
+  recoverBinding: async (input) => {
+    const attempt = await sessionRecoveryCoordinator.recover(input);
+    const logical = store.getLogicalSession(input.logicalSessionId);
+    const sessionId = logical?.legacySessionId ?? null;
+    const recoveredSession = sessionId ? store.getSession(sessionId) : null;
+    if (!sessionId || !logical?.activeBinding) {
+      const error = new Error("Recovered Session route is incomplete during Tool bootstrap preflight.");
+      error.code = "RECOVERY_BINDING_MISSING";
+      throw error;
+    }
+    await sessionApplicationService.resumeSession(sessionId, {
+      purpose: "session-create-finalization",
+      actorId: recoveredSession?.agentId ?? null,
+      sessionId,
+      logicalSessionId: logical.logicalSessionId,
+      providerBindingId: logical.activeBinding.bindingId,
+      sessionKind: recoveredSession?.sessionKind ?? "legacy",
+      objectiveId: recoveredSession?.objectiveId ?? null,
+      workItemId: recoveredSession?.workItemId ?? null,
+      desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+    });
+    return attempt;
+  },
   maxCandidates: 32,
   concurrency: 2
 });
@@ -1407,23 +1636,61 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
   registry: agentProviderRegistry,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   hasActiveRun: (session) => sessionHasActiveRun(session),
-  resolveTargetContext: async ({ reference, logical }) => {
+  resolveTargetContext: async ({ reference, logical, providerId }) => {
     const session = reference.metadata?.session ?? store.getSession(reference.sessionId);
     const agent = collaborationCore.getAgentForSession(reference.sessionId)
       ?? ensureCollaborationAgentForSession(session);
+    const sourceMaterialization = logical?.activeBinding?.bindingId
+      ? store.getSessionToolCatalogMaterialization(
+          logical.logicalSessionId,
+          logical.activeBinding.bindingId
+        )
+      : null;
+    const preservedDomains = desiredToolDomainIds(sourceMaterialization);
+    const desiredToolDomains = preservedDomains.length > 0
+      ? preservedDomains
+      : session?.sessionKind === "worker" ? ["artifacts"] : [];
+    const toolHostContext = {
+      purpose: "provider-switch",
+      actorId: agent?.agentId ?? null,
+      sessionId: reference.sessionId,
+      logicalSessionId: logical.logicalSessionId,
+      sessionKind: session?.sessionKind ?? "legacy",
+      objectiveId: session?.objectiveId ?? null,
+      workItemId: session?.workItemId ?? null,
+      desiredToolDomains
+    };
+    const preparedToolHost = await toolHostService.prepareSession(providerId, toolHostContext);
+    const providerAttachment = preparedToolHost?.providerAttachment ?? null;
     return {
       agentId: agent?.agentId ?? null,
       sessionKind: session?.sessionKind ?? "legacy",
-      instructionSummary: summarizeProviderInstructionSources(logical)
+      instructionSummary: summarizeProviderInstructionSources(logical),
+      desiredToolDomains,
+      toolHostContext,
+      preparedToolHost,
+      dynamicTools: providerAttachment?.dynamicTools,
+      dynamicToolAgentId: providerAttachment?.dynamicToolAgentId ?? agent?.agentId ?? null,
+      dynamicToolMetadata: providerAttachment?.dynamicToolMetadata ?? null
     };
   },
-  createTargetSession: async ({ providerId, title, cwd, agentId, instructionSummary, sessionKind }) => {
+  createTargetSession: async ({
+    providerId, title, cwd, agentId, instructionSummary, sessionKind,
+    input, preparedToolHost, toolHostContext
+  }) => {
     const created = await sessionApplicationService.createSessionForRouteTransition(providerId, {
+      ...(input ?? {}),
       title,
       cwd,
       instructionSources: instructionSummary ? [instructionSummary] : [],
       sessionKind
-    }, { purpose: "provider-switch", actorId: agentId ?? null, sessionKind });
+    }, {
+      ...(toolHostContext ?? {}),
+      purpose: "provider-switch",
+      actorId: agentId ?? null,
+      sessionKind,
+      preparedToolHost
+    });
     return {
       providerThreadId: created?.external?.threadId ?? created?.external?.sessionId ?? created?.id ?? null,
       providerSessionId: created?.external?.sessionId
@@ -1432,6 +1699,125 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
         ?? null,
       sessionProjection: created
     };
+  },
+  resumeTargetSession: async (input) => {
+    const sourceSession = store.getSession(
+      input.sourceLogical?.legacySessionId ?? input.context?.toolHostContext?.sessionId
+    );
+    const targetProjection = {
+      ...(sourceSession ?? {}),
+      status: "complete",
+      summary: "Provider Session recovered for route commit.",
+      external: {
+        ...(sourceSession?.external ?? {}),
+        provider: input.providerId,
+        threadId: input.providerThreadId,
+        sessionId: input.providerSessionId,
+        cwd: input.sourceLogical?.activeBinding?.boundCwd ?? sourceSession?.external?.cwd ?? null
+      }
+    };
+    const preparedToolHost = input.context?.preparedToolHost ?? null;
+    const providerAttachment = input.dynamicToolConfirmation && preparedToolHost?.providerAttachment
+      ? {
+          ...preparedToolHost.providerAttachment,
+          dynamicToolConfirmation: input.dynamicToolConfirmation
+        }
+      : preparedToolHost?.providerAttachment;
+    if (input.providerId === "codex-app-server") {
+      try {
+        await codexRuntime.inspectEmptyThreadForRouteCommit(input.providerThreadId, {
+          cwd: input.sourceLogical?.activeBinding?.boundCwd ?? sourceSession?.external?.cwd ?? undefined,
+          runtimeWorkspaceRoots: input.sourceLogical?.activeBinding?.boundCwd
+            ? [input.sourceLogical.activeBinding.boundCwd]
+            : undefined,
+          ...(providerAttachment ?? {})
+        });
+        return {
+          providerThreadId: input.providerThreadId,
+          providerSessionId: input.providerSessionId,
+          sessionProjection: targetProjection
+        };
+      } catch (error) {
+        if (error?.code !== "PROVIDER_EMPTY_THREAD_UNRECOVERABLE" || error?.safeToRecreate !== true) {
+          throw error;
+        }
+        const recreated = await sessionApplicationService.createSessionForRouteTransition(
+          input.providerId,
+          {
+            title: input.sourceLogical?.title ?? sourceSession?.title ?? "Recovered Provider Session",
+            cwd: input.sourceLogical?.activeBinding?.boundCwd ?? sourceSession?.external?.cwd,
+            instructionSources: input.context?.instructionSummary
+              ? [input.context.instructionSummary]
+              : [],
+            sessionKind: input.context?.sessionKind ?? sourceSession?.sessionKind ?? "legacy"
+          },
+          {
+            ...(input.context?.toolHostContext ?? {}),
+            purpose: "provider-switch-recreate-empty-target",
+            preparedToolHost
+          }
+        );
+        const providerThreadId = recreated?.external?.threadId
+          ?? recreated?.external?.sessionId
+          ?? recreated?.id
+          ?? null;
+        if (!providerThreadId) throw error;
+        return {
+          providerThreadId,
+          providerSessionId: recreated?.external?.sessionId ?? providerThreadId,
+          sessionProjection: recreated,
+          replacedUnrecoverableTarget: true,
+          previousProviderThreadId: input.providerThreadId
+        };
+      }
+    }
+    const resumed = await agentProviderRegistry.invoke(
+      input.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      {
+        sessionId: sourceSession?.id ?? input.context?.toolHostContext?.sessionId ?? input.logicalSessionId,
+        logicalSessionId: input.logicalSessionId,
+        providerId: input.providerId,
+        providerSessionId: input.providerSessionId,
+        routingVersion: Number(input.transition?.sourceRoutingVersion ?? 0) + 1,
+        metadata: { session: targetProjection }
+      },
+      {
+        ...(input.context?.toolHostContext ?? {}),
+        purpose: "provider-switch-recovery",
+        toolHost: preparedToolHost
+          ? { ...preparedToolHost, providerAttachment }
+          : null
+      }
+    );
+    return {
+      providerThreadId: input.providerThreadId,
+      providerSessionId: input.providerSessionId,
+      sessionProjection: resumed ?? targetProjection
+    };
+  },
+  confirmToolSchema: ({ providerThreadId, dynamicTools }) => (
+    codexRuntime.confirmThreadToolPlan(providerThreadId, dynamicTools)
+  ),
+  prepareToolMaterialization: async (input) => {
+    const session = input.sessionId ? store.getSession(input.sessionId) : null;
+    const source = input.sourceBinding?.bindingId
+      ? store.getSessionToolCatalogMaterialization(input.logicalSessionId, input.sourceBinding.bindingId)
+      : null;
+    const replacement = {
+      binding: prospectiveToolHostBinding({
+        logicalSessionId: input.logicalSessionId,
+        binding: input.binding,
+        session
+      }),
+      desiredDomains: desiredToolDomainIds(source)
+    };
+    return input.requiresApplied === true
+      ? toolHostMaterializationCoordinator.prepareAppliedReplacement({
+          ...replacement,
+          providerConfirmation: input.dynamicToolConfirmation
+        })
+      : toolHostMaterializationCoordinator.prepareDesiredReplacement(replacement);
   },
   onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
 });
@@ -2179,8 +2565,9 @@ function continuePendingWorkspaceTransition(logical, lastCompletedTurnId) {
     ? store.getPendingWorkspaceTransition(logical.logicalSessionId)
     : null;
   if (!transition || transition.phase !== "waitingForTurn") return null;
-  return collaborationThreadOptionsForSession(logical.legacySessionId).then((options) => (
-    workspaceTransitionManager.continueWorkspaceTransition(transition.transitionId, {
+  if (transition.transitionKind === "provider") return null;
+  return workspaceTransitionRuntimeForLogicalSession(logical).then(({ manager, options }) => (
+    manager.continueWorkspaceTransition(transition.transitionId, {
       lastCompletedTurnId,
       ...options
     })
@@ -2287,9 +2674,10 @@ async function reconcileMovedWorkspaceRoutes(worktrees = [], options = {}) {
       }
       reconcilingWorkspacePaths.add(logical.logicalSessionId);
       try {
-        await workspaceTransitionManager.reconcileActiveWorkspacePath(
+        const runtime = await workspaceTransitionRuntimeForLogicalSession(logical);
+        await runtime.manager.reconcileActiveWorkspacePath(
           logical.logicalSessionId,
-          await collaborationThreadOptionsForSession(logical.legacySessionId)
+          runtime.options
         );
       } catch (error) {
         console.warn(`[workspace-route] path rebind failed logicalSession=${logical.logicalSessionId} error=${error.message}`);
@@ -3374,10 +3762,79 @@ async function collaborationThreadOptionsForSession(sessionId, options = {}) {
         .filter(Boolean);
     }
   }
-  return (await toolHostService.prepareSession("codex-app-server", {
+  const prepared = await toolHostService.prepareSession("codex-app-server", {
     actorId: agent.agentId,
     ...metadata
-  }))?.providerAttachment ?? {};
+  });
+  const attachment = prepared?.providerAttachment ?? {};
+  const receipt = prepared?.materialization?.record?.providerReceipt ?? null;
+  if (!receipt?.providerRevision
+    || !receipt?.providerDefinitionsHash
+    || !Number.isSafeInteger(receipt?.providerDefinitionsCount)
+    || !receipt?.providerObservationKind) return attachment;
+  return {
+    ...attachment,
+    dynamicToolConfirmation: {
+      providerRevision: receipt.providerRevision,
+      providerDefinitionsHash: receipt.providerDefinitionsHash,
+      providerDefinitionsCount: receipt.providerDefinitionsCount,
+      providerObservationKind: receipt.providerObservationKind
+    }
+  };
+}
+
+async function workspaceTransitionRuntimeForLogicalSession(logical) {
+  return resolveWorkspaceTransitionRuntime(logical?.activeBinding?.providerId, {
+    "codex-app-server": {
+      manager: workspaceTransitionManager,
+      loadOptions: () => collaborationThreadOptionsForSession(logical?.legacySessionId)
+    },
+    "claude-sdk": { manager: claudeWorkspaceTransitionManager },
+    openclacky: { manager: openClackyWorkspaceTransitionManager }
+  });
+}
+
+function withPersistedCodexToolConfirmation(reference, attachment = {}) {
+  const logicalSessionId = reference?.logicalSessionId
+    ?? reference?.metadata?.session?.external?.logicalSessionId
+    ?? null;
+  const providerBindingId = reference?.bindingId ?? reference?.providerBindingId ?? null;
+  if (!logicalSessionId || !providerBindingId) return attachment;
+  const record = store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
+  const receipt = record?.providerReceipt ?? null;
+  if (!receipt?.providerRevision
+    || !receipt?.providerDefinitionsHash
+    || !Number.isSafeInteger(receipt?.providerDefinitionsCount)
+    || !receipt?.providerObservationKind) return attachment;
+  return {
+    ...attachment,
+    dynamicToolConfirmation: {
+      providerRevision: receipt.providerRevision,
+      providerDefinitionsHash: receipt.providerDefinitionsHash,
+      providerDefinitionsCount: receipt.providerDefinitionsCount,
+      providerObservationKind: receipt.providerObservationKind
+    }
+  };
+}
+
+function codexAppliedToolProofIsCurrent(binding, record) {
+  if (binding?.providerId !== "codex-app-server") return true;
+  const receipt = record?.providerReceipt ?? {};
+  const definitions = record?.exposurePlan?.providerDefinitions;
+  const threadId = binding.providerSessionId;
+  const startProof = typeof receipt.providerRevision === "string"
+    && receipt.providerRevision.startsWith(`thread-start:${threadId}:`)
+    && receipt.providerObservationKind === "thread_start_accepted";
+  const inheritedProof = typeof receipt.providerRevision === "string"
+    && receipt.providerRevision.startsWith(`thread-fork-inherited:${threadId}:`)
+    && receipt.providerObservationKind === "thread_fork_inherited";
+  return record?.exposurePlan?.capabilityRevision === CODEX_TOOL_SCHEMA_CAPABILITIES.capabilityRevision
+    && receipt.providerCapabilityRevision === CODEX_TOOL_SCHEMA_CAPABILITIES.capabilityRevision
+    && typeof receipt.providerDefinitionsHash === "string"
+    && receipt.providerDefinitionsHash === record.exposurePlan?.providerDefinitionsHash
+    && Array.isArray(definitions)
+    && receipt.providerDefinitionsCount === definitions.length
+    && (startProof || inheritedProof);
 }
 
 function sessionToolMetadata(session) {
@@ -3429,6 +3886,60 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
       Number(workItem?.resource_version ?? 1)
     )
   };
+}
+
+function prospectiveToolHostBinding({ logicalSessionId, binding = {}, session = null }) {
+  const workItem = session?.workItemId ? store.getWorkItem(session.workItemId) : null;
+  const providerBindingId = binding.bindingId ?? binding.providerBindingId;
+  const providerSessionId = binding.providerSessionId ?? binding.providerThreadId;
+  return {
+    logicalSessionId,
+    providerBindingId,
+    providerId: binding.providerId,
+    providerSessionId,
+    routingVersion: Number(binding.routingVersion ?? 1),
+    bindingGeneration: Number(binding.bindingGeneration ?? 1),
+    state: "active",
+    isCurrent: true,
+    tombstoned: false,
+    sessionId: session?.id ?? null,
+    sessionKind: session?.sessionKind ?? "legacy",
+    objectiveId: session?.objectiveId ?? null,
+    workItemId: session?.workItemId ?? null,
+    currentWorkItemSessionId: workItem?.current_session_id ?? null,
+    agentId: session?.agentId ?? null,
+    worktreeId: binding.worktreeId ?? null,
+    repositoryId: binding.repositoryId ?? null,
+    boundCwd: binding.boundCwd ?? null,
+    authorizationRevision: Math.max(
+      Number(binding.routingVersion ?? 1),
+      Number(workItem?.resource_version ?? 1)
+    )
+  };
+}
+
+async function prepareDesiredWorkspaceToolMaterialization({
+  logicalSessionId,
+  sessionId,
+  sourceBinding,
+  binding
+}) {
+  const session = sessionId ? store.getSession(sessionId) : null;
+  const source = sourceBinding?.bindingId
+    ? store.getSessionToolCatalogMaterialization(logicalSessionId, sourceBinding.bindingId)
+    : null;
+  return toolHostMaterializationCoordinator.prepareDesiredReplacement({
+    binding: prospectiveToolHostBinding({ logicalSessionId, binding, session }),
+    desiredDomains: desiredToolDomainIds(source)
+  });
+}
+
+function desiredToolDomainIds(materialization = null) {
+  return [...new Set([
+    ...(materialization?.desiredDomains ?? []),
+    ...(materialization?.appliedDomains ?? [])
+  ].map((domain) => typeof domain === "string" ? domain : domain?.domainId)
+    .filter(Boolean))].sort();
 }
 
 function objectiveChatInstructions(metadata) {
@@ -4789,14 +5300,17 @@ async function resumeCodexProviderSession(reference, context = {}) {
   const previous = reference.metadata?.session
     ?? store.getSession(reference.sessionId);
   if (!previous) throw new Error("Session not found.");
-  const runtimeOptions = context.toolHost?.providerAttachment
-    ?? await collaborationThreadOptionsForSession(reference.sessionId);
+  const runtimeOptions = withPersistedCodexToolConfirmation(
+    reference,
+    context.toolHost?.providerAttachment
+      ?? await collaborationThreadOptionsForSession(reference.sessionId)
+  );
   if (context.purpose === "session-create-finalization") {
     // A newly started empty Codex thread has no rollout and cannot be resumed.
     // Its dynamic contracts were installed during thread/start; only their
     // trusted Session scope must be rebound after Corptie persists the route.
     codexRuntime.bindThreadToolContext(reference.providerSessionId, runtimeOptions);
-  } else if (context.purpose === "session-recovery-validation") {
+  } else if (["session-recovery-validation", "provider-switch-recovery"].includes(context.purpose)) {
     // A replacement Codex thread is intentionally empty until the recovered
     // Delivery is dispatched. Fresh empty threads have no rollout file yet, so
     // thread/resume would falsely report them missing. ensureThreadResumed
@@ -4838,8 +5352,11 @@ async function prepareCodexProviderExecution(reference, context = {}) {
   const activeCwd = routeResolution?.route?.cwd
     ?? logicalRoute?.activeBinding?.boundCwd
     ?? managed.external?.cwd;
-  const threadOptions = context.toolHost?.providerAttachment
-    ?? await collaborationThreadOptionsForSession(sessionId);
+  const threadOptions = withPersistedCodexToolConfirmation(
+    reference,
+    context.toolHost?.providerAttachment
+      ?? await collaborationThreadOptionsForSession(sessionId)
+  );
   const resumeStartedAt = Date.now();
   const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
     cwd: activeCwd,
@@ -5455,6 +5972,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     throw error;
   }
   const reference = requireSessionReference(sessionId);
+  assertSessionRecoveryMessageBoundary(reference);
   if (options.agentWorkItem) assertAgentWorkSessionReference(options.agentWorkItem, reference);
   const routedSessionId = reference.sessionId;
   const publicSessionId = reference.logicalSessionId ?? routedSessionId;
@@ -5602,6 +6120,21 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     legacySessionId: routedSessionId,
     result
   };
+}
+
+function assertSessionRecoveryMessageBoundary(reference) {
+  const logicalSessionId = reference?.logicalSessionId ?? null;
+  const legacySessionId = reference?.sessionId ?? null;
+  const logical = logicalSessionId
+    ? store.getLogicalSession(logicalSessionId)
+    : legacySessionId
+      ? store.getLogicalSessionByLegacySessionId(legacySessionId)
+      : null;
+  if (logical?.transitionState !== "sessionRecovery") return;
+  const error = new Error("The Session is recovering. Sending messages is temporarily unavailable.");
+  error.code = "SESSION_BUSY";
+  error.reason = "sessionRecovery";
+  throw error;
 }
 
 function collaborationConfirmationReply(value) {
@@ -6659,15 +7192,8 @@ async function handleClaudeTurnSettled(event) {
   const agent = collaborationCore.getAgentForSession(sessionId);
   if (event.status === "completed") {
     refreshWorkspaceInventoryAfterTurn(logical);
-    const transition = store.getPendingWorkspaceTransition(logical.logicalSessionId);
-    const continuation = transition?.phase === "waitingForTurn"
-      ? claudeWorkspaceTransitionManager.continueWorkspaceTransition(transition.transitionId, {
-          lastCompletedTurnId: event.turnId
-        })
-      : null;
-    const providerSwitch = transition?.transitionKind === "provider"
-      ? continuePendingProviderSwitch(logical)
-      : null;
+    const continuation = continuePendingWorkspaceTransition(logical, event.turnId);
+    const providerSwitch = continuePendingProviderSwitch(logical);
     resumeWorkAfterTransition(continuation, () => {
       scheduleAgentWorkDrain(sessionId);
     });
@@ -9617,6 +10143,31 @@ server.on("upgrade", (request, socket, head) => {
   }
 });
 
+async function resumeSessionRecoveryAttemptsAtStartup() {
+  const attempts = store.listResumableSessionRecoveryAttempts();
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < attempts.length) {
+      const attempt = attempts[cursor];
+      cursor += 1;
+      try {
+        await sessionRecoveryCoordinator.recover({
+          logicalSessionId: attempt.logicalSessionId,
+          providerId: attempt.providerId,
+          idempotencyKey: attempt.idempotencyKey,
+          attemptId: attempt.attemptId
+        });
+      } catch (error) {
+        console.warn(`[session-recovery] startup resume failed attempt=${attempt.attemptId} code=${error.code ?? "SESSION_RECOVERY_FAILED"}`);
+      }
+    }
+  };
+  await Promise.all(Array.from(
+    { length: Math.min(2, attempts.length) },
+    () => worker()
+  ));
+}
+
 await store.initialize();
 benchmarkControlPlane.initialize();
 if (runIsolationCoordinator) {
@@ -9663,16 +10214,6 @@ store.setStateDirtyListener(scheduleStateSyncPublish);
 store.setTimelineDirtyListener(scheduleTimelineChangePublish);
 await ensureCorptieOpenClackyRuntime({ environmentName });
 openClackyManager.start();
-for (const attempt of store.listResumableSessionRecoveryAttempts()) {
-  sessionRecoveryCoordinator.recover({
-    logicalSessionId: attempt.logicalSessionId,
-    providerId: attempt.providerId,
-    idempotencyKey: attempt.idempotencyKey,
-    attemptId: attempt.attemptId
-  }).catch((error) => {
-    console.warn(`[session-recovery] startup resume failed attempt=${attempt.attemptId} code=${error.code ?? "SESSION_RECOVERY_FAILED"}`);
-  });
-}
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
   store,
@@ -9746,6 +10287,7 @@ for (const agent of store.listAgents()) {
 for (const storedSession of storedSessionsAtStartup) {
   ensureCollaborationAgentForSession(storedSession);
 }
+await resumeSessionRecoveryAttemptsAtStartup();
 const rolloutRecoveredDeliveries = recoverCollaborationDeliveriesAfterCodexRolloutRepair({
   core: collaborationCore,
   store,
@@ -9768,12 +10310,29 @@ publishProviderEventOutbox(store.listPendingEventOutbox(500));
 for (const transition of store.listPendingWorkspaceTransitions()) {
   const logical = store.getLogicalSession(transition.logicalSessionId);
   try {
-    const transitionManager = logical?.activeBinding?.providerId === "claude-sdk"
-      ? claudeWorkspaceTransitionManager
-      : workspaceTransitionManager;
-    const recovered = await transitionManager.recoverWorkspaceTransition(
+    if (transition.transitionKind === "provider") {
+      const sessionId = logical?.legacySessionId;
+      const unsettled = sessionId ? store.listUnsettledSessionTurns(sessionId) : [];
+      if (unsettled.length > 0) {
+        console.log(`[provider-switch] recovery waiting transition=${transition.transitionId} unsettled=${unsettled.length}`);
+        continue;
+      }
+      const reference = sessionBindingRepository.resolve(
+        logical?.legacySessionId ?? logical?.logicalSessionId
+      );
+      const recovered = await sessionProviderSwitchCoordinator.completeProviderSwitch(
+        transition.transitionId,
+        undefined,
+        reference,
+        logical
+      );
+      console.log(`[provider-switch] recovered transition=${transition.transitionId} status=${recovered.status}`);
+      continue;
+    }
+    const runtime = await workspaceTransitionRuntimeForLogicalSession(logical);
+    const recovered = await runtime.manager.recoverWorkspaceTransition(
       transition.transitionId,
-      await collaborationThreadOptionsForSession(logical?.legacySessionId)
+      runtime.options
     );
     console.log(`[workspace-transition] recovered transition=${transition.transitionId} status=${recovered.status}`);
   } catch (error) {
