@@ -884,8 +884,6 @@ struct SessionListRowContent: View {
 }
 
 struct DetailSessionRailRow: View {
-    @EnvironmentObject private var backendClient: BackendClient
-    @State private var isRenaming = false
     @ObservedObject var row: SessionRowModel
     let selectedSessionID: String?
     let select: (TaskSession) -> Void
@@ -919,14 +917,6 @@ struct DetailSessionRailRow: View {
         }
         .buttonStyle(.plain)
         .help("\(session.title)\n\(session.executionTaskStatus.label)")
-        .contextMenu {
-            SessionContextMenuContent(session: session, isRenaming: $isRenaming)
-        }
-        .sheet(isPresented: $isRenaming) {
-            RenameSessionSheet(session: session) { isRenaming = false }
-                .environmentObject(backendClient)
-                .presentationBackground(.clear)
-        }
     }
 }
 
