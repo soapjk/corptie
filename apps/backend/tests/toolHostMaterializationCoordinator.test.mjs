@@ -261,6 +261,36 @@ test("an existing restricted-gateway binding hot-loads a newly registered deferr
   }
 });
 
+test("catalog search tokenizes natural-language intent and normalized domain hints", async () => {
+  const value = await fixture();
+  try {
+    value.catalog.register({
+      id: "work-item-acceptance",
+      tools: [{
+        name: "corptie_work_item_report_acceptance",
+        description: "Report criterion-by-criterion acceptance evidence for the WorkItem bound to this Session.",
+        inputSchema: { type: "object" }
+      }],
+      execute: () => null
+    });
+
+    const result = await value.coordinator.search({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      intent: "Call the acceptance evidence reporting tool for the current work item binding",
+      domainHint: "work item acceptance"
+    });
+
+    assert.deepEqual(result.domains.map((domain) => domain.domainId), ["work-item-acceptance"]);
+    assert.deepEqual(result.domains[0].tools.map((tool) => tool.canonicalName), [
+      "corptie_work_item_report_acceptance"
+    ]);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("unconfirmed bootstrap-only Tool schema is marked safe for one binding replacement before dispatch", async () => {
   const value = await fixture({
     capability: {
