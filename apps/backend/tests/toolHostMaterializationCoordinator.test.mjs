@@ -387,6 +387,32 @@ test("unconfirmed bootstrap-only Tool schema is marked safe for one binding repl
   }
 });
 
+test("all confirmed pre-dispatch Tool schema failures remain safely retryable", async () => {
+  const value = await fixture({
+    apply: async () => {
+      const error = new Error("Provider rejected the materialized schema receipt.");
+      error.code = "PROVIDER_TOOL_RECEIPT_INVALID";
+      throw error;
+    }
+  });
+  try {
+    await assert.rejects(
+      () => value.coordinator.ensureApplied({
+        logicalSessionId: "logical:worker", providerBindingId: "binding:worker"
+      }),
+      (error) => error?.code === "SESSION_TOOL_CATALOG_REFRESH_FAILED"
+        && error.dispatchState === "not_sent"
+        && error.recoveryAction === undefined
+    );
+    const failed = value.store.getSessionToolCatalogMaterialization("logical:worker", "binding:worker");
+    assert.equal(failed.status, "error");
+    assert.equal(failed.lastErrorCode, "PROVIDER_TOOL_RECEIPT_INVALID");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("an active Turn records desired state but never mutates Provider tool schemas", async () => {
   const value = await fixture();
   try {
