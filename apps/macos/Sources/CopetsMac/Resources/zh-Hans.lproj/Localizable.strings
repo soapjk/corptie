@@ -217,9 +217,6 @@
 "Connecting" = "正在连接";
 "Error" = "错误";
 "Stopped" = "已停止";
-"Welcome to Corptie" = "欢迎使用 Corptie";
-"Corptie keeps your agent tasks visible in a floating panel while you work on other things.\n\nYour session data is stored in ~/Library/Application Support/Corptie/ and stays on this machine.\n\nIf you ever need to run tasks in a workspace on an external drive, you may need to grant Corptie Full Disk Access in System Settings." = "Corptie 会将 Agent 任务显示在悬浮面板中，方便你在处理其他工作时随时查看。\n\n会话数据存储在 ~/Library/Application Support/Corptie/，并始终保留在这台 Mac 上。\n\n如果需要在外置硬盘的工作区中运行任务，可能需要在系统设置中授予 Corptie 完全磁盘访问权限。";
-"Get Started" = "开始使用";
 "Show Corptie" = "显示 Corptie";
 "Collaboration..." = "协作…";
 "Settings..." = "设置…";

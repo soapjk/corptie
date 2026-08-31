@@ -562,12 +562,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.setActivationPolicy(.regular)
         configureApplicationIcon()
 
-        // Start the App-owned backend before any first-run UI that can block
-        // this delegate callback. A fresh Development defaults suite may show
-        // a modal welcome prompt, but backend availability must not depend on
-        // dismissing that prompt.
+        // Start the App-owned backend immediately. First-use guidance is
+        // intentionally absent until a non-blocking onboarding design exists.
         CorptieBackendSupervisor.ensureBackendStarted()
-        showWelcomePromptIfNeeded()
 
         // The production backend is started alongside the app, so the first
         // Entity request can legitimately race its launch. Refresh the Entity
@@ -820,29 +817,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         NSApp.applicationIconImage = icon
-    }
-
-    private func showWelcomePromptIfNeeded() {
-        let key = "corptie.hasAcknowledgedWelcomeSetup"
-
-        guard !CorptieAppEnvironment.userDefaults.bool(forKey: key) else {
-            return
-        }
-
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = L10n("Welcome to Corptie")
-        alert.informativeText = L10n("""
-        Corptie keeps your agent tasks visible in a floating panel while you work on other things.
-
-        Your session data is stored in ~/Library/Application Support/Corptie/ and stays on this machine.
-
-        If you ever need to run tasks in a workspace on an external drive, you may need to grant Corptie Full Disk Access in System Settings.
-        """)
-        alert.addButton(withTitle: L10n("Get Started"))
-        CorptieAppEnvironment.userDefaults.set(true, forKey: key)
-        CorptieAppEnvironment.userDefaults.synchronize()
-        alert.runModal()
     }
 
     private func installStatusItem() {
