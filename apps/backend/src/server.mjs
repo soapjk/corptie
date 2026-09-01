@@ -94,6 +94,7 @@ import {
   ToolHostMaterializationCoordinator
 } from "./application/toolHostMaterializationCoordinator.mjs";
 import { ToolBootstrapBindingPreflight } from "./application/toolBootstrapBindingPreflight.mjs";
+import { EmptyProviderBindingPreflight } from "./application/emptyProviderBindingPreflight.mjs";
 import { SerializedOperationQueue } from "./application/serializedOperationQueue.mjs";
 import { SessionBindingRepository } from "./agent-provider/sessionBindingRepository.mjs";
 import { createClaudeProviderRuntime } from "./agent-provider/bootstrap/claudeProviderBootstrap.mjs";
@@ -1564,6 +1565,66 @@ const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
   maxCandidates: 32,
   concurrency: 2
 });
+const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
+  store,
+  providerId: "codex-app-server",
+  concurrency: 2,
+  onChanged: (candidate) => store.touchSessionProjectionDependency(candidate.sessionId),
+  ensureUsable: async (candidate) => {
+    let logical = store.getLogicalSession(candidate.logicalSessionId);
+    let binding = logical?.activeBinding ?? null;
+    if (!binding) {
+      const error = new Error("Session has no active Provider binding during startup verification.");
+      error.code = "SESSION_BINDING_NOT_FOUND";
+      throw error;
+    }
+    const session = store.getSession(candidate.sessionId);
+    const resumeContext = {
+      purpose: binding.bindingId === candidate.bindingId
+        ? "startup-binding-runtime-verification"
+        : "session-create-finalization",
+      actorId: session?.agentId ?? null,
+      sessionId: candidate.sessionId,
+      logicalSessionId: logical.logicalSessionId,
+      providerBindingId: binding.bindingId,
+      sessionKind: session?.sessionKind ?? "legacy",
+      objectiveId: session?.objectiveId ?? null,
+      workItemId: session?.workItemId ?? null
+    };
+    try {
+      await sessionApplicationService.resumeSession(candidate.sessionId, resumeContext);
+      return { recovered: false, bindingId: binding.bindingId };
+    } catch (error) {
+      if (!isSafelyRecoverableEmptyBindingError(error)) throw error;
+    }
+    const attempt = await sessionRecoveryCoordinator.recover({
+      logicalSessionId: logical.logicalSessionId,
+      providerId: binding.providerId,
+      sourceBindingId: binding.bindingId,
+      idempotencyKey: `startup-empty-binding-recovery:v1:${binding.bindingId}`,
+      reason: "PROVIDER_EMPTY_BINDING_UNAVAILABLE"
+    });
+    logical = store.getLogicalSession(candidate.logicalSessionId);
+    binding = logical?.activeBinding ?? null;
+    if (!binding) {
+      const error = new Error("Recovered Session route has no active Provider binding.");
+      error.code = "RECOVERY_BINDING_MISSING";
+      throw error;
+    }
+    await sessionApplicationService.resumeSession(candidate.sessionId, {
+      ...resumeContext,
+      purpose: "session-create-finalization",
+      providerBindingId: binding.bindingId,
+      desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+    });
+    return { recovered: true, bindingId: binding.bindingId };
+  }
+});
+
+function isSafelyRecoverableEmptyBindingError(error) {
+  return error?.code === "PROVIDER_SESSION_UNAVAILABLE"
+    || error?.code === "PROVIDER_EMPTY_THREAD_UNRECOVERABLE";
+}
 platformOperationService = new PlatformOperationService({
   store,
   objectiveService,
@@ -2423,6 +2484,9 @@ function decorateSessionForClient(session, options = {}) {
     logicalSession: logical,
     requireActiveBinding: options.requireActiveBinding !== false,
     providerRuntime: providerId ? providerRuntimeReadiness.get(providerId) : null,
+    bindingRuntime: logical?.logicalSessionId
+      ? emptyCodexBindingPreflight.readiness(logical.logicalSessionId)
+      : null,
     toolMaterialization,
     readOnly: options.readOnly === true
   });
@@ -10696,6 +10760,10 @@ for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
   console.log(`[session-title] renamed historical duplicate session=${previous.id} from=${JSON.stringify(previous.title)} to=${JSON.stringify(unique.title)}`);
 }
 storedSessionsAtStartup = uniqueStoredSessionsAtStartup;
+const emptyCodexBindingPreparation = emptyCodexBindingPreflight.prepare();
+if (emptyCodexBindingPreparation.candidates > 0) {
+  console.info(`[empty-binding-preflight] pending=${emptyCodexBindingPreparation.candidates}`);
+}
 // Scope the dedicated Codex home to Corptie's process tree. A Codex process
 // launched independently from Terminal continues to use the user's native
 // ~/.codex home.
@@ -10869,6 +10937,13 @@ async function runProviderStartupMaintenance(knownWorktrees) {
   );
   if (toolBootstrapSummary?.scanned > 0) {
     console.info(`[tool-bootstrap-preflight] ${JSON.stringify(toolBootstrapSummary)}`);
+  }
+  const emptyBindingSummary = await runContainedStartupOperation(
+    "empty-binding-preflight",
+    () => emptyCodexBindingPreflight.run()
+  );
+  if (emptyBindingSummary?.scanned > 0) {
+    console.info(`[empty-binding-preflight] ${JSON.stringify(emptyBindingSummary)}`);
   }
   const operations = [
     runContainedStartupOperation("archived-session-runtime-release", async () => {

@@ -9114,6 +9114,26 @@ export class CorptieStore {
     );
   }
 
+  hasSessionTurnForBinding(sessionId, bindingId) {
+    return Boolean(this.selectOne(
+      `SELECT 1 AS present FROM session_turns
+       WHERE session_id = ? AND binding_id = ? LIMIT 1`,
+      [sessionId, bindingId]
+    ));
+  }
+
+  /// Wake the revisioned Session projection when a runtime-only dependency
+  /// changes without rewriting conversation ordering timestamps. The legacy
+  /// column name predates its broader projection-dependency role.
+  touchSessionProjectionDependency(sessionId) {
+    this.db.run(
+      `UPDATE sessions SET archive_dependency_version = archive_dependency_version + 1
+       WHERE id = ?`,
+      [sessionId]
+    );
+    this.scheduleSave();
+  }
+
   latestCompletedSessionTurn(sessionId, bindingId = null) {
     const row = bindingId
       ? this.selectOne(

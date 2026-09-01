@@ -59,7 +59,8 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     "repairBrokenWorkItemSessionsAtStartup",
     "recoverPendingWorkspaceTransitions",
     "reconcileMovedWorkspaceRoutes",
-    "toolBootstrapBindingPreflight.run"
+    "toolBootstrapBindingPreflight.run",
+    "emptyCodexBindingPreflight.run"
   ]) {
     assert.ok(maintenance.includes(operation), `${operation} must remain scheduled as background maintenance`);
   }
