@@ -562,6 +562,8 @@
 "GitHub push failed." = "GitHub 推送失败。";
 "GitHub push failed: %@" = "GitHub 推送失败：%@";
 "Pushing to GitHub…" = "正在推送到 GitHub…";
+"Checking GitHub…" = "正在检查 GitHub…";
+"Checking this Worktree's GitHub push status." = "正在检查此 Worktree 的 GitHub 推送状态。";
 "Changes committed and pushed to GitHub" = "修改已提交并推送到 GitHub";
 "Branch pushed to GitHub" = "分支已推送到 GitHub";
 "Local Agent files detected" = "检测到本地 Agent 文件";

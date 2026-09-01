@@ -17,8 +17,14 @@ struct ManagedRepositoryListEnvelope: Decodable, Sendable {
 
 struct ManagedRepositoryDetail: Decodable, Sendable {
     let repository: ManagedRepository
-    let project: ManagedGitProject
+    var project: ManagedGitProject
     let latestJob: WorktreeIntegrationJob?
+}
+
+struct ManagedWorktreeGitHubPushEnvelope: Decodable, Sendable {
+    let repositoryId: String
+    let worktreeId: String
+    let gitHubPush: GitHubPushStatus?
 }
 
 struct ProjectDevelopmentServiceStatus: Decodable, Equatable, Sendable {
@@ -59,7 +65,7 @@ struct ManagedGitProject: Decodable, Sendable {
     let mainBranch: String?
     let mainHeadOid: String
     let pendingWorktreeCount: Int
-    let worktrees: [ManagedWorktree]
+    var worktrees: [ManagedWorktree]
 }
 
 struct ManagedWorktree: Identifiable, Decodable, Equatable, Sendable {

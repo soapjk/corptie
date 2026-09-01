@@ -182,7 +182,7 @@ export class GitWorkspaceManager {
       const value = await scan;
       this.inspectionCache.set(cacheKey, {
         value,
-        expiresAt: this.now() + this.inspectionCacheTtlMs
+        expiresAt: this.now() + (options.cacheTtlMs ?? this.inspectionCacheTtlMs)
       });
       return value;
     } finally {
@@ -385,12 +385,14 @@ export class GitWorkspaceManager {
     return { ...status, worktrees };
   }
 
-  async managementInspectionForProject(workingDirectory, expectedRepositoryId = null) {
+  async managementInspectionForProject(workingDirectory, expectedRepositoryId = null, options = {}) {
     const startedAt = performance.now();
     const status = await this.projectStatusForPath(workingDirectory, expectedRepositoryId, {
       includeDiffStat: false,
       inspectionLevel: "management",
-      reason: "worktree_management"
+      reason: "worktree_management",
+      forceFresh: options.forceFresh === true,
+      cacheTtlMs: options.cacheTtlMs ?? 60_000
     });
     const worktrees = await mapConcurrentOrdered(status.worktrees, this.inspectionConcurrency, async (worktree) => ({
       ...worktree,
