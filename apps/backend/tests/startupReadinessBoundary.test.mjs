@@ -72,6 +72,16 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     /promise\.finally\(\(\) => startupMaintenanceTasks\.delete/,
     "startup task tracking must not create an unhandled rejected finally Promise"
   );
+  assert.match(
+    source,
+    /reason: "PROVIDER_EMPTY_BINDING_UNAVAILABLE",[\s\S]{0,500}compressHandoff: false/,
+    "empty binding prewarming must never invoke per-Session model compression"
+  );
+  assert.match(
+    source,
+    /domainId === "work-item-acceptance" \? "task-acceptance" : domainId/,
+    "legacy Tool Domain ids must normalize before active binding recovery"
+  );
 });
 
 test("SQLite migration cannot block the fixed-cost transport event loop", async () => {

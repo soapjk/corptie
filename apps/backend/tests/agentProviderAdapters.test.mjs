@@ -63,13 +63,21 @@ test("Codex bootstrap owns the concrete client behind a Provider runtime port", 
   const runtime = new CodexProviderRuntime({
     client: {
       notifications: [{ method: "ready" }],
-      deleteThread: async (...args) => calls.push(["delete", ...args])
+      archiveThread: async (...args) => calls.push(["archive", ...args]),
+      deleteThread: async (...args) => calls.push(["delete", ...args]),
+      unarchiveThread: async (...args) => calls.push(["unarchive", ...args])
     }
   });
 
+  await runtime.archiveThread("thread-a");
   await runtime.deleteThread("thread-a");
+  await runtime.unarchiveThread("thread-a");
   assert.deepEqual(runtime.notifications, [{ method: "ready" }]);
-  assert.deepEqual(calls, [["delete", "thread-a"]]);
+  assert.deepEqual(calls, [
+    ["archive", "thread-a"],
+    ["delete", "thread-a"],
+    ["unarchive", "thread-a"]
+  ]);
 });
 
 test("Provider bootstrap accepts external Provider factories without knowing their ids", async () => {
