@@ -343,33 +343,18 @@ export class SessionApplicationService {
   }
 
   async sendMessage(sessionId, message, context = {}) {
-    let reference = await this.referenceFor(sessionId);
-    const dispatch = async () => {
-      await this.assertMessageDispatchAllowed?.(reference, context);
-      const sessionContext = this.resolveMessageContext
-        ? await this.resolveMessageContext(reference, { ...context, message })
-        : null;
-      return this.registry.invoke(
-        reference.providerId,
-        AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
-        reference,
-        message,
-        sessionContext ? { ...context, sessionContext } : context
-      );
-    };
-    try {
-      return await dispatch();
-    } catch (error) {
-      if (!this.#canReplaceProviderBinding(error)) throw error;
-      const recovered = await this.recoverUnavailableSession({
-        sessionId,
-        reference,
-        error,
-        context
-      });
-      reference = recovered?.reference ?? await this.referenceFor(sessionId);
-      return dispatch();
-    }
+    const reference = await this.referenceFor(sessionId);
+    await this.assertMessageDispatchAllowed?.(reference, context);
+    const sessionContext = this.resolveMessageContext
+      ? await this.resolveMessageContext(reference, { ...context, message })
+      : null;
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
+      reference,
+      message,
+      sessionContext ? { ...context, sessionContext } : context
+    );
   }
 
   #canReplaceProviderBinding(error) {

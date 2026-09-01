@@ -29,7 +29,6 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     "openClackyManager.start()",
     "codexResetForecastMonitor.start()",
     "await resumeSessionRecoveryAttemptsAtStartup()",
-    "await repairBrokenTaskSessionsAtStartup()",
     "await deleteHistoricalUnusableTaskSessionsAtStartup()",
     "await sessionProviderSwitchCoordinator.completeProviderSwitch",
     "await runtime.manager.recoverWorkspaceTransition",
@@ -58,7 +57,6 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     "ensureCorptieClaudeRuntime",
     "ensureCorptieOpenClackyRuntime",
     "resumeSessionRecoveryAttemptsAtStartup",
-    "repairBrokenTaskSessionsAtStartup",
     "recoverPendingWorkspaceTransitions",
     "reconcileMovedWorkspaceRoutes",
     "toolBootstrapBindingPreflight.run",
@@ -67,6 +65,11 @@ test("Provider initialization and recovery stay outside the backend readiness pa
   ]) {
     assert.ok(maintenance.includes(operation), `${operation} must remain scheduled as background maintenance`);
   }
+  assert.doesNotMatch(
+    source,
+    /repairBrokenTaskSessionsAtStartup|selfRepairTaskSession/,
+    "startup and message delivery must never replace a Session binding implicitly"
+  );
   assert.doesNotMatch(
     source,
     /promise\.finally\(\(\) => startupMaintenanceTasks\.delete/,

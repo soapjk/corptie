@@ -685,6 +685,97 @@ test("a fresh empty thread starts its first turn without an invalid resume", asy
   ]);
 });
 
+test("recovery stabilization persists a completed no-tool Turn before binding commit", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.requireThreadToolPlanConfirmation = () => ({ providerRevision: "confirmed" });
+  client.startTurn = async (threadId) => {
+    client.liveItemsByThread.set(threadId, new Map([[
+      "message:ack",
+      { id: "message:ack", turnId: "turn:stabilize", type: "agentMessage", text: "CORPTIE_RECOVERY_STABILIZED" }
+    ]]));
+    client.notifications.push({
+      method: "turn/completed",
+      params: { threadId, turn: { id: "turn:stabilize", status: "completed" } }
+    });
+    return { turn: { id: "turn:stabilize" } };
+  };
+  client.request = async (method, params) => {
+    assert.equal(method, "thread/read");
+    assert.equal(params.threadId, "thread:recovery");
+    return { thread: { id: "thread:recovery", turns: [{ id: "turn:stabilize", status: "completed" }] } };
+  };
+
+  const receipt = await client.stabilizeRecoveryThread("thread:recovery", { dynamicTools: [] });
+
+  assert.equal(receipt.durable, true);
+  assert.equal(receipt.turnId, "turn:stabilize");
+  assert.equal(receipt.toolAttempts, 0);
+});
+
+test("recovery stabilization rejects and records any dynamic Tool attempt", async () => {
+  let executed = false;
+  const client = new CodexAppServerClient({
+    onDynamicToolCall: async () => { executed = true; }
+  });
+  client.initialize = async () => {};
+  client.requireThreadToolPlanConfirmation = () => ({ providerRevision: "confirmed" });
+  client.respondToServerRequest = async () => {};
+  client.startTurn = async (threadId) => {
+    await client.handleDynamicToolCall({
+      id: 41,
+      params: { threadId, tool: "corptie_forbidden_during_recovery", arguments: {} }
+    });
+    client.liveItemsByThread.set(threadId, new Map([[
+      "message:ack",
+      { id: "message:ack", turnId: "turn:stabilize", type: "agentMessage", text: "CORPTIE_RECOVERY_STABILIZED" }
+    ]]));
+    client.notifications.push({
+      method: "turn/completed",
+      params: { threadId, turn: { id: "turn:stabilize", status: "completed" } }
+    });
+    return { turn: { id: "turn:stabilize" } };
+  };
+
+  await assert.rejects(
+    () => client.stabilizeRecoveryThread("thread:recovery", { dynamicTools: [] }),
+    { code: "RECOVERY_STABILIZATION_SIDE_EFFECT_ATTEMPTED" }
+  );
+  assert.equal(executed, false);
+});
+
+test("recovery stabilization rejects built-in Provider side-effect items", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.requireThreadToolPlanConfirmation = () => ({ providerRevision: "confirmed" });
+  client.startTurn = async (threadId) => {
+    client.liveItemsByThread.set(threadId, new Map([
+      ["command:attempt", {
+        id: "command:attempt",
+        turnId: "turn:stabilize",
+        type: "commandExecution",
+        text: "$ pwd"
+      }],
+      ["message:ack", {
+        id: "message:ack",
+        turnId: "turn:stabilize",
+        type: "agentMessage",
+        text: "CORPTIE_RECOVERY_STABILIZED"
+      }]
+    ]));
+    client.notifications.push({
+      method: "turn/completed",
+      params: { threadId, turn: { id: "turn:stabilize", status: "completed" } }
+    });
+    return { turn: { id: "turn:stabilize" } };
+  };
+
+  await assert.rejects(
+    () => client.stabilizeRecoveryThread("thread:recovery", { dynamicTools: [] }),
+    { code: "RECOVERY_STABILIZATION_SIDE_EFFECT_ATTEMPTED" }
+  );
+});
+
 test("a restored thread reloads when runtime context changes", async () => {
   const calls = [];
   const client = new CodexAppServerClient();

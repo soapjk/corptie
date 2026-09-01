@@ -383,6 +383,7 @@ test("recovery freezes Timeline, validates no-side-effect replay, commits bindin
     assert.equal(committed.boundarySequence, 16);
     assert.equal(committed.manifest.entries.some((entry) => entry.content === "concurrent message"), false);
     assert.deepEqual(calls.filter((call) => call === "replay"), ["replay"]);
+    assert.deepEqual(calls.filter((call) => call === "stabilize"), ["stabilize"]);
     assert.equal(calls.includes("execute-tool"), false);
 
     const logical = fixture.store.getLogicalSession("logical:recovery");
@@ -403,7 +404,7 @@ test("recovery freezes Timeline, validates no-side-effect replay, commits bindin
   }
 });
 
-test("automatic Message recovery freezes before the triggering unsent delivery", async () => {
+test("explicit delivery-boundary Recovery freezes before the triggering unsent delivery", async () => {
   const fixture = await storeFixture();
   try {
     appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "remember me" } });
@@ -458,6 +459,26 @@ test("recovery fails closed on replay hash mismatch and preserves the old active
     const logical = fixture.store.getLogicalSession("logical:recovery");
     assert.equal(logical.activeBinding.bindingId, "binding:source");
     assert.equal(logical.routingVersion, 1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("recovery refuses to commit a replacement without durable Provider proof", async () => {
+  const fixture = await storeFixture();
+  try {
+    appendEvent(fixture.store, { sequence: 1, type: "user/message", payload: { text: "hello" } });
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort([], fixture.store, { stabilizationDurable: false }),
+      resolveProviderDescriptor: () => capabilityDescriptor
+    });
+    await assert.rejects(() => coordinator.recover({
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: "durability-missing"
+    }), { code: "RECOVERY_REPLACEMENT_NOT_DURABLE" });
+    assert.equal(fixture.store.getLogicalSession("logical:recovery").activeBinding.bindingId, "binding:source");
   } finally {
     await fixture.close();
   }
@@ -992,6 +1013,14 @@ function recoveryPort(calls, store, options = {}) {
         acknowledged: true,
         injectedAtCreation: true,
         sideEffectsObserved: false
+      };
+    },
+    stabilizeReplacement: async () => {
+      calls.push("stabilize");
+      return {
+        durable: options.stabilizationDurable !== false,
+        providerObservationKind: "test_recovery_stabilized",
+        toolAttempts: options.stabilizationToolAttempts ?? 0
       };
     },
     validateReplacement: async ({ attempt }) => ({

@@ -74,7 +74,7 @@ export class ProviderSessionRecoveryPort {
   constructor(operations = {}) {
     const required = [
       "createReplacement", "attachToolHost", "applyInstructions", "replayContext",
-      "validateReplacement", "cancelReplacement"
+      "stabilizeReplacement", "validateReplacement", "cancelReplacement"
     ];
     for (const name of required) {
       if (typeof operations[name] !== "function") {
@@ -574,11 +574,18 @@ export class SessionRecoveryCoordinator {
         attempt, replacement, manifest: plan.manifest, manifestHash: plan.manifestHash,
         executeTools: false, authorization: "historical_context_only"
       });
-      const validation = await this.providerPort.validateReplacement({
+      const stabilizationReceipt = await this.providerPort.stabilizeReplacement({
         attempt, replacement, manifest: plan.manifest, manifestHash: plan.manifestHash,
         toolReceipt, instructionReceipt, replayReceipt
       });
-      validateRecoveryReceipts({ attempt, replacement, capabilities, plan, toolReceipt, instructionReceipt, replayReceipt, validation });
+      const validation = await this.providerPort.validateReplacement({
+        attempt, replacement, manifest: plan.manifest, manifestHash: plan.manifestHash,
+        toolReceipt, instructionReceipt, replayReceipt, stabilizationReceipt
+      });
+      validateRecoveryReceipts({
+        attempt, replacement, capabilities, plan, toolReceipt, instructionReceipt,
+        replayReceipt, stabilizationReceipt, validation
+      });
       this.#assertNotCancelled(attempt.attemptId);
       committed = this.store.commitSessionRecoveryBinding({
         attemptId: attempt.attemptId,
@@ -633,7 +640,7 @@ export class SessionRecoveryCoordinator {
   }
 }
 
-export function validateRecoveryReceipts({ attempt, replacement, capabilities, plan, toolReceipt, instructionReceipt, replayReceipt, validation }) {
+export function validateRecoveryReceipts({ attempt, replacement, capabilities, plan, toolReceipt, instructionReceipt, replayReceipt, stabilizationReceipt, validation }) {
   const fail = (condition, code, message) => { if (!condition) throw recoveryError(code, message); };
   fail(replacement?.providerSessionId && replacement?.providerThreadId && replacement?.bindingId, "RECOVERY_REPLACEMENT_INVALID", "Replacement Session identity is incomplete.");
   fail(replacement.providerSessionId !== attempt.sourceProviderSessionId, "RECOVERY_REPLACEMENT_IDENTITY_REUSED", "Replacement reused the unavailable Provider Session identity.");
@@ -658,6 +665,12 @@ export function validateRecoveryReceipts({ attempt, replacement, capabilities, p
   fail(validation?.artifactReferencesHash === stableRecoveryHash(attempt.artifactReferences), "RECOVERY_ARTIFACT_REFERENCE_MISMATCH", "Replacement Artifact References do not match.");
   fail(replayReceipt?.manifestHash === plan.manifestHash, "RECOVERY_REPLAY_HASH_MISMATCH", "Provider replay acknowledgement hash does not match.");
   fail(replayReceipt?.sideEffectsObserved === false, "RECOVERY_SIDE_EFFECT_DETECTED", "Replay reported a historical side effect.");
+  fail(stabilizationReceipt?.durable === true,
+    "RECOVERY_REPLACEMENT_NOT_DURABLE",
+    "Provider did not prove that the replacement Session survives a runtime restart.");
+  fail(Number(stabilizationReceipt?.toolAttempts ?? 0) === 0,
+    "RECOVERY_STABILIZATION_SIDE_EFFECT_ATTEMPTED",
+    "Recovery stabilization attempted to invoke a Tool.");
   if (plan.strategy === "handoff_only") {
     fail(replayReceipt?.injectedAtCreation === true, "RECOVERY_HANDOFF_NOT_INJECTED", "Provider did not accept the recovery handoff during replacement creation.");
   }

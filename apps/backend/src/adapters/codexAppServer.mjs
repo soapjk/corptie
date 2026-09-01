@@ -46,6 +46,7 @@ export class CodexAppServerClient {
     this.confirmedToolSchemasByThread = new Map();
     this.threadResumeFingerprints = new Map();
     this.threadResumePromises = new Map();
+    this.recoveryStabilizationThreads = new Map();
     // thread/start creates an in-memory thread before Codex has written its
     // first rollout. Such a thread can accept turn/start in this app-server
     // process, but thread/resume is invalid until the first turn exists.
@@ -498,6 +499,97 @@ export class CodexAppServerClient {
     return result;
   }
 
+  async stabilizeRecoveryThread(threadId, options = {}) {
+    await this.initialize();
+    this.requireThreadToolPlanConfirmation(threadId, options, {
+      mismatchCode: "RECOVERY_TOOL_CONFIRMATION_MISMATCH"
+    });
+    const notificationStart = this.notifications.length;
+    const timeoutMs = options.timeoutMs ?? 90_000;
+    const startedAt = Date.now();
+    const state = { toolAttempts: 0 };
+    this.recoveryStabilizationThreads.set(threadId, state);
+    try {
+      const started = await this.startTurn(
+        threadId,
+        "<corptie_recovery_stabilization authorization=\"no_tools\">This is an internal persistence checkpoint. Do not call tools, inspect files, or perform side effects. Reply exactly CORPTIE_RECOVERY_STABILIZED.</corptie_recovery_stabilization>",
+        {
+          cwd: options.cwd,
+          approvalPolicy: "never",
+          sandboxPolicy: { type: "readOnly" },
+          model: options.model,
+          reasoningEffort: options.reasoningEffort
+        }
+      );
+      const turnId = started?.turn?.id ?? null;
+      if (!turnId) throw recoveryStabilizationError("RECOVERY_STABILIZATION_TURN_MISSING", "Codex did not create the recovery stabilization Turn.");
+      while (Date.now() - startedAt < timeoutMs) {
+        const completed = this.notifications.slice(notificationStart).find((message) => {
+          return message.method === "turn/completed"
+            && message.params?.threadId === threadId
+            && message.params?.turn?.id === turnId;
+        });
+        if (completed) {
+          const status = String(completed.params?.turn?.status ?? "completed").toLowerCase();
+          if (status !== "completed" || completed.params?.turn?.error) {
+            throw recoveryStabilizationError(
+              "RECOVERY_STABILIZATION_TURN_FAILED",
+              "Codex could not complete the recovery stabilization Turn."
+            );
+          }
+          if (state.toolAttempts > 0) {
+            throw recoveryStabilizationError(
+              "RECOVERY_STABILIZATION_SIDE_EFFECT_ATTEMPTED",
+              "The recovery stabilization Turn attempted to call a Tool and was rejected."
+            );
+          }
+          const turnItems = [...(this.liveItemsByThread.get(threadId)?.values() ?? [])]
+            .filter((item) => item.turnId === turnId);
+          const sideEffectItem = turnItems.find((item) => [
+            "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "imageView"
+          ].includes(item.type));
+          if (sideEffectItem) {
+            throw recoveryStabilizationError(
+              "RECOVERY_STABILIZATION_SIDE_EFFECT_ATTEMPTED",
+              `The recovery stabilization Turn attempted ${sideEffectItem.type} and was rejected.`
+            );
+          }
+          const text = this.latestAgentMessageText(threadId, turnId).trim();
+          if (text !== "CORPTIE_RECOVERY_STABILIZED") {
+            throw recoveryStabilizationError(
+              "RECOVERY_STABILIZATION_ACK_INVALID",
+              "Codex did not return the exact recovery stabilization acknowledgement."
+            );
+          }
+          const snapshot = await this.request("thread/read", { threadId, includeTurns: true }, options.requestTimeoutMs ?? 30_000);
+          const persisted = snapshot?.thread?.id === threadId
+            && Array.isArray(snapshot.thread.turns)
+            && snapshot.thread.turns.some((turn) => turn?.id === turnId && String(turn?.status ?? "completed").toLowerCase() === "completed");
+          if (!persisted) {
+            throw recoveryStabilizationError(
+              "RECOVERY_STABILIZATION_NOT_PERSISTED",
+              "Codex did not expose a persisted completed Turn for the recovery Session."
+            );
+          }
+          return {
+            durable: true,
+            providerObservationKind: "recovery_stabilization_turn_completed",
+            providerThreadId: threadId,
+            turnId,
+            toolAttempts: 0
+          };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      throw recoveryStabilizationError(
+        "RECOVERY_STABILIZATION_TIMEOUT",
+        "Timed out while waiting for Codex to persist the recovery Session."
+      );
+    } finally {
+      this.recoveryStabilizationThreads.delete(threadId);
+    }
+  }
+
   async interruptTurn(threadId, turnId) {
     await this.initialize();
     return this.request("turn/interrupt", {
@@ -894,6 +986,13 @@ export class CodexAppServerClient {
     const params = message.params ?? {};
     const agentId = this.dynamicToolAgentsByThread.get(params.threadId);
     try {
+      const stabilization = this.recoveryStabilizationThreads.get(params.threadId);
+      if (stabilization) {
+        stabilization.toolAttempts += 1;
+        const error = new Error("Tools are disabled during recovery stabilization.");
+        error.code = "RECOVERY_STABILIZATION_TOOL_FORBIDDEN";
+        throw error;
+      }
       if (!this.onDynamicToolCall || !agentId) {
         throw new Error(`No Corptie dynamic-tool identity is bound to thread ${params.threadId ?? "unknown"}.`);
       }
@@ -1053,6 +1152,12 @@ export class CodexAppServerClient {
       });
     }
   }
+}
+
+function recoveryStabilizationError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function hashToolDefinitions(definitions) {

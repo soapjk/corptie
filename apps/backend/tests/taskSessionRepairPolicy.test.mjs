@@ -1,34 +1,9 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
-import {
-  MAX_AUTOMATIC_TASK_SESSION_REPAIRS,
-  evaluateTaskSessionRepair,
-  historicalProviderSessionUnavailable
-} from "../src/application/taskSessionRepairPolicy.mjs";
+import { historicalProviderSessionUnavailable } from "../src/application/taskSessionRepairPolicy.mjs";
 
-function input(overrides = {}) {
-  return {
-    task: { id: "task:one", lifecycle_state: "in_progress", current_session_id: "session:old" },
-    session: { id: "session:old", sessionKind: "worker" },
-    failedWork: { targetTurnId: null },
-    error: { code: "PROVIDER_SESSION_UNAVAILABLE", safeToRetry: true },
-    turnCount: 0,
-    uncertainDeliveries: [],
-    repairCount: 0,
-    providerId: "provider-neutral",
-    agent: { agentId: "agent:one" },
-    ...overrides
-  };
-}
-
-test("an incomplete Task with a definitively missing unused Provider Session can self-repair", () => {
-  assert.deepEqual(evaluateTaskSessionRepair(input()), {
-    eligible: true,
-    reason: "provider-session-unavailable"
-  });
-});
-
-test("relocated rollout file absence is recognized as a historical explicit Provider failure", () => {
+test("historical Provider rollout absence remains classifiable without authorizing Session replacement", () => {
   assert.equal(historicalProviderSessionUnavailable(
     '{"message":"failed to resolve rollout path `/old/runtime/sessions/rollout-thread-a.jsonl`: file does not exist"}'
   ), true);
@@ -37,45 +12,12 @@ test("relocated rollout file absence is recognized as a historical explicit Prov
   ), false);
 });
 
-test("self-repair fails closed after any observed or ambiguous Provider execution", () => {
-  assert.equal(evaluateTaskSessionRepair(input({ turnCount: 1 })).reason, "PROVIDER_EXECUTION_OBSERVED");
-  assert.equal(evaluateTaskSessionRepair(input({
-    uncertainDeliveries: [{ status: "delivery_unknown", last_error: "socket closed" }]
-  })).reason, "DELIVERY_OUTCOME_AMBIGUOUS");
-  assert.equal(evaluateTaskSessionRepair(input({
-    uncertainDeliveries: [{
-      status: "delivery_unknown",
-      last_error: '{"message":"no rollout found for thread id legacy-thread"}'
-    }]
-  })).eligible, true, "legacy releases misclassified this explicit pre-execution failure");
-  assert.equal(evaluateTaskSessionRepair(input({
-    uncertainDeliveries: [{
-      status: "delivery_unknown",
-      last_error: "Task task:one points to no Session, not active Worker Session session:old."
-    }, {
-      status: "delivery_unknown",
-      last_error: '{"message":"no rollout found for thread id legacy-thread"}'
-    }]
-  })).eligible, true, "the legacy binding race and missing rollout both happened before Provider execution");
-  assert.equal(evaluateTaskSessionRepair(input({
-    uncertainDeliveries: [{
-      status: "delivery_unknown",
-      last_error: "Task task:one points to no Session, not active Worker Session session:old."
-    }, {
-      status: "delivery_unknown",
-      last_error: "connection reset after dispatch"
-    }]
-  })).reason, "DELIVERY_OUTCOME_AMBIGUOUS", "an unrelated ambiguous delivery must still fail closed");
-});
+test("Provider failure never replaces a Task Session outside explicit Recovery", async () => {
+  const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
 
-test("terminal, stale, and repeatedly failing Tasks cannot be replaced", () => {
-  assert.equal(evaluateTaskSessionRepair(input({
-    task: { id: "task:one", lifecycle_state: "done", current_session_id: "session:old" }
-  })).reason, "TASK_TERMINAL");
-  assert.equal(evaluateTaskSessionRepair(input({
-    task: { id: "task:one", lifecycle_state: "in_progress", current_session_id: "session:new" }
-  })).reason, "SESSION_NOT_CURRENT_WORKER");
-  assert.equal(evaluateTaskSessionRepair(input({
-    repairCount: MAX_AUTOMATIC_TASK_SESSION_REPAIRS
-  })).reason, "REPAIR_LIMIT_REACHED");
+  assert.doesNotMatch(source, /selfRepairTaskSession/);
+  assert.doesNotMatch(source, /repairBrokenTaskSessionsAtStartup/);
+  assert.doesNotMatch(source, /source:\s*["']self-repair["']/);
+  assert.match(source, /if \(!shouldRetryBusy\) throw error;/);
+  assert.match(source, /unavailable\.code = "PROVIDER_BINDING_RECOVERY_REQUIRED"/);
 });

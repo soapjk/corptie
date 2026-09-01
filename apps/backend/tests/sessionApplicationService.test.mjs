@@ -614,7 +614,7 @@ test("Session recovery rebuilds and passes the Provider-neutral Tool Host attach
   assert.equal(calls[0].context.toolHost.providerAttachment.config.mcp_servers.investrace.command, "node");
 });
 
-test("an unavailable Provider binding is replaced and an unsent message is retried exactly once", async () => {
+test("an unavailable Provider binding is preserved and an unsent message is not retried implicitly", async () => {
   const sends = [];
   let currentReference = {
     sessionId: "session:recover-send",
@@ -658,15 +658,16 @@ test("an unavailable Provider binding is replaced and an unsent message is retri
     }
   });
 
-  const result = await service.sendMessage("logical:recover-send", "send once", {
-    idempotencyKey: "delivery:recover-send"
-  });
+  await assert.rejects(
+    service.sendMessage("logical:recover-send", "send once", {
+      idempotencyKey: "delivery:recover-send"
+    }),
+    { code: "PROVIDER_SESSION_UNAVAILABLE" }
+  );
 
-  assert.equal(result.turn.id, "turn:recovered");
-  assert.equal(recoveries.length, 1);
-  assert.equal(recoveries[0].error.dispatchState, "not_sent");
-  assert.deepEqual(sends.map((entry) => entry.reference.bindingId), ["binding:failed", "binding:recovered"]);
-  assert.deepEqual(sends.map((entry) => entry.message), ["send once", "send once"]);
+  assert.equal(recoveries.length, 0);
+  assert.deepEqual(sends.map((entry) => entry.reference.bindingId), ["binding:failed"]);
+  assert.deepEqual(sends.map((entry) => entry.message), ["send once"]);
 });
 
 test("restart replaces an unconfirmed Tool schema binding exactly once without creating a Turn", async () => {
