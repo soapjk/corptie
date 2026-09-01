@@ -16,6 +16,7 @@ export class SessionRuntimeReleaseService {
     this.cancel = cancel;
     this.logger = logger;
     this.pending = new Map();
+    this.reconciliationConcurrency = 4;
   }
 
   request(sessionId, reason = "archived") {
@@ -40,6 +41,7 @@ export class SessionRuntimeReleaseService {
 
   async restore(sessionId) {
     this.cancelPending(sessionId);
+    this.store.clearSessionRuntimeReleaseReceipt?.(sessionId);
     return this.sessionService.resumeSession(sessionId, {
       source: "session-unarchive-runtime-restore",
       purpose: "session-unarchive"
@@ -47,14 +49,32 @@ export class SessionRuntimeReleaseService {
   }
 
   reconcileArchivedSessions() {
-    const sessions = this.store.listSessions({ archived: true });
-    for (const session of sessions) void this.request(session.id, session.archiveReason ?? "startup-reconcile");
+    const sessions = this.store.listArchivedSessionsPendingRuntimeRelease
+      ? this.store.listArchivedSessionsPendingRuntimeRelease({ limit: 100 })
+      : this.store.listSessions({ archived: true });
+    void this.#requestReconciliationBatch(sessions);
     return sessions.length;
   }
 
+  async #requestReconciliationBatch(sessions) {
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < sessions.length) {
+        const session = sessions[cursor];
+        cursor += 1;
+        await this.request(session.id, session.archiveReason ?? "startup-reconcile");
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(this.reconciliationConcurrency, sessions.length) },
+      () => worker()
+    ));
+  }
+
   releaseCompletedTaskSessions(taskId) {
-    const sessions = this.store.listSessions({ archived: true })
-      .filter((session) => session.taskId === taskId);
+    const sessions = this.store.listArchivedSessionsPendingRuntimeRelease
+      ? this.store.listArchivedSessionsPendingRuntimeRelease({ taskId, limit: 100 })
+      : this.store.listSessions({ archived: true }).filter((session) => session.taskId === taskId);
     for (const session of sessions) void this.request(session.id, "task-completed");
     return sessions.length;
   }
@@ -75,6 +95,7 @@ export class SessionRuntimeReleaseService {
         source: "session-archive-runtime-release",
         reason
       });
+      this.store.markSessionRuntimeReleased?.(sessionId, reason);
       this.#finish(sessionId, state, { status: "released", result });
     } catch (error) {
       // Provider startup races and a just-settled native Turn are transient.

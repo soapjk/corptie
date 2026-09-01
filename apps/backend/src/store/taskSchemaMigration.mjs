@@ -139,12 +139,64 @@ function migrateTaxonomyValues(db) {
     db.run("UPDATE memories SET owner_type='task' WHERE owner_type='work_item'");
   }
   if (table(db, "artifacts")) {
-    db.run("UPDATE artifacts SET scope='task' WHERE scope='work_item'");
-    db.run("UPDATE artifacts SET visibility='task_private' WHERE visibility='work_item_private'");
+    migrateArtifactTaxonomy(db);
   }
   if (table(db, "memory_events")) {
     db.run("UPDATE memory_events SET owner_type='task' WHERE owner_type='work_item'");
   }
+}
+
+function migrateArtifactTaxonomy(db) {
+  const tableDefinition = db.get(
+    "SELECT sql FROM sqlite_master WHERE type='table' AND name='artifacts'"
+  )?.sql;
+  if (!tableDefinition) return;
+
+  // The legacy table CHECK rejects task_private before an UPDATE can rewrite
+  // existing rows. Rebuild the table inside the surrounding migration
+  // transaction so the constraint and the values change atomically, without
+  // creating a full-database backup.
+  if (tableDefinition.includes("work_item_private")) {
+    const temporaryTable = "artifacts_task_domain_v1";
+    const dependentSchema = db.all(
+      `SELECT type, name, sql FROM sqlite_master
+       WHERE tbl_name='artifacts' AND type IN ('index', 'trigger') AND sql IS NOT NULL
+       ORDER BY type, name`
+    );
+    const columns = db.all("PRAGMA table_info(artifacts)").map((column) => column.name);
+    const createTemporaryTable = tableDefinition
+      .replace(
+        /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`\[]?artifacts["`\]]?/i,
+        `CREATE TABLE ${identifier(temporaryTable)}`
+      )
+      .replaceAll("work_item_private", "task_private");
+    if (createTemporaryTable === tableDefinition) {
+      throw new Error("TASK_DOMAIN_ARTIFACT_SCHEMA_UNSUPPORTED");
+    }
+
+    db.run(createTemporaryTable);
+    const columnList = columns.map(identifier).join(", ");
+    const selectList = columns.map((column) => {
+      if (column === "visibility") {
+        return `CASE WHEN ${identifier(column)}='work_item_private' THEN 'task_private' ELSE ${identifier(column)} END`;
+      }
+      if (column === "scope") {
+        return `CASE WHEN ${identifier(column)}='work_item' THEN 'task' ELSE ${identifier(column)} END`;
+      }
+      return identifier(column);
+    }).join(", ");
+    db.run(`INSERT INTO ${identifier(temporaryTable)} (${columnList})
+      SELECT ${selectList} FROM artifacts`);
+    db.run("DROP TABLE artifacts");
+    db.run(`ALTER TABLE ${identifier(temporaryTable)} RENAME TO artifacts`);
+    for (const item of dependentSchema) {
+      db.run(item.sql.replaceAll("work_item_private", "task_private"));
+    }
+    return;
+  }
+
+  db.run("UPDATE artifacts SET scope='task' WHERE scope='work_item'");
+  db.run("UPDATE artifacts SET visibility='task_private' WHERE visibility='work_item_private'");
 }
 
 function createTaskSnapshotSchema(db) {

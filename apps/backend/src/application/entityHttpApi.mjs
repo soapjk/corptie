@@ -9,6 +9,39 @@ import { presentMemory } from "./memoryOperationService.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 
+function encodeTaskCursor(cursor) {
+  return cursor ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url") : null;
+}
+
+function decodeTaskCursor(value) {
+  if (!value) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (!Number.isInteger(cursor?.completionRank)
+      || typeof cursor?.updatedAt !== "string" || !cursor.updatedAt
+      || typeof cursor?.id !== "string" || !cursor.id) throw new Error("invalid");
+    return cursor;
+  } catch {
+    throw apiError("INVALID_TASK_CURSOR", "Invalid Task page cursor.", 400);
+  }
+}
+
+function encodeMemoryCursor(cursor) {
+  return cursor ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url") : null;
+}
+
+function decodeMemoryCursor(value) {
+  if (!value) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (typeof cursor?.updatedAt !== "string" || !cursor.updatedAt
+      || typeof cursor?.id !== "string" || !cursor.id) throw new Error("invalid");
+    return cursor;
+  } catch {
+    throw apiError("INVALID_MEMORY_CURSOR", "Invalid Memory page cursor.", 400);
+  }
+}
+
 function normalizeEnvironment(value = "") {
   const normalized = String(value || "").toLowerCase();
   return normalized === "dev" || normalized === "development" ? "development" : "production";
@@ -608,17 +641,30 @@ export function handleEntityHttpRequest({
       const objectiveTasksMatch = path.match(/^\/objectives\/([^/]+)\/tasks$/);
       if (request.method === "GET" && objectiveTasksMatch) {
         const id = decodeURIComponent(objectiveTasksMatch[1]);
+        const page = objectiveService.store.listTaskPage({
+          objectiveId: id,
+          includeCompleted: url.searchParams.get("includeCompleted") !== "false",
+          limit: url.searchParams.get("limit"),
+          cursor: decodeTaskCursor(url.searchParams.get("cursor"))
+        });
         return sendJson(response, 200, {
-          tasks: objectiveService.listTasksByObjective(id)
-            .map((item) => presentTaskWithOrigin(objectiveService, item))
+          tasks: page.items.map((item) => presentTaskWithOrigin(objectiveService, item)),
+          hasMore: page.hasMore,
+          nextCursor: encodeTaskCursor(page.nextCursor)
         });
       }
 
       // ---- Task ----
       if (request.method === "GET" && path === "/tasks") {
+        const page = objectiveService.store.listTaskPage({
+          includeCompleted: url.searchParams.get("includeCompleted") !== "false",
+          limit: url.searchParams.get("limit"),
+          cursor: decodeTaskCursor(url.searchParams.get("cursor"))
+        });
         return sendJson(response, 200, {
-          tasks: objectiveService.listTasks()
-            .map((item) => presentTaskWithOrigin(objectiveService, item))
+          tasks: page.items.map((item) => presentTaskWithOrigin(objectiveService, item)),
+          hasMore: page.hasMore,
+          nextCursor: encodeTaskCursor(page.nextCursor)
         });
       }
       if (request.method === "POST" && path === "/tasks") {
@@ -947,16 +993,19 @@ export function handleEntityHttpRequest({
           sourceType: url.searchParams.get("sourceType"),
           trustLevel: url.searchParams.get("trustLevel")
         };
-        const memories = (global
-          ? hubService.store.listAllMemories()
-          : hubService.store.listMemoriesByOwner(ownerType, ownerId))
-          .filter((memory) => includeRevoked || !memory.revoked_at)
-          .filter((memory) => !query || `${memory.content} ${memory.tags_json}`.toLocaleLowerCase().includes(query))
-          .filter((memory) => !filters.kind || memory.kind === filters.kind)
-          .filter((memory) => !filters.status || memory.promotion_status === filters.status)
-          .filter((memory) => !filters.sourceType || memory.source_type === filters.sourceType)
-          .filter((memory) => !filters.trustLevel || memory.trust_level === filters.trustLevel);
-        return sendJson(response, 200, { memories: memories.map(presentMemory) });
+        const page = hubService.store.listMemoryPage({
+          ...(global ? {} : { ownerType, ownerId }),
+          includeRevoked,
+          query,
+          ...filters,
+          limit: url.searchParams.get("limit"),
+          cursor: decodeMemoryCursor(url.searchParams.get("cursor"))
+        });
+        return sendJson(response, 200, {
+          memories: page.items.map(presentMemory),
+          hasMore: page.hasMore,
+          nextCursor: encodeMemoryCursor(page.nextCursor)
+        });
       }
       const memoryMatch = path.match(/^\/memories\/([^/]+)$/);
       if (request.method === "GET" && memoryMatch) {

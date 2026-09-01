@@ -312,20 +312,17 @@ test("canonical completion migration repairs history as read and future receipts
     reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
     await reopened.initialize();
     const historicalCursor = historical.at(-1).sequence;
-    assert.ok(reopened.canonicalUnreadMigrationBackupPath);
-    await access(reopened.canonicalUnreadMigrationBackupPath);
+    await assert.rejects(
+      access(`${dbPath}.pre-canonical-unread-v2.backup`),
+      (error) => error.code === "ENOENT",
+      "startup migrations must not create a full database backup"
+    );
     assert.deepEqual(reopened.canonicalUnreadMigrationAudit, {
       scannedEvents: 10,
       repairedEvents: 10,
       affectedSessions: 1,
       adjustedReceipts: 1
     });
-    const backupReader = new DatabaseSync(reopened.canonicalUnreadMigrationBackupPath, { readOnly: true });
-    assert.equal(backupReader.prepare("PRAGMA quick_check").get().quick_check, "ok");
-    assert.equal(backupReader.prepare(
-      "SELECT SUM(has_agent_message) AS count FROM session_events WHERE type = 'turn.completed'"
-    ).get().count, 0);
-    backupReader.close();
     assert.deepEqual(reopened.listSessionMessageCursors().get("s1"), {
       lastAgentMessageSequence: historicalCursor,
       lastReadMessageSequence: historicalCursor
@@ -553,7 +550,7 @@ test("has_agent_message migration is retryable and removes JSON from hot cursor 
   }
 });
 
-test("legacy schema receives a verified local backup before adding the cursor column", async () => {
+test("legacy schema migrates the cursor column without creating a full database backup", async () => {
   const { store, directory } = await createStore();
   const dbPath = join(directory, "corptie.sqlite");
   try {
@@ -569,15 +566,13 @@ test("legacy schema receives a verified local backup before adding the cursor co
 
     const migrated = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
     await migrated.initialize();
-    assert.ok(migrated.performanceMigrationBackupPath);
-    await access(migrated.performanceMigrationBackupPath);
+    await assert.rejects(
+      access(`${dbPath}.pre-sqlite-performance-v1.backup`),
+      (error) => error.code === "ENOENT",
+      "startup migrations must not create a full database backup"
+    );
     assert.ok(migrated.selectAll("PRAGMA table_info(session_events)")
       .some((column) => column.name === "has_agent_message"));
-    const backupReader = new DatabaseSync(migrated.performanceMigrationBackupPath, { readOnly: true });
-    assert.equal(backupReader.prepare("PRAGMA quick_check").get().quick_check, "ok");
-    assert.equal(backupReader.prepare("PRAGMA table_info(session_events)").all()
-      .some((column) => column.name === "has_agent_message"), false);
-    backupReader.close();
     await migrated.close();
   } finally {
     await rm(directory, { recursive: true, force: true });

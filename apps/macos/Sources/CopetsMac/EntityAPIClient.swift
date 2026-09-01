@@ -35,6 +35,8 @@ final class EntityAPIClient: ObservableObject {
     @Published private(set) var tasksRevision: UInt64 = 0
     let sessionGroupingDidChange = PassthroughSubject<Void, Never>()
     @Published private(set) var tasksLoadError: String?
+    @Published private(set) var browsedTasksHasMore = false
+    @Published private(set) var browsedMemoriesHasMore = false
     @Published private(set) var objectivesLoadError: String?
 
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
@@ -48,6 +50,12 @@ final class EntityAPIClient: ObservableObject {
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var objectivesRefreshGeneration = EntityRefreshGeneration()
     private var appStateCancellables = Set<AnyCancellable>()
+    private var browsedTasksNextCursor: String?
+    private var browsedTasksObjectiveId: String?
+    private var browsedTasks: [CorptieTask] = []
+    private var browsedMemories: [MemoryItem] = []
+    private var browsedMemoryQueryItems: [URLQueryItem] = []
+    private var browsedMemoryNextCursor: String?
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -132,11 +140,16 @@ final class EntityAPIClient: ObservableObject {
     }
 
     func tasks(for objective: Objective) async -> [CorptieTask]? {
-        appState.tasks.filter { $0.objectiveId == objective.id }
+        await loadBrowsedTasks(objectiveId: objective.id, reset: true)
     }
 
     func allCorptieTasks() async -> [CorptieTask]? {
-        appState.tasks
+        await loadBrowsedTasks(objectiveId: nil, reset: true)
+    }
+
+    func loadMoreBrowsedTasks() async -> [CorptieTask]? {
+        guard browsedTasksHasMore, browsedTasksNextCursor != nil else { return browsedTasks }
+        return await loadBrowsedTasks(objectiveId: browsedTasksObjectiveId, reset: false)
     }
 
     func clearCorptieTasksLoadError() {
@@ -157,6 +170,48 @@ final class EntityAPIClient: ObservableObject {
             tasksLoadError = nil
             errorMessage = nil
             return tasks
+        } catch {
+            let message = Self.tasksLoadErrorMessage(error)
+            tasksLoadError = message
+            errorMessage = message
+            return nil
+        }
+    }
+
+    private func loadBrowsedTasks(objectiveId: String?, reset: Bool) async -> [CorptieTask]? {
+        do {
+            let endpoint = objectiveId.map { baseURL.appending(path: "objectives/\($0)/tasks") }
+                ?? baseURL.appending(path: "tasks")
+            var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
+            var queryItems = [
+                URLQueryItem(name: "limit", value: "50"),
+                URLQueryItem(name: "includeCompleted", value: "true")
+            ]
+            if !reset, let browsedTasksNextCursor {
+                queryItems.append(URLQueryItem(name: "cursor", value: browsedTasksNextCursor))
+            }
+            components.queryItems = queryItems
+            let (data, response) = try await URLSession.shared.data(from: components.url!)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                throw EntityLaunchError(
+                    message: envelope?.error ?? "加载 CorptieTask 失败（HTTP \(http.statusCode)）",
+                    code: envelope?.code
+                )
+            }
+            let page = try decoder.decode(CorptieTaskListEnvelope.self, from: data)
+            if reset || browsedTasksObjectiveId != objectiveId {
+                browsedTasks = page.tasks
+            } else {
+                var knownIDs = Set(browsedTasks.map(\.id))
+                browsedTasks.append(contentsOf: page.tasks.filter { knownIDs.insert($0.id).inserted })
+            }
+            browsedTasksObjectiveId = objectiveId
+            browsedTasksHasMore = page.hasMore == true
+            browsedTasksNextCursor = page.nextCursor
+            tasksLoadError = nil
+            errorMessage = nil
+            return browsedTasks
         } catch {
             let message = Self.tasksLoadErrorMessage(error)
             tasksLoadError = message
@@ -622,35 +677,30 @@ final class EntityAPIClient: ObservableObject {
         components?.queryItems = [
             URLQueryItem(name: "ownerType", value: ownerType),
             URLQueryItem(name: "ownerId", value: ownerId),
-            URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false")
+            URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false"),
+            URLQueryItem(name: "limit", value: "50")
         ]
         guard let url = components?.url else { return nil }
-        do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                throw EntityLaunchError(
-                    message: envelope?.error ?? "加载工作项记忆失败（HTTP \(http.statusCode)）",
-                    code: envelope?.code
-                )
-            }
-            let result = try decoder.decode(MemoryListEnvelope.self, from: data).memories
-            errorMessage = nil
-            return result
-        } catch {
-            errorMessage = error.localizedDescription
-            return nil
-        }
+        return await loadMemories(url: url, reset: true)
     }
 
     func allMemories(includeRevoked: Bool = true) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "global", value: "true"),
-            URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false")
+            URLQueryItem(name: "includeRevoked", value: includeRevoked ? "true" : "false"),
+            URLQueryItem(name: "limit", value: "50")
         ]
         guard let url = components?.url else { return nil }
-        return await loadMemories(url: url)
+        return await loadMemories(url: url, reset: true)
+    }
+
+    func loadMoreMemories() async -> [MemoryItem]? {
+        guard browsedMemoriesHasMore, let browsedMemoryNextCursor else { return browsedMemories }
+        var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)!
+        components.queryItems = browsedMemoryQueryItems
+            + [URLQueryItem(name: "cursor", value: browsedMemoryNextCursor)]
+        return await loadMemories(url: components.url!, reset: false)
     }
 
     func updateMemory(memoryId: String, tags: [String]) async -> MemoryItem? {
@@ -744,12 +794,23 @@ final class EntityAPIClient: ObservableObject {
         return await mutateMemory(request)
     }
 
-    private func loadMemories(url: URL) async -> [MemoryItem]? {
+    private func loadMemories(url: URL, reset: Bool) async -> [MemoryItem]? {
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             try validateMemoryResponse(response, data: data)
+            let page = try decoder.decode(MemoryListEnvelope.self, from: data)
+            if reset {
+                browsedMemories = page.memories
+                browsedMemoryQueryItems = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?
+                    .filter { $0.name != "cursor" } ?? []
+            } else {
+                var knownIDs = Set(browsedMemories.map(\.id))
+                browsedMemories.append(contentsOf: page.memories.filter { knownIDs.insert($0.id).inserted })
+            }
+            browsedMemoriesHasMore = page.hasMore == true
+            browsedMemoryNextCursor = page.nextCursor
             errorMessage = nil
-            return try decoder.decode(MemoryListEnvelope.self, from: data).memories
+            return browsedMemories
         } catch {
             errorMessage = error.localizedDescription
             return nil

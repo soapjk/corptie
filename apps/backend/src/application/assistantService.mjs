@@ -226,14 +226,17 @@ export class AssistantService {
         ];
       }
       case "memory.list": {
-        const memories = this.store.listAllMemories();
+        const page = this.store.listMemoryPage({ limit: 20, includeRevoked: true });
+        const memories = page.items;
         return [
           { role: "user", content },
           {
             role: "assistant",
             kind: "memory",
-            content: memories.length ? `共 ${memories.length} 条记忆` : "暂无记忆",
-            data: { memories: memories.slice(0, 20) }
+            content: memories.length
+              ? `显示最近 ${memories.length} 条记忆${page.hasMore ? "，还有更多可在记忆管理中加载" : ""}`
+              : "暂无记忆",
+            data: { memories, hasMore: page.hasMore, nextCursor: page.nextCursor }
           }
         ];
       }

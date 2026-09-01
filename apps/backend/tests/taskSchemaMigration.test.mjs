@@ -31,9 +31,12 @@ function database() {
     CREATE TABLE artifacts (
       id TEXT PRIMARY KEY,
       scope TEXT NOT NULL,
-      visibility TEXT NOT NULL,
+      visibility TEXT NOT NULL CHECK (visibility IN (
+        'objective_private', 'work_item_private', 'session_private', 'repository_tracked'
+      )),
       work_item_id TEXT REFERENCES work_items(id)
     );
+    CREATE INDEX idx_artifacts_scope ON artifacts(scope, visibility);
     CREATE TABLE collaboration_tasks (
       task_id TEXT PRIMARY KEY,
       parent_task_id TEXT REFERENCES collaboration_tasks(task_id),
@@ -79,6 +82,17 @@ test("task domain migration renames the authoritative graph without dual tables"
   assert.deepEqual({ ...db.prepare("SELECT scope, visibility, task_id FROM artifacts").get() }, {
     scope: "task", visibility: "task_private", task_id: "work_item:1"
   });
+  assert.match(
+    db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='artifacts'").get().sql,
+    /task_private/
+  );
+  assert.doesNotMatch(
+    db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='artifacts'").get().sql,
+    /work_item_private/
+  );
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_artifacts_scope'").get());
+  assert.doesNotThrow(() => db.prepare("INSERT INTO artifacts VALUES (?, ?, ?, ?)")
+    .run("artifact:2", "task", "task_private", "work_item:1"));
   assert.deepEqual({ ...db.prepare("SELECT task_id, target_task_id FROM collaboration_requests").get() }, {
     task_id: "collaboration:1", target_task_id: "work_item:1"
   });

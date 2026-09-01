@@ -19,6 +19,10 @@ const RELATIONS = new Set(ARTIFACT_RELATIONS);
 const VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
 const ARTIFACT_SCOPES = new Set(["objective", "task"]);
 const MAX_READ_BYTES = ARTIFACT_READ_DEFAULT_LIMITS.maxPageBytes;
+const ARTIFACT_SEARCH_INDEX_STATE_KEY = "artifact-search-index:v1";
+const ARTIFACT_USAGE_RECONCILIATION_STATE_KEY = "artifact-turn-read-usage:v1";
+const ARTIFACT_ORPHAN_AUDIT_STATE_KEY = "artifact-orphan-audit:v1";
+const ARTIFACT_ORPHAN_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 export class ArtifactService {
   constructor(options = {}) {
@@ -35,20 +39,42 @@ export class ArtifactService {
     if (!this.store) throw new TypeError("ArtifactService requires a store.");
   }
 
-  async initialize() {
+  async initialize({ performMaintenance = true } = {}) {
     this.contentRoot ??= this.store.layout?.artifactsDirectory
       ?? join(this.store.settings().dataRoot, "artifacts");
     await mkdir(join(this.contentRoot, "objects"), { recursive: true, mode: 0o700 });
     await mkdir(join(this.contentRoot, "tmp"), { recursive: true, mode: 0o700 });
+    if (!performMaintenance) return [];
+    return this.runStartupMaintenance();
+  }
+
+  async runStartupMaintenance() {
     const recovered = await this.recoverContentOperations();
-    const orphaned = await this.auditOrphanedContent();
-    this.searchIndexRebuildPromise = new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    }).then(() => this.rebuildSearchIndex()).catch((error) => {
-      this.searchIndexRebuildError = error;
-      return { indexedArtifacts: 0, errorCode: error?.code ?? "ARTIFACT_INDEX_REBUILD_FAILED" };
-    });
-    this.store.reconcileArtifactTurnReadUsage?.(this.clock());
+    const lastOrphanAudit = this.store.getRuntimeState?.(ARTIFACT_ORPHAN_AUDIT_STATE_KEY);
+    const orphanAuditDue = !lastOrphanAudit?.completedAt
+      || Date.now() - Date.parse(lastOrphanAudit.completedAt) >= ARTIFACT_ORPHAN_AUDIT_INTERVAL_MS;
+    const orphaned = orphanAuditDue ? await this.auditOrphanedContent() : [];
+    if (orphanAuditDue) {
+      this.store.setRuntimeState?.(ARTIFACT_ORPHAN_AUDIT_STATE_KEY, { completedAt: this.clock() });
+    }
+    if (!this.store.getRuntimeState?.(ARTIFACT_SEARCH_INDEX_STATE_KEY)?.completedAt) {
+      this.searchIndexRebuildPromise = new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      }).then(async () => {
+        const result = await this.rebuildSearchIndex();
+        this.store.setRuntimeState?.(ARTIFACT_SEARCH_INDEX_STATE_KEY, { completedAt: this.clock() });
+        return result;
+      }).catch((error) => {
+        this.searchIndexRebuildError = error;
+        return { indexedArtifacts: 0, errorCode: error?.code ?? "ARTIFACT_INDEX_REBUILD_FAILED" };
+      });
+    } else {
+      this.searchIndexRebuildPromise = Promise.resolve({ indexedArtifacts: 0, skipped: "already_current" });
+    }
+    if (!this.store.getRuntimeState?.(ARTIFACT_USAGE_RECONCILIATION_STATE_KEY)?.completedAt) {
+      this.store.reconcileArtifactTurnReadUsage?.(this.clock());
+      this.store.setRuntimeState?.(ARTIFACT_USAGE_RECONCILIATION_STATE_KEY, { completedAt: this.clock() });
+    }
     return [...recovered, ...orphaned];
   }
 
@@ -141,7 +167,9 @@ export class ArtifactService {
     const context = this.context(contextInput);
     const relatedTaskIds = this.#relatedTaskIds(context);
     const artifacts = this.store.listArtifactsByObjective(context.objectiveId, {
-      includeRevoked: options.includeRevoked === true
+      includeRevoked: options.includeRevoked === true,
+      limit: options.limit ?? null,
+      offset: options.offset ?? 0
     });
     return artifacts.filter((artifact) => artifact.status === "revoked"
       ? options.includeRevoked === true && this.#canManageArtifact(context, artifact)

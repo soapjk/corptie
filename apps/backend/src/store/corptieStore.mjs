@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { access, copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import os from "node:os";
-import { backup, DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { performance } from "node:perf_hooks";
 import { normalizeNewSessionDefaults } from "../utils/newSessionDefaults.mjs";
 import { normalizeSessionTitle } from "../utils/sessionTitles.mjs";
@@ -39,7 +39,7 @@ import {
   resolveSessionArchiveState
 } from "../domain/sessionArchivePolicy.mjs";
 import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
-import { migrateTaskDomainV1, needsTaskDomainMigration } from "./taskSchemaMigration.mjs";
+import { migrateTaskDomainV1 } from "./taskSchemaMigration.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -87,47 +87,26 @@ export class CorptieStore {
     this.transactionDepth = 0;
     this.pendingStateDirty = false;
     this.pendingTimelineDirty = new Set();
-    this.performanceMigrationBackupPath = null;
     this.migrationInProgress = false;
-    this.canonicalUnreadMigrationBackupPath = null;
     this.canonicalUnreadMigrationAudit = null;
-    this.taskDomainMigrationBackupPath = null;
   }
 
-  async initialize() {
-    await this.resolveDataPath();
+  async initialize(options = {}) {
+    if (options.resolveDataPath !== false) await this.resolveDataPath();
+    if (!this.dbPath) throw new Error("Store data path must be resolved before initialization.");
     await mkdir(dirname(this.dbPath), { recursive: true });
     this.db = new NativeDatabase(this.dbPath);
     try {
       this.db.run("PRAGMA journal_mode = WAL");
       this.db.run("PRAGMA synchronous = FULL");
       this.db.run("PRAGMA busy_timeout = 5000");
-      await this.ensurePerformanceMigrationBackup();
-      await this.ensureCanonicalUnreadMigrationBackup();
-      await this.ensureTaskDomainMigrationBackup();
-      this.migrate();
+      this.db.run("PRAGMA foreign_keys = ON");
+      if (options.performMigrations !== false) this.migrate();
     } catch (error) {
       this.db.close();
       this.db = null;
       throw error;
     }
-  }
-
-  async ensureTaskDomainMigrationBackup() {
-    if (!needsTaskDomainMigration(this.db)) return null;
-    const backupPath = `${this.dbPath}.pre-task-domain-v1.backup`;
-    await backup(this.db.database, backupPath);
-    const verification = new DatabaseSync(backupPath);
-    try {
-      const result = verification.prepare("PRAGMA quick_check").get();
-      if (result?.quick_check !== "ok") {
-        throw new Error(`TASK_DOMAIN_BACKUP_INVALID: ${result?.quick_check ?? "unknown"}`);
-      }
-    } finally {
-      verification.close();
-    }
-    this.taskDomainMigrationBackupPath = backupPath;
-    return backupPath;
   }
 
   reconcileInterruptedSessionExecutionAtStartup(timestamp = new Date().toISOString()) {
@@ -215,7 +194,10 @@ export class CorptieStore {
   async resolveDataPath() {
     if (this.explicitPaths && this.dbPath) {
       this.dataDir = dirname(this.dbPath);
-      this.dataRoot = this.dataDir;
+      // The migration Worker receives the canonical Data Root explicitly so
+      // schema seed/default paths remain identical to an in-process migration.
+      // Standalone Stores that specify only a DB retain the dirname behavior.
+      this.dataRoot = this.dataRootExplicit ? resolve(this.dataRoot) : this.dataDir;
       this.layout = resolveDataRootLayout(this.dataRoot, environmentName);
       this.configPath ||= join(this.dataDir, "config.json");
       return;
@@ -245,36 +227,6 @@ export class CorptieStore {
     this.config.dataRoot = this.dataRoot;
     await this.writeConfig();
     await this.writeRootSelection();
-  }
-
-  async ensurePerformanceMigrationBackup() {
-    const sessionEvents = this.db.get(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-      ["session_events"],
-      "CorptieStore.ensurePerformanceMigrationBackup"
-    );
-    if (!sessionEvents) return;
-    const columns = this.db.all(
-      "PRAGMA table_info(session_events)",
-      [],
-      "CorptieStore.ensurePerformanceMigrationBackup"
-    );
-    if (columns.some((column) => column.name === "has_agent_message")) return;
-
-    const backupPath = `${this.dbPath}.pre-sqlite-performance-v1.backup`;
-    if (!await exists(backupPath)) {
-      await backup(this.db.database, backupPath);
-    }
-    const verification = new DatabaseSync(backupPath, { readOnly: true });
-    try {
-      const result = verification.prepare("PRAGMA quick_check").get();
-      if (result?.quick_check !== "ok") {
-        throw new Error("SQLite performance migration backup failed integrity verification.");
-      }
-    } finally {
-      verification.close();
-    }
-    this.performanceMigrationBackupPath = backupPath;
   }
 
   async readRootSelectionAndLegacyConfig() {
@@ -309,44 +261,6 @@ export class CorptieStore {
       && (await readdir(this.layout.logsDirectory)).length === 0) {
       await cp(configuredLogDir, this.layout.logsDirectory, { recursive: true, force: false });
     }
-  }
-
-  async ensureCanonicalUnreadMigrationBackup() {
-    const tables = new Set(this.db.all(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('data_migrations', 'provider_event_inbox', 'session_events')",
-      [],
-      "CorptieStore.ensureCanonicalUnreadMigrationBackup"
-    ).map((row) => row.name));
-    if (!tables.has("data_migrations")
-        || !tables.has("provider_event_inbox")
-        || !tables.has("session_events")) return;
-    const applied = this.db.get(
-      "SELECT 1 AS applied FROM data_migrations WHERE migration_id = ?",
-      ["session-events-canonical-agent-message-v2"],
-      "CorptieStore.ensureCanonicalUnreadMigrationBackup"
-    );
-    if (applied) return;
-    const pending = this.db.get(
-      "SELECT 1 AS pending FROM provider_event_inbox WHERE event_type = 'turn.completed' LIMIT 1",
-      [],
-      "CorptieStore.ensureCanonicalUnreadMigrationBackup"
-    );
-    if (!pending) return;
-
-    const backupPath = `${this.dbPath}.pre-canonical-unread-v2.backup`;
-    if (!await exists(backupPath)) {
-      await backup(this.db.database, backupPath);
-    }
-    const verification = new DatabaseSync(backupPath, { readOnly: true });
-    try {
-      const result = verification.prepare("PRAGMA quick_check").get();
-      if (result?.quick_check !== "ok") {
-        throw new Error("Canonical unread migration backup failed integrity verification.");
-      }
-    } finally {
-      verification.close();
-    }
-    this.canonicalUnreadMigrationBackupPath = backupPath;
   }
 
   async writeConfig() {
@@ -1256,6 +1170,15 @@ export class CorptieStore {
         value_json TEXT NOT NULL DEFAULT '{}',
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS session_runtime_release_receipts (
+        session_id TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        released_at TEXT NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_runtime_release_receipts_released
+        ON session_runtime_release_receipts(released_at DESC);
 
       CREATE TABLE IF NOT EXISTS feishu_bots (
         id TEXT PRIMARY KEY,
@@ -2450,6 +2373,8 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_artifacts_objective
       ON artifacts(objective_id, status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_objective_page
+      ON artifacts(objective_id, updated_at DESC, artifact_id);
 
       CREATE TABLE IF NOT EXISTS artifact_versions (
         artifact_id TEXT NOT NULL,
@@ -2473,6 +2398,10 @@ export class CorptieStore {
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_versions_storage
       ON artifact_versions(artifact_id, content_hash);
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_versions_storage_key
+      ON artifact_versions(storage_key)
+      WHERE storage_key IS NOT NULL;
 
       CREATE INDEX IF NOT EXISTS idx_artifact_versions_pinned_read
       ON artifact_versions(artifact_id, version, content_hash);
@@ -2689,6 +2618,8 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_project_integration_runs_scope
       ON project_integration_runs(repository_id, objective_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_project_integration_runs_recent
+      ON project_integration_runs(created_at DESC, id DESC);
 
       CREATE TABLE IF NOT EXISTS project_integration_items (
         run_id TEXT NOT NULL,
@@ -2802,6 +2733,9 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(owner_type, owner_id);
       CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+      CREATE INDEX IF NOT EXISTS idx_memories_updated_page ON memories(updated_at DESC, id DESC);
+      CREATE INDEX IF NOT EXISTS idx_memories_owner_updated_page
+        ON memories(owner_type, owner_id, updated_at DESC, id DESC);
 
       CREATE TABLE IF NOT EXISTS memory_remember_operations (
         session_id TEXT NOT NULL,
@@ -3032,6 +2966,21 @@ export class CorptieStore {
     this.ensureColumn("tasks", "canceled_at", "TEXT");
     this.ensureColumn("tasks", "cancel_reason", "TEXT");
     this.ensureColumn("tasks", "deletion_status", "TEXT");
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_browse_page
+      ON tasks(
+        CASE WHEN lifecycle_state = 'done' THEN 1 ELSE 0 END,
+        updated_at DESC,
+        id DESC
+      )
+      WHERE COALESCE(deletion_status, '') <> 'deleted'`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_objective_browse_page
+      ON tasks(
+        objective_id,
+        CASE WHEN lifecycle_state = 'done' THEN 1 ELSE 0 END,
+        updated_at DESC,
+        id DESC
+      )
+      WHERE COALESCE(deletion_status, '') <> 'deleted'`);
     this.ensureColumn("tasks", "deletion_error", "TEXT");
     this.ensureColumn("tasks", "deletion_worktree_removed_at", "TEXT");
     this.ensureColumn("tasks", "completion_operation_id", "TEXT");
@@ -6073,6 +6022,56 @@ export class CorptieStore {
     ).map(sessionEventFromRow);
   }
 
+  listSessionRecoveryEventSample(sessionId, boundarySequence, options = {}) {
+    const boundary = Number(boundarySequence);
+    if (!Number.isSafeInteger(boundary) || boundary < 0) {
+      throw new TypeError("boundarySequence must be non-negative.");
+    }
+    const headLimit = Math.max(1, Math.min(32, Number(options.headLimit) || 12));
+    const tailLimit = Math.max(32, Math.min(400, Number(options.tailLimit) || 240));
+    const columns = recoveryEventProjectionSQL("events");
+    const predicate = recoveryRelevantEventSQL("events");
+    const read = (order, limit) => this.selectAll(
+      `SELECT ${columns}
+       FROM session_events events
+       WHERE events.session_id = ? AND events.sequence <= ?
+         AND (${predicate})
+       ORDER BY events.sequence ${order}
+       LIMIT ?`,
+      [sessionId, boundary, limit]
+    );
+    const head = read("ASC", headLimit);
+    const tail = read("DESC", tailLimit).reverse();
+    const latestCheckpoint = this.selectOne(
+      `SELECT ${columns}
+       FROM session_events events
+       WHERE events.session_id = ? AND events.sequence <= ?
+         AND LOWER(events.type) LIKE '%checkpoint%'
+       ORDER BY events.sequence DESC LIMIT 1`,
+      [sessionId, boundary]
+    );
+    const rowsBySequence = new Map();
+    for (const row of [...head, ...(latestCheckpoint ? [latestCheckpoint] : []), ...tail]) {
+      rowsBySequence.set(Number(row.sequence), row);
+    }
+    const firstTailSequence = Number(tail[0]?.sequence ?? boundary + 1);
+    const lastHeadSequence = Number(head.at(-1)?.sequence ?? 0);
+    const truncated = firstTailSequence > lastHeadSequence + 1 && Boolean(this.selectOne(
+      `SELECT 1 AS found FROM session_events events
+       WHERE events.session_id = ?
+         AND events.sequence > ? AND events.sequence < ?
+         AND (${predicate})
+       LIMIT 1`,
+      [sessionId, lastHeadSequence, firstTailSequence]
+    ));
+    return Object.freeze({
+      events: [...rowsBySequence.values()]
+        .sort((left, right) => Number(left.sequence) - Number(right.sequence))
+        .map(sessionEventFromRow),
+      truncated
+    });
+  }
+
   saveSessionRecoveryManifest(attemptId, manifest, manifestHash) {
     const attempt = this.getSessionRecoveryAttempt(attemptId);
     if (!attempt) return null;
@@ -8340,6 +8339,57 @@ export class CorptieStore {
     return rows.map((row) => this.rowToSession(row));
   }
 
+  listSessionTitleIdentities() {
+    return this.selectAll(
+      `SELECT id, title FROM sessions
+       WHERE deleted_at IS NULL
+       ORDER BY title ASC, id ASC`
+    );
+  }
+
+  listSessionPage(options = {}) {
+    const archived = options.archived === true ? 1 : 0;
+    const limit = Math.max(1, Math.min(100, Number(options.limit) || 50));
+    const cursor = options.cursor ?? null;
+    const sessionKind = typeof options.sessionKind === "string" && options.sessionKind
+      ? options.sessionKind
+      : null;
+    const sessionId = typeof options.sessionId === "string" && options.sessionId
+      ? options.sessionId
+      : null;
+    const hasCursor = typeof cursor?.updatedAt === "string" && typeof cursor?.id === "string";
+    const rows = this.selectAll(
+      `${sessionProjectionSelectSQL()}
+       WHERE sessions.deleted_at IS NULL
+         AND ${effectiveSessionArchivedSQL()} = ?
+         ${sessionId ? "AND sessions.id = ?" : ""}
+         ${sessionKind ? "AND sessions.session_kind = ?" : ""}
+         ${hasCursor ? `AND (
+           sessions.updated_at < ?
+           OR (sessions.updated_at = ? AND sessions.id < ?)
+         )` : ""}
+       ORDER BY sessions.updated_at DESC, sessions.id DESC
+       LIMIT ?`,
+      [
+        archived,
+        ...(sessionId ? [sessionId] : []),
+        ...(sessionKind ? [sessionKind] : []),
+        ...(hasCursor ? [cursor.updatedAt, cursor.updatedAt, cursor.id] : []),
+        limit + 1
+      ]
+    );
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit).map((row) => this.rowToSession(row));
+    const tail = items.at(-1);
+    return {
+      items,
+      hasMore,
+      nextCursor: hasMore && tail
+        ? { updatedAt: tail.updatedAt, id: tail.id }
+        : null
+    };
+  }
+
   getSession(id) {
     const row = this.selectOne(
       `${sessionProjectionSelectSQL()} WHERE sessions.id = ? AND sessions.deleted_at IS NULL`,
@@ -8423,6 +8473,39 @@ export class CorptieStore {
        ORDER BY created_at ASC, id ASC`,
       [sessionId, turnId]
     );
+    return rows.map((row) => normalizeStoredItem({
+      id: row.id,
+      turnId: row.turn_id,
+      turnStatus: row.turn_status,
+      type: row.type,
+      title: row.title,
+      text: normalizeStoredText(row.text, provider),
+      options: parseJson(row.options_json, null),
+      rawMetadataJSON: row.raw_metadata_json ?? null,
+      bindingId: row.binding_id ?? null,
+      presentationRole: row.presentation_role ?? null,
+      presentationText: row.presentation_text ?? null,
+      status: row.status,
+      createdAt: row.created_at
+    }, provider));
+  }
+
+  getFileChangeItemsForTurn(sessionId, turnId, provider = "", limit = 500) {
+    const pageLimit = Math.max(1, Math.min(500, Number(limit) || 500));
+    const rows = this.selectAll(
+      `SELECT id, turn_id, turn_status, type, title, text, options_json,
+              raw_metadata_json, binding_id, presentation_role, presentation_text,
+              status, created_at
+       FROM session_items
+       WHERE session_id = ? AND turn_id = ? AND type = 'fileChange'
+       ORDER BY created_at ASC, id ASC LIMIT ?`,
+      [sessionId, turnId, pageLimit + 1]
+    );
+    if (rows.length > pageLimit) {
+      const error = new Error("The Turn contains too many file-change records for one safe operation.");
+      error.code = "TURN_CHANGE_SET_TOO_LARGE";
+      throw error;
+    }
     return rows.map((row) => normalizeStoredItem({
       id: row.id,
       turnId: row.turn_id,
@@ -8531,7 +8614,7 @@ export class CorptieStore {
     const firstAnchor = anchorRows[0];
     const lastAnchor = anchorRows.at(-1);
     const beforeRows = this.selectAll(
-      `SELECT ${columns} FROM session_items
+      `SELECT ${columns} FROM session_items INDEXED BY idx_session_items_latest
        WHERE session_id = ?
          AND (created_at < ? OR (created_at = ? AND id < ?))
        ORDER BY created_at DESC, id DESC LIMIT ?`,
@@ -8548,7 +8631,7 @@ export class CorptieStore {
     const first = rows[0];
     const last = rows.at(-1);
     const hasEarlier = Boolean(this.selectOne(
-      `SELECT 1 FROM session_items WHERE session_id = ?
+      `SELECT 1 FROM session_items INDEXED BY idx_session_items_latest WHERE session_id = ?
        AND (created_at < ? OR (created_at = ? AND id < ?)) LIMIT 1`,
       [sessionId, first.created_at, first.created_at, first.id]
     ));
@@ -8593,26 +8676,20 @@ export class CorptieStore {
         return { items: [], hasMoreHistory: false, historyItemsCount: 0, cursorStatus: "invalid" };
       }
     }
-    const rows = this.selectAll(
-      `SELECT ${columns} FROM session_items
+    const pageRows = this.selectAll(
+      `SELECT ${columns} FROM session_items INDEXED BY idx_session_items_latest
        WHERE session_id = ?
          ${boundary ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
        ORDER BY created_at DESC, id DESC LIMIT ?`,
       boundary
-        ? [sessionId, boundary.created_at, boundary.created_at, boundary.id, pageLimit]
-        : [sessionId, pageLimit]
-    ).reverse();
+        ? [sessionId, boundary.created_at, boundary.created_at, boundary.id, pageLimit + 1]
+        : [sessionId, pageLimit + 1]
+    );
+    const hasMoreHistory = pageRows.length > pageLimit;
+    const rows = pageRows.slice(0, pageLimit).reverse();
     if (rows.length === 0) {
       return { items: [], hasMoreHistory: false, historyItemsCount: 0, cursorStatus: "exhausted" };
     }
-    const first = rows[0];
-    const count = this.selectOne(
-      `SELECT COUNT(*) AS count FROM session_items
-       WHERE session_id = ?
-         AND (created_at < ? OR (created_at = ? AND id < ?))`,
-      [sessionId, first.created_at, first.created_at, first.id]
-    );
-    const historyItemsCount = Number(count?.count ?? 0);
     return {
       items: rows.map((row) => normalizeStoredItem({
         id: row.id,
@@ -8629,17 +8706,16 @@ export class CorptieStore {
         status: row.status,
         createdAt: row.created_at
       }, provider)),
-      hasMoreHistory: historyItemsCount > 0,
-      historyItemsCount,
+      hasMoreHistory,
+      // Exact remaining counts require a linear history scan and are not used
+      // by the client. hasMoreHistory is the authoritative continuation signal.
+      historyItemsCount: hasMoreHistory ? null : 0,
       cursorStatus: "found"
     };
   }
 
   getLatestTimelineItemWindow(sessionId, { limit = 200, provider = "" } = {}) {
     const pageLimit = Math.floor(Math.max(1, Math.min(200, Number(limit) || 200)));
-    const columns = `id, turn_id, turn_status, type, title, text, options_json,
-                     raw_metadata_json, binding_id, presentation_role, presentation_text,
-                     status, created_at`;
     const rows = this.latestTimelineRowsWithConversationBoundaries(sessionId, pageLimit);
     // An existing Session with no Timeline items still has a valid, fully
     // authoritative local window. Returning null used to route the read into
@@ -8650,12 +8726,13 @@ export class CorptieStore {
       return { items: [], hasEarlier: false, hasLater: false, historyItemsCount: 0 };
     }
     const first = rows[0];
-    const history = this.selectOne(
-      `SELECT COUNT(*) AS count FROM session_items WHERE session_id = ?
-       AND (created_at < ? OR (created_at = ? AND id < ?))`,
+    const hasEarlier = Boolean(this.selectOne(
+      `SELECT 1 FROM session_items INDEXED BY idx_session_items_latest
+       WHERE session_id = ?
+         AND (created_at < ? OR (created_at = ? AND id < ?))
+       LIMIT 1`,
       [sessionId, first.created_at, first.created_at, first.id]
-    );
-    const historyItemsCount = Number(history?.count ?? 0);
+    ));
     return {
       items: rows.map((row) => normalizeStoredItem({
         id: row.id,
@@ -8672,9 +8749,9 @@ export class CorptieStore {
         status: row.status,
         createdAt: row.created_at
       }, provider)),
-      hasEarlier: historyItemsCount > 0,
+      hasEarlier,
       hasLater: false,
-      historyItemsCount
+      historyItemsCount: hasEarlier ? null : 0
     };
   }
 
@@ -8761,8 +8838,42 @@ export class CorptieStore {
       "UPDATE sessions SET archived = ?, sort_order = ?, updated_at = ? WHERE id = ?",
       [archived ? 1 : 0, this.nextTopSortOrder(archived), updatedAt, id]
     );
+    if (!archived) this.clearSessionRuntimeReleaseReceipt(id);
     this.scheduleSave();
     return this.getSession(id);
+  }
+
+  listArchivedSessionsPendingRuntimeRelease({ taskId = null, limit = 100 } = {}) {
+    const boundedLimit = Math.max(1, Math.min(500, Number(limit) || 100));
+    return this.selectAll(
+      `SELECT sessions.* FROM sessions INDEXED BY idx_sessions_archived_order
+       LEFT JOIN session_runtime_release_receipts receipt
+         ON receipt.session_id = sessions.id
+       WHERE sessions.archived = 1
+         AND sessions.deleted_at IS NULL
+         AND receipt.session_id IS NULL
+         ${taskId ? "AND sessions.task_id = ?" : ""}
+       ORDER BY sessions.pinned DESC, sessions.sort_order ASC, sessions.id ASC
+       LIMIT ?`,
+      taskId ? [taskId, boundedLimit] : [boundedLimit]
+    ).map((row) => this.rowToSession(row));
+  }
+
+  markSessionRuntimeReleased(sessionId, reason = "archived", releasedAt = new Date().toISOString()) {
+    this.db.run(
+      `INSERT INTO session_runtime_release_receipts (session_id, reason, released_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(session_id) DO UPDATE SET
+         reason=excluded.reason,
+         released_at=excluded.released_at`,
+      [sessionId, reason, releasedAt]
+    );
+    this.scheduleSave();
+  }
+
+  clearSessionRuntimeReleaseReceipt(sessionId) {
+    this.db.run("DELETE FROM session_runtime_release_receipts WHERE session_id = ?", [sessionId]);
+    this.scheduleSave();
   }
 
   pinSession(id, pinned = true) {
@@ -9148,12 +9259,40 @@ export class CorptieStore {
     );
   }
 
-  hasSessionTurnForBinding(sessionId, bindingId) {
-    return Boolean(this.selectOne(
-      `SELECT 1 AS present FROM session_turns
-       WHERE session_id = ? AND binding_id = ? LIMIT 1`,
-      [sessionId, bindingId]
-    ));
+  listEmptyActiveProviderBindings(providerId) {
+    return this.selectAll(
+      `SELECT sessions.id AS session_id,
+              logical.logical_session_id,
+              binding.binding_id,
+              binding.provider_id,
+              binding.provider_session_id
+       FROM logical_sessions logical
+       JOIN sessions ON sessions.id = logical.legacy_session_id
+       JOIN provider_thread_bindings binding
+         ON binding.provider_thread_id = logical.active_thread_id
+       WHERE logical.archived = 0
+         AND sessions.deleted_at IS NULL
+         AND ${effectiveSessionArchivedSQL()} = 0
+         AND logical.transition_state IS NULL
+         AND binding.state = 'active'
+         AND binding.provider_id = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM session_turns turn
+           WHERE turn.session_id = sessions.id
+             AND turn.binding_id = binding.binding_id
+         )
+       ORDER BY sessions.pinned DESC,
+                sessions.sort_order ASC,
+                sessions.updated_at DESC,
+                logical.logical_session_id ASC`,
+      [providerId]
+    ).map((row) => ({
+      sessionId: row.session_id,
+      logicalSessionId: row.logical_session_id,
+      bindingId: row.binding_id,
+      providerId: row.provider_id,
+      providerSessionId: row.provider_session_id
+    }));
   }
 
   /// Wake the revisioned Session projection when a runtime-only dependency
@@ -9562,10 +9701,24 @@ export class CorptieStore {
     return rows.map(sessionEventFromRow);
   }
 
-  listLatestSessionMessageTimes() {
-    const rows = this.selectAll(
+  listLatestSessionMessageTimes(sessionIds = null) {
+    const ids = normalizedSessionIdFilter(sessionIds);
+    if (ids?.length === 0) return new Map();
+    // SQLite has repeatedly preferred the much larger cursor index for this
+    // sparse predicate when sqlite_stat1 is absent or stale. Resident callers
+    // already supply authoritative, non-deleted Session ids, so keep that hot
+    // path on the purpose-built partial index and avoid the redundant join.
+    const rows = ids ? this.selectAll(
       `SELECT events.session_id, MAX(events.created_at) AS last_message_at
-       FROM session_events events
+       FROM session_events events INDEXED BY idx_session_events_latest_message
+       WHERE (events.surface = 1
+          OR events.type IN ('SessionUserMessageCreated', 'CodexThreadCompleted'))
+         AND events.session_id IN (${ids.map(() => "?").join(", ")})
+       GROUP BY events.session_id`,
+      ids
+    ) : this.selectAll(
+      `SELECT events.session_id, MAX(events.created_at) AS last_message_at
+       FROM session_events events INDEXED BY idx_session_events_latest_message
        JOIN sessions ON sessions.id = events.session_id AND sessions.deleted_at IS NULL
        WHERE events.surface = 1
           OR events.type IN ('SessionUserMessageCreated', 'CodexThreadCompleted')
@@ -9574,8 +9727,23 @@ export class CorptieStore {
     return new Map(rows.map((row) => [row.session_id, row.last_message_at]));
   }
 
-  listSessionMessageCursors() {
-    const rows = this.selectAll(`
+  listSessionMessageCursors(sessionIds = null) {
+    const ids = normalizedSessionIdFilter(sessionIds);
+    if (ids?.length === 0) return new Map();
+    const rows = ids ? this.selectAll(`
+      SELECT sessions.id AS session_id,
+             COALESCE((
+               SELECT MAX(events.sequence) FROM session_events events
+               WHERE events.session_id = sessions.id
+                 AND ${agentMessageEventSQL("events")}
+             ), 0) AS last_agent_message_sequence,
+             COALESCE(session_read_receipts.last_read_agent_message_sequence, 0)
+               AS last_read_message_sequence
+      FROM sessions
+      LEFT JOIN session_read_receipts ON session_read_receipts.session_id = sessions.id
+      WHERE sessions.deleted_at IS NULL
+        AND sessions.id IN (${ids.map(() => "?").join(", ")})
+    `, ids) : this.selectAll(`
       SELECT sessions.id AS session_id,
              COALESCE(agent_messages.last_agent_message_sequence, 0)
                AS last_agent_message_sequence,
@@ -9597,7 +9765,10 @@ export class CorptieStore {
     }]));
   }
 
-  listSessionTimelineRevisions() {
+  listSessionTimelineRevisions(sessionIds = null) {
+    const ids = normalizedSessionIdFilter(sessionIds);
+    if (ids?.length === 0) return new Map();
+    const filter = ids ? `AND sessions.id IN (${ids.map(() => "?").join(", ")})` : "";
     const rows = this.selectAll(`
       SELECT sessions.id AS session_id,
              COALESCE(session_timeline_revisions.revision, 0) AS revision
@@ -9605,7 +9776,8 @@ export class CorptieStore {
       LEFT JOIN session_timeline_revisions
         ON session_timeline_revisions.session_id = sessions.id
       WHERE sessions.deleted_at IS NULL
-    `);
+        ${filter}
+    `, ids ?? []);
     return new Map(rows.map((row) => [row.session_id, Number(row.revision ?? 0)]));
   }
 
@@ -10651,9 +10823,13 @@ export class CorptieStore {
     } : null;
   }
 
-  listTasks() {
+  listTasks(options = {}) {
+    const includeCompleted = options.includeCompleted !== false;
     return this.selectAll(
-      `SELECT * FROM tasks WHERE COALESCE(deletion_status, '') <> 'deleted' ORDER BY created_at ASC`
+      `SELECT * FROM tasks
+       WHERE COALESCE(deletion_status, '') <> 'deleted'
+         ${includeCompleted ? "" : "AND lifecycle_state <> 'done'"}
+       ORDER BY created_at ASC`
     );
   }
 
@@ -10664,6 +10840,55 @@ export class CorptieStore {
        ORDER BY created_at ASC`,
       [objectiveId]
     );
+  }
+
+  listTaskPage(options = {}) {
+    const objectiveId = typeof options.objectiveId === "string" && options.objectiveId
+      ? options.objectiveId
+      : null;
+    const includeCompleted = options.includeCompleted !== false;
+    const limit = Math.max(1, Math.min(100, Number(options.limit) || 50));
+    const cursor = options.cursor ?? null;
+    const hasCursor = Number.isInteger(cursor?.completionRank)
+      && typeof cursor?.updatedAt === "string"
+      && typeof cursor?.id === "string";
+    const completionRankSQL = "CASE WHEN tasks.lifecycle_state = 'done' THEN 1 ELSE 0 END";
+    const rows = this.selectAll(
+      `SELECT tasks.*, ${completionRankSQL} AS completion_rank
+       FROM tasks
+       WHERE COALESCE(tasks.deletion_status, '') <> 'deleted'
+         ${objectiveId ? "AND tasks.objective_id = ?" : ""}
+         ${includeCompleted ? "" : "AND tasks.lifecycle_state <> 'done'"}
+         ${hasCursor ? `AND (
+           ${completionRankSQL} > ?
+           OR (${completionRankSQL} = ? AND tasks.updated_at < ?)
+           OR (${completionRankSQL} = ? AND tasks.updated_at = ? AND tasks.id < ?)
+         )` : ""}
+       ORDER BY completion_rank ASC, tasks.updated_at DESC, tasks.id DESC
+       LIMIT ?`,
+      [
+        ...(objectiveId ? [objectiveId] : []),
+        ...(hasCursor ? [
+          cursor.completionRank,
+          cursor.completionRank, cursor.updatedAt,
+          cursor.completionRank, cursor.updatedAt, cursor.id
+        ] : []),
+        limit + 1
+      ]
+    );
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+    const items = pageRows.map(({ completion_rank: _completionRank, ...row }) => row);
+    const tailRow = pageRows.at(-1);
+    return {
+      items,
+      hasMore,
+      nextCursor: hasMore && tailRow ? {
+        completionRank: Number(tailRow.completion_rank),
+        updatedAt: tailRow.updated_at,
+        id: tailRow.id
+      } : null
+    };
   }
 
   createArtifactMetadata(input) {
@@ -10700,12 +10925,21 @@ export class CorptieStore {
     ).map(artifactFromRow);
   }
 
-  listArtifactsByObjective(objectiveId, { includeRevoked = false } = {}) {
+  listArtifactsByObjective(objectiveId, { includeRevoked = false, limit = null, offset = 0 } = {}) {
+    const pagination = limit == null ? "" : "LIMIT ? OFFSET ?";
     return this.selectAll(
       `SELECT * FROM artifacts WHERE objective_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}
-       ORDER BY updated_at DESC, artifact_id`,
-      [objectiveId]
+       ORDER BY updated_at DESC, artifact_id ${pagination}`,
+      limit == null ? [objectiveId] : [objectiveId, limit, offset]
     ).map(artifactFromRow);
+  }
+
+  countArtifactsByObjective(objectiveId, { includeRevoked = false } = {}) {
+    return Number(this.selectOne(
+      `SELECT COUNT(*) AS count FROM artifacts
+       WHERE objective_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}`,
+      [objectiveId]
+    )?.count ?? 0);
   }
 
   listArtifactsReferencedByTask(taskId, { includeRevokedReferences = false, limit = null, offset = 0 } = {}) {
@@ -11275,10 +11509,14 @@ export class CorptieStore {
     return projectIntegrationRunFromRow(row, items);
   }
 
-  listProjectIntegrationRuns() {
-    return this.selectAll(
-      `SELECT id FROM project_integration_runs ORDER BY created_at ASC`
-    ).map((row) => this.getProjectIntegrationRun(row.id));
+  listProjectIntegrationRuns(limit = null) {
+    const boundedLimit = limit == null ? null : Math.max(1, Math.min(200, Number(limit) || 50));
+    const rows = this.selectAll(
+      `SELECT id FROM project_integration_runs
+       ORDER BY created_at ${boundedLimit == null ? "ASC" : "DESC LIMIT ?"}`,
+      boundedLimit == null ? [] : [boundedLimit]
+    );
+    return rows.map((row) => this.getProjectIntegrationRun(row.id));
   }
 
   getLatestProjectIntegrationRun(repositoryId, objectiveId) {
@@ -12178,6 +12416,53 @@ export class CorptieStore {
 
   listAllMemories() {
     return this.selectAll(`SELECT * FROM memories ORDER BY updated_at DESC`);
+  }
+
+  listMemoryPage(options = {}) {
+    const ownerType = typeof options.ownerType === "string" && options.ownerType ? options.ownerType : null;
+    const ownerId = typeof options.ownerId === "string" && options.ownerId ? options.ownerId : null;
+    const limit = Math.max(1, Math.min(100, Number(options.limit) || 50));
+    const cursor = options.cursor ?? null;
+    const hasCursor = typeof cursor?.updatedAt === "string" && typeof cursor?.id === "string";
+    const clauses = [];
+    const params = [];
+    if (ownerType && ownerId) {
+      clauses.push("owner_type = ?", "owner_id = ?");
+      params.push(ownerType, ownerId);
+    }
+    if (options.includeRevoked !== true) clauses.push("revoked_at IS NULL");
+    for (const [column, value] of [
+      ["kind", options.kind],
+      ["promotion_status", options.status],
+      ["source_type", options.sourceType],
+      ["trust_level", options.trustLevel]
+    ]) {
+      if (typeof value === "string" && value) {
+        clauses.push(`${column} = ?`);
+        params.push(value);
+      }
+    }
+    if (typeof options.query === "string" && options.query) {
+      clauses.push("(LOWER(content) LIKE ? OR LOWER(tags_json) LIKE ?)");
+      params.push(`%${options.query.toLocaleLowerCase()}%`, `%${options.query.toLocaleLowerCase()}%`);
+    }
+    if (hasCursor) {
+      clauses.push("(updated_at < ? OR (updated_at = ? AND id < ?))");
+      params.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+    }
+    const rows = this.selectAll(
+      `SELECT * FROM memories ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+       ORDER BY updated_at DESC, id DESC LIMIT ?`,
+      [...params, limit + 1]
+    );
+    const hasMore = rows.length > limit;
+    const items = rows.slice(0, limit);
+    const tail = items.at(-1);
+    return {
+      items,
+      hasMore,
+      nextCursor: hasMore && tail ? { updatedAt: tail.updated_at, id: tail.id } : null
+    };
   }
 
   updateMemory(id, patch = {}) {
@@ -13255,6 +13540,12 @@ function normalizedExecutionStatus(value) {
   return value === "complete" ? "completed" : value;
 }
 
+function normalizedSessionIdFilter(sessionIds) {
+  if (sessionIds == null) return null;
+  const values = typeof sessionIds === "string" ? [sessionIds] : Array.from(sessionIds);
+  return [...new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))];
+}
+
 function normalizedProviderConnectionStatus(value) {
   const normalized = String(value ?? "").toLowerCase();
   if (normalized.includes("reconnect") || normalized.includes("connect")) {
@@ -14303,6 +14594,71 @@ function agentMessageEventSQL(tableAlias) {
     )`;
   }
   return `${tableAlias}.has_agent_message = 1`;
+}
+
+function recoveryRelevantEventSQL(tableAlias) {
+  return `${tableAlias}.type IN (
+      'user/message', 'SessionUserMessageCreated',
+      'assistant/message', 'assistant.message.completed',
+      'AgentTurnCompleted', 'CodexThreadCompleted', 'turn.completed'
+    )
+    OR LOWER(${tableAlias}.type) LIKE '%tool.completed%'
+    OR LOWER(${tableAlias}.type) LIKE '%tool/result%'
+    OR LOWER(${tableAlias}.type) LIKE '%checkpoint%'
+    OR LOWER(${tableAlias}.type) LIKE '%context.reference%'
+    OR LOWER(${tableAlias}.type) LIKE '%system/context%'
+    OR LOWER(${tableAlias}.type) LIKE '%artifact.reference%'
+    OR LOWER(${tableAlias}.type) LIKE '%artifact/reference%'`;
+}
+
+function recoveryEventProjectionSQL(tableAlias) {
+  const completionTurnId = `COALESCE(
+    json_extract(${tableAlias}.payload_json, '$.turnId'),
+    json_extract(${tableAlias}.payload_json, '$.item.turnId')
+  )`;
+  const projectedCompletionText = `COALESCE(
+    NULLIF(json_extract(${tableAlias}.payload_json, '$.item.text'), ''),
+    NULLIF(json_extract(${tableAlias}.payload_json, '$.text'), ''),
+    NULLIF(json_extract(${tableAlias}.payload_json, '$.message.text'), ''),
+    NULLIF(json_extract(${tableAlias}.payload_json, '$.summary'), ''),
+    NULLIF(json_extract(${tableAlias}.payload_json, '$.session.summary'), ''),
+    (
+      SELECT COALESCE(NULLIF(item.presentation_text, ''), NULLIF(item.text, ''))
+      FROM session_items item
+      WHERE item.session_id = ${tableAlias}.session_id
+        AND item.turn_id = ${completionTurnId}
+        AND item.type = 'agentMessage'
+      ORDER BY CASE WHEN item.presentation_role = 'final_answer' THEN 0 ELSE 1 END,
+               item.created_at DESC, item.id DESC
+      LIMIT 1
+    )
+  )`;
+  return `${tableAlias}.event_id, ${tableAlias}.session_id, ${tableAlias}.log_id,
+    ${tableAlias}.sequence, ${tableAlias}.type, ${tableAlias}.producer,
+    ${tableAlias}.surface, ${tableAlias}.source_event_seqs_json,
+    ${tableAlias}.call_id, NULL AS source_json,
+    CASE
+      WHEN ${tableAlias}.type IN ('AgentTurnCompleted', 'CodexThreadCompleted', 'turn.completed')
+      THEN json_object(
+        'hasAgentMessage', json_extract(${tableAlias}.payload_json, '$.hasAgentMessage'),
+        'turnId', ${completionTurnId},
+        'item', json_object('type', 'agentMessage', 'text', ${projectedCompletionText},
+                            'turnId', ${completionTurnId})
+      )
+      WHEN LOWER(${tableAlias}.type) LIKE '%tool.completed%'
+        OR LOWER(${tableAlias}.type) LIKE '%tool/result%'
+      THEN json_object(
+        'turnId', json_extract(${tableAlias}.payload_json, '$.turnId'),
+        'toolName', json_extract(${tableAlias}.payload_json, '$.toolName'),
+        'summary', COALESCE(
+          json_extract(${tableAlias}.payload_json, '$.summary'),
+          json_extract(${tableAlias}.payload_json, '$.text'),
+          'Historical tool result retained as evidence summary.'
+        )
+      )
+      ELSE ${tableAlias}.payload_json
+    END AS payload_json,
+    ${tableAlias}.created_at`;
 }
 
 function sessionEventFromRow(row) {

@@ -429,7 +429,7 @@ test("stored latest timeline window is bounded and reports earlier history", asy
     assert.equal(window.items.at(-1).id, "item-0499");
     assert.equal(window.hasEarlier, true);
     assert.equal(window.hasLater, false);
-    assert.equal(window.historyItemsCount, 420);
+    assert.equal(window.historyItemsCount, null);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -457,7 +457,7 @@ test("Timeline history uses stable keyset pages and never needs a reconstructed 
     });
     assert.deepEqual(first.items.map((item) => item.id), ["item-06", "item-07", "item-08", "item-09"]);
     assert.equal(first.hasMoreHistory, true);
-    assert.equal(first.historyItemsCount, 6);
+    assert.equal(first.historyItemsCount, null);
     assert.equal(first.cursorStatus, "found");
 
     const second = store.getSessionTimelineHistoryPage("history-keyset", {
@@ -465,7 +465,8 @@ test("Timeline history uses stable keyset pages and never needs a reconstructed 
       limit: 4
     });
     assert.deepEqual(second.items.map((item) => item.id), ["item-02", "item-03", "item-04", "item-05"]);
-    assert.equal(second.historyItemsCount, 2);
+    assert.equal(second.hasMoreHistory, true);
+    assert.equal(second.historyItemsCount, null);
     assert.equal(second.cursorStatus, "found");
     assert.deepEqual(
       store.getSessionTimelineHistoryPage("history-keyset", { beforeId: "item-00", limit: 4 }),

@@ -700,6 +700,13 @@ enum CorptiePalette {
 
 struct SessionsResponse: Decodable, Sendable {
     let sessions: [TaskSession]
+    let page: SessionPageMetadata?
+}
+
+struct SessionPageMetadata: Decodable, Sendable {
+    let limit: Int
+    let hasMore: Bool
+    let nextCursor: String?
 }
 
 struct SessionCollectionSnapshotEnvelope: Decodable, Sendable {

@@ -98,6 +98,16 @@ struct MemoryManagementView: View {
                 )
             } else {
                 layeredList
+                if client.browsedMemoriesHasMore {
+                    Button(L10n("Load more memories")) {
+                        Task {
+                            isLoading = true
+                            defer { isLoading = false }
+                            memories = await client.loadMoreMemories() ?? memories
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
             }
             if let error = client.errorMessage, !error.isEmpty {
                 Text(error).font(.caption).foregroundStyle(.red)

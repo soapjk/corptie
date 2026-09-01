@@ -37,6 +37,14 @@ struct ArtifactSectionView: View {
 
             artifactLoadContent
 
+            if client.hasMore(objectiveId: objectiveId, taskId: taskId) {
+                Button(L10n("Load more Artifacts")) {
+                    Task { await client.loadMore(objectiveId: objectiveId, taskId: taskId) }
+                }
+                .buttonStyle(.borderless)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+
             if let receipt = importReceipt {
                 Label("SHA-256 \(receipt.contentHash.prefix(12))… · \(receipt.byteLength) bytes · source preserved", systemImage: "checkmark.shield")
                     .font(.system(size: 9)).foregroundStyle(.green)

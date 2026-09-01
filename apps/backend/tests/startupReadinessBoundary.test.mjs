@@ -19,7 +19,7 @@ test("remote Feishu reconciliation stays outside the backend readiness path", as
 
 test("Provider initialization and recovery stay outside the backend readiness path", async () => {
   const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
-  const startupIndex = source.indexOf("await store.initialize()");
+  const startupIndex = source.indexOf("await store.resolveDataPath()");
   const listenIndex = source.indexOf('server.listen(port, "127.0.0.1"');
   const readinessPath = source.slice(startupIndex, listenIndex);
   const providerOperations = [
@@ -34,6 +34,8 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     "await sessionProviderSwitchCoordinator.completeProviderSwitch",
     "await runtime.manager.recoverWorkspaceTransition",
     "await reconcileMovedWorkspaceRoutes",
+    "emptyCodexBindingPreflight.prepare()",
+    "emptyCodexBindingPreflight.run()",
     "tickAgentWorkQueue().catch",
     "scheduledSessionTaskService.start()"
   ];
@@ -60,6 +62,7 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     "recoverPendingWorkspaceTransitions",
     "reconcileMovedWorkspaceRoutes",
     "toolBootstrapBindingPreflight.run",
+    "emptyCodexBindingPreflight.prepare",
     "emptyCodexBindingPreflight.run"
   ]) {
     assert.ok(maintenance.includes(operation), `${operation} must remain scheduled as background maintenance`);
@@ -69,6 +72,23 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     /promise\.finally\(\(\) => startupMaintenanceTasks\.delete/,
     "startup task tracking must not create an unhandled rejected finally Promise"
   );
+});
+
+test("SQLite migration cannot block the fixed-cost transport event loop", async () => {
+  const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
+  const listenIndex = source.indexOf('server.listen(port, "127.0.0.1"');
+  const migrationIndex = source.indexOf("await migrateStoreOffMainThread(", listenIndex);
+  const mainStoreOpenIndex = source.indexOf(
+    "await store.initialize({ resolveDataPath: false, performMigrations: false })",
+    migrationIndex
+  );
+  const readyIndex = source.indexOf("backendStoreReady = true", mainStoreOpenIndex);
+
+  assert.ok(listenIndex >= 0);
+  assert.ok(migrationIndex > listenIndex, "the loopback listener must open before schema migration");
+  assert.ok(mainStoreOpenIndex > migrationIndex, "the main Store must open only after the Worker releases SQLite");
+  assert.ok(readyIndex > mainStoreOpenIndex, "Store-backed APIs must remain gated until the main connection opens");
+  assert.match(source.slice(migrationIndex, mainStoreOpenIndex), /dbPath: store\.dbPath/);
 });
 
 test("startup settles durable nonterminal work before runtime queue draining", async () => {
@@ -94,4 +114,44 @@ test("startup settles durable nonterminal work before runtime queue draining", a
     false,
     "startup must not revive interrupted collaboration deliveries"
   );
+});
+
+test("Session collection reads are bounded and publish an explicit continuation contract", async () => {
+  const [server, store] = await Promise.all([
+    readFile(new URL("../src/server.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/store/corptieStore.mjs", import.meta.url), "utf8")
+  ]);
+  const sessionsRoute = server.slice(
+    server.indexOf('if (request.method === "GET" && url.pathname === "/sessions")'),
+    server.indexOf('if (request.method === "POST" && url.pathname === "/sessions")')
+  );
+  const snapshot = server.slice(
+    server.indexOf("function controlPlaneSnapshot()"),
+    server.indexOf("function sessionChangeAffects", server.indexOf("function controlPlaneSnapshot()"))
+  );
+
+  assert.match(sessionsRoute, /limit/);
+  assert.match(sessionsRoute, /nextCursor/);
+  assert.match(sessionsRoute, /hasMore/);
+  assert.match(sessionsRoute, /sessionId/);
+  assert.match(store, /listSessionPage\(options = \{\}\)/);
+  assert.match(store, /LIMIT \?/);
+  assert.match(snapshot, /listLatestSessionMessageTimes\(residentSessionIds\)/);
+  assert.match(snapshot, /listSessionMessageCursors\(residentSessionIds\)/);
+  assert.match(snapshot, /listSessionTimelineRevisions\(residentSessionIds\)/);
+});
+
+test("startup migrations run in place without creating full database backups", async () => {
+  const store = await readFile(new URL("../src/store/corptieStore.mjs", import.meta.url), "utf8");
+  const initialize = store.slice(
+    store.indexOf("async initialize(options = {})"),
+    store.indexOf("reconcileInterruptedSessionExecutionAtStartup")
+  );
+
+  assert.match(initialize, /performMigrations !== false\) this\.migrate\(\)/);
+  assert.doesNotMatch(initialize, /backup\(/);
+  assert.doesNotMatch(initialize, /MigrationBackup/);
+  assert.doesNotMatch(store, /pre-task-domain-v1\.backup/);
+  assert.doesNotMatch(store, /pre-sqlite-performance-v1\.backup/);
+  assert.doesNotMatch(store, /pre-canonical-unread-v2\.backup/);
 });

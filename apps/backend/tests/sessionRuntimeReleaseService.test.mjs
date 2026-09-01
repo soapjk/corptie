@@ -92,6 +92,28 @@ test("completed Task and startup reconciliation select only archived Sessions", 
   ]);
 });
 
+test("startup reconciliation reads only bounded Sessions without a durable release receipt", () => {
+  const requested = [];
+  const calls = [];
+  const pending = [{ id: "session:pending", archived: true, archiveReason: "manual" }];
+  const service = new SessionRuntimeReleaseService({
+    store: {
+      listArchivedSessionsPendingRuntimeRelease: (options) => {
+        calls.push(options);
+        return pending;
+      },
+      getSession: () => null,
+      hasUnsettledSessionRuntimeWork: () => false
+    },
+    sessionService: { disconnectSession: async () => ({}) }
+  });
+  service.request = (id, reason) => { requested.push([id, reason]); return Promise.resolve(); };
+
+  assert.equal(service.reconcileArchivedSessions(), 1);
+  assert.deepEqual(calls, [{ limit: 100 }]);
+  assert.deepEqual(requested, [["session:pending", "manual"]]);
+});
+
 test("restoring an archived Session reconnects its persisted Provider binding", async () => {
   const calls = [];
   const service = new SessionRuntimeReleaseService({

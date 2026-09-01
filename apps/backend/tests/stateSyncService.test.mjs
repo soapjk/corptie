@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { deliveredStateRevision, StateSyncService } from "../src/application/stateSyncService.mjs";
 
-function fixture({ revision = 0, oldest = revision, changes = [], state = {} } = {}) {
+function fixture({ revision = 0, oldest = revision, changes = [], state = {}, readEntity = null } = {}) {
   const store = {
     stateRevision: () => revision,
     oldestStateChangeRevision: () => oldest,
     stateChangesAfter: (after) => changes.filter((change) => change.revision > after)
   };
-  return new StateSyncService({ store, snapshot: () => state });
+  return new StateSyncService({ store, snapshot: () => state, readEntity });
 }
 
 test("state snapshot normalizes every control-plane collection", () => {
@@ -96,6 +96,33 @@ test("change set coalesces row history and hydrates authoritative entities", () 
   assert.equal(changes.revision, 3);
   assert.deepEqual(changes.upserts.sessions, [{ id: "s1", status: "running" }]);
   assert.deepEqual(changes.upserts.tasks, [{ id: "w1" }]);
+});
+
+test("change sets hydrate named entities without rebuilding the global snapshot", () => {
+  let snapshotBuilds = 0;
+  const entities = new Map([
+    ["session\0s1", { id: "s1", status: "complete" }],
+    ["task\0t1", { id: "t1", lifecycleState: "done" }]
+  ]);
+  const store = {
+    stateRevision: () => 4,
+    oldestStateChangeRevision: () => 2,
+    stateChangesAfter: () => [
+      { revision: 3, entityType: "session", entityId: "s1", operation: "upsert" },
+      { revision: 4, entityType: "task", entityId: "t1", operation: "upsert" }
+    ]
+  };
+  const service = new StateSyncService({
+    store,
+    snapshot: () => { snapshotBuilds += 1; return {}; },
+    readEntity: (type, id) => entities.get(`${type}\0${id}`) ?? null
+  });
+
+  const changes = service.changesAfter(2);
+  assert.equal(changes.snapshotRequired, false);
+  assert.deepEqual(changes.upserts.sessions, [{ id: "s1", status: "complete" }]);
+  assert.deepEqual(changes.upserts.tasks, [{ id: "t1", lifecycleState: "done" }]);
+  assert.equal(snapshotBuilds, 0);
 });
 
 test("Artifact table changes coalesce into dedicated cache invalidations", () => {

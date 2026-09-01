@@ -2,10 +2,9 @@ import Foundation
 import Testing
 @testable import CorptieMac
 
-/// Authoritative connection-state transitions live in `AppStateStore.isReachable`,
-/// flipped by the sync engine on every snapshot/change-set success or transport
-/// failure. `BackendClient.isOnline` derives from it via a Combine sink so the
-/// console footer and floating panel refresh without a tab switch or restart.
+/// The fixed-cost global stream is sufficient to show the Backend transport as
+/// connected while Store-backed state initializes independently. State Sync
+/// reachability remains authoritative for data availability.
 @MainActor
 struct BackendConnectionStateTests {
     private func snapshot(revision: Int64) -> StateSnapshotEnvelope {
@@ -87,12 +86,15 @@ struct BackendConnectionStateTests {
         #expect(client.lastError == nil)
     }
 
-    @Test func sessionStreamConnectionReconcilesStaleErrorWithoutMaskingSyncFailure() {
+    @Test func sessionStreamConnectionMarksTransportOnlineDuringStoreInitialization() {
+        AppStateStore.shared.reportSyncError("Store initializing")
+        pumpRunLoop()
         let client = BackendClient()
         client.recordProjectWorktreeActionError("Merge conflict in server.mjs")
         #expect(client.lastError != nil)
 
         client.markBackendConnectedFromSessionStream()
+        #expect(client.isOnline == true)
         #expect(client.lastError == nil)
         #expect(client.projectWorktreeActionError == "Merge conflict in server.mjs")
     }
