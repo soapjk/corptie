@@ -317,6 +317,21 @@ export class ToolHostMaterializationCoordinator {
     return failed;
   }
 
+  async invalidateAppliedProof(logicalSessionId, providerBindingId, errorCode, errorSummary) {
+    const binding = await this.#binding(logicalSessionId, providerBindingId);
+    const current = this.store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
+    if (!current || current.status !== "applied") return current;
+    const failed = this.store.invalidateSessionToolCatalogAppliedProof({
+      logicalSessionId,
+      providerBindingId,
+      errorCode,
+      errorSummary,
+      updatedAt: this.clock()
+    }, current.resourceVersion);
+    if (failed) this.#emit("applied_proof_invalidated", { binding, desiredVersion: current.desiredVersion });
+    return failed;
+  }
+
   async reconcile(logicalSessionId, providerBindingId) {
     const binding = await this.#binding(logicalSessionId, providerBindingId);
     const record = this.store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);

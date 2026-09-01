@@ -99,6 +99,30 @@ test("100 concurrent desiredVersion requests single-flight into one Provider app
   }
 });
 
+test("invalidating an applied proof keeps the existing binding and fails readiness closed", async () => {
+  const value = await fixture();
+  try {
+    await value.coordinator.ensureApplied({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker"
+    });
+    const invalidated = await value.coordinator.invalidateAppliedProof(
+      "logical:worker",
+      "binding:worker",
+      "PROVIDER_TOOL_RECOVERY_REQUIRED",
+      "Explicit Recovery is required."
+    );
+    assert.equal(invalidated.status, "error");
+    assert.equal(invalidated.lastErrorCode, "PROVIDER_TOOL_RECOVERY_REQUIRED");
+    assert.equal(invalidated.lastErrorSummary, "Explicit Recovery is required.");
+    assert.equal(value.store.getLogicalSession("logical:worker").activeBinding.bindingId, "binding:worker");
+    assert.equal(value.events.at(-1).type, "applied_proof_invalidated");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("direct ensureApplied calls cannot shrink previously desired or applied Tool domains", async () => {
   const value = await fixture();
   try {

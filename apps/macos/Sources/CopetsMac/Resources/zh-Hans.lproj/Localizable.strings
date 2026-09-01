@@ -108,6 +108,13 @@
 "Rename" = "重命名";
 "Restart Session" = "重启会话";
 "Restarting session…" = "正在重启会话…";
+"Reconnecting Existing Session" = "正在重连现有会话";
+"Starting Provider Runtime" = "正在启动 Provider 运行时";
+"Session Recovery Required" = "需要会话恢复";
+"Corptie is reconnecting the existing Provider Thread. No new Thread or context rebuild is being created." = "Corptie 正在重连已有的 Provider Thread，不会创建新 Thread，也不会重建上下文。";
+"The Provider process is starting. This does not rebuild this Session or replace its Provider Thread." = "Provider 进程正在启动，不会重建此会话，也不会替换它的 Provider Thread。";
+"The existing Provider Thread was preserved, but its Tool schema proof is no longer trusted. Start Session Recovery explicitly to replace it." = "已有 Provider Thread 已被保留，但其 Tool schema 证明已不可信。需要显式启动会话恢复后才会替换它。";
+"The existing Provider Thread could not be reconnected and was preserved. Start Session Recovery explicitly to replace it." = "已有 Provider Thread 无法重连并已被保留。需要显式启动会话恢复后才会替换它。";
 "Session will restart after the current run finishes" = "当前运行结束后将重启会话";
 "Session restarted" = "会话已重启";
 "Could not restart session." = "无法重启会话。";

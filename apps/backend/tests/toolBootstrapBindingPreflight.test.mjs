@@ -37,7 +37,7 @@ function fixture(options = {}) {
     }]
   ]);
   const calls = [];
-  const recoveries = [];
+  const invalidations = [];
   const service = new ToolBootstrapBindingPreflight({
     store: {
       listSessions: ({ archived }) => sessions.filter((session) => archived
@@ -53,17 +53,16 @@ function fixture(options = {}) {
         calls.push(input);
         if (options.ensureApplied) return options.ensureApplied(input);
         return { status: "applied" };
+      },
+      invalidateAppliedProof: async (...args) => {
+        invalidations.push(args);
+        return { status: "error", lastErrorCode: args[2] };
       }
     },
     isSessionBusy: (session) => session.status === "running",
     isAppliedProofCurrent: options.isAppliedProofCurrent,
-    recoverBinding: async (input) => {
-      recoveries.push(input);
-      if (options.recoverBinding) return options.recoverBinding(input);
-      return { state: "committed" };
-    }
   });
-  return { service, calls, recoveries };
+  return { service, calls, invalidations };
 }
 
 test("startup preflight hot-applies only stale idle bindings and preserves desired domains", async () => {
@@ -72,9 +71,9 @@ test("startup preflight hot-applies only stale idle bindings and preserves desir
   assert.deepEqual({
     scanned: result.scanned,
     hotApplied: result.hotApplied,
-    recovered: result.recovered,
+    recoveryRequired: result.recoveryRequired,
     failed: result.failed
-  }, { scanned: 1, hotApplied: 1, recovered: 0, failed: 0 });
+  }, { scanned: 1, hotApplied: 1, recoveryRequired: 0, failed: 0 });
   assert.equal(value.calls.length, 1);
   assert.deepEqual(value.calls[0], {
     logicalSessionId: "logical:0",
@@ -83,7 +82,7 @@ test("startup preflight hot-applies only stale idle bindings and preserves desir
     activeTurn: false,
     phase: "refresh"
   });
-  assert.equal(value.recoveries.length, 0);
+  assert.equal(value.invalidations.length, 0);
 });
 
 test("startup preflight does not skip a claimed applied record with obsolete Provider proof", async () => {
@@ -97,14 +96,14 @@ test("startup preflight does not skip a claimed applied record with obsolete Pro
   const result = await value.service.run();
   assert.equal(result.scanned, 2);
   assert.equal(result.hotApplied, 1);
-  assert.equal(result.recovered, 1);
+  assert.equal(result.recoveryRequired, 1);
   assert.equal(value.calls.length, 1);
-  assert.equal(value.recoveries.length, 1);
-  assert.equal(value.recoveries[0].logicalSessionId, "logical:1");
-  assert.equal(value.recoveries[0].sourceBindingId, "binding:1");
+  assert.deepEqual(value.invalidations[0].slice(0, 3), [
+    "logical:1", "binding:1", "PROVIDER_TOOL_RECOVERY_REQUIRED"
+  ]);
 });
 
-test("startup preflight replaces a binding only for the exact not-sent unconfirmed proof", async () => {
+test("startup preflight never replaces a binding when explicit Recovery is required", async () => {
   const replacementError = Object.assign(new Error("unconfirmed"), {
     code: "SESSION_TOOL_CATALOG_REFRESH_FAILED",
     dispatchState: "not_sent",
@@ -116,13 +115,9 @@ test("startup preflight replaces a binding only for the exact not-sent unconfirm
 
   const value = fixture({ ensureApplied: async () => { throw replacementError; } });
   const result = await value.service.run();
-  assert.equal(result.recovered, 1);
+  assert.equal(result.recoveryRequired, 1);
   assert.equal(result.failed, 0);
-  assert.equal(value.recoveries.length, 1);
-  assert.equal(value.recoveries[0].logicalSessionId, "logical:0");
-  assert.equal(value.recoveries[0].sourceBindingId, "binding:0");
-  assert.match(value.recoveries[0].idempotencyKey, new RegExp(TOOL_HOST_BOOTSTRAP_SCHEMA_HASH));
-  assert.match(value.recoveries[0].idempotencyKey, /materialization:41$/);
+  assert.equal(value.invalidations.length, 0);
 
   const ambiguous = fixture({ ensureApplied: async () => {
     throw Object.assign(new Error("unknown"), {
@@ -133,7 +128,7 @@ test("startup preflight replaces a binding only for the exact not-sent unconfirm
     });
   } });
   const ambiguousResult = await ambiguous.service.run();
-  assert.equal(ambiguousResult.recovered, 0);
+  assert.equal(ambiguousResult.recoveryRequired, 0);
   assert.equal(ambiguousResult.failed, 1);
-  assert.equal(ambiguous.recoveries.length, 0);
+  assert.equal(ambiguous.invalidations.length, 0);
 });

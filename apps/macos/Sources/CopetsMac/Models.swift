@@ -598,6 +598,31 @@ struct SessionNotReadyReason: Codable, Equatable, Sendable {
     let code: String
     let message: String
     let retryable: Bool?
+
+    @MainActor var presentationTitle: String {
+        switch code {
+        case "BINDING_RUNTIME_VERIFYING": L10n("Reconnecting Existing Session")
+        case "PROVIDER_INITIALIZING": L10n("Starting Provider Runtime")
+        case "PROVIDER_TOOL_RECOVERY_REQUIRED", "PROVIDER_BINDING_RECOVERY_REQUIRED":
+            L10n("Session Recovery Required")
+        default: L10n("Session Not Ready")
+        }
+    }
+
+    @MainActor var presentationMessage: String {
+        switch code {
+        case "BINDING_RUNTIME_VERIFYING":
+            L10n("Corptie is reconnecting the existing Provider Thread. No new Thread or context rebuild is being created.")
+        case "PROVIDER_INITIALIZING":
+            L10n("The Provider process is starting. This does not rebuild this Session or replace its Provider Thread.")
+        case "PROVIDER_TOOL_RECOVERY_REQUIRED":
+            L10n("The existing Provider Thread was preserved, but its Tool schema proof is no longer trusted. Start Session Recovery explicitly to replace it.")
+        case "PROVIDER_BINDING_RECOVERY_REQUIRED":
+            L10n("The existing Provider Thread could not be reconnected and was preserved. Start Session Recovery explicitly to replace it.")
+        default:
+            message
+        }
+    }
 }
 
 struct SessionActions: Codable, Equatable, Sendable {

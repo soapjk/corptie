@@ -23,6 +23,7 @@ export class SessionApplicationService {
     this.toolHostService = options.toolHostService ?? null;
     this.toolMaterializationPort = options.toolMaterializationPort ?? null;
     this.resolveRequiredToolDomains = options.resolveRequiredToolDomains ?? (() => []);
+    this.observeLifecycle = options.observeLifecycle ?? (() => {});
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
       throw new TypeError("SessionApplicationService requires resolveSessionReference().");
@@ -274,31 +275,45 @@ export class SessionApplicationService {
 
   async restartSession(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const audit = restartAudit(reference, context);
+    this.observeLifecycle({ type: "SessionRestartRequested", ...audit });
     try {
-      return await this.registry.invoke(
+      const result = await this.registry.invoke(
         reference.providerId,
         AGENT_PROVIDER_CAPABILITIES.SESSION_RESTART,
         reference,
         context
       );
+      this.observeLifecycle({ type: "SessionRestartInvocationCompleted", ...audit, resultStatus: result?.status ?? null });
+      return result;
     } catch (error) {
-      if (!this.#canReplaceProviderBinding(error)) throw error;
-      const recovered = await this.recoverUnavailableSession({
-        sessionId,
-        reference,
-        error,
-        context: { ...context, recoveryKind: "restart" }
-      });
-      const recoveredReference = recovered?.reference ?? await this.referenceFor(sessionId);
-      return {
-        status: "completed",
-        recovered: true,
-        recoveryAction: "provider_binding_replaced",
-        sessionId: recoveredReference.sessionId,
-        logicalSessionId: recoveredReference.logicalSessionId,
-        providerBindingId: recoveredReference.bindingId,
-        routingVersion: recoveredReference.routingVersion
-      };
+      if (!this.#canReplaceProviderBinding(error)) {
+        this.observeLifecycle({ type: "SessionRestartInvocationFailed", ...audit, errorCode: error?.code ?? "SESSION_RESTART_FAILED" });
+        throw error;
+      }
+      try {
+        const recovered = await this.recoverUnavailableSession({
+          sessionId,
+          reference,
+          error,
+          context: { ...context, recoveryKind: "restart" }
+        });
+        const recoveredReference = recovered?.reference ?? await this.referenceFor(sessionId);
+        const result = {
+          status: "completed",
+          recovered: true,
+          recoveryAction: "provider_binding_replaced",
+          sessionId: recoveredReference.sessionId,
+          logicalSessionId: recoveredReference.logicalSessionId,
+          providerBindingId: recoveredReference.bindingId,
+          routingVersion: recoveredReference.routingVersion
+        };
+        this.observeLifecycle({ type: "SessionRestartInvocationCompleted", ...audit, resultStatus: result.status, recovered: true });
+        return result;
+      } catch (recoveryError) {
+        this.observeLifecycle({ type: "SessionRestartInvocationFailed", ...audit, errorCode: recoveryError?.code ?? "SESSION_RECOVERY_FAILED" });
+        throw recoveryError;
+      }
     }
   }
 
@@ -513,6 +528,21 @@ export function validateReasoningLevelForModel({ modelId, reasoningLevel, models
   const error = new RangeError(`Reasoning level ${reasoningLevel} is not supported by model ${modelId}.`);
   error.code = "UNSUPPORTED_REASONING_LEVEL";
   throw error;
+}
+
+function restartAudit(reference, context) {
+  return Object.freeze({
+    sessionId: reference.sessionId,
+    logicalSessionId: reference.logicalSessionId,
+    providerId: reference.providerId,
+    providerBindingId: reference.bindingId,
+    providerSessionId: reference.providerSessionId,
+    routingVersion: reference.routingVersion,
+    source: normalizedText(context.source) ?? "unknown",
+    actorId: normalizedText(context.actorId),
+    actorSessionId: normalizedText(context.actorSessionId),
+    idempotencyKey: normalizedText(context.idempotencyKey)
+  });
 }
 
 function normalizedText(value) {
