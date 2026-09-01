@@ -8,9 +8,26 @@ struct CorptieTaskDeletionInteractionTests {
         let contents = try warRoomSource()
 
         #expect(contents.contains(".contextMenu {"))
+        #expect(contents.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
+        #expect(contents.contains("Button(L10n(\"编辑\"), systemImage: \"square.and.pencil\")"))
         #expect(contents.contains("Label(L10n(\"删除 CorptieTask\"), systemImage: \"trash\")"))
         #expect(contents.contains("onRequestDeletion(item)"))
         #expect(contents.contains(".disabled(pendingDeletionIds.contains(item.id))"))
+        #expect(contents.contains(".contentShape(Rectangle())"))
+    }
+
+    @Test
+    func objectiveRowsExposeFullWidthEditAndDeleteContextActions() throws {
+        let contents = try warRoomSource()
+
+        #expect(contents.contains("Button(L10n(\"View Tasks\"), systemImage: \"rectangle.grid.1x2\")"))
+        #expect(contents.contains("objectivePendingEdit = objective"))
+        #expect(contents.contains("objectivePendingDeletion = objective"))
+        #expect(contents.contains("private func deleteObjective(_ objective: Objective) async"))
+
+        let clientSource = try entityAPIClientSource()
+        #expect(clientSource.contains("!(200..<300).contains(http.statusCode)"))
+        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to delete Objective.\")"))
     }
 
     @Test

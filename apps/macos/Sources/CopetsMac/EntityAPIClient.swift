@@ -982,7 +982,13 @@ final class EntityAPIClient: ObservableObject {
         var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
         request.httpMethod = "DELETE"
         do {
-            _ = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.displayMessage ?? L10n("Unable to delete Objective.")
+                return false
+            }
+            errorMessage = nil
             await refreshObjectives()
             return true
         } catch {
