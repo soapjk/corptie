@@ -16,7 +16,7 @@ test("state snapshot normalizes every control-plane collection", () => {
   const snapshot = service.snapshot();
   assert.equal(snapshot.revision, 4);
   assert.deepEqual(snapshot.state.sessions, [{ id: "s1" }]);
-  assert.deepEqual(snapshot.state.workItems, []);
+  assert.deepEqual(snapshot.state.tasks, []);
   assert.deepEqual(snapshot.state.skills, []);
   assert.deepEqual(snapshot.state.integrationRuns, []);
 });
@@ -87,15 +87,15 @@ test("change set coalesces row history and hydrates authoritative entities", () 
     oldest: 1,
     changes: [
       { revision: 2, entityType: "session", entityId: "s1", operation: "upsert" },
-      { revision: 3, entityType: "workItem", entityId: "w1", operation: "upsert" }
+      { revision: 3, entityType: "task", entityId: "w1", operation: "upsert" }
     ],
-    state: { sessions: [{ id: "s1", status: "running" }], workItems: [{ id: "w1" }] }
+    state: { sessions: [{ id: "s1", status: "running" }], tasks: [{ id: "w1" }] }
   });
   const changes = service.changesAfter(1);
   assert.equal(changes.snapshotRequired, false);
   assert.equal(changes.revision, 3);
   assert.deepEqual(changes.upserts.sessions, [{ id: "s1", status: "running" }]);
-  assert.deepEqual(changes.upserts.workItems, [{ id: "w1" }]);
+  assert.deepEqual(changes.upserts.tasks, [{ id: "w1" }]);
 });
 
 test("Artifact table changes coalesce into dedicated cache invalidations", () => {
@@ -111,7 +111,7 @@ test("Artifact table changes coalesce into dedicated cache invalidations", () =>
 
   const changes = service.changesAfter(2);
   assert.deepEqual(changes.artifactInvalidations, ["artifact:one", "artifact:two"]);
-  assert.deepEqual(changes.upserts.workItems, []);
+  assert.deepEqual(changes.upserts.tasks, []);
 });
 
 test("change set emits deletes and requires snapshot beyond replay window", () => {
@@ -160,7 +160,7 @@ test("entity absent from the authoritative projection removes a stale client cop
     revision: 3,
     oldest: 2,
     changes: [{ revision: 3, entityType: "session", entityId: "s-missing", operation: "upsert" }],
-    state: { sessions: [], workItems: [] }
+    state: { sessions: [], tasks: [] }
   });
   const changes = service.changesAfter(2);
   assert.equal(changes.snapshotRequired, false);

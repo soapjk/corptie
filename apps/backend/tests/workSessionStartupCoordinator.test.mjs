@@ -32,22 +32,22 @@ async function fixture(overrides = {}) {
     `INSERT INTO git_worktrees (worktree_id, repository_id, path, canonical_path, git_dir, is_main,
       availability, head_oid, branch_ref, branch_name, detached, inventory_version, observed_at, raw_json)
      VALUES ('worktree:one', 'repository:one', ?, ?, ?, 0, 'available', ?,
-      'refs/heads/workitem/one', 'workitem/one', 0, 'inventory:one', ?, '{}')`,
+      'refs/heads/task/one', 'task/one', 0, 'inventory:one', ?, '{}')`,
     [worktreePath, worktreePath, join(directory, "repo", ".git", "worktrees", "one"), COMMIT, now]
   );
   const objective = objectiveService.createObjective({
     id: "objective:one", name: "Objective", contributorAgentIds: [agent.agentId],
     workspaceIds: ["repository:one"]
   });
-  const workItem = objectiveService.createWorkItem({
-    id: "work_item:one", objectiveId: objective.id, title: "Authoritative startup",
+  const task = objectiveService.createTask({
+    id: "task:one", objectiveId: objective.id, title: "Authoritative startup",
     mainAgentId: agent.agentId, mainWorkspaceId: "repository:one"
   });
   const calls = { prepare: 0, inspectWorktree: 0, create: 0, bind: 0, inspectBinding: 0, activate: 0, compensate: 0 };
   const allocation = {
     repositoryId: "repository:one", worktreeId: "worktree:one",
     canonicalWorktreePath: worktreePath,
-    headIdentity: { kind: "branch", branch: "workitem/one" },
+    headIdentity: { kind: "branch", branch: "task/one" },
     sourceCommitOid: COMMIT, sourceTreeOid: TREE, baseRef: "main",
     repositoryInventoryVersion: "inventory:one", workspaceResourceVersion: 1,
     createdByStartupOperationId: null, reused: false
@@ -56,7 +56,7 @@ async function fixture(overrides = {}) {
     store,
     leaseOwner: overrides.leaseOwner ?? "test-worker",
     validateStart: async (input) => ({
-      workItem: store.getWorkItem(input.workItemId), objective, agent, providerId: input.providerId
+      task: store.getTask(input.taskId), objective, agent, providerId: input.providerId
     }),
     prepareWorktree: async (input) => {
       calls.prepare += 1;
@@ -70,14 +70,14 @@ async function fixture(overrides = {}) {
       calls.create += 1;
       const id = `provider:worker:${calls.create}`;
       store.createSession({
-        id, title: workItem.title, provider: providerId, agentId: agent.agentId,
-        sessionKind: "worker", objectiveId: objective.id, workItemId: workItem.id,
+        id, title: task.title, provider: providerId, agentId: agent.agentId,
+        sessionKind: "worker", objectiveId: objective.id, taskId: task.id,
         cwd: workspace.canonicalWorktreePath
       });
       store.createLogicalSessionRoute({
         logicalSessionId: `session:worker:${calls.create}`, legacySessionId: id,
         providerThreadId: `thread:${calls.create}`, providerSessionId: id,
-        providerId, boundCwd: workspace.canonicalWorktreePath, sessionName: workItem.title
+        providerId, boundCwd: workspace.canonicalWorktreePath, sessionName: task.title
       });
       core.bindSession({ agentId: agent.agentId, sessionId: id });
       return store.getSession(id);
@@ -103,12 +103,12 @@ async function fixture(overrides = {}) {
     compensateWorktree: async () => { calls.compensate += 1; return { removed: true }; },
     ...overrides
   });
-  return { directory, store, service, calls, allocation, workItem };
+  return { directory, store, service, calls, allocation, task };
 }
 
 function input(key = "start:one") {
   return {
-    workItemId: "work_item:one", requestedAgentId: "agent:worker",
+    taskId: "task:one", requestedAgentId: "agent:worker",
     providerId: "codex-app-server", idempotencyKey: key, source: "test"
   };
 }
@@ -156,7 +156,7 @@ test("Store exposes only the Revision 2 startup authority and no legacy start ta
   const f = await fixture();
   try {
     assert.equal(f.store.selectOne(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='work_item_start_operations'"
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='task_start_operations'"
     ), null);
     assert.ok(f.store.selectOne(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='work_session_startup_operations'"
@@ -168,7 +168,7 @@ test("Store exposes only the Revision 2 startup authority and no legacy start ta
       "start_worktree_branch"
     ]);
     assert.deepEqual(
-      f.store.selectAll("PRAGMA table_info(work_items)")
+      f.store.selectAll("PRAGMA table_info(tasks)")
         .map((column) => column.name)
         .filter((name) => legacyColumns.has(name)),
       []
@@ -201,7 +201,7 @@ test("same idempotency key replays one operation, resource set, and receipt hash
   } finally { await cleanup(f); }
 });
 
-test("different idempotency keys cannot create concurrent startup operations for one WorkItem", async () => {
+test("different idempotency keys cannot create concurrent startup operations for one Task", async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const f = await fixture({ createSession: async () => gate });
@@ -251,11 +251,11 @@ test("a Provider proof mismatch never reports ready and compensates owned resour
   });
   try {
     await assert.rejects(() => f.service.start(input()), { code: "START_PROVIDER_CWD_MISMATCH" });
-    const operation = f.store.selectOne("SELECT * FROM work_session_startup_operations WHERE work_item_id='work_item:one'");
+    const operation = f.store.selectOne("SELECT * FROM work_session_startup_operations WHERE task_id='task:one'");
     assert.equal(operation.state, "failed_compensated");
     assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM work_session_startup_receipts").count, 0);
     assert.equal(f.calls.compensate, 1);
-    assert.equal(f.store.getWorkItem("work_item:one").execution_status, "start_failed");
+    assert.equal(f.store.getTask("task:one").execution_status, "start_failed");
   } finally { await cleanup(f); }
 });
 
@@ -368,11 +368,11 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
     const allocation = { ...f.allocation, createdByStartupOperationId: operationId };
     f.store.db.run(
       `INSERT INTO work_session_startup_operations (
-        startup_operation_id, objective_id, work_item_id, requested_agent_id, provider_id,
+        startup_operation_id, objective_id, task_id, requested_agent_id, provider_id,
         repository_id, idempotency_key, request_fingerprint, source, state, worktree_id,
         allocation_json, lease_owner, lease_expires_at, correlation_id, allocated_at,
         worktree_prepared_at, updated_at, resource_version
-      ) VALUES (?, 'objective:one', 'work_item:one', 'agent:worker', 'codex-app-server',
+      ) VALUES (?, 'objective:one', 'task:one', 'agent:worker', 'codex-app-server',
         'repository:one', 'start:crashed', 'fingerprint', 'test', 'worktree_prepared',
         'worktree:one', ?, 'dead-process', '2026-08-30T00:00:00.001Z', 'correlation:crash', ?, ?, ?, 2)`,
       [operationId, JSON.stringify(allocation), now, now, now]
@@ -390,7 +390,7 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
       leaseOwner: "recovery-worker",
       clock: () => "2026-08-30T00:01:00.000Z",
       validateStart: async (value) => ({
-        workItem: reopened.getWorkItem(value.workItemId),
+        task: reopened.getTask(value.taskId),
         objective: reopened.getObjective("objective:one"),
         agent: reopened.getAgent("agent:worker"), providerId: value.providerId
       }),
@@ -401,7 +401,7 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
         reopened.createSession({
           id: "provider:recovered", title: "Recovered", provider: providerId,
           agentId: "agent:worker", sessionKind: "worker", objectiveId: "objective:one",
-          workItemId: "work_item:one", cwd: workspace.canonicalWorktreePath
+          taskId: "task:one", cwd: workspace.canonicalWorktreePath
         });
         reopened.createLogicalSessionRoute({
           logicalSessionId: "session:recovered", legacySessionId: "provider:recovered",

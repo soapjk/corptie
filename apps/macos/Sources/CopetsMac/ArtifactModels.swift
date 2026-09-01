@@ -2,7 +2,7 @@ import Foundation
 
 enum ArtifactVisibility: String, Codable, CaseIterable, Identifiable, Sendable {
     case objectivePrivate = "objective_private"
-    case workItemPrivate = "work_item_private"
+    case taskPrivate = "task_private"
     case sessionPrivate = "session_private"
     case repositoryTracked = "repository_tracked"
     var id: String { rawValue }
@@ -15,7 +15,7 @@ struct ObjectiveArtifact: Identifiable, Codable, Hashable, Sendable {
     let title: String
     let summary: String
     let visibility: ArtifactVisibility
-    let boundWorkItemId: String?
+    let boundTaskId: String?
     let boundSessionId: String?
     let repositoryLocator: String?
     let currentVersion: Int
@@ -69,7 +69,7 @@ struct ArtifactReference: Identifiable, Codable, Hashable, Sendable {
     let referenceId: String
     let artifactId: String
     let objectiveId: String
-    let workItemId: String?
+    let taskId: String?
     let sessionId: String?
     let relation: String
     let required: Bool
@@ -94,7 +94,7 @@ struct ArtifactAuditEvent: Identifiable, Codable, Hashable, Sendable {
     let action: String
     let actorId: String
     let sessionId: String?
-    let workItemId: String?
+    let taskId: String?
     let fromVersion: Int?
     let toVersion: Int?
     let createdAt: String

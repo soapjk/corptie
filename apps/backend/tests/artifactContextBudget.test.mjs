@@ -12,17 +12,17 @@ async function fixture() {
   await store.initialize();
   const agent = store.createAgent({ name: "Budget Worker", provider: "codex-app-server" });
   store.createObjective({ id: "objective:budget", name: "Budget", contributorAgentIds: [agent.agentId] });
-  store.createWorkItem({ id: "work_item:budget", objectiveId: "objective:budget", title: "Budget", mainAgentId: agent.agentId });
+  store.createTask({ id: "task:budget", objectiveId: "objective:budget", title: "Budget", mainAgentId: agent.agentId });
   store.upsertSession({
     id: "session:budget", title: "Budget", provider: "codex-app-server", status: "running",
-    sessionKind: "worker", agentId: agent.agentId, objectiveId: "objective:budget", workItemId: "work_item:budget"
+    sessionKind: "worker", agentId: agent.agentId, objectiveId: "objective:budget", taskId: "task:budget"
   });
-  store.bindSessionToWorkItem("session:budget", "work_item:budget", "objective:budget");
+  store.bindSessionToTask("session:budget", "task:budget", "objective:budget");
   const service = new ArtifactService({ store, contentRoot: join(directory, "artifacts") });
   await service.initialize();
   const context = {
     actorId: agent.agentId, sessionId: "session:budget", objectiveId: "objective:budget",
-    workItemId: "work_item:budget", providerBindingId: "binding:budget", turnId: "turn:one"
+    taskId: "task:budget", providerBindingId: "binding:budget", turnId: "turn:one"
   };
   return { directory, store, service, context };
 }

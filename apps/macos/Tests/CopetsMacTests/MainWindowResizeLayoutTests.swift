@@ -123,7 +123,7 @@ struct MainWindowResizeLayoutTests {
         let resizedTrailingTopOffset = trailingChrome.frame.maxY
             - (view.bounds.maxY - view.safeAreaInsets.top)
 
-        #expect(centerChrome.frame.size == NSSize(width: 252, height: 30))
+        #expect(centerChrome.frame.size == NSSize(width: 210, height: 30))
         #expect(abs(centerChrome.frame.midX - view.bounds.midX) < 0.01)
         #expect(abs(initialCenterTopOffset - 12) < 0.01)
         #expect(abs(resizedCenterTopOffset - initialCenterTopOffset) < 0.01)
@@ -161,7 +161,7 @@ struct MainWindowResizeLayoutTests {
         container.frame = NSRect(x: 0, y: 0, width: 1_200, height: 700)
         container.select(.console)
         container.layoutSubtreeIfNeeded()
-        container.select(.sessions)
+        container.select(.automations)
         container.layoutSubtreeIfNeeded()
         let detachedConsoleFrame = try #require(created[.console]?.frame)
 
@@ -170,12 +170,12 @@ struct MainWindowResizeLayoutTests {
 
         #expect(container.cachedPageCount == 2)
         #expect(container.attachedPageCount == 2)
-        #expect(container.visibleTabs == [.sessions])
+        #expect(container.visibleTabs == [.automations])
         #expect(created[.console]?.frame == detachedConsoleFrame)
-        #expect(created[.sessions]?.frame == container.bounds)
+        #expect(created[.automations]?.frame == container.bounds)
         #expect(created[.console]?.superview === container)
         #expect(created[.console]?.isHidden == true)
-        #expect(created[.sessions]?.superview === container)
+        #expect(created[.automations]?.superview === container)
     }
 
     @Test
@@ -269,14 +269,18 @@ struct MainWindowResizeLayoutTests {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac")
 
-        for fileName in ["WarRoomView.swift", "SessionsView.swift"] {
-            let contents = try String(
-                contentsOf: sourceRoot.appendingPathComponent(fileName),
-                encoding: .utf8
-            )
-            #expect(contents.contains("max: TwoPaneLayoutMetrics.sidebarMaximumWidth"))
-            #expect(!contents.contains("w * 0.34"))
-        }
+        let legacyBoard = try String(
+            contentsOf: sourceRoot.appendingPathComponent("WarRoomView.swift"),
+            encoding: .utf8
+        )
+        let unifiedConsole = try String(
+            contentsOf: sourceRoot.appendingPathComponent("UnifiedConsoleView.swift"),
+            encoding: .utf8
+        )
+        #expect(legacyBoard.contains("max: TwoPaneLayoutMetrics.sidebarMaximumWidth"))
+        #expect(unifiedConsole.contains(".frame(width: TwoPaneLayoutMetrics.sidebarWidth)"))
+        #expect(!legacyBoard.contains("w * 0.34"))
+        #expect(!unifiedConsole.contains("w * 0.34"))
     }
 }
 

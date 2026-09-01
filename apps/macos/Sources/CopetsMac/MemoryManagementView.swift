@@ -2,20 +2,20 @@ import SwiftUI
 
 @MainActor
 enum MemoryScopeLayer: String, CaseIterable {
-    case workItem = "work_item"
+    case task = "task"
     case objective
     case agent
 
     var title: String {
         switch self {
-        case .workItem: L10n("WorkItem Memory")
+        case .task: L10n("CorptieTask Memory")
         case .objective: L10n("Objective Memory")
         case .agent: L10n("Agent Long-term Memory")
         }
     }
     var icon: String {
         switch self {
-        case .workItem: "checklist"
+        case .task: "checklist"
         case .objective: "target"
         case .agent: "person.crop.circle.badge.checkmark"
         }
@@ -192,12 +192,12 @@ struct MemoryManagementView: View {
     private var scopeSubtitle: String {
         switch scope {
         case .global:
-            L10n("WorkItem → Objective → Agent is the recall priority. Memories are grouped by both scope and origin.")
+            L10n("CorptieTask → Objective → Agent is the recall priority. Memories are grouped by both scope and origin.")
         case .owner(type: "agent", id: _):
-            L10n("Only this Agent's structured long-term layer is managed here. Objective, WorkItem, and runtime file memories remain separate.")
+            L10n("Only this Agent's structured long-term layer is managed here. Objective, CorptieTask, and runtime file memories remain separate.")
         case .owner(type: "objective", id: _):
-            L10n("Shared Objective context. WorkItem-local and Agent long-term memories are managed separately.")
-        case .owner(type: "work_item", id: _):
+            L10n("Shared Objective context. CorptieTask-local and Agent long-term memories are managed separately.")
+        case .owner(type: "task", id: _):
             L10n("The most specific task-local layer and the first layer considered during recall.")
         case .owner:
             L10n("Structured Memory for the selected owner.")
@@ -372,7 +372,7 @@ private struct MemoryCreationSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(L10n("Add structured Memory")).font(.headline)
-            Text(L10n("Choose the narrowest scope that should be affected. WorkItem is local, Objective is shared by the objective, and Agent is long-term."))
+            Text(L10n("Choose the narrowest scope that should be affected. CorptieTask is local, Objective is shared by the objective, and Agent is long-term."))
                 .font(.caption).foregroundStyle(.secondary)
 
             Form {
@@ -424,7 +424,7 @@ private struct MemoryCreationSheet: View {
     private var ownerOptions: [MemoryOwnerOption] {
         let options: [MemoryOwnerOption]
         switch ownerType {
-        case "work_item": options = client.workItems.compactMap {
+        case "task": options = client.tasks.compactMap {
             guard $0.currentSessionId != nil else { return nil }
             return MemoryOwnerOption(id: $0.id, label: $0.title)
         }
@@ -441,12 +441,12 @@ private struct MemoryCreationSheet: View {
     private var isValid: Bool {
         !ownerId.isEmpty
             && !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (ownerType != "work_item" || sourceSessionId != nil)
+            && (ownerType != "task" || sourceSessionId != nil)
     }
 
     private var sourceSessionId: String? {
-        guard ownerType == "work_item" else { return nil }
-        return client.workItems.first(where: { $0.id == ownerId })?.currentSessionId
+        guard ownerType == "task" else { return nil }
+        return client.tasks.first(where: { $0.id == ownerId })?.currentSessionId
     }
 
     private func selectFirstOwnerIfNeeded() {

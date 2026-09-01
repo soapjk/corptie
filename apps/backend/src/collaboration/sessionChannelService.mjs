@@ -70,7 +70,7 @@ export class SessionChannelService {
       inReplyToMessageId: optionalText(input.inReplyToMessageId),
       targetObjectiveId: optionalText(input.targetObjectiveId),
       sessionAgentId: optionalText(input.sessionAgentId),
-      workItemId: optionalText(input.workItemId),
+      taskId: optionalText(input.taskId),
       title: optionalText(input.title),
       summary: optionalText(input.summary) ?? body,
       sourceContext: this.#resourceContext(source.logicalSessionId)
@@ -498,7 +498,7 @@ export class SessionChannelService {
     return {
       sessionId: logical.logicalSessionId,
       objectiveId: session?.objectiveId ?? null,
-      workItemId: session?.workItemId ?? null,
+      taskId: session?.taskId ?? null,
       agentId: session?.agentId ?? this.collaborationCore.getAgentForSession(logical.logicalSessionId)?.agentId ?? null,
       repositoryId: logical.repositoryId ?? null,
       worktreeId: logical.activeWorkspaceId ?? null,
@@ -608,7 +608,7 @@ function sameChannelRequest(existing, input, recipientSessionId) {
     && (stored.inReplyToMessageId ?? null) === optionalText(input.inReplyToMessageId)
     && (stored.targetObjectiveId ?? null) === optionalText(input.targetObjectiveId)
     && (stored.sessionAgentId ?? null) === optionalText(input.sessionAgentId)
-    && (stored.workItemId ?? null) === optionalText(input.workItemId)
+    && (stored.taskId ?? null) === optionalText(input.taskId)
     && (stored.title ?? null) === optionalText(input.title)
     && (stored.summary ?? stored.body) === (optionalText(input.summary) ?? requiredText(input.body, "body"));
 }

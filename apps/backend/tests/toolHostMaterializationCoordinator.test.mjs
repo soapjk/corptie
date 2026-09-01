@@ -38,7 +38,7 @@ async function fixture(overrides = {}) {
     logicalSessionId: "logical:worker", providerBindingId: "binding:worker",
     providerId: "fake", routingVersion: 1, state: "active", isCurrent: true,
     sessionId: "session:worker", sessionKind: "worker", objectiveId: "objective:one",
-    workItemId: "work_item:one", currentWorkItemSessionId: "session:worker",
+    taskId: "task:one", currentTaskSessionId: "session:worker",
     agentId: "agent:shared", authorizationRevision: 1
   };
   let applyCount = 0;
@@ -419,10 +419,10 @@ test("catalog search tokenizes natural-language intent and normalized domain hin
   const value = await fixture();
   try {
     value.catalog.register({
-      id: "work-item-acceptance",
+      id: "task-acceptance",
       tools: [{
-        name: "corptie_work_item_report_acceptance",
-        description: "Report criterion-by-criterion acceptance evidence for the WorkItem bound to this Session.",
+        name: "corptie_task_report_acceptance",
+        description: "Report criterion-by-criterion acceptance evidence for the Task bound to this Session.",
         inputSchema: { type: "object" }
       }],
       execute: () => null
@@ -431,13 +431,13 @@ test("catalog search tokenizes natural-language intent and normalized domain hin
     const result = await value.coordinator.search({
       logicalSessionId: value.binding.logicalSessionId,
       providerBindingId: value.binding.providerBindingId,
-      intent: "Call the acceptance evidence reporting tool for the current work item binding",
-      domainHint: "work item acceptance"
+      intent: "Call the acceptance evidence reporting tool for the current Task binding",
+      domainHint: "Task acceptance"
     });
 
-    assert.deepEqual(result.domains.map((domain) => domain.domainId), ["work-item-acceptance"]);
+    assert.deepEqual(result.domains.map((domain) => domain.domainId), ["task-acceptance"]);
     assert.deepEqual(result.domains[0].tools.map((tool) => tool.canonicalName), [
-      "corptie_work_item_report_acceptance"
+      "corptie_task_report_acceptance"
     ]);
   } finally {
     value.store.close();

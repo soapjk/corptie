@@ -297,7 +297,7 @@ test("mapWorkspaceList 把 Objective 映射为 WorkspaceView，session 按 objec
   assert.equal(items[0].createdAt, "2026-08-16T00:00:00.000Z");
   assert.equal(items[1].workspaceId, "objective:o2");
   assert.deepEqual(items[1].sessionIds, ["session:s3"]);
-  assert.equal(items[1].path, ""); // 无活跃 work_item → 空 path
+  assert.equal(items[1].path, ""); // 无活跃 task → 空 path
 });
 
 test("mapWorkspaceList 空输入返回空数组", () => {

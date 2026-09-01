@@ -1,9 +1,9 @@
-const COMPLETED_WORK_ITEM_STATES = new Set(["done", "complete", "completed"]);
+const COMPLETED_TASK_STATES = new Set(["done"]);
 
-export class WorkItemExecutionOrchestratorError extends Error {
+export class TaskExecutionOrchestratorError extends Error {
   constructor(code, message, statusCode = 400) {
     super(message);
-    this.name = "WorkItemExecutionOrchestratorError";
+    this.name = "TaskExecutionOrchestratorError";
     this.code = code;
     this.statusCode = statusCode;
   }
@@ -12,71 +12,71 @@ export class WorkItemExecutionOrchestratorError extends Error {
 // Owns the product-level start/recovery sequence. Git preparation is kept
 // provider-neutral; only an existing Session's route transition and resume are
 // delegated to the shared Agent Provider contracts.
-export class WorkItemExecutionOrchestrator {
+export class TaskExecutionOrchestrator {
   constructor(options = {}) {
-    this.getWorkItem = options.getWorkItem;
+    this.getTask = options.getTask;
     this.getSession = options.getSession;
     this.getSessionRoute = options.getSessionRoute;
     this.ensureWorkspace = options.ensureWorkspace;
     this.switchWorkspace = options.switchWorkspace;
     this.restoreSessionRoute = options.restoreSessionRoute ?? (() => {});
     this.resumeSession = options.resumeSession;
-    this.updateWorkItem = options.updateWorkItem;
+    this.updateTask = options.updateTask;
     this.onChanged = options.onChanged ?? (() => {});
     for (const method of [
-      "getWorkItem",
+      "getTask",
       "getSession",
       "getSessionRoute",
       "ensureWorkspace",
       "switchWorkspace",
       "resumeSession",
-      "updateWorkItem"
+      "updateTask"
     ]) {
       if (typeof this[method] !== "function") {
-        throw new TypeError(`WorkItemExecutionOrchestrator requires ${method}().`);
+        throw new TypeError(`TaskExecutionOrchestrator requires ${method}().`);
       }
     }
   }
 
-  prepareWorkspace(workItem, session = null) {
-    return this.ensureWorkspace({ workItem, session });
+  prepareWorkspace(task, session = null) {
+    return this.ensureWorkspace({ task, session });
   }
 
-  async restore(workItemId) {
-    const workItem = this.getWorkItem(requiredText(workItemId, "workItemId"));
-    if (!workItem) {
-      throw new WorkItemExecutionOrchestratorError(
-        "WORK_ITEM_NOT_FOUND",
-        `WorkItem not found: ${workItemId}`,
+  async restore(taskId) {
+    const task = this.getTask(requiredText(taskId, "taskId"));
+    if (!task) {
+      throw new TaskExecutionOrchestratorError(
+        "TASK_NOT_FOUND",
+        `Task not found: ${taskId}`,
         404
       );
     }
-    if (!COMPLETED_WORK_ITEM_STATES.has(String(workItem.status ?? ""))) {
-      throw new WorkItemExecutionOrchestratorError(
-        "WORK_ITEM_NOT_COMPLETED",
-        "Only a completed WorkItem can be restored.",
+    if (!COMPLETED_TASK_STATES.has(String(task.lifecycle_state ?? ""))) {
+      throw new TaskExecutionOrchestratorError(
+        "TASK_NOT_COMPLETED",
+        "Only a completed Task can be restored.",
         409
       );
     }
-    const sessionId = requiredOptionalText(workItem.current_session_id);
+    const sessionId = requiredOptionalText(task.current_session_id);
     const session = sessionId ? this.getSession(sessionId) : null;
     if (!session) {
-      throw new WorkItemExecutionOrchestratorError(
-        "WORK_ITEM_SESSION_REQUIRED",
-        "The completed WorkItem has no bound Session to restore.",
+      throw new TaskExecutionOrchestratorError(
+        "TASK_SESSION_REQUIRED",
+        "The completed Task has no bound Session to restore.",
         409
       );
     }
 
     const route = this.getSessionRoute(session.id);
     if (!route?.activeBinding) {
-      throw new WorkItemExecutionOrchestratorError(
-        "WORK_ITEM_SESSION_ROUTE_REQUIRED",
+      throw new TaskExecutionOrchestratorError(
+        "TASK_SESSION_ROUTE_REQUIRED",
         "The bound Session has no recoverable Workspace route.",
         409
       );
     }
-    const workspace = await this.ensureWorkspace({ workItem, session });
+    const workspace = await this.ensureWorkspace({ task, session });
 
     let transition = null;
     const activePath = requiredOptionalText(route.activeBinding.boundCwd);
@@ -85,9 +85,9 @@ export class WorkItemExecutionOrchestrator {
       || activePath !== workspace.path) {
       transition = await this.switchWorkspace(session.id, workspace.worktreeId);
       if (transition?.status === "waitingForTurn") {
-        throw new WorkItemExecutionOrchestratorError(
-          "WORK_ITEM_SESSION_BUSY",
-          "The bound Session is still processing. Wait for it to become idle before restoring this WorkItem.",
+        throw new TaskExecutionOrchestratorError(
+          "TASK_SESSION_BUSY",
+          "The bound Session is still processing. Wait for it to become idle before restoring this Task.",
           409
         );
       }
@@ -95,16 +95,16 @@ export class WorkItemExecutionOrchestrator {
 
     await this.restoreSessionRoute(session.id);
     const resumedSession = await this.resumeSession(session.id);
-    const updatedWorkItem = this.updateWorkItem(workItem.id, {
-      status: "in_progress",
+    const updatedTask = this.updateTask(task.id, {
+      lifecycleState: "in_progress",
       executionStatus: "idle",
       acceptanceAssessment: null
     });
-    this.onChanged("WorkItemChanged", {
+    this.onChanged("TaskChanged", {
       action: "execution-restored",
-      entity: updatedWorkItem
+      entity: updatedTask
     });
-    return { workItem: updatedWorkItem, session: resumedSession, workspace, transition };
+    return { task: updatedTask, session: resumedSession, workspace, transition };
   }
 }
 

@@ -9,8 +9,8 @@ struct ManagedWorktreeDeletionPolicyTests {
             eligible,
             worktree(id: "unmerged", merged: false),
             worktree(id: "dirty", dirty: true),
-            worktree(id: "occupied", associations: [association(workItemId: nil)]),
-            worktree(id: "owned", associations: [association(workItemId: "work_item:one")]),
+            worktree(id: "occupied", associations: [association(taskId: nil)]),
+            worktree(id: "owned", associations: [association(taskId: "task:one")]),
             worktree(id: "locked", isLocked: true),
             worktree(id: "operating", operationState: "rebase")
         ]
@@ -19,9 +19,9 @@ struct ManagedWorktreeDeletionPolicyTests {
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[2])?.code == "NOT_MERGED_INTO_MAIN")
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[3])?.code == "UNCOMMITTED_CHANGES")
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[4])?.code == "WORKTREE_IN_USE")
-        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.code == "WORK_ITEM_ASSOCIATED")
-        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("WorkItem") == true)
-        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("work_item:one") == true)
+        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.code == "TASK_ASSOCIATED")
+        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("CorptieTask") == true)
+        #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("task:one") == true)
         #expect(ManagedWorktreeDeletionPolicy.blocker(for: worktrees[5])?.reason.contains("Complete or move it") == true)
     }
 
@@ -41,8 +41,8 @@ struct ManagedWorktreeDeletionPolicyTests {
 
     @Test func backendScanBlockerIsAuthoritativeForCleanupEligibility() {
         let blocker = ManagedWorktreeDeletionBlocker(
-            code: "WORK_ITEM_ASSOCIATED",
-            reason: "Blocked by WorkItem “Follow-up” (work_item:new)."
+            code: "TASK_ASSOCIATED",
+            reason: "Blocked by CorptieTask “Follow-up” (task:new)."
         )
         let blocked = worktree(id: "blocked", deletionBlocker: blocker)
 
@@ -50,10 +50,10 @@ struct ManagedWorktreeDeletionPolicyTests {
         #expect(ManagedWorktreeDeletionPolicy.eligibleWorktrees(from: [blocked]).isEmpty)
     }
 
-    private func association(workItemId: String?) -> ManagedWorktreeAssociation {
+    private func association(taskId: String?) -> ManagedWorktreeAssociation {
         .init(
             logicalSessionId: "logical:one", sessionId: "session:one", title: "Session",
-            active: true, workItemId: workItemId, workItemTitle: workItemId == nil ? nil : "WorkItem"
+            active: true, taskId: taskId, taskTitle: taskId == nil ? nil : "CorptieTask"
         )
     }
 

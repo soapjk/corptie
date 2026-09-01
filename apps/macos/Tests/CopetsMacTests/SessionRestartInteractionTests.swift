@@ -14,7 +14,7 @@ struct SessionRestartInteractionTests {
 
     @Test
     func sessionsTabSidebarExposesRestartThroughTheSharedContextMenu() throws {
-        let sessionsSource = try contents(of: "SessionsView.swift")
+        let sessionsSource = try contents(of: "UnifiedConsoleView.swift")
         let rowStart = try #require(sessionsSource.range(of: "private struct SessionsSidebarRow: View"))
         let rowEnd = try #require(sessionsSource.range(
             of: "func sessionMatchingPendingSelection",

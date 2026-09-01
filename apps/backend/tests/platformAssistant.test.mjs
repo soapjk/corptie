@@ -136,9 +136,9 @@ test("platform operations are denied to user Agents and use product services for
       tool: "corptie_platform_objectives_manage",
       arguments: { action: "create", name: "平台事件目标" }
     });
-    const workItem = await service.execute({
+    const task = await service.execute({
       actorId: "assistant", sessionId: "session:assistant",
-      tool: "corptie_platform_work_items_manage",
+      tool: "corptie_platform_tasks_manage",
       arguments: { action: "create", objective_id: objective.result.id, title: "平台事件任务" }
     });
 
@@ -153,22 +153,22 @@ test("platform operations are denied to user Agents and use product services for
     await assert.rejects(
       service.execute({
         actorId: "assistant", sessionId: "session:assistant",
-        tool: "corptie_platform_work_items_manage",
-        arguments: { action: "update", work_item_id: workItem.result.id, patch: { assigneeAgentId: "agent:missing" } }
+        tool: "corptie_platform_tasks_manage",
+        arguments: { action: "update", task_id: task.result.id, patch: { assigneeAgentId: "agent:missing" } }
       }),
       { code: "UNKNOWN_PATCH_FIELD", field: "assigneeAgentId" }
     );
     await assert.rejects(
       service.execute({
         actorId: "assistant", sessionId: "session:assistant",
-        tool: "corptie_platform_work_items_manage",
+        tool: "corptie_platform_tasks_manage",
         arguments: { action: "create", objective_id: objective.result.id, title: "Bad", patch: { acceptanceCriteria: [] } }
       }),
       { code: "INVALID_FIELD_TYPE", field: "acceptanceCriteria" }
     );
     assert.deepEqual(
       entityEvents.map((event) => event.type),
-      ["AgentChanged", "ObjectiveChanged", "WorkItemChanged"]
+      ["AgentChanged", "ObjectiveChanged", "TaskChanged"]
     );
 
     store.upsertSession({
@@ -200,19 +200,19 @@ test("platform operations are denied to user Agents and use product services for
   }
 });
 
-test("platform Objective and WorkItem tool patch schemas reject additional properties", () => {
+test("platform Objective and Task tool patch schemas reject additional properties", () => {
   const objectiveSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_objectives_manage").inputSchema.properties.patch;
-  const workItemSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_work_items_manage").inputSchema.properties.patch;
+  const taskSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_tasks_manage").inputSchema.properties.patch;
   assert.equal(objectiveSchema.additionalProperties, false);
   assert.ok(objectiveSchema.properties.idealState);
   assert.equal(Object.hasOwn(objectiveSchema.properties, "acceptanceCriteria"), false);
-  assert.equal(workItemSchema.additionalProperties, false);
-  assert.ok(workItemSchema.properties.acceptanceCriteria);
-  for (const schema of [objectiveSchema, workItemSchema]) {
+  assert.equal(taskSchema.additionalProperties, false);
+  assert.ok(taskSchema.properties.acceptanceCriteria);
+  for (const schema of [objectiveSchema, taskSchema]) {
     assert.equal(Object.hasOwn(schema.properties, "workspacePath"), false);
     assert.equal(Object.hasOwn(schema.properties, "main_agent_id"), false);
   }
-  const manageSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_work_items_manage").inputSchema;
+  const manageSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_tasks_manage").inputSchema;
   assert.equal(manageSchema.additionalProperties, false);
   assert.deepEqual(
     manageSchema.allOf.map((rule) => ({
@@ -220,12 +220,12 @@ test("platform Objective and WorkItem tool patch schemas reject additional prope
       required: rule.then.required
     })),
     [
-      { action: "get", required: ["work_item_id"] },
+      { action: "get", required: ["task_id"] },
       { action: "create", required: ["objective_id", "title"] },
-      { action: "update", required: ["work_item_id", "patch"] },
-      { action: "delete", required: ["work_item_id"] },
-      { action: "dependencies", required: ["work_item_id"] },
-      { action: ["add_dependency", "remove_dependency"], required: ["work_item_id", "target_work_item_id"] }
+      { action: "update", required: ["task_id", "patch"] },
+      { action: "delete", required: ["task_id"] },
+      { action: "dependencies", required: ["task_id"] },
+      { action: ["add_dependency", "remove_dependency"], required: ["task_id", "target_task_id"] }
     ]
   );
 });

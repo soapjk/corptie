@@ -26,7 +26,7 @@ export function handleCodeTaskObservabilityHttpRequest({ request, response, url,
 function requestContext(request) {
   const logicalSessionId = boundedHeader(request, "x-corptie-session-id");
   if (!logicalSessionId) return { kind: "local_user" };
-  return { kind: "session", logicalSessionId, workItemId: boundedHeader(request, "x-corptie-work-item-id"),
+  return { kind: "session", logicalSessionId, taskId: boundedHeader(request, "x-corptie-task-id"),
     canReadRelatedObservability: boundedHeader(request, "x-corptie-observability-related") === "true",
     canReadRawObservability: boundedHeader(request, "x-corptie-observability-raw") === "true" };
 }

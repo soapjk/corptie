@@ -10,10 +10,10 @@ struct SessionSelectionRecoveryPolicyTests {
     }
 
     @Test func recoversTheMostRecentStillAccessibleSession() {
-        let completedWorkItem = makeRecoveryWorkItem(id: "work-item:completed", status: "done")
-        let current = makeRecoverySession(id: "session:current", workItemID: completedWorkItem.id, archived: true)
-        let inaccessibleRecent = makeRecoverySession(id: "session:completed", workItemID: completedWorkItem.id, archived: true)
-        let accessibleOlder = makeRecoverySession(id: "session:accessible", workItemID: nil, kind: .assistantChat)
+        let completedCorptieTask = makeRecoveryCorptieTask(id: "task:completed", lifecycleState: "done")
+        let current = makeRecoverySession(id: "session:current", taskID: completedCorptieTask.id, archived: true)
+        let inaccessibleRecent = makeRecoverySession(id: "session:completed", taskID: completedCorptieTask.id, archived: true)
+        let accessibleOlder = makeRecoverySession(id: "session:accessible", taskID: nil, kind: .assistantChat)
 
         #expect(SessionSelectionRecoveryPolicy.recoverySessionID(
             recentSessionIDs: [current.id, inaccessibleRecent.id, accessibleOlder.id],
@@ -25,7 +25,7 @@ struct SessionSelectionRecoveryPolicyTests {
     @Test func backendResolvedCompletedWorkerSessionCannotBecomeARecoveryTarget() {
         let session = makeRecoverySession(
             id: "session:one",
-            workItemID: "work-item:one",
+            taskID: "task:one",
             archived: true
         )
 
@@ -36,13 +36,13 @@ struct SessionSelectionRecoveryPolicyTests {
     }
 
     @Test func explicitlyArchivedWorkerSessionCannotBecomeARecoveryTarget() {
-        let session = makeRecoverySession(id: "session:archived", workItemID: "work-item:one", archived: true)
+        let session = makeRecoverySession(id: "session:archived", taskID: "task:one", archived: true)
         #expect(!SessionSelectionRecoveryPolicy.isAccessible(session, sessions: [session]))
     }
 
     @Test func fallsBackToTheFirstAccessibleSessionWhenHistoryIsStale() {
-        let first = makeRecoverySession(id: "session:first", workItemID: nil, kind: .objectiveChat)
-        let second = makeRecoverySession(id: "session:second", workItemID: nil, kind: .assistantChat)
+        let first = makeRecoverySession(id: "session:first", taskID: nil, kind: .objectiveChat)
+        let second = makeRecoverySession(id: "session:second", taskID: nil, kind: .assistantChat)
 
         #expect(SessionSelectionRecoveryPolicy.recoverySessionID(
             recentSessionIDs: ["session:deleted"],
@@ -52,15 +52,15 @@ struct SessionSelectionRecoveryPolicyTests {
     }
 }
 
-private func makeRecoveryWorkItem(id: String, status: String) -> WorkItem {
-    WorkItem(
+private func makeRecoveryCorptieTask(id: String, lifecycleState: String) -> CorptieTask {
+    CorptieTask(
         id: id,
         objectiveId: "objective:one",
         title: id,
         description: "Description",
         acceptanceCriteria: "Criteria",
         priority: "medium",
-        status: status,
+        lifecycleState: lifecycleState,
         mainWorkspaceId: nil,
         mainAgentId: "agent:one",
         currentSessionId: nil,
@@ -74,7 +74,7 @@ private func makeRecoveryWorkItem(id: String, status: String) -> WorkItem {
 
 private func makeRecoverySession(
     id: String,
-    workItemID: String?,
+    taskID: String?,
     kind: SessionKind = .worker,
     archived: Bool = false
 ) -> TaskSession {
@@ -85,7 +85,7 @@ private func makeRecoverySession(
         agentId: "agent:one",
         sessionKind: kind,
         objectiveId: "objective:one",
-        workItemId: workItemID,
+        taskId: taskID,
         status: .complete,
         progress: 1,
         summary: "",

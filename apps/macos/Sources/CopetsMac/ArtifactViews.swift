@@ -4,7 +4,7 @@ import SwiftUI
 struct ArtifactSectionView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     let objectiveId: String
-    let workItemId: String?
+    let taskId: String?
 
     @State private var selection: ObjectiveArtifact?
     @State private var showCreate = false
@@ -12,7 +12,7 @@ struct ArtifactSectionView: View {
     @State private var isImporting = false
 
     private var loadState: ArtifactCollectionLoadState {
-        if let workItemId { return client.workItemLoadStates[workItemId] ?? .idle }
+        if let taskId { return client.taskLoadStates[taskId] ?? .idle }
         return client.objectiveLoadStates[objectiveId] ?? .idle
     }
 
@@ -42,17 +42,17 @@ struct ArtifactSectionView: View {
                     .font(.system(size: 9)).foregroundStyle(.green)
             }
         }
-        .task(id: workItemId ?? objectiveId) { await refresh() }
-        .onDisappear { if let workItemId { client.cancelRefresh(workItemId: workItemId) } }
+        .task(id: taskId ?? objectiveId) { await refresh() }
+        .onDisappear { if let taskId { client.cancelRefresh(taskId: taskId) } }
         .sheet(item: $selection) { artifact in
             ArtifactDetailContainer(
                 artifactId: artifact.artifactId,
                 objectiveId: objectiveId,
-                workItemId: workItemId
+                taskId: taskId
             ) { Task { await refresh() } }
         }
         .sheet(isPresented: $showCreate) {
-            ArtifactCreateView(objectiveId: objectiveId, workItemId: workItemId) {
+            ArtifactCreateView(objectiveId: objectiveId, taskId: taskId) {
                 showCreate = false
                 Task { await refresh() }
             }
@@ -118,7 +118,7 @@ struct ArtifactSectionView: View {
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(artifact.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                                    Text("v\(ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, workItemId: workItemId)) · \(artifact.visibility.rawValue)")
+                                    Text("v\(ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: taskId)) · \(artifact.visibility.rawValue)")
                                         .font(.system(size: 9)).foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -139,7 +139,7 @@ struct ArtifactSectionView: View {
     }
 
     private func refresh() async {
-        if let workItemId { await client.refresh(workItemId: workItemId) }
+        if let taskId { await client.refresh(taskId: taskId) }
         else { await client.refresh(objectiveId: objectiveId) }
     }
 
@@ -154,12 +154,12 @@ struct ArtifactSectionView: View {
             let imported = await client.importFile(
                 objectiveId: objectiveId,
                 fileURL: url,
-                visibility: workItemId == nil ? .objectivePrivate : .workItemPrivate,
-                boundWorkItemId: workItemId
+                visibility: taskId == nil ? .objectivePrivate : .taskPrivate,
+                boundTaskId: taskId
             )
             importReceipt = imported?.receipt
-            if let workItemId, let artifact = imported?.artifact {
-                _ = await client.reference(artifactId: artifact.artifactId, workItemId: workItemId, relation: "implementation_spec", required: false, versionPolicy: "fixed")
+            if let taskId, let artifact = imported?.artifact {
+                _ = await client.reference(artifactId: artifact.artifactId, taskId: taskId, relation: "implementation_spec", required: false, versionPolicy: "fixed")
             }
             isImporting = false
             await refresh()
@@ -168,10 +168,10 @@ struct ArtifactSectionView: View {
 }
 
 enum ArtifactVersionSelectionPolicy {
-    static func preferredVersion(for artifact: ObjectiveArtifact, workItemId: String?) -> Int {
-        if let workItemId,
+    static func preferredVersion(for artifact: ObjectiveArtifact, taskId: String?) -> Int {
+        if let taskId,
            let reference = artifact.references.first(where: {
-               $0.workItemId == workItemId && $0.revokedAt == nil
+               $0.taskId == taskId && $0.revokedAt == nil
            }) {
             return reference.pinnedVersion
         }
@@ -183,16 +183,16 @@ private struct ArtifactDetailContainer: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     let artifactId: String
     let objectiveId: String
-    let workItemId: String?
+    let taskId: String?
     let onChanged: () -> Void
 
     var body: some View {
         if let artifact = client.artifact(
             artifactId: artifactId,
             objectiveId: objectiveId,
-            workItemId: workItemId
+            taskId: taskId
         ) {
-            ArtifactDetailView(artifact: artifact, workItemId: workItemId, onChanged: onChanged)
+            ArtifactDetailView(artifact: artifact, taskId: taskId, onChanged: onChanged)
                 .id("\(artifact.artifactId):\(artifact.resourceVersion)")
         } else {
             ContentUnavailableView(
@@ -209,7 +209,7 @@ private struct ArtifactCreateView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
     let objectiveId: String
-    let workItemId: String?
+    let taskId: String?
     let onCreated: () -> Void
 
     @State private var title = ""
@@ -229,7 +229,7 @@ private struct ArtifactCreateView: View {
                 .font(.system(.body, design: .monospaced))
                 .frame(minHeight: 220)
                 .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
-            if workItemId != nil {
+            if taskId != nil {
                 Picker(L10n("Relation"), selection: $relation) {
                     ForEach(["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"], id: \.self) { Text($0).tag($0) }
                 }
@@ -256,11 +256,11 @@ private struct ArtifactCreateView: View {
         Task {
             let artifact = await client.create(
                 objectiveId: objectiveId, title: title, summary: summary, content: content,
-                visibility: workItemId == nil ? .objectivePrivate : .workItemPrivate,
-                boundWorkItemId: workItemId
+                visibility: taskId == nil ? .objectivePrivate : .taskPrivate,
+                boundTaskId: taskId
             )
-            if let artifact, let workItemId {
-                _ = await client.reference(artifactId: artifact.artifactId, workItemId: workItemId, relation: relation, required: required, versionPolicy: versionPolicy)
+            if let artifact, let taskId {
+                _ = await client.reference(artifactId: artifact.artifactId, taskId: taskId, relation: relation, required: required, versionPolicy: versionPolicy)
             }
             isSaving = false
             if artifact != nil { onCreated(); dismiss() }
@@ -272,7 +272,7 @@ private struct ArtifactDetailView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
     let artifact: ObjectiveArtifact
-    let workItemId: String?
+    let taskId: String?
     let onChanged: () -> Void
 
     @State private var detail: ArtifactDetailEnvelope?
@@ -287,13 +287,13 @@ private struct ArtifactDetailView: View {
     @State private var openError: String?
     @State private var readTurnExecutionId = UUID().uuidString
 
-    init(artifact: ObjectiveArtifact, workItemId: String?, onChanged: @escaping () -> Void) {
+    init(artifact: ObjectiveArtifact, taskId: String?, onChanged: @escaping () -> Void) {
         self.artifact = artifact
-        self.workItemId = workItemId
+        self.taskId = taskId
         self.onChanged = onChanged
         _selectedVersion = State(initialValue: ArtifactVersionSelectionPolicy.preferredVersion(
             for: artifact,
-            workItemId: workItemId
+            taskId: taskId
         ))
     }
 
@@ -345,7 +345,7 @@ private struct ArtifactDetailView: View {
                 turnExecutionId: readTurnExecutionId
             )
         }
-        .sheet(isPresented: $showPublish) { ArtifactPublishView(artifact: artifact, workItemId: workItemId) { showPublish = false; onChanged(); dismiss() } }
+        .sheet(isPresented: $showPublish) { ArtifactPublishView(artifact: artifact, taskId: taskId) { showPublish = false; onChanged(); dismiss() } }
         .confirmationDialog(L10n("Mark this Artifact superseded?"), isPresented: $showSupersede) {
             Button(L10n("Mark Superseded"), role: .destructive) { Task { if await client.markSuperseded(artifactId: artifact.artifactId) { onChanged(); dismiss() } } }
         }
@@ -389,7 +389,7 @@ private struct ArtifactDetailView: View {
             Text(L10n("References and Impact")).font(.caption.bold())
             ForEach(artifact.references) { reference in
                 HStack {
-                    Text("\(reference.relation) · \(reference.workItemId ?? reference.sessionId ?? "-") · v\(reference.pinnedVersion)")
+                    Text("\(reference.relation) · \(reference.taskId ?? reference.sessionId ?? "-") · v\(reference.pinnedVersion)")
                     if reference.required { Text(L10n("Required")).foregroundStyle(.orange) }
                     if let pending = reference.pendingVersion, can("acknowledge_reference") {
                         Button("v\(pending) pending — acknowledge") { Task { if await client.acknowledge(referenceId: reference.referenceId) { onChanged(); dismiss() } } }
@@ -405,7 +405,7 @@ private struct ArtifactDetailView: View {
     }
 
     private func can(_ action: String) -> Bool {
-        workItemId == nil || artifact.availableActions?.contains(action) == true
+        taskId == nil || artifact.availableActions?.contains(action) == true
     }
 
     private var contentPage: some View {
@@ -547,14 +547,14 @@ private struct ArtifactPublishView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
     let artifact: ObjectiveArtifact
-    let workItemId: String?
+    let taskId: String?
     let onPublished: () -> Void
     @State private var summary: String
     @State private var content = ""
 
-    init(artifact: ObjectiveArtifact, workItemId: String?, onPublished: @escaping () -> Void) {
+    init(artifact: ObjectiveArtifact, taskId: String?, onPublished: @escaping () -> Void) {
         self.artifact = artifact
-        self.workItemId = workItemId
+        self.taskId = taskId
         self.onPublished = onPublished
         _summary = State(initialValue: artifact.summary)
     }
@@ -564,9 +564,9 @@ private struct ArtifactPublishView: View {
             Text(L10n("Publish New Artifact Version")).font(.headline)
             TextField(L10n("Summary"), text: $summary)
             TextEditor(text: $content).font(.system(.body, design: .monospaced)).frame(minHeight: 260)
-            Text(L10n("Started WorkItems remain pinned. latest-approved references receive an audited impact notice requiring acknowledgement."))
+            Text(L10n("Started CorptieTasks remain pinned. latest-approved references receive an audited impact notice requiring acknowledgement."))
                 .font(.caption).foregroundStyle(.orange)
-            HStack { Spacer(); Button(L10n("Cancel")) { dismiss() }; Button(L10n("Publish")) { Task { if await client.publish(artifact: artifact, workItemId: workItemId, content: content, summary: summary) { onPublished(); dismiss() } } }.disabled(content.isEmpty) }
+            HStack { Spacer(); Button(L10n("Cancel")) { dismiss() }; Button(L10n("Publish")) { Task { if await client.publish(artifact: artifact, taskId: taskId, content: content, summary: summary) { onPublished(); dismiss() } } }.disabled(content.isEmpty) }
         }.padding(20).frame(width: 580, height: 440)
     }
 }

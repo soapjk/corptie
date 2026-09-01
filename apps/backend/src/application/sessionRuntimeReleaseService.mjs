@@ -52,10 +52,10 @@ export class SessionRuntimeReleaseService {
     return sessions.length;
   }
 
-  releaseCompletedWorkItemSessions(workItemId) {
+  releaseCompletedTaskSessions(taskId) {
     const sessions = this.store.listSessions({ archived: true })
-      .filter((session) => session.workItemId === workItemId);
-    for (const session of sessions) void this.request(session.id, "work-item-completed");
+      .filter((session) => session.taskId === taskId);
+    for (const session of sessions) void this.request(session.id, "task-completed");
     return sessions.length;
   }
 

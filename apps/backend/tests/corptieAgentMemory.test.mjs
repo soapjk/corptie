@@ -133,7 +133,7 @@ test("bundled Provider memories forbid autonomous Worktree creation and switchin
     "../resources/agent/global-instructions.production.md"
   ]) {
     const content = await readFile(new URL(relativePath, import.meta.url), "utf8");
-    assert.match(content, /programmatically creates and binds the WorkItem Worktree/u);
+    assert.match(content, /programmatically creates and binds the Task Worktree/u);
     assert.match(content, /Stay in that bound Workspace/u);
     assert.match(content, /only when the direct user explicitly requests it/u);
     assert.match(content, /Ordinary development work is not authorization/u);

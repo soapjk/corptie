@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { WorkItemWorkspaceService } from "../src/application/workItemWorkspaceService.mjs";
+import { TaskWorkspaceService } from "../src/application/taskWorkspaceService.mjs";
 
 function createService(overrides = {}) {
   const calls = [];
-  const service = new WorkItemWorkspaceService({
+  const service = new TaskWorkspaceService({
     store: {
       getLogicalSessionByLegacySessionId(sessionId) {
         calls.push(["route", sessionId]);
@@ -23,8 +23,8 @@ function createService(overrides = {}) {
       calls.push(["ensure", input]);
       return overrides.ensured ?? {
         worktreeId: "worktree:new",
-        path: "/repo-workitem-one",
-        branchName: "workitem/one",
+        path: "/repo-task-one",
+        branchName: "task/one",
         headOid: "abc",
         reused: false
       };
@@ -41,14 +41,14 @@ function createService(overrides = {}) {
   return { service, calls };
 }
 
-const workItem = {
-  id: "work_item:one",
+const task = {
+  id: "task:one",
   main_workspace_id: "repository:one"
 };
 
 test("first execution skips management inspection and directly ensures the deterministic Worktree", async () => {
   const { service, calls } = createService();
-  const result = await service.ensure({ workItem });
+  const result = await service.ensure({ task });
 
   assert.equal(result.worktreeId, "worktree:new");
   assert.equal(result.requiresSessionTransition, false);
@@ -56,7 +56,7 @@ test("first execution skips management inspection and directly ensures the deter
   assert.deepEqual(calls[2][1], {
     repositoryId: "repository:one",
     workingDirectory: "/repo",
-    workItemId: "work_item:one"
+    taskId: "task:one"
   });
 });
 
@@ -65,7 +65,7 @@ test("existing Session execution preserves route inspection and Worktree reuse s
     worktreeId: "worktree:existing",
     canonicalPath: "/canonical-existing",
     path: "/existing",
-    branchName: "workitem/one",
+    branchName: "task/one",
     headOid: "def",
     availability: "available",
     isMain: false
@@ -74,7 +74,7 @@ test("existing Session execution preserves route inspection and Worktree reuse s
     route: { activeWorkspaceId: existing.worktreeId, logicalSessionId: "logical:one" },
     inspection: { worktrees: [existing] }
   });
-  const result = await service.ensure({ workItem, session: { id: "session:one" } });
+  const result = await service.ensure({ task, session: { id: "session:one" } });
 
   assert.deepEqual(result, {
     worktreeId: existing.worktreeId,
@@ -90,8 +90,8 @@ test("existing Session execution preserves route inspection and Worktree reuse s
 test("a stale registered Worktree is rebuilt from its preserved task branch", async () => {
   const stale = {
     worktreeId: "worktree:stale",
-    path: "/repo-workitem-one",
-    branchName: "workitem/one",
+    path: "/repo-task-one",
+    branchName: "task/one",
     availability: "prunable",
     isMain: false
   };
@@ -101,20 +101,20 @@ test("a stale registered Worktree is rebuilt from its preserved task branch", as
     restored: {
       restored: {
         worktreeId: "worktree:restored",
-        canonicalPath: "/repo-workitem-one",
-        path: "/repo-workitem-one",
-        branchName: "workitem/one",
+        canonicalPath: "/repo-task-one",
+        path: "/repo-task-one",
+        branchName: "task/one",
         headOid: "restored-head"
       }
     }
   });
 
-  const result = await service.ensure({ workItem, session: { id: "session:one" } });
+  const result = await service.ensure({ task, session: { id: "session:one" } });
 
   assert.deepEqual(result, {
     worktreeId: "worktree:restored",
-    path: "/repo-workitem-one",
-    branchName: "workitem/one",
+    path: "/repo-task-one",
+    branchName: "task/one",
     headOid: "restored-head",
     reused: false,
     rebuilt: true,
@@ -124,13 +124,13 @@ test("a stale registered Worktree is rebuilt from its preserved task branch", as
   assert.deepEqual(calls.at(-1)[1], { logicalSessionId: "logical:one" });
 });
 
-test("a missing Worktree inventory record is recreated through the deterministic WorkItem branch", async () => {
+test("a missing Worktree inventory record is recreated through the deterministic Task branch", async () => {
   const { service, calls } = createService({
     route: { activeWorkspaceId: "worktree:missing", logicalSessionId: "logical:one" },
     inspection: { worktrees: [] }
   });
 
-  const result = await service.ensure({ workItem, session: { id: "session:one" } });
+  const result = await service.ensure({ task, session: { id: "session:one" } });
 
   assert.equal(result.worktreeId, "worktree:new");
   assert.equal(result.rebuilt, true);
@@ -139,15 +139,15 @@ test("a missing Worktree inventory record is recreated through the deterministic
   assert.deepEqual(calls.at(-1)[1], {
     repositoryId: "repository:one",
     workingDirectory: "/repo",
-    workItemId: "work_item:one"
+    taskId: "task:one"
   });
 });
 
 test("Worktree rebuild failure is stable, actionable, and never falls back to a new branch", async () => {
   const stale = {
     worktreeId: "worktree:stale",
-    path: "/repo-workitem-one",
-    branchName: "workitem/one",
+    path: "/repo-task-one",
+    branchName: "task/one",
     availability: "prunable",
     isMain: false
   };
@@ -157,14 +157,14 @@ test("Worktree rebuild failure is stable, actionable, and never falls back to a 
   });
   service.restoreMissingWorktree = async () => {
     calls.push(["restore-failed"]);
-    throw new Error("The original branch workitem/one no longer exists.");
+    throw new Error("The original branch task/one no longer exists.");
   };
 
   await assert.rejects(
-    service.ensure({ workItem, session: { id: "session:one" } }),
+    service.ensure({ task, session: { id: "session:one" } }),
     (error) => error.code === "WORKTREE_REBUILD_FAILED"
       && error.statusCode === 409
-      && /workitem\/one no longer exists/.test(error.message)
+      && /task\/one no longer exists/.test(error.message)
   );
   assert.equal(calls.some(([name]) => name === "ensure"), false);
 });
@@ -172,7 +172,7 @@ test("Worktree rebuild failure is stable, actionable, and never falls back to a 
 test("missing Workspace remains an explicit 409 business error before Git access", async () => {
   const { service, calls } = createService();
   await assert.rejects(
-    service.ensure({ workItem: { id: "work_item:no-workspace", main_workspace_id: null } }),
+    service.ensure({ task: { id: "task:no-workspace", main_workspace_id: null } }),
     (error) => error.code === "WORKSPACE_REQUIRED" && error.statusCode === 409
   );
   assert.deepEqual(calls, []);
@@ -186,13 +186,13 @@ test("stale and inaccessible Workspace bindings report distinct actionable error
     throw error;
   };
   await assert.rejects(
-    stale.service.ensure({ workItem }),
+    stale.service.ensure({ task }),
     (error) => error.code === "WORKSPACE_BINDING_INVALID" && /重新绑定/.test(error.message)
   );
 
   const inaccessible = createService({ accessError: Object.assign(new Error("denied"), { code: "EACCES" }) });
   await assert.rejects(
-    inaccessible.service.ensure({ workItem }),
+    inaccessible.service.ensure({ task }),
     (error) => error.code === "WORKSPACE_UNAVAILABLE" && /磁盘挂载/.test(error.message)
   );
 });

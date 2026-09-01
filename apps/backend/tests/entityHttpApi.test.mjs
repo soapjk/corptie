@@ -15,7 +15,7 @@ import { MemoryRecallService } from "../src/application/memoryRecallService.mjs"
 import { AssistantService } from "../src/application/assistantService.mjs";
 import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 import { SkillRegistryService } from "../src/application/skillRegistryService.mjs";
-import { WorkItemCompletionService } from "../src/application/workItemCompletionService.mjs";
+import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -57,8 +57,8 @@ async function createServices() {
   const entityEvents = [];
   const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
   const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
-  const workItemCompletionService = new WorkItemCompletionService({ store, onCompleted: (entity) => {
-    onEntityChanged("WorkItemChanged", { action: "user-intent-completion", entity });
+  const taskCompletionService = new TaskCompletionService({ store, onCompleted: (entity) => {
+    onEntityChanged("TaskChanged", { action: "user-intent-completion", entity });
   } });
   const hubService = new HubService({ store });
   return {
@@ -67,7 +67,7 @@ async function createServices() {
     entityEvents,
     onEntityChanged,
     objectiveService,
-    workItemCompletionService,
+    taskCompletionService,
     hubService,
     memoryRecallService: new MemoryRecallService({ store, hubService }),
     router: new CollaborationRouter({ store }),
@@ -86,22 +86,22 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
   const request = mockRequest(method, pathname, search, body, requestHeaders);
   const response = mockResponse();
   const url = new URL(request.url);
-  const startWorkItemExecution = services.startWorkItemExecution ?? (services.launchSession
+  const startTaskExecution = services.startTaskExecution ?? (services.launchSession
     ? async (input) => {
-        const workItem = services.objectiveService.store.getWorkItem(input.workItemId);
+        const task = services.objectiveService.store.getTask(input.taskId);
         const agent = services.objectiveService.store.getAgent(input.requestedAgentId);
         const session = await services.launchSession({
-          workItem,
+          task,
           agent,
           providerId: input.providerId,
           title: input.title,
           observePerformance: () => {}
         });
-        const bound = services.objectiveService.store.bindSessionToWorkItem(
-          session.id, workItem.id, workItem.objective_id
+        const bound = services.objectiveService.store.bindSessionToTask(
+          session.id, task.id, task.objective_id
         );
-        services.objectiveService.store.updateWorkItem(workItem.id, {
-          status: "in_progress", mainAgentId: agent.agentId, executionStatus: "running"
+        services.objectiveService.store.updateTask(task.id, {
+          lifecycleState: "in_progress", mainAgentId: agent.agentId, executionStatus: "running"
         });
         return {
           status: "ready", idempotentReplay: false, session: bound,
@@ -123,21 +123,21 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     backgroundAgentService: services.backgroundAgentService,
     createSession: services.createSession,
     launchSession: services.launchSession,
-    startWorkItemExecution,
-    beginWorkItemExecution: services.beginWorkItemExecution,
-    getWorkItemStartup: services.getWorkItemStartup,
+    startTaskExecution,
+    beginTaskExecution: services.beginTaskExecution,
+    getTaskStartup: services.getTaskStartup,
     getSessionStartupBinding: services.getSessionStartupBinding,
     launchAgentSession: services.launchAgentSession,
     launchObjectiveChatSession: services.launchObjectiveChatSession,
-    inspectWorkItemWorktree: services.inspectWorkItemWorktree,
-    reclaimWorkItemWorktree: services.reclaimWorkItemWorktree,
-    inspectWorkItemDeletion: services.inspectWorkItemDeletion,
-    deleteWorkItemSafely: services.deleteWorkItemSafely,
-    restoreWorkItemExecution: services.restoreWorkItemExecution,
-    workItemCompletionService: services.workItemCompletionService,
+    inspectTaskWorktree: services.inspectTaskWorktree,
+    reclaimTaskWorktree: services.reclaimTaskWorktree,
+    inspectTaskDeletion: services.inspectTaskDeletion,
+    deleteTaskSafely: services.deleteTaskSafely,
+    restoreTaskExecution: services.restoreTaskExecution,
+    taskCompletionService: services.taskCompletionService,
     resolveAgentAvailability: services.resolveAgentAvailability,
     suggestAgentSessionTitle: services.suggestAgentSessionTitle,
-    observeWorkItemPerformance: services.observeWorkItemPerformance,
+    observeTaskPerformance: services.observeTaskPerformance,
     observeFormAssistPerformance: services.observeFormAssistPerformance,
     registerGitRepository: services.registerGitRepository,
     auditLog: services.auditLog,
@@ -154,25 +154,25 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
   };
 }
 
-async function completeThroughMacOSIntent(services, workItem, suffix = randomUUID()) {
+async function completeThroughMacOSIntent(services, task, suffix = randomUUID()) {
   const requestId = `completion-intent:${suffix}`;
   const intent = await callApi({
     method: "POST",
-    pathname: `/work-items/${workItem.id}/completion-intents`,
+    pathname: `/tasks/${task.id}/completion-intents`,
     body: {
       requestId,
       interactionId: `interaction:${suffix}`,
-      uiSurface: "work_item_completion_confirmation",
-      displayedWorkItemId: workItem.id,
-      displayedWorkItemTitle: workItem.title,
-      displayedAcceptanceStatus: workItem.acceptanceAssessment?.status ?? "not_assessed"
+      uiSurface: "task_completion_confirmation",
+      displayedTaskId: task.id,
+      displayedTaskTitle: task.title,
+      displayedAcceptanceStatus: task.acceptanceAssessment?.status ?? "not_assessed"
     },
     ...services
   });
   assert.equal(intent.statusCode, 201);
   return callApi({
     method: "POST",
-    pathname: `/work-items/${workItem.id}/confirm-completion`,
+    pathname: `/tasks/${task.id}/confirm-completion`,
     body: {
       intentToken: intent.body.intentToken,
       requestId,
@@ -182,21 +182,21 @@ async function completeThroughMacOSIntent(services, workItem, suffix = randomUUI
   });
 }
 
-test("WorkItem Worktree endpoints inspect and reclaim through the project service", async () => {
+test("Task Worktree endpoints inspect and reclaim through the project service", async () => {
   const services = await createServices();
   const calls = [];
   try {
     const inspection = {
       status: "available",
-      workItemId: "work-item:one",
+      taskId: "task:one",
       canReclaim: true,
       worktree: { worktreeId: "worktree:feature", branchName: "feature/one" }
     };
     const inspected = await callApi({
       method: "GET",
-      pathname: "/work-items/work-item%3Aone/worktree",
-      inspectWorkItemWorktree: async (workItemId) => {
-        calls.push(["inspect", workItemId]);
+      pathname: "/tasks/task%3Aone/worktree",
+      inspectTaskWorktree: async (taskId) => {
+        calls.push(["inspect", taskId]);
         return inspection;
       },
       ...services
@@ -206,9 +206,9 @@ test("WorkItem Worktree endpoints inspect and reclaim through the project servic
 
     const reclaimed = await callApi({
       method: "POST",
-      pathname: "/work-items/work-item%3Aone/worktree/reclaim",
-      reclaimWorkItemWorktree: async (workItemId) => {
-        calls.push(["reclaim", workItemId]);
+      pathname: "/tasks/task%3Aone/worktree/reclaim",
+      reclaimTaskWorktree: async (taskId) => {
+        calls.push(["reclaim", taskId]);
         return { ...inspection, status: "retired", canReclaim: false };
       },
       ...services
@@ -216,8 +216,8 @@ test("WorkItem Worktree endpoints inspect and reclaim through the project servic
     assert.equal(reclaimed.statusCode, 200);
     assert.equal(reclaimed.body.status, "retired");
     assert.deepEqual(calls, [
-      ["inspect", "work-item:one"],
-      ["reclaim", "work-item:one"]
+      ["inspect", "task:one"],
+      ["reclaim", "task:one"]
     ]);
   } finally {
     await services.store.close();
@@ -225,23 +225,23 @@ test("WorkItem Worktree endpoints inspect and reclaim through the project servic
   }
 });
 
-test("WorkItem deletion endpoints expose preflight and execute only through the safe deletion service", async () => {
+test("Task deletion endpoints expose preflight and execute only through the safe deletion service", async () => {
   const services = await createServices();
   const calls = [];
   const plan = {
-    workItemId: "work-item:one",
+    taskId: "task:one",
     status: "risky",
     retryable: true,
-    worktree: { worktreeId: "worktree:one", path: "/repo-one", branchName: "workitem/one" },
+    worktree: { worktreeId: "worktree:one", path: "/repo-one", branchName: "task/one" },
     risks: [{ code: "UNTRACKED_FILES", message: "untracked", files: ["draft.txt"] }],
     blockers: []
   };
   try {
     const inspected = await callApi({
       method: "GET",
-      pathname: "/work-items/work-item%3Aone/deletion",
-      inspectWorkItemDeletion: async (workItemId, actor) => {
-        calls.push(["inspect", workItemId, actor]);
+      pathname: "/tasks/task%3Aone/deletion",
+      inspectTaskDeletion: async (taskId, actor) => {
+        calls.push(["inspect", taskId, actor]);
         return plan;
       },
       ...services
@@ -251,19 +251,19 @@ test("WorkItem deletion endpoints expose preflight and execute only through the 
 
     const deleted = await callApi({
       method: "POST",
-      pathname: "/work-items/work-item%3Aone/actions/delete",
-      body: { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "workitem/one" },
-      deleteWorkItemSafely: async (workItemId, input, actor) => {
-        calls.push(["delete", workItemId, input, actor]);
-        return { ok: true, workItemId };
+      pathname: "/tasks/task%3Aone/actions/delete",
+      body: { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one" },
+      deleteTaskSafely: async (taskId, input, actor) => {
+        calls.push(["delete", taskId, input, actor]);
+        return { ok: true, taskId };
       },
       ...services
     });
     assert.equal(deleted.statusCode, 200);
     assert.equal(deleted.body.ok, true);
     assert.deepEqual(calls, [
-      ["inspect", "work-item:one", { type: "user", id: "user:local-macos" }],
-      ["delete", "work-item:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "workitem/one" }, { type: "user", id: "user:local-macos" }]
+      ["inspect", "task:one", { type: "user", id: "user:local-macos" }],
+      ["delete", "task:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one" }, { type: "user", id: "user:local-macos" }]
     ]);
   } finally {
     await services.store.close();
@@ -271,59 +271,59 @@ test("WorkItem deletion endpoints expose preflight and execute only through the 
   }
 });
 
-test("WorkItem deletion HTTP errors preserve forbidden, missing, and association blocker details", async () => {
+test("Task deletion HTTP errors preserve forbidden, missing, and association blocker details", async () => {
   const services = await createServices();
   try {
     const forbidden = await callApi({
       method: "POST",
-      pathname: "/work-items/work-item%3Aforbidden/actions/delete",
+      pathname: "/tasks/task%3Aforbidden/actions/delete",
       body: { mode: "safe" },
-      deleteWorkItemSafely: async () => {
-        throw Object.assign(new Error("You do not have permission to delete this WorkItem."), {
-          code: "WORK_ITEM_DELETE_FORBIDDEN", statusCode: 403
+      deleteTaskSafely: async () => {
+        throw Object.assign(new Error("You do not have permission to delete this Task."), {
+          code: "TASK_DELETE_FORBIDDEN", statusCode: 403
         });
       },
       ...services
     });
     assert.deepEqual(forbidden.body, {
-      error: "You do not have permission to delete this WorkItem.",
-      code: "WORK_ITEM_DELETE_FORBIDDEN"
+      error: "You do not have permission to delete this Task.",
+      code: "TASK_DELETE_FORBIDDEN"
     });
     assert.equal(forbidden.statusCode, 403);
 
     const missing = await callApi({
       method: "GET",
-      pathname: "/work-items/work-item%3Amissing/deletion",
-      inspectWorkItemDeletion: async () => {
-        throw Object.assign(new Error("WorkItem not found: work-item:missing"), {
-          code: "WORK_ITEM_NOT_FOUND", statusCode: 404
+      pathname: "/tasks/task%3Amissing/deletion",
+      inspectTaskDeletion: async () => {
+        throw Object.assign(new Error("Task not found: task:missing"), {
+          code: "TASK_NOT_FOUND", statusCode: 404
         });
       },
       ...services
     });
     assert.equal(missing.statusCode, 404);
-    assert.equal(missing.body.code, "WORK_ITEM_NOT_FOUND");
+    assert.equal(missing.body.code, "TASK_NOT_FOUND");
 
     const deletion = {
-      workItemId: "work-item:blocked", status: "blocked", retryable: true,
+      taskId: "task:blocked", status: "blocked", retryable: true,
       worktree: null, risks: [], blockers: [{
-        code: "WORK_ITEM_HAS_BOUND_ARTIFACTS",
-        message: "WorkItem remains bound to retained Artifact Required evidence."
+        code: "TASK_HAS_BOUND_ARTIFACTS",
+        message: "Task remains bound to retained Artifact Required evidence."
       }]
     };
     const blocked = await callApi({
       method: "POST",
-      pathname: "/work-items/work-item%3Ablocked/actions/delete",
+      pathname: "/tasks/task%3Ablocked/actions/delete",
       body: { mode: "safe" },
-      deleteWorkItemSafely: async () => {
+      deleteTaskSafely: async () => {
         throw Object.assign(new Error(deletion.blockers[0].message), {
-          code: "WORK_ITEM_DELETE_BLOCKED", statusCode: 409, deletion
+          code: "TASK_DELETE_BLOCKED", statusCode: 409, deletion
         });
       },
       ...services
     });
     assert.equal(blocked.statusCode, 409);
-    assert.equal(blocked.body.code, "WORK_ITEM_DELETE_BLOCKED");
+    assert.equal(blocked.body.code, "TASK_DELETE_BLOCKED");
     assert.deepEqual(blocked.body.deletion, deletion);
   } finally {
     await services.store.close();
@@ -331,27 +331,27 @@ test("WorkItem deletion HTTP errors preserve forbidden, missing, and association
   }
 });
 
-test("WorkItem restore endpoint delegates the atomic execution recovery flow", async () => {
+test("Task restore endpoint delegates the atomic execution recovery flow", async () => {
   const services = await createServices();
   try {
-    const workItem = services.objectiveService.createWorkItem({
+    const task = services.objectiveService.createTask({
       objectiveId: services.objectiveService.createObjective({
         name: "Recovery objective",
         idealState: "Recovered"
       }).id,
       title: "Recover me",
-      status: "in_progress"
+      lifecycleState: "in_progress"
     });
-    const restoreReceipt = services.workItemCompletionService.issueMacOSIntent(
-      workItem.id,
+    const restoreReceipt = services.taskCompletionService.issueMacOSIntent(
+      task.id,
       {
         requestId: "restore-setup-intent", interactionId: "restore-setup-click",
-        uiSurface: "work_item_completion_confirmation", displayedWorkItemId: workItem.id,
-        displayedWorkItemTitle: workItem.title, displayedAcceptanceStatus: "not_assessed"
+        uiSurface: "task_completion_confirmation", displayedTaskId: task.id,
+        displayedTaskTitle: task.title, displayedAcceptanceStatus: "not_assessed"
       },
       { type: "user", id: "user:local-macos" }
     );
-    services.workItemCompletionService.completeFromMacOS(workItem.id, {
+    services.taskCompletionService.completeFromMacOS(task.id, {
       intentToken: restoreReceipt.intentToken,
       requestId: "restore-setup-intent",
       idempotencyKey: "restore-setup-completion"
@@ -359,12 +359,12 @@ test("WorkItem restore endpoint delegates the atomic execution recovery flow", a
     const calls = [];
     const restored = await callApi({
       method: "POST",
-      pathname: `/work-items/${encodeURIComponent(workItem.id)}/actions/restore`,
-      restoreWorkItemExecution: async (workItemId) => {
-        calls.push(workItemId);
+      pathname: `/tasks/${encodeURIComponent(task.id)}/actions/restore`,
+      restoreTaskExecution: async (taskId) => {
+        calls.push(taskId);
         return {
-          workItem: services.store.updateWorkItem(workItemId, {
-            status: "in_progress",
+          task: services.store.updateTask(taskId, {
+            lifecycleState: "in_progress",
             executionStatus: "idle"
           }),
           session: { id: "session:one" },
@@ -376,24 +376,24 @@ test("WorkItem restore endpoint delegates the atomic execution recovery flow", a
     });
 
     assert.equal(restored.statusCode, 200);
-    assert.equal(restored.body.workItem.status, "in_progress");
+    assert.equal(restored.body.task.lifecycleState, "in_progress");
     assert.equal(restored.body.workspace.reused, true);
-    assert.deepEqual(calls, [workItem.id]);
+    assert.deepEqual(calls, [task.id]);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
   }
 });
 
-test("WorkItem restore endpoint preserves an actionable Worktree rebuild failure", async () => {
+test("Task restore endpoint preserves an actionable Worktree rebuild failure", async () => {
   const services = await createServices();
   try {
     const failed = await callApi({
       method: "POST",
-      pathname: "/work-items/work_item%3Aone/actions/restore",
-      restoreWorkItemExecution: async () => {
+      pathname: "/tasks/task%3Aone/actions/restore",
+      restoreTaskExecution: async () => {
         throw Object.assign(
-          new Error("无法基于 WorkItem work_item:one 的任务分支重建 Worktree：外置磁盘未挂载。"),
+          new Error("无法基于 Task task:one 的任务分支重建 Worktree：外置磁盘未挂载。"),
           { code: "WORKTREE_REBUILD_FAILED", statusCode: 409 }
         );
       },
@@ -489,7 +489,7 @@ test("POST /assist/form-draft generates every field without creating an entity",
       method: "POST",
       pathname: "/assist/form-draft",
       body: {
-        formType: "workItem",
+        formType: "task",
         prompt: "实现统一的一键填充",
         currentValues: { title: "", description: "", acceptanceCriteria: "", priority: "medium" }
       },
@@ -516,16 +516,16 @@ test("POST /assist/form-draft generates every field without creating an entity",
     });
 
     assert.equal(result.statusCode, 200);
-    assert.equal(result.body.formType, "workItem");
+    assert.equal(result.body.formType, "task");
     assert.equal(result.body.fields.title, "统一帮我写");
     assert.equal(result.body.providerId, "fake-provider");
     assert.equal(calls[0].purpose, "assist-form-draft");
     assert.equal(calls[0].permissionProfile, "read-only");
     assert.equal(calls[0].preferredReasoning, "low");
-    assert.equal(services.store.listWorkItems().length, 0);
+    assert.equal(services.store.listTasks().length, 0);
     assert.equal(performanceMeasurements.length, 1);
     assert.equal(performanceMeasurements[0].operation, "assist.form-draft");
-    assert.equal(performanceMeasurements[0].formType, "workItem");
+    assert.equal(performanceMeasurements[0].formType, "task");
     assert.equal(performanceMeasurements[0].outcome, "succeeded");
     assert.equal(performanceMeasurements[0].phases.agentContextMs, 2.5);
     assert.equal(performanceMeasurements[0].phases.providerInvokeMs, 7.5);
@@ -722,7 +722,7 @@ test("POST /assist/form-draft rejects unknown input and malformed Agent fields",
   }
 });
 
-test("POST /sessions delegates Provider-only creation when no WorkItem binding is requested", async () => {
+test("POST /sessions delegates Provider-only creation when no Task binding is requested", async () => {
   const services = await createServices();
   try {
     const calls = [];
@@ -781,23 +781,23 @@ test("POST 创建接口按客户端 ID 幂等，冲突重放返回 409 而非数
     assert.equal(conflict.body.code, "ENTITY_CREATION_CONFLICT");
     assert.doesNotMatch(conflict.body.error, /SQLite|constraint/i);
 
-    const workItemBody = {
-      id: "work_item:http-idempotent",
+    const taskBody = {
+      id: "task:http-idempotent",
       objectiveId: objectiveBody.id,
       title: "幂等工作项"
     };
-    const firstWorkItem = await callApi({ method: "POST", pathname: "/work-items", body: workItemBody, ...services });
-    const retriedWorkItem = await callApi({ method: "POST", pathname: "/work-items", body: workItemBody, ...services });
-    assert.equal(firstWorkItem.statusCode, 201);
-    assert.equal(retriedWorkItem.statusCode, 201);
-    assert.equal(services.store.listWorkItems().length, 1);
+    const firstTask = await callApi({ method: "POST", pathname: "/tasks", body: taskBody, ...services });
+    const retriedTask = await callApi({ method: "POST", pathname: "/tasks", body: taskBody, ...services });
+    assert.equal(firstTask.statusCode, 201);
+    assert.equal(retriedTask.statusCode, 201);
+    assert.equal(services.store.listTasks().length, 1);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
   }
 });
 
-test("Objective/WorkItem HTTP validation returns structured errors without SQLite details", async () => {
+test("Objective/Task HTTP validation returns structured errors without SQLite details", async () => {
   const services = await createServices();
   try {
     const unknown = await callApi({
@@ -839,39 +839,39 @@ test("Objective/WorkItem HTTP validation returns structured errors without SQLit
     assert.equal(invalidPatch.body.field, "agentId");
     assert.equal(services.store.getObjective(objective.body.id).name, "Valid");
 
-    const workItem = await callApi({
+    const task = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: { objectiveId: objective.body.id, title: "Valid item" },
       ...services
     });
-    const invalidWorkItemPatch = await callApi({
+    const invalidTaskPatch = await callApi({
       method: "PATCH",
-      pathname: `/work-items/${workItem.body.id}`,
+      pathname: `/tasks/${task.body.id}`,
       body: { main_agent_id: "agent:missing" },
       ...services
     });
-    assert.equal(invalidWorkItemPatch.statusCode, 400);
-    assert.equal(invalidWorkItemPatch.body.code, "UNKNOWN_PATCH_FIELD");
-    assert.equal(invalidWorkItemPatch.body.field, "main_agent_id");
-    assert.equal(services.store.getWorkItem(workItem.body.id).title, "Valid item");
+    assert.equal(invalidTaskPatch.statusCode, 400);
+    assert.equal(invalidTaskPatch.body.code, "UNKNOWN_PATCH_FIELD");
+    assert.equal(invalidTaskPatch.body.field, "main_agent_id");
+    assert.equal(services.store.getTask(task.body.id).title, "Valid item");
     const unknownStatus = await callApi({
       method: "PATCH",
-      pathname: `/work-items/${workItem.body.id}`,
-      body: { status: "reviewing_unknown" },
+      pathname: `/tasks/${task.body.id}`,
+      body: { lifecycleState: "reviewing_unknown" },
       ...services
     });
     assert.equal(unknownStatus.statusCode, 400);
-    assert.equal(unknownStatus.body.code, "INVALID_STATUS");
+    assert.equal(unknownStatus.body.code, "INVALID_LIFECYCLE_STATE");
     const canceledStatus = await callApi({
       method: "PATCH",
-      pathname: `/work-items/${workItem.body.id}`,
-      body: { status: "canceled" },
+      pathname: `/tasks/${task.body.id}`,
+      body: { lifecycleState: "canceled" },
       ...services
     });
     assert.equal(canceledStatus.statusCode, 400);
-    assert.equal(canceledStatus.body.code, "INVALID_STATUS");
-    assert.equal(services.store.getWorkItem(workItem.body.id).status, "todo");
+    assert.equal(canceledStatus.body.code, "INVALID_LIFECYCLE_STATE");
+    assert.equal(services.store.getTask(task.body.id).lifecycle_state, "todo");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -893,7 +893,7 @@ test("POST /objectives/:id/sessions creates at most one Objective Chat and rejec
       calls.push(input);
       return {
         id: `objective-chat:${calls.length}`, title: "Planning", agent: input.agent.name, agentId: input.agent.agentId,
-        sessionKind: "objectiveChat", objectiveId: objective.id, workItemId: null,
+        sessionKind: "objectiveChat", objectiveId: objective.id, taskId: null,
         status: "running", progress: 0.5, summary: "Starting", updatedAt: new Date().toISOString(), accent: "cyan"
       };
     };
@@ -907,7 +907,7 @@ test("POST /objectives/:id/sessions creates at most one Objective Chat and rejec
     assert.equal(created.statusCode, 201);
     assert.equal(created.body.session.sessionKind, "objectiveChat");
     assert.equal(created.body.session.objectiveId, objective.id);
-    assert.equal(created.body.session.workItemId, null);
+    assert.equal(created.body.session.taskId, null);
 
     services.store.upsertSession(created.body.session);
     services.store.bindSessionToObjective(created.body.session.id, objective.id);
@@ -961,7 +961,7 @@ test("entity mutations publish provider-neutral refresh events", async () => {
     });
     await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: { objectiveId: objective.body.id, title: "事件任务" },
       ...services
     });
@@ -969,7 +969,7 @@ test("entity mutations publish provider-neutral refresh events", async () => {
 
     assert.deepEqual(
       services.entityEvents.map((event) => event.type),
-      ["ObjectiveChanged", "WorkItemChanged", "AgentChanged"]
+      ["ObjectiveChanged", "TaskChanged", "AgentChanged"]
     );
   } finally {
     await services.store.close();
@@ -1110,7 +1110,7 @@ test("Objective 挂靠资源：workspace/关联/contributor + 对称关联", asy
   }
 });
 
-test("POST /work-items 挂 objective + 依赖环 409", async () => {
+test("POST /tasks 挂 objective + 依赖环 409", async () => {
   const services = await createServices();
   try {
     const objective = await callApi({ method: "POST", pathname: "/objectives", body: { name: "目标" }, ...services });
@@ -1118,22 +1118,22 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
 
     const itemA = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: { objectiveId, title: "A" },
       ...services
     });
     assert.equal(itemA.statusCode, 201);
     assert.equal(itemA.body.acceptanceAssessment, null);
     assert.equal(itemA.body.creationOrigin.originType, "direct_user");
-    assert.equal(services.store.getWorkItemCreationOrigin(itemA.body.id).originType, "direct_user");
+    assert.equal(services.store.getTaskCreationOrigin(itemA.body.id).originType, "direct_user");
 
-    const listed = await callApi({ method: "GET", pathname: "/work-items", ...services });
+    const listed = await callApi({ method: "GET", pathname: "/tasks", ...services });
     assert.equal(listed.statusCode, 200);
-    assert.equal(listed.body.workItems[0].acceptanceAssessment, null);
+    assert.equal(listed.body.tasks[0].acceptanceAssessment, null);
 
     const itemB = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: { objectiveId, title: "B" },
       ...services
     });
@@ -1141,8 +1141,8 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
     // A 依赖 B
     const dep = await callApi({
       method: "POST",
-      pathname: `/work-items/${itemA.body.id}/dependencies`,
-      body: { targetWorkItemId: itemB.body.id },
+      pathname: `/tasks/${itemA.body.id}/dependencies`,
+      body: { targetTaskId: itemB.body.id },
       ...services
     });
     assert.equal(dep.statusCode, 201);
@@ -1150,8 +1150,8 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
     // B 依赖 A → 环，409
     const cycle = await callApi({
       method: "POST",
-      pathname: `/work-items/${itemB.body.id}/dependencies`,
-      body: { targetWorkItemId: itemA.body.id },
+      pathname: `/tasks/${itemB.body.id}/dependencies`,
+      body: { targetTaskId: itemA.body.id },
       ...services
     });
     assert.equal(cycle.statusCode, 409);
@@ -1162,7 +1162,76 @@ test("POST /work-items 挂 objective + 依赖环 409", async () => {
   }
 });
 
-test("binding a valid Workspace is persisted and immediately visible to WorkItem start validation", async () => {
+test("Task revision HTTP atomically snapshots the previous problem definition", async () => {
+  const services = await createServices();
+  try {
+    const objective = services.objectiveService.createObjective({ name: "Evolving objective" });
+    const task = services.objectiveService.createTask({
+      objectiveId: objective.id,
+      title: "First problem",
+      description: "Initial description",
+      goal: "Initial goal",
+      acceptanceCriteria: "Initial acceptance",
+      verificationCriteria: "Initial verification"
+    });
+    services.store.createSession({
+      id: "session:task-revision-http",
+      title: "Task worker",
+      sessionKind: "worker",
+      objectiveId: objective.id,
+      taskId: task.id
+    });
+
+    const revised = await callApi({
+      method: "POST",
+      pathname: `/tasks/${encodeURIComponent(task.id)}/revisions`,
+      body: {
+        expectedRevision: 1,
+        createdBySessionId: "session:task-revision-http",
+        next: {
+          title: "Second problem",
+          goal: "Second goal",
+          acceptanceCriteria: "Second acceptance",
+          verificationCriteria: "Second verification"
+        },
+        executionSummary: "The first problem is complete."
+      },
+      ...services
+    });
+    assert.equal(revised.statusCode, 201);
+    assert.equal(revised.body.task.title, "Second problem");
+    assert.equal(revised.body.task.lifecycleState, "in_progress");
+    assert.equal(revised.body.task.revision, 2);
+    assert.equal(revised.body.snapshot.title, "First problem");
+    assert.equal(revised.body.snapshot.version, 1);
+
+    const snapshots = await callApi({
+      method: "GET",
+      pathname: `/tasks/${encodeURIComponent(task.id)}/snapshots`,
+      ...services
+    });
+    assert.equal(snapshots.statusCode, 200);
+    assert.deepEqual(snapshots.body.snapshots.map((snapshot) => snapshot.id), [revised.body.snapshot.id]);
+
+    const stale = await callApi({
+      method: "POST",
+      pathname: `/tasks/${encodeURIComponent(task.id)}/revisions`,
+      body: {
+        expectedRevision: 1,
+        createdBySessionId: "session:task-revision-http",
+        next: { title: "Stale overwrite" }
+      },
+      ...services
+    });
+    assert.equal(stale.statusCode, 409);
+    assert.equal(stale.body.code, "TASK_REVISION_CONFLICT");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("binding a valid Workspace is persisted and immediately visible to Task start validation", async () => {
   const services = await createServices();
   try {
     const repositoryId = registerRepository(services.store, "repository:immediate", "worktree:immediate-main");
@@ -1175,7 +1244,7 @@ test("binding a valid Workspace is persisted and immediately visible to WorkItem
       workspaceIds: [repositoryId],
       contributorAgentIds: [agent.agentId]
     });
-    const item = services.objectiveService.createWorkItem({
+    const item = services.objectiveService.createTask({
       objectiveId: objective.id,
       title: "Bind then start",
       mainAgentId: agent.agentId
@@ -1183,22 +1252,22 @@ test("binding a valid Workspace is persisted and immediately visible to WorkItem
 
     const bound = await callApi({
       method: "PATCH",
-      pathname: `/work-items/${encodeURIComponent(item.id)}`,
+      pathname: `/tasks/${encodeURIComponent(item.id)}`,
       body: { mainWorkspaceId: repositoryId },
       ...services
     });
     assert.equal(bound.statusCode, 200);
-    assert.equal(bound.body.main_workspace_id, repositoryId);
+    assert.equal(bound.body.mainWorkspaceId, repositoryId);
 
     let observedRepositoryId = null;
     const started = await callApi({
       method: "POST",
       pathname: "/sessions",
-      body: { workItemId: item.id, agentId: agent.agentId, providerId: "codex-app-server" },
-      startWorkItemExecution: async (input) => {
+      body: { taskId: item.id, agentId: agent.agentId, providerId: "codex-app-server" },
+      startTaskExecution: async (input) => {
         assert.equal(input.requestedAgentId, agent.agentId);
         assert.equal(Object.hasOwn(input, "agentId"), false);
-        observedRepositoryId = services.store.getWorkItem(input.workItemId).main_workspace_id;
+        observedRepositoryId = services.store.getTask(input.taskId).main_workspace_id;
         return {
           status: "ready", idempotentReplay: false,
           session: { id: "session:immediate" },
@@ -1215,7 +1284,7 @@ test("binding a valid Workspace is persisted and immediately visible to WorkItem
   }
 });
 
-test("WorkItem completion requires a passing evidence-backed acceptance assessment", async () => {
+test("Task completion requires a passing evidence-backed acceptance assessment", async () => {
   const services = await createServices();
   try {
     const objective = await callApi({
@@ -1223,7 +1292,7 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
     });
     const created = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: {
         objectiveId: objective.body.id,
         title: "验收任务",
@@ -1242,27 +1311,27 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
 
     await callApi({
       method: "PATCH",
-      pathname: `/work-items/${created.body.id}`,
-      body: { status: "in_progress" },
+      pathname: `/tasks/${created.body.id}`,
+      body: { lifecycleState: "in_progress" },
       ...services
     });
 
     const rejectedCompletion = await callApi({
       method: "PATCH",
-      pathname: `/work-items/${created.body.id}`,
-      body: { status: "done" },
+      pathname: `/tasks/${created.body.id}`,
+      body: { lifecycleState: "done" },
       ...services
     });
     assert.equal(rejectedCompletion.statusCode, 403);
-    assert.equal(rejectedCompletion.body.code, "WORK_ITEM_COMPLETION_INTENT_REQUIRED");
+    assert.equal(rejectedCompletion.body.code, "TASK_COMPLETION_INTENT_REQUIRED");
     assert.equal(
-      services.store.listWorkItemCompletionOperations(created.body.id)[0].callSurface,
-      "macos_work_item_patch"
+      services.store.listTaskCompletionOperations(created.body.id)[0].callSurface,
+      "macos_task_patch"
     );
 
     const assessed = await callApi({
       method: "PUT",
-      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      pathname: `/tasks/${created.body.id}/acceptance-assessment`,
       body: {
         sourceSessionId: "acceptance-session",
         results: [
@@ -1281,24 +1350,24 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
       ...services
     });
     assert.equal(assessed.statusCode, 200);
-    assert.equal(assessed.body.status, "in_progress");
+    assert.equal(assessed.body.lifecycleState, "in_progress");
     assert.equal(assessed.body.completionSuggestion.recommended, true);
     assert.equal(assessed.body.completionSuggestion.results.length, 2);
 
     const rejectedByUser = await callApi({
       method: "POST",
-      pathname: `/work-items/${created.body.id}/reject-acceptance`,
+      pathname: `/tasks/${created.body.id}/reject-acceptance`,
       body: { rejected: true },
       ...services
     });
     assert.equal(rejectedByUser.statusCode, 200);
-    assert.equal(rejectedByUser.body.status, "in_progress");
+    assert.equal(rejectedByUser.body.lifecycleState, "in_progress");
     assert.equal(rejectedByUser.body.acceptanceAssessment.status, "rejected");
     assert.equal(rejectedByUser.body.completionSuggestion, null);
 
     const repeatedRejection = await callApi({
       method: "POST",
-      pathname: `/work-items/${created.body.id}/reject-acceptance`,
+      pathname: `/tasks/${created.body.id}/reject-acceptance`,
       body: { rejected: true },
       ...services
     });
@@ -1312,7 +1381,7 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
 
     const rejectedUnknownField = await callApi({
       method: "POST",
-      pathname: `/work-items/${created.body.id}/reject-acceptance`,
+      pathname: `/tasks/${created.body.id}/reject-acceptance`,
       body: { rejected: true, unexpected: true },
       ...services
     });
@@ -1321,7 +1390,7 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
 
     const reassessed = await callApi({
       method: "PUT",
-      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      pathname: `/tasks/${created.body.id}/acceptance-assessment`,
       body: {
         sourceSessionId: "acceptance-session",
         results: [
@@ -1343,10 +1412,10 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
     assert.equal(reassessed.body.completionSuggestion.recommended, true);
 
     const completed = await completeThroughMacOSIntent(
-      services, services.objectiveService.getWorkItem(created.body.id), "passing-assessment"
+      services, services.objectiveService.getTask(created.body.id), "passing-assessment"
     );
     assert.equal(completed.statusCode, 200);
-    assert.equal(completed.body.workItem.status, "done");
+    assert.equal(completed.body.task.lifecycleState, "done");
     assert.equal(completed.body.operation.sourceType, "direct_macos_ui_action");
   } finally {
     await services.store.close();
@@ -1354,7 +1423,7 @@ test("WorkItem completion requires a passing evidence-backed acceptance assessme
   }
 });
 
-test("explicit user confirmation completes an in-progress WorkItem without automatic proof", async () => {
+test("explicit user confirmation completes an in-progress Task without automatic proof", async () => {
   const services = await createServices();
   try {
     const objective = await callApi({
@@ -1362,7 +1431,7 @@ test("explicit user confirmation completes an in-progress WorkItem without autom
     });
     const created = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: {
         objectiveId: objective.body.id,
         title: "人工确认任务",
@@ -1372,50 +1441,47 @@ test("explicit user confirmation completes an in-progress WorkItem without autom
     });
     await callApi({
       method: "PATCH",
-      pathname: `/work-items/${created.body.id}`,
-      body: { status: "in_progress" },
+      pathname: `/tasks/${created.body.id}`,
+      body: { lifecycleState: "in_progress" },
       ...services
     });
 
     const missingConfirmation = await callApi({
       method: "POST",
-      pathname: `/work-items/${created.body.id}/confirm-completion`,
+      pathname: `/tasks/${created.body.id}/confirm-completion`,
       body: { confirmed: false },
       ...services
     });
-    assert.equal(missingConfirmation.statusCode, 403);
-    assert.equal(missingConfirmation.body.code, "WORK_ITEM_COMPLETION_INTENT_REQUIRED");
-    assert.equal(
-      services.store.listWorkItemCompletionOperations(created.body.id)[0].callSurface,
-      "legacy_confirmed_true_http"
-    );
+    assert.equal(missingConfirmation.statusCode, 400);
+    assert.equal(missingConfirmation.body.code, "INVALID_INPUT");
+    assert.equal(services.store.listTaskCompletionOperations(created.body.id).length, 0);
 
     const completed = await completeThroughMacOSIntent(
-      services, services.objectiveService.getWorkItem(created.body.id), "without-assessment"
+      services, services.objectiveService.getTask(created.body.id), "without-assessment"
     );
     assert.equal(completed.statusCode, 200);
-    assert.equal(completed.body.workItem.status, "done");
-    assert.equal(completed.body.workItem.completionSuggestion, null);
-    assert.equal(completed.body.workItem.completionSource.sourceType, "direct_macos_ui_action");
-    const auditByWorkItem = await callApi({
-      method: "GET", pathname: `/work-items/${created.body.id}/completion-audit`, ...services
+    assert.equal(completed.body.task.lifecycleState, "done");
+    assert.equal(completed.body.task.completionSuggestion, null);
+    assert.equal(completed.body.task.completionSource.sourceType, "direct_macos_ui_action");
+    const auditByTask = await callApi({
+      method: "GET", pathname: `/tasks/${created.body.id}/completion-audit`, ...services
     });
-    assert.equal(auditByWorkItem.statusCode, 200);
-    assert.equal(auditByWorkItem.body.operations[0].operationId, completed.body.operation.operationId);
+    assert.equal(auditByTask.statusCode, 200);
+    assert.equal(auditByTask.body.operations[0].operationId, completed.body.operation.operationId);
     const auditByOperation = await callApi({
       method: "GET",
-      pathname: `/work-item-completion-operations/${encodeURIComponent(completed.body.operation.operationId)}`,
+      pathname: `/task-completion-operations/${encodeURIComponent(completed.body.operation.operationId)}`,
       ...services
     });
     assert.equal(auditByOperation.statusCode, 200);
-    assert.equal(auditByOperation.body.operation.workItemId, created.body.id);
+    assert.equal(auditByOperation.body.operation.taskId, created.body.id);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
   }
 });
 
-test("explicit user confirmation completes an in-progress WorkItem after automated acceptance fails", async () => {
+test("explicit user confirmation completes an in-progress Task after automated acceptance fails", async () => {
   const services = await createServices();
   try {
     const objective = await callApi({
@@ -1423,7 +1489,7 @@ test("explicit user confirmation completes an in-progress WorkItem after automat
     });
     const created = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: {
         objectiveId: objective.body.id,
         title: "未通过后人工确认任务",
@@ -1441,14 +1507,14 @@ test("explicit user confirmation completes an in-progress WorkItem after automat
     services.objectiveService.bindSession("failed-acceptance-session", created.body.id);
     await callApi({
       method: "PATCH",
-      pathname: `/work-items/${created.body.id}`,
-      body: { status: "in_progress" },
+      pathname: `/tasks/${created.body.id}`,
+      body: { lifecycleState: "in_progress" },
       ...services
     });
 
     const assessed = await callApi({
       method: "PUT",
-      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      pathname: `/tasks/${created.body.id}/acceptance-assessment`,
       body: {
         sourceSessionId: "failed-acceptance-session",
         results: [{
@@ -1464,11 +1530,11 @@ test("explicit user confirmation completes an in-progress WorkItem after automat
     assert.equal(assessed.body.completionSuggestion, null);
 
     const completed = await completeThroughMacOSIntent(
-      services, services.objectiveService.getWorkItem(created.body.id), "failed-assessment"
+      services, services.objectiveService.getTask(created.body.id), "failed-assessment"
     );
     assert.equal(completed.statusCode, 200);
-    assert.equal(completed.body.workItem.status, "done");
-    assert.equal(completed.body.workItem.acceptanceAssessment.status, "not_proven");
+    assert.equal(completed.body.task.lifecycleState, "done");
+    assert.equal(completed.body.task.acceptanceAssessment.status, "not_proven");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -1483,7 +1549,7 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
     });
     const created = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: {
         objectiveId: objective.body.id,
         title: "联合验收任务",
@@ -1504,13 +1570,13 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
     }
 
     const beforeAssessment = await callApi({
-      method: "GET", pathname: `/work-items/${created.body.id}`, ...services
+      method: "GET", pathname: `/tasks/${created.body.id}`, ...services
     });
     assert.equal(beforeAssessment.body.completionSuggestion, null);
 
     const failed = await callApi({
       method: "PUT",
-      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      pathname: `/tasks/${created.body.id}/acceptance-assessment`,
       body: {
         sourceSessionId: "verification-session",
         results: [
@@ -1530,7 +1596,7 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
 
     const passed = await callApi({
       method: "PUT",
-      pathname: `/work-items/${created.body.id}/acceptance-assessment`,
+      pathname: `/tasks/${created.body.id}/acceptance-assessment`,
       body: {
         sourceSessionId: "verification-session",
         results: [
@@ -1549,7 +1615,7 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
       ...services
     });
     assert.equal(passed.statusCode, 200);
-    assert.equal(passed.body.status, "todo");
+    assert.equal(passed.body.lifecycleState, "todo");
     assert.equal(passed.body.completionSuggestion.recommended, true);
     assert.deepEqual(
       passed.body.completionSuggestion.results.map((result) => result.evidence[0].reference),
@@ -1647,10 +1713,10 @@ test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () 
   const services = await createServices();
   try {
     services.store.createObjective({ id: "o1", name: "Objective" });
-    services.store.createWorkItem({ id: "wi1", objectiveId: "o1", title: "WorkItem" });
+    services.store.createTask({ id: "wi1", objectiveId: "o1", title: "Task" });
     services.store.createSession({
       id: "s1", title: "t", provider: "codex-app-server", status: "complete",
-      objectiveId: "o1", workItemId: "wi1", agentId: "a1"
+      objectiveId: "o1", taskId: "wi1", agentId: "a1"
     });
     services.store.appendSessionEvent({ eventId: "e1", sessionId: "s1", type: "tool_call", payload: { text: "git commit 流程" } });
     services.store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "summary", payload: { summary: "完成实体层" } });
@@ -1658,7 +1724,7 @@ test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () 
     const extract = await callApi({
       method: "POST",
       pathname: "/memories/extract",
-      body: { sessionId: "s1", objectiveId: "o1", workItemId: "wi1", agentId: "a1" },
+      body: { sessionId: "s1", objectiveId: "o1", taskId: "wi1", agentId: "a1" },
       ...services
     });
     assert.equal(extract.statusCode, 201);
@@ -1676,12 +1742,12 @@ test("POST /memories/extract 从 Session 提炼记忆（主路径）", async () 
   }
 });
 
-test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fields, and isolation", async () => {
+test("Task memory HTTP lifecycle validates start, source binding, unknown fields, and isolation", async () => {
   const services = await createServices();
   try {
     services.store.createObjective({ id: "objective:memory-http", name: "Memory HTTP" });
-    for (const id of ["work_item:http-one", "work_item:http-two"]) {
-      services.store.createWorkItem({ id, objectiveId: "objective:memory-http", title: id });
+    for (const id of ["task:http-one", "task:http-two"]) {
+      services.store.createTask({ id, objectiveId: "objective:memory-http", title: id });
     }
 
     const unscoped = await callApi({ method: "GET", pathname: "/memories", ...services });
@@ -1690,7 +1756,7 @@ test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fi
     const beforeStart = await callApi({
       method: "GET",
       pathname: "/memories",
-      search: "?ownerType=work_item&ownerId=work_item%3Ahttp-one",
+      search: "?ownerType=task&ownerId=task%3Ahttp-one",
       ...services
     });
     assert.equal(beforeStart.statusCode, 200);
@@ -1698,19 +1764,19 @@ test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fi
 
     services.store.createSession({
       id: "session:http-one", title: "one", provider: "codex-app-server", status: "running",
-      objectiveId: "objective:memory-http", workItemId: "work_item:http-one", agentId: "agent:http"
+      objectiveId: "objective:memory-http", taskId: "task:http-one", agentId: "agent:http"
     });
     services.store.createSession({
       id: "session:http-two", title: "two", provider: "codex-app-server", status: "running",
-      objectiveId: "objective:memory-http", workItemId: "work_item:http-two", agentId: "agent:http"
+      objectiveId: "objective:memory-http", taskId: "task:http-two", agentId: "agent:http"
     });
 
     const created = await callApi({
       method: "POST",
       pathname: "/memories",
       body: {
-        ownerType: "work_item",
-        ownerId: "work_item:http-one",
+        ownerType: "task",
+        ownerId: "task:http-one",
         kind: "fact",
         content: "Actual progress context",
         sourceSessionId: "session:http-one"
@@ -1718,14 +1784,14 @@ test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fi
       ...services
     });
     assert.equal(created.statusCode, 201);
-    assert.equal(created.body.work_item_id, "work_item:http-one");
+    assert.equal(created.body.task_id, "task:http-one");
 
     const crossBound = await callApi({
       method: "POST",
       pathname: "/memories",
       body: {
-        ownerType: "work_item",
-        ownerId: "work_item:http-two",
+        ownerType: "task",
+        ownerId: "task:http-two",
         kind: "fact",
         content: "must fail",
         sourceSessionId: "session:http-one"
@@ -1739,8 +1805,8 @@ test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fi
       method: "POST",
       pathname: "/memories",
       body: {
-        ownerType: "work_item",
-        ownerId: "work_item:http-one",
+        ownerType: "task",
+        ownerId: "task:http-one",
         kind: "fact",
         content: "must fail",
         sourceSessionId: "session:http-one",
@@ -1753,11 +1819,11 @@ test("WorkItem memory HTTP lifecycle validates start, source binding, unknown fi
 
     const one = await callApi({
       method: "GET", pathname: "/memories",
-      search: "?ownerType=work_item&ownerId=work_item%3Ahttp-one", ...services
+      search: "?ownerType=task&ownerId=task%3Ahttp-one", ...services
     });
     const two = await callApi({
       method: "GET", pathname: "/memories",
-      search: "?ownerType=work_item&ownerId=work_item%3Ahttp-two", ...services
+      search: "?ownerType=task&ownerId=task%3Ahttp-two", ...services
     });
     assert.equal(one.body.memories.length, 1);
     assert.deepEqual(two.body.memories, []);
@@ -2130,9 +2196,9 @@ test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async 
     const objective = await callApi({
       method: "POST", pathname: "/objectives", body: { name: "目标" }, ...services
     });
-    const workItem = await callApi({
+    const task = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: { objectiveId: objective.body.id, title: "任务" },
       ...services
     });
@@ -2140,7 +2206,7 @@ test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async 
       ...services,
       method: "POST",
       pathname: "/sessions",
-      body: { workItemId: workItem.body.id, agentId: "assistant" },
+      body: { taskId: task.body.id, agentId: "assistant" },
       launchSession: async () => { throw new Error("must not launch"); }
     });
     assert.equal(assistantAsWorker.statusCode, 400);
@@ -2164,7 +2230,7 @@ test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async 
   }
 });
 
-test("WorkItem creation persists the selected Agent and only the explicit run action launches it", async () => {
+test("Task creation persists the selected Agent and only the explicit run action launches it", async () => {
   const services = await createServices();
   try {
     const performance = [];
@@ -2178,71 +2244,71 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
       contributorAgentIds: [agent.agentId]
     });
     let launchCount = 0;
-    const launchSession = async ({ agent: launchedAgent, workItem, observePerformance }) => {
+    const launchSession = async ({ agent: launchedAgent, task, observePerformance }) => {
       launchCount += 1;
       assert.equal(launchedAgent.agentId, agent.agentId);
-      assert.equal(workItem.main_agent_id, agent.agentId);
+      assert.equal(task.main_agent_id, agent.agentId);
       observePerformance("workspacePrepareMs", 12.34);
       observePerformance("providerSessionCreateMs", 56.78);
       services.store.upsertSession({
         id: `session:explicit:${launchCount}`,
-        title: workItem.title,
+        title: task.title,
         agent: launchedAgent.name,
         agentId: launchedAgent.agentId,
         provider: "test-provider",
         status: "running",
         sessionKind: "worker",
-        objectiveId: workItem.objective_id,
-        workItemId: workItem.id
+        objectiveId: task.objective_id,
+        taskId: task.id
       });
       return services.store.getSession(`session:explicit:${launchCount}`);
     };
 
     const created = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: {
         objectiveId: objective.id,
         title: "Create once",
         mainAgentId: agent.agentId
       },
       launchSession,
-      observeWorkItemPerformance: (measurement) => performance.push(measurement),
+      observeTaskPerformance: (measurement) => performance.push(measurement),
       ...services
     });
 
     assert.equal(created.statusCode, 201);
-    assert.equal(created.body.main_agent_id, agent.agentId);
-    assert.equal(created.body.execution_status, "idle");
-    assert.equal(created.body.current_session_id, null);
+    assert.equal(created.body.mainAgentId, agent.agentId);
+    assert.equal(created.body.executionStatus, "idle");
+    assert.equal(created.body.currentSessionId, null);
     assert.equal(launchCount, 0, "create-only must not launch a Session");
 
     const started = await callApi({
       method: "POST",
       pathname: "/sessions",
       body: {
-        workItemId: created.body.id,
+        taskId: created.body.id,
         agentId: agent.agentId,
         providerId: "test-provider"
       },
       launchSession,
-      observeWorkItemPerformance: (measurement) => performance.push(measurement),
+      observeTaskPerformance: (measurement) => performance.push(measurement),
       ...services
     });
 
     assert.equal(started.statusCode, 201);
     assert.equal(launchCount, 1);
-    const running = services.store.getWorkItem(created.body.id);
+    const running = services.store.getTask(created.body.id);
     assert.equal(running.main_agent_id, agent.agentId);
     assert.equal(running.execution_status, "running");
     assert.equal(running.current_session_id, started.body.session.id);
-    assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
+    assert.equal(services.store.listTasksByObjective(objective.id).length, 1);
     assert.deepEqual(performance.map((measurement) => measurement.operation), [
-      "work-item.create",
-      "work-item.execute"
+      "task.create",
+      "task.execute"
     ]);
     assert.equal(performance[0].outcome, "succeeded");
-    assert.equal(performance[0].workItemId, created.body.id);
+    assert.equal(performance[0].taskId, created.body.id);
     assert.equal(performance[1].phases.orchestrationMs >= 0, true);
     assert.equal(performance[1].totalMs >= 0, true);
   } finally {
@@ -2251,7 +2317,7 @@ test("WorkItem creation persists the selected Agent and only the explicit run ac
   }
 });
 
-test("execution failure is explicit and retrying the existing WorkItem does not create another item", async () => {
+test("execution failure is explicit and retrying the existing Task does not create another item", async () => {
   const services = await createServices();
   try {
     const performance = [];
@@ -2262,7 +2328,7 @@ test("execution failure is explicit and retrying the existing WorkItem does not 
     });
     const created = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: { objectiveId: objective.id, title: "Stable identity", mainAgentId: agent.agentId },
       ...services
     });
@@ -2270,43 +2336,43 @@ test("execution failure is explicit and retrying the existing WorkItem does not 
     const failed = await callApi({
       method: "POST",
       pathname: "/sessions",
-      body: { workItemId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
+      body: { taskId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
       launchSession: async () => {
         const error = new Error("Provider launch failed clearly");
         error.code = "PROVIDER_LAUNCH_FAILED";
         error.statusCode = 502;
         throw error;
       },
-      observeWorkItemPerformance: (measurement) => performance.push(measurement),
+      observeTaskPerformance: (measurement) => performance.push(measurement),
       ...services
     });
 
     assert.equal(failed.statusCode, 502);
     assert.equal(failed.body.code, "PROVIDER_LAUNCH_FAILED");
     assert.match(failed.body.error, /Provider launch failed clearly/);
-    assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
-    assert.equal(services.store.getWorkItem(created.body.id).execution_status, "idle");
+    assert.equal(services.store.listTasksByObjective(objective.id).length, 1);
+    assert.equal(services.store.getTask(created.body.id).execution_status, "idle");
     assert.equal(performance.length, 1);
-    assert.equal(performance[0].operation, "work-item.execute");
+    assert.equal(performance[0].operation, "task.execute");
     assert.equal(performance[0].outcome, "failed");
     assert.equal(performance[0].errorCode, "PROVIDER_LAUNCH_FAILED");
-    assert.equal(performance[0].workItemId, created.body.id);
+    assert.equal(performance[0].taskId, created.body.id);
 
     const retried = await callApi({
       method: "POST",
       pathname: "/sessions",
-      body: { workItemId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
-      launchSession: async ({ workItem }) => {
+      body: { taskId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
+      launchSession: async ({ task }) => {
         services.store.upsertSession({
           id: "session:retry",
-          title: workItem.title,
+          title: task.title,
           agent: agent.name,
           agentId: agent.agentId,
           provider: "test-provider",
           status: "running",
           sessionKind: "worker",
-          objectiveId: workItem.objective_id,
-          workItemId: workItem.id
+          objectiveId: task.objective_id,
+          taskId: task.id
         });
         return services.store.getSession("session:retry");
       },
@@ -2314,8 +2380,8 @@ test("execution failure is explicit and retrying the existing WorkItem does not 
     });
 
     assert.equal(retried.statusCode, 201);
-    assert.equal(services.store.listWorkItemsByObjective(objective.id).length, 1);
-    assert.equal(services.store.getWorkItem(created.body.id).current_session_id, "session:retry");
+    assert.equal(services.store.listTasksByObjective(objective.id).length, 1);
+    assert.equal(services.store.getTask(created.body.id).current_session_id, "session:retry");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -2333,9 +2399,9 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
       body: { name: "目标", contributorAgentIds: [contributor.body.agent.agentId] },
       ...services
     });
-    const workItem = await callApi({
+    const task = await callApi({
       method: "POST",
-      pathname: "/work-items",
+      pathname: "/tasks",
       body: { objectiveId: objective.body.id, title: "任务" },
       ...services
     });
@@ -2344,12 +2410,12 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
       method: "POST",
       pathname: "/sessions",
       body: {
-        workItemId: workItem.body.id,
+        taskId: task.body.id,
         agentId: contributor.body.agent.agentId,
         providerId: "codex-app-server",
         title: "自定义 Worker"
       },
-      launchSession: async ({ agent, workItem: launchedWorkItem, title }) => {
+      launchSession: async ({ agent, task: launchedTask, title }) => {
         assert.equal(title, "自定义 Worker");
         services.store.upsertSession({
           id: "worker-session",
@@ -2359,15 +2425,15 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
           provider: "codex-app-server",
           status: "running",
           sessionKind: "worker",
-          objectiveId: launchedWorkItem.objective_id,
-          workItemId: launchedWorkItem.id
+          objectiveId: launchedTask.objective_id,
+          taskId: launchedTask.id
         });
         return services.store.getSession("worker-session");
       }
     });
     assert.equal(worker.statusCode, 201);
     assert.equal(worker.body.session.sessionKind, "worker");
-    assert.equal(worker.body.session.workItemId, workItem.body.id);
+    assert.equal(worker.body.session.taskId, task.body.id);
     assert.equal(worker.body.session.agentId, contributor.body.agent.agentId);
     assert.equal(worker.body.session.title, "自定义 Worker");
     assert.equal(Object.hasOwn(worker.body.session, "avatarPath"), false);
@@ -2394,7 +2460,7 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
     });
     assert.equal(assistant.statusCode, 201);
     assert.equal(assistant.body.session.sessionKind, "assistantChat");
-    assert.equal(assistant.body.session.workItemId, null);
+    assert.equal(assistant.body.session.taskId, null);
     assert.equal(assistant.body.session.agentId, "assistant");
     assert.equal(assistant.body.session.title, "自定义 Chat");
     assert.equal(Object.hasOwn(assistant.body.session, "avatarPath"), false);
@@ -2404,7 +2470,7 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
       method: "POST",
       pathname: "/sessions",
       body: {
-        workItemId: workItem.body.id,
+        taskId: task.body.id,
         agentId: contributor.body.agent.agentId,
         avatarPath: "/tmp/worker-avatar.png"
       },

@@ -68,8 +68,8 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
       name: "Objective",
       contributorAgentIds: [agent.agentId]
     });
-    const workItem = store.createWorkItem({
-      id: "work-item:one",
+    const task = store.createTask({
+      id: "task:one",
       objectiveId: objective.id,
       title: "Work Item",
       mainAgentId: agent.agentId
@@ -84,14 +84,14 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
       agentId: agent.agentId,
       sessionKind: "worker",
       objectiveId: objective.id,
-      workItemId: workItem.id
+      taskId: task.id
     });
 
     const stored = store.getSession("codex:created");
     assert.equal(stored.agentId, agent.agentId);
     assert.equal(stored.sessionKind, "worker");
     assert.equal(stored.objectiveId, objective.id);
-    assert.equal(stored.workItemId, workItem.id);
+    assert.equal(stored.taskId, task.id);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

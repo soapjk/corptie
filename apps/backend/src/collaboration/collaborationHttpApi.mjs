@@ -19,7 +19,7 @@ export function handleCollaborationHttpRequest({
   onSearchMemory,
   onSearchSkills,
   onLoadSkill,
-  onReportWorkItemAcceptance
+  onReportTaskAcceptance
 }) {
   const isInternal = url.pathname.startsWith("/internal/collaboration/");
   const isProductApi = url.pathname === "/collaboration/overview"
@@ -51,7 +51,7 @@ export function handleCollaborationHttpRequest({
         return sendJson(response, 200, { sessions: sessionCollaborationService.discoverSessions(sessionMetadata, actorAgentId, {
           agentId: url.searchParams.get("agentId") || undefined,
           objectiveId: url.searchParams.get("objectiveId") || undefined,
-          workItemId: url.searchParams.get("workItemId") || undefined,
+          taskId: url.searchParams.get("taskId") || undefined,
           sessionKind: url.searchParams.get("sessionKind") || undefined
         }) });
       }
@@ -64,46 +64,46 @@ export function handleCollaborationHttpRequest({
         ) });
       }
 
-      if (request.method === "GET" && url.pathname === "/internal/collaboration/work-items") {
-        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
-        return sendJson(response, 200, { workItems: sessionCollaborationService.listWorkItems(sessionMetadata, actorAgentId) });
+      if (request.method === "GET" && url.pathname === "/internal/collaboration/tasks") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
+        return sendJson(response, 200, { tasks: sessionCollaborationService.listTasks(sessionMetadata, actorAgentId) });
       }
 
-      const scopedWorkItemMatch = url.pathname.match(/^\/internal\/collaboration\/work-items\/([^/]+)$/);
-      if (request.method === "GET" && scopedWorkItemMatch) {
-        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
-        return sendJson(response, 200, { workItem: sessionCollaborationService.getWorkItem(
-          sessionMetadata, actorAgentId, decodeURIComponent(scopedWorkItemMatch[1])
+      const scopedTaskMatch = url.pathname.match(/^\/internal\/collaboration\/tasks\/([^/]+)$/);
+      if (request.method === "GET" && scopedTaskMatch) {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
+        return sendJson(response, 200, { task: sessionCollaborationService.getTask(
+          sessionMetadata, actorAgentId, decodeURIComponent(scopedTaskMatch[1])
         ) });
       }
 
-      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-items") {
-        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
-        return sendJson(response, 201, sessionCollaborationService.createWorkItem(
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
+        return sendJson(response, 201, sessionCollaborationService.createTask(
           sessionMetadata, actorAgentId, await readJson(request)
         ));
       }
 
-      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-item-relations") {
-        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
-        return sendJson(response, 201, { relationship: sessionCollaborationService.relateWorkItems(
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/task-relations") {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
+        return sendJson(response, 201, { relationship: sessionCollaborationService.relateTasks(
           sessionMetadata, actorAgentId, await readJson(request)
         ) });
       }
 
-      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-item-artifact-references") {
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/task-artifact-references") {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Artifact sharing is unavailable.", 503);
         return sendJson(response, 201, sessionCollaborationService.shareArtifact(
           sessionMetadata, actorAgentId, await readJson(request)
         ));
       }
 
-      const scopedWorkItemAction = url.pathname.match(/^\/internal\/collaboration\/work-items\/([^/]+)\/start$/);
-      if (request.method === "POST" && scopedWorkItemAction) {
-        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped WorkItem tools are unavailable.", 503);
+      const scopedTaskAction = url.pathname.match(/^\/internal\/collaboration\/tasks\/([^/]+)\/start$/);
+      if (request.method === "POST" && scopedTaskAction) {
+        if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
         const input = await readJson(request);
-        input.workItemId = decodeURIComponent(scopedWorkItemAction[1]);
-        const result = await sessionCollaborationService.startWorkItem(sessionMetadata, actorAgentId, input);
+        input.taskId = decodeURIComponent(scopedTaskAction[1]);
+        const result = await sessionCollaborationService.startTask(sessionMetadata, actorAgentId, input);
         return sendJson(response, 200, result);
       }
 
@@ -122,14 +122,14 @@ export function handleCollaborationHttpRequest({
         return sendJson(response, 202, await onSwitchWorkspace(actorAgentId, await readJson(request), sessionMetadata));
       }
 
-      if (request.method === "POST" && url.pathname === "/internal/collaboration/work-items/acceptance") {
-        if (!onReportWorkItemAcceptance) {
-          throw apiError("WORK_ITEM_ACCEPTANCE_UNAVAILABLE", "WorkItem acceptance reporting is unavailable.", 503);
+      if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks/acceptance") {
+        if (!onReportTaskAcceptance) {
+          throw apiError("TASK_ACCEPTANCE_UNAVAILABLE", "Task acceptance reporting is unavailable.", 503);
         }
         return sendJson(
           response,
           200,
-          await onReportWorkItemAcceptance(actorAgentId, await readJson(request), sessionMetadata)
+          await onReportTaskAcceptance(actorAgentId, await readJson(request), sessionMetadata)
         );
       }
 
@@ -309,7 +309,7 @@ export function handleCollaborationHttpRequest({
         } else if (!input.targetObjectiveId || !input.sessionAgentId) {
           throw apiError(
             "SESSION_CREATION_RESOURCES_REQUIRED",
-            "Supply an exact recipient Session, or targetObjectiveId plus sessionAgentId so Corptie can create the target WorkItem and Session.",
+            "Supply an exact recipient Session, or targetObjectiveId plus sessionAgentId so Corptie can create the target Task and Session.",
             400
           );
         }
@@ -375,22 +375,22 @@ export function handleCollaborationHttpRequest({
             recipientSession ? "SESSION_RESOURCE_OWNER_NOT_FOUND" : "SESSION_CREATION_RESOURCES_REQUIRED",
             input.recipientSessionName
               ? `No active Session is named ${input.recipientSessionName}.`
-              : "Supply an exact recipientSessionId, or targetObjectiveId plus sessionAgentId so Corptie can create the target WorkItem and Session before creating the task.",
+              : "Supply an exact recipientSessionId, or targetObjectiveId plus sessionAgentId so Corptie can create the target Task and Session before creating the task.",
             404
           );
         }
         if (!recipientSession && !String(input.targetObjectiveId ?? "").trim()) {
-          throw apiError("TARGET_OBJECTIVE_REQUIRED", "targetObjectiveId is required when Corptie must create a target WorkItem and Session.", 400);
+          throw apiError("TARGET_OBJECTIVE_REQUIRED", "targetObjectiveId is required when Corptie must create a target Task and Session.", 400);
         }
         const actor = core.getAgent(actorAgentId);
         const sourceLogical = core.store.getLogicalSession(sessionMetadata.sessionId);
         const sourceProviderSessionId = sourceLogical?.legacySessionId ?? sessionMetadata.sessionId;
         const runningWork = sourceProviderSessionId
-          ? core.store.getRunningAgentWorkItemForSession(sourceProviderSessionId)
+          ? core.store.getRunningAgentTaskForSession(sourceProviderSessionId)
           : null;
         const parentTask = (runningWork?.source?.taskId
           ? core.getTask(runningWork.source.taskId)
-          : null) ?? core.getTaskForWorkItem(sourceCapabilities.workItemId);
+          : null) ?? core.getTaskForTask(sourceCapabilities.taskId);
         const trustedSessionRoute = Boolean(recipientSession && onConfirmationResolved)
           && core.hasConfirmedSessionRoute(sourceCapabilities.sourceSessionId, recipientSession);
         const confirmation = core.proposeTask({
@@ -398,8 +398,8 @@ export function handleCollaborationHttpRequest({
           parentTaskId: parentTask?.taskId ?? undefined,
           contextId: parentTask?.contextId ?? undefined,
           sourceObjectiveId: sourceCapabilities.objectiveId ?? undefined,
-          sourceWorkItemId: sourceCapabilities.workItemId ?? undefined,
-          workItemId: input.workItemId ?? recipientSessionDescriptor?.workItemId ?? undefined,
+          sourceTaskId: sourceCapabilities.taskId ?? undefined,
+          targetTaskId: input.targetTaskId ?? recipientSessionDescriptor?.taskId ?? undefined,
           sessionAgentId: input.sessionAgentId ?? undefined,
           recipientAgentId: recipient.agentId,
           recipientSessionId: recipientSession,
@@ -484,7 +484,7 @@ function memoryMetadata(request) {
   return {
     sessionId: headerText(request, "x-corptie-session-id"),
     objectiveId: headerText(request, "x-corptie-objective-id"),
-    workItemId: headerText(request, "x-corptie-work-item-id")
+    taskId: headerText(request, "x-corptie-task-id")
   };
 }
 
@@ -495,14 +495,14 @@ function withAuthoritativeBinding(agent, capabilities) {
     providerSessionId: capabilities.providerSessionId,
     currentSessionId: capabilities.sourceSessionId,
     currentObjectiveId: capabilities.objectiveId,
-    currentWorkItemId: capabilities.workItemId,
+    currentTaskId: capabilities.taskId,
     runtimeBinding: {
       authoritative: true,
       sessionId: capabilities.sourceSessionId,
       providerSessionId: capabilities.providerSessionId,
       sessionKind: capabilities.sessionKind,
       objectiveId: capabilities.objectiveId,
-      workItemId: capabilities.workItemId
+      taskId: capabilities.taskId
     }
   };
 }
@@ -715,8 +715,8 @@ function compactTaskForActor(task, actorAgentId, actorSessionId = null, core = n
     protocolVersion: task.protocolVersion,
     sourceObjectiveId: task.sourceObjectiveId,
     targetObjectiveId: task.targetObjectiveId,
-    sourceWorkItemId: task.sourceWorkItemId,
-    workItemId: task.workItemId,
+    sourceTaskId: task.sourceTaskId,
+    taskId: task.taskId,
     initiatorSessionId: task.initiatorSessionId,
     recipientSessionId: task.recipientSessionId,
     routingVersion: task.routingVersion,
@@ -788,9 +788,9 @@ function availableActions(task, role) {
 }
 
 function statusForCode(code) {
-  if (["AGENT_NOT_FOUND", "SERVICE_NOT_FOUND", "TASK_NOT_FOUND", "DELIVERY_NOT_FOUND", "OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND"].includes(code)) return 404;
+  if (["AGENT_NOT_FOUND", "SERVICE_NOT_FOUND", "TASK_NOT_FOUND", "DELIVERY_NOT_FOUND", "OBJECTIVE_NOT_FOUND", "TASK_NOT_FOUND"].includes(code)) return 404;
   if (["ACTOR_NOT_AUTHORIZED", "SERVICE_OWNER_REQUIRED", "RECIPIENT_NOT_SERVICE_OWNER", "OBJECTIVE_AGENT_NOT_AUTHORIZED", "MEMORY_SESSION_SCOPE_REQUIRED", "MEMORY_SCOPE_FORBIDDEN"].includes(code)) return 403;
-  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "MEMORY_IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK", "OBJECTIVE_BOUNDARY_REQUIRED", "WORK_ITEM_OBJECTIVE_MISMATCH", "WORK_ITEM_AGENT_MISMATCH", "WORK_ITEM_TERMINAL", "RESOURCE_VERSION_CONFLICT"].includes(code)) return 409;
+  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "MEMORY_IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK", "OBJECTIVE_BOUNDARY_REQUIRED", "TASK_OBJECTIVE_MISMATCH", "TASK_AGENT_MISMATCH", "TASK_TERMINAL", "RESOURCE_VERSION_CONFLICT"].includes(code)) return 409;
   if (["MEMORY_PERSISTENCE_FAILED", "MEMORY_IDEMPOTENCY_RECORD_INVALID"].includes(code)) return 500;
   return 400;
 }

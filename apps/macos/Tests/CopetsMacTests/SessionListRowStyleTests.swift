@@ -30,9 +30,9 @@ final class SessionListRowStyleTests: XCTestCase {
         )
     }
 
-    func testLongWorkItemSessionTitleUsesCompactListProjection() {
+    func testLongCorptieTaskSessionTitleUsesCompactListProjection() {
         let title = "完善 Session 规划列表折叠、Tab 分组和多轮样式微调"
-        let displayTitle = SessionListTitlePolicy.displayTitle(title, isWorkItemSession: true)
+        let displayTitle = SessionListTitlePolicy.displayTitle(title, isCorptieTaskSession: true)
 
         XCTAssertTrue(displayTitle.hasSuffix("…"))
         XCTAssertLessThan(displayTitle.count, title.count)
@@ -42,20 +42,20 @@ final class SessionListRowStyleTests: XCTestCase {
         )
     }
 
-    func testShortWorkItemSessionTitleRemainsUnchanged() {
+    func testShortCorptieTaskSessionTitleRemainsUnchanged() {
         XCTAssertEqual(
             SessionListTitlePolicy.displayTitle(
                 "优化 Session 列表行样式",
-                isWorkItemSession: true
+                isCorptieTaskSession: true
             ),
             "优化 Session 列表行样式"
         )
     }
 
-    func testNonWorkItemSessionTitleIsNeverContentCompacted() {
+    func testNonCorptieTaskSessionTitleIsNeverContentCompacted() {
         let title = "A deliberately long Assistant Session title that must remain intact"
         XCTAssertEqual(
-            SessionListTitlePolicy.displayTitle(title, isWorkItemSession: false),
+            SessionListTitlePolicy.displayTitle(title, isCorptieTaskSession: false),
             title
         )
     }

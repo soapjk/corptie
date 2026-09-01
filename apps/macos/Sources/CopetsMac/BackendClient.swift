@@ -5,7 +5,7 @@ import UserNotifications
 
 extension Notification.Name {
     /// 请求在主悬浮窗（液态玻璃）打开某个 session 的对话，userInfo["sessionId"] 传 session id。
-    /// 控制台 WorkItem 详情「打开对话」用，桥接新版控制台与旧版 session 对话视图。
+    /// 控制台 CorptieTask 详情「打开对话」用，桥接新版控制台与旧版 session 对话视图。
     static let openSessionConversation = Notification.Name("openSessionConversation")
     static let openSessionOverview = Notification.Name("openSessionOverview")
     static let showAgentOrb = Notification.Name("showAgentOrb")
@@ -267,7 +267,7 @@ final class BackendClient: ObservableObject {
     private(set) var projectWorktreeActionIds: Set<String> { get { sessionCommandController.projectWorktreeActionIds } set { sessionCommandController.projectWorktreeActionIds = newValue } }
     private(set) var isCleaningMergedProjectWorktrees: Bool { get { sessionCommandController.isCleaningMergedProjectWorktrees } set { sessionCommandController.isCleaningMergedProjectWorktrees = newValue } }
     private(set) var isIntegratingCompletedWorktrees: Bool { get { sessionCommandController.isIntegratingCompletedWorktrees } set { sessionCommandController.isIntegratingCompletedWorktrees = newValue } }
-    private(set) var isCreatingIntegrationConflictWorkItem: Bool { get { sessionCommandController.isCreatingIntegrationConflictWorkItem } set { sessionCommandController.isCreatingIntegrationConflictWorkItem = newValue } }
+    private(set) var isCreatingIntegrationConflictCorptieTask: Bool { get { sessionCommandController.isCreatingIntegrationConflictCorptieTask } set { sessionCommandController.isCreatingIntegrationConflictCorptieTask = newValue } }
     private(set) var gitHubPushPreparation: GitHubPushPreparation? { get { sessionCommandController.gitHubPushPreparation } set { sessionCommandController.gitHubPushPreparation = newValue } }
     private(set) var gitHubPushError: String? { get { sessionCommandController.gitHubPushError } set { sessionCommandController.gitHubPushError = newValue } }
     private(set) var isPreparingGitHubPush: Bool { get { sessionCommandController.isPreparingGitHubPush } set { sessionCommandController.isPreparingGitHubPush = newValue } }
@@ -1345,7 +1345,7 @@ final class BackendClient: ObservableObject {
 
     private func projectSessionsFromAppState() {
         let nextSessions = sessions
-        // `appState.$state` 对任何实体（workItems/objectives/agents…）变化都会发射，
+        // `appState.$state` 对任何实体（tasks/objectives/agents…）变化都会发射，
         // 但这里只关心活动会话集合是否真的变了。相等时短路，避免无关实体的
         // 高频更新反复触发 sessionsDidChange → 下游预加载/列表重算。
         guard nextSessions != lastProjectedSessions else { return }
@@ -2426,18 +2426,18 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func createIntegrationConflictWorkItem(runId: String, agentId: String, title: String? = nil) {
+    func createIntegrationConflictCorptieTask(runId: String, agentId: String, title: String? = nil) {
         guard let session = selectedSession,
               let projectId = projectId(for: session),
               let objectiveId = session.objectiveId,
-              !isCreatingIntegrationConflictWorkItem else { return }
+              !isCreatingIntegrationConflictCorptieTask else { return }
         Task {
             beginProjectWorktreeAction()
-            isCreatingIntegrationConflictWorkItem = true
-            defer { isCreatingIntegrationConflictWorkItem = false }
+            isCreatingIntegrationConflictCorptieTask = true
+            defer { isCreatingIntegrationConflictCorptieTask = false }
             do {
                 var request = URLRequest(url: baseURL.appending(
-                    path: "projects/\(projectId)/objectives/\(objectiveId)/integrations/\(runId)/conflict-work-item"
+                    path: "projects/\(projectId)/objectives/\(objectiveId)/integrations/\(runId)/conflict-task"
                 ))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -2450,11 +2450,11 @@ final class BackendClient: ObservableObject {
                 guard let httpResponse = response as? HTTPURLResponse,
                       (200..<300).contains(httpResponse.statusCode) else {
                     throw BackendError.message(
-                        Self.errorMessage(from: data) ?? L10n("Could not create the conflict-resolution WorkItem.")
+                        Self.errorMessage(from: data) ?? L10n("Could not create the conflict-resolution CorptieTask.")
                     )
                 }
                 let result = try JSONDecoder().decode(
-                    ProjectIntegrationConflictWorkItemResponse.self,
+                    ProjectIntegrationConflictCorptieTaskResponse.self,
                     from: data
                 )
                 if var current = selectedProjectIntegrationStatus {
@@ -2473,8 +2473,8 @@ final class BackendClient: ObservableObject {
                     acceptCreatedSession(createdSession, selectImmediately: true)
                 }
                 sendStatusMessage = result.reused
-                    ? L10n("Opened the existing conflict-resolution WorkItem")
-                    : L10n("Created and started the conflict-resolution WorkItem")
+                    ? L10n("Opened the existing conflict-resolution CorptieTask")
+                    : L10n("Created and started the conflict-resolution CorptieTask")
             } catch {
                 recordProjectWorktreeActionError(error.localizedDescription)
             }
@@ -2974,11 +2974,11 @@ final class BackendClient: ObservableObject {
             initiatorSessionId: item.collaborationInitiatorSessionId,
             initiatorSessionTitle: item.collaborationInitiatorSessionTitle,
             initiatorSessionKind: item.collaborationInitiatorSessionKind,
-            initiatorWorkItemId: item.collaborationSourceWorkItemId,
+            initiatorCorptieTaskId: item.collaborationSourceCorptieTaskId,
             recipientSessionId: item.collaborationRecipientSessionId,
             recipientSessionTitle: item.collaborationRecipientSessionTitle,
             recipientSessionKind: item.collaborationRecipientSessionKind,
-            recipientWorkItemId: item.collaborationTargetWorkItemId,
+            recipientCorptieTaskId: item.collaborationTargetCorptieTaskId,
             routeStatus: item.collaborationRouteStatus,
             routingVersion: item.collaborationRoutingVersion,
             taskTitle: item.collaborationTaskTitle ?? "Cross-session collaboration",

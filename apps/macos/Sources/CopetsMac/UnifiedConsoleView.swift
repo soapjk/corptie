@@ -2,7 +2,7 @@ import Combine
 import AppKit
 import SwiftUI
 
-// Sessions Tab：两栏布局（参考 Rudder 的三栏设计哲学，但对话页收敛为两栏）。
+// 统一控制台：Objective/Assistant 导航、Task 列、消息列和详情列。
 //   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，纸面卡片质感）
 //   中 content  — 对话（复用旧版 DetailView，吃满剩余宽度，纸面卡片质感）
 //   详情信息   — 右侧竖列常驻 side panel（固定宽度，无收起按钮，模仿 Rudder IssueDetail 的 rail）
@@ -12,7 +12,7 @@ import SwiftUI
 //     没有收起/折叠按钮——只有 <48rem 移动端才 display:none（靠顶部 SlidersHorizontal 打开 Sheet）。
 //   - 字段区标题用 11px uppercase + tracking 的小字「Properties」标签，下面竖向排列字段。
 //   - 窄列固定像素宽度，主工作区吃掉剩余空间。
-struct SessionsView: View {
+struct UnifiedConsoleView: View {
     private let backendClient = BackendClient.shared
     @ObservedObject private var sessionIndexStore = BackendClient.shared.sessionIndexStore
     /// Archived rows are loaded only after the archive surface is opened and
@@ -28,6 +28,9 @@ struct SessionsView: View {
     @State private var detailRenderTask: Task<Void, Never>?
     @State private var pendingSelectionTask: Task<Void, Never>?
     @State private var selectedCategory: SessionCategory = .worker
+    /// nil 表示 Assistant 空间；非 nil 表示对应 Objective 的 Task 空间。
+    @State private var selectedObjectiveId: String?
+    @State private var selectedTaskId: String?
     @State private var isShowingWorkerArchive = false
     @State private var submittedReadSequencesBySessionID: [String: Int] = [:]
     @AppStorage(
@@ -54,24 +57,23 @@ struct SessionsView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $sidebarState.visibility) {
-            sessionListSidebar
-                .toolbar(removing: .sidebarToggle)
-                .navigationSplitViewColumnWidth(
-                    min: TwoPaneLayoutMetrics.sidebarWidth,
-                    ideal: TwoPaneLayoutMetrics.sidebarWidth,
-                    max: TwoPaneLayoutMetrics.sidebarMaximumWidth
-                )
-        } detail: {
+        HStack(spacing: 0) {
+            objectiveRail
+                .frame(width: 64)
+            Divider()
+            unifiedTaskSidebar
+                .frame(width: TwoPaneLayoutMetrics.sidebarWidth)
+            Divider()
             sessionConversation
-                .padding(.horizontal, TwoPaneLayoutMetrics.contentPadding)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toolbar(removing: .sidebarToggle)
         .environmentObject(backendClient)
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
         .onAppear {
-            PerfStopwatch.event("SessionsView·onAppear", value: 1)
+            PerfStopwatch.event("UnifiedConsoleView·onAppear", value: 1)
+            restoreConsoleSpaceIfNeeded()
             activateSessions()
         }
         .onDisappear {
@@ -89,7 +91,7 @@ struct SessionsView: View {
         .onReceive(backendClient.sessionsDidChange) { sessions in
             attemptPendingSelection(sessions)
             if !recoverSelectionIfNeeded(from: sessions) {
-                restoreSelection(for: selectedCategory)
+                restoreConsoleContentIfNeeded()
             }
             if let selectedSessionID = backendClient.selectedSession?.id {
                 markOpenedSessionRead(sessions.first(where: { $0.id == selectedSessionID }))
@@ -124,20 +126,338 @@ struct SessionsView: View {
             if newValue != .worker {
                 isShowingWorkerArchive = false
             }
-            restoreSelection(for: newValue)
         }
         .onReceive(entityClient.sessionGroupingDidChange) { _ in
             entityGroupingRevision &+= 1
+            restoreConsoleSpaceIfNeeded()
             if !recoverSelectionIfNeeded(from: backendClient.sessions),
                selectedCategory == .worker {
-                restoreSelection(for: .worker)
+                restoreConsoleContentIfNeeded()
             }
         }
     }
 
+    private var objectiveRail: some View {
+        VStack(spacing: 8) {
+            Button {
+                selectAssistantSpace()
+            } label: {
+                consoleRailIcon(
+                    systemImage: "sparkles",
+                    label: L10n("Assistant"),
+                    isSelected: selectedObjectiveId == nil
+                )
+            }
+            .buttonStyle(.plain)
+
+            Divider()
+                .padding(.horizontal, 10)
+
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(entityClient.objectives) { objective in
+                        Button {
+                            selectObjectiveSpace(objective.id)
+                        } label: {
+                            consoleRailIcon(
+                                text: objectiveInitials(objective.name),
+                                label: objective.name,
+                                isSelected: selectedObjectiveId == objective.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+        .background(Color(nsColor: .underPageBackgroundColor).opacity(0.45))
+    }
+
+    @ViewBuilder
+    private func consoleRailIcon(
+        systemImage: String? = nil,
+        text: String? = nil,
+        label: String,
+        isSelected: Bool
+    ) -> some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: isSelected ? 13 : 20, style: .continuous)
+                .fill(isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+            } else {
+                Text(text ?? "?")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .lineLimit(1)
+            }
+        }
+        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .frame(width: 42, height: 42)
+        .contentShape(Rectangle())
+        .help(label)
+        .accessibilityLabel(label)
+        .animation(.easeInOut(duration: 0.12), value: isSelected)
+    }
+
+    private func objectiveInitials(_ name: String) -> String {
+        let compact = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return compact.isEmpty ? "?" : String(compact.prefix(2)).uppercased()
+    }
+
+    private var unifiedTaskSidebar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(selectedObjective?.name ?? L10n("Assistant Sessions"))
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                searchToggleButton
+                newChatToolbarButton
+            }
+            .padding(8)
+
+            if isSearching {
+                sessionSearchBar
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+            }
+
+            if let objective = selectedObjective {
+                objectiveTaskList(objective)
+            } else {
+                assistantSessionList
+            }
+        }
+        .sheet(isPresented: $showNewSessionCreation) {
+            NewSessionCreationSheet()
+        }
+    }
+
+    private var selectedObjective: Objective? {
+        guard let selectedObjectiveId else { return nil }
+        return entityClient.objectives.first { $0.id == selectedObjectiveId }
+    }
+
+    private var selectedTask: CorptieTask? {
+        guard let selectedTaskId else { return nil }
+        return entityClient.tasks.first { $0.id == selectedTaskId }
+    }
+
+    private var assistantSessionRows: [SessionRowModel] {
+        searchFilteredRows.filter { $0.session.resolvedSessionKind == .assistantChat }
+    }
+
+    private var objectiveChatRows: [SessionRowModel] {
+        guard let selectedObjectiveId else { return [] }
+        return searchFilteredRows.filter {
+            $0.session.resolvedSessionKind == .objectiveChat
+                && $0.session.objectiveId == selectedObjectiveId
+        }
+    }
+
+    private var visibleObjectiveTasks: [CorptieTask] {
+        guard let selectedObjectiveId else { return [] }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return entityClient.tasks
+            .filter { $0.objectiveId == selectedObjectiveId && $0.lifecycleState != "done" }
+            .filter { task in
+                query.isEmpty
+                    || task.title.localizedCaseInsensitiveContains(query)
+                    || task.description.localizedCaseInsensitiveContains(query)
+            }
+            .sorted { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                return lhs.id < rhs.id
+            }
+    }
+
+    private var assistantSessionList: some View {
+        List {
+            if assistantSessionRows.isEmpty {
+                Text(L10n("No Assistant Sessions"))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(assistantSessionRows) { row in
+                    sessionRow(row)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private func objectiveTaskList(_ objective: Objective) -> some View {
+        List {
+            Section {
+                if let row = objectiveChatRows.first {
+                    sessionRow(row, subtitle: L10n("Objective discussion"))
+                } else {
+                    Label(L10n("Start Objective Chat"), systemImage: "scope")
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text(L10n("Objective Chat"))
+            }
+
+            Section {
+                if visibleObjectiveTasks.isEmpty {
+                    Text(L10n("No Tasks"))
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(visibleObjectiveTasks) { task in
+                        taskRow(task)
+                    }
+                }
+            } header: {
+                Text(L10n("Tasks"))
+            }
+        }
+        .listStyle(.sidebar)
+        .overlay(alignment: .bottom) {
+            HStack {
+                Text(L10n("Completed Tasks remain available until archived."))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(10)
+            .background(.ultraThinMaterial)
+        }
+    }
+
+    private func taskRow(_ task: CorptieTask) -> some View {
+        let session = workerSession(for: task)
+        return Button {
+            selectedTaskId = task.id
+            if let session {
+                selectedCategory = .worker
+                selectSessionAfterHighlight(session)
+            } else {
+                backendClient.closeDetail()
+            }
+        } label: {
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(taskStatusColor(task.lifecycleState))
+                    .frame(width: 7, height: 7)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(task.title)
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(2)
+                    Text(session == nil ? L10n("Not started") : task.lifecycleState)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(selectedTaskId == task.id ? Color.accentColor.opacity(0.09) : Color.clear)
+        )
+    }
+
+    private func workerSession(for task: CorptieTask) -> TaskSession? {
+        if let currentSessionId = task.currentSessionId,
+           let current = backendClient.sessions.first(where: { $0.id == currentSessionId }) {
+            return current
+        }
+        return backendClient.sessions.first { $0.taskId == task.id && $0.archived != true }
+    }
+
+    private func taskStatusColor(_ status: String) -> Color {
+        switch status.lowercased() {
+        case "completed", "complete": return .green
+        case "blocked", "failed": return .red
+        case "running", "in_progress", "active": return .blue
+        default: return .secondary
+        }
+    }
+
+    private func restoreConsoleSpaceIfNeeded() {
+        if let selectedObjectiveId,
+           entityClient.objectives.contains(where: { $0.id == selectedObjectiveId }) {
+            return
+        }
+        if let session = backendClient.selectedSession,
+           session.resolvedSessionKind != .assistantChat,
+           let objectiveId = session.objectiveId,
+           entityClient.objectives.contains(where: { $0.id == objectiveId }) {
+            selectedObjectiveId = objectiveId
+            selectedCategory = SessionCategory(session: session)
+            selectedTaskId = session.taskId
+            return
+        }
+        selectedObjectiveId = entityClient.objectives.first?.id
+        selectedCategory = selectedObjectiveId == nil ? .assistant : .worker
+        selectDefaultContentForCurrentSpace()
+    }
+
+    private func selectAssistantSpace() {
+        selectedObjectiveId = nil
+        selectedTaskId = nil
+        selectedCategory = .assistant
+        selectDefaultContentForCurrentSpace()
+    }
+
+    private func selectObjectiveSpace(_ objectiveId: String) {
+        guard selectedObjectiveId != objectiveId else { return }
+        selectedObjectiveId = objectiveId
+        selectedTaskId = nil
+        selectedCategory = .worker
+        selectDefaultContentForCurrentSpace()
+    }
+
+    private func selectDefaultContentForCurrentSpace() {
+        if selectedObjectiveId == nil {
+            if let session = assistantSessionRows.first?.session {
+                selectSessionAfterHighlight(session)
+            } else {
+                backendClient.closeDetail()
+            }
+            return
+        }
+        if let task = visibleObjectiveTasks.first {
+            selectedTaskId = task.id
+            if let session = workerSession(for: task) {
+                selectSessionAfterHighlight(session)
+            } else {
+                backendClient.closeDetail()
+            }
+        } else if let session = objectiveChatRows.first?.session {
+            selectedCategory = .objective
+            selectSessionAfterHighlight(session)
+        } else {
+            backendClient.closeDetail()
+        }
+    }
+
+    private func restoreConsoleContentIfNeeded() {
+        if let session = backendClient.selectedSession,
+           sessionMatchesCurrentConsoleSpace(session) {
+            return
+        }
+        selectDefaultContentForCurrentSpace()
+    }
+
+    private func sessionMatchesCurrentConsoleSpace(_ session: TaskSession) -> Bool {
+        if let selectedObjectiveId {
+            return session.objectiveId == selectedObjectiveId
+                && (session.resolvedSessionKind == .worker
+                    || session.resolvedSessionKind == .objectiveChat)
+        }
+        return session.resolvedSessionKind == .assistantChat
+    }
+
     private func activateSessions() {
         // 常驻子树后 onAppear 会在启动时（selectedTab 仍为 console）就触发，
-        // 只有真正处于 Sessions Tab 时才执行激活逻辑。
+        // 只有真正处于 Console Tab 时才执行激活逻辑。
         guard sidebarState.isSelected else { return }
         if let selectedSession = backendClient.selectedSession {
             viewportController.hydrate(selectedSession.id)
@@ -146,7 +466,9 @@ struct SessionsView: View {
         scheduleDetailRendering()
         backendClient.suppressBackgroundPolling = true
         attemptPendingSelection(backendClient.sessions)
-        restoreLastSelectedSession(backendClient.sessions)
+        if router.pendingSessionId == nil {
+            restoreConsoleContentIfNeeded()
+        }
         Task { await entityClient.refreshAgents() }
     }
 
@@ -236,7 +558,7 @@ struct SessionsView: View {
         CorptieAppEnvironment.userDefaults.stringArray(forKey: recentSessionIdsKey) ?? []
     }
 
-    /// WorkItem 完成会让其 Worker Session 离开活动列表。此时不再按列表顺序随意挑选，
+    /// CorptieTask 完成会让其 Worker Session 离开活动列表。此时不再按列表顺序随意挑选，
     /// 而是跳到用户最近打开且仍可访问的 Session，并同步切换对应分类。
     @discardableResult
     private func recoverSelectionIfNeeded(from sessions: [TaskSession]) -> Bool {
@@ -297,95 +619,16 @@ struct SessionsView: View {
         // row highlight and a warm timeline host can therefore paint in the
         // same event turn; provider/network work starts only after the target
         // content identity is already correct.
+        selectedCategory = SessionCategory(session: session)
+        if session.resolvedSessionKind == .assistantChat {
+            selectedObjectiveId = nil
+            selectedTaskId = nil
+        } else {
+            selectedObjectiveId = session.objectiveId
+            selectedTaskId = session.taskId
+        }
         viewportController.hydrate(session.id)
         backendClient.select(session: session)
-    }
-
-    // MARK: - 左：会话列表（原生 sidebar）
-
-    private var sessionListSidebar: some View {
-        let groups = groupedSessions
-        return VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                if isShowingWorkerArchive {
-                    Button {
-                        setWorkerArchiveVisible(false)
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 12, weight: .semibold))
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    .help(L10n("Back to Active Work Sessions"))
-
-                    Text(L10n("Work Session Archive"))
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                } else {
-                    sessionCategoryPicker
-                        .frame(maxWidth: .infinity)
-                }
-                searchToggleButton
-                if !isShowingWorkerArchive {
-                    newChatToolbarButton
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.top, 8)
-
-            if isSearching {
-                sessionSearchBar
-                    .padding(.horizontal, 8)
-                    .padding(.top, 6)
-            }
-
-            List {
-                if isSearching && !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && groups.isEmpty {
-                    ContentUnavailableView.search(text: searchText)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                } else if groups.isEmpty {
-                    Text(isShowingWorkerArchive
-                        ? L10n("No Archived Work Sessions")
-                        : L10n("No Sessions in This Category"))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                } else {
-                    ForEach(groups) { group in
-                        if group.showsHeader {
-                            Section {
-                                if !collapsedGroupKeys.contains(group.key) {
-                                    ForEach(group.rows) { row in
-                                        sessionRow(row, subtitle: group.rowSubtitles[row.id])
-                                    }
-                                }
-                            } header: {
-                                sessionGroupHeader(group)
-                            }
-                        } else {
-                            ForEach(group.rows) { row in
-                                sessionRow(row, subtitle: group.rowSubtitles[row.id])
-                            }
-                        }
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .overlay(alignment: .bottom) {
-                if selectedCategory == .worker && !isShowingWorkerArchive {
-                    workerSessionFunctionBar
-                        .padding(10)
-                }
-            }
-        }
-        .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet()
-        }
     }
 
     private var searchToggleButton: some View {
@@ -657,7 +900,7 @@ struct SessionsView: View {
             makeSessionGroups(
                 rows: searchFilteredRows,
                 agents: entityClient.agents,
-                workItems: entityClient.workItems,
+                tasks: entityClient.tasks,
                 objectives: entityClient.objectives,
                 category: selectedCategory,
                 workerScope: workerSessionScope,
@@ -742,6 +985,28 @@ struct SessionsView: View {
                 SessionDetailPanel(session: session)
             }
             .padding(16)
+        } else if let task = selectedTask {
+            HStack(spacing: 8) {
+                VStack(spacing: 12) {
+                    Image(systemName: "bubble.left.and.exclamationmark.bubble.right")
+                        .font(.system(size: 32, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text(task.title)
+                        .font(.system(size: 18, weight: .semibold))
+                        .multilineTextAlignment(.center)
+                    Text(L10n("This Task has not started a conversation yet. Start it from Task Information."))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 360)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                SessionCorptieTaskDetailCard(taskId: task.id)
+                    .frame(width: 280)
+            }
+            .padding(16)
         } else {
             ContentUnavailableView(
                 L10n("Select a Session"),
@@ -801,7 +1066,7 @@ private struct SessionsSidebarRow: View {
 func sessionMatchingPendingSelection(_ pendingSessionId: String?, in sessions: [TaskSession]) -> TaskSession? {
     guard let pendingSessionId = normalizedSessionRouteIdentifier(pendingSessionId) else { return nil }
     // Preserve the canonical Session id as the highest-priority match. Logical
-    // and Provider ids are accepted only as route aliases so a WorkItem created
+    // and Provider ids are accepted only as route aliases so a CorptieTask created
     // before/after a workspace or Provider transition still opens the same
     // product Session instead of failing hydration or selecting another row.
     if let exact = sessions.first(where: { $0.id == pendingSessionId }) {
@@ -945,7 +1210,7 @@ enum SessionCategory: String, CaseIterable, Identifiable {
 /// The sidebar projection is expensive for large Session collections, but a
 /// selection change does not alter any of its inputs. Keep the immutable
 /// result behind an explicit revision key so SwiftUI may reevaluate
-/// `SessionsView.body` without repeating filtering, sorting, and grouping.
+/// `UnifiedConsoleView.body` without repeating filtering, sorting, and grouping.
 struct SessionGroupProjectionKey: Equatable {
     let groupingRevision: UInt64
     let filterRevision: UInt64
@@ -981,7 +1246,7 @@ final class SessionGroupProjectionStore: ObservableObject {
 func makeSessionGroups(
     rows: [SessionRowModel],
     agents: [Agent],
-    workItems: [WorkItem],
+    tasks: [CorptieTask],
     objectives: [Objective],
     category: SessionCategory,
     workerScope: WorkerSessionScope = .active,
@@ -1003,7 +1268,7 @@ func makeSessionGroups(
         return left.row.id < right.row.id
     }
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
-    let workItemsByID = Dictionary(uniqueKeysWithValues: workItems.map { ($0.id, $0) })
+    let tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
     let objectivesByID = Dictionary(uniqueKeysWithValues: objectives.map { ($0.id, $0) })
     var assistantOrder: [String] = []
     var assistantRows: [String: [SessionRowModel]] = [:]
@@ -1038,11 +1303,11 @@ func makeSessionGroups(
             let objectiveKey = registerObjective(session.objectiveId)
             objectiveRows[objectiveKey, default: []].append(row)
         case .worker:
-            let workItem = session.workItemId.flatMap { workItemsByID[$0] }
+            let task = session.taskId.flatMap { tasksByID[$0] }
             let isArchived = session.archived == true
             guard (workerScope == .archived) == isArchived else { continue }
             visibleWorkerRows.append(row)
-            let objectiveKey = registerObjective(workItem?.objectiveId ?? session.objectiveId)
+            let objectiveKey = registerObjective(task?.objectiveId ?? session.objectiveId)
             workerObjectiveKeysByRowID[row.id] = objectiveKey
             workerRows[objectiveKey, default: []].append(row)
         case .legacy:
@@ -1218,13 +1483,22 @@ struct SessionDetailPanel: View {
     }()
 
     var body: some View {
-        VStack(spacing: 12) {
-            if let workItemId = session.workItemId, !workItemId.isEmpty {
-                sessionCard
+        Group {
+            if let taskId = session.taskId, !taskId.isEmpty {
+                VStack(spacing: 0) {
+                    sessionCard(decoratesSurface: false)
                     .frame(height: 330)
-                SessionWorkItemDetailCard(workItemId: workItemId)
+                    Divider()
+                        .opacity(0.5)
+                    SessionCorptieTaskDetailCard(
+                        taskId: taskId,
+                        decoratesSurface: false,
+                        showsHeader: false
+                    )
+                }
+                .modifier(DetailRailSurfaceModifier(enabled: true))
             } else {
-                sessionCard
+                sessionCard(decoratesSurface: true)
             }
         }
         .frame(width: Self.railWidth)
@@ -1251,10 +1525,12 @@ struct SessionDetailPanel: View {
         }
     }
 
-    private var sessionCard: some View {
+    private func sessionCard(decoratesSurface: Bool) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(L10n("会话详情"))
+                Text(session.resolvedSessionKind == .worker
+                    ? L10n("Task Information")
+                    : L10n("Session Details"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -1310,12 +1586,7 @@ struct SessionDetailPanel: View {
             }
         }
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
+        .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
     }
 
     private var statusCard: some View {
@@ -1366,7 +1637,7 @@ struct SessionDetailPanel: View {
                     Button("网页链接…", systemImage: "globe") { contextReferenceAddMode = .webURL }
                     Divider()
                     Button("Objective…", systemImage: "scope") { contextReferenceAddMode = .objective }
-                    Button("WorkItem…", systemImage: "checklist") { contextReferenceAddMode = .workItem }
+                    Button("CorptieTask…", systemImage: "checklist") { contextReferenceAddMode = .task }
                     Button("Agent…", systemImage: "person.2") { contextReferenceAddMode = .agent }
                     Button("其他会话…", systemImage: "bubble.left.and.bubble.right") { contextReferenceAddMode = .session }
                 } label: {
@@ -1673,7 +1944,7 @@ struct SessionDetailPanel: View {
 private enum ContextReferenceAddMode: String, Identifiable {
     case webURL
     case objective
-    case workItem
+    case task
     case agent
     case session
 
@@ -1682,7 +1953,7 @@ private enum ContextReferenceAddMode: String, Identifiable {
         switch self {
         case .webURL: "添加网页链接"
         case .objective: "引用 Objective"
-        case .workItem: "引用 WorkItem"
+        case .task: "引用 CorptieTask"
         case .agent: "引用 Agent"
         case .session: "引用其他会话"
         }
@@ -1691,7 +1962,7 @@ private enum ContextReferenceAddMode: String, Identifiable {
         switch self {
         case .webURL: .webURL
         case .objective: .objective
-        case .workItem: .workItem
+        case .task: .task
         case .agent: .agent
         case .session: .session
         }
@@ -1713,7 +1984,7 @@ private struct ContextReferenceAddSheet: View {
     let mode: ContextReferenceAddMode
     @State private var urlText = ""
     @State private var searchText = ""
-    @State private var workItems: [WorkItem] = []
+    @State private var tasks: [CorptieTask] = []
     @State private var isSubmitting = false
 
     var body: some View {
@@ -1777,7 +2048,7 @@ private struct ContextReferenceAddSheet: View {
             if let error = backendClient.lastError, !error.isEmpty {
                 Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2)
             }
-            if mode == .workItem, let error = entityClient.workItemsLoadError {
+            if mode == .task, let error = entityClient.tasksLoadError {
                 Text(error).font(.system(size: 10)).foregroundStyle(.red).lineLimit(3)
             }
         }
@@ -1786,9 +2057,9 @@ private struct ContextReferenceAddSheet: View {
         .task {
             switch mode {
             case .objective: await entityClient.refreshObjectives()
-            case .workItem:
-                if let loaded = await entityClient.allWorkItems() {
-                    workItems = loaded
+            case .task:
+                if let loaded = await entityClient.allCorptieTasks() {
+                    tasks = loaded
                 }
             case .agent: await entityClient.refreshAgents()
             case .session, .webURL: break
@@ -1800,8 +2071,8 @@ private struct ContextReferenceAddSheet: View {
         switch mode {
         case .objective:
             entityClient.objectives.map { .init(id: $0.id, title: $0.name, subtitle: $0.status, systemImage: "scope") }
-        case .workItem:
-            workItems.map { .init(id: $0.id, title: $0.title, subtitle: $0.status, systemImage: "checklist") }
+        case .task:
+            tasks.map { .init(id: $0.id, title: $0.title, subtitle: $0.lifecycleState, systemImage: "checklist") }
         case .agent:
             entityClient.agents
                 .filter { $0.agentId != session.agentId }
@@ -1853,7 +2124,7 @@ private extension SessionContextReferenceType {
         case .localFile: "doc"
         case .webURL: "globe"
         case .objective: "scope"
-        case .workItem: "checklist"
+        case .task: "checklist"
         case .agent: "person.2"
         case .session: "bubble.left.and.bubble.right"
         }
@@ -1880,20 +2151,26 @@ func sessionAgentDisplayName(session: TaskSession, agents: [Agent]) -> String {
     return agents.first(where: { $0.agentId == agentId })?.name ?? agentId
 }
 
-private struct SessionWorkItemDetailCard: View {
+private struct SessionCorptieTaskDetailCard: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
-    let workItemId: String
-    @State private var workItem: WorkItem?
+    let taskId: String
+    var decoratesSurface = true
+    var showsHeader = true
+    @State private var task: CorptieTask?
     @State private var isLoading = true
 
     var body: some View {
         Group {
-            if let workItem {
-                let objective = entityClient.objectives.first { $0.id == workItem.objectiveId }
-                WorkItemDetailView(
-                    workItem: workItem,
+            if let task {
+                let objective = entityClient.objectives.first { $0.id == task.objectiveId }
+                CorptieTaskDetailView(
+                    task: task,
                     workspaceIds: objective?.workspaceIds ?? [],
-                    contributorAgentIds: objective?.contributorAgentIds ?? []
+                    contributorAgentIds: objective?.contributorAgentIds ?? [],
+                    onRequestReload: {
+                        Task { await entityClient.refreshObjectives() }
+                    },
+                    showsHeader: showsHeader
                 )
             } else if isLoading {
                 ProgressView()
@@ -1901,20 +2178,15 @@ private struct SessionWorkItemDetailCard: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ContentUnavailableView(
-                    L10n("Unable to Load WorkItem"),
+                    L10n("Unable to Load CorptieTask"),
                     systemImage: "exclamationmark.triangle",
                     description: Text(L10n("绑定记录可能已不存在"))
                 )
             }
         }
         .frame(maxHeight: .infinity)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
-        }
-        .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
-        .task(id: workItemId) {
+        .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
+        .task(id: taskId) {
             isLoading = true
             if entityClient.objectives.isEmpty {
                 await entityClient.refreshObjectives()
@@ -1922,17 +2194,36 @@ private struct SessionWorkItemDetailCard: View {
             if entityClient.repositories.isEmpty {
                 await entityClient.refreshRepositories()
             }
-            if let cached = entityClient.workItems.first(where: { $0.id == workItemId }) {
-                workItem = cached
+            if let cached = entityClient.tasks.first(where: { $0.id == taskId }) {
+                task = cached
             } else {
-                workItem = await entityClient.workItem(id: workItemId)
+                task = await entityClient.task(id: taskId)
             }
             isLoading = false
         }
-        .onChange(of: entityClient.workItemsRevision) { _, _ in
-            if let refreshed = entityClient.workItems.first(where: { $0.id == workItemId }) {
-                workItem = refreshed
+        .onChange(of: entityClient.tasksRevision) { _, _ in
+            if let refreshed = entityClient.tasks.first(where: { $0.id == taskId }) {
+                task = refreshed
             }
+        }
+    }
+}
+
+private struct DetailRailSurfaceModifier: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
+                }
+                .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
+        } else {
+            content
         }
     }
 }

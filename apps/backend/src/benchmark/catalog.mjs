@@ -9,7 +9,7 @@ const scenarios = {
   S4: ["swift-state-regression", ["state-transition", "main-actor-boundary", "tests-pass"]],
   S5: ["toolset-lifecycle", ["toolset-version-canonical", "validation-plan-identity", "snapshot-echo-equal"]],
   S6: ["layered-search", ["expected-hit-recall", "denied-path-zero", "snapshot-reference-equal"]],
-  S7: ["workitem-e2e", ["artifact-reference-final", "turn-summary", "receipt-chain-complete", "repository-pollution-zero"]]
+  S7: ["task-e2e", ["artifact-reference-final", "turn-summary", "receipt-chain-complete", "repository-pollution-zero"]]
 };
 
 export class BenchmarkCatalog {

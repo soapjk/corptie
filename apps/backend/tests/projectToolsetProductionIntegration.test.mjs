@@ -18,7 +18,7 @@ test("production initialize/update composes authoritative Startup, Snapshot, Too
   await mkdir(externalRoot, { recursive: true });
   const source = await createProjectCodeFixture({ parent: externalRoot, files: swiftPackageFiles() });
   t.after(() => rm(source.directory, { recursive: true, force: true }));
-  const sessionContext = { objectiveId, workItemId: "work_item:test", logicalSessionId: "logical:test" };
+  const sessionContext = { objectiveId, taskId: "task:test", logicalSessionId: "logical:test" };
   const startupReceipt = startupReceiptFor({
     identity: source.identity, commitOid: source.commitOid, treeOid: source.treeOid,
     sessionContext, binding: source.binding
@@ -40,7 +40,7 @@ test("production initialize/update composes authoritative Startup, Snapshot, Too
   });
   t.after(() => composition.toolsetStore.close());
 
-  const authenticatedSession = { logicalSessionId: sessionContext.logicalSessionId, workItemId: sessionContext.workItemId };
+  const authenticatedSession = { logicalSessionId: sessionContext.logicalSessionId, taskId: sessionContext.taskId };
   const initialized = await composition.service.initialize(source.directory, { authenticatedSession, idempotencyKey: "toolset-production:init" });
   assert.equal(initialized.state, "ready", JSON.stringify({ initialized, operation: await composition.toolsetStore.get(initialized.operationId) })); assert.equal(initialized.outcome, "passed");
   assert.deepEqual(initialized.receipt.actionReceipts.map((item) => item.kind), ["build", "test"]);
@@ -50,7 +50,7 @@ test("production initialize/update composes authoritative Startup, Snapshot, Too
   assert.equal(runtime.toolsetValidationReceiptPointer.receiptHash, initialized.receipt.receiptHash);
   assert.equal(runtime.snapshot.sourceFingerprint, initialized.receipt.snapshotRef.sourceFingerprint);
   const resolved = await composition.runAuthorityResolver.resolve({
-    logicalSessionId: runtime.logicalSessionId, workItemId: runtime.workItemId,
+    logicalSessionId: runtime.logicalSessionId, taskId: runtime.taskId,
     repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId,
     action: "build", bindingId: runtime.bindingId, bindingGeneration: runtime.bindingGeneration
   });
@@ -58,7 +58,7 @@ test("production initialize/update composes authoritative Startup, Snapshot, Too
   assert.equal(resolved.repositorySourceSnapshotReceiptRef.sourceFingerprint, initialized.receipt.snapshotRef.sourceFingerprint);
 
   const runSession = {
-    logicalSessionId: runtime.logicalSessionId, workItemId: runtime.workItemId,
+    logicalSessionId: runtime.logicalSessionId, taskId: runtime.taskId,
     repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId
   };
   const prepare = {
@@ -80,7 +80,7 @@ test("production initialize/update composes authoritative Startup, Snapshot, Too
   }, runSession, { toolsetReceiptResolver: receiptResolver }), (error) => error.code === "RUN_TOOLSET_RECEIPT_UNRESOLVED");
 
   await assert.rejects(() => composition.runAuthorityResolver.resolve({
-    logicalSessionId: runtime.logicalSessionId, workItemId: runtime.workItemId,
+    logicalSessionId: runtime.logicalSessionId, taskId: runtime.taskId,
     repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId,
     action: "build", bindingId: runtime.bindingId, bindingGeneration: runtime.bindingGeneration + 1
   }), (error) => error.code === "STARTUP_BINDING_STALE");
@@ -90,7 +90,7 @@ test("production authority fails closed for stale source and active receipt hash
   await mkdir(externalRoot, { recursive: true });
   const source = await createProjectCodeFixture({ parent: externalRoot, files: swiftPackageFiles() });
   t.after(() => rm(source.directory, { recursive: true, force: true }));
-  const sessionContext = { objectiveId, workItemId: "work_item:test", logicalSessionId: "logical:test" };
+  const sessionContext = { objectiveId, taskId: "task:test", logicalSessionId: "logical:test" };
   const startupReceipt = startupReceiptFor({ identity: source.identity, commitOid: source.commitOid, treeOid: source.treeOid, sessionContext, binding: source.binding });
   const store = productionStore({ source, sessionContext, startupReceipt });
   const startupReceipts = new ProjectCodeStartupReceiptRepository({ store });
@@ -103,7 +103,7 @@ test("production authority fails closed for stale source and active receipt hash
     dataRoot: join(runService.dataRoot, "toolset-control-negative"), environment: "test"
   });
   t.after(() => composition.toolsetStore.close());
-  const authenticatedSession = { logicalSessionId: sessionContext.logicalSessionId, workItemId: sessionContext.workItemId };
+  const authenticatedSession = { logicalSessionId: sessionContext.logicalSessionId, taskId: sessionContext.taskId };
   const initialized = await composition.service.initialize(source.directory, { authenticatedSession, idempotencyKey: "toolset-production:negative" });
   assert.equal(initialized.state, "ready", JSON.stringify({ initialized, operation: await composition.toolsetStore.get(initialized.operationId) }));
 
@@ -144,8 +144,8 @@ function productionStore({ source, sessionContext, startupReceipt }) {
       return { ...sessionContext, sessionId: "session:test", agentId: "agent:test" };
     },
     getLogicalSession: () => logical,
-    getSession: () => ({ id: "session:test", sessionKind: "worker", workItemId: sessionContext.workItemId, objectiveId: sessionContext.objectiveId }),
-    getWorkItem: () => ({ id: sessionContext.workItemId, objective_id: sessionContext.objectiveId }),
+    getSession: () => ({ id: "session:test", sessionKind: "worker", taskId: sessionContext.taskId, objectiveId: sessionContext.objectiveId }),
+    getTask: () => ({ id: sessionContext.taskId, objective_id: sessionContext.objectiveId }),
     putProjectCodeReceipt(record) { receipts.set(record.receiptId, structuredClone(record)); return record; },
     getProjectCodeReceiptById(receiptId) {
       const value = receipts.get(receiptId); return value ? { ...structuredClone(value), logicalSessionId: value.logicalSessionId } : null;

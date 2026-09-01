@@ -74,7 +74,7 @@ function addScopedSession(f, suffix, options = {}) {
     contributorAgentIds: options.contributor === false ? [] : [agent.agentId],
     workspaceIds: options.workspace === false ? [] : [repositoryId]
   });
-  const workItem = f.store.createWorkItem({ objectiveId: objective.id, title: `Work ${suffix}` });
+  const task = f.store.createTask({ objectiveId: objective.id, title: `Work ${suffix}` });
   const providerSessionId = `provider:${suffix}`;
   const logicalSessionId = `logical:${suffix}`;
   f.store.createSession({
@@ -83,7 +83,7 @@ function addScopedSession(f, suffix, options = {}) {
     agentId: agent.agentId,
     sessionKind: "worker",
     objectiveId: objective.id,
-    workItemId: workItem.id
+    taskId: task.id
   });
   f.store.createLogicalSessionRoute({
     logicalSessionId,
@@ -102,11 +102,11 @@ function addScopedSession(f, suffix, options = {}) {
   return {
     agentId: agent.agentId,
     objectiveId: objective.id,
-    workItemId: workItem.id,
+    taskId: task.id,
     providerSessionId,
     logicalSessionId,
     repositoryId,
-    metadata: { sessionId: providerSessionId, objectiveId: objective.id, workItemId: workItem.id }
+    metadata: { sessionId: providerSessionId, objectiveId: objective.id, taskId: task.id }
   };
 }
 

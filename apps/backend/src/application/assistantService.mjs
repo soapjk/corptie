@@ -1,6 +1,6 @@
 // 助手对话服务（03 §16.4 / 07 agent.assistant.chat）：自然语言 → 元操作工具调用。
 //
-// 助手复用 owner_type 管理接口（objective.*/work_item.*/memory.* 等）作为 assistant_tools，
+// 助手复用 owner_type 管理接口（objective.*/task.*/memory.* 等）作为 assistant_tools，
 // 把「用户自然语言指令」翻译为这些调用。
 //
 // 意图识别可注入 LLM（intentResolver，function-calling 风格）：
@@ -20,7 +20,7 @@ const ASSISTANT_TOOLS_PROMPT = [
   "Decide which tool to call and return ONLY JSON.",
   "Tools:",
   'objective.create: { "name": string } — create an objective/goal',
-  'work_item.create: { "title": string, "objectiveId": string? } — create a work item/task',
+  'task.create: { "title": string, "objectiveId": string? } — create a work item/task',
   'agent.create: { "name": string, "provider": string? } — create an agent',
   'agent.list: {} — list agents',
   'agent.delete: { "name": string } — delete an agent by name',
@@ -108,7 +108,7 @@ export class AssistantService {
       return { tool: "objective.create", args: { name: this.extractName(text) } };
     }
     if (/建|创建|新建/.test(text) && /工作项|任务|task|work.?item/i.test(text)) {
-      return { tool: "work_item.create", args: { title: this.extractName(text) } };
+      return { tool: "task.create", args: { title: this.extractName(text) } };
     }
     if (/建|创建|新建/.test(text) && /agent|智能体|助手/i.test(text)) {
       return { tool: "agent.create", args: { name: this.extractName(text) } };
@@ -151,7 +151,7 @@ export class AssistantService {
           }
         ];
       }
-      case "work_item.create": {
+      case "task.create": {
         const objectives = this.objectiveService.listObjectives();
         const specified = args.objectiveId
           ? objectives.find((o) => o.id === args.objectiveId)
@@ -160,7 +160,7 @@ export class AssistantService {
         if (!objective) {
           objective = this.objectiveService.createObjective({ name: "默认目标" });
         }
-        const workItem = this.objectiveService.createWorkItem({
+        const task = this.objectiveService.createTask({
           objectiveId: objective.id,
           title: args.title || "未命名"
         }, {
@@ -171,8 +171,8 @@ export class AssistantService {
           {
             role: "assistant",
             kind: "receipt",
-            content: `已在目标「${objective.name}」下创建工作项「${workItem.title}」`,
-            data: { type: "work_item", workItem, objective }
+            content: `已在目标「${objective.name}」下创建工作项「${task.title}」`,
+            data: { type: "task", task, objective }
           }
         ];
       }

@@ -112,7 +112,7 @@ export class ProjectToolsetAuthorizationPort {
   async assertProjectToolsetAccess(input) {
     if (typeof this.resolveAuthority !== "function") throw contractError("TOOLSET_PERMISSION_DENIED", "Toolset authority resolver is unavailable.");
     const authority = await this.resolveAuthority(input.logicalSessionId);
-    for (const field of ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId"]) {
+    for (const field of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]) {
       if (authority?.[field] !== input[field]) throw contractError("TOOLSET_PERMISSION_DENIED", `${field} differs from authenticated Toolset authority.`);
     }
     if (authority?.capabilityClass !== input.capabilityClass) throw contractError("TOOLSET_PERMISSION_DENIED", "Toolset capability differs from authenticated authority.");
@@ -121,6 +121,6 @@ export class ProjectToolsetAuthorizationPort {
 }
 
 function authoritativeRunSession(session) {
-  if (!session?.logicalSessionId || !session?.workItemId || !session?.repositoryId || !session?.worktreeId) throw contractError("TOOLSET_PERMISSION_DENIED", "Run Isolation requires an authenticated repository Work Session.");
-  return Object.freeze({ logicalSessionId: session.logicalSessionId, workItemId: session.workItemId, repositoryId: session.repositoryId, worktreeId: session.worktreeId });
+  if (!session?.logicalSessionId || !session?.taskId || !session?.repositoryId || !session?.worktreeId) throw contractError("TOOLSET_PERMISSION_DENIED", "Run Isolation requires an authenticated repository Work Session.");
+  return Object.freeze({ logicalSessionId: session.logicalSessionId, taskId: session.taskId, repositoryId: session.repositoryId, worktreeId: session.worktreeId });
 }

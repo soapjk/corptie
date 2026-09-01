@@ -28,7 +28,7 @@ struct EntityRefreshGenerationTests {
             revision: 1,
             state: ControlPlaneStatePayload(
                 sessions: [performanceSessionFixture()],
-                workItems: [],
+                tasks: [],
                 objectives: [],
                 agents: [],
                 skills: [],
@@ -38,14 +38,14 @@ struct EntityRefreshGenerationTests {
         ))
         await Task.yield()
 
-        #expect(client.workItemsRevision == 0)
+        #expect(client.tasksRevision == 0)
         #expect(groupingInvalidations == 0)
 
         _ = store.apply(snapshot: StateSnapshotEnvelope(
             revision: 2,
             state: ControlPlaneStatePayload(
                 sessions: [performanceSessionFixture()],
-                workItems: [performanceWorkItemFixture()],
+                tasks: [performanceCorptieTaskFixture()],
                 objectives: [],
                 agents: [],
                 skills: [],
@@ -55,7 +55,7 @@ struct EntityRefreshGenerationTests {
         ))
         await Task.yield()
 
-        #expect(client.workItemsRevision == 1)
+        #expect(client.tasksRevision == 1)
         #expect(groupingInvalidations == 1)
         withExtendedLifetime(cancellable) {}
     }
@@ -68,7 +68,7 @@ struct EntityRefreshGenerationTests {
             agentId: nil,
             sessionKind: .worker,
             objectiveId: nil,
-            workItemId: nil,
+            taskId: nil,
             status: .running,
             progress: 0,
             summary: "",
@@ -86,15 +86,15 @@ struct EntityRefreshGenerationTests {
         )
     }
 
-    private func performanceWorkItemFixture() -> WorkItem {
-        WorkItem(
-            id: "work_item:performance",
+    private func performanceCorptieTaskFixture() -> CorptieTask {
+        CorptieTask(
+            id: "task:performance",
             objectiveId: "objective:performance",
             title: "Performance",
             description: "",
             acceptanceCriteria: "",
             priority: "medium",
-            status: "in_progress",
+            lifecycleState: "in_progress",
             mainWorkspaceId: nil,
             mainAgentId: nil,
             currentSessionId: "session:performance",

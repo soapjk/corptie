@@ -82,11 +82,11 @@ export class ProjectToolsetAuthorityResolver {
   }
 
   async #authority(authenticatedSession, workingDirectory) {
-    if (!authenticatedSession || typeof authenticatedSession.logicalSessionId !== "string" || typeof authenticatedSession.workItemId !== "string") fail("TOOLSET_PERMISSION_DENIED", "An authenticated Session is required.");
+    if (!authenticatedSession || typeof authenticatedSession.logicalSessionId !== "string" || typeof authenticatedSession.taskId !== "string") fail("TOOLSET_PERMISSION_DENIED", "An authenticated Session is required.");
     const authority = await this.sessions.resolve({ authenticatedSession, workingDirectory });
-    for (const key of ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId"]) if (typeof authority?.[key] !== "string" || !authority[key]) fail("TOOLSET_PERMISSION_DENIED", "Session authority is incomplete.");
-    if (authority.logicalSessionId !== authenticatedSession.logicalSessionId || authority.workItemId !== authenticatedSession.workItemId) fail("TOOLSET_PERMISSION_DENIED", "Session authority changed while resolving Toolset context.");
-    return Object.freeze({ logicalSessionId: authority.logicalSessionId, objectiveId: authority.objectiveId, workItemId: authority.workItemId, repositoryId: authority.repositoryId, worktreeId: authority.worktreeId });
+    for (const key of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]) if (typeof authority?.[key] !== "string" || !authority[key]) fail("TOOLSET_PERMISSION_DENIED", "Session authority is incomplete.");
+    if (authority.logicalSessionId !== authenticatedSession.logicalSessionId || authority.taskId !== authenticatedSession.taskId) fail("TOOLSET_PERMISSION_DENIED", "Session authority changed while resolving Toolset context.");
+    return Object.freeze({ logicalSessionId: authority.logicalSessionId, objectiveId: authority.objectiveId, taskId: authority.taskId, repositoryId: authority.repositoryId, worktreeId: authority.worktreeId });
   }
 }
 
@@ -126,5 +126,5 @@ async function existsText(path) { try { await readFile(path, "utf8"); return tru
 function required(value, name) { if (!value) throw new TypeError(`ProjectToolsetService requires ${name}.`); return value; }
 function snapshotReference(receipt) { return { receiptId: receipt?.receiptId, receiptHash: receipt?.receiptHash, sourceFingerprint: receipt?.sourceFingerprint, schemaVersion: receipt?.schemaVersion, resourceVersion: receipt?.resourceVersion, artifactRef: receipt?.artifactRef }; }
 function runIsolationStartupReference(receipt) { if (!Number.isInteger(receipt?.resourceVersion) || receipt.resourceVersion < 1) fail("STARTUP_BINDING_INVALID", "Startup resourceVersion is invalid."); return Object.freeze({ startupOperationId: receipt.startupOperationId, receiptHash: receipt.receiptHash, schemaVersion: 2, resourceVersion: receipt.resourceVersion, artifactRef: { artifactId: STARTUP_CONTRACT.artifactId, version: 1, contentHash: STARTUP_CONTRACT.contentHash, relation: "implementation_spec", receiptType: "StartupBindingReceipt", schemaVersion: 2 } }); }
-function assertAuthorityIdentity(value, authority, code) { for (const key of ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId"]) if (value?.[key] !== authority[key]) fail(code, `${key} does not match authenticated authority.`); }
+function assertAuthorityIdentity(value, authority, code) { for (const key of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]) if (value?.[key] !== authority[key]) fail(code, `${key} does not match authenticated authority.`); }
 function fail(code, message) { throw contractError(code, message); }

@@ -74,8 +74,8 @@ export class BenchmarkControlPlane {
 
   #scope(logicalSessionId) {
     const binding = this.store.assertLogicalWorkSessionBinding(logicalSessionId);
-    if (!binding.objectiveId || !binding.workItemId) throw benchmarkError("BENCHMARK_WORK_SESSION_REQUIRED", "Benchmark writes require a bound Worker Session.", "authorization", { statusCode: 403 });
-    return { logicalSessionId: binding.logicalSessionId, objectiveId: binding.objectiveId, workItemId: binding.workItemId };
+    if (!binding.objectiveId || !binding.taskId) throw benchmarkError("BENCHMARK_WORK_SESSION_REQUIRED", "Benchmark writes require a bound Worker Session.", "authorization", { statusCode: 403 });
+    return { logicalSessionId: binding.logicalSessionId, objectiveId: binding.objectiveId, taskId: binding.taskId };
   }
 }
 

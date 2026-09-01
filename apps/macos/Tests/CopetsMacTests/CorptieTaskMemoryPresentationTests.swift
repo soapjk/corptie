@@ -2,25 +2,25 @@ import Foundation
 import Testing
 @testable import CorptieMac
 
-struct WorkItemMemoryPresentationTests {
-    @Test func unstartedWorkItemDoesNotLoadMemory() {
-        #expect(!WorkItemMemoryPresentationPolicy.shouldLoad(currentSessionId: nil))
-        #expect(!WorkItemMemoryPresentationPolicy.shouldLoad(currentSessionId: "  "))
+struct CorptieTaskMemoryPresentationTests {
+    @Test func unstartedCorptieTaskDoesNotLoadMemory() {
+        #expect(!CorptieTaskMemoryPresentationPolicy.shouldLoad(currentSessionId: nil))
+        #expect(!CorptieTaskMemoryPresentationPolicy.shouldLoad(currentSessionId: "  "))
     }
 
-    @Test func startedWorkItemLoadsOnlyAfterSessionBindingExists() {
-        #expect(WorkItemMemoryPresentationPolicy.shouldLoad(currentSessionId: "session:worker"))
+    @Test func startedCorptieTaskLoadsOnlyAfterSessionBindingExists() {
+        #expect(CorptieTaskMemoryPresentationPolicy.shouldLoad(currentSessionId: "session:worker"))
     }
 
-    @Test func memoryWireModelDecodesTheExplicitWorkItemAssociation() throws {
+    @Test func memoryWireModelDecodesTheExplicitCorptieTaskAssociation() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let memory = try decoder.decode(MemoryItem.self, from: Data("""
         {
           "id": "memory:one",
-          "owner_type": "work_item",
-          "owner_id": "work_item:one",
-          "work_item_id": "work_item:one",
+          "owner_type": "task",
+          "owner_id": "task:one",
+          "task_id": "task:one",
           "kind": "fact",
           "content": "Actual execution context",
           "source_type": "extracted",
@@ -28,8 +28,8 @@ struct WorkItemMemoryPresentationTests {
         }
         """.utf8))
 
-        #expect(memory.ownerId == "work_item:one")
-        #expect(memory.workItemId == "work_item:one")
+        #expect(memory.ownerId == "task:one")
+        #expect(memory.taskId == "task:one")
     }
 
     @Test func inspectorWireModelDecodesLifecycleProvenanceAndRecallDiagnostics() throws {
@@ -37,7 +37,7 @@ struct WorkItemMemoryPresentationTests {
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let memory = try decoder.decode(MemoryItem.self, from: Data("""
         {
-          "id":"memory:audit","ownerType":"agent","ownerId":"agent:one","workItemId":null,
+          "id":"memory:audit","ownerType":"agent","ownerId":"agent:one","taskId":null,
           "kind":"procedure","content":"Use the shared contract","sourceType":"user",
           "sourceSessionId":"session:one","sourceEventSeqs":[3],"tags":["provider-neutral"],
           "confidence":0.91,"usageCount":4,"lastAccessedAt":"2026-08-23T01:00:00Z",
@@ -68,7 +68,7 @@ struct WorkItemMemoryPresentationTests {
         #expect(MemoryOriginLayer.classify(try memory(source: "promoted", trust: "trusted", status: "active")) == .agentDurable)
         #expect(MemoryOriginLayer.classify(try memory(source: "pre_compaction", trust: "trusted", status: "active")) == .systemManaged)
         #expect(MemoryOriginLayer.classify(try memory(source: "user", trust: "trusted", status: "active", revokedAt: "2026-08-24T00:00:00Z")) == .inactive)
-        #expect(MemoryScopeLayer.allCases.map(\.rawValue) == ["work_item", "objective", "agent"])
+        #expect(MemoryScopeLayer.allCases.map(\.rawValue) == ["task", "objective", "agent"])
     }
 
     private func memory(

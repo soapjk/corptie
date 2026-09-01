@@ -1,7 +1,7 @@
 import SwiftUI
 
-// WorkItem 的 Workspace 单选选择器。
-// WorkItem 从属于 Objective，绑定 Workspace 时从所属 Objective 已挂靠的仓库里选（不再弹文件浏览器选任意目录）。
+// CorptieTask 的 Workspace 单选选择器。
+// CorptieTask 从属于 Objective，绑定 Workspace 时从所属 Objective 已挂靠的仓库里选（不再弹文件浏览器选任意目录）。
 struct WorkspacePicker: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @Binding var workspaceId: String?

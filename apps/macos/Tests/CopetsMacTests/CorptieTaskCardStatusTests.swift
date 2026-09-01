@@ -1,16 +1,16 @@
 import Testing
 @testable import CorptieMac
 
-struct WorkItemCardStatusTests {
+struct CorptieTaskCardStatusTests {
     @Test func reportsNoSessionWithoutACurrentBinding() {
-        #expect(WorkItemBoundSessionActivity.resolve(
-            workItem: makeWorkItem(currentSessionId: nil, executionStatus: "idle"),
+        #expect(CorptieTaskBoundSessionActivity.resolve(
+            task: makeCorptieTask(currentSessionId: nil, executionStatus: "idle"),
             sessions: []
         ) == .noSession)
     }
 
     @Test func mapsTheBoundSessionsAuthoritativeRuntimeStatus() {
-        let mappings: [(TaskStatus, WorkItemBoundSessionActivity)] = [
+        let mappings: [(TaskStatus, CorptieTaskBoundSessionActivity)] = [
             (.running, .processing),
             (.blocked, .waitingForInput),
             (.complete, .idle),
@@ -19,46 +19,46 @@ struct WorkItemCardStatusTests {
         ]
 
         for (status, expected) in mappings {
-            let workItem = makeWorkItem(currentSessionId: "session:current", executionStatus: "idle")
-            let session = makeWorkItemSession(id: "session:current", status: status)
-            #expect(WorkItemBoundSessionActivity.resolve(
-                workItem: workItem,
+            let task = makeCorptieTask(currentSessionId: "session:current", executionStatus: "idle")
+            let session = makeCorptieTaskSession(id: "session:current", status: status)
+            #expect(CorptieTaskBoundSessionActivity.resolve(
+                task: task,
                 sessions: [session]
             ) == expected)
         }
     }
 
     @Test func ignoresOtherSessionsWhenTheCurrentBindingIsPresent() {
-        let current = makeWorkItemSession(id: "session:current", status: .running)
-        let newerOther = makeWorkItemSession(
+        let current = makeCorptieTaskSession(id: "session:current", status: .running)
+        let newerOther = makeCorptieTaskSession(
             id: "session:other",
             status: .failed,
             updatedAt: "2026-08-20T00:00:00Z"
         )
-        #expect(WorkItemBoundSessionActivity.resolve(
-            workItem: makeWorkItem(currentSessionId: current.id, executionStatus: "failed"),
+        #expect(CorptieTaskBoundSessionActivity.resolve(
+            task: makeCorptieTask(currentSessionId: current.id, executionStatus: "failed"),
             sessions: [newerOther, current]
         ) == .processing)
     }
 
     @Test func fallsBackToPersistedExecutionStatusDuringSnapshotRaces() {
-        let workItem = makeWorkItem(currentSessionId: "session:not-loaded", executionStatus: "paused")
-        #expect(WorkItemBoundSessionActivity.resolve(
-            workItem: workItem,
+        let task = makeCorptieTask(currentSessionId: "session:not-loaded", executionStatus: "paused")
+        #expect(CorptieTaskBoundSessionActivity.resolve(
+            task: task,
             sessions: []
         ) == .paused)
     }
 }
 
-private func makeWorkItem(currentSessionId: String?, executionStatus: String?) -> WorkItem {
-    WorkItem(
-        id: "work-item:one",
+private func makeCorptieTask(currentSessionId: String?, executionStatus: String?) -> CorptieTask {
+    CorptieTask(
+        id: "task:one",
         objectiveId: "objective:one",
-        title: "WorkItem",
+        title: "CorptieTask",
         description: "",
         acceptanceCriteria: "",
         priority: "medium",
-        status: "in_progress",
+        lifecycleState: "in_progress",
         mainWorkspaceId: nil,
         mainAgentId: "agent:one",
         currentSessionId: currentSessionId,
@@ -70,7 +70,7 @@ private func makeWorkItem(currentSessionId: String?, executionStatus: String?) -
     )
 }
 
-private func makeWorkItemSession(
+private func makeCorptieTaskSession(
     id: String,
     status: TaskStatus,
     updatedAt: String = "2026-08-19T00:00:00Z"
@@ -82,7 +82,7 @@ private func makeWorkItemSession(
         agentId: "agent:one",
         sessionKind: .worker,
         objectiveId: "objective:one",
-        workItemId: "work-item:one",
+        taskId: "task:one",
         status: status,
         progress: status == .running ? 0.5 : 1,
         summary: "",

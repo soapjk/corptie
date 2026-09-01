@@ -2,14 +2,14 @@ import XCTest
 @testable import CorptieMac
 
 @MainActor
-final class WorkItemCreateFormTests: XCTestCase {
+final class CorptieTaskCreateFormTests: XCTestCase {
     func testAvailableAgentsAreAssignableContributorsOnly() {
         let available = agent(id: "agent:available", role: "independentContributor", status: "available")
         let unavailable = agent(id: "agent:unavailable", role: "independentContributor", status: "unavailable")
         let assistant = agent(id: "agent:assistant", role: "assistant", status: "available")
         let outside = agent(id: "agent:outside", role: "independentContributor", status: "available")
 
-        let result = WorkItemCreateFormPolicy.availableAgents(
+        let result = CorptieTaskCreateFormPolicy.availableAgents(
             from: [available, unavailable, assistant, outside],
             allowedAgentIds: [available.agentId, unavailable.agentId, assistant.agentId]
         )
@@ -18,18 +18,18 @@ final class WorkItemCreateFormTests: XCTestCase {
     }
 
     func testMissingAgentHasExplicitValidationAndCannotSubmit() {
-        let message = WorkItemCreateFormPolicy.validationMessage(
+        let message = CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
             detail: "Implement the feature",
             workspaceId: "repository:one",
             agentId: nil
         )
 
-        XCTAssertEqual(message, L10n("请选择负责该 WorkItem 的 Agent。"))
+        XCTAssertEqual(message, L10n("请选择负责该 CorptieTask 的 Agent。"))
     }
 
     func testCompleteFormPassesValidation() {
-        XCTAssertNil(WorkItemCreateFormPolicy.validationMessage(
+        XCTAssertNil(CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
             detail: "Implement the feature",
             workspaceId: "repository:one",
@@ -39,11 +39,11 @@ final class WorkItemCreateFormTests: XCTestCase {
 
     func testExecutionPresentationShowsNotStartedAndRunning() {
         XCTAssertEqual(
-            WorkItemExecutionPresentation.label(executionStatus: "idle", sessionStatus: nil),
+            CorptieTaskExecutionPresentation.label(executionStatus: "idle", sessionStatus: nil),
             L10n("Not Started")
         )
         XCTAssertEqual(
-            WorkItemExecutionPresentation.label(executionStatus: "idle", sessionStatus: "running"),
+            CorptieTaskExecutionPresentation.label(executionStatus: "idle", sessionStatus: "running"),
             L10n("Running")
         )
     }
@@ -51,7 +51,7 @@ final class WorkItemCreateFormTests: XCTestCase {
     func testProviderSelectionUsesPreferredCreatableProviderAndKeepsUserChoice() throws {
         let providers = try providerCatalog()
         XCTAssertEqual(
-            WorkItemCreateProviderPolicy.selection(
+            CorptieTaskCreateProviderPolicy.selection(
                 current: "",
                 preferred: "claude-sdk",
                 providers: providers
@@ -59,7 +59,7 @@ final class WorkItemCreateFormTests: XCTestCase {
             "claude-sdk"
         )
         XCTAssertEqual(
-            WorkItemCreateProviderPolicy.selection(
+            CorptieTaskCreateProviderPolicy.selection(
                 current: "codex-app-server",
                 preferred: "claude-sdk",
                 providers: providers
@@ -71,7 +71,7 @@ final class WorkItemCreateFormTests: XCTestCase {
     func testProviderSelectionExcludesProvidersThatCannotCreateSessions() throws {
         let providers = try providerCatalog()
         XCTAssertEqual(
-            WorkItemCreateProviderPolicy.selection(
+            CorptieTaskCreateProviderPolicy.selection(
                 current: "read-only",
                 preferred: "read-only",
                 providers: providers

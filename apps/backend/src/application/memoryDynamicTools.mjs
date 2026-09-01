@@ -15,14 +15,14 @@ function tool(name, description, properties = {}, required = []) {
 
 const scope = {
   type: "string",
-  enum: ["agent", "objective", "work_item"],
-  description: "Memory scope. Owner identity is derived from the authenticated current Session. When omitted for remember, the narrowest bound scope is used: WorkItem, then Objective, then Agent."
+  enum: ["agent", "objective", "task"],
+  description: "Memory scope. Owner identity is derived from the authenticated current Session. When omitted for remember, the narrowest bound scope is used: Task, then Objective, then Agent."
 };
 
 export const memoryDynamicTools = Object.freeze([
   tool(
     "corptie_memory_search",
-    "Search active, non-revoked memories visible to the current Session's Agent, Objective, and WorkItem. Empty intent returns a bounded high-confidence recall set.",
+    "Search active, non-revoked memories visible to the current Session's Agent, Objective, and Task. Empty intent returns a bounded high-confidence recall set.",
     {
       intent: {
         type: "string",

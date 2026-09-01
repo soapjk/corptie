@@ -41,18 +41,18 @@ async function fixture({ detached = false } = {}) {
   const objective = objectiveService.createObjective({
     id: "objective:one", name: "Objective", workspaceIds: [repositoryId], contributorAgentIds: [agent.agentId]
   });
-  const workItem = objectiveService.createWorkItem({
-    id: "work_item:one", objectiveId: objective.id, title: "Prepare", mainWorkspaceId: repositoryId,
+  const task = objectiveService.createTask({
+    id: "task:one", objectiveId: objective.id, title: "Prepare", mainWorkspaceId: repositoryId,
     mainAgentId: agent.agentId
   });
   const preparer = new WorktreeStartupPreparer({
     store,
     ensureWorkspace: async () => {
-      await git(main, "worktree", "add", ...(detached ? ["--detach"] : ["-b", "workitem/one"]), target, "HEAD");
+      await git(main, "worktree", "add", ...(detached ? ["--detach"] : ["-b", "task/one"]), target, "HEAD");
       snapshot = await createGitWorkspaceSnapshot(target);
       store.upsertGitWorkspaceSnapshot(snapshot);
       const created = snapshot.worktrees.find((item) =>
-        item.branchName === "workitem/one" || (detached && item.isDetached && item.path.endsWith("/target"))
+        item.branchName === "task/one" || (detached && item.isDetached && item.path.endsWith("/target"))
       );
       return {
         worktreeId: created.worktreeId, path: created.path, branchName: created.branchName,
@@ -61,7 +61,7 @@ async function fixture({ detached = false } = {}) {
       };
     }
   });
-  return { directory, main, other, target, store, preparer, repositoryId, workItem };
+  return { directory, main, other, target, store, preparer, repositoryId, task };
 }
 
 async function cleanup(f) {
@@ -74,15 +74,15 @@ test("creates and verifies exact owned Worktree without changing another dirty W
   try {
     const before = { head: await git(f.other, "rev-parse", "HEAD"), status: await git(f.other, "status", "--porcelain=v1") };
     const allocation = await f.preparer.prepare({
-      startupOperationId: "startup:one", workItemId: f.workItem.id,
-      repositoryId: f.repositoryId, idempotencyKey: "start:one", workItem: f.workItem
+      startupOperationId: "startup:one", taskId: f.task.id,
+      repositoryId: f.repositoryId, idempotencyKey: "start:one", task: f.task
     });
     const after = { head: await git(f.other, "rev-parse", "HEAD"), status: await git(f.other, "status", "--porcelain=v1") };
 
     assert.deepEqual(after, before);
     assert.equal(allocation.createdByStartupOperationId, "startup:one");
     assert.equal(allocation.headIdentity.kind, "branch");
-    assert.equal(allocation.headIdentity.branch, "workitem/one");
+    assert.equal(allocation.headIdentity.branch, "task/one");
     assert.match(allocation.sourceCommitOid, /^[0-9a-f]{40}$/);
     assert.match(allocation.sourceTreeOid, /^[0-9a-f]{40}$/);
     assert.equal(f.store.getGitWorktree(allocation.worktreeId).dedicated, true);
@@ -99,8 +99,8 @@ test("preserves detached HEAD identity as a full commit OID", async () => {
   const f = await fixture({ detached: true });
   try {
     const allocation = await f.preparer.prepare({
-      startupOperationId: "startup:detached", workItemId: f.workItem.id,
-      repositoryId: f.repositoryId, idempotencyKey: "start:detached", workItem: f.workItem
+      startupOperationId: "startup:detached", taskId: f.task.id,
+      repositoryId: f.repositoryId, idempotencyKey: "start:detached", task: f.task
     });
     assert.deepEqual(allocation.headIdentity, { kind: "detached", commitOid: allocation.sourceCommitOid });
   } finally { await cleanup(f); }
@@ -110,19 +110,19 @@ test("refuses to claim a reused Worktree owned by another startup operation", as
   const f = await fixture();
   try {
     const first = await f.preparer.prepare({
-      startupOperationId: "startup:first", workItemId: f.workItem.id,
-      repositoryId: f.repositoryId, idempotencyKey: "start:first", workItem: f.workItem
+      startupOperationId: "startup:first", taskId: f.task.id,
+      repositoryId: f.repositoryId, idempotencyKey: "start:first", task: f.task
     });
     const second = new WorktreeStartupPreparer({
       store: f.store,
       ensureWorkspace: async () => ({
         worktreeId: first.worktreeId, path: first.canonicalWorktreePath,
-        branchName: "workitem/one", headOid: first.sourceCommitOid, reused: true
+        branchName: "task/one", headOid: first.sourceCommitOid, reused: true
       })
     });
     await assert.rejects(() => second.prepare({
-      startupOperationId: "startup:second", workItemId: f.workItem.id,
-      repositoryId: f.repositoryId, idempotencyKey: "start:second", workItem: f.workItem
+      startupOperationId: "startup:second", taskId: f.task.id,
+      repositoryId: f.repositoryId, idempotencyKey: "start:second", task: f.task
     }), { code: "START_WORKTREE_COLLISION" });
   } finally { await cleanup(f); }
 });
@@ -144,9 +144,9 @@ test("revalidates a programmatically prepared Worktree owned by the startup oper
       ensureWorkspace: async () => assert.fail("operation-owned Store Worktree must be reused")
     });
     const allocation = await preparer.prepare({
-      startupOperationId: "startup:integration", workItemId: f.workItem.id,
+      startupOperationId: "startup:integration", taskId: f.task.id,
       repositoryId: f.repositoryId, idempotencyKey: "start:integration",
-      workItem: f.store.getWorkItem(f.workItem.id)
+      task: f.store.getTask(f.task.id)
     });
     assert.equal(allocation.worktreeId, target.worktreeId);
     assert.equal(allocation.reused, true);

@@ -60,7 +60,7 @@ export function createProjectCodeHostNamespace(options = {}) {
     tools: projectCodeDynamicTools,
     authorize: ({ metadata }) => metadata?.sessionKind === "worker"
       && Boolean(metadata?.logicalSessionId)
-      && Boolean(metadata?.workItemId)
+      && Boolean(metadata?.taskId)
       && Boolean(metadata?.objectiveId),
     execute: async (input) => {
       await options.validateRoute?.(input);

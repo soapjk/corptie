@@ -34,7 +34,7 @@
       "minLength": 1,
       "maxLength": 512
     },
-    "workItemId": {
+    "taskId": {
       "type": "string",
       "minLength": 1,
       "maxLength": 512
@@ -218,7 +218,7 @@
     "runId",
     "runReceiptRef",
     "logicalSessionId",
-    "workItemId",
+    "taskId",
     "repositoryId",
     "worktreeId",
     "sourceFingerprint",

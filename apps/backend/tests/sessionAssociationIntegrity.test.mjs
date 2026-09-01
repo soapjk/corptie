@@ -21,13 +21,13 @@ async function fixture() {
     name: "Objective",
     contributorAgentIds: [agent.agentId]
   });
-  const workItem = store.createWorkItem({
-    id: "work_item:one",
+  const task = store.createTask({
+    id: "task:one",
     objectiveId: objective.id,
     title: "Work",
     mainAgentId: agent.agentId
   });
-  return { directory, store, agent, objective, workItem };
+  return { directory, store, agent, objective, task };
 }
 
 async function cleanup(f) {
@@ -49,7 +49,7 @@ test("Provider projection persists the complete Worker association and preserves
       agentId: f.agent.agentId,
       sessionKind: "worker",
       objectiveId: f.objective.id,
-      workItemId: f.workItem.id
+      taskId: f.task.id
     });
     persistProviderSessionProjection(f.store, { ...providerSession, status: "complete" }, {
       providerId: "codex-app-server",
@@ -58,7 +58,7 @@ test("Provider projection persists the complete Worker association and preserves
     });
     const stored = f.store.getSession(providerSession.id);
     assert.equal(stored.objectiveId, f.objective.id);
-    assert.equal(stored.workItemId, f.workItem.id);
+    assert.equal(stored.taskId, f.task.id);
     assert.equal(stored.status, "complete");
     assert.deepEqual(f.store.sessionAssociationIssues(), []);
   } finally {
@@ -87,8 +87,8 @@ test("business validation and SQLite guards reject orphaned or cross-Objective W
       status: "running",
       sessionKind: "worker",
       objectiveId: other.id,
-      workItemId: f.workItem.id
-    }), { code: "SESSION_WORK_ITEM_OBJECTIVE_MISMATCH" });
+      taskId: f.task.id
+    }), { code: "SESSION_TASK_OBJECTIVE_MISMATCH" });
 
     assert.throws(() => f.store.db.run(
       `INSERT INTO sessions (id,title,agent,provider,status,progress,summary,accent,created_at,updated_at,raw_json,session_kind)

@@ -45,8 +45,8 @@ test("assistant.chat 建工作项（无目标时自动建默认目标）", async
     const result = await assistant.chat("建工作项 拆巨文件");
     const receipt = result.messages[1];
     assert.equal(receipt.kind, "receipt");
-    assert.equal(receipt.data.type, "work_item");
-    assert.equal(receipt.data.workItem.title, "拆巨文件");
+    assert.equal(receipt.data.type, "task");
+    assert.equal(receipt.data.task.title, "拆巨文件");
     assert.equal(receipt.data.objective.name, "默认目标");
   } finally {
     await store.close();

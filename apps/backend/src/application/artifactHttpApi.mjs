@@ -2,7 +2,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
   const path = url.pathname;
   const isArtifactApi = path === "/artifacts" || path.startsWith("/artifacts/")
     || /^\/objectives\/[^/]+\/artifacts(?:\/(?:backup|restore))?$/.test(path)
-    || /^\/work-items\/[^/]+\/artifacts(?:\/[^/]+\/publish)?$/.test(path);
+    || /^\/tasks\/[^/]+\/artifacts(?:\/[^/]+\/publish)?$/.test(path);
   if (!isArtifactApi) return false;
 
   const timeout = setTimeout(() => {
@@ -42,30 +42,30 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       }
     }
 
-    const workItemList = path.match(/^\/work-items\/([^/]+)\/artifacts$/);
-    if (request.method === "GET" && workItemList) {
-      const workItemId = decodeURIComponent(workItemList[1]);
-      const workItem = service.store.getWorkItem(workItemId);
-      if (!workItem) throw httpError("ARTIFACT_WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
-      const context = localContext(workItem.objective_id);
+    const taskList = path.match(/^\/tasks\/([^/]+)\/artifacts$/);
+    if (request.method === "GET" && taskList) {
+      const taskId = decodeURIComponent(taskList[1]);
+      const task = service.store.getTask(taskId);
+      if (!task) throw httpError("ARTIFACT_TASK_NOT_FOUND", "Task not found.", 404);
+      const context = localContext(task.objective_id);
       const limit = boundedQueryInteger(url, "limit", 1, 200, 100);
       const offset = boundedQueryInteger(url, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
-      const artifacts = service.listForWorkItem(context, workItemId, { limit, offset });
-      const totalCount = service.store.countArtifactsReferencedByWorkItem(workItemId);
+      const artifacts = service.listForTask(context, taskId, { limit, offset });
+      const totalCount = service.store.countArtifactsReferencedByTask(taskId);
       const nextOffset = offset + artifacts.length < totalCount ? offset + artifacts.length : null;
       return sendJson(response, 200, { artifacts, totalCount, nextOffset });
     }
 
-    const workItemPublish = path.match(/^\/work-items\/([^/]+)\/artifacts\/([^/]+)\/publish$/);
-    if (request.method === "POST" && workItemPublish) {
-      const workItemId = decodeURIComponent(workItemPublish[1]);
-      const artifactId = decodeURIComponent(workItemPublish[2]);
-      const workItem = service.store.getWorkItem(workItemId);
-      if (!workItem) throw httpError("ARTIFACT_WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
+    const taskPublish = path.match(/^\/tasks\/([^/]+)\/artifacts\/([^/]+)\/publish$/);
+    if (request.method === "POST" && taskPublish) {
+      const taskId = decodeURIComponent(taskPublish[1]);
+      const artifactId = decodeURIComponent(taskPublish[2]);
+      const task = service.store.getTask(taskId);
+      if (!task) throw httpError("ARTIFACT_TASK_NOT_FOUND", "Task not found.", 404);
       const input = await readJson(request);
       return sendJson(response, 201, await service.publishAndRepin(
-        localContext(workItem.objective_id), artifactId,
-        { ...mapInput(input), workItemId, referenceId: input.referenceId,
+        localContext(task.objective_id), artifactId,
+        { ...mapInput(input), taskId, referenceId: input.referenceId,
           expectedResourceVersion: input.expectedResourceVersion,
           expectedPinnedVersion: input.expectedPinnedVersion,
           expectedPinnedHash: input.expectedPinnedHash,
@@ -110,7 +110,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       const artifact = requiredArtifact(service, artifactId);
       const input = await readJson(request);
       return sendJson(response, 201, service.createReference(localContext(artifact.objectiveId), artifactId, {
-        workItemId: input.workItemId, sessionId: input.sessionId, relation: input.relation,
+        taskId: input.taskId, sessionId: input.sessionId, relation: input.relation,
         required: input.required, versionPolicy: input.versionPolicy, version: input.version
       }));
     }
@@ -177,7 +177,7 @@ function requiredArtifact(service, artifactId) { const artifact = service.store.
 function mapInput(input) {
   return {
     artifactId: input.artifactId, title: input.title, summary: input.summary, content: input.content,
-    visibility: input.visibility, boundWorkItemId: input.boundWorkItemId, boundSessionId: input.boundSessionId,
+    visibility: input.visibility, boundTaskId: input.boundTaskId, boundSessionId: input.boundSessionId,
     repositoryLocator: input.repositoryLocator, confirmedRepositoryTracked: input.confirmedRepositoryTracked,
     mimeType: input.mimeType, approvalStatus: input.approvalStatus, sourceEventId: input.sourceEventId,
     expectedResourceVersion: input.expectedResourceVersion,

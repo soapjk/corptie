@@ -32,8 +32,8 @@ async function fixture() {
   return { directory, store, objectiveService, core, artifactService, confirmationService, service, started };
 }
 
-function bindSession(f, { id, logicalId, agentId, kind = "assistantChat", objectiveId = null, workItemId = null }) {
-  f.store.createSession({ id, title: logicalId, agentId, sessionKind: kind, objectiveId, workItemId });
+function bindSession(f, { id, logicalId, agentId, kind = "assistantChat", objectiveId = null, taskId = null }) {
+  f.store.createSession({ id, title: logicalId, agentId, sessionKind: kind, objectiveId, taskId });
   f.store.createLogicalSessionRoute({ logicalSessionId: logicalId, legacySessionId: id, providerThreadId: `thread:${id}`, providerSessionId: id, providerId: "codex-app-server", boundCwd: f.directory, sessionName: logicalId });
   f.core.bindSession({ agentId, sessionId: id });
 }
@@ -57,7 +57,7 @@ test("platform Artifact create is explicitly Objective-scoped, Session-attribute
     bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
     const objective = f.objectiveService.createObjective({ name: "Artifact Objective" });
     const other = f.objectiveService.createObjective({ name: "Other Objective" });
-    const wrongWorkItem = f.objectiveService.createWorkItem({ objectiveId: other.id, title: "Wrong" });
+    const wrongTask = f.objectiveService.createTask({ objectiveId: other.id, title: "Wrong" });
     const input = { actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_artifacts_manage", arguments: { action: "create", objective_id: objective.id, title: "Platform evidence", content: "immutable", visibility: "objective_private", idempotency_key: "artifact-create-1" } };
     const created = await f.service.execute(input);
     assert.equal(created.actorSessionId, "provider:platform");
@@ -69,7 +69,7 @@ test("platform Artifact create is explicitly Objective-scoped, Session-attribute
     assert.equal(replay.idempotentReplay, true);
     assert.equal(replay.result.artifactId, created.result.artifactId);
     await assert.rejects(() => f.service.execute({ ...input, arguments: { ...input.arguments, title: "Changed" } }), { code: "IDEMPOTENCY_CONFLICT" });
-    await assert.rejects(() => f.service.execute({ ...input, arguments: { ...input.arguments, idempotency_key: "bad-ref", visibility: "work_item_private", bound_work_item_id: wrongWorkItem.id } }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
+    await assert.rejects(() => f.service.execute({ ...input, arguments: { ...input.arguments, idempotency_key: "bad-ref", visibility: "task_private", bound_task_id: wrongTask.id } }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
     assert.equal(f.store.listArtifactsByObjective(objective.id).length, 1);
     await assert.rejects(() => f.service.execute({ ...input, arguments: { ...input.arguments, idempotency_key: "unknown", invented: true } }), { code: "UNKNOWN_FIELD" });
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
@@ -96,18 +96,18 @@ test("platform collaboration discovers exact Sessions, starts shared-lifecycle W
   try {
     const workerAgent = f.store.createAgent({ name: "Worker", role: "independentContributor" });
     const objective = f.objectiveService.createObjective({ name: "Target", contributorAgentIds: [workerAgent.agentId] });
-    const workItem = f.objectiveService.createWorkItem({ objectiveId: objective.id, title: "Target work", mainAgentId: workerAgent.agentId });
+    const task = f.objectiveService.createTask({ objectiveId: objective.id, title: "Target work", mainAgentId: workerAgent.agentId });
     bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
-    bindSession(f, { id: "provider:target", logicalId: "session:target", agentId: workerAgent.agentId, kind: "worker", objectiveId: objective.id, workItemId: workItem.id });
+    bindSession(f, { id: "provider:target", logicalId: "session:target", agentId: workerAgent.agentId, kind: "worker", objectiveId: objective.id, taskId: task.id });
     const discovered = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "discover_sessions", objective_id: objective.id } });
     assert.deepEqual(discovered.result.sessions.map((entry) => entry.sessionId), ["session:target"]);
-    await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "start_worker", work_item_id: workItem.id, agent_id: workerAgent.agentId, provider_id: "claude-sdk", idempotency_key: "start-worker" } });
-    assert.equal(f.started[0].workItemId, workItem.id);
+    await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "start_worker", task_id: task.id, agent_id: workerAgent.agentId, provider_id: "claude-sdk", idempotency_key: "start-worker" } });
+    assert.equal(f.started[0].taskId, task.id);
     const proposed = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "request", session_id: "session:target", title: "Review", summary: "Review the target", type: "question", idempotency_key: "request-target" } });
     assert.equal(proposed.result.confirmation.request.initiatorSessionId, "session:platform");
     assert.equal(proposed.result.confirmation.request.recipientSessionId, "session:target");
     assert.ok(proposed.result.confirmation.request.recipientSessionId);
-    assert.equal(f.store.selectAll("SELECT * FROM collaboration_tasks").length, 0, "staging never creates a formal Task before user confirmation");
+    assert.equal(f.store.selectAll("SELECT * FROM collaboration_requests").length, 0, "staging never creates a formal Task before user confirmation");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 

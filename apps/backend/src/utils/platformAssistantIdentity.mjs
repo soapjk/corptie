@@ -8,7 +8,7 @@ export const AGENT_KIND = Object.freeze({
 export const PLATFORM_ASSISTANT_MANIFEST = Object.freeze({
   agentId: PLATFORM_ASSISTANT_ID,
   defaultName: "Corptie",
-  description: "Corptie 平台助手：代用户管理 Agent、Objective、WorkItem、Session 与其他 Corptie 产品能力。",
+  description: "Corptie 平台助手：代用户管理 Agent、Objective、Task、Session 与其他 Corptie 产品能力。",
   role: "assistant",
   capabilities: Object.freeze(["platform.manage"]),
   systemPrompt: [

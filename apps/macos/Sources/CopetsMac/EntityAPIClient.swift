@@ -15,13 +15,13 @@ struct EntityRefreshGeneration: Equatable {
 }
 
 private struct SessionGroupingEntityState: Equatable {
-    let workItems: [String: WorkItem]
+    let tasks: [String: CorptieTask]
     let objectives: [String: Objective]
     let agents: [String: Agent]
 }
 
 // 实体层轻量 API 客户端（15 Phase 5 净新增）。
-// 独立于 BackendClient.swift 巨石，直连后端 entityHttpApi（/objectives、/work-items）。
+// 独立于 BackendClient.swift 巨石，直连后端 entityHttpApi（/objectives、/tasks）。
 // 与 BackendClient 使用相同后端地址（CorptieAppEnvironment.backendBaseURL）与 URLSession 模式。
 
 @MainActor
@@ -31,10 +31,10 @@ final class EntityAPIClient: ObservableObject {
     private let appState: AppStateStore
     var objectives: [Objective] { appState.objectives }
     var agents: [Agent] { appState.agents }
-    var workItems: [WorkItem] { appState.workItems }
-    @Published private(set) var workItemsRevision: UInt64 = 0
+    var tasks: [CorptieTask] { appState.tasks }
+    @Published private(set) var tasksRevision: UInt64 = 0
     let sessionGroupingDidChange = PassthroughSubject<Void, Never>()
-    @Published private(set) var workItemsLoadError: String?
+    @Published private(set) var tasksLoadError: String?
     @Published private(set) var objectivesLoadError: String?
 
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
@@ -59,19 +59,19 @@ final class EntityAPIClient: ObservableObject {
         self.appState = appState
 
         appState.$state
-            .map(\.workItems)
+            .map(\.tasks)
             .removeDuplicates()
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.workItemsRevision &+= 1
+                self?.tasksRevision &+= 1
             }
             .store(in: &appStateCancellables)
 
         appState.$state
             .map { state in
                 SessionGroupingEntityState(
-                    workItems: state.workItems,
+                    tasks: state.tasks,
                     objectives: state.objectives,
                     agents: state.agents
                 )
@@ -131,41 +131,41 @@ final class EntityAPIClient: ObservableObject {
         errorMessage = appState.syncError
     }
 
-    func workItems(for objective: Objective) async -> [WorkItem]? {
-        appState.workItems.filter { $0.objectiveId == objective.id }
+    func tasks(for objective: Objective) async -> [CorptieTask]? {
+        appState.tasks.filter { $0.objectiveId == objective.id }
     }
 
-    func allWorkItems() async -> [WorkItem]? {
-        appState.workItems
+    func allCorptieTasks() async -> [CorptieTask]? {
+        appState.tasks
     }
 
-    func clearWorkItemsLoadError() {
-        workItemsLoadError = nil
+    func clearCorptieTasksLoadError() {
+        tasksLoadError = nil
     }
 
-    private func loadWorkItems(from url: URL) async -> [WorkItem]? {
+    private func loadCorptieTasks(from url: URL) async -> [CorptieTask]? {
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
                 throw EntityLaunchError(
-                    message: envelope?.error ?? "加载 WorkItem 失败（HTTP \(http.statusCode)）",
+                    message: envelope?.error ?? "加载 CorptieTask 失败（HTTP \(http.statusCode)）",
                     code: envelope?.code
                 )
             }
-            let workItems = try decoder.decode(WorkItemListEnvelope.self, from: data).workItems
-            workItemsLoadError = nil
+            let tasks = try decoder.decode(CorptieTaskListEnvelope.self, from: data).tasks
+            tasksLoadError = nil
             errorMessage = nil
-            return workItems
+            return tasks
         } catch {
-            let message = Self.workItemsLoadErrorMessage(error)
-            workItemsLoadError = message
+            let message = Self.tasksLoadErrorMessage(error)
+            tasksLoadError = message
             errorMessage = message
             return nil
         }
     }
 
-    static func workItemsLoadErrorMessage(_ error: Error) -> String {
+    static func tasksLoadErrorMessage(_ error: Error) -> String {
         let detail: String
         if let launchError = error as? EntityLaunchError {
             detail = launchError.message
@@ -184,56 +184,60 @@ final class EntityAPIClient: ObservableObject {
         } else {
             detail = error.localizedDescription
         }
-        return "WorkItem 加载失败；未用空列表覆盖现有内容。此错误不代表数据已删除。\(detail)"
+        return "CorptieTask 加载失败；未用空列表覆盖现有内容。此错误不代表数据已删除。\(detail)"
     }
 
-    func workItem(id: String) async -> WorkItem? {
+    func task(id: String) async -> CorptieTask? {
         do {
-            let url = baseURL.appending(path: "work-items/\(id)")
+            let url = baseURL.appending(path: "tasks/\(id)")
             let (data, response) = try await URLSession.shared.data(from: url)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-                errorMessage = "加载 WorkItem 失败（HTTP \(http.statusCode)）"
+                errorMessage = "加载 CorptieTask 失败（HTTP \(http.statusCode)）"
                 return nil
             }
-            let workItem = try decoder.decode(WorkItem.self, from: data)
+            let task = try decoder.decode(CorptieTask.self, from: data)
             errorMessage = nil
-            return workItem
+            return task
         } catch {
             errorMessage = error.localizedDescription
             return nil
         }
     }
 
-    // 更新 WorkItem：PATCH /work-items/:id → workItem（直接返回对象，非 envelope）
+    // 更新 CorptieTask：PATCH /tasks/:id → task（直接返回对象，非 envelope）
     @discardableResult
-    func updateWorkItem(workItemId: String, title: String? = nil, description: String? = nil,
+    func updateCorptieTask(taskId: String, title: String? = nil, description: String? = nil,
+                        goal: String? = nil,
                         acceptanceCriteria: String? = nil,
-                        priority: String? = nil, status: String? = nil, mainWorkspaceId: String? = nil,
-                        mainAgentId: String? = nil) async -> WorkItem? {
-        var request = URLRequest(url: baseURL.appending(path: "work-items/\(workItemId)"))
+                        verificationCriteria: String? = nil,
+                        priority: String? = nil, lifecycleState: String? = nil, mainWorkspaceId: String? = nil,
+                        mainAgentId: String? = nil) async -> CorptieTask? {
+        var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = [:]
         if let title { body["title"] = title }
         if let description { body["description"] = description }
+        if let goal { body["goal"] = goal }
         if let acceptanceCriteria { body["acceptanceCriteria"] = acceptanceCriteria }
+        if let verificationCriteria { body["verificationCriteria"] = verificationCriteria }
         if let priority { body["priority"] = priority }
-        if let status { body["status"] = status }
+        if let lifecycleState { body["lifecycleState"] = lifecycleState }
         if let mainWorkspaceId { body["mainWorkspaceId"] = mainWorkspaceId }
         if let mainAgentId { body["mainAgentId"] = mainAgentId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        return await performEntityMutation(request, as: WorkItem.self)
+        return await performEntityMutation(request, as: CorptieTask.self)
     }
 
-    func inspectWorkItemDeletion(workItemId: String) async -> WorkItemDeletionPlan? {
-        let url = baseURL.appending(path: "work-items/\(workItemId)/deletion")
+    func inspectCorptieTaskDeletion(taskId: String) async -> CorptieTaskDeletionPlan? {
+        let url = baseURL.appending(path: "tasks/\(taskId)/deletion")
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to inspect WorkItem deletion."), code: envelope?.code)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to inspect CorptieTask deletion."), code: envelope?.code)
             }
-            let plan = try decoder.decode(WorkItemDeletionPlan.self, from: data)
+            let plan = try decoder.decode(CorptieTaskDeletionPlan.self, from: data)
             errorMessage = nil
             return plan
         } catch {
@@ -242,12 +246,12 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    func deleteWorkItem(
-        workItemId: String,
+    func deleteCorptieTask(
+        taskId: String,
         force: Bool = false,
         confirmedBranchName: String? = nil
     ) async -> Bool {
-        var request = URLRequest(url: baseURL.appending(path: "work-items/\(workItemId)/actions/delete"))
+        var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/actions/delete"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["mode": force ? "force" : "safe"]
@@ -260,10 +264,10 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to delete WorkItem."), code: envelope?.code)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to delete CorptieTask."), code: envelope?.code)
             }
-            let result = try decoder.decode(WorkItemDeletionResult.self, from: data)
-            guard result.ok else { throw EntityLaunchError(message: L10n("WorkItem deletion did not complete."), code: "DELETE_INCOMPLETE") }
+            let result = try decoder.decode(CorptieTaskDeletionResult.self, from: data)
+            guard result.ok else { throw EntityLaunchError(message: L10n("CorptieTask deletion did not complete."), code: "DELETE_INCOMPLETE") }
             await AppStateSyncController.shared.refreshSnapshot()
             if let syncError = appState.syncError { throw EntityLaunchError(message: syncError, code: "STATE_SYNC_FAILED") }
             errorMessage = nil
@@ -274,34 +278,34 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    func issueWorkItemCompletionIntent(
-        workItem: WorkItem,
+    func issueCorptieTaskCompletionIntent(
+        task: CorptieTask,
         interactionId: String,
         requestId: String,
         uiSurface: String
-    ) async -> WorkItemCompletionIntentReceipt? {
+    ) async -> CorptieTaskCompletionIntentReceipt? {
         var request = URLRequest(
-            url: baseURL.appending(path: "work-items/\(workItem.id)/completion-intents")
+            url: baseURL.appending(path: "tasks/\(task.id)/completion-intents")
         )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let acceptanceStatus = workItem.acceptanceAssessment?.status ?? "not_assessed"
+        let acceptanceStatus = task.acceptanceAssessment?.status ?? "not_assessed"
         request.httpBody = try? JSONSerialization.data(withJSONObject: [
             "requestId": requestId,
             "interactionId": interactionId,
             "uiSurface": uiSurface,
-            "displayedWorkItemId": workItem.id,
-            "displayedWorkItemTitle": workItem.title,
+            "displayedTaskId": task.id,
+            "displayedTaskTitle": task.title,
             "displayedAcceptanceStatus": acceptanceStatus
         ])
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to authorize WorkItem completion"), code: envelope?.code)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to authorize CorptieTask completion"), code: envelope?.code)
             }
-            let receipt = try decoder.decode(WorkItemCompletionIntentReceipt.self, from: data)
-            guard receipt.workItemId == workItem.id, receipt.objectiveId == workItem.objectiveId,
+            let receipt = try decoder.decode(CorptieTaskCompletionIntentReceipt.self, from: data)
+            guard receipt.taskId == task.id, receipt.objectiveId == task.objectiveId,
                   receipt.interactionId == interactionId else {
                 throw EntityLaunchError(message: L10n("Completion authorization target mismatch"), code: "COMPLETION_INTENT_TARGET_MISMATCH")
             }
@@ -316,11 +320,11 @@ final class EntityAPIClient: ObservableObject {
     // Consumes the exact immutable receipt captured at the user's click. Retry
     // uses the same request/idempotency keys and never reads current selection.
     @discardableResult
-    func confirmWorkItemCompletion(submission: WorkItemCompletionSubmission) async -> WorkItem? {
-        let workItemId = submission.workItemId
+    func confirmCorptieTaskCompletion(submission: CorptieTaskCompletionSubmission) async -> CorptieTask? {
+        let taskId = submission.taskId
         let receipt = submission.receipt
         var request = URLRequest(
-            url: baseURL.appending(path: "work-items/\(workItemId)/confirm-completion")
+            url: baseURL.appending(path: "tasks/\(taskId)/confirm-completion")
         )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -333,25 +337,25 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to confirm WorkItem completion"), code: envelope?.code)
+                throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to confirm CorptieTask completion"), code: envelope?.code)
             }
-            let result = try decoder.decode(WorkItemCompletionEnvelope.self, from: data)
-            guard result.workItem.id == workItemId else {
+            let result = try decoder.decode(CorptieTaskCompletionEnvelope.self, from: data)
+            guard result.task.id == taskId else {
                 throw EntityLaunchError(message: L10n("Completion response target mismatch"), code: "COMPLETION_RESPONSE_TARGET_MISMATCH")
             }
-            appState.acceptWorkItem(result.workItem)
+            appState.acceptCorptieTask(result.task)
             await AppStateSyncController.shared.refreshSnapshot()
             errorMessage = nil
-            return result.workItem
+            return result.task
         } catch {
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
     }
 
-    func restoreWorkItemExecution(workItemId: String) async -> EntityWorkItemRestoreResult {
+    func restoreCorptieTaskExecution(taskId: String) async -> EntityCorptieTaskRestoreResult {
         var request = URLRequest(
-            url: baseURL.appending(path: "work-items/\(workItemId)/actions/restore")
+            url: baseURL.appending(path: "tasks/\(taskId)/actions/restore")
         )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -361,11 +365,11 @@ final class EntityAPIClient: ObservableObject {
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                let message = envelope?.error ?? L10n("Unable to restore WorkItem execution")
+                let message = envelope?.error ?? L10n("Unable to restore CorptieTask execution")
                 errorMessage = message
                 return .failure(message: message, code: envelope?.code)
             }
-            let restored = try decoder.decode(WorkItemRestoreEnvelope.self, from: data).workItem
+            let restored = try decoder.decode(CorptieTaskRestoreEnvelope.self, from: data).task
             errorMessage = nil
             return .success(restored)
         } catch {
@@ -375,9 +379,9 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    func worktreeStatus(workItemId: String) async -> WorkItemWorktreeStatus? {
+    func worktreeStatus(taskId: String) async -> CorptieTaskWorktreeStatus? {
         do {
-            let url = baseURL.appending(path: "work-items/\(workItemId)/worktree")
+            let url = baseURL.appending(path: "tasks/\(taskId)/worktree")
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
@@ -387,7 +391,7 @@ final class EntityAPIClient: ObservableObject {
                     code: envelope?.code
                 )
             }
-            let status = try decoder.decode(WorkItemWorktreeStatus.self, from: data)
+            let status = try decoder.decode(CorptieTaskWorktreeStatus.self, from: data)
             errorMessage = nil
             return status
         } catch {
@@ -396,9 +400,9 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    func reclaimWorktree(workItemId: String) async -> WorkItemWorktreeStatus? {
+    func reclaimWorktree(taskId: String) async -> CorptieTaskWorktreeStatus? {
         var request = URLRequest(
-            url: baseURL.appending(path: "work-items/\(workItemId)/worktree/reclaim")
+            url: baseURL.appending(path: "tasks/\(taskId)/worktree/reclaim")
         )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -413,7 +417,7 @@ final class EntityAPIClient: ObservableObject {
                     code: envelope?.code
                 )
             }
-            let status = try decoder.decode(WorkItemWorktreeStatus.self, from: data)
+            let status = try decoder.decode(CorptieTaskWorktreeStatus.self, from: data)
             errorMessage = nil
             return status
         } catch {
@@ -424,26 +428,26 @@ final class EntityAPIClient: ObservableObject {
 
     // 用户明确驳回已通过的自动验收结论，保留评估证据但撤销“可完成”建议。
     @discardableResult
-    func rejectWorkItemAcceptance(workItemId: String) async -> WorkItem? {
+    func rejectCorptieTaskAcceptance(taskId: String) async -> CorptieTask? {
         var request = URLRequest(
-            url: baseURL.appending(path: "work-items/\(workItemId)/reject-acceptance")
+            url: baseURL.appending(path: "tasks/\(taskId)/reject-acceptance")
         )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["rejected": true])
-        return await performEntityMutation(request, as: WorkItem.self)
+        return await performEntityMutation(request, as: CorptieTask.self)
     }
 
     // 提交独立的验收评估。该接口要求逐条标准、结论和可核验证据；
     // Session 生命周期状态不能通过此方法隐式转换为验收通过。
     @discardableResult
     func submitAcceptanceAssessment(
-        workItemId: String,
+        taskId: String,
         sourceSessionId: String,
-        results: [WorkItemAcceptanceResult]
-    ) async -> WorkItem? {
+        results: [CorptieTaskAcceptanceResult]
+    ) async -> CorptieTask? {
         var request = URLRequest(
-            url: baseURL.appending(path: "work-items/\(workItemId)/acceptance-assessment")
+            url: baseURL.appending(path: "tasks/\(taskId)/acceptance-assessment")
         )
         request.httpMethod = "PUT"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -461,22 +465,24 @@ final class EntityAPIClient: ObservableObject {
                     code: envelope?.code
                 )
             }
-            let workItem = try decoder.decode(WorkItem.self, from: data)
+            let task = try decoder.decode(CorptieTask.self, from: data)
             errorMessage = nil
-            return workItem
+            return task
         } catch {
             errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
             return nil
         }
     }
 
-    // 创建 WorkItem：POST /work-items { objectiveId, title, mainAgentId, ... } → workItem
+    // 创建 CorptieTask：POST /tasks { objectiveId, title, mainAgentId, ... } → task
     @discardableResult
-    func createWorkItem(id: String? = nil, objectiveId: String, title: String, description: String? = nil,
+    func createCorptieTask(id: String? = nil, objectiveId: String, title: String, description: String? = nil,
+                        goal: String? = nil,
                         acceptanceCriteria: String? = nil,
+                        verificationCriteria: String? = nil,
                         mainWorkspaceId: String? = nil, mainAgentId: String? = nil,
-                        priority: String? = nil) async -> WorkItem? {
-        var request = URLRequest(url: baseURL.appending(path: "work-items"))
+                        priority: String? = nil) async -> CorptieTask? {
+        var request = URLRequest(url: baseURL.appending(path: "tasks"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let id, !id.isEmpty {
@@ -485,22 +491,72 @@ final class EntityAPIClient: ObservableObject {
         var body: [String: Any] = ["objectiveId": objectiveId, "title": title]
         if let id, !id.isEmpty { body["id"] = id }
         if let description, !description.isEmpty { body["description"] = description }
+        if let goal, !goal.isEmpty { body["goal"] = goal }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
+        if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }
         if let mainWorkspaceId, !mainWorkspaceId.isEmpty { body["mainWorkspaceId"] = mainWorkspaceId }
         if let mainAgentId, !mainAgentId.isEmpty { body["mainAgentId"] = mainAgentId }
         if let priority { body["priority"] = priority }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        return await performEntityMutation(request, as: WorkItem.self)
+        return await performEntityMutation(request, as: CorptieTask.self)
     }
 
-    // WorkItem execution history is a selector over the unified AppStateStore.
+    func taskSnapshots(taskId: String) async -> [CorptieTaskSnapshot] {
+        do {
+            let url = baseURL.appending(path: "tasks/\(taskId)/snapshots")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                throw EntityLaunchError(message: L10n("Unable to load Task history."), code: "TASK_SNAPSHOTS_LOAD_FAILED")
+            }
+            let envelope = try decoder.decode(CorptieTaskSnapshotListEnvelope.self, from: data)
+            errorMessage = nil
+            return envelope.snapshots
+        } catch {
+            errorMessage = (error as? EntityLaunchError)?.message ?? error.localizedDescription
+            return []
+        }
+    }
+
+    @discardableResult
+    func reviseCorptieTask(
+        task: CorptieTask,
+        createdBySessionId: String,
+        title: String,
+        description: String,
+        goal: String,
+        acceptanceCriteria: String,
+        verificationCriteria: String,
+        executionSummary: String,
+        sourceMessageId: String? = nil
+    ) async -> CorptieTaskRevisionEnvelope? {
+        var request = URLRequest(url: baseURL.appending(path: "tasks/\(task.id)/revisions"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var body: [String: Any] = [
+            "expectedRevision": task.revision,
+            "createdBySessionId": createdBySessionId,
+            "executionSummary": executionSummary,
+            "next": [
+                "title": title,
+                "description": description,
+                "goal": goal,
+                "acceptanceCriteria": acceptanceCriteria,
+                "verificationCriteria": verificationCriteria
+            ]
+        ]
+        if let sourceMessageId { body["sourceMessageId"] = sourceMessageId }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        return await performEntityMutation(request, as: CorptieTaskRevisionEnvelope.self)
+    }
+
+    // CorptieTask execution history is a selector over the unified AppStateStore.
     // There is no view-local HTTP cache to drift from the session list.
-    func sessions(for workItem: WorkItem) async -> [WorkItemSessionSummary] {
+    func sessions(for task: CorptieTask) async -> [CorptieTaskSessionSummary] {
         appState.sessions
-            .filter { $0.workItemId == workItem.id }
+            .filter { $0.taskId == task.id }
             .sorted { $0.updatedAt > $1.updatedAt }
             .map {
-                WorkItemSessionSummary(
+                CorptieTaskSessionSummary(
                     id: $0.id,
                     title: $0.title,
                     status: $0.status.rawValue,
@@ -560,7 +616,7 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 查某 owner（如 work_item）的记忆：GET /memories?ownerType=&ownerId= → { memories }
+    // 查某 owner（如 task）的记忆：GET /memories?ownerType=&ownerId= → { memories }
     func memories(ownerType: String, ownerId: String, includeRevoked: Bool = false) async -> [MemoryItem]? {
         var components = URLComponents(url: baseURL.appending(path: "memories"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
@@ -718,10 +774,10 @@ final class EntityAPIClient: ObservableObject {
         throw EntityLaunchError(message: envelope?.error ?? "Memory request failed (HTTP \(http.statusCode)).", code: envelope?.code)
     }
 
-    // 创建 Worker Session：必须同时绑定 WorkItem 与 Independent Contributor。
+    // 创建 Worker Session：必须同时绑定 CorptieTask 与 Independent Contributor。
     @discardableResult
     func createSession(
-        workItemId: String,
+        taskId: String,
         agentId: String,
         providerId: String,
         title: String? = nil
@@ -731,9 +787,9 @@ final class EntityAPIClient: ObservableObject {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         // Stable for retries of the same launch intent, while selecting a
         // different Agent or Provider intentionally starts a new operation.
-        let operationID = "work-item-start:\(workItemId):\(agentId):\(providerId)"
+        let operationID = "task-start:\(taskId):\(agentId):\(providerId)"
         request.setValue(operationID, forHTTPHeaderField: "X-Corptie-Operation-Id")
-        var body: [String: Any] = ["workItemId": workItemId, "agentId": agentId, "providerId": providerId]
+        var body: [String: Any] = ["taskId": taskId, "agentId": agentId, "providerId": providerId]
         if let title { body["title"] = title }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         do {
@@ -746,8 +802,8 @@ final class EntityAPIClient: ObservableObject {
             }
             let created = try decoder.decode(WorkSessionCreateEnvelope.self, from: data)
             let startup = created.start
-            guard startup.receipt.workItemId == workItemId,
-                  created.session.workItemId == startup.receipt.workItemId,
+            guard startup.receipt.taskId == taskId,
+                  created.session.taskId == startup.receipt.taskId,
                   created.session.objectiveId == startup.receipt.objectiveId,
                   created.session.sessionKind == .worker,
                   (startup.receipt.logicalSessionId.hasPrefix("session:")
@@ -767,7 +823,7 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // Assistant Chat Session：仅凭 Assistant 开聊，不绑定 WorkItem。
+    // Assistant Chat Session：仅凭 Assistant 开聊，不绑定 CorptieTask。
     @discardableResult
     func startAgentSession(
         agentId: String,
@@ -1212,11 +1268,11 @@ final class EntityAPIClient: ObservableObject {
                 return nil
             }
             let value = try decoder.decode(type, from: data)
-            // Apply a successful WorkItem mutation before the follow-up snapshot.
+            // Apply a successful CorptieTask mutation before the follow-up snapshot.
             // This is the command's read-your-write boundary: a bind-then-start
             // action in the same UI turn must not keep using the stale nil binding.
-            if let workItem = value as? WorkItem {
-                appState.acceptWorkItem(workItem)
+            if let task = value as? CorptieTask {
+                appState.acceptCorptieTask(task)
             }
             await AppStateSyncController.shared.refreshSnapshot()
             errorMessage = nil
@@ -1241,5 +1297,5 @@ private struct AssistDraftResponse: Decodable {
 
 private struct AcceptanceAssessmentRequest: Encodable {
     let sourceSessionId: String
-    let results: [WorkItemAcceptanceResult]
+    let results: [CorptieTaskAcceptanceResult]
 }
