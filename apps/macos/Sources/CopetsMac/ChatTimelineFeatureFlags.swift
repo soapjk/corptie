@@ -46,7 +46,7 @@ struct ChatTimelineFeatureFlags: Equatable, Sendable {
                 environmentKey: "CORPTIE_CHAT_INITIAL_DISPLAY_WEIGHT",
                 defaults: defaults,
                 defaultsKey: "chat.initialDisplayWeight",
-                defaultValue: 7,
+                defaultValue: 20,
                 range: 1...500
             ),
             uiBatchIntervalMilliseconds: integerValue(
