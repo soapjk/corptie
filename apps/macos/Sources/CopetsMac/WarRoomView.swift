@@ -26,6 +26,9 @@ struct WarRoomView: View {
     @State private var tasksReloadToken = 0
     @State private var isCreatingObjective = false
     @State private var objectivePendingEdit: Objective?
+    @State private var objectivePendingDeletion: Objective?
+    @State private var objectiveDeletionError: String?
+    @State private var taskPendingEdit: CorptieTask?
     @State private var deletionPresentation: CorptieTaskDeletionPresentation?
     @State private var deletionNotice: CorptieTaskDeletionNotice?
     @State private var inspectingDeletionIds = Set<String>()
@@ -113,6 +116,36 @@ struct WarRoomView: View {
         }
         .sheet(item: $objectivePendingEdit) { objective in
             ObjectiveDetailView(objective: objective)
+        }
+        .sheet(item: $taskPendingEdit) { task in
+            let workspaceIds = client.objectives.first(where: { $0.id == task.objectiveId })?.workspaceIds ?? []
+            CorptieTaskEditView(task: task, workspaceIds: workspaceIds) {
+                tasksReloadToken &+= 1
+            }
+        }
+        .alert(L10n("删除 Objective"), isPresented: Binding(
+            get: { objectivePendingDeletion != nil },
+            set: { if !$0 { objectivePendingDeletion = nil } }
+        )) {
+            Button(L10n("删除"), role: .destructive) {
+                guard let objective = objectivePendingDeletion else { return }
+                objectivePendingDeletion = nil
+                Task { await deleteObjective(objective) }
+            }
+            Button(L10n("取消"), role: .cancel) { objectivePendingDeletion = nil }
+        } message: {
+            Text(L10nFormat(
+                "Delete “%@”? All of its CorptieTasks will be deleted. This action cannot be undone.",
+                objectivePendingDeletion?.name ?? ""
+            ))
+        }
+        .alert(L10n("Objective deletion failed"), isPresented: Binding(
+            get: { objectiveDeletionError != nil },
+            set: { if !$0 { objectiveDeletionError = nil } }
+        )) {
+            Button(L10n("OK"), role: .cancel) { objectiveDeletionError = nil }
+        } message: {
+            Text(objectiveDeletionError ?? "")
         }
         .sheet(item: $deletionPresentation) { presentation in
             CorptieTaskDeletionConfirmationView(
@@ -205,10 +238,19 @@ struct WarRoomView: View {
             } else {
                 ForEach(client.objectives) { objective in
                     Label(objective.name, systemImage: "target")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                         .tag(objective.id)
                         .contextMenu {
-                            Button(L10n("编辑")) {
+                            Button(L10n("View Tasks"), systemImage: "rectangle.grid.1x2") {
+                                selectedObjectiveId = objective.id
+                            }
+                            Button(L10n("编辑"), systemImage: "square.and.pencil") {
                                 objectivePendingEdit = objective
+                            }
+                            Divider()
+                            Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+                                objectivePendingDeletion = objective
                             }
                         }
                 }
@@ -277,6 +319,7 @@ struct WarRoomView: View {
                 items: tasks,
                 selectedCorptieTaskId: $selectedCorptieTaskId,
                 pendingDeletionIds: pendingDeletionIds,
+                onRequestEdit: { taskPendingEdit = $0 },
                 onRequestDeletion: { item in Task { await prepareDeletion(item) } },
                 onRequestReload: { tasksReloadToken &+= 1 },
                 onRequestLoadMore: loadMoreTasks
@@ -287,6 +330,7 @@ struct WarRoomView: View {
                 items: tasks,
                 selectedCorptieTaskId: $selectedCorptieTaskId,
                 pendingDeletionIds: pendingDeletionIds,
+                onRequestEdit: { taskPendingEdit = $0 },
                 onRequestDeletion: { item in Task { await prepareDeletion(item) } },
                 onRequestReload: { tasksReloadToken &+= 1 },
                 onRequestLoadMore: loadMoreTasks
@@ -383,6 +427,16 @@ struct WarRoomView: View {
 
     private var pendingDeletionIds: Set<String> {
         inspectingDeletionIds.union(deletingCorptieTaskIds)
+    }
+
+    private func deleteObjective(_ objective: Objective) async {
+        guard await client.deleteObjective(objectiveId: objective.id) else {
+            objectiveDeletionError = client.errorMessage ?? L10n("Unable to delete Objective.")
+            return
+        }
+        if selectedObjectiveId == objective.id {
+            selectedObjectiveId = WarRoomObjectiveScope.allSelectionId
+        }
     }
 
     private func prepareDeletion(_ task: CorptieTask) async {
@@ -659,6 +713,7 @@ struct CorptieTaskBoardView: View {
     let items: [CorptieTask]
     @Binding var selectedCorptieTaskId: String?
     let pendingDeletionIds: Set<String>
+    let onRequestEdit: (CorptieTask) -> Void
     let onRequestDeletion: (CorptieTask) -> Void
     var onRequestReload: () -> Void = {}
     var onRequestLoadMore: () async -> Void = {}
@@ -694,6 +749,7 @@ struct CorptieTaskBoardView: View {
                         sessions: backendClient.sessions,
                         selectedCorptieTaskId: $selectedCorptieTaskId,
                         pendingDeletionIds: pendingDeletionIds,
+                        onRequestEdit: onRequestEdit,
                         onRequestDeletion: onRequestDeletion,
                         isCollapsed: Binding(
                             get: { collapsedColumns.contains(column) },
@@ -760,6 +816,7 @@ struct CorptieTaskColumnView: View {
     let sessions: [TaskSession]
     @Binding var selectedCorptieTaskId: String?
     let pendingDeletionIds: Set<String>
+    let onRequestEdit: (CorptieTask) -> Void
     let onRequestDeletion: (CorptieTask) -> Void
     @Binding var isCollapsed: Bool
 
@@ -802,8 +859,17 @@ struct CorptieTaskColumnView: View {
                                 isSelected: selectedCorptieTaskId == item.id,
                                 isDeletionPending: pendingDeletionIds.contains(item.id)
                             )
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                                 .onTapGesture { selectedCorptieTaskId = item.id }
                                 .contextMenu {
+                                    Button(L10n("Open Details"), systemImage: "sidebar.right") {
+                                        selectedCorptieTaskId = item.id
+                                    }
+                                    Button(L10n("编辑"), systemImage: "square.and.pencil") {
+                                        onRequestEdit(item)
+                                    }
+                                    Divider()
                                     Button(role: .destructive) {
                                         onRequestDeletion(item)
                                     } label: {
