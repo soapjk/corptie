@@ -1,10 +1,5 @@
 import SwiftUI
 
-enum CorptieTaskCreateExecutionMode: Equatable {
-    case createOnly
-    case startImmediately
-}
-
 enum CorptieTaskCreateFormPolicy {
     static func availableAgents(from agents: [Agent], allowedAgentIds: Set<String>) -> [Agent] {
         agents.filter {
@@ -50,7 +45,7 @@ enum CorptieTaskCreateProviderPolicy {
     }
 }
 
-// 新建工作项表单（sheet）。Workspace 与 Agent 均为必填；创建和执行使用独立操作。
+// 新建工作项表单（sheet）。Task 与 Work Session 伴生，创建成功后立即启动其 Session。
 struct CorptieTaskCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -145,12 +140,8 @@ struct CorptieTaskCreateView: View {
             HStack {
                 Spacer()
                 Button(L10n("取消")) { dismiss() }
-                Button(L10n("仅创建不执行")) {
-                    submit(.createOnly)
-                }
-                .disabled(!canSubmit)
-                Button(L10n("创建后立即执行")) {
-                    submit(.startImmediately)
+                Button(L10n("创建")) {
+                    submit()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canSubmit || selectedProviderId.isEmpty)
@@ -230,11 +221,11 @@ struct CorptieTaskCreateView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if creatableProviders.isEmpty {
-                Text(L10n("没有可创建 Session 的 Provider，仍可仅创建 CorptieTask。"))
+                Text(L10n("没有可创建 Work Session 的 Provider，暂时无法创建 CorptieTask。"))
                     .font(.caption)
                     .foregroundStyle(.red)
             } else {
-                Text(L10n("仅在“创建后立即执行”时使用。"))
+                Text(L10n("创建 CorptieTask 后会立即创建并启动其伴生 Work Session。"))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -249,13 +240,13 @@ struct CorptieTaskCreateView: View {
         )
     }
 
-    private func submit(_ mode: CorptieTaskCreateExecutionMode) {
+    private func submit() {
         guard validationMessage == nil, let selectedAgentId else {
             submissionError = validationMessage ?? L10n("请选择负责该 CorptieTask 的 Agent。")
             return
         }
-        if mode == .startImmediately, selectedProviderId.isEmpty {
-            submissionError = L10n("没有可创建 Session 的 Provider，无法立即执行。")
+        guard !selectedProviderId.isEmpty else {
+            submissionError = L10n("没有可创建 Work Session 的 Provider，无法创建 CorptieTask。")
             return
         }
 
@@ -267,7 +258,7 @@ struct CorptieTaskCreateView: View {
         let requestAcceptanceCriteria = acceptanceCriteria
         let requestWorkspaceId = workspaceId
         let requestPriority = priority
-        let providerId = mode == .startImmediately ? selectedProviderId : nil
+        let providerId = selectedProviderId
         let started = BackgroundTaskCenter.shared.start(
             id: requestId,
             title: L10nFormat("创建 CorptieTask：%@", requestTitle)
@@ -294,12 +285,6 @@ struct CorptieTaskCreateView: View {
             }
             onCreated(task)
 
-            guard mode == .startImmediately else {
-                return .success(L10nFormat("CorptieTask“%@”已创建。", requestTitle))
-            }
-            guard let providerId else {
-                return .failure(L10n("CorptieTask 已创建，但没有可创建 Session 的 Provider；配置 Provider 后可重试执行。"))
-            }
             let latest = await PerfStopwatch.measure("CorptieTask.execute.existingSessionLookup") {
                 await client.task(id: task.id)
             }

@@ -538,7 +538,7 @@ struct WarRoomView: View {
     }
 }
 
-private struct CorptieTaskDeletionPresentation: Identifiable {
+struct CorptieTaskDeletionPresentation: Identifiable {
     let id = UUID()
     let task: CorptieTask
     let plan: CorptieTaskDeletionPlan
@@ -1729,11 +1729,8 @@ struct CorptieTaskDetailView: View {
         }
     }
 
-    // 执行/终止/确认完成控制按钮：圆形、仅图标。
-    // - 已完成 → 恢复按钮，通过原子恢复入口先校验/重建 Worktree 再恢复 Session。
-    // - 待确认完成（review）→ 绿色对勾按钮，点击弹确认框，确认后变已完成。
-    // - 运行中 → 终止按钮（红色停止图标）。
-    // - 其它（待开始 / 会话已存在但已停止）→ 执行按钮（播放图标）。
+    // Task 创建时已经自动启动伴生 Work Session，因此这里不再提供手动开始按钮。
+    // 仅保留运行中的终止操作，以及已完成 Task 的显式恢复操作。
     @ViewBuilder
     private var executionControlButton: some View {
         if isCompleted {
@@ -1761,19 +1758,6 @@ struct CorptieTaskDetailView: View {
             }
             .buttonStyle(.plain)
             .help(L10n("终止执行"))
-        } else {
-            Button {
-                Task { await startOrResumeExecution() }
-            } label: {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(Color.accentColor, in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(isLaunchingExecution)
-            .help(L10n(currentSession == nil ? "Run" : "Resume"))
         }
     }
 
@@ -1992,7 +1976,7 @@ struct CorptieTaskDetailView: View {
     }
 }
 
-private struct CorptieTaskDeletionConfirmationView: View {
+struct CorptieTaskDeletionConfirmationView: View {
     let task: CorptieTask
     let plan: CorptieTaskDeletionPlan
     let onCancel: () -> Void

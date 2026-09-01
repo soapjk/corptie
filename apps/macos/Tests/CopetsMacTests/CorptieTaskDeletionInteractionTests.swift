@@ -31,6 +31,18 @@ struct CorptieTaskDeletionInteractionTests {
     }
 
     @Test
+    func productionConsoleObjectiveAvatarsAndTaskRowsExposeContextActions() throws {
+        let source = try unifiedConsoleSource()
+
+        #expect(source.contains("private var objectiveRail: some View"))
+        #expect(source.contains("objectivePendingEdit = objective"))
+        #expect(source.contains("objectivePendingDeletion = objective"))
+        #expect(source.contains("private func taskRow(_ task: CorptieTask) -> some View"))
+        #expect(source.contains("taskPendingEdit = task"))
+        #expect(source.contains("Task { await prepareTaskDeletion(task) }"))
+    }
+
+    @Test
     func confirmedDeletionDismissesTheSheetBeforeStartingBackgroundWork() throws {
         let contents = try warRoomSource()
         let functionStart = try #require(contents.range(of: "private func enqueueDeletion("))
@@ -80,6 +92,18 @@ struct CorptieTaskDeletionInteractionTests {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac/WarRoomView.swift")
         return try String(contentsOf: source, encoding: .utf8)
+    }
+
+    private func unifiedConsoleSource() throws -> String {
+        let testsURL = URL(fileURLWithPath: #filePath)
+        let packageRoot = testsURL
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: packageRoot.appendingPathComponent("Sources/CopetsMac/UnifiedConsoleView.swift"),
+            encoding: .utf8
+        )
     }
 
     private func entityAPIClientSource() throws -> String {
