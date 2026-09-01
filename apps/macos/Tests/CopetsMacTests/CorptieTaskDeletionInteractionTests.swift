@@ -8,7 +8,7 @@ struct CorptieTaskDeletionInteractionTests {
         let contents = try warRoomSource()
 
         #expect(contents.contains(".contextMenu {"))
-        #expect(contents.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
+        #expect(!contents.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
         #expect(contents.contains("Button(L10n(\"编辑\"), systemImage: \"square.and.pencil\")"))
         #expect(contents.contains("Label(L10n(\"删除 CorptieTask\"), systemImage: \"trash\")"))
         #expect(contents.contains("onRequestDeletion(item)"))
@@ -38,6 +38,7 @@ struct CorptieTaskDeletionInteractionTests {
         #expect(source.contains("objectivePendingEdit = objective"))
         #expect(source.contains("objectivePendingDeletion = objective"))
         #expect(source.contains("private func taskRow(_ task: CorptieTask) -> some View"))
+        #expect(!source.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
         #expect(source.contains("taskPendingEdit = task"))
         #expect(source.contains("Task { await prepareTaskDeletion(task) }"))
     }

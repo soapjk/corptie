@@ -17,10 +17,10 @@ enum CorptieTaskCreateFormPolicy {
         agentId: String?
     ) -> String? {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return L10n("请输入工作项标题。")
+            return L10n("请输入 Task 标题。")
         }
         if detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return L10n("请输入工作项描述。")
+            return L10n("请输入 Task 描述。")
         }
         if workspaceId == nil {
             return L10n("请选择 Workspace。")
@@ -45,7 +45,7 @@ enum CorptieTaskCreateProviderPolicy {
     }
 }
 
-// 新建工作项表单（sheet）。Task 与 Work Session 伴生，创建成功后立即启动其 Session。
+// 新建 Task 表单（sheet）。Task 与 Work Session 伴生，创建成功后立即启动其 Session。
 struct CorptieTaskCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -67,7 +67,7 @@ struct CorptieTaskCreateView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(L10n("新建工作项"))
+            Text(L10n("新建 Task"))
                 .font(.title3.bold())
 
             FormAssistPanel(
@@ -88,7 +88,7 @@ struct CorptieTaskCreateView: View {
                 Text(L10n("标题 *"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                TextField(L10n("工作项标题"), text: $title)
+                TextField(L10n("Task 标题"), text: $title)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("描述 *"))

@@ -863,9 +863,6 @@ struct CorptieTaskColumnView: View {
                                 .contentShape(Rectangle())
                                 .onTapGesture { selectedCorptieTaskId = item.id }
                                 .contextMenu {
-                                    Button(L10n("Open Details"), systemImage: "sidebar.right") {
-                                        selectedCorptieTaskId = item.id
-                                    }
                                     Button(L10n("编辑"), systemImage: "square.and.pencil") {
                                         onRequestEdit(item)
                                     }
@@ -1076,6 +1073,7 @@ struct CorptieTaskDetailView: View {
     var onRequestDeletion: (() -> Void)?
     var onRequestReload: () -> Void = {}
     var showsHeader = true
+    var embedsInParentScroll = false
 
     @State private var currentSession: CorptieTaskSessionSummary?
     @State private var memories: [MemoryItem] = []
@@ -1112,52 +1110,12 @@ struct CorptieTaskDetailView: View {
                     .opacity(0.5)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    overviewSection
-
-                    detailTextSection(
-                        title: L10n("Goal"),
-                        systemImage: "scope",
-                        text: task.goal
-                    )
-
-                    detailTextSection(
-                        title: L10n("Description"),
-                        systemImage: "text.alignleft",
-                        text: task.description
-                    )
-
-                    detailTextSection(
-                        title: L10n("Acceptance Criteria"),
-                        systemImage: "checklist",
-                        text: task.acceptanceCriteria
-                    )
-
-                    detailTextSection(
-                        title: L10n("Verification Criteria"),
-                        systemImage: "checkmark.seal",
-                        text: task.verificationCriteria
-                    )
-
-                    ArtifactSectionView(objectiveId: task.objectiveId, taskId: task.id)
-
-                    Divider()
-
-                    executionSection
-
-                    if isCompleted {
-                        Divider()
-
-                        worktreeSection
-                    }
-
-                    Divider()
-
-                    memorySection
+            if embedsInParentScroll {
+                detailContent
+            } else {
+                ScrollView {
+                    detailContent
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(14)
             }
         }
         .task(id: task) {
@@ -1291,6 +1249,54 @@ struct CorptieTaskDetailView: View {
         } message: {
             Text(L10n("The merged Worktree and its local branch will be removed. Session history will be archived and preserved."))
         }
+    }
+
+    private var detailContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            overviewSection
+
+            detailTextSection(
+                title: L10n("Goal"),
+                systemImage: "scope",
+                text: task.goal
+            )
+
+            detailTextSection(
+                title: L10n("Description"),
+                systemImage: "text.alignleft",
+                text: task.description
+            )
+
+            detailTextSection(
+                title: L10n("Acceptance Criteria"),
+                systemImage: "checklist",
+                text: task.acceptanceCriteria
+            )
+
+            detailTextSection(
+                title: L10n("Verification Criteria"),
+                systemImage: "checkmark.seal",
+                text: task.verificationCriteria
+            )
+
+            ArtifactSectionView(objectiveId: task.objectiveId, taskId: task.id)
+
+            Divider()
+
+            executionSection
+
+            if isCompleted {
+                Divider()
+
+                worktreeSection
+            }
+
+            Divider()
+
+            memorySection
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
     }
 
     private var detailHeader: some View {

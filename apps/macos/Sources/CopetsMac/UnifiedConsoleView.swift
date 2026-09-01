@@ -48,6 +48,8 @@ struct UnifiedConsoleView: View {
     @EnvironmentObject private var sidebarState: TabSidebarState
     /// 「+」新建会话：明确选择 Assistant、Objective 或 Worker Session。
     @State private var showNewSessionCreation = false
+    @State private var isCreatingObjective = false
+    @State private var isCreatingTask = false
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
     @State private var collapsedGroupKeys: Set<String> = []
     @State private var entityGroupingRevision: UInt64 = 0
@@ -144,6 +146,20 @@ struct UnifiedConsoleView: View {
         }
         .sheet(item: $objectivePendingEdit) { objective in
             ObjectiveDetailView(objective: objective)
+        }
+        .sheet(isPresented: $isCreatingObjective) {
+            ObjectiveCreateView()
+        }
+        .sheet(isPresented: $isCreatingTask) {
+            if let objective = selectedObjective {
+                CorptieTaskCreateView(
+                    objectiveId: objective.id,
+                    workspaceIds: objective.workspaceIds,
+                    contributorAgentIds: objective.contributorAgentIds
+                ) { task in
+                    selectedTaskId = task.id
+                }
+            }
         }
         .sheet(item: $taskPendingEdit) { task in
             let workspaceIds = entityClient.objectives.first(where: { $0.id == task.objectiveId })?.workspaceIds ?? []
@@ -242,6 +258,22 @@ struct UnifiedConsoleView: View {
                 }
                 .padding(.vertical, 2)
             }
+
+            Divider()
+                .padding(.horizontal, 10)
+
+            Button {
+                isCreatingObjective = true
+            } label: {
+                consoleRailIcon(
+                    systemImage: "plus",
+                    label: L10n("New Objective"),
+                    isSelected: false
+                )
+            }
+            .buttonStyle(.plain)
+            .help(L10n("New Objective"))
+
             Spacer(minLength: 0)
         }
         .padding(.vertical, 10)
@@ -288,7 +320,7 @@ struct UnifiedConsoleView: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 searchToggleButton
-                newChatToolbarButton
+                newTaskOrChatToolbarButton
             }
             .padding(8)
 
@@ -488,9 +520,6 @@ struct UnifiedConsoleView: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
             .contextMenu {
-                Button(L10n("Open Details"), systemImage: "sidebar.right") {
-                    openTask(task, session: session)
-                }
                 Button(L10n("编辑"), systemImage: "square.and.pencil") {
                     taskPendingEdit = task
                 }
@@ -946,9 +975,13 @@ struct UnifiedConsoleView: View {
         backendClient.select(session: session)
     }
 
-    private var newChatToolbarButton: some View {
+    private var newTaskOrChatToolbarButton: some View {
         Button {
-            showNewSessionCreation = true
+            if selectedObjective == nil {
+                showNewSessionCreation = true
+            } else {
+                isCreatingTask = true
+            }
         } label: {
             Image(systemName: "plus")
                 .font(.system(size: 13, weight: .semibold))
@@ -956,7 +989,7 @@ struct UnifiedConsoleView: View {
                 .frame(width: 22, height: 22)
         }
         .buttonStyle(.plain)
-        .help(L10n("Create an Assistant, Objective, or Worker Session"))
+        .help(L10n(selectedObjective == nil ? "New Assistant Session" : "New Task"))
     }
 
     private var workerSessionFunctionBar: some View {
@@ -1688,16 +1721,18 @@ struct SessionDetailPanel: View {
     var body: some View {
         Group {
             if let taskId = session.taskId, !taskId.isEmpty {
-                VStack(spacing: 0) {
-                    sessionCard(decoratesSurface: false)
-                    .frame(height: 330)
-                    Divider()
-                        .opacity(0.5)
-                    SessionCorptieTaskDetailCard(
-                        taskId: taskId,
-                        decoratesSurface: false,
-                        showsHeader: false
-                    )
+                ScrollView {
+                    VStack(spacing: 0) {
+                        sessionCard(decoratesSurface: false, scrollsContent: false)
+                        Divider()
+                            .opacity(0.5)
+                        SessionCorptieTaskDetailCard(
+                            taskId: taskId,
+                            decoratesSurface: false,
+                            showsHeader: false,
+                            embedsInParentScroll: true
+                        )
+                    }
                 }
                 .modifier(DetailRailSurfaceModifier(enabled: true))
             } else {
@@ -1728,7 +1763,7 @@ struct SessionDetailPanel: View {
         }
     }
 
-    private func sessionCard(decoratesSurface: Bool) -> some View {
+    private func sessionCard(decoratesSurface: Bool, scrollsContent: Bool = true) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Text(session.resolvedSessionKind == .worker
@@ -1744,52 +1779,52 @@ struct SessionDetailPanel: View {
             Divider()
                 .opacity(0.5)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    statusCard
-
-                    SessionMemoryDiagnosticsView(session: session)
-
-                    ScheduledSessionStrip(session: session)
-
-                    SessionTurnObservabilityView(sessionId: session.id)
-
-                    if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {
-                        assistantSection
-                        contextReferencesSection
-                    }
-
-                    detailSection(title: "运行环境", systemImage: "cpu") {
-                        providerPicker
-                        detailFields(primaryFields)
-                    }
-
-                    if let cwd = session.external?.cwd, !cwd.isEmpty {
-                        detailSection(title: "工作空间", systemImage: "folder") {
-                            Text(compactPath(cwd))
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .lineLimit(2)
-                                .truncationMode(.middle)
-                                .textSelection(.enabled)
-                                .help(cwd)
-                        }
-                    }
-
-                    detailSection(title: "会话恢复边界", systemImage: "arrow.clockwise.circle") {
-                        Text(L10n("Corptie 可用本地 Timeline 重建可见消息、已固定的 Artifact 引用、权限与工具目录，但 Provider 的隐藏推理、KV cache、内部压缩或私有状态、未持久化事件、不确定的在途操作，以及没有本地副本的 Provider-only 附件无法恢复。历史工具和审批只作为不可执行证据恢复，不会重新运行，也不构成新的用户授权。"))
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityLabel(L10n("Provider 会话恢复限制"))
-                    }
+            if scrollsContent {
+                ScrollView {
+                    sessionDetailContent
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
+            } else {
+                sessionDetailContent
             }
         }
-        .frame(maxHeight: .infinity)
+        .frame(maxHeight: scrollsContent ? .infinity : nil)
         .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
+    }
+
+    private var sessionDetailContent: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            statusCard
+
+            SessionMemoryDiagnosticsView(session: session)
+
+            ScheduledSessionStrip(session: session)
+
+            SessionTurnObservabilityView(sessionId: session.id)
+
+            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {
+                assistantSection
+                contextReferencesSection
+            }
+
+            detailSection(title: "运行环境", systemImage: "cpu") {
+                providerPicker
+                detailFields(primaryFields)
+            }
+
+            if let cwd = session.external?.cwd, !cwd.isEmpty {
+                detailSection(title: "工作空间", systemImage: "folder") {
+                    Text(compactPath(cwd))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(cwd)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
     }
 
     private var statusCard: some View {
@@ -2359,6 +2394,7 @@ private struct SessionCorptieTaskDetailCard: View {
     let taskId: String
     var decoratesSurface = true
     var showsHeader = true
+    var embedsInParentScroll = false
     @State private var task: CorptieTask?
     @State private var isLoading = true
 
@@ -2373,7 +2409,8 @@ private struct SessionCorptieTaskDetailCard: View {
                     onRequestReload: {
                         Task { await entityClient.refreshObjectives() }
                     },
-                    showsHeader: showsHeader
+                    showsHeader: showsHeader,
+                    embedsInParentScroll: embedsInParentScroll
                 )
             } else if isLoading {
                 ProgressView()
@@ -2387,7 +2424,7 @@ private struct SessionCorptieTaskDetailCard: View {
                 )
             }
         }
-        .frame(maxHeight: .infinity)
+        .frame(maxHeight: embedsInParentScroll ? nil : .infinity)
         .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
         .task(id: taskId) {
             isLoading = true
