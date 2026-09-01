@@ -31,6 +31,13 @@ struct UnifiedConsoleView: View {
     /// nil 表示 Assistant 空间；非 nil 表示对应 Objective 的 Task 空间。
     @State private var selectedObjectiveId: String?
     @State private var selectedTaskId: String?
+    @State private var objectivePendingEdit: Objective?
+    @State private var objectivePendingDeletion: Objective?
+    @State private var objectiveDeletionError: String?
+    @State private var taskPendingEdit: CorptieTask?
+    @State private var taskDeletionPresentation: CorptieTaskDeletionPresentation?
+    @State private var taskDeletionError: String?
+    @State private var pendingTaskDeletionIds = Set<String>()
     @State private var isShowingWorkerArchive = false
     @State private var submittedReadSequencesBySessionID: [String: Int] = [:]
     @AppStorage(
@@ -135,6 +142,62 @@ struct UnifiedConsoleView: View {
                 restoreConsoleContentIfNeeded()
             }
         }
+        .sheet(item: $objectivePendingEdit) { objective in
+            ObjectiveDetailView(objective: objective)
+        }
+        .sheet(item: $taskPendingEdit) { task in
+            let workspaceIds = entityClient.objectives.first(where: { $0.id == task.objectiveId })?.workspaceIds ?? []
+            CorptieTaskEditView(task: task, workspaceIds: workspaceIds) {}
+        }
+        .sheet(item: $taskDeletionPresentation) { presentation in
+            CorptieTaskDeletionConfirmationView(
+                task: presentation.task,
+                plan: presentation.plan,
+                onCancel: { taskDeletionPresentation = nil },
+                onMergeFirst: {
+                    taskDeletionPresentation = nil
+                    taskDeletionError = L10nFormat(
+                        "CorptieTask 未删除。请先在项目 Worktree 管理中将分支 %@ 合并到目标主分支，确认无待提交文件后再重试删除。",
+                        presentation.plan.worktree?.branchName ?? ""
+                    )
+                },
+                onDelete: { force, branch in
+                    deleteTask(presentation.task, force: force, confirmedBranchName: branch)
+                }
+            )
+        }
+        .alert(L10n("删除 Objective"), isPresented: Binding(
+            get: { objectivePendingDeletion != nil },
+            set: { if !$0 { objectivePendingDeletion = nil } }
+        )) {
+            Button(L10n("删除"), role: .destructive) {
+                guard let objective = objectivePendingDeletion else { return }
+                objectivePendingDeletion = nil
+                Task { await deleteObjective(objective) }
+            }
+            Button(L10n("取消"), role: .cancel) { objectivePendingDeletion = nil }
+        } message: {
+            Text(L10nFormat(
+                "Delete “%@”? All of its CorptieTasks will be deleted. This action cannot be undone.",
+                objectivePendingDeletion?.name ?? ""
+            ))
+        }
+        .alert(L10n("操作失败"), isPresented: Binding(
+            get: { objectiveDeletionError != nil || taskDeletionError != nil },
+            set: {
+                if !$0 {
+                    objectiveDeletionError = nil
+                    taskDeletionError = nil
+                }
+            }
+        )) {
+            Button(L10n("OK"), role: .cancel) {
+                objectiveDeletionError = nil
+                taskDeletionError = nil
+            }
+        } message: {
+            Text(objectiveDeletionError ?? taskDeletionError ?? "")
+        }
     }
 
     private var objectiveRail: some View {
@@ -164,6 +227,15 @@ struct UnifiedConsoleView: View {
                                 label: objective.name,
                                 isSelected: selectedObjectiveId == objective.id
                             )
+                            .contextMenu {
+                                Button(L10n("编辑"), systemImage: "square.and.pencil") {
+                                    objectivePendingEdit = objective
+                                }
+                                Divider()
+                                Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+                                    objectivePendingDeletion = objective
+                                }
+                            }
                         }
                         .buttonStyle(.plain)
                     }
@@ -397,13 +469,7 @@ struct UnifiedConsoleView: View {
     private func taskRow(_ task: CorptieTask) -> some View {
         let session = workerSession(for: task)
         return Button {
-            selectedTaskId = task.id
-            if let session {
-                selectedCategory = .worker
-                selectSessionAfterHighlight(session)
-            } else {
-                backendClient.closeDetail()
-            }
+            openTask(task, session: session)
         } label: {
             HStack(spacing: 9) {
                 Circle()
@@ -421,12 +487,84 @@ struct UnifiedConsoleView: View {
             }
             .padding(.vertical, 4)
             .contentShape(Rectangle())
+            .contextMenu {
+                Button(L10n("Open Details"), systemImage: "sidebar.right") {
+                    openTask(task, session: session)
+                }
+                Button(L10n("编辑"), systemImage: "square.and.pencil") {
+                    taskPendingEdit = task
+                }
+                Divider()
+                Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+                    Task { await prepareTaskDeletion(task) }
+                }
+                .disabled(pendingTaskDeletionIds.contains(task.id))
+            }
         }
         .buttonStyle(.plain)
         .listRowBackground(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(selectedTaskId == task.id ? Color.accentColor.opacity(0.09) : Color.clear)
         )
+    }
+
+    private func openTask(_ task: CorptieTask, session: TaskSession?) {
+        selectedTaskId = task.id
+        if let session {
+            selectedCategory = .worker
+            selectSessionAfterHighlight(session)
+        } else {
+            backendClient.closeDetail()
+        }
+    }
+
+    private func deleteObjective(_ objective: Objective) async {
+        guard await entityClient.deleteObjective(objectiveId: objective.id) else {
+            objectiveDeletionError = entityClient.errorMessage ?? L10n("Unable to delete Objective.")
+            return
+        }
+        if selectedObjectiveId == objective.id {
+            selectedObjectiveId = entityClient.objectives.first?.id
+            selectedTaskId = nil
+            selectDefaultContentForCurrentSpace()
+        }
+    }
+
+    private func prepareTaskDeletion(_ task: CorptieTask) async {
+        guard !pendingTaskDeletionIds.contains(task.id) else { return }
+        pendingTaskDeletionIds.insert(task.id)
+        defer { pendingTaskDeletionIds.remove(task.id) }
+        guard let plan = await entityClient.inspectCorptieTaskDeletion(taskId: task.id) else {
+            taskDeletionError = entityClient.errorMessage ?? L10n("无法检查 CorptieTask 的关联资源。")
+            return
+        }
+        taskDeletionPresentation = CorptieTaskDeletionPresentation(task: task, plan: plan)
+    }
+
+    private func deleteTask(
+        _ task: CorptieTask,
+        force: Bool,
+        confirmedBranchName: String?
+    ) {
+        guard !pendingTaskDeletionIds.contains(task.id) else { return }
+        taskDeletionPresentation = nil
+        pendingTaskDeletionIds.insert(task.id)
+        Task {
+            let deleted = await entityClient.deleteCorptieTask(
+                taskId: task.id,
+                force: force,
+                confirmedBranchName: confirmedBranchName
+            )
+            pendingTaskDeletionIds.remove(task.id)
+            if deleted {
+                if selectedTaskId == task.id {
+                    selectedTaskId = nil
+                    selectDefaultContentForCurrentSpace()
+                }
+            } else {
+                taskDeletionError = entityClient.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。")
+            }
+        }
     }
 
     private func workerSession(for task: CorptieTask) -> TaskSession? {
@@ -1059,7 +1197,7 @@ struct UnifiedConsoleView: View {
                     Text(task.title)
                         .font(.system(size: 18, weight: .semibold))
                         .multilineTextAlignment(.center)
-                    Text(L10n("This Task has not started a conversation yet. Start it from Task Information."))
+                    Text(L10n("The companion Work Session is being prepared."))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
