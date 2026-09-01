@@ -11,7 +11,11 @@ const store = new CorptieStore({
 try {
   if (workerData.operation === "optimize") {
     await store.initialize({ performMigrations: false });
-    store.db.run("PRAGMA optimize=0x10002");
+    // The 0x10000 flag inspects every table that lacks recent usage history.
+    // On a multi-gigabyte Store that becomes a full-database startup scan and
+    // can hold SQLite's writer lock for tens of seconds. Explicit maintenance
+    // may optimize only the tables SQLite already identified as useful.
+    store.db.run("PRAGMA optimize");
     await store.close({ checkpoint: false });
   } else {
     await store.initialize();

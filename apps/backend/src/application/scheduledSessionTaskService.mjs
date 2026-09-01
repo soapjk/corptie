@@ -26,6 +26,7 @@ export class ScheduledSessionTaskService {
     this.observeListPerformance = options.observeListPerformance ?? null;
     this.inspectProcess = options.inspectProcess ?? inspectProcess;
     this.evaluateCondition = options.evaluateCondition ?? executeConditionScript;
+    this.logger = options.logger ?? console;
     this.now = options.now ?? (() => new Date());
     this.leaseOwner = options.leaseOwner ?? `scheduler:${process.pid}:${randomUUID()}`;
     this.leaseMs = options.leaseMs ?? 30_000;
@@ -41,9 +42,9 @@ export class ScheduledSessionTaskService {
 
   start() {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.tick(), this.tickMs);
+    this.timer = setInterval(() => this.#requestTick("interval"), this.tickMs);
     this.timer.unref?.();
-    void this.tick();
+    this.#requestTick("startup");
   }
 
   stop() {
@@ -184,7 +185,7 @@ export class ScheduledSessionTaskService {
       lastErrorCode: null, lastErrorMessage: null, leaseOwner: null, leaseExpiresAt: null
     });
     this.#record("ScheduledSessionTaskResumed", updated, null, actor, {});
-    void this.tick();
+    this.#requestTick("resume");
     return updated;
   }
 
@@ -254,6 +255,18 @@ export class ScheduledSessionTaskService {
     } finally {
       this.ticking = false;
     }
+  }
+
+  #requestTick(source) {
+    void this.tick().catch((error) => {
+      // SQLite maintenance and another short transaction may temporarily own
+      // the writer lock. A scheduler poll is retryable by definition: keep the
+      // Backend alive and let the next interval retry instead of turning a
+      // background Automation into a process-level unhandled rejection.
+      this.logger.warn?.(
+        `[scheduled-session-task] tick failed source=${source} code=${error?.code ?? "unknown"} error=${error?.message ?? error}`
+      );
+    });
   }
 
   handleAgentWorkEvent(type, operation) {

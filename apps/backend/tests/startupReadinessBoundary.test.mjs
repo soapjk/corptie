@@ -91,6 +91,24 @@ test("SQLite migration cannot block the fixed-cost transport event loop", async 
   assert.match(source.slice(migrationIndex, mainStoreOpenIndex), /dbPath: store\.dbPath/);
 });
 
+test("full-database query planner optimization is absent from application startup", async () => {
+  const [serverSource, workerSource] = await Promise.all([
+    readFile(new URL("../src/server.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/store/storeMigrationWorker.mjs", import.meta.url), "utf8")
+  ]);
+
+  assert.equal(
+    serverSource.includes("optimizeStoreOffMainThread"),
+    false,
+    "opening the App must not launch a competing query-planner writer"
+  );
+  assert.equal(
+    workerSource.includes("PRAGMA optimize=0x10002"),
+    false,
+    "explicit optimization must not force an all-table scan"
+  );
+});
+
 test("startup settles durable nonterminal work before runtime queue draining", async () => {
   const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
   const listenIndex = source.indexOf('server.listen(port, "127.0.0.1"');
