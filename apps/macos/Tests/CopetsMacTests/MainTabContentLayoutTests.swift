@@ -5,12 +5,27 @@ import Testing
 struct MainTabContentLayoutTests {
     @Test
     func selectedIndexTracksTheStableTabOrder() {
+        #expect(AppTab.allCases == [.console, .automations, .worktrees, .sessionDSH, .agents])
         #expect(AppTab.console.index == 0)
-        #expect(AppTab.sessions.index == 1)
-        #expect(AppTab.automations.index == 2)
-        #expect(AppTab.worktrees.index == 3)
-        #expect(AppTab.sessionDSH.index == 4)
-        #expect(AppTab.agents.index == 5)
+        #expect(AppTab.automations.index == 1)
+        #expect(AppTab.worktrees.index == 2)
+        #expect(AppTab.sessionDSH.index == 3)
+        #expect(AppTab.agents.index == 4)
+    }
+
+    @Test
+    func consoleDirectlyHostsTheUnifiedConversationSurface() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/MainTabView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        #expect(contents.contains("root = AnyView(UnifiedConsoleView())"))
+        #expect(!contents.contains("case sessions"))
+        #expect(!contents.contains("root = AnyView(WarRoomView())"))
+        #expect(contents.contains("selectTab(.console)"))
     }
 
     @MainActor
@@ -18,28 +33,28 @@ struct MainTabContentLayoutTests {
     func transitionsUseStableTabOrderAndAttachOnlyTwoFixedSizePages() throws {
         let container = makeContainer(animationDuration: 10)
         container.frame = NSRect(x: 0, y: 0, width: 1_200, height: 700)
-        container.select(.sessions, animated: false)
+        container.select(.automations, animated: false)
         let layoutCount = container.activePageLayoutCount
 
         container.select(.worktrees)
 
         #expect(container.transition == MainTabTransition(
-            from: .sessions,
+            from: .automations,
             to: .worktrees,
             direction: .forward
         ))
-        #expect(container.attachedTabs == [.sessions, .worktrees])
-        #expect(container.visibleTabs == [.sessions, .worktrees])
+        #expect(container.attachedTabs == [.automations, .worktrees])
+        #expect(container.visibleTabs == [.automations, .worktrees])
         #expect(container.attachedPageCount == 2)
-        #expect(container.cachedPage(for: .sessions)?.frame == container.bounds)
+        #expect(container.cachedPage(for: .automations)?.frame == container.bounds)
         #expect(container.cachedPage(for: .worktrees)?.frame == container.bounds)
         #expect(container.activePageLayoutCount == layoutCount + 1)
 
         container.finishActiveTransition()
         #expect(container.transition == nil)
-        #expect(container.attachedTabs == [.sessions, .worktrees])
+        #expect(container.attachedTabs == [.automations, .worktrees])
         #expect(container.visibleTabs == [.worktrees])
-        #expect(container.cachedPage(for: .sessions)?.isHidden == true)
+        #expect(container.cachedPage(for: .automations)?.isHidden == true)
     }
 
     @MainActor
@@ -48,40 +63,40 @@ struct MainTabContentLayoutTests {
         let container = makeContainer(animationDuration: 10)
         container.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
         container.select(.agents, animated: false)
-        container.select(.sessions)
+        container.select(.automations)
 
         #expect(container.transition?.direction == .backward)
-        #expect(container.attachedTabs == [.sessions, .agents])
-        #expect(container.visibleTabs == [.sessions, .agents])
+        #expect(container.attachedTabs == [.automations, .agents])
+        #expect(container.visibleTabs == [.automations, .agents])
 
-        container.select(.automations)
-        #expect(container.selectedTab == .sessions)
+        container.select(.worktrees)
+        #expect(container.selectedTab == .automations)
         #expect(container.transition == MainTabTransition(
             from: .agents,
-            to: .sessions,
+            to: .automations,
             direction: .backward
         ))
-        #expect(container.pendingTab == .automations)
-        #expect(container.attachedTabs == [.sessions, .agents])
-        #expect(container.visibleTabs == [.sessions, .agents])
+        #expect(container.pendingTab == .worktrees)
+        #expect(container.attachedTabs == [.automations, .agents])
+        #expect(container.visibleTabs == [.automations, .agents])
         #expect(container.attachedPageCount == 2)
 
         container.select(.console)
         #expect(container.pendingTab == .console)
-        #expect(container.attachedTabs == [.sessions, .agents])
-        #expect(container.visibleTabs == [.sessions, .agents])
-        #expect(container.cachedPage(for: .automations) == nil)
+        #expect(container.attachedTabs == [.automations, .agents])
+        #expect(container.visibleTabs == [.automations, .agents])
+        #expect(container.cachedPage(for: .worktrees) == nil)
 
         container.finishActiveTransition()
         #expect(container.selectedTab == .console)
         #expect(container.transition == MainTabTransition(
-            from: .sessions,
+            from: .automations,
             to: .console,
             direction: .backward
         ))
         #expect(container.pendingTab == nil)
-        #expect(container.attachedTabs == [.console, .sessions, .agents])
-        #expect(container.visibleTabs == [.console, .sessions])
+        #expect(container.attachedTabs == [.console, .automations, .agents])
+        #expect(container.visibleTabs == [.console, .automations])
         #expect(container.attachedPageCount == 3)
         #expect(container.cachedPage(for: .agents)?.isHidden == true)
     }
@@ -132,18 +147,18 @@ struct MainTabContentLayoutTests {
             return page
         }
         container.frame = NSRect(x: 0, y: 0, width: 980, height: 620)
-        container.select(.sessions, animated: false)
-        let sessions = try #require(created[.sessions])
-        sessions.marker = "scroll-and-selection-state"
+        container.select(.console, animated: false)
+        let console = try #require(created[.console])
+        console.marker = "scroll-and-selection-state"
 
         container.select(.worktrees, animated: false)
-        container.select(.sessions, animated: false)
+        container.select(.console, animated: false)
 
-        #expect(created[.sessions] === sessions)
-        #expect(created[.sessions]?.marker == "scroll-and-selection-state")
+        #expect(created[.console] === console)
+        #expect(created[.console]?.marker == "scroll-and-selection-state")
         #expect(container.cachedPageCount == 2)
-        #expect(container.attachedTabs == [.sessions, .worktrees])
-        #expect(container.visibleTabs == [.sessions])
+        #expect(container.attachedTabs == [.console, .worktrees])
+        #expect(container.visibleTabs == [.console])
     }
 
     @MainActor

@@ -29,9 +29,9 @@ async function fixture() {
     name: "Collaboration Fixture",
     contributorAgentIds: ["agent-a", "agent-b"]
   });
-  let workItemOrdinal = 0;
-  const createWorkerOwnership = (agentId, title) => store.createWorkItem({
-    id: `work-item:collaboration-fixture:${++workItemOrdinal}`,
+  let taskOrdinal = 0;
+  const createWorkerOwnership = (agentId, title) => store.createTask({
+    id: `task:collaboration-fixture:${++taskOrdinal}`,
     objectiveId: objective.id,
     title,
     mainAgentId: agentId
@@ -40,14 +40,14 @@ async function fixture() {
     ["codex:thread-a", "session:thread-a", "agent-a", "Agent A Session"],
     ["codex:thread-b", "session:thread-b", "agent-b", "Agent B Session"]
   ]) {
-    const workItem = createWorkerOwnership(agentId, title);
+    const task = createWorkerOwnership(agentId, title);
     store.createSession({
       id: providerSessionId,
       title,
       agentId,
       sessionKind: "worker",
       objectiveId: objective.id,
-      workItemId: workItem.id,
+      taskId: task.id,
       cwd: directory
     });
     store.createLogicalSessionRoute({
@@ -159,11 +159,11 @@ test("a result reply uses the established Session channel without recipient rero
 
     value.core.accept(task.taskId, "agent-b", "session:thread-b");
     value.core.startWorking(task.taskId, "agent-b", "session:thread-b");
-    const otherWorkItem = value.createWorkerOwnership("agent-b", "Other B Session");
+    const otherTask = value.createWorkerOwnership("agent-b", "Other B Session");
     value.store.createSession({
       id: "codex:thread-b-other", title: "Other B Session", agentId: "agent-b",
       sessionKind: "worker", objectiveId: value.objective.id,
-      workItemId: otherWorkItem.id, cwd: value.directory
+      taskId: otherTask.id, cwd: value.directory
     });
     value.store.createLogicalSessionRoute({
       logicalSessionId: "session:thread-b-other", legacySessionId: "codex:thread-b-other",
@@ -219,11 +219,11 @@ test("a result reply uses the established Session channel without recipient rero
 test("concurrent tasks preserve independent reply Session endpoints", async () => {
   const value = await fixture();
   try {
-    const secondWorkItem = value.createWorkerOwnership("agent-a", "Agent A Session 2");
+    const secondTask = value.createWorkerOwnership("agent-a", "Agent A Session 2");
     value.store.createSession({
       id: "codex:thread-a-2", title: "Agent A Session 2", agentId: "agent-a",
       sessionKind: "worker", objectiveId: value.objective.id,
-      workItemId: secondWorkItem.id, cwd: value.directory
+      taskId: secondTask.id, cwd: value.directory
     });
     value.store.createLogicalSessionRoute({
       logicalSessionId: "session:thread-a-2", legacySessionId: "codex:thread-a-2",
@@ -558,7 +558,7 @@ test("delivery preflight fails closed instead of rerouting a v3 task when its ta
       agentId: "agent-b",
       sessionKind: "worker",
       objectiveId: task.targetObjectiveId,
-      workItemId: task.workItemId,
+      taskId: task.targetTaskId,
       cwd: value.directory
     });
     value.store.createLogicalSessionRoute({
@@ -769,8 +769,8 @@ test("a completed Provider turn reconciles an interrupted delivery without resen
   try {
     createRequest(value.core);
     const delivery = value.core.listPendingDeliveries()[0];
-    const workItem = value.store.enqueueAgentWorkItem({
-      workItemId: `delivery:${delivery.deliveryId}`,
+    const task = value.store.enqueueAgentTask({
+      taskId: `delivery:${delivery.deliveryId}`,
       agentId: delivery.recipientAgentId,
       sessionId: "codex:thread-b",
       kind: "collaboration",
@@ -781,11 +781,11 @@ test("a completed Provider turn reconciles an interrupted delivery without resen
       deliveryId: delivery.deliveryId,
       createdAt: delivery.createdAt
     });
-    value.store.claimAgentWorkItem(workItem.workItemId);
+    value.store.claimAgentTask(task.taskId);
     value.core.claimDelivery(delivery.deliveryId);
     assert.equal(value.core.recoverInterruptedDeliveries(), 1);
 
-    const completed = value.store.updateAgentWorkItem(workItem.workItemId, {
+    const completed = value.store.updateAgentTask(task.taskId, {
       status: "completed",
       targetTurnId: "turn:accepted-before-restart"
     });

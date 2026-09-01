@@ -1,11 +1,11 @@
 import SwiftUI
 
-enum WorkItemCreateExecutionMode: Equatable {
+enum CorptieTaskCreateExecutionMode: Equatable {
     case createOnly
     case startImmediately
 }
 
-enum WorkItemCreateFormPolicy {
+enum CorptieTaskCreateFormPolicy {
     static func availableAgents(from agents: [Agent], allowedAgentIds: Set<String>) -> [Agent] {
         agents.filter {
             allowedAgentIds.contains($0.agentId)
@@ -31,13 +31,13 @@ enum WorkItemCreateFormPolicy {
             return L10n("请选择 Workspace。")
         }
         if agentId == nil {
-            return L10n("请选择负责该 WorkItem 的 Agent。")
+            return L10n("请选择负责该 CorptieTask 的 Agent。")
         }
         return nil
     }
 }
 
-enum WorkItemCreateProviderPolicy {
+enum CorptieTaskCreateProviderPolicy {
     static func selection(
         current: String,
         preferred: String?,
@@ -51,14 +51,14 @@ enum WorkItemCreateProviderPolicy {
 }
 
 // 新建工作项表单（sheet）。Workspace 与 Agent 均为必填；创建和执行使用独立操作。
-struct WorkItemCreateView: View {
+struct CorptieTaskCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
     let objectiveId: String
     let workspaceIds: [String]
     let contributorAgentIds: [String]
-    let onCreated: (WorkItem) -> Void
+    let onCreated: (CorptieTask) -> Void
 
     @State private var title = ""
     @State private var detail = ""
@@ -67,7 +67,7 @@ struct WorkItemCreateView: View {
     @State private var workspaceId: String?
     @State private var selectedAgentId: String?
     @State private var selectedProviderId = ""
-    @State private var creationId = "work_item:\(UUID().uuidString.lowercased())"
+    @State private var creationId = "task:\(UUID().uuidString.lowercased())"
     @State private var submissionError: String?
 
     var body: some View {
@@ -76,7 +76,7 @@ struct WorkItemCreateView: View {
                 .font(.title3.bold())
 
             FormAssistPanel(
-                formType: .workItem,
+                formType: .task,
                 promptHint: L10n("例如：重构三个创建页，共享一键生成协议和错误处理，并补充测试。"),
                 currentValues: {
                     [
@@ -168,14 +168,14 @@ struct WorkItemCreateView: View {
     }
 
     private var availableAgents: [Agent] {
-        WorkItemCreateFormPolicy.availableAgents(
+        CorptieTaskCreateFormPolicy.availableAgents(
             from: client.agents,
             allowedAgentIds: Set(contributorAgentIds)
         )
     }
 
     private var validationMessage: String? {
-        WorkItemCreateFormPolicy.validationMessage(
+        CorptieTaskCreateFormPolicy.validationMessage(
             title: title,
             detail: detail,
             workspaceId: workspaceId,
@@ -205,7 +205,7 @@ struct WorkItemCreateView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             } else if selectedAgentId == nil {
-                Text(L10n("请选择负责该 WorkItem 的 Agent。"))
+                Text(L10n("请选择负责该 CorptieTask 的 Agent。"))
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -230,7 +230,7 @@ struct WorkItemCreateView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if creatableProviders.isEmpty {
-                Text(L10n("没有可创建 Session 的 Provider，仍可仅创建 WorkItem。"))
+                Text(L10n("没有可创建 Session 的 Provider，仍可仅创建 CorptieTask。"))
                     .font(.caption)
                     .foregroundStyle(.red)
             } else {
@@ -242,16 +242,16 @@ struct WorkItemCreateView: View {
     }
 
     private func reconcileProviderSelection() {
-        selectedProviderId = WorkItemCreateProviderPolicy.selection(
+        selectedProviderId = CorptieTaskCreateProviderPolicy.selection(
             current: selectedProviderId,
             preferred: backendClient.defaultSessionProviderId,
             providers: backendClient.agentProviders
         )
     }
 
-    private func submit(_ mode: WorkItemCreateExecutionMode) {
+    private func submit(_ mode: CorptieTaskCreateExecutionMode) {
         guard validationMessage == nil, let selectedAgentId else {
-            submissionError = validationMessage ?? L10n("请选择负责该 WorkItem 的 Agent。")
+            submissionError = validationMessage ?? L10n("请选择负责该 CorptieTask 的 Agent。")
             return
         }
         if mode == .startImmediately, selectedProviderId.isEmpty {
@@ -270,14 +270,14 @@ struct WorkItemCreateView: View {
         let providerId = mode == .startImmediately ? selectedProviderId : nil
         let started = BackgroundTaskCenter.shared.start(
             id: requestId,
-            title: L10nFormat("创建 WorkItem：%@", requestTitle)
+            title: L10nFormat("创建 CorptieTask：%@", requestTitle)
         ) {
-            var created = await PerfStopwatch.measure("WorkItem.create.idempotencyLookup") {
-                await client.workItem(id: requestId)
+            var created = await PerfStopwatch.measure("CorptieTask.create.idempotencyLookup") {
+                await client.task(id: requestId)
             }
             if created == nil {
-                created = await PerfStopwatch.measure("WorkItem.create.persistRequest") {
-                    await client.createWorkItem(
+                created = await PerfStopwatch.measure("CorptieTask.create.persistRequest") {
+                    await client.createCorptieTask(
                         id: requestId,
                         objectiveId: requestObjectiveId,
                         title: requestTitle,
@@ -289,37 +289,37 @@ struct WorkItemCreateView: View {
                     )
                 }
             }
-            guard let workItem = created else {
-                return .failure(client.errorMessage ?? L10n("WorkItem 创建失败，可重试。"))
+            guard let task = created else {
+                return .failure(client.errorMessage ?? L10n("CorptieTask 创建失败，可重试。"))
             }
-            onCreated(workItem)
+            onCreated(task)
 
             guard mode == .startImmediately else {
-                return .success(L10nFormat("WorkItem“%@”已创建。", requestTitle))
+                return .success(L10nFormat("CorptieTask“%@”已创建。", requestTitle))
             }
             guard let providerId else {
-                return .failure(L10n("WorkItem 已创建，但没有可创建 Session 的 Provider；配置 Provider 后可重试执行。"))
+                return .failure(L10n("CorptieTask 已创建，但没有可创建 Session 的 Provider；配置 Provider 后可重试执行。"))
             }
-            let latest = await PerfStopwatch.measure("WorkItem.execute.existingSessionLookup") {
-                await client.workItem(id: workItem.id)
+            let latest = await PerfStopwatch.measure("CorptieTask.execute.existingSessionLookup") {
+                await client.task(id: task.id)
             }
             if latest?.currentSessionId != nil {
-                return .success(L10nFormat("WorkItem“%@”已创建并开始执行。", requestTitle))
+                return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
             }
-            let result = await PerfStopwatch.measure("WorkItem.execute.startRequest") {
+            let result = await PerfStopwatch.measure("CorptieTask.execute.startRequest") {
                 await client.createSession(
-                    workItemId: workItem.id,
+                    taskId: task.id,
                     agentId: selectedAgentId,
                     providerId: providerId,
-                    title: workItem.title
+                    title: task.title
                 )
             }
             if let session = result.session {
                 backendClient.acceptCreatedSession(session, selectImmediately: false)
-                return .success(L10nFormat("WorkItem“%@”已创建并开始执行。", requestTitle))
+                return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
             }
             return .failure(L10nFormat(
-                "WorkItem 已创建，但执行失败：%@。可重试执行，不会重复创建 WorkItem。",
+                "CorptieTask 已创建，但执行失败：%@。可重试执行，不会重复创建 CorptieTask。",
                 result.error?.message ?? L10n("未知错误")
             ))
         }

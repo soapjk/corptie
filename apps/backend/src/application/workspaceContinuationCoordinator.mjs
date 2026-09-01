@@ -21,7 +21,7 @@ export class WorkspaceContinuationCoordinator {
     const agent = this.resolveAgent(sessionId);
     if (!agent) throw new Error(`Session ${sessionId} has no Agent identity for workspace continuation.`);
     if (ownership.agentId && ownership.agentId !== agent.agentId) {
-      throw new Error(`Session ${sessionId} is no longer bound to the WorkItem Agent.`);
+      throw new Error(`Session ${sessionId} is no longer bound to the Task Agent.`);
     }
     const source = {
       type: "workspace-continuation",
@@ -31,11 +31,11 @@ export class WorkspaceContinuationCoordinator {
       bindingId: logical.activeBinding.bindingId,
       providerSessionId: logical.activeBinding.providerSessionId,
       productSessionId: sessionId,
-      workItemId: ownership.workItemId,
+      taskId: ownership.taskId,
       localVisibility: "status_only"
     };
-    let workItem = this.enqueueWork({
-      workItemId: continuationWorkItemId(transitionId),
+    let task = this.enqueueWork({
+      taskId: continuationTaskId(transitionId),
       agentId: agent.agentId,
       sessionId,
       kind: "user",
@@ -45,22 +45,22 @@ export class WorkspaceContinuationCoordinator {
       localVisibility: "status_only",
       createdAt: transition.updatedAt
     });
-    if (workItem && !sameWorkTarget(workItem.source, source)) {
-      workItem = this.store.updateAgentWorkItem(workItem.workItemId, { source });
+    if (task && !sameWorkTarget(task.source, source)) {
+      task = this.store.updateAgentTask(task.taskId, { source });
     }
-    const state = workItem?.status === "running" ? "running" : "queued";
+    const state = task?.status === "running" ? "running" : "queued";
     this.store.updateWorkspaceTransitionContinuation(transitionId, {
       state,
-      turnId: workItem?.targetTurnId ?? null,
+      turnId: task?.targetTurnId ?? null,
       error: null
     });
-    this.onEvent("WorkspaceContinuationQueued", { transition, logicalSession: logical, workItem });
+    this.onEvent("WorkspaceContinuationQueued", { transition, logicalSession: logical, task });
     this.scheduleDrain(sessionId);
-    return workItem;
+    return task;
   }
 
-  assertWorkTarget(workItem) {
-    const transitionId = continuationTransitionId(workItem);
+  assertWorkTarget(task) {
+    const transitionId = continuationTransitionId(task);
     if (!transitionId) return null;
     const transition = this.store.getWorkspaceTransition(transitionId);
     if (!transition || transition.phase !== "committed") {
@@ -68,14 +68,14 @@ export class WorkspaceContinuationCoordinator {
     }
     const logical = this.requireCommittedRoute(transition);
     const ownership = this.store.assertLogicalWorkSessionBinding(transition.logicalSessionId);
-    const source = workItem.source ?? {};
-    if (workItem.sessionId !== logical.legacySessionId
+    const source = task.source ?? {};
+    if (task.sessionId !== logical.legacySessionId
       || source.productSessionId !== logical.legacySessionId
       || source.logicalSessionId !== logical.logicalSessionId
       || source.routingVersion !== logical.routingVersion
       || source.bindingId !== logical.activeBinding.bindingId
       || source.providerSessionId !== logical.activeBinding.providerSessionId
-      || (source.workItemId ?? null) !== (ownership.workItemId ?? null)) {
+      || (source.taskId ?? null) !== (ownership.taskId ?? null)) {
       const error = new Error("The workspace continuation target changed before dispatch.");
       error.code = "STALE_WORKSPACE_CONTINUATION";
       throw error;
@@ -96,11 +96,11 @@ export class WorkspaceContinuationCoordinator {
   recover() {
     const results = [];
     for (const transition of this.store.listWorkspaceTransitionsAwaitingContinuation()) {
-      const workItem = this.store.getAgentWorkItem(continuationWorkItemId(transition.transitionId));
-      if (workItem?.status === "completed") {
+      const task = this.store.getAgentTask(continuationTaskId(transition.transitionId));
+      if (task?.status === "completed") {
         this.store.updateWorkspaceTransitionContinuation(transition.transitionId, {
           state: "completed",
-          turnId: workItem.targetTurnId,
+          turnId: task.targetTurnId,
           error: null
         });
         continue;
@@ -109,15 +109,15 @@ export class WorkspaceContinuationCoordinator {
         this.requireCommittedRoute(transition);
         this.store.assertLogicalWorkSessionBinding(transition.logicalSessionId);
       } catch (error) {
-        if (workItem && ["queued", "running"].includes(workItem.status)) {
-          this.store.updateAgentWorkItem(workItem.workItemId, {
+        if (task && ["queued", "running"].includes(task.status)) {
+          this.store.updateAgentTask(task.taskId, {
             status: "failed",
             lastError: error.message
           });
         }
         this.store.updateWorkspaceTransitionContinuation(transition.transitionId, {
           state: "failed",
-          turnId: workItem?.targetTurnId ?? null,
+          turnId: task?.targetTurnId ?? null,
           error: error.message
         });
         this.onEvent("WorkspaceContinuationSuperseded", {
@@ -126,8 +126,8 @@ export class WorkspaceContinuationCoordinator {
         });
         continue;
       }
-      if (workItem?.status === "failed" || workItem?.status === "cancelled") {
-        this.store.updateAgentWorkItem(workItem.workItemId, {
+      if (task?.status === "failed" || task?.status === "cancelled") {
+        this.store.updateAgentTask(task.taskId, {
           status: "queued",
           startedAt: null,
           completedAt: null,
@@ -147,51 +147,51 @@ export class WorkspaceContinuationCoordinator {
     return results.filter(Boolean);
   }
 
-  recordWorkRequeued(workItem) {
-    const transitionId = continuationTransitionId(workItem);
+  recordWorkRequeued(task) {
+    const transitionId = continuationTransitionId(task);
     if (!transitionId) return;
     this.store.updateWorkspaceTransitionContinuation(transitionId, {
       state: "queued",
       turnId: null,
-      error: workItem.lastError ?? null
+      error: task.lastError ?? null
     });
-    this.onEvent("WorkspaceContinuationQueued", { transitionId, workItem });
+    this.onEvent("WorkspaceContinuationQueued", { transitionId, task });
   }
 
-  recordWorkStarted(workItem) {
-    const transitionId = continuationTransitionId(workItem);
+  recordWorkStarted(task) {
+    const transitionId = continuationTransitionId(task);
     if (!transitionId) return;
     this.store.updateWorkspaceTransitionContinuation(transitionId, {
       state: "running",
-      turnId: workItem.targetTurnId ?? null,
+      turnId: task.targetTurnId ?? null,
       error: null
     });
-    this.onEvent("WorkspaceContinuationStarted", { transitionId, workItem });
+    this.onEvent("WorkspaceContinuationStarted", { transitionId, task });
   }
 
-  recordWorkSettled(workItem) {
-    const transitionId = continuationTransitionId(workItem);
+  recordWorkSettled(task) {
+    const transitionId = continuationTransitionId(task);
     if (!transitionId) return;
-    const state = workItem.status === "completed" ? "completed" : "failed";
+    const state = task.status === "completed" ? "completed" : "failed";
     this.store.updateWorkspaceTransitionContinuation(transitionId, {
       state,
-      turnId: workItem.targetTurnId ?? null,
-      error: workItem.lastError ?? null
+      turnId: task.targetTurnId ?? null,
+      error: task.lastError ?? null
     });
     this.onEvent(state === "completed" ? "WorkspaceContinuationCompleted" : "WorkspaceContinuationFailed", {
       transitionId,
-      workItem
+      task
     });
   }
 }
 
-export function continuationWorkItemId(transitionId) {
+export function continuationTaskId(transitionId) {
   return `workspace-continuation:${transitionId}`;
 }
 
-function continuationTransitionId(workItem) {
-  return workItem?.source?.type === "workspace-continuation"
-    ? workItem.source.transitionId
+function continuationTransitionId(task) {
+  return task?.source?.type === "workspace-continuation"
+    ? task.source.transitionId
     : null;
 }
 
@@ -203,5 +203,5 @@ function sameWorkTarget(actual, expected) {
     && actual.bindingId === expected.bindingId
     && actual.providerSessionId === expected.providerSessionId
     && actual.productSessionId === expected.productSessionId
-    && (actual.workItemId ?? null) === (expected.workItemId ?? null);
+    && (actual.taskId ?? null) === (expected.taskId ?? null);
 }

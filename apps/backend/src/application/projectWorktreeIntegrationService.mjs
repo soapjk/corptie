@@ -1,5 +1,5 @@
 const COMPLETED_EXECUTION_STATES = new Set(["completed"]);
-const COMPLETED_WORK_ITEM_STATES = new Set(["done", "complete", "completed"]);
+const COMPLETED_TASK_STATES = new Set(["done", "complete", "completed"]);
 
 export class ProjectWorktreeIntegrationError extends Error {
   constructor(code, message, statusCode = 400) {
@@ -11,16 +11,16 @@ export class ProjectWorktreeIntegrationError extends Error {
 }
 
 // Project-level Git integration stays independent of any Agent Provider. The only
-// Agent-facing operation is the explicit conflict-resolution WorkItem callback.
+// Agent-facing operation is the explicit conflict-resolution Task callback.
 export class ProjectWorktreeIntegrationService {
   constructor(options = {}) {
     this.store = options.store;
     this.inspectProject = options.inspectProject;
     this.mergeWorktree = options.mergeWorktree;
     this.createConflictWorkspace = options.createConflictWorkspace;
-    this.createAndLaunchConflictWorkItem = options.createAndLaunchConflictWorkItem;
+    this.createAndLaunchConflictTask = options.createAndLaunchConflictTask;
     this.isSessionActive = options.isSessionActive ?? (() => false);
-    this.presentWorkItem = options.presentWorkItem ?? ((workItem) => workItem);
+    this.presentTask = options.presentTask ?? ((task) => task);
     this.onEvent = options.onEvent ?? (() => {});
     this.activeProjects = new Set();
     this.activeConflictRuns = new Set();
@@ -28,7 +28,7 @@ export class ProjectWorktreeIntegrationService {
       "inspectProject",
       "mergeWorktree",
       "createConflictWorkspace",
-      "createAndLaunchConflictWorkItem"
+      "createAndLaunchConflictTask"
     ]) {
       if (typeof this[method] !== "function") {
         throw new TypeError(`ProjectWorktreeIntegrationService requires ${method}().`);
@@ -84,7 +84,7 @@ export class ProjectWorktreeIntegrationService {
         mainHeadBefore: initial.mainHeadOid,
         items: candidates.eligible.map((candidate, ordinal) => ({
           worktreeId: candidate.worktreeId,
-          workItemId: candidate.workItemId,
+          taskId: candidate.taskId,
           branchName: candidate.branchName,
           sourceHeadOid: candidate.headOid,
           ordinal
@@ -163,12 +163,12 @@ export class ProjectWorktreeIntegrationService {
     }
   }
 
-  async createConflictWorkItem(projectId, objectiveId, runId, input = {}) {
+  async createConflictTask(projectId, objectiveId, runId, input = {}) {
     const conflictRunKey = String(runId);
     if (this.activeConflictRuns.has(conflictRunKey)) {
       throw new ProjectWorktreeIntegrationError(
-        "CONFLICT_WORK_ITEM_ALREADY_CREATING",
-        "The conflict-resolution WorkItem is already being created.",
+        "CONFLICT_TASK_ALREADY_CREATING",
+        "The conflict-resolution Task is already being created.",
         409
       );
     }
@@ -186,21 +186,21 @@ export class ProjectWorktreeIntegrationService {
         "This Integration Run has no merge conflicts."
       );
     }
-    if (run.conflictWorkItemId) {
-      const existingWorkItem = this.store.getWorkItem(run.conflictWorkItemId);
-      if (existingWorkItem) {
+    if (run.conflictTaskId) {
+      const existingTask = this.store.getTask(run.conflictTaskId);
+      if (existingTask) {
         const inspection = await this.inspectProject(scope.projectId);
         const presented = this.#present(scope, inspection, this.#candidates(scope, inspection), run);
         return {
           run: presented.latestRun,
-          workItem: this.presentWorkItem(existingWorkItem),
+          task: this.presentTask(existingTask),
           session: run.conflictSessionId ? this.store.getSession(run.conflictSessionId) : null,
           reused: true
         };
       }
       run = this.store.updateProjectIntegrationRun(run.id, {
         status: "conflicts_detected",
-        conflictWorkItemId: null,
+        conflictTaskId: null,
         conflictSessionId: null
       });
     }
@@ -238,13 +238,13 @@ export class ProjectWorktreeIntegrationService {
         integrationBranch: workspace.branchName
       });
     }
-    const workItems = new Map(
-      this.store.listWorkItemsByObjective(scope.objective.id).map((item) => [item.id, item])
+    const tasks = new Map(
+      this.store.listTasksByObjective(scope.objective.id).map((item) => [item.id, item])
     );
     const sourceLines = conflicts.map((item) => {
-      const workItem = workItems.get(item.workItemId);
+      const task = tasks.get(item.taskId);
       const files = item.conflictFiles.length > 0 ? `；冲突文件：${item.conflictFiles.join(", ")}` : "";
-      return `- ${item.branchName ?? item.worktreeId} — ${workItem?.title ?? item.workItemId}${files}`;
+      return `- ${item.branchName ?? item.worktreeId} — ${task?.title ?? item.taskId}${files}`;
     });
     const title = input.title?.trim() || `处理 ${conflicts.length} 个 Worktree 的集成冲突`;
     const description = [
@@ -278,7 +278,7 @@ export class ProjectWorktreeIntegrationService {
       "5. 最后将 Integration 分支合入本地 main，并验证每个来源分支都是 main 的祖先。",
       "6. 不得推送远端，不得删除任何来源 Worktree 或分支。"
     ].join("\n");
-    const created = await this.createAndLaunchConflictWorkItem({
+    const created = await this.createAndLaunchConflictTask({
       objective: scope.objective,
       projectId: scope.projectId,
       agent,
@@ -294,12 +294,12 @@ export class ProjectWorktreeIntegrationService {
       integrationWorktreeId: workspace.worktreeId,
       integrationWorktreePath: workspace.path,
       integrationBranch: workspace.branchName,
-      conflictWorkItemId: created.workItem.id,
+      conflictTaskId: created.task.id,
       conflictSessionId: created.session.id
     });
     this.onEvent("ProjectWorktreeConflictResolutionStarted", {
       run: updatedRun,
-      workItem: created.workItem,
+      task: created.task,
       session: created.session
     });
     const inspection = await this.inspectProject(scope.projectId);
@@ -326,10 +326,10 @@ export class ProjectWorktreeIntegrationService {
   }
 
   #candidates(scope, inspection) {
-    const workItems = this.store.listWorkItemsByObjective(scope.objective.id);
-    const workItemsById = new Map(workItems.map((item) => [item.id, item]));
-    const workItemsBySessionId = new Map(
-      workItems.filter((item) => item.current_session_id).map((item) => [item.current_session_id, item])
+    const tasks = this.store.listTasksByObjective(scope.objective.id);
+    const tasksById = new Map(tasks.map((item) => [item.id, item]));
+    const tasksBySessionId = new Map(
+      tasks.filter((item) => item.current_session_id).map((item) => [item.current_session_id, item])
     );
     const eligible = [];
     const excluded = [];
@@ -338,39 +338,39 @@ export class ProjectWorktreeIntegrationService {
       const sessions = (worktree.sessions ?? [])
         .map((binding) => binding.sessionId ? this.store.getSession(binding.sessionId) : null)
         .filter(Boolean);
-      const workItem = sessions.map((session) => (
-        workItemsById.get(session.workItemId) ?? workItemsBySessionId.get(session.id)
+      const task = sessions.map((session) => (
+        tasksById.get(session.taskId) ?? tasksBySessionId.get(session.id)
       )).find(Boolean);
       const candidate = {
         worktreeId: worktree.worktreeId,
         path: worktree.path,
         branchName: worktree.branchName,
         headOid: worktree.headOid,
-        workItemId: workItem?.id ?? null,
-        workItemTitle: workItem?.title ?? null
+        taskId: task?.id ?? null,
+        taskTitle: task?.title ?? null
       };
       let reason = null;
-      if (!workItem) reason = "not_bound_to_objective_work_item";
+      if (!task) reason = "not_bound_to_objective_task";
       else if (worktree.availability !== "available") reason = "worktree_unavailable";
       else if (worktree.dirty) reason = "worktree_dirty";
       else if (worktree.mergedIntoMain) reason = "already_integrated";
       else if (!worktree.branchName || !worktree.headOid) reason = "branch_unavailable";
       else if (sessions.some((session) => this.isSessionActive(session))) reason = "session_active";
-      else if (!COMPLETED_EXECUTION_STATES.has(workItem.execution_status)
-        && !COMPLETED_WORK_ITEM_STATES.has(workItem.status)) reason = "work_item_not_completed";
+      else if (!COMPLETED_EXECUTION_STATES.has(task.execution_status)
+        && !COMPLETED_TASK_STATES.has(task.lifecycle_state)) reason = "task_not_completed";
       (reason ? excluded : eligible).push(reason ? { ...candidate, reason } : candidate);
     }
     eligible.sort((left, right) => {
-      const leftItem = workItemsById.get(left.workItemId);
-      const rightItem = workItemsById.get(right.workItemId);
+      const leftItem = tasksById.get(left.taskId);
+      const rightItem = tasksById.get(right.taskId);
       return String(leftItem?.updated_at ?? "").localeCompare(String(rightItem?.updated_at ?? ""));
     });
     return { eligible, excluded };
   }
 
   #present(scope, inspection, candidates, run) {
-    const workItems = new Map(
-      this.store.listWorkItemsByObjective(scope.objective.id).map((item) => [item.id, item])
+    const tasks = new Map(
+      this.store.listTasksByObjective(scope.objective.id).map((item) => [item.id, item])
     );
     const agents = (scope.objective.contributorAgentIds ?? [])
       .map((agentId) => this.store.getAgent(agentId))
@@ -381,7 +381,7 @@ export class ProjectWorktreeIntegrationService {
         role: agent.role
       }));
     const presentedRun = presentProjectIntegrationRun(run, {
-      resolveWorkItem: (workItemId) => workItems.get(workItemId)
+      resolveTask: (taskId) => tasks.get(taskId)
     });
     return {
       projectId: scope.projectId,
@@ -449,12 +449,12 @@ export function integrationCounts(items = []) {
 // derived labels/counts, so they must never be exposed directly to clients.
 export function presentProjectIntegrationRun(run, options = {}) {
   if (!run) return null;
-  const resolveWorkItem = options.resolveWorkItem ?? (() => null);
+  const resolveTask = options.resolveTask ?? (() => null);
   const items = (run.items ?? []).map((item) => ({
     ...item,
-    workItemTitle: resolveWorkItem(item.workItemId)?.title
-      ?? item.workItemTitle
-      ?? item.workItemId
+    taskTitle: resolveTask(item.taskId)?.title
+      ?? item.taskTitle
+      ?? item.taskId
   }));
   return {
     ...run,

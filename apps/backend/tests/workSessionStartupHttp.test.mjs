@@ -30,8 +30,8 @@ async function call(method, path, body, callbacks = {}) {
     response: res,
     url: new URL(req.url),
     objectiveService: { store: {} },
-    beginWorkItemExecution: callbacks.begin,
-    getWorkItemStartup: callbacks.get,
+    beginTaskExecution: callbacks.begin,
+    getTaskStartup: callbacks.get,
     getSessionStartupBinding: callbacks.session
   });
   await res.finished;
@@ -48,7 +48,7 @@ test("POST start returns pending and polling returns only the authoritative read
     receipt: { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", receiptHash: "hash" }
   };
   let beginInput = null;
-  const started = await call("POST", "/work-items/work_item%3Aone/start", {
+  const started = await call("POST", "/tasks/task%3Aone/start", {
     requestedAgentId: "agent:worker", providerId: "codex-app-server", idempotencyKey: "start:one"
   }, {
     begin: (input) => { beginInput = input; return pending; }
@@ -56,16 +56,16 @@ test("POST start returns pending and polling returns only the authoritative read
   assert.equal(started.handled, true);
   assert.equal(started.statusCode, 202);
   assert.deepEqual(started.body, pending);
-  assert.equal(beginInput.workItemId, "work_item:one");
+  assert.equal(beginInput.taskId, "task:one");
   assert.equal(Object.hasOwn(beginInput, "path"), false);
   assert.equal(Object.hasOwn(beginInput, "worktreeId"), false);
 
   const polled = await call(
     "GET",
-    "/work-items/work_item%3Aone/startup/startup%3Aone",
+    "/tasks/task%3Aone/startup/startup%3Aone",
     {},
     { get: (input) => {
-      assert.deepEqual(input, { workItemId: "work_item:one", startupOperationId: "startup:one" });
+      assert.deepEqual(input, { taskId: "task:one", startupOperationId: "startup:one" });
       return ready;
     } }
   );
@@ -83,7 +83,7 @@ test("logical Session startup-binding endpoint exposes the same ready receipt", 
 });
 
 test("start API rejects client-selected Workspace identity fields", async () => {
-  const result = await call("POST", "/work-items/work_item%3Aone/start", {
+  const result = await call("POST", "/tasks/task%3Aone/start", {
     requestedAgentId: "agent:worker", providerId: "codex-app-server",
     idempotencyKey: "start:one", worktreeId: "worktree:forged"
   }, { begin: () => { throw new Error("must not run"); } });
@@ -96,13 +96,13 @@ test("start API returns a ready replay as 200 and rejects legacy Agent aliases",
     status: "ready", idempotentReplay: true,
     receipt: { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", receiptHash: "hash" }
   };
-  const replay = await call("POST", "/work-items/work_item%3Aone/start", {
+  const replay = await call("POST", "/tasks/task%3Aone/start", {
     requestedAgentId: "agent:worker", providerId: "codex-app-server", idempotencyKey: "start:one"
   }, { begin: () => ready });
   assert.equal(replay.statusCode, 200);
   assert.deepEqual(replay.body, ready);
 
-  const legacy = await call("POST", "/work-items/work_item%3Aone/start", {
+  const legacy = await call("POST", "/tasks/task%3Aone/start", {
     agentId: "agent:worker", providerId: "codex-app-server", idempotencyKey: "start:one"
   }, { begin: () => { throw new Error("must not run"); } });
   assert.equal(legacy.statusCode, 400);

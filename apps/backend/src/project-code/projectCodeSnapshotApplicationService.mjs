@@ -23,7 +23,7 @@ export class ProjectCodeSnapshotApplicationService {
       receiptType: "RepositorySourceSnapshotReceipt",
       logicalSessionId: context.sessionContext.logicalSessionId,
       objectiveId: context.sessionContext.objectiveId,
-      workItemId: context.sessionContext.workItemId,
+      taskId: context.sessionContext.taskId,
       repositoryId: snapshot.receipt.repositoryId,
       worktreeId: snapshot.receipt.worktreeId,
       sourceFingerprint: snapshot.receipt.sourceFingerprint,
@@ -39,18 +39,18 @@ export class ProjectCodeSnapshotApplicationService {
     const ownership = this.store.assertLogicalWorkSessionBinding(id);
     const logical = this.store.getLogicalSession(id);
     const session = ownership.sessionId ? this.store.getSession(ownership.sessionId) : null;
-    const workItem = this.store.getWorkItem(ownership.workItemId);
+    const task = this.store.getTask(ownership.taskId);
     const startupReceipt = this.startupReceipts.require(id);
-    if (!logical?.activeBinding || !session || !workItem
+    if (!logical?.activeBinding || !session || !task
       || startupReceipt.worktreeId !== logical.activeBinding.worktreeId
       || startupReceipt.canonicalWorktreePath !== logical.activeBinding.boundCwd
       || startupReceipt.objectiveId !== ownership.objectiveId
-      || startupReceipt.workItemId !== ownership.workItemId) {
+      || startupReceipt.taskId !== ownership.taskId) {
       throw contractError("STARTUP_BINDING_STALE", "Snapshot request does not match the active authoritative Worker Session route.");
     }
     return {
       startupReceipt,
-      sessionContext: { objectiveId: ownership.objectiveId, workItemId: ownership.workItemId, logicalSessionId: id },
+      sessionContext: { objectiveId: ownership.objectiveId, taskId: ownership.taskId, logicalSessionId: id },
       binding: {
         repositoryId: startupReceipt.repositoryId,
         worktreeId: startupReceipt.worktreeId,

@@ -1,31 +1,31 @@
-const TERMINAL_WORK_ITEM_STATUSES = new Set([
+const TERMINAL_TASK_LIFECYCLE_STATES = new Set([
   "done"
 ]);
 
 // Keep recovery bounded while leaving one upgrade-time attempt for legacy
 // replacement chains that were themselves created by the empty-thread bug.
-export const MAX_AUTOMATIC_WORK_ITEM_SESSION_REPAIRS = 4;
+export const MAX_AUTOMATIC_TASK_SESSION_REPAIRS = 4;
 
 export function historicalProviderSessionUnavailable(value) {
   return /(?:no rollout found for thread id\b|failed to resolve rollout path\b.*\bfile does not exist)/i
     .test(String(value ?? ""));
 }
 
-export function historicalWorkItemBindingUnavailable(value) {
-  return /^WorkItem\s+\S+\s+points to no Session, not active Worker Session\s+\S+\.?$/i
+export function historicalTaskBindingUnavailable(value) {
+  return /^Task\s+\S+\s+points to no Session, not active Worker Session\s+\S+\.?$/i
     .test(String(value ?? "").trim());
 }
 
 export function historicalPreExecutionSessionFailure(value) {
   return historicalProviderSessionUnavailable(value)
-    || historicalWorkItemBindingUnavailable(value);
+    || historicalTaskBindingUnavailable(value);
 }
 
-export function evaluateWorkItemSessionRepair(input = {}) {
-  const status = String(input.workItem?.status ?? "").trim().toLowerCase();
-  if (!input.workItem?.id || TERMINAL_WORK_ITEM_STATUSES.has(status)) return denied("WORK_ITEM_TERMINAL");
+export function evaluateTaskSessionRepair(input = {}) {
+  const status = String(input.task?.lifecycle_state ?? "").trim().toLowerCase();
+  if (!input.task?.id || TERMINAL_TASK_LIFECYCLE_STATES.has(status)) return denied("TASK_TERMINAL");
   if (!input.session || input.session.sessionKind !== "worker"
-    || input.workItem.current_session_id !== input.session.id) return denied("SESSION_NOT_CURRENT_WORKER");
+    || input.task.current_session_id !== input.session.id) return denied("SESSION_NOT_CURRENT_WORKER");
   if (input.error?.code !== "PROVIDER_SESSION_UNAVAILABLE" || input.error.safeToRetry !== true) {
     return denied("PROVIDER_FAILURE_AMBIGUOUS");
   }
@@ -37,7 +37,7 @@ export function evaluateWorkItemSessionRepair(input = {}) {
     || !historicalPreExecutionSessionFailure(delivery.last_error))) {
     return denied("DELIVERY_OUTCOME_AMBIGUOUS");
   }
-  if (Number(input.repairCount ?? 0) >= MAX_AUTOMATIC_WORK_ITEM_SESSION_REPAIRS) {
+  if (Number(input.repairCount ?? 0) >= MAX_AUTOMATIC_TASK_SESSION_REPAIRS) {
     return denied("REPAIR_LIMIT_REACHED");
   }
   if (!input.providerId || !input.agent) return denied("REPAIR_TARGET_UNAVAILABLE");

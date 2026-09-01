@@ -3,7 +3,7 @@ import XCTest
 @testable import CorptieMac
 
 @MainActor
-final class WorkItemResponseHandlingTests: XCTestCase {
+final class CorptieTaskResponseHandlingTests: XCTestCase {
     private func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -14,14 +14,18 @@ final class WorkItemResponseHandlingTests: XCTestCase {
         let data = Data(
             """
             {
-              "workItems": [{
-                "id": "work-item:one",
+              "tasks": [{
+                "id": "task:one",
                 "objective_id": "objective:one",
                 "title": "Keep the data visible",
                 "description": "",
+                "goal": "",
                 "acceptance_criteria": "",
+                "verification_criteria": "",
                 "priority": "medium",
-                "status": "todo",
+                "lifecycle_state": "todo",
+                "resource_version": 1,
+                "revision": 1,
                 "main_workspace_id": null,
                 "main_agent_id": null,
                 "current_session_id": null,
@@ -35,23 +39,27 @@ final class WorkItemResponseHandlingTests: XCTestCase {
             """.utf8
         )
 
-        let items = try decoder().decode(WorkItemListEnvelope.self, from: data).workItems
+        let items = try decoder().decode(CorptieTaskListEnvelope.self, from: data).tasks
         XCTAssertEqual(items.count, 1)
         XCTAssertNil(items[0].acceptanceAssessment)
     }
 
-    func testStartupFailureUsesOnlyWorkItemLifecycleProjection() throws {
+    func testStartupFailureUsesOnlyCorptieTaskLifecycleProjection() throws {
         let data = Data(
             """
             {
-              "workItems": [{
-                "id": "work-item:partial",
+              "tasks": [{
+                "id": "task:partial",
                 "objective_id": "objective:one",
                 "title": "Partial start",
                 "description": "",
+                "goal": "",
                 "acceptance_criteria": "",
+                "verification_criteria": "",
                 "priority": "medium",
-                "status": "todo",
+                "lifecycle_state": "todo",
+                "resource_version": 1,
+                "revision": 1,
                 "main_workspace_id": "repository:one",
                 "main_agent_id": "agent:one",
                 "current_session_id": null,
@@ -63,7 +71,7 @@ final class WorkItemResponseHandlingTests: XCTestCase {
             """.utf8
         )
 
-        let item = try XCTUnwrap(decoder().decode(WorkItemListEnvelope.self, from: data).workItems.first)
+        let item = try XCTUnwrap(decoder().decode(CorptieTaskListEnvelope.self, from: data).tasks.first)
         XCTAssertEqual(item.executionStatus, "start_failed")
         XCTAssertNil(item.currentSessionId)
     }
@@ -72,14 +80,18 @@ final class WorkItemResponseHandlingTests: XCTestCase {
         let data = Data(
             """
             {
-              "workItems": [{
-                "id": "work-item:passed",
+              "tasks": [{
+                "id": "task:passed",
                 "objective_id": "objective:one",
                 "title": "Independent states",
                 "description": "",
+                "goal": "",
                 "acceptance_criteria": "Tests pass",
+                "verification_criteria": "",
                 "priority": "medium",
-                "status": "in_progress",
+                "lifecycle_state": "in_progress",
+                "resource_version": 1,
+                "revision": 1,
                 "main_workspace_id": null,
                 "main_agent_id": null,
                 "current_session_id": "session:one",
@@ -113,24 +125,28 @@ final class WorkItemResponseHandlingTests: XCTestCase {
             """.utf8
         )
 
-        let item = try XCTUnwrap(decoder().decode(WorkItemListEnvelope.self, from: data).workItems.first)
-        XCTAssertEqual(item.status, "in_progress")
+        let item = try XCTUnwrap(decoder().decode(CorptieTaskListEnvelope.self, from: data).tasks.first)
+        XCTAssertEqual(item.lifecycleState, "in_progress")
         XCTAssertEqual(item.acceptanceAssessment?.status, "passed")
         XCTAssertEqual(item.completionSuggestion?.recommended, true)
     }
 
-    func testMalformedLegacyAcceptanceAssessmentDoesNotHideTheWorkItem() throws {
+    func testMalformedAcceptanceAssessmentIsRejected() throws {
         let data = Data(
             """
             {
-              "workItems": [{
-                "id": "work-item:legacy",
+              "tasks": [{
+                "id": "task:legacy",
                 "objective_id": "objective:one",
                 "title": "Legacy",
                 "description": "",
+                "goal": "",
                 "acceptance_criteria": "",
+                "verification_criteria": "",
                 "priority": "medium",
-                "status": "todo",
+                "lifecycle_state": "todo",
+                "resource_version": 1,
+                "revision": 1,
                 "acceptanceAssessment": {},
                 "created_at": "2026-08-18T00:00:00.000Z",
                 "updated_at": "2026-08-18T00:00:00.000Z"
@@ -139,9 +155,7 @@ final class WorkItemResponseHandlingTests: XCTestCase {
             """.utf8
         )
 
-        let item = try XCTUnwrap(decoder().decode(WorkItemListEnvelope.self, from: data).workItems.first)
-        XCTAssertEqual(item.id, "work-item:legacy")
-        XCTAssertNil(item.acceptanceAssessment)
+        XCTAssertThrowsError(try decoder().decode(CorptieTaskListEnvelope.self, from: data))
     }
 
 }

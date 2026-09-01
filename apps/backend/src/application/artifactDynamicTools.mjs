@@ -22,18 +22,18 @@ export const artifactDynamicTools = Object.freeze([
   }, ["artifact_id", "version", "content_hash"]),
   tool("corptie_artifact_search", "Search bounded Artifact metadata across only Artifacts authorized for the authenticated Session. Private bodies remain available only through fixed get pages.", {
     query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 },
-    scope: { type: "string", enum: ["objective", "work_item"] },
+    scope: { type: "string", enum: ["objective", "task"] },
     kinds: { type: "array", items: { type: "string" } },
     category_prefix: { type: "string" },
     tags: { type: "array", items: { type: "string" } }
   }, ["query"]),
-  tool("corptie_artifact_create", "Create either an Objective-public Artifact or a current-WorkItem Artifact. Every Work Session in the Objective can manage Objective-public Artifacts; another WorkItem's Artifact is read-only. Worker creation remains idempotent.", {
+  tool("corptie_artifact_create", "Create either an Objective-public Artifact or a current-Task Artifact. Every Work Session in the Objective can manage Objective-public Artifacts; another Task's Artifact is read-only. Worker creation remains idempotent.", {
     title: { type: "string", minLength: 1 }, summary: { type: "string" }, content: { type: "string" },
-    visibility: { type: "string", enum: ["objective_private", "work_item_private", "session_private", "repository_tracked"] },
-    bound_work_item_id: { type: "string" }, bound_session_id: { type: "string" },
+    visibility: { type: "string", enum: ["objective_private", "task_private", "session_private", "repository_tracked"] },
+    bound_task_id: { type: "string" }, bound_session_id: { type: "string" },
     repository_locator: { type: "string" }, confirmed_repository_tracked: { type: "boolean" },
     mime_type: { type: "string" }, approval_status: { type: "string", enum: ["draft", "approved"] },
-    scope: { type: "string", enum: ["objective", "work_item"] },
+    scope: { type: "string", enum: ["objective", "task"] },
     kind: { type: "string" }, category_path: { type: "string" },
     tags: { type: "array", items: { type: "string" } },
     aliases: { type: "array", items: { type: "string" } },
@@ -49,7 +49,7 @@ export const artifactDynamicTools = Object.freeze([
     tags: { type: "array", items: { type: "string" } }, aliases: { type: "array", items: { type: "string" } },
     keywords: { type: "array", items: { type: "string" } }
   }, ["artifact_id"]),
-  tool("corptie_artifact_publish_version", "Publish a new immutable version. For the current WorkItem's private Artifact, expected_resource_version, expected_pinned_version, expected_pinned_hash, and idempotency_key are required and the active fixed Reference is atomically repinned. Objective-public Artifacts use their normal shared management policy.", {
+  tool("corptie_artifact_publish_version", "Publish a new immutable version. For the current Task's private Artifact, expected_resource_version, expected_pinned_version, expected_pinned_hash, and idempotency_key are required and the active fixed Reference is atomically repinned. Objective-public Artifacts use their normal shared management policy.", {
     artifact_id: artifactId, content: { type: "string" }, summary: { type: "string" },
     mime_type: { type: "string" }, approval_status: { type: "string", enum: ["draft", "approved"] },
     reference_id: { type: "string", pattern: "^artifact_reference:" },
@@ -58,12 +58,12 @@ export const artifactDynamicTools = Object.freeze([
     expected_pinned_hash: contentHash,
     idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
   }, ["artifact_id", "content"]),
-  tool("corptie_artifact_reference", "Create an explicit versioned Reference. Worker Sessions may target only their current WorkItem or Session.", {
-    artifact_id: artifactId, work_item_id: { type: "string" }, session_id: { type: "string" },
+  tool("corptie_artifact_reference", "Create an explicit versioned Reference. Worker Sessions may target only their current Task or Session.", {
+    artifact_id: artifactId, task_id: { type: "string" }, session_id: { type: "string" },
     relation: { type: "string", enum: ["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"] },
     required: { type: "boolean" }, version_policy: { type: "string", enum: ["fixed", "latest_approved"] }, version
   }, ["artifact_id", "relation"]),
-  tool("corptie_artifact_revoke_reference", "Revoke a manageable explicit WorkItem or Session Artifact Reference with an audit reason.", {
+  tool("corptie_artifact_revoke_reference", "Revoke a manageable explicit Task or Session Artifact Reference with an audit reason.", {
     reference_id: { type: "string", minLength: 1 }, reason: { type: "string", minLength: 1 }
   }, ["reference_id", "reason"]),
   tool("corptie_artifact_delete", "Logically delete a manageable Artifact while retaining immutable versions and audit history.", {
@@ -86,7 +86,7 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
     logicalSessionId: input.metadata?.logicalSessionId,
     turnExecutionId: input.turnExecutionId ?? input.turnId ?? input.metadata?.turnExecutionId,
     objectiveId: input.metadata?.objectiveId,
-    workItemId: input.metadata?.workItemId,
+    taskId: input.metadata?.taskId,
     providerBindingId: input.metadata?.providerBindingId
   };
   switch (input.tool) {
@@ -102,7 +102,7 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
     });
     case "corptie_artifact_create": return service.create(context, {
       title: args.title, summary: args.summary, content: args.content, visibility: args.visibility,
-      boundWorkItemId: args.bound_work_item_id, boundSessionId: args.bound_session_id,
+      boundTaskId: args.bound_task_id, boundSessionId: args.bound_session_id,
       repositoryLocator: args.repository_locator, confirmedRepositoryTracked: args.confirmed_repository_tracked,
       mimeType: args.mime_type, approvalStatus: args.approval_status,
       scope: args.scope, kind: args.kind, categoryPath: args.category_path,
@@ -121,7 +121,7 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
       idempotencyKey: args.idempotency_key
     });
     case "corptie_artifact_reference": return service.createReference(context, args.artifact_id, {
-      workItemId: args.work_item_id, sessionId: args.session_id, relation: args.relation,
+      taskId: args.task_id, sessionId: args.session_id, relation: args.relation,
       required: args.required, versionPolicy: args.version_policy, version: args.version
     });
     case "corptie_artifact_revoke_reference": return service.revokeReference(context, args.reference_id, args.reason);

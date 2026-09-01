@@ -72,7 +72,7 @@ test("a failed workspace continuation does not look complete", () => {
   assert.equal(presented.activityStatus, "Target binding disappeared.");
 });
 
-test("WorkItem completion waits for the workspace continuation to settle", () => {
+test("Task completion waits for the workspace continuation to settle", () => {
   assert.equal(workspaceContinuationKeepsSessionActive(
     { phase: "waitingForTurn" },
     null
@@ -118,7 +118,7 @@ test("a stored provider-neutral session kind survives provider refresh", () => {
   assert.equal(merged.sessionKind, "assistantChat");
 });
 
-test("stored WorkItem, Objective, and Agent bindings survive a third-party Provider refresh", () => {
+test("stored Task, Objective, and Agent bindings survive a third-party Provider refresh", () => {
   const merged = mergeStoredSessionPresentation(
     {
       id: "openclacky:session-a",
@@ -131,7 +131,7 @@ test("stored WorkItem, Objective, and Agent bindings survive a third-party Provi
       title: "Stored",
       agentId: "agent:liang",
       objectiveId: "objective:poly",
-      workItemId: "work-item:poly",
+      taskId: "task:poly",
       sessionKind: "worker",
       external: {}
     }
@@ -139,7 +139,7 @@ test("stored WorkItem, Objective, and Agent bindings survive a third-party Provi
 
   assert.equal(merged.agentId, "agent:liang");
   assert.equal(merged.objectiveId, "objective:poly");
-  assert.equal(merged.workItemId, "work-item:poly");
+  assert.equal(merged.taskId, "task:poly");
   assert.equal(merged.sessionKind, "worker");
 });
 
@@ -311,7 +311,7 @@ test("the archived session list applies the shared explicit and Worker lifecycle
     codexSessions: [
       { id: "codex:archived", archived: true },
       { id: "codex:active", archived: false },
-      { id: "codex:completed-worker", sessionKind: "worker", workItemStatus: "done", archived: false },
+      { id: "codex:completed-worker", sessionKind: "worker", taskStatus: "done", archived: false },
       { id: "codex:history-without-archive-marker" }
     ],
     mockSessions: [{ id: "mock:a" }]
@@ -337,7 +337,7 @@ test("the active session list excludes every effectively archived session", () =
     ],
     codexSessions: [
       { id: "codex:active", archived: false },
-      { id: "codex:completed-worker", sessionKind: "worker", workItemStatus: "completed" },
+      { id: "codex:completed-worker", sessionKind: "worker", taskStatus: "completed" },
       { id: "codex:legacy-active" }
     ],
     mockSessions: [{ id: "mock:active" }]

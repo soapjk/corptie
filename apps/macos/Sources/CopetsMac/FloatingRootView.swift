@@ -4561,8 +4561,8 @@ struct DetailView: View {
             item.collaborationRecipientSessionId ?? "",
             item.collaborationRecipientSessionTitle ?? "",
             item.collaborationTaskTitle ?? "",
-            item.collaborationSourceWorkItemId ?? "",
-            item.collaborationTargetWorkItemId ?? "",
+            item.collaborationSourceCorptieTaskId ?? "",
+            item.collaborationTargetCorptieTaskId ?? "",
             item.collaborationRelation ?? "",
             item.collaborationRouteStatus ?? "",
             item.collaborationRoutingVersion.map(String.init) ?? ""
@@ -5056,8 +5056,8 @@ private func detailSourceItemSignature(_ item: CodexThreadItem) -> String {
             item.collaborationRecipientSessionId ?? "",
             item.collaborationRecipientSessionTitle ?? "",
             item.collaborationTaskTitle ?? "",
-            item.collaborationSourceWorkItemId ?? "",
-            item.collaborationTargetWorkItemId ?? "",
+            item.collaborationSourceCorptieTaskId ?? "",
+            item.collaborationTargetCorptieTaskId ?? "",
             item.collaborationRelation ?? "",
             item.collaborationRouteStatus ?? "",
             item.collaborationRoutingVersion.map(String.init) ?? "",
@@ -5460,7 +5460,7 @@ func nativeCollaborationCardPresentation(
         guard value != normalizedID,
               !lowercased.hasPrefix("session:"),
               !lowercased.hasPrefix("objective:"),
-              !lowercased.hasPrefix("work_item:") else { return fallback }
+              !lowercased.hasPrefix("task:") else { return fallback }
         return value
     }
 
@@ -5518,9 +5518,9 @@ func nativeCollaborationCardPresentation(
     let message = nonEmpty(item.presentationText)
         ?? nonEmpty(item.text)
         ?? L10n("协作消息正文不可用")
-    let targetWorkItem = readableName(
+    let targetCorptieTask = readableName(
         item.collaborationTaskTitle,
-        id: item.collaborationTargetWorkItemId,
+        id: item.collaborationTargetCorptieTaskId,
         fallback: L10n("未命名协作任务")
     )
     var lines = ["**\(L10n("消息"))**", message]
@@ -5534,7 +5534,7 @@ func nativeCollaborationCardPresentation(
         lines.append("**\(L10n("路由状态"))**  \(markdownEscaped(route)) · v\(item.collaborationRoutingVersion ?? 0)")
     }
     if let relation = nonEmpty(item.collaborationRelation) {
-        lines.append("**\(L10n("WorkItem 关系"))**  \(markdownEscaped(relation))")
+        lines.append("**\(L10n("CorptieTask 关系"))**  \(markdownEscaped(relation))")
     }
     let timestamp = item.createdAt
         .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
@@ -5545,15 +5545,15 @@ func nativeCollaborationCardPresentation(
         bodyMarkdown: lines.joined(separator: "\n"),
         messageText: message,
         route: NativeCollaborationRoutePresentation(
-            destinationKind: hasTargetSession ? .existingSession : .newWorkItem,
-            routeLabel: hasTargetSession ? L10n("发送到现有会话") : L10n("将创建新的 WorkItem"),
+            destinationKind: hasTargetSession ? .existingSession : .newCorptieTask,
+            routeLabel: hasTargetSession ? L10n("发送到现有会话") : L10n("将创建新的 CorptieTask"),
             sourceLabel: L10n("来源"),
             sourceSession: "Session · \(sourceSession)",
             sourceObjective: "Objective · \(sourceObjective)",
             targetLabel: L10n("目标"),
             targetName: hasTargetSession
                 ? "Session · \(targetSession)"
-                : "WorkItem · \(targetWorkItem)",
+                : "CorptieTask · \(targetCorptieTask)",
             targetObjective: "Objective · \(targetObjective)"
         )
     )
@@ -5709,8 +5709,8 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.collaborationRecipientSessionId ?? "",
         item.collaborationRecipientSessionTitle ?? "",
         item.collaborationTaskTitle ?? "",
-        item.collaborationSourceWorkItemId ?? "",
-        item.collaborationTargetWorkItemId ?? "",
+        item.collaborationSourceCorptieTaskId ?? "",
+        item.collaborationTargetCorptieTaskId ?? "",
         item.collaborationRelation ?? "",
         item.collaborationRouteStatus ?? "",
         item.collaborationRoutingVersion.map(String.init) ?? ""
@@ -7167,12 +7167,12 @@ private struct ProjectWorktreeManagerView: View {
         }
         .sheet(item: $pendingConflictRun) { run in
             if let integrationStatus = supplementaryData.selectedProjectIntegrationStatus {
-                ProjectIntegrationConflictWorkItemConfirmationView(
+                ProjectIntegrationConflictCorptieTaskConfirmationView(
                     run: run,
                     status: integrationStatus,
-                    isCreating: backendClient.isCreatingIntegrationConflictWorkItem,
+                    isCreating: backendClient.isCreatingIntegrationConflictCorptieTask,
                     onConfirm: { agentId, title in
-                        backendClient.createIntegrationConflictWorkItem(
+                        backendClient.createIntegrationConflictCorptieTask(
                             runId: run.id,
                             agentId: agentId,
                             title: title
@@ -7200,7 +7200,7 @@ private struct ProjectWorktreeManagerView: View {
                 Text(L10nFormat(
                     "Corptie will merge these completed Worktrees into main one at a time. Conflicts will be recorded and the remaining Worktrees will continue. No remote push is performed.\n\n%@",
                     integrationStatus.eligibleWorktrees.map {
-                        "\($0.branchName ?? L10n("detached HEAD")) — \($0.workItemTitle ?? L10n("Untitled WorkItem"))"
+                        "\($0.branchName ?? L10n("detached HEAD")) — \($0.taskTitle ?? L10n("Untitled CorptieTask"))"
                     }.joined(separator: "\n")
                 ))
             }
@@ -7298,10 +7298,10 @@ private struct ProjectWorktreeManagerView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(conflicts) { item in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.branchName ?? item.workItemTitle)
+                            Text(item.branchName ?? item.taskTitle)
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             Text(item.conflictFiles.isEmpty
-                                ? L10n("Conflicting files will be inspected by the resolution WorkItem")
+                                ? L10n("Conflicting files will be inspected by the resolution CorptieTask")
                                 : item.conflictFiles.joined(separator: ", "))
                                 .font(.system(size: 10))
                                 .foregroundStyle(CorptiePalette.secondaryText)
@@ -7318,13 +7318,13 @@ private struct ProjectWorktreeManagerView: View {
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
                     Spacer()
-                    Button(run.conflictWorkItemId == nil
+                    Button(run.conflictCorptieTaskId == nil
                         ? L10n("Resolve Conflicts…")
-                        : L10n("Open Conflict WorkItem")) {
-                        if run.conflictWorkItemId == nil {
+                        : L10n("Open Conflict CorptieTask")) {
+                        if run.conflictCorptieTaskId == nil {
                             pendingConflictRun = run
                         } else {
-                            backendClient.createIntegrationConflictWorkItem(
+                            backendClient.createIntegrationConflictCorptieTask(
                                 runId: run.id,
                                 agentId: status.eligibleAgents.first?.agentId ?? ""
                             )
@@ -7332,12 +7332,12 @@ private struct ProjectWorktreeManagerView: View {
                     }
                     .controlSize(.small)
                     .disabled(
-                        backendClient.isCreatingIntegrationConflictWorkItem
-                            || (run.conflictWorkItemId == nil && status.eligibleAgents.isEmpty)
+                        backendClient.isCreatingIntegrationConflictCorptieTask
+                            || (run.conflictCorptieTaskId == nil && status.eligibleAgents.isEmpty)
                     )
-                    .help(status.eligibleAgents.isEmpty && run.conflictWorkItemId == nil
-                        ? L10n("Add an IC Agent to this Objective before creating the resolution WorkItem")
-                        : L10n("Create and immediately start a WorkItem to resolve these merge conflicts"))
+                    .help(status.eligibleAgents.isEmpty && run.conflictCorptieTaskId == nil
+                        ? L10n("Add an IC Agent to this Objective before creating the resolution CorptieTask")
+                        : L10n("Create and immediately start a CorptieTask to resolve these merge conflicts"))
                 }
             }
 
@@ -7348,7 +7348,7 @@ private struct ProjectWorktreeManagerView: View {
                         .foregroundStyle(.red)
                     ForEach(failures) { item in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.branchName ?? item.workItemTitle)
+                            Text(item.branchName ?? item.taskTitle)
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             Text(item.error ?? L10n("The Worktree could not be integrated. Refresh and try again."))
                                 .font(.system(size: 10.5, weight: .medium))
@@ -7381,7 +7381,7 @@ private struct ProjectWorktreeManagerView: View {
             showingIntegrationConfirmation = true
         case .noEligibleWorktrees:
             backendClient.recordProjectWorktreeActionError(L10n(
-                "No completed Worktrees are eligible for integration. Complete the WorkItem, stop its active Session, and commit its local changes before trying again."
+                "No completed Worktrees are eligible for integration. Complete the CorptieTask, stop its active Session, and commit its local changes before trying again."
             ))
         case .unresolvedConflicts:
             backendClient.recordProjectWorktreeActionError(L10n(
@@ -7820,7 +7820,7 @@ private struct ProjectWorktreeManagerView: View {
     }
 }
 
-private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
+private struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
     let run: ProjectIntegrationRun
     let status: ProjectIntegrationStatusResponse
     let isCreating: Bool
@@ -7845,10 +7845,10 @@ private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
                     .font(.system(size: 24))
                     .foregroundStyle(CorptiePalette.amber)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n("Create Conflict-Resolution WorkItem"))
+                    Text(L10n("Create Conflict-Resolution CorptieTask"))
                         .font(.system(size: 18, weight: .bold))
                     Text(L10nFormat(
-                        "This WorkItem will be created under Objective %@ and start immediately.",
+                        "This CorptieTask will be created under Objective %@ and start immediately.",
                         status.objective.name
                     ))
                     .font(.system(size: 11, weight: .medium))
@@ -7857,7 +7857,7 @@ private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
             }
 
             Text(L10nFormat(
-                "This operation creates one dedicated WorkItem to resolve the merge conflicts in the following %d branches and merge the result into main:",
+                "This operation creates one dedicated CorptieTask to resolve the merge conflicts in the following %d branches and merge the result into main:",
                 conflicts.count
             ))
             .font(.system(size: 12, weight: .medium))
@@ -7866,9 +7866,9 @@ private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(conflicts) { item in
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.branchName ?? item.workItemTitle)
+                            Text(item.branchName ?? item.taskTitle)
                                 .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                            Text(item.workItemTitle)
+                            Text(item.taskTitle)
                                 .font(.system(size: 10.5))
                                 .foregroundStyle(CorptiePalette.secondaryText)
                             if !item.conflictFiles.isEmpty {
@@ -7903,7 +7903,7 @@ private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
                     .labelsHidden()
                 }
                 GridRow {
-                    Text(L10n("WorkItem title"))
+                    Text(L10n("CorptieTask title"))
                         .foregroundStyle(CorptiePalette.secondaryText)
                     TextField(L10n("Resolve completed Worktree merge conflicts"), text: $title)
                         .textFieldStyle(.roundedBorder)
@@ -7913,7 +7913,7 @@ private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
 
             if let selectedAgent {
                 Text(L10nFormat(
-                    "After confirmation, Corptie will bind this WorkItem to Agent %@ and start its Work Session in a dedicated Integration Worktree.",
+                    "After confirmation, Corptie will bind this CorptieTask to Agent %@ and start its Work Session in a dedicated Integration Worktree.",
                     selectedAgent.name
                 ))
                 .font(.system(size: 10.5))
@@ -7931,7 +7931,7 @@ private struct ProjectIntegrationConflictWorkItemConfirmationView: View {
                 Spacer()
                 Button(L10n("Cancel"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button(L10n("Create and Start WorkItem")) {
+                Button(L10n("Create and Start CorptieTask")) {
                     let customTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                     onConfirm(selectedAgentId, customTitle.isEmpty ? nil : customTitle)
                 }
@@ -8759,7 +8759,7 @@ struct ThreadItemView: View {
                                     title: item.collaborationInitiatorSessionTitle,
                                     id: sourceSession,
                                     kind: item.collaborationInitiatorSessionKind,
-                                    workItemId: item.collaborationSourceWorkItemId
+                                    taskId: item.collaborationSourceCorptieTaskId
                                 )
                             )
                         }
@@ -8771,20 +8771,20 @@ struct ThreadItemView: View {
                                     title: item.collaborationRecipientSessionTitle,
                                     id: recipientSession,
                                     kind: item.collaborationRecipientSessionKind,
-                                    workItemId: item.collaborationTargetWorkItemId
+                                    taskId: item.collaborationTargetCorptieTaskId
                                 )
                             )
                         } else if isSessionChannelAuthorization {
                             collaborationConfirmationField(
                                 icon: "person.badge.plus",
                                 label: "目标 Session",
-                                value: L10n("确认后创建目标 WorkItem 与 Session")
+                                value: L10n("确认后创建目标 CorptieTask 与 Session")
                             )
                         } else {
                             collaborationConfirmationField(
                                 icon: "checklist",
-                                label: "目标 WorkItem",
-                                value: collaborationPendingTargetWorkItem
+                                label: "目标 CorptieTask",
+                                value: collaborationPendingTargetCorptieTask
                             )
                         }
                         if let sourceObjective = collaborationObjective(
@@ -8895,15 +8895,15 @@ struct ThreadItemView: View {
         return name
     }
 
-    private func collaborationSessionIdentity(title: String?, id: String, kind: String?, workItemId: String?) -> String {
+    private func collaborationSessionIdentity(title: String?, id: String, kind: String?, taskId: String?) -> String {
         guard let title = nonEmpty(title), title != id, !looksLikeTechnicalID(title) else { return L10n("会话") }
         return title
     }
 
-    private var collaborationPendingTargetWorkItem: String {
+    private var collaborationPendingTargetCorptieTask: String {
         let title = nonEmpty(item.collaborationTaskTitle).flatMap { looksLikeTechnicalID($0) ? nil : $0 }
         let resolvedIdentity = title ?? L10n("未命名协作任务")
-        guard nonEmpty(item.collaborationTargetWorkItemId) == nil else { return resolvedIdentity }
+        guard nonEmpty(item.collaborationTargetCorptieTaskId) == nil else { return resolvedIdentity }
         return "\(resolvedIdentity) · \(L10n("确认后在目标 Objective 下新建"))"
     }
 
@@ -8911,7 +8911,7 @@ struct ThreadItemView: View {
         let normalized = value.lowercased()
         return normalized.hasPrefix("session:")
             || normalized.hasPrefix("objective:")
-            || normalized.hasPrefix("work_item:")
+            || normalized.hasPrefix("task:")
     }
 
     private var isCollaborationConfirmationItem: Bool {
@@ -9114,7 +9114,7 @@ struct ThreadItemView: View {
             title: item.collaborationInitiatorSessionTitle,
             id: item.collaborationInitiatorSessionId ?? "",
             kind: item.collaborationInitiatorSessionKind,
-            workItemId: item.collaborationSourceWorkItemId
+            taskId: item.collaborationSourceCorptieTaskId
         )
     }
 
@@ -9123,7 +9123,7 @@ struct ThreadItemView: View {
             title: item.collaborationRecipientSessionTitle ?? backendClient.selectedSession?.title,
             id: item.collaborationRecipientSessionId ?? "",
             kind: item.collaborationRecipientSessionKind,
-            workItemId: item.collaborationTargetWorkItemId
+            taskId: item.collaborationTargetCorptieTaskId
         )
     }
 

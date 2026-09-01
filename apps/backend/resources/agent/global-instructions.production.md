@@ -6,7 +6,7 @@
 
 # Authoritative Work Session workspace
 
-- Corptie programmatically creates and binds the WorkItem Worktree before the first Turn. Stay in that bound Workspace; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development work is not authorization, and shell `cd` or command `workdir` never changes the logical Workspace.
+- Corptie programmatically creates and binds the Task Worktree before the first Turn. Stay in that bound Workspace; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development work is not authorization, and shell `cd` or command `workdir` never changes the logical Workspace.
 
 # External actions: local-only by default
 

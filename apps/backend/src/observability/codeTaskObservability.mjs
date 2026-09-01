@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { DependencyContractManifest, codedError } from "./dependencyContractManifest.mjs";
 
@@ -47,6 +47,10 @@ export class CodeTaskObservabilityService {
     this.beforeLegacyCutover = beforeLegacyCutover;
     this.rawStore = null;
     this.rawCaptureStatus = "not_initialized";
+    this.pendingObservations = [];
+    this.pendingFingerprints = new Map();
+    this.pendingFlushScheduled = false;
+    this.persistenceError = null;
   }
 
   initialize() {
@@ -84,7 +88,15 @@ export class CodeTaskObservabilityService {
   }
 
   recordObservation({ observation: input, authority }) {
+    if (this.persistenceError) throw this.persistenceError;
     const normalized = normalizeObservation(input, authority, this.manifest);
+    const pendingFingerprint = this.pendingFingerprints.get(normalized.observationId);
+    if (pendingFingerprint) {
+      if (pendingFingerprint !== normalized.idempotencyFingerprint) {
+        throw codedError("OBSERVATION_ID_CONFLICT", "The Observation id was replayed with different canonical content.", 409);
+      }
+      return { state: "duplicate", observationId: normalized.observationId };
+    }
     const existing = this.store.selectOne(
       "SELECT canonical_fingerprint FROM observation_correlation_index WHERE observation_id=?", [normalized.observationId]
     );
@@ -102,27 +114,15 @@ export class CodeTaskObservabilityService {
     }
     let pointer;
     try {
-      pointer = this.rawStore.append(normalized.turnExecutionId, normalized);
+      pointer = this.rawStore.reserve(normalized.turnExecutionId, normalized);
     } catch (error) {
       const reason = error.code === "OBSERVATION_RAW_QUOTA_EXCEEDED" ? "quota" : "data_root_unavailable";
       this.#recordDrop(normalized.turnExecutionId, reason, 1, nowIso);
       return { state: "quarantined", observationId: normalized.observationId, rawCaptureStatus: reason };
     }
-    this.store.db.run(
-      `INSERT INTO observation_correlation_index (
-        observation_id,turn_execution_id,logical_session_id,turn_id,producer,producer_sequence,observed_at_unix_nano,
-        operation_kind,operation_id,run_id,canonical_fingerprint,raw_offset,raw_length,created_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [normalized.observationId, normalized.turnExecutionId, normalized.identity.logicalSessionId, normalized.identity.turnId,
-        normalized.producer, normalized.producerSequence, normalized.observedAtUnixNano,
-        normalized.operationRef?.kind ?? null, normalized.operationRef?.id ?? null, normalized.runId ?? null,
-        normalized.idempotencyFingerprint, pointer.offset, pointer.length, nowIso]
-    );
-    this.store.db.run(
-      `UPDATE observation_turn_executions SET observation_count=observation_count+1, raw_manifest_json=?, updated_at=?
-       WHERE turn_execution_id=?`,
-      [JSON.stringify(pointer.manifest), nowIso, normalized.turnExecutionId]
-    );
+    this.pendingObservations.push({ normalized, pointer, nowIso });
+    this.pendingFingerprints.set(normalized.observationId, normalized.idempotencyFingerprint);
+    this.#schedulePendingFlush();
     return { state: "accepted", observationId: normalized.observationId, droppedAttributeCount: normalized.droppedAttributeCount };
   }
 
@@ -137,13 +137,13 @@ export class CodeTaskObservabilityService {
     const nowIso = this.now().toISOString();
     this.store.db.run(
       `INSERT INTO observation_turn_summaries (
-        turn_execution_id,logical_session_id,turn_id,work_item_id,objective_id,repository_id,worktree_id,
+        turn_execution_id,logical_session_id,turn_id,task_id,objective_id,repository_id,worktree_id,
         finalized,ended_at,analysis_version,summary_hash,summary_json,computed_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(turn_execution_id) DO UPDATE SET finalized=excluded.finalized,ended_at=excluded.ended_at,
         analysis_version=excluded.analysis_version,summary_hash=excluded.summary_hash,summary_json=excluded.summary_json,
         computed_at=excluded.computed_at`,
-      [row.turn_execution_id, row.logical_session_id, row.turn_id, row.work_item_id, row.objective_id,
+      [row.turn_execution_id, row.logical_session_id, row.turn_id, row.task_id, row.objective_id,
         row.repository_id, row.worktree_id, projection.finalized ? 1 : 0, projection.endedAt,
         CODE_TASK_ANALYSIS_VERSION, summaryHash, JSON.stringify(completeReport), nowIso]
     );
@@ -276,8 +276,13 @@ export class CodeTaskObservabilityService {
   }
 
   cleanup() {
+    this.#flushPending();
     const raw = this.rawStore ? this.rawStore.cleanup() : { deleted: 0, status: "data_root_unavailable" };
     return { raw, compactDeleted: this.cleanupCompactSummaries() };
+  }
+
+  flush() {
+    this.#flushPending();
   }
 
   #executionReceipt(row) {
@@ -302,6 +307,7 @@ export class CodeTaskObservabilityService {
   }
 
   finalizeLegacyCutover(turnExecutionId) {
+    this.#flushPending();
     const migration = this.store.selectOne(
       "SELECT state FROM observation_schema_migrations WHERE migration_id='code_task_observability_v4'"
     );
@@ -345,7 +351,7 @@ export class CodeTaskObservabilityService {
       this.store.db.run(`
       CREATE TABLE IF NOT EXISTS observation_turn_executions (
         turn_execution_id TEXT PRIMARY KEY, logical_session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
-        objective_id TEXT, work_item_id TEXT, provider_binding_id TEXT NOT NULL, binding_generation INTEGER NOT NULL,
+        objective_id TEXT, task_id TEXT, provider_binding_id TEXT NOT NULL, binding_generation INTEGER NOT NULL,
         repository_id TEXT, worktree_id TEXT, source_commit_oid TEXT, source_tree_oid TEXT,
         status TEXT NOT NULL DEFAULT 'running', projection_state TEXT NOT NULL DEFAULT 'partial',
         observation_count INTEGER NOT NULL DEFAULT 0, dropped_event_count INTEGER NOT NULL DEFAULT 0,
@@ -367,13 +373,13 @@ export class CodeTaskObservabilityService {
         ON observation_correlation_index(turn_execution_id,observed_at_unix_nano,producer_sequence,observation_id);
       CREATE TABLE IF NOT EXISTS observation_turn_summaries (
         turn_execution_id TEXT PRIMARY KEY, logical_session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
-        work_item_id TEXT, objective_id TEXT, repository_id TEXT, worktree_id TEXT, finalized INTEGER NOT NULL,
+        task_id TEXT, objective_id TEXT, repository_id TEXT, worktree_id TEXT, finalized INTEGER NOT NULL,
         ended_at TEXT, analysis_version TEXT NOT NULL, summary_hash TEXT NOT NULL, summary_json TEXT NOT NULL,
         computed_at TEXT NOT NULL,
         FOREIGN KEY(turn_execution_id) REFERENCES observation_turn_executions(turn_execution_id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_observation_summary_session ON observation_turn_summaries(logical_session_id,ended_at);
-      CREATE INDEX IF NOT EXISTS idx_observation_summary_work_item ON observation_turn_summaries(work_item_id,ended_at);
+      CREATE INDEX IF NOT EXISTS idx_observation_summary_task ON observation_turn_summaries(task_id,ended_at);
       CREATE TABLE IF NOT EXISTS observation_schema_migrations (
         migration_id TEXT PRIMARY KEY, state TEXT NOT NULL CHECK (state IN ('ready','completed')),
         proof_turn_execution_id TEXT, started_at TEXT NOT NULL, completed_at TEXT, updated_at TEXT NOT NULL
@@ -413,11 +419,11 @@ export class CodeTaskObservabilityService {
     }
     this.store.db.run(
       `INSERT INTO observation_turn_executions (
-        turn_execution_id,logical_session_id,turn_id,objective_id,work_item_id,provider_binding_id,binding_generation,
+        turn_execution_id,logical_session_id,turn_id,objective_id,task_id,provider_binding_id,binding_generation,
         repository_id,worktree_id,source_commit_oid,source_tree_oid,created_at,updated_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [observation.turnExecutionId, observation.identity.logicalSessionId, observation.identity.turnId,
-        observation.identity.objectiveId ?? null, observation.identity.workItemId ?? null,
+        observation.identity.objectiveId ?? null, observation.identity.taskId ?? null,
         observation.identity.providerBindingId, observation.identity.bindingGeneration,
         observation.identity.repositoryId ?? null, observation.identity.worktreeId ?? null,
         observation.sourceIdentity?.sourceCommitOid ?? authority.startupBindingReceipt?.sourceCommitOid ?? null,
@@ -436,9 +442,56 @@ export class CodeTaskObservabilityService {
   }
 
   #executionRow(turnExecutionId) {
+    this.#flushPending();
     const row = this.store.selectOne("SELECT * FROM observation_turn_executions WHERE turn_execution_id=?", [turnExecutionId]);
     if (!row) throw codedError("TURN_EXECUTION_NOT_FOUND", "Turn execution not found.", 404);
     return row;
+  }
+
+  #schedulePendingFlush() {
+    if (this.pendingFlushScheduled) return;
+    this.pendingFlushScheduled = true;
+    queueMicrotask(() => {
+      this.pendingFlushScheduled = false;
+      try {
+        this.#flushPending();
+      } catch (error) {
+        this.persistenceError = error;
+      }
+    });
+  }
+
+  #flushPending() {
+    if (this.persistenceError) throw this.persistenceError;
+    if (this.pendingObservations.length === 0) return;
+    const batch = this.pendingObservations.splice(0);
+    try {
+      for (const { pointer } of batch) this.rawStore.commit(pointer);
+      this.store.runInTransaction(() => {
+        for (const { normalized, pointer, nowIso } of batch) {
+          this.store.db.run(
+            `INSERT INTO observation_correlation_index (
+              observation_id,turn_execution_id,logical_session_id,turn_id,producer,producer_sequence,observed_at_unix_nano,
+              operation_kind,operation_id,run_id,canonical_fingerprint,raw_offset,raw_length,created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            [normalized.observationId, normalized.turnExecutionId, normalized.identity.logicalSessionId, normalized.identity.turnId,
+              normalized.producer, normalized.producerSequence, normalized.observedAtUnixNano,
+              normalized.operationRef?.kind ?? null, normalized.operationRef?.id ?? null, normalized.runId ?? null,
+              normalized.idempotencyFingerprint, pointer.offset, pointer.length, nowIso]
+          );
+          this.store.db.run(
+            `UPDATE observation_turn_executions SET observation_count=observation_count+1, raw_manifest_json=?, updated_at=?
+             WHERE turn_execution_id=?`,
+            [JSON.stringify(pointer.manifest), nowIso, normalized.turnExecutionId]
+          );
+        }
+      });
+      for (const { normalized } of batch) this.pendingFingerprints.delete(normalized.observationId);
+    } catch (error) {
+      this.pendingObservations.unshift(...batch);
+      this.persistenceError = error;
+      throw error;
+    }
   }
 
   #readObservations(row) {
@@ -451,7 +504,7 @@ export class CodeTaskObservabilityService {
     if (context?.kind === "local_user") return;
     if (!context?.logicalSessionId) throw codedError("OBSERVATION_PERMISSION_DENIED", "Authenticated Session context is required.", 403);
     if (context.logicalSessionId !== row.logical_session_id) {
-      if (!(context.workItemId && context.workItemId === row.work_item_id && context.canReadRelatedObservability === true)) {
+      if (!(context.taskId && context.taskId === row.task_id && context.canReadRelatedObservability === true)) {
         throw codedError("OBSERVATION_PERMISSION_DENIED", "The Session cannot read this observability scope.", 403);
       }
     }
@@ -490,16 +543,26 @@ class ExternalObservationStore {
     if (!resolved.startsWith(`/Volumes/${sep}`) && !resolved.startsWith("/Volumes/")) throw storageError("OBSERVATION_EXTERNAL_DATA_ROOT_REQUIRED");
     this.root = join(resolved, "observability", this.environment, "raw");
     mkdirSync(this.root, { recursive: true, mode: 0o700 }); chmodSync(this.root, 0o700);
+    this.objectSizes = new Map();
     this.usageBytes = this.#scanUsage(); this.cleanup();
   }
-  append(turnExecutionId, observation) {
+  reserve(turnExecutionId, observation) {
     const path = this.#path(turnExecutionId); const data = `${stableStringify(observation)}\n`;
     const length = Buffer.byteLength(data);
     if (this.usageBytes + length > this.quotaBytes) throw storageError("OBSERVATION_RAW_QUOTA_EXCEEDED");
-    const offset = existsSync(path) ? statSync(path).size : 0;
-    appendFileSync(path, data, { encoding: "utf8", mode: 0o600 }); chmodSync(path, 0o600); this.usageBytes += length;
-    return { offset, length, manifest: { storage: "external_data_root", objectId: basename(path), byteLength: offset + length,
+    const offset = this.objectSizes.get(path) ?? 0;
+    this.objectSizes.set(path, offset + length);
+    this.usageBytes += length;
+    return { path, data, firstWrite: offset === 0, offset, length,
+      manifest: { storage: "external_data_root", objectId: basename(path), byteLength: offset + length,
       rawTtlDays: this.rawTtlDays, quotaBytes: this.quotaBytes } };
+  }
+  commit(pointer) {
+    appendFileSync(pointer.path, pointer.data, { encoding: "utf8", mode: 0o600 });
+    if (!pointer.firstWrite) return;
+    chmodSync(pointer.path, 0o600);
+    const logicalNow = this.now();
+    utimesSync(pointer.path, logicalNow, logicalNow);
   }
   read(turnExecutionId) {
     const path = this.#path(turnExecutionId); if (!existsSync(path)) return [];
@@ -519,12 +582,24 @@ class ExternalObservationStore {
     for (const entry of entries) {
       if (deleted >= this.maxCleanupEntries) break;
       const path = join(this.root, entry.name); const stat = statSync(path);
-      if (stat.mtimeMs < cutoff) { unlinkSync(path); this.usageBytes = Math.max(0, this.usageBytes - stat.size); deleted += 1; }
+      if (stat.mtimeMs < cutoff) {
+        unlinkSync(path);
+        this.objectSizes.delete(path);
+        this.usageBytes = Math.max(0, this.usageBytes - stat.size);
+        deleted += 1;
+      }
     }
     return { status: "completed", deleted, usageBytes: this.usageBytes, quotaBytes: this.quotaBytes };
   }
   #path(turnExecutionId) { return join(this.root, `${sha256(turnExecutionId)}.ndjson`); }
-  #scanUsage() { return readdirSync(this.root, { withFileTypes: true }).filter((e) => e.isFile()).reduce((n, e) => n + statSync(join(this.root, e.name)).size, 0); }
+  #scanUsage() {
+    return readdirSync(this.root, { withFileTypes: true }).filter((entry) => entry.isFile()).reduce((total, entry) => {
+      const path = join(this.root, entry.name);
+      const size = statSync(path).size;
+      this.objectSizes.set(path, size);
+      return total + size;
+    }, 0);
+  }
 }
 
 export function authoritativeProviderReceipts({ event, binding, sessionEvent } = {}) {
@@ -552,7 +627,7 @@ export function authoritativeProviderReceipts({ event, binding, sessionEvent } =
     receiptId: `turn_execution_receipt:${turnDigest.slice(0, 32)}`, turnExecutionId, turnId,
     logicalSessionId: startup.logicalSessionId, providerBindingId: startup.providerBindingId,
     bindingGeneration: startup.bindingGeneration, sourceSessionEventId: sessionEvent?.eventId ?? null });
-  const identity = Object.freeze({ objectiveId: startup.objectiveId, workItemId: startup.workItemId,
+  const identity = Object.freeze({ objectiveId: startup.objectiveId, taskId: startup.taskId,
     logicalSessionId: startup.logicalSessionId, providerBindingId: startup.providerBindingId,
     bindingGeneration: startup.bindingGeneration, repositoryId: startup.repositoryId,
     worktreeId: startup.worktreeId, turnId });
@@ -657,7 +732,7 @@ function normalizeObservation(input, authority, manifest) {
     throw codedError("PROVIDER_BINDING_GENERATION_STALE", "StartupBindingReceipt generation is stale for this Observation.", 409);
   }
   if (!startup || startup.schemaVersion !== 2 || startup.status !== "ready" || !startup.startupOperationId || !startup.receiptHash
-    || nullable(startup.objectiveId) !== nullable(identity.objectiveId) || nullable(startup.workItemId) !== nullable(identity.workItemId)
+    || nullable(startup.objectiveId) !== nullable(identity.objectiveId) || nullable(startup.taskId) !== nullable(identity.taskId)
     || startup.logicalSessionId !== identity.logicalSessionId || startup.providerBindingId !== identity.providerBindingId
     || startup.bindingGeneration !== identity.bindingGeneration
     || nullable(startup.repositoryId) !== nullable(identity.repositoryId) || nullable(startup.worktreeId) !== nullable(identity.worktreeId)) {
@@ -766,7 +841,7 @@ function validateRunIsolationReceipt(runReceipt, { runId, authority, manifest })
     "fencingToken", "logicalSessionId", "metricsRef", "mode", "outcome", "portLeaseRefs", "processLeaseRefs", "readyAt",
     "receiptHash", "receiptId", "repositoryId", "repositorySourceSnapshotReceiptRef", "resourceVersion", "runContextHash",
     "runId", "schemaVersion", "sourceFingerprint", "startedAt", "startupBindingReceiptRef", "state", "stoppedAt",
-    "toolsetValidationReceiptPointer", "workItemId", "worktreeId"]);
+    "toolsetValidationReceiptPointer", "taskId", "worktreeId"]);
   if (!runReceipt || runReceipt.schemaVersion !== RUN_RECEIPT_SCHEMA_VERSION || runReceipt.runId !== runId
     || !runReceipt.receiptId || !/^(run|dev):.+$/.test(runReceipt.runId)
     || !Number.isSafeInteger(runReceipt.resourceVersion) || runReceipt.resourceVersion < 1
@@ -1045,7 +1120,7 @@ function buildReport(row, projection, contextGrowth, rawCaptureStatus) {
   const versions = first?.versions ?? {};
   return { schemaVersion: 4, analysisVersion: CODE_TASK_ANALYSIS_VERSION,
     identity: { logicalSessionId: row.logical_session_id, turnId: row.turn_id, turnExecutionId: row.turn_execution_id,
-      objectiveId: row.objective_id, workItemId: row.work_item_id, providerBindingId: row.provider_binding_id,
+      objectiveId: row.objective_id, taskId: row.task_id, providerBindingId: row.provider_binding_id,
       bindingGeneration: Number(row.binding_generation), repositoryId: row.repository_id, worktreeId: row.worktree_id },
     sourceIdentity: { sourceCommitOid: row.source_commit_oid, sourceTreeOid: row.source_tree_oid,
       snapshotReceiptId: first?.sourceIdentity?.snapshotReceiptId ?? null }, versions,
@@ -1109,8 +1184,8 @@ function toOtlp(report, spans) {
 
 function requiredIdentity(input) {
   if (!input || typeof input !== "object") throw codedError("OBSERVATION_IDENTITY_REQUIRED", "Observation identity is required.");
-  rejectUnknown(input, ["objectiveId", "workItemId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]);
-  return { objectiveId: optionalId(input.objectiveId, "objectiveId"), workItemId: optionalId(input.workItemId, "workItemId"),
+  rejectUnknown(input, ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]);
+  return { objectiveId: optionalId(input.objectiveId, "objectiveId"), taskId: optionalId(input.taskId, "taskId"),
     logicalSessionId: requiredId(input.logicalSessionId, "logicalSessionId"), providerBindingId: requiredId(input.providerBindingId, "providerBindingId"),
     bindingGeneration: boundedInteger(input.bindingGeneration, 1, Number.MAX_SAFE_INTEGER, "bindingGeneration"),
     repositoryId: optionalId(input.repositoryId, "repositoryId"), worktreeId: optionalId(input.worktreeId, "worktreeId"),
@@ -1136,7 +1211,7 @@ function sanitizeAttributes(input = {}) { if (!input || typeof input !== "object
     if (["string", "number", "boolean"].includes(typeof value) && (typeof value !== "string" || value.length <= SAFE_SCALAR_MAX)) attributes[key] = value; else dropped += 1;
   }
   return { attributes, dropped }; }
-function sameIdentity(a, b) { return ["objectiveId", "workItemId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]
+function sameIdentity(a, b) { return ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]
   .every((key) => nullable(a[key]) === nullable(b[key])); }
 function requireReceiptRef(refs, kind, receiptId) { if (!receiptId || !refs.some((ref) => ref.kind === kind && ref.receiptId === receiptId))
   throw codedError("OBSERVATION_RECEIPT_REQUIRED", `A matching ${kind} receipt reference is required.`, 409); }

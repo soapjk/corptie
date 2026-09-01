@@ -69,8 +69,8 @@ test("a Provider user item arriving before send returns updates the durable prod
 test("a collaboration prompt is claimed by its Provider turn and remains one canonical Timeline item", async () => {
   const { directory, store, projector } = await fixture();
   try {
-    const { workItem } = store.enqueueAgentWorkItemWithResult({
-      workItemId: "agent-work:one",
+    const { task } = store.enqueueAgentTaskWithResult({
+      taskId: "agent-work:one",
       agentId: "agent:one",
       sessionId: binding.sessionId,
       kind: "collaboration",
@@ -79,16 +79,16 @@ test("a collaboration prompt is claimed by its Provider turn and remains one can
       source: { type: "collaboration", taskId: "task:one" },
       localVisibility: "status_only"
     });
-    const running = store.claimAgentWorkItem(workItem.workItemId);
+    const running = store.claimAgentTask(task.taskId);
     store.upsertTimelineItemProjection(binding.sessionId, {
-      id: `work:${workItem.workItemId}`,
-      turnId: `work:${workItem.workItemId}`,
+      id: `work:${task.taskId}`,
+      turnId: `work:${task.taskId}`,
       type: "userMessage",
       title: "Agent Collaboration",
-      text: workItem.text,
+      text: task.text,
       status: "running",
       presentationRole: "collaboration",
-      rawMetadataJSON: JSON.stringify({ workItemId: workItem.workItemId, presentationRole: "collaboration" })
+      rawMetadataJSON: JSON.stringify({ taskId: task.taskId, presentationRole: "collaboration" })
     });
 
     projector.project({ event: event("turn.started"), binding });
@@ -110,12 +110,12 @@ test("a collaboration prompt is claimed by its Provider turn and remains one can
     });
 
     const userItems = store.getItems(binding.sessionId).filter((item) => item.type === "userMessage");
-    assert.deepEqual(userItems.map((item) => item.id), [`work:${workItem.workItemId}`]);
+    assert.deepEqual(userItems.map((item) => item.id), [`work:${task.taskId}`]);
     assert.equal(userItems[0].turnId, "turn:one");
     assert.equal(userItems[0].title, "Agent Collaboration");
     assert.equal(userItems[0].presentationRole, "collaboration");
-    assert.equal(userItems[0].workItemId, workItem.workItemId);
-    assert.equal(store.getAgentWorkItem(workItem.workItemId).targetTurnId, "turn:one");
+    assert.equal(userItems[0].taskId, task.taskId);
+    assert.equal(store.getAgentTask(task.taskId).targetTurnId, "turn:one");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

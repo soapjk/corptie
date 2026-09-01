@@ -70,10 +70,10 @@ export class WorkSessionStartupCoordinator {
     return this.#pendingView(operation);
   }
 
-  getReceipt({ startupOperationId, workItemId = null } = {}) {
+  getReceipt({ startupOperationId, taskId = null } = {}) {
     const operation = this.#operation(requiredText(startupOperationId, "startupOperationId"));
-    if (!operation || (workItemId && operation.work_item_id !== workItemId)) {
-      throw coded("START_REFERENCE_INVALID", "Startup operation was not found in the requested WorkItem.", 404, false);
+    if (!operation || (taskId && operation.task_id !== taskId)) {
+      throw coded("START_REFERENCE_INVALID", "Startup operation was not found in the requested Task.", 404, false);
     }
     if (operation.state === "ready") return this.#readyView(operation, true);
     if (TERMINAL_FAILURE_STATES.has(operation.state)) return this.#failureView(operation);
@@ -181,10 +181,10 @@ export class WorkSessionStartupCoordinator {
       if (operation.state === "allocated") {
         allocation = await this.prepareWorktree({
           startupOperationId: operationId,
-          workItemId: operation.work_item_id,
-          repositoryId: operation.repository_id ?? context.workItem.main_workspace_id,
+          taskId: operation.task_id,
+          repositoryId: operation.repository_id ?? context.task.main_workspace_id,
           idempotencyKey: operation.idempotency_key,
-          workItem: context.workItem
+          task: context.task
         });
         allocation = await this.#verifiedAllocation(operation, allocation);
         operation = this.#transition(operation, "worktree_prepared", { allocation });
@@ -259,18 +259,18 @@ export class WorkSessionStartupCoordinator {
   }
 
   #allocate(input) {
-    const workItemId = namespaced(input.workItemId, "work_item:", "workItemId");
+    const taskId = namespaced(input.taskId, "task:", "taskId");
     const requestedAgentId = namespaced(input.requestedAgentId, "agent:", "requestedAgentId");
     const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
-    const workItem = this.store.getWorkItem(workItemId);
-    if (!workItem) throw coded("START_REFERENCE_INVALID", "WorkItem was not found.", 404, false);
-    const objectiveId = namespaced(workItem.objective_id, "objective:", "objectiveId");
-    const repositoryId = namespaced(workItem.main_workspace_id, "repository:", "repositoryId");
+    const task = this.store.getTask(taskId);
+    if (!task) throw coded("START_REFERENCE_INVALID", "Task was not found.", 404, false);
+    const objectiveId = namespaced(task.objective_id, "objective:", "objectiveId");
+    const repositoryId = namespaced(task.main_workspace_id, "repository:", "repositoryId");
     const providerId = requiredText(input.providerId, "providerId");
     const normalized = {
       authenticatedSessionId: optionalText(input.authenticatedSessionId),
       objectiveId,
-      workItemId,
+      taskId,
       requestedAgentId,
       providerId,
       repositoryId,
@@ -280,12 +280,12 @@ export class WorkSessionStartupCoordinator {
       replacingSessionId: optionalText(input.replacingSessionId)
     };
     const fingerprint = sha256(canonicalJson(normalized));
-    const operationId = `startup:${sha256(`${workItemId}\0${idempotencyKey}`).slice(0, 32)}`;
+    const operationId = `startup:${sha256(`${taskId}\0${idempotencyKey}`).slice(0, 32)}`;
     let result;
     this.store.runInTransaction(() => {
       const existing = this.store.selectOne(
-        "SELECT * FROM work_session_startup_operations WHERE work_item_id=? AND idempotency_key=?",
-        [workItemId, idempotencyKey]
+        "SELECT * FROM work_session_startup_operations WHERE task_id=? AND idempotency_key=?",
+        [taskId, idempotencyKey]
       );
       if (existing) {
         if (existing.request_fingerprint !== fingerprint) {
@@ -296,11 +296,11 @@ export class WorkSessionStartupCoordinator {
       }
       const active = this.store.selectOne(
         `SELECT startup_operation_id FROM work_session_startup_operations
-         WHERE work_item_id=? AND state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating') LIMIT 1`,
-        [workItemId]
+         WHERE task_id=? AND state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating') LIMIT 1`,
+        [taskId]
       );
       if (active) {
-        throw coded("START_ALREADY_IN_PROGRESS", "Another startup operation already owns this WorkItem.", 409, true, {
+        throw coded("START_ALREADY_IN_PROGRESS", "Another startup operation already owns this Task.", 409, true, {
           startupOperationId: active.startup_operation_id
         });
       }
@@ -308,19 +308,19 @@ export class WorkSessionStartupCoordinator {
       const correlationId = `startup-correlation:${randomUUID()}`;
       this.store.db.run(
         `INSERT INTO work_session_startup_operations (
-          startup_operation_id, objective_id, work_item_id, requested_agent_id, provider_id,
+          startup_operation_id, objective_id, task_id, requested_agent_id, provider_id,
           repository_id, actor_logical_session_id,
           idempotency_key, request_fingerprint, source, requested_title, initial_prompt, replacing_session_id, state,
           lease_owner, lease_expires_at, correlation_id, allocated_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'allocated', ?, ?, ?, ?, ?)`,
-        [operationId, objectiveId, workItemId, requestedAgentId, providerId,
+        [operationId, objectiveId, taskId, requestedAgentId, providerId,
           repositoryId, normalized.authenticatedSessionId, idempotencyKey, fingerprint,
           normalized.source, normalized.title, normalized.initialPrompt, normalized.replacingSessionId, this.leaseOwner,
           expiresAt(now, this.leaseTtlMs), correlationId, now, now]
       );
       this.store.db.run(
-        `UPDATE work_items SET execution_status='starting', updated_at=? WHERE id=?`,
-        [now, workItemId]
+        `UPDATE tasks SET execution_status='starting', updated_at=? WHERE id=?`,
+        [now, taskId]
       );
       result = this.store.selectOne(
         "SELECT * FROM work_session_startup_operations WHERE startup_operation_id=?", [operationId]
@@ -328,7 +328,7 @@ export class WorkSessionStartupCoordinator {
       this.#insertAudit(result, "startup.allocated", null, 1, {});
     });
     this.store.scheduleSave();
-    this.onChanged("WorkItemChanged", { action: "startup-allocated", entity: this.store.getWorkItem(workItemId) });
+    this.onChanged("TaskChanged", { action: "startup-allocated", entity: this.store.getTask(taskId) });
     return result;
   }
 
@@ -358,9 +358,9 @@ export class WorkSessionStartupCoordinator {
     const logical = this.store.getLogicalSessionByLegacySessionId(session.id);
     const boundCwd = logical?.activeBinding?.boundCwd ? canonicalPath(logical.activeBinding.boundCwd) : null;
     if (!persisted || persisted.objectiveId !== operation.objective_id
-      || persisted.workItemId !== operation.work_item_id || persisted.sessionKind !== "worker"
+      || persisted.taskId !== operation.task_id || persisted.sessionKind !== "worker"
       || !logical?.logicalSessionId || boundCwd !== allocation.canonicalWorktreePath) {
-      throw coded("START_SESSION_BIND_FAILED", "Persisted logical Session does not match the authoritative WorkItem/Worktree identity.", 409, true);
+      throw coded("START_SESSION_BIND_FAILED", "Persisted logical Session does not match the authoritative Task/Worktree identity.", 409, true);
     }
     return logical;
   }
@@ -382,13 +382,13 @@ export class WorkSessionStartupCoordinator {
       const now = this.clock();
       this.store.db.run(
         `INSERT INTO work_session_startup_bindings (
-          provider_binding_id, startup_operation_id, objective_id, work_item_id, logical_session_id,
+          provider_binding_id, startup_operation_id, objective_id, task_id, logical_session_id,
           repository_id, worktree_id, canonical_worktree_path, head_kind, branch,
           detached_commit_oid, base_ref, source_commit_oid, source_tree_oid,
           repository_inventory_version, workspace_resource_version, binding_generation, status,
           provider_id, provider_context_hash, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'binding', ?, ?, ?)`,
-        [providerBindingId, operation.startup_operation_id, operation.objective_id, operation.work_item_id,
+        [providerBindingId, operation.startup_operation_id, operation.objective_id, operation.task_id,
           operation.logical_session_id, allocation.repositoryId, allocation.worktreeId,
           allocation.canonicalWorktreePath, allocation.headIdentity.kind,
           allocation.headIdentity.kind === "branch" ? allocation.headIdentity.branch : null,
@@ -439,7 +439,7 @@ export class WorkSessionStartupCoordinator {
       schemaVersion: 2,
       startupOperationId: operation.startup_operation_id,
       objectiveId: operation.objective_id,
-      workItemId: operation.work_item_id,
+      taskId: operation.task_id,
       logicalSessionId: operation.logical_session_id ?? null,
       repositoryId: allocation.repositoryId,
       worktreeId: allocation.worktreeId,
@@ -457,10 +457,10 @@ export class WorkSessionStartupCoordinator {
     const binding = this.#binding(operation.startup_operation_id);
     const session = this.store.getSession(operation.legacy_session_id);
     const logical = this.#verifiedLogicalSession(operation, session, allocation);
-    const workItem = this.store.getWorkItem(operation.work_item_id);
+    const task = this.store.getTask(operation.task_id);
     const inventory = this.store.getGitWorktree(allocation.worktreeId);
-    if (!workItem || workItem.objective_id !== operation.objective_id
-      || workItem.main_workspace_id !== allocation.repositoryId
+    if (!task || task.objective_id !== operation.objective_id
+      || task.main_workspace_id !== allocation.repositoryId
       || !inventory || inventory.repositoryId !== allocation.repositoryId
       || canonicalPath(inventory.canonicalPath || inventory.path) !== allocation.canonicalWorktreePath
       || binding.status !== "binding" || binding.binding_generation !== operation.binding_generation
@@ -476,7 +476,7 @@ export class WorkSessionStartupCoordinator {
       status: "ready",
       startupOperationId: operation.startup_operation_id,
       objectiveId: operation.objective_id,
-      workItemId: operation.work_item_id,
+      taskId: operation.task_id,
       logicalSessionId: logical.logicalSessionId,
       repositoryId: allocation.repositoryId,
       worktreeId: allocation.worktreeId,
@@ -529,10 +529,10 @@ export class WorkSessionStartupCoordinator {
       );
       requireSingleRowChange(this.store, "Startup operation changed before ready commit.");
       this.store.db.run(
-        `UPDATE work_items SET current_session_id=?, status='in_progress', execution_status='running',
+        `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status='running',
          main_agent_id=?, acceptance_assessment_json='{}',
          resource_version=resource_version+1, updated_at=? WHERE id=?`,
-        [session.id, operation.requested_agent_id, now, operation.work_item_id]
+        [session.id, operation.requested_agent_id, now, operation.task_id]
       );
       this.store.db.run("UPDATE agents SET current_session_id=?, updated_at=? WHERE agent_id=?", [
         session.id, now, operation.requested_agent_id
@@ -543,7 +543,7 @@ export class WorkSessionStartupCoordinator {
       });
     });
     this.store.scheduleSave();
-    this.onChanged("WorkItemChanged", { action: "startup-ready", entity: this.store.getWorkItem(operation.work_item_id) });
+    this.onChanged("TaskChanged", { action: "startup-ready", entity: this.store.getTask(operation.task_id) });
     return this.#readyView(this.#operation(operation.startup_operation_id), false);
   }
 
@@ -603,7 +603,7 @@ export class WorkSessionStartupCoordinator {
       this.#insertAudit(operation, `startup.${state}`, operation.resource_version, nextVersion, details);
     });
     this.store.scheduleSave();
-    this.onChanged("WorkItemChanged", { action: `startup-${state}`, entity: this.store.getWorkItem(operation.work_item_id) });
+    this.onChanged("TaskChanged", { action: `startup-${state}`, entity: this.store.getTask(operation.task_id) });
     return this.#operation(operation.startup_operation_id);
   }
 
@@ -675,7 +675,7 @@ export class WorkSessionStartupCoordinator {
     } else if (allocation) {
       completedSteps.push("worktree_preserved_verified_reuse");
     }
-    completedSteps.push("work_item_claim_released");
+    completedSteps.push("task_claim_released");
     const now = this.clock();
     const state = manualRequired ? "failed_manual_cleanup" : "failed_compensated";
     const result = {
@@ -695,15 +695,15 @@ export class WorkSessionStartupCoordinator {
       );
       requireSingleRowChange(this.store, "Startup compensation result lost its state claim.");
       this.store.db.run(
-        `UPDATE work_items SET execution_status='start_failed', updated_at=?,
+        `UPDATE tasks SET execution_status='start_failed', updated_at=?,
          current_session_id=CASE WHEN current_session_id=? THEN NULL ELSE current_session_id END WHERE id=?`,
-        [now, current.legacy_session_id, current.work_item_id]
+        [now, current.legacy_session_id, current.task_id]
       );
       this.#insertAudit(latest, manualRequired ? "startup.compensation_failed" : "startup.compensation_completed",
         latest.resource_version, nextVersion, result);
     });
     this.store.scheduleSave();
-    this.onChanged("WorkItemChanged", { action: "startup-failed", entity: this.store.getWorkItem(current.work_item_id) });
+    this.onChanged("TaskChanged", { action: "startup-failed", entity: this.store.getTask(current.task_id) });
   }
 
   #takeLease(operation) {
@@ -748,7 +748,7 @@ export class WorkSessionStartupCoordinator {
       receipt,
       operation: this.#operationView(operation),
       session: this.store.getSession(operation.legacy_session_id),
-      workItem: this.store.getWorkItem(operation.work_item_id)
+      task: this.store.getTask(operation.task_id)
     };
   }
 
@@ -785,7 +785,7 @@ export class WorkSessionStartupCoordinator {
   #operationView(operation) {
     return {
       startupOperationId: operation.startup_operation_id,
-      workItemId: operation.work_item_id,
+      taskId: operation.task_id,
       state: operation.state,
       resourceVersion: operation.resource_version,
       bindingGeneration: operation.binding_generation ?? null
@@ -795,7 +795,7 @@ export class WorkSessionStartupCoordinator {
   #inputFor(operation) {
     return {
       authenticatedSessionId: operation.actor_logical_session_id ?? null,
-      workItemId: operation.work_item_id,
+      taskId: operation.task_id,
       objectiveId: operation.objective_id,
       requestedAgentId: operation.requested_agent_id,
       providerId: operation.provider_id,

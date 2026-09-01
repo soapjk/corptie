@@ -256,9 +256,9 @@ export class ScheduledSessionTaskService {
     }
   }
 
-  handleAgentWorkEvent(type, workItem) {
-    const run = workItem?.workItemId
-      ? this.store.getScheduledSessionRunForAgentWorkItem(workItem.workItemId)
+  handleAgentWorkEvent(type, operation) {
+    const run = operation?.taskId
+      ? this.store.getScheduledSessionRunForAgentTask(operation.taskId)
       : null;
     if (!run) return null;
     if (["completed", "failed", "cancelled", "skipped", "missed"].includes(run.status)) return run;
@@ -279,9 +279,9 @@ export class ScheduledSessionTaskService {
     } else return null;
     const updatedRun = this.store.updateScheduledSessionRun(run.runId, {
       status,
-      targetTurnId: workItem.targetTurnId ?? run.targetTurnId,
+      targetTurnId: operation.targetTurnId ?? run.targetTurnId,
       errorCode: status === "failed" ? "AGENT_WORK_FAILED" : null,
-      errorMessage: status === "failed" ? workItem.lastError : null,
+      errorMessage: status === "failed" ? operation.lastError : null,
       startedAt: status === "running" ? timestamp : run.startedAt,
       completedAt: ["completed", "failed"].includes(status) ? timestamp : run.completedAt
     });
@@ -292,7 +292,7 @@ export class ScheduledSessionTaskService {
       lastErrorMessage: updatedRun.errorMessage,
       lastRunAt: timestamp
     });
-    this.#record(eventType, task, updatedRun, { type: "system", id: this.leaseOwner }, { workItem });
+    this.#record(eventType, task, updatedRun, { type: "system", id: this.leaseOwner }, { operation });
     return updatedRun;
   }
 
@@ -494,7 +494,7 @@ export class ScheduledSessionTaskService {
         return cancelledRun;
       }
       const actionResults = [];
-      let workItem = null;
+      let queuedOperation = null;
       const actions = task.actions?.length ? task.actions : [{ type: "queueSessionMessage", message: task.message }];
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index];
@@ -513,7 +513,7 @@ export class ScheduledSessionTaskService {
             JSON.stringify(message.payload ?? null)
           );
           const enqueueResult = await this.enqueue({
-            workItemId: `scheduled:${deliveryId}`,
+            taskId: `scheduled:${deliveryId}`,
             agentId: route.agentId,
             sessionId: route.sessionId,
             kind: "user",
@@ -536,8 +536,8 @@ export class ScheduledSessionTaskService {
             localVisibility: "normal",
             createdAt: now.toISOString()
           });
-          workItem = enqueueResult?.workItem ?? enqueueResult;
-          if (!workItem?.workItemId) {
+          queuedOperation = enqueueResult?.task ?? enqueueResult;
+          if (!queuedOperation?.taskId) {
             operationError("AUTOMATION_DELIVERY_RECEIPT_INVALID", `Delivery ${deliveryId} returned no durable work item.`);
           }
           const deduplicated = enqueueResult?.inserted === false;
@@ -545,7 +545,7 @@ export class ScheduledSessionTaskService {
             type: action.type,
             status: deduplicated ? "deduplicated" : "queued",
             deliveryId,
-            workItemId: workItem.workItemId,
+            taskId: queuedOperation.taskId,
             completedAt: this.now().toISOString()
           });
           this.#record(
@@ -553,7 +553,7 @@ export class ScheduledSessionTaskService {
             task,
             run,
             { type: "system", id: this.leaseOwner },
-            { scheduledFor: run.scheduledFor, deliveryId, agentWorkItemId: workItem.workItemId }
+            { scheduledFor: run.scheduledFor, deliveryId, agentTaskId: queuedOperation.taskId }
           );
         } else if (action.type === "activateSession") {
           await this.activate({ logicalSessionId: task.logicalSessionId, sessionId: route.sessionId, automationId: task.taskId, runId: run.runId });
@@ -573,15 +573,15 @@ export class ScheduledSessionTaskService {
           ))
         });
       }
-      const deliveryStatus = workItem ? "queued" : "completed";
+      const deliveryStatus = queuedOperation ? "queued" : "completed";
       const updatedRun = this.store.updateScheduledSessionRun(run.runId, {
         status: deliveryStatus,
-        agentWorkItemId: workItem?.workItemId ?? null,
+        agentTaskId: queuedOperation?.taskId ?? null,
         bindingId: route.binding.bindingId,
         providerSessionId: route.binding.providerSessionId,
         routingVersion: route.binding.routingVersion,
-        queuedAt: workItem ? now.toISOString() : null,
-        completedAt: workItem ? null : now.toISOString(),
+        queuedAt: queuedOperation ? now.toISOString() : null,
+        completedAt: queuedOperation ? null : now.toISOString(),
         stages: appendStage(run.stages, stage("dispatch", "completed", this.now().toISOString(), { status: deliveryStatus })),
         actionResults,
         errorCode: null,
@@ -601,8 +601,8 @@ export class ScheduledSessionTaskService {
         retryCount: 0,
         pendingScheduledFor: null
       });
-      this.#record(workItem ? "ScheduledSessionRunQueued" : "ScheduledSessionRunCompleted", updatedTask, updatedRun, { type: "system", id: this.leaseOwner }, {
-        agentWorkItemId: workItem?.workItemId ?? null,
+      this.#record(queuedOperation ? "ScheduledSessionRunQueued" : "ScheduledSessionRunCompleted", updatedTask, updatedRun, { type: "system", id: this.leaseOwner }, {
+        agentTaskId: queuedOperation?.taskId ?? null,
         targetSessionId: route.sessionId,
         bindingId: route.binding.bindingId,
         routingVersion: route.binding.routingVersion
@@ -733,7 +733,7 @@ export class ScheduledSessionTaskService {
       errorCode: error.code,
       errorMessage: error.message,
       scheduledFor: run.scheduledFor,
-      deliveryId: run.agentWorkItemId,
+      deliveryId: run.agentTaskId,
       retryCount: currentTask.retryCount,
       willRetry: false,
       retrySuppressed: "delivery_already_committed"
@@ -776,7 +776,7 @@ export class ScheduledSessionTaskService {
         errorCode: code,
         errorMessage: message,
         scheduledFor: failedRun?.scheduledFor ?? scheduledFor,
-        deliveryId: failedRun?.agentWorkItemId ?? null,
+        deliveryId: failedRun?.agentTaskId ?? null,
         retryCount: task.retryCount,
         willRetry: false,
         retrySuppressed: `task_${task.status}`

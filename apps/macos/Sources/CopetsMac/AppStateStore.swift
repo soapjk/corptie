@@ -3,7 +3,7 @@ import Foundation
 
 struct ControlPlaneStatePayload: Decodable, Sendable {
     var sessions: [TaskSession]
-    var workItems: [WorkItem]
+    var tasks: [CorptieTask]
     var objectives: [Objective]
     var agents: [Agent]
     var skills: [Skill]
@@ -18,7 +18,7 @@ struct StateSnapshotEnvelope: Decodable, Sendable {
 
 struct StateEntityDeletes: Decodable, Sendable {
     var sessions: [String]
-    var workItems: [String]
+    var tasks: [String]
     var objectives: [String]
     var agents: [String]
     var skills: [String]
@@ -46,7 +46,7 @@ enum AppStateApplyResult: Equatable {
 
 struct NormalizedAppState: Equatable {
     var sessions: [String: TaskSession] = [:]
-    var workItems: [String: WorkItem] = [:]
+    var tasks: [String: CorptieTask] = [:]
     var objectives: [String: Objective] = [:]
     var agents: [String: Agent] = [:]
     var skills: [String: Skill] = [:]
@@ -65,7 +65,7 @@ final class AppStateStore: ObservableObject {
             // the sorted result cached so the O(n log n) sort is not repeated
             // for each read against an unchanged state. Only invalidate when the
             // sessions dictionary actually changes — unrelated entity updates
-            // (workItems/objectives/agents…) must not drop the sort cache.
+            // (tasks/objectives/agents…) must not drop the sort cache.
             if oldValue.sessions != state.sessions {
                 cachedSessions = nil
             }
@@ -87,7 +87,7 @@ final class AppStateStore: ObservableObject {
         cachedSessions = sorted
         return sorted
     }
-    var workItems: [WorkItem] { state.workItems.values.sorted { $0.createdAt < $1.createdAt } }
+    var tasks: [CorptieTask] { state.tasks.values.sorted { $0.createdAt < $1.createdAt } }
     var objectives: [Objective] { state.objectives.values.sorted { $0.createdAt > $1.createdAt } }
     var agents: [Agent] { state.agents.values.sorted { $0.createdAt < $1.createdAt } }
     var skills: [Skill] { state.skills.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
@@ -97,7 +97,7 @@ final class AppStateStore: ObservableObject {
     }
 
     func session(_ id: String) -> TaskSession? { state.sessions[id] }
-    func workItem(_ id: String) -> WorkItem? { state.workItems[id] }
+    func task(_ id: String) -> CorptieTask? { state.tasks[id] }
     func objective(_ id: String) -> Objective? { state.objectives[id] }
     func agent(_ id: String) -> Agent? { state.agents[id] }
 
@@ -137,14 +137,14 @@ final class AppStateStore: ObservableObject {
         }
         var next = state
         Self.upsert(changeSet.upserts.sessions, into: &next.sessions, id: \TaskSession.id)
-        Self.upsert(changeSet.upserts.workItems, into: &next.workItems, id: \WorkItem.id)
+        Self.upsert(changeSet.upserts.tasks, into: &next.tasks, id: \CorptieTask.id)
         Self.upsert(changeSet.upserts.objectives, into: &next.objectives, id: \Objective.id)
         Self.upsert(changeSet.upserts.agents, into: &next.agents, id: \Agent.agentId)
         Self.upsert(changeSet.upserts.skills, into: &next.skills, id: \Skill.skillId)
         Self.upsert(changeSet.upserts.repositories, into: &next.repositories, id: \GitRepository.id)
         Self.upsert(changeSet.upserts.integrationRuns, into: &next.integrationRuns, id: \ProjectIntegrationRun.id)
         changeSet.deletes.sessions.forEach { next.sessions[$0] = nil }
-        changeSet.deletes.workItems.forEach { next.workItems[$0] = nil }
+        changeSet.deletes.tasks.forEach { next.tasks[$0] = nil }
         changeSet.deletes.objectives.forEach { next.objectives[$0] = nil }
         changeSet.deletes.agents.forEach { next.agents[$0] = nil }
         changeSet.deletes.skills.forEach { next.skills[$0] = nil }
@@ -252,11 +252,11 @@ final class AppStateStore: ObservableObject {
     }
 
     @discardableResult
-    func acceptWorkItem(_ workItem: WorkItem) -> WorkItem {
+    func acceptCorptieTask(_ task: CorptieTask) -> CorptieTask {
         var next = state
-        next.workItems[workItem.id] = workItem
+        next.tasks[task.id] = task
         state = next
-        return workItem
+        return task
     }
 
     func installPerformanceFixtureSession(_ session: TaskSession) {
@@ -287,7 +287,7 @@ final class AppStateStore: ObservableObject {
     private static func normalized(_ payload: ControlPlaneStatePayload) -> NormalizedAppState {
         NormalizedAppState(
             sessions: Dictionary(uniqueKeysWithValues: payload.sessions.map { ($0.id, $0) }),
-            workItems: Dictionary(uniqueKeysWithValues: payload.workItems.map { ($0.id, $0) }),
+            tasks: Dictionary(uniqueKeysWithValues: payload.tasks.map { ($0.id, $0) }),
             objectives: Dictionary(uniqueKeysWithValues: payload.objectives.map { ($0.id, $0) }),
             agents: Dictionary(uniqueKeysWithValues: payload.agents.map { ($0.agentId, $0) }),
             skills: Dictionary(uniqueKeysWithValues: payload.skills.map { ($0.skillId, $0) }),

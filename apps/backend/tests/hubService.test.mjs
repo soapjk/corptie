@@ -16,32 +16,32 @@ async function createStore() {
   return { store, directory };
 }
 
-function createStartedWorkItem(store) {
+function createStartedTask(store) {
   store.createObjective({ id: "o1", name: "Objective" });
-  store.createWorkItem({ id: "wi1", objectiveId: "o1", title: "WorkItem" });
+  store.createTask({ id: "wi1", objectiveId: "o1", title: "Task" });
   store.createSession({
     id: "s1", title: "Worker", provider: "codex-app-server", status: "running",
-    objectiveId: "o1", workItemId: "wi1", agentId: "a1"
+    objectiveId: "o1", taskId: "wi1", agentId: "a1"
   });
 }
 
 test("retrieveMemory 按作用域聚合 + 关键词匹配", async () => {
   const { store, directory } = await createStore();
   try {
-    createStartedWorkItem(store);
+    createStartedTask(store);
     store.createMemory({
-      ownerType: "work_item",
+      ownerType: "task",
       ownerId: "wi1",
-      workItemId: "wi1",
+      taskId: "wi1",
       sourceSessionId: "s1",
       kind: "lesson",
       content: "SQLite 外键要手动开",
       confidence: 0.9
     });
     store.createMemory({
-      ownerType: "work_item",
+      ownerType: "task",
       ownerId: "wi1",
-      workItemId: "wi1",
+      taskId: "wi1",
       sourceSessionId: "s1",
       kind: "fact",
       content: "无关内容",
@@ -56,11 +56,11 @@ test("retrieveMemory 按作用域聚合 + 关键词匹配", async () => {
     });
 
     const hub = new HubService({ store });
-    const results = await hub.retrieveMemory("SQLite 外键", { workItemId: "wi1", agentId: "a1" });
+    const results = await hub.retrieveMemory("SQLite 外键", { taskId: "wi1", agentId: "a1" });
     assert.equal(results.length, 1);
     assert.equal(results[0].content, "SQLite 外键要手动开");
 
-    const agentResults = await hub.retrieveMemory("发布流程", { workItemId: "wi1", agentId: "a1" });
+    const agentResults = await hub.retrieveMemory("发布流程", { taskId: "wi1", agentId: "a1" });
     assert.equal(agentResults[0].owner_type, "agent");
   } finally {
     await store.close();
@@ -78,7 +78,7 @@ test("search 去抖缓存：第二次命中 cached", async () => {
       content: "git commit 流程"
     });
     const hub = new HubService({ store });
-    const scope = { agentId: "a1", sessionId: "s1", objectiveId: "o1", workItemId: "wi1" };
+    const scope = { agentId: "a1", sessionId: "s1", objectiveId: "o1", taskId: "wi1" };
 
     const first = hub.search("git commit", scope);
     assert.equal(first.cached, false);
@@ -112,19 +112,19 @@ test("discover none 三岔路 + 活跃工具集", async () => {
   }
 });
 
-test("缓存 key 含 agentId：同 workItem 不同 agent 不误命中", async () => {
+test("缓存 key 含 agentId：同 task 不同 agent 不误命中", async () => {
   const { store, directory } = await createStore();
   try {
     // a1 有 procedure 记忆，a2 没有
     store.createMemory({ ownerType: "agent", ownerId: "a1", kind: "procedure", content: "git commit 流程" });
     const hub = new HubService({ store });
-    const shared = { objectiveId: "o1", workItemId: "wi1", sessionId: "s1" };
+    const shared = { objectiveId: "o1", taskId: "wi1", sessionId: "s1" };
 
     const first = hub.search("git commit", { ...shared, agentId: "a1" });
     assert.equal(first.cached, false);
     assert.equal(first.found, true);
 
-    // 同一意图 + 同一 workItem/objective，但 agentId 不同 → 不应命中 a1 的缓存
+    // 同一意图 + 同一 task/objective，但 agentId 不同 → 不应命中 a1 的缓存
     const second = hub.search("git commit", { ...shared, agentId: "a2" });
     assert.equal(second.cached, false);
     assert.equal(second.found, false); // a2 无 procedure 记忆

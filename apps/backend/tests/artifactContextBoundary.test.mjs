@@ -66,7 +66,7 @@ test("Artifact index packing remains bounded and fast for the 80-item worst case
   assert.ok(samples[Math.floor(samples.length * 0.95)] < 10, `p95=${samples[Math.floor(samples.length * 0.95)]}ms`);
 });
 
-test("Objective snapshot remains valid JSON within dual hard budgets at 80 WorkItems and Artifacts", () => {
+test("Objective snapshot remains valid JSON within dual hard budgets at 80 Tasks and Artifacts", () => {
   const objective = {
     id: "objective:1", name: "目标".repeat(600), description: "😀说明".repeat(2_000),
     idealState: "理想状态".repeat(1_000), status: "active", priority: "high",
@@ -74,8 +74,8 @@ test("Objective snapshot remains valid JSON within dual hard budgets at 80 WorkI
     workspaceIds: Array.from({ length: 100 }, (_, index) => `repository:${index}`),
     contributorAgentIds: Array.from({ length: 100 }, (_, index) => `agent:${index}`)
   };
-  const workItems = Array.from({ length: 80 }, (_, index) => ({
-    id: `work_item:${String(index).padStart(3, "0")}`, title: "工作".repeat(100),
+  const tasks = Array.from({ length: 80 }, (_, index) => ({
+    id: `task:${String(index).padStart(3, "0")}`, title: "工作".repeat(100),
     description: "描述😀".repeat(500), acceptance_criteria: "标准".repeat(500),
     priority: "medium", status: "in_progress", main_workspace_id: null,
     main_agent_id: null, current_session_id: null
@@ -92,7 +92,7 @@ test("Objective snapshot remains valid JSON within dual hard budgets at 80 WorkI
   }));
   const store = {
     getObjective: () => objective,
-    listWorkItemsByObjective: () => workItems,
+    listTasksByObjective: () => tasks,
     resolveWorkspacePath: (id) => `/Volumes/T9/${id}/${"p".repeat(2_000)}`,
     getAgent: (id) => agents.get(id),
     getObjectiveChatSession: () => ({ id: "session:objective", sessionKind: "objectiveChat", objectiveId: objective.id })
@@ -111,7 +111,7 @@ test("Objective snapshot remains valid JSON within dual hard budgets at 80 WorkI
   samples.sort((left, right) => left - right);
   assert.ok(result.utf8Bytes <= 32_768);
   assert.ok(result.estimatedTokens <= 8_192);
-  assert.ok(result.counts.workItems <= 80);
+  assert.ok(result.counts.tasks <= 80);
   assert.ok(result.counts.artifacts <= 80);
   assert.doesNotThrow(() => JSON.parse(result.prompt.split("Objective snapshot:\n")[1]));
   assert.ok(samples[Math.ceil(samples.length * 0.95) - 1] < 20, `p95=${samples[Math.ceil(samples.length * 0.95) - 1]}ms`);

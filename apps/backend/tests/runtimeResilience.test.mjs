@@ -26,7 +26,7 @@ test("collaboration MCP environment preserves authenticated Session scope", () =
       providerBindingId: "binding:thread-one",
       sessionKind: "objectiveChat",
       objectiveId: "objective:one",
-      workItemId: null
+      taskId: null
     }
   }), {
     CORPTIE_AGENT_ID: "agent:owner",
@@ -36,7 +36,7 @@ test("collaboration MCP environment preserves authenticated Session scope", () =
     CORPTIE_PROVIDER_BINDING_ID: "binding:thread-one",
     CORPTIE_SESSION_KIND: "objectiveChat",
     CORPTIE_OBJECTIVE_ID: "objective:one",
-    CORPTIE_WORK_ITEM_ID: "",
+    CORPTIE_TASK_ID: "",
     CORPTIE_OBJECTIVE_CHAT_ID: "objective:one",
     CORPTIE_OBJECTIVE_CHAT_SESSION_ID: "codex:thread-one"
   });

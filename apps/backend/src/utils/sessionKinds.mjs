@@ -36,10 +36,10 @@ export function assertExplicitSessionKind(value, { allowLegacy = false, field = 
   return normalized;
 }
 
-export function inferSessionKind({ sessionKind, objectiveId, workItemId, agentRole } = {}) {
+export function inferSessionKind({ sessionKind, objectiveId, taskId, agentRole } = {}) {
   const normalized = normalizeSessionKind(sessionKind);
   if (normalized !== SESSION_KIND.legacy) return normalized;
-  if (typeof workItemId === "string" && workItemId.trim()) return SESSION_KIND.worker;
+  if (typeof taskId === "string" && taskId.trim()) return SESSION_KIND.worker;
   if (typeof objectiveId === "string" && objectiveId.trim()) return SESSION_KIND.objectiveChat;
   if (agentRole === "assistant") return SESSION_KIND.assistantChat;
   return SESSION_KIND.legacy;

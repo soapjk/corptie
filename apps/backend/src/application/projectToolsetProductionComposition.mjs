@@ -98,7 +98,7 @@ export function createProjectToolsetProductionComposition(options = {}) {
       assertActiveReceipt(active, refs.toolsetValidationReceiptPointer);
       return Object.freeze({
         logicalSessionId: authority.logicalSessionId,
-        workItemId: authority.workItemId,
+        taskId: authority.taskId,
         repositoryId: authority.repositoryId,
         worktreeId: authority.worktreeId,
         bindingId: authority.bindingId,
@@ -177,12 +177,12 @@ export class ProjectToolsetProductionInitializer {
 }
 
 function resolveSessionAuthority({ store, startupReceipts, authenticatedSession, workingDirectory }) {
-  if (!authenticatedSession?.logicalSessionId || !authenticatedSession?.workItemId) fail("TOOLSET_PERMISSION_DENIED", "Authenticated Work Session identity is required.");
+  if (!authenticatedSession?.logicalSessionId || !authenticatedSession?.taskId) fail("TOOLSET_PERMISSION_DENIED", "Authenticated Work Session identity is required.");
   const ownership = store.assertLogicalWorkSessionBinding(authenticatedSession.logicalSessionId);
   const logical = store.getLogicalSession(authenticatedSession.logicalSessionId);
   const startup = startupReceipts.require(authenticatedSession.logicalSessionId);
   const binding = logical?.activeBinding;
-  if (!ownership?.objectiveId || ownership.workItemId !== authenticatedSession.workItemId
+  if (!ownership?.objectiveId || ownership.taskId !== authenticatedSession.taskId
     || !binding || binding.state !== "active"
     || binding.worktreeId !== startup.worktreeId || resolve(binding.boundCwd) !== resolve(startup.canonicalWorktreePath)
     || resolve(workingDirectory) !== resolve(startup.canonicalWorktreePath)) {
@@ -191,7 +191,7 @@ function resolveSessionAuthority({ store, startupReceipts, authenticatedSession,
   return Object.freeze({
     logicalSessionId: authenticatedSession.logicalSessionId,
     objectiveId: ownership.objectiveId,
-    workItemId: ownership.workItemId,
+    taskId: ownership.taskId,
     repositoryId: startup.repositoryId,
     worktreeId: startup.worktreeId,
     // StartupBindingReceipt owns the execution binding generation. The
@@ -207,12 +207,12 @@ function resolveSessionAuthority({ store, startupReceipts, authenticatedSession,
 
 function authoritativeSession(store, logicalSessionId) {
   const ownership = store.assertLogicalWorkSessionBinding(logicalSessionId);
-  if (!ownership?.workItemId) fail("TOOLSET_PERMISSION_DENIED", "Logical Session is not a Work Session.");
-  return Object.freeze({ logicalSessionId, workItemId: ownership.workItemId });
+  if (!ownership?.taskId) fail("TOOLSET_PERMISSION_DENIED", "Logical Session is not a Work Session.");
+  return Object.freeze({ logicalSessionId, taskId: ownership.taskId });
 }
 
 function assertRunAuthorityRequest(request, authority) {
-  for (const field of ["logicalSessionId", "workItemId", "repositoryId", "worktreeId", "bindingId", "bindingGeneration"]) {
+  for (const field of ["logicalSessionId", "taskId", "repositoryId", "worktreeId", "bindingId", "bindingGeneration"]) {
     if (request[field] !== authority[field]) fail(field === "bindingGeneration" ? "STARTUP_BINDING_STALE" : "RUN_UNAUTHORIZED", `${field} differs from authoritative Toolset composition.`);
   }
 }

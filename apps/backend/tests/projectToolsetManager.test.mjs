@@ -125,11 +125,11 @@ test("production manager composition executes a Toolset action through Run v6 an
   await chmod(state.scripts.build.path, 0o700);
   await manager.markConfigured(project.mainPath);
   const workspace = await import("../src/utils/gitWorktreeInventory.mjs").then(({ inspectGitWorkspace }) => inspectGitWorkspace(project.mainPath));
-  const authority = { logicalSessionId: "logical:test", workItemId: "work_item:test", repositoryId: workspace.repositoryId, worktreeId: workspace.worktreeId };
+  const authority = { logicalSessionId: "logical:test", taskId: "task:test", repositoryId: workspace.repositoryId, worktreeId: workspace.worktreeId };
   const toolset = toolsetFixture({ receiptId: "toolset_validation_receipt:production", authority });
   toolsetReceipt = toolset.receipt;
   const request = { ...authority, action: "build", bindingId: "binding:production", bindingGeneration: 1 };
-  const authorityResolver = new RunIsolationAuthorityResolver({ resolveAuthority: async (input) => ({ logicalSessionId: input.logicalSessionId, workItemId: input.workItemId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, bindingId: input.bindingId, bindingGeneration: input.bindingGeneration, startupBindingReceiptRef: prepareInput().startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: toolset.snapshotRef, toolsetValidationReceiptPointer: toolset.pointer }) });
+  const authorityResolver = new RunIsolationAuthorityResolver({ resolveAuthority: async (input) => ({ logicalSessionId: input.logicalSessionId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, bindingId: input.bindingId, bindingGeneration: input.bindingGeneration, startupBindingReceiptRef: prepareInput().startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: toolset.snapshotRef, toolsetValidationReceiptPointer: toolset.pointer }) });
   const resolved = await authorityResolver.resolve(request);
   const result = await manager.run(project.mainPath, "build", { sourceIdentity: { revision: "test", fingerprint: toolset.snapshotRef.sourceFingerprint, dirty: false }, runIsolation: { session: authority, prepare: prepareInput({ sourceAware: true, toolsetRequired: true, ...resolved, idempotencyKey: "production-manager-build" }) } });
   assert.equal(result.ok, true);
@@ -359,7 +359,7 @@ async function createFixture() {
   };
 }
 
-const TEST_RUN_AUTHORITY = Object.freeze({ prepare: Object.freeze({ idempotencyKey: "test-authority" }), session: Object.freeze({ logicalSessionId: "logical:test", workItemId: "work_item:test" }) });
+const TEST_RUN_AUTHORITY = Object.freeze({ prepare: Object.freeze({ idempotencyKey: "test-authority" }), session: Object.freeze({ logicalSessionId: "logical:test", taskId: "task:test" }) });
 
 function isolatedManager() {
   return new ProjectToolsetManager({

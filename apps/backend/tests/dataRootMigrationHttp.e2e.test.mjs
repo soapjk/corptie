@@ -68,7 +68,7 @@ test("HTTP migration enters maintenance, requests host restart, and reconnects o
   } finally {
     backend.kill("SIGTERM");
     await waitForExit(backend).catch(() => {});
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 

@@ -22,21 +22,21 @@ async function createStore() {
 
 function createStartedExecution(store, {
   objectiveId = "o1",
-  workItemId = "wi1",
+  taskId = "wi1",
   sessionId = "s1",
   agentId = "a1"
 } = {}) {
   if (!store.getObjective(objectiveId)) {
     store.createObjective({ id: objectiveId, name: objectiveId });
   }
-  store.createWorkItem({ id: workItemId, objectiveId, title: workItemId });
+  store.createTask({ id: taskId, objectiveId, title: taskId });
   store.createSession({
     id: sessionId,
     title: sessionId,
     provider: "codex-app-server",
     status: "running",
     objectiveId,
-    workItemId,
+    taskId,
     agentId
   });
 }
@@ -46,20 +46,20 @@ test("memories CRUD + 置信度衰减", async () => {
   try {
     createStartedExecution(store);
     const memory = store.createMemory({
-      ownerType: "work_item",
+      ownerType: "task",
       ownerId: "wi1",
-      workItemId: "wi1",
+      taskId: "wi1",
       sourceSessionId: "s1",
       kind: "lesson",
       content: "SQLite 外键要手动开"
     });
     assert.equal(memory.promotion_status, "active");
-    assert.equal(store.listMemoriesByOwner("work_item", "wi1").length, 1);
+    assert.equal(store.listMemoriesByOwner("task", "wi1").length, 1);
 
     const updated = store.updateMemory(memory.id, { confidence: 0.8 });
     assert.equal(updated.confidence, 0.8);
 
-    store.decayMemories("work_item", "wi1", 0.5);
+    store.decayMemories("task", "wi1", 0.5);
     assert.equal(store.getMemory(memory.id).confidence, 0.4);
 
     store.deleteMemory(memory.id);
@@ -81,7 +81,7 @@ test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
     const extractor = new MemoryExtractor({ store });
     const memories = await extractor.extractFromSession("s1", {
       objectiveId: "o1",
-      workItemId: "wi1",
+      taskId: "wi1",
       agentId: "a1"
     });
 
@@ -93,10 +93,10 @@ test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
     // 能力类（procedure）→ Agent 进化记忆
     assert.equal(procedure.owner_type, "agent");
     assert.equal(procedure.owner_id, "a1");
-    // 其余 → work_item 工作记忆
-    assert.equal(lesson.owner_type, "work_item");
+    // 其余 → task 工作记忆
+    assert.equal(lesson.owner_type, "task");
     assert.equal(lesson.owner_id, "wi1");
-    assert.equal(fact.owner_type, "work_item");
+    assert.equal(fact.owner_type, "task");
     assert.equal(lesson.source_type, "extracted");
     assert.equal(lesson.source_session_id, "s1");
   } finally {
@@ -111,7 +111,7 @@ test("two Sessions can append memories to one Agent concurrently without lost wr
     for (const [index, sessionId] of ["s1", "s2"].entries()) {
       createStartedExecution(store, {
         objectiveId: `o${index + 1}`,
-        workItemId: `wi${index + 1}`,
+        taskId: `wi${index + 1}`,
         sessionId,
         agentId: "agent:shared"
       });
@@ -154,8 +154,8 @@ test("two Sessions can append memories to one Agent concurrently without lost wr
 
 test("ownerForKind 归属规则", () => {
   assert.deepEqual(ownerForKind("procedure", { agentId: "a" }), { ownerType: "agent", ownerId: "a" });
-  assert.deepEqual(ownerForKind("fact", { workItemId: "w", objectiveId: "o" }), {
-    ownerType: "work_item",
+  assert.deepEqual(ownerForKind("fact", { taskId: "w", objectiveId: "o" }), {
+    ownerType: "task",
     ownerId: "w"
   });
   assert.deepEqual(ownerForKind("lesson", { objectiveId: "o" }), {
@@ -173,9 +173,9 @@ test("defaultClassify 类型映射", () => {
 
 test("ownerForKind 缺失 agentId 时能力类返回 null（不再写 owner_id=null）", () => {
   // 能力类记忆必须归属到 Agent；缺失 agentId → null
-  assert.equal(ownerForKind("procedure", { objectiveId: "o", workItemId: "w" }), null);
+  assert.equal(ownerForKind("procedure", { objectiveId: "o", taskId: "w" }), null);
   assert.equal(ownerForKind("skill", {}), null);
-  // 非能力类缺失 workItem/objective/agent → null
+  // 非能力类缺失 task/objective/agent → null
   assert.equal(ownerForKind("lesson", {}), null);
 });
 
@@ -187,11 +187,11 @@ test("extractFromSession 缺失 agentId 时跳过能力类事件（不撞 NOT NU
     store.appendSessionEvent({ eventId: "e2", sessionId: "s1", type: "summary", payload: { summary: "完成" } });
 
     const extractor = new MemoryExtractor({ store });
-    // scope 无 agentId：procedure（能力类）应被跳过，summary（fact）落到 work_item
-    const memories = await extractor.extractFromSession("s1", { objectiveId: "o1", workItemId: "wi1" });
+    // scope 无 agentId：procedure（能力类）应被跳过，summary（fact）落到 task
+    const memories = await extractor.extractFromSession("s1", { objectiveId: "o1", taskId: "wi1" });
     assert.equal(memories.length, 1);
     assert.equal(memories[0].kind, "fact");
-    assert.equal(memories[0].owner_type, "work_item");
+    assert.equal(memories[0].owner_type, "task");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

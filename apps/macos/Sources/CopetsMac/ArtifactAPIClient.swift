@@ -12,9 +12,9 @@ final class ArtifactAPIClient: ObservableObject {
     static let shared = ArtifactAPIClient()
 
     @Published private(set) var artifactsByObjective: [String: [ObjectiveArtifact]] = [:]
-    @Published private(set) var artifactsByWorkItem: [String: [ObjectiveArtifact]] = [:]
+    @Published private(set) var artifactsByCorptieTask: [String: [ObjectiveArtifact]] = [:]
     @Published private(set) var objectiveLoadStates: [String: ArtifactCollectionLoadState] = [:]
-    @Published private(set) var workItemLoadStates: [String: ArtifactCollectionLoadState] = [:]
+    @Published private(set) var taskLoadStates: [String: ArtifactCollectionLoadState] = [:]
     @Published var errorMessage: String?
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
@@ -23,8 +23,8 @@ final class ArtifactAPIClient: ObservableObject {
     private var externalRefreshTask: Task<Void, Never>?
     private static let requestTimeout: TimeInterval = 5
 
-    func artifact(artifactId: String, objectiveId: String, workItemId: String?) -> ObjectiveArtifact? {
-        let artifacts = workItemId.flatMap { artifactsByWorkItem[$0] }
+    func artifact(artifactId: String, objectiveId: String, taskId: String?) -> ObjectiveArtifact? {
+        let artifacts = taskId.flatMap { artifactsByCorptieTask[$0] }
             ?? artifactsByObjective[objectiveId]
             ?? []
         return artifacts.first { $0.artifactId == artifactId }
@@ -41,15 +41,15 @@ final class ArtifactAPIClient: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             let objectiveIds = Set(self.artifactsByObjective.keys)
                 .union(self.objectiveLoadStates.keys)
-            let workItemIds = Set(self.artifactsByWorkItem.keys)
-                .union(self.workItemLoadStates.keys)
+            let taskIds = Set(self.artifactsByCorptieTask.keys)
+                .union(self.taskLoadStates.keys)
             for objectiveId in objectiveIds.sorted() {
                 guard !Task.isCancelled else { return }
                 await self.refresh(objectiveId: objectiveId)
             }
-            for workItemId in workItemIds.sorted() {
+            for taskId in taskIds.sorted() {
                 guard !Task.isCancelled else { return }
-                await self.refresh(workItemId: workItemId)
+                await self.refresh(taskId: taskId)
             }
         }
     }
@@ -75,18 +75,18 @@ final class ArtifactAPIClient: ObservableObject {
         }
     }
 
-    func refresh(workItemId: String) async {
-        let key = "workItem:\(workItemId)"
+    func refresh(taskId: String) async {
+        let key = "task:\(taskId)"
         let token = UUID()
         requestTokens[key] = token
-        let previous = workItemLoadStates[workItemId]?.value ?? artifactsByWorkItem[workItemId]
-        workItemLoadStates[workItemId] = .loading(previousValue: previous)
+        let previous = taskLoadStates[taskId]?.value ?? artifactsByCorptieTask[taskId]
+        taskLoadStates[taskId] = .loading(previousValue: previous)
         do {
             var artifacts: [ObjectiveArtifact] = []
             var offset = 0
             repeat {
                 var components = URLComponents(
-                    url: Self.endpointURL(baseURL: baseURL, path: "work-items/\(workItemId)/artifacts"),
+                    url: Self.endpointURL(baseURL: baseURL, path: "tasks/\(taskId)/artifacts"),
                     resolvingAgainstBaseURL: false
                 )!
                 components.queryItems = [
@@ -101,18 +101,18 @@ final class ArtifactAPIClient: ObservableObject {
                 guard let nextOffset = envelope.nextOffset else { break }
                 offset = nextOffset
             } while true
-            artifactsByWorkItem[workItemId] = artifacts
-            workItemLoadStates[workItemId] = .loaded(artifacts)
+            artifactsByCorptieTask[taskId] = artifacts
+            taskLoadStates[taskId] = .loaded(artifacts)
         } catch is CancellationError {
             return
         } catch {
             guard requestTokens[key] == token else { return }
-            workItemLoadStates[workItemId] = .failed(message: Self.displayMessage(for: error), previousValue: previous)
+            taskLoadStates[taskId] = .failed(message: Self.displayMessage(for: error), previousValue: previous)
         }
     }
 
-    func cancelRefresh(workItemId: String) {
-        requestTokens.removeValue(forKey: "workItem:\(workItemId)")
+    func cancelRefresh(taskId: String) {
+        requestTokens.removeValue(forKey: "task:\(taskId)")
     }
 
     func detail(artifact: ObjectiveArtifact, version: Int, offset: Int = 0, turnExecutionId: String) async -> ArtifactDetailEnvelope? {
@@ -141,26 +141,26 @@ final class ArtifactAPIClient: ObservableObject {
         } catch { errorMessage = error.localizedDescription; return nil }
     }
 
-    func create(objectiveId: String, title: String, summary: String, content: String, visibility: ArtifactVisibility, boundWorkItemId: String?) async -> ObjectiveArtifact? {
+    func create(objectiveId: String, title: String, summary: String, content: String, visibility: ArtifactVisibility, boundTaskId: String?) async -> ObjectiveArtifact? {
         var body: [String: Any] = [
             "title": title, "summary": summary, "content": content, "visibility": visibility.rawValue
         ]
-        if let boundWorkItemId { body["boundWorkItemId"] = boundWorkItemId }
+        if let boundTaskId { body["boundTaskId"] = boundTaskId }
         return await mutate("objectives/\(objectiveId)/artifacts", method: "POST", body: body)
     }
 
-    func importFile(objectiveId: String, fileURL: URL, visibility: ArtifactVisibility, boundWorkItemId: String?) async -> ArtifactImportEnvelope? {
+    func importFile(objectiveId: String, fileURL: URL, visibility: ArtifactVisibility, boundTaskId: String?) async -> ArtifactImportEnvelope? {
         var body: [String: Any] = ["importPath": fileURL.path, "title": fileURL.lastPathComponent, "visibility": visibility.rawValue]
-        if let boundWorkItemId { body["boundWorkItemId"] = boundWorkItemId }
+        if let boundTaskId { body["boundTaskId"] = boundTaskId }
         let result: ArtifactImportEnvelope? = await mutate(
             "objectives/\(objectiveId)/artifacts", method: "POST", body: body)
         return result
     }
 
-    func publish(artifact: ObjectiveArtifact, workItemId: String?, content: String, summary: String) async -> Bool {
-        guard let workItemId,
+    func publish(artifact: ObjectiveArtifact, taskId: String?, content: String, summary: String) async -> Bool {
+        guard let taskId,
               artifact.availableActions?.contains("publish_and_repin") == true else {
-            guard workItemId == nil || artifact.availableActions?.contains("publish") == true else {
+            guard taskId == nil || artifact.availableActions?.contains("publish") == true else {
                 errorMessage = "This Artifact is read-only in the current Work Item."
                 return false
             }
@@ -170,7 +170,7 @@ final class ArtifactAPIClient: ObservableObject {
             return result != nil
         }
         guard let reference = artifact.references.first(where: {
-                  $0.workItemId == workItemId && $0.revokedAt == nil && $0.versionPolicy == "fixed"
+                  $0.taskId == taskId && $0.revokedAt == nil && $0.versionPolicy == "fixed"
               }) else {
             errorMessage = "This Artifact is read-only in the current Work Item."
             return false
@@ -181,7 +181,7 @@ final class ArtifactAPIClient: ObservableObject {
         let idempotencyKey = publishIdempotencyKeys[requestIdentity] ?? UUID().uuidString
         publishIdempotencyKeys[requestIdentity] = idempotencyKey
         let result: ArtifactPublicationEnvelope? = await mutate(
-            "work-items/\(workItemId)/artifacts/\(artifact.artifactId)/publish", method: "POST",
+            "tasks/\(taskId)/artifacts/\(artifact.artifactId)/publish", method: "POST",
             body: [
                 "content": content, "summary": summary, "approvalStatus": "approved",
                 "referenceId": reference.referenceId,
@@ -192,14 +192,14 @@ final class ArtifactAPIClient: ObservableObject {
             ])
         if result != nil {
             publishIdempotencyKeys.removeValue(forKey: requestIdentity)
-            await refresh(workItemId: workItemId)
+            await refresh(taskId: taskId)
         }
         return result != nil
     }
 
-    func reference(artifactId: String, workItemId: String, relation: String, required: Bool, versionPolicy: String) async -> Bool {
+    func reference(artifactId: String, taskId: String, relation: String, required: Bool, versionPolicy: String) async -> Bool {
         let result: ArtifactReference? = await mutate("artifacts/\(artifactId)/references", method: "POST", body: [
-            "workItemId": workItemId, "relation": relation, "required": required, "versionPolicy": versionPolicy
+            "taskId": taskId, "relation": relation, "required": required, "versionPolicy": versionPolicy
         ])
         return result != nil
     }

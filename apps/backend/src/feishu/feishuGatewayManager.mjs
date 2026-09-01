@@ -12,7 +12,7 @@ const execFileAsync = promisify(execFile);
 const pairingCodePattern = /^\d{6}$/;
 const sessionCardPageSize = 5;
 const workspaceCardPageSize = 5;
-const completedWorkItemStatuses = new Set(["done", "complete", "completed"]);
+const completedTaskStatuses = new Set(["done", "complete", "completed"]);
 const feishuHiddenSessionItemTypes = new Set([
   "reasoning",
   "plan",
@@ -791,8 +791,8 @@ export class FeishuGatewayManager {
       const marker = current?.sessionId === session.id ? "●" : owner ? "×" : "○";
       const occupied = owner && owner.botId !== botId ? " · 已被其他机器人占用" : "";
       const agent = ` · Agent：${session.agentName || "未绑定"}`;
-      const workItem = session.workItemTitle ? ` · WorkItem：${session.workItemTitle}` : "";
-      return `${index + 1}. ${marker} ${session.title} · ${displayStatus(session.status)}${agent}${workItem}${occupied}`;
+      const task = session.taskTitle ? ` · Task：${session.taskTitle}` : "";
+      return `${index + 1}. ${marker} ${session.title} · ${displayStatus(session.status)}${agent}${task}${occupied}`;
     });
     return `会话列表：\n${lines.join("\n")}\n\n发送 /use 序号 切换，例如 /use 2`;
   }
@@ -1355,9 +1355,9 @@ export function buildSessionListCard({
               content: `<font color='grey'>Agent：${escapeCardMarkdown(session.agentName || "未绑定")}</font>`,
               text_size: "notation"
             },
-            ...(session.workItemTitle ? [{
+            ...(session.taskTitle ? [{
               tag: "markdown",
-              content: `<font color='grey'>WorkItem：${escapeCardMarkdown(session.workItemTitle)}</font>`,
+              content: `<font color='grey'>Task：${escapeCardMarkdown(session.taskTitle)}</font>`,
               text_size: "notation"
             }] : [])
           ]
@@ -1678,15 +1678,15 @@ export function buildCollaborationConfirmationCard({ sessionId, sessionTitle = "
     "目标 Objective"
   );
   const hasTargetSession = Boolean(optionalText(item?.collaborationRecipientSessionId));
-  const taskTitle = optionalText(item?.collaborationTaskTitle);
+  const taskTitle = optionalText(item?.collaborationRequestTitle);
   const instruction = optionalText(item?.presentationText) || "等待确认发送协作任务。";
   const criteria = Array.isArray(item?.collaborationAcceptanceCriteria)
     ? item.collaborationAcceptanceCriteria.map(optionalText).filter(Boolean)
     : [];
   const elements = [
-    { tag: "markdown", content: `**来源会话 → 目标会话**\n${escapeCardMarkdown(sourceSession)} → ${escapeCardMarkdown(hasTargetSession ? targetSession : "确认后创建新的 WorkItem 和目标会话")}` },
+    { tag: "markdown", content: `**来源会话 → 目标会话**\n${escapeCardMarkdown(sourceSession)} → ${escapeCardMarkdown(hasTargetSession ? targetSession : "确认后创建新的 Task 和目标会话")}` },
     { tag: "markdown", content: `**来源 Objective → 目标 Objective**\n${escapeCardMarkdown(sourceObjective)} → ${escapeCardMarkdown(targetObjective)}` },
-    ...(!hasTargetSession && taskTitle ? [{ tag: "markdown", content: `**将创建 WorkItem**\n${escapeCardMarkdown(taskTitle)}` }] : []),
+    ...(!hasTargetSession && taskTitle ? [{ tag: "markdown", content: `**将创建 Task**\n${escapeCardMarkdown(taskTitle)}` }] : []),
     { tag: "markdown", content: `**消息**\n${escapeCardMarkdown(instruction)}` },
     ...(criteria.length ? [{
       tag: "markdown",
@@ -1742,7 +1742,7 @@ export function buildCollaborationMessageCard({ sessionTitle = "", item }) {
     item?.collaborationTargetObjectiveId,
     "目标 Objective"
   );
-  const taskTitle = optionalText(item?.collaborationTaskTitle);
+  const taskTitle = optionalText(item?.collaborationRequestTitle);
   const body = optionalText(item?.presentationText) || optionalText(item?.text) || "收到一条跨会话协作消息。";
   return cardShell({
     title: optionalText(sessionTitle) || "跨会话协作",
@@ -1761,7 +1761,7 @@ export function buildCollaborationMessageCard({ sessionTitle = "", item }) {
 function readableCollaborationName(name, id, fallback) {
   const value = optionalText(name);
   const stableId = optionalText(id);
-  if (!value || value === stableId || /^(session|objective|work_item):/i.test(value)) return fallback;
+  if (!value || value === stableId || /^(session|objective|task):/i.test(value)) return fallback;
   return value;
 }
 
@@ -2020,8 +2020,8 @@ function pairingHash(code) {
 }
 
 function isCompletedWorkSession(session) {
-  const isWorker = session?.sessionKind === "worker" || Boolean(optionalText(session?.workItemId));
-  return isWorker && completedWorkItemStatuses.has(optionalText(session?.workItemStatus).toLowerCase());
+  const isWorker = session?.sessionKind === "worker" || Boolean(optionalText(session?.taskId));
+  return isWorker && completedTaskStatuses.has(optionalText(session?.taskStatus).toLowerCase());
 }
 
 function displayStatus(status) {

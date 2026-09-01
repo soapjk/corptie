@@ -73,11 +73,11 @@ function finitePositiveNumber(value) {
   return Number.isFinite(number) && number > 0 ? number : null;
 }
 
-export function collaborationEnvelopeFailure({ workItem, task, envelope } = {}) {
-  if (workItem?.kind !== "collaboration") return "not_collaboration";
-  const taskId = normalizedText(workItem.source?.taskId);
+export function collaborationEnvelopeFailure({ task, collaborationTask, envelope } = {}) {
+  if (task?.kind !== "collaboration") return "not_collaboration";
+  const taskId = normalizedText(task.source?.taskId);
   if (!taskId) return "missing_task_id";
-  if (!task || normalizedText(task.taskId) !== taskId) return "task_not_found";
+  if (!collaborationTask || normalizedText(collaborationTask.taskId) !== taskId) return "task_not_found";
   if (!envelope || normalizedText(envelope.task?.taskId) !== taskId) return "envelope_not_found";
   if (!normalizedText(envelope.message?.senderSessionId)
       && !normalizedText(envelope.message?.envelope?.sender?.sessionId)) return "missing_sender_session_id";

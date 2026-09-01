@@ -6,7 +6,7 @@ export const SESSION_CONTEXT_REFERENCE_TYPES = Object.freeze([
   "localFile",
   "webURL",
   "objective",
-  "workItem",
+  "task",
   "agent",
   "session"
 ]);
@@ -200,9 +200,9 @@ export class SessionContextReferenceService {
       if (!target) throw serviceError("OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
       return { targetKey: targetId, targetId, displayName: target.name };
     }
-    if (targetType === "workItem") {
-      const target = this.store.getWorkItem(targetId);
-      if (!target) throw serviceError("WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
+    if (targetType === "task") {
+      const target = this.store.getTask(targetId);
+      if (!target) throw serviceError("TASK_NOT_FOUND", "Task not found.", 404);
       return { targetKey: targetId, targetId, displayName: target.title };
     }
     if (targetType === "agent") {
@@ -243,7 +243,7 @@ export class SessionContextReferenceService {
       case "localFile": return this.resolveLocalFile(reference);
       case "webURL": return { title: reference.snapshotTitle ?? reference.displayName, text: reference.snapshotText ?? "" };
       case "objective": return this.resolveObjective(reference);
-      case "workItem": return this.resolveWorkItem(reference);
+      case "task": return this.resolveTask(reference);
       case "agent": return this.resolveAgent(reference);
       case "session": return this.resolveSession(reference);
       default: throw serviceError("INVALID_CONTEXT_REFERENCE_TYPE", "Unsupported context reference type.", 400);
@@ -278,11 +278,11 @@ export class SessionContextReferenceService {
     };
   }
 
-  resolveWorkItem(reference) {
-    const value = this.store.getWorkItem(reference.targetId);
-    if (!value) throw serviceError("WORK_ITEM_NOT_FOUND", "Referenced WorkItem no longer exists.", 404);
+  resolveTask(reference) {
+    const value = this.store.getTask(reference.targetId);
+    if (!value) throw serviceError("TASK_NOT_FOUND", "Referenced Task no longer exists.", 404);
     return {
-      title: `WorkItem: ${value.title}`,
+      title: `Task: ${value.title}`,
       text: lines([
         ["Status", value.status], ["Priority", value.priority], ["Description", value.description],
         ["Acceptance criteria", value.acceptance_criteria], ["Objective id", value.objective_id]

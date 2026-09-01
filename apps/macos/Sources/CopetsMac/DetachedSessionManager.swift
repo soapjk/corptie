@@ -1154,7 +1154,7 @@ private struct DetachedCollaborationConfirmationCard: View {
                             fallback: L10n("目标会话")
                         ))
                     } else {
-                        confirmationField("目标 WorkItem", value: pendingTargetWorkItem)
+                        confirmationField("目标 CorptieTask", value: pendingTargetCorptieTask)
                     }
                     if confirmation.sourceObjectiveId != nil {
                         confirmationField("来源 Objective", value: readableName(
@@ -1230,17 +1230,17 @@ private struct DetachedCollaborationConfirmationCard: View {
         guard value != normalizedID,
               !lowercased.hasPrefix("session:"),
               !lowercased.hasPrefix("objective:"),
-              !lowercased.hasPrefix("work_item:") else { return fallback }
+              !lowercased.hasPrefix("task:") else { return fallback }
         return value
     }
 
-    private var pendingTargetWorkItem: String {
+    private var pendingTargetCorptieTask: String {
         let title = readableName(
             confirmation.taskTitle,
-            id: confirmation.recipientWorkItemId,
+            id: confirmation.recipientCorptieTaskId,
             fallback: L10n("未命名协作任务")
         )
-        guard confirmation.recipientWorkItemId == nil else { return title }
+        guard confirmation.recipientCorptieTaskId == nil else { return title }
         return "\(title) · \(L10n("确认后在目标 Objective 下新建"))"
     }
 }

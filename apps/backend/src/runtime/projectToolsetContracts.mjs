@@ -15,7 +15,7 @@ export const TOOLSET_CONTRACT = Object.freeze({
 export const TOOLSET_RECEIPT_SCHEMA = Object.freeze({
   artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
   version: 1,
-  contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d"
+  contentHash: "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669"
 });
 export const STARTUP_CONTRACT = Object.freeze({
   artifactId: "artifact:7f26689a-5b9a-4b32-ad86-ad93c0be2949",
@@ -30,7 +30,7 @@ export const RUN_CONTRACT = Object.freeze({
 export const SNAPSHOT_SEARCH_SCHEMA = Object.freeze({
   artifactId: "artifact:ee9b734f-799d-41b6-804f-9868697de511",
   version: 1,
-  contentHash: "920fa9b2952490e4e4c93c88ca2855c11aeac9ff615bea43f738feff7d6d93e9"
+  contentHash: "a288feb13a2c784e1267d4c40b44e1a0204c530c8f0b9910f0d9f2f52a9ccc76"
 });
 
 export const FIXED_DEPENDENCY_MANIFEST = Object.freeze({ schemaVersion: 4, entries: Object.freeze([
@@ -54,13 +54,13 @@ const RUN_REF_FIELDS = ["receiptId", "receiptHash", "schemaVersion", "resourceVe
 const ERROR_FIELDS = ["code", "message", "retryable", "details"];
 const ERROR_DETAILS_FIELDS = ["actionId", "assertionId", "phase"];
 const RECEIPT_FIELDS = ["receiptId", "receiptHash", "schemaVersion", "resourceVersion", "artifactRef", "identity", "snapshotRef", "toolsetVersion", "validationPlanIdentity", "validationCacheKey", "actionReceipts", "assertionReceipts", "cacheDisposition", "outcome", "startedAt", "finishedAt", "expiresAt", "error"];
-const IDENTITY_FIELDS = ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId", "startupBindingRef"];
+const IDENTITY_FIELDS = ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId", "startupBindingRef"];
 const STARTUP_REF_FIELDS = ["artifactId", "artifactVersion", "artifactContentHash", "startupOperationId", "startupReceiptHash"];
 const ARTIFACT_REF_FIELDS = ["artifactId", "version", "contentHash", "relation", "receiptType", "schemaVersion"];
 const ACTION_FIELDS = ["id", "kind", "ordinal", "executionDisposition", "outcome", "runReceiptRef", "cleanupReceiptRef", "startedAt", "finishedAt", "evidenceHash", "error"];
 const ASSERTION_FIELDS = ["id", "actionId", "assertionType", "outcome", "startedAt", "finishedAt", "evidenceHash", "error"];
-const RUN_RECEIPT_FIELDS = ["schemaVersion", "receiptId", "receiptHash", "runId", "mode", "logicalSessionId", "workItemId", "repositoryId", "worktreeId", "sourceFingerprint", "startupBindingReceiptRef", "repositorySourceSnapshotReceiptRef", "toolsetValidationReceiptPointer", "state", "outcome", "runContextHash", "dataRootBindingId", "processLeaseRefs", "portLeaseRefs", "dataLeaseRef", "credentialLeaseRefs", "fencingToken", "resourceVersion", "eventRefs", "metricsRef", "readyAt", "startedAt", "stoppedAt", "completedAt", "error"];
-const CLEANUP_RECEIPT_FIELDS = ["schemaVersion", "receiptId", "receiptHash", "cleanupOperationId", "runId", "runReceiptRef", "logicalSessionId", "workItemId", "repositoryId", "worktreeId", "sourceFingerprint", "outcome", "policy", "ownerSessionId", "retentionReason", "retentionPolicyVersion", "retainUntil", "quotaBytes", "observedBytes", "fencingToken", "resourceVersion", "dataRootBindingId", "sourceIdentityHash", "trashIdentityHash", "safetyChecks", "processReconciliation", "bytesReclaimed", "filesRemoved", "eventRefs", "startedAt", "finishedAt", "error"];
+const RUN_RECEIPT_FIELDS = ["schemaVersion", "receiptId", "receiptHash", "runId", "mode", "logicalSessionId", "taskId", "repositoryId", "worktreeId", "sourceFingerprint", "startupBindingReceiptRef", "repositorySourceSnapshotReceiptRef", "toolsetValidationReceiptPointer", "state", "outcome", "runContextHash", "dataRootBindingId", "processLeaseRefs", "portLeaseRefs", "dataLeaseRef", "credentialLeaseRefs", "fencingToken", "resourceVersion", "eventRefs", "metricsRef", "readyAt", "startedAt", "stoppedAt", "completedAt", "error"];
+const CLEANUP_RECEIPT_FIELDS = ["schemaVersion", "receiptId", "receiptHash", "cleanupOperationId", "runId", "runReceiptRef", "logicalSessionId", "taskId", "repositoryId", "worktreeId", "sourceFingerprint", "outcome", "policy", "ownerSessionId", "retentionReason", "retentionPolicyVersion", "retainUntil", "quotaBytes", "observedBytes", "fencingToken", "resourceVersion", "dataRootBindingId", "sourceIdentityHash", "trashIdentityHash", "safetyChecks", "processReconciliation", "bytesReclaimed", "filesRemoved", "eventRefs", "startedAt", "finishedAt", "error"];
 const CLEANUP_SAFETY_CHECKS = ["canonicalRoot", "runMarker", "identity", "leaseOwner", "fence", "noSymlink", "noHardlinkEscape", "noMountCrossing", "noActiveProcess", "noActivePort", "noActiveDataLease", "noActiveCredentialLease", "serverHandleClosed", "targetBoundary"];
 
 export function validateDependencyManifest(manifest) {
@@ -81,7 +81,7 @@ export function validateStartupBindingReceipt(receipt, expected, ref) {
   if (!plain(receipt) || receipt.schemaVersion !== 2 || receipt.status !== "ready"
     || receipt.startupOperationId !== ref.startupOperationId || receipt.receiptHash !== ref.startupReceiptHash
     || receipt.logicalSessionId !== expected.logicalSessionId || receipt.objectiveId !== expected.objectiveId
-    || receipt.workItemId !== expected.workItemId || receipt.repositoryId !== expected.repositoryId
+    || receipt.taskId !== expected.taskId || receipt.repositoryId !== expected.repositoryId
     || receipt.worktreeId !== expected.worktreeId) fail("STARTUP_BINDING_INVALID");
   if (Object.hasOwn(receipt, "receiptId") || Object.hasOwn(receipt, "artifactRef")) fail("STARTUP_BINDING_INVALID");
   return receipt;
@@ -179,7 +179,7 @@ export function resolvedRunReceiptRef(receipt, type) {
 export function toolsetValidationReceiptPointer(receipt, expectedIdentity = null) {
   validateToolsetReceiptShape(receipt);
   if (validationReceiptHash(receipt) !== receipt.receiptHash || receipt.outcome !== "passed") fail("RECEIPT_INVALID");
-  if (expectedIdentity) for (const key of ["logicalSessionId", "workItemId", "repositoryId", "worktreeId"]) if (receipt.identity[key] !== expectedIdentity[key]) fail("RECEIPT_INVALID");
+  if (expectedIdentity) for (const key of ["logicalSessionId", "taskId", "repositoryId", "worktreeId"]) if (receipt.identity[key] !== expectedIdentity[key]) fail("RECEIPT_INVALID");
   return Object.freeze({ receiptId: receipt.receiptId, receiptHash: receipt.receiptHash, resourceVersion: receipt.resourceVersion, toolsetVersion: receipt.toolsetVersion, validationPlanIdentity: receipt.validationPlanIdentity, sourceFingerprint: receipt.snapshotRef.sourceFingerprint });
 }
 
@@ -190,7 +190,7 @@ export function validateToolsetReceiptShape(receipt) {
   requireHash(receipt.receiptHash, "receiptHash");
   validateContractArtifactRef(receipt.artifactRef, "ToolsetValidationReceipt", 3, TOOLSET_RECEIPT_SCHEMA);
   requireClosedObject(receipt.identity, IDENTITY_FIELDS, "identity");
-  for (const name of ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId"]) boundedString(receipt.identity[name], 512, name);
+  for (const name of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]) boundedString(receipt.identity[name], 512, name);
   validateStartupBindingRef(receipt.identity.startupBindingRef);
   validateSnapshotRef(receipt.snapshotRef);
   requirePrefixedHash(receipt.toolsetVersion, "ptv1", "toolsetVersion");
@@ -212,7 +212,7 @@ export function validateToolsetReceiptShape(receipt) {
 export async function validateToolsetReceipt(receipt, context, ports) {
   validateToolsetReceiptShape(receipt);
   if (validationReceiptHash(receipt) !== receipt.receiptHash) fail("RECEIPT_INVALID");
-  for (const key of ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId"]) {
+  for (const key of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]) {
     if (receipt.identity[key] !== context[key]) fail("SOURCE_FINGERPRINT_MISMATCH");
   }
   if (receipt.snapshotRef.receiptHash !== context.snapshotRef.receiptHash
@@ -296,7 +296,7 @@ function validateToolsetPointerShape(value, context) {
 function validateResolvedReceipt(receipt, context, type) {
   boundedString(receipt.receiptId, 128, "receiptId"); boundedString(receipt.runId, 128, "runId"); requireHash(receipt.receiptHash, "receiptHash"); requireHash(receipt.sourceFingerprint, "sourceFingerprint");
   if (validationReceiptHash(receipt) !== receipt.receiptHash) fail("RECEIPT_INVALID");
-  for (const key of ["logicalSessionId", "workItemId", "repositoryId", "worktreeId"]) if (receipt[key] !== context[key]) fail("RECEIPT_INVALID");
+  for (const key of ["logicalSessionId", "taskId", "repositoryId", "worktreeId"]) if (receipt[key] !== context[key]) fail("RECEIPT_INVALID");
   if (receipt.sourceFingerprint !== context.snapshotRef.sourceFingerprint) fail("SOURCE_FINGERPRINT_MISMATCH");
   if (type === "CleanupReceipt" && receipt.ownerSessionId !== context.logicalSessionId) fail("RECEIPT_INVALID");
 }

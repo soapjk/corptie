@@ -18,36 +18,36 @@ function fixture() {
     workspaceIds: ["repository:1"],
     contributorAgentIds: ["agent:1"]
   };
-  const workItems = [
+  const tasks = [
     {
-      id: "work_item:1", objective_id: objective.id, title: "First",
+      id: "task:1", objective_id: objective.id, title: "First",
       current_session_id: "session:1", execution_status: "completed", status: "in_progress",
       updated_at: "2026-08-18T01:00:00.000Z"
     },
     {
-      id: "work_item:2", objective_id: objective.id, title: "Second",
+      id: "task:2", objective_id: objective.id, title: "Second",
       current_session_id: "session:2", execution_status: "completed", status: "in_progress",
       updated_at: "2026-08-18T02:00:00.000Z"
     }
   ];
   const sessions = new Map([
-    ["session:1", { id: "session:1", workItemId: "work_item:1", status: "complete" }],
-    ["session:2", { id: "session:2", workItemId: "work_item:2", status: "complete" }]
+    ["session:1", { id: "session:1", taskId: "task:1", status: "complete" }],
+    ["session:2", { id: "session:2", taskId: "task:2", status: "complete" }]
   ]);
   const runs = new Map();
   const store = {
     getObjective: (id) => id === objective.id ? objective : null,
-    listWorkItemsByObjective: (id) => id === objective.id ? workItems : [],
+    listTasksByObjective: (id) => id === objective.id ? tasks : [],
     getSession: (id) => sessions.get(id) ?? null,
     getAgent: (id) => id === "agent:1"
       ? { agentId: id, name: "Integrator", provider: "codex", role: "independentContributor" }
       : null,
-    getWorkItem: (id) => workItems.find((item) => item.id === id) ?? null,
+    getTask: (id) => tasks.find((item) => item.id === id) ?? null,
     createProjectIntegrationRun(input) {
       const run = {
         id: "integration:1", repositoryId: input.repositoryId, objectiveId: input.objectiveId,
         status: "running", mainHeadBefore: input.mainHeadBefore, mainHeadAfter: null,
-        conflictWorkItemId: null, conflictSessionId: null,
+        conflictTaskId: null, conflictSessionId: null,
         integrationWorktreeId: null, integrationWorktreePath: null, integrationBranch: null,
         items: input.items.map((item) => ({
           runId: "integration:1", ...item, status: "pending", conflictFiles: [],
@@ -98,18 +98,18 @@ function fixture() {
     mainHeadOid: state.mainHeadOid,
     worktrees: structuredClone(state.worktrees)
   });
-  return { store, state, inspection, workItems, sessions };
+  return { store, state, inspection, tasks, sessions };
 }
 
 test("integration run presenter supplies the complete client wire contract", () => {
   const presented = presentProjectIntegrationRun({
     id: "integration:1",
     items: [
-      { workItemId: "work_item:1", status: "integrated" },
-      { workItemId: "work_item:missing", status: "conflict" }
+      { taskId: "task:1", status: "integrated" },
+      { taskId: "task:missing", status: "conflict" }
     ]
   }, {
-    resolveWorkItem: (id) => id === "work_item:1" ? { title: "Resolved title" } : null
+    resolveTask: (id) => id === "task:1" ? { title: "Resolved title" } : null
   });
 
   assert.deepEqual(presented.counts, {
@@ -120,8 +120,8 @@ test("integration run presenter supplies the complete client wire contract", () 
     pending: 0
   });
   assert.deepEqual(
-    presented.items.map((item) => item.workItemTitle),
-    ["Resolved title", "work_item:missing"]
+    presented.items.map((item) => item.taskTitle),
+    ["Resolved title", "task:missing"]
   );
 });
 
@@ -132,7 +132,7 @@ test("status exposes completed Objective Worktrees and scoped contributor Agents
     inspectProject: async () => inspection(),
     mergeWorktree: async () => ({ mainHead: "unused" }),
     createConflictWorkspace: async () => ({}),
-    createAndLaunchConflictWorkItem: async () => ({})
+    createAndLaunchConflictTask: async () => ({})
   });
 
   const status = await service.status("repository:1", "objective:1");
@@ -161,7 +161,7 @@ test("one-click integration serially merges clean Worktrees and records conflict
       ].join("\n"));
     },
     createConflictWorkspace: async () => ({}),
-    createAndLaunchConflictWorkItem: async () => ({})
+    createAndLaunchConflictTask: async () => ({})
   });
 
   const result = await service.integrateCompleted("repository:1", "objective:1");
@@ -194,7 +194,7 @@ test("one-click integration completes every eligible Worktree and updates the fi
       return { mainHead: state.mainHeadOid };
     },
     createConflictWorkspace: async () => ({}),
-    createAndLaunchConflictWorkItem: async () => ({})
+    createAndLaunchConflictTask: async () => ({})
   });
 
   const result = await service.integrateCompleted("repository:1", "objective:1");
@@ -227,7 +227,7 @@ test("one-click integration rejects a concurrent duplicate while the first run c
       return { mainHead: state.mainHeadOid };
     },
     createConflictWorkspace: async () => ({}),
-    createAndLaunchConflictWorkItem: async () => ({})
+    createAndLaunchConflictTask: async () => ({})
   });
 
   const first = service.integrateCompleted("repository:1", "objective:1");
@@ -253,8 +253,8 @@ test("conflict parser and counters keep Git conflicts separate from other failur
   ]), { total: 5, integrated: 2, conflicts: 1, failed: 1, pending: 1 });
 });
 
-test("conflict resolution creates one Objective WorkItem in a dedicated Integration Worktree and reuses it", async () => {
-  const { store, state, inspection, workItems, sessions } = fixture();
+test("conflict resolution creates one Objective Task in a dedicated Integration Worktree and reuses it", async () => {
+  const { store, state, inspection, tasks, sessions } = fixture();
   let workspaceCreations = 0;
   let launches = 0;
   let launchInput = null;
@@ -272,33 +272,33 @@ test("conflict resolution creates one Objective WorkItem in a dedicated Integrat
         branchName: "integration/one"
       };
     },
-    createAndLaunchConflictWorkItem: async (input) => {
+    createAndLaunchConflictTask: async (input) => {
       launches += 1;
       launchInput = input;
-      const workItem = {
-        id: "work_item:resolution",
+      const task = {
+        id: "task:resolution",
         objective_id: "objective:1",
         title: input.title
       };
       const session = {
         id: "session:resolution",
-        workItemId: workItem.id,
+        taskId: task.id,
         status: "running"
       };
-      workItems.push(workItem);
+      tasks.push(task);
       sessions.set(session.id, session);
-      return { workItem, session };
+      return { task, session };
     }
   });
   const integrated = await service.integrateCompleted("repository:1", "objective:1");
 
-  const created = await service.createConflictWorkItem(
+  const created = await service.createConflictTask(
     "repository:1",
     "objective:1",
     integrated.latestRun.id,
     { agentId: "agent:1" }
   );
-  const reused = await service.createConflictWorkItem(
+  const reused = await service.createConflictTask(
     "repository:1",
     "objective:1",
     integrated.latestRun.id,
@@ -311,7 +311,7 @@ test("conflict resolution creates one Objective WorkItem in a dedicated Integrat
   assert.equal(reused.reused, true);
   assert.equal(created.run.status, "conflict_resolution_running");
   assert.equal(created.run.integrationWorktreePath, "/repo-integration");
-  assert.equal(created.run.conflictWorkItemId, "work_item:resolution");
+  assert.equal(created.run.conflictTaskId, "task:resolution");
   assert.equal(launchInput.objective.id, "objective:1");
   assert.equal(launchInput.agent.agentId, "agent:1");
   assert.equal(launchInput.workspace.path, "/repo-integration");
@@ -344,7 +344,7 @@ test("Integration Runs and per-Worktree results persist in the Corptie store", a
       mainHeadBefore: "main:1",
       items: [{
         worktreeId: "wt:1",
-        workItemId: "work_item:1",
+        taskId: "task:1",
         branchName: "feature/one",
         sourceHeadOid: "head:1"
       }]

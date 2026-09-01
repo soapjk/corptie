@@ -81,7 +81,7 @@ final class SessionCommandController: ObservableObject {
     @Published var projectWorktreeActionIds = Set<String>()
     @Published var isCleaningMergedProjectWorktrees = false
     @Published var isIntegratingCompletedWorktrees = false
-    @Published var isCreatingIntegrationConflictWorkItem = false
+    @Published var isCreatingIntegrationConflictCorptieTask = false
     @Published var gitHubPushPreparation: GitHubPushPreparation?
     @Published var gitHubPushError: String?
     @Published var isPreparingGitHubPush = false

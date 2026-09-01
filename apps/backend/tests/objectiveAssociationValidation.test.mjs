@@ -49,7 +49,7 @@ function registerRepository(store, repositoryId, worktreeId) {
   });
 }
 
-test("Objective and WorkItem inputs reject unknown fields and invalid types before SQLite", async () => {
+test("Objective and Task inputs reject unknown fields and invalid types before SQLite", async () => {
   const { directory, store, service } = await fixture();
   try {
     assert.throws(
@@ -73,14 +73,14 @@ test("Objective and WorkItem inputs reject unknown fields and invalid types befo
     assert.equal(store.getObjective(objective.id).name, "Strict");
     assert.equal(store.getObjective(objective.id).updatedAt, objectiveUpdatedAt);
 
-    const item = service.createWorkItem({ objectiveId: objective.id, title: "Strict item" });
-    const itemUpdatedAt = store.getWorkItem(item.id).updated_at;
+    const item = service.createTask({ objectiveId: objective.id, title: "Strict item" });
+    const itemUpdatedAt = store.getTask(item.id).updated_at;
     assert.throws(
-      () => store.updateWorkItem(item.id, { assigneeAgentId: "agent:any" }),
+      () => store.updateTask(item.id, { assigneeAgentId: "agent:any" }),
       { code: "UNKNOWN_PATCH_FIELD", field: "assigneeAgentId" }
     );
-    assert.equal(store.getWorkItem(item.id).title, "Strict item");
-    assert.equal(store.getWorkItem(item.id).updated_at, itemUpdatedAt);
+    assert.equal(store.getTask(item.id).title, "Strict item");
+    assert.equal(store.getTask(item.id).updated_at, itemUpdatedAt);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -118,7 +118,7 @@ test("repository and assignable Agent associations must exist and remain inside 
       contributorAgentIds: [contributor.agentId]
     });
     assert.throws(
-      () => service.createWorkItem({
+      () => service.createTask({
         objectiveId: objective.id,
         title: "Wrong workspace",
         mainWorkspaceId: "worktree:scope"
@@ -126,7 +126,7 @@ test("repository and assignable Agent associations must exist and remain inside 
       { code: "INVALID_WORKSPACE_ID_TYPE", field: "mainWorkspaceId" }
     );
     assert.throws(
-      () => service.createWorkItem({
+      () => service.createTask({
         objectiveId: objective.id,
         title: "Missing worktree workspace",
         mainWorkspaceId: "missing-worktree:scope"
@@ -134,7 +134,7 @@ test("repository and assignable Agent associations must exist and remain inside 
       { code: "INVALID_WORKSPACE_ID_TYPE", field: "mainWorkspaceId" }
     );
     assert.throws(
-      () => service.createWorkItem({
+      () => service.createTask({
         objectiveId: objective.id,
         title: "Wrong agent",
         mainAgentId: assistant.agentId
@@ -142,7 +142,7 @@ test("repository and assignable Agent associations must exist and remain inside 
       { code: "AGENT_NOT_ASSIGNABLE", field: "mainAgentId" }
     );
 
-    const item = service.createWorkItem({
+    const item = service.createTask({
       objectiveId: objective.id,
       title: "Valid",
       mainWorkspaceId: repositoryId,
@@ -194,20 +194,20 @@ test("historical worktree associations migrate safely and unresolved records rem
     const worktreeId = "worktree:history";
     registerRepository(store, repositoryId, worktreeId);
     const objective = service.createObjective({ name: "History" });
-    const item = service.createWorkItem({ objectiveId: objective.id, title: "History item" });
+    const item = service.createTask({ objectiveId: objective.id, title: "History item" });
 
     store.db.run(
       "UPDATE objectives SET workspace_ids_json = ? WHERE id = ?",
       [JSON.stringify([worktreeId, "worktree:unknown"]), objective.id]
     );
     store.db.run(
-      "UPDATE work_items SET main_workspace_id = ? WHERE id = ?",
+      "UPDATE tasks SET main_workspace_id = ? WHERE id = ?",
       [worktreeId, item.id]
     );
 
-    const report = store.auditObjectiveWorkItemAssociations({ migrate: true });
+    const report = store.auditObjectiveTaskAssociations({ migrate: true });
     assert.deepEqual(store.getObjective(objective.id).workspaceIds, [repositoryId, "worktree:unknown"]);
-    assert.equal(store.getWorkItem(item.id).main_workspace_id, repositoryId);
+    assert.equal(store.getTask(item.id).main_workspace_id, repositoryId);
     assert.ok(report.some((entry) => entry.status === "migrated" && entry.receivedValue === worktreeId));
     assert.ok(report.some((entry) => entry.status === "unresolved" && entry.receivedValue === "worktree:unknown"));
   } finally {

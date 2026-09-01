@@ -37,7 +37,7 @@ export async function createProjectCodeFixture(options = {}) {
     git(directory, ["rev-parse", "HEAD"]), git(directory, ["rev-parse", "HEAD^{tree}"])
   ]);
   const sessionContext = {
-    objectiveId: "objective:11111111-1111-1111-1111-111111111111", workItemId: "work_item:test", logicalSessionId: "logical:test"
+    objectiveId: "objective:11111111-1111-1111-1111-111111111111", taskId: "task:test", logicalSessionId: "logical:test"
   };
   const binding = {
     repositoryId: identity.repositoryId,
@@ -88,7 +88,7 @@ export function toolsetReceiptFor(snapshot, overrides = {}) {
     artifactRef: {
       artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
       version: 1,
-      contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d",
+      contentHash: "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669",
       relation: "implementation_spec",
       receiptType: "ToolsetValidationReceipt",
       schemaVersion: 3
@@ -96,7 +96,7 @@ export function toolsetReceiptFor(snapshot, overrides = {}) {
     identity: {
       logicalSessionId: "logical:test",
       objectiveId: snapshot.receipt.objectiveId,
-      workItemId: "work_item:test",
+      taskId: "task:test",
       repositoryId: snapshot.receipt.repositoryId,
       worktreeId: snapshot.receipt.worktreeId,
       startupBindingRef: startupBindingRef(snapshot.startupReceipt)
@@ -123,7 +123,7 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
   const context = {
     runId,
     logicalSessionId: sessionContext.logicalSessionId,
-    workItemId: sessionContext.workItemId,
+    taskId: sessionContext.taskId,
     repositoryId: snapshot.receipt.repositoryId,
     worktreeId: snapshot.receipt.worktreeId,
     sourceFingerprint: snapshot.receipt.sourceFingerprint,
@@ -167,7 +167,7 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
         runId,
         mode: "test",
         logicalSessionId: sessionContext.logicalSessionId,
-        workItemId: sessionContext.workItemId,
+        taskId: sessionContext.taskId,
         repositoryId: snapshot.receipt.repositoryId,
         worktreeId: snapshot.receipt.worktreeId,
         sourceFingerprint: snapshot.receipt.sourceFingerprint,
@@ -218,7 +218,7 @@ export function formalRunIsolationPort(snapshot, sessionContext, options = {}) {
           }
         },
         logicalSessionId: sessionContext.logicalSessionId,
-        workItemId: sessionContext.workItemId,
+        taskId: sessionContext.taskId,
         repositoryId: snapshot.receipt.repositoryId,
         worktreeId: snapshot.receipt.worktreeId,
         sourceFingerprint: snapshot.receipt.sourceFingerprint,

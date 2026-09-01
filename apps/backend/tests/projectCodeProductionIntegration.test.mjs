@@ -38,7 +38,7 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
     logicalSessionId: fixture.sessionContext.logicalSessionId,
     sessionKind: "worker",
     objectiveId: fixture.sessionContext.objectiveId,
-    workItemId: fixture.sessionContext.workItemId
+    taskId: fixture.sessionContext.taskId
   };
   try {
     const snap = await catalog.execute({ tool: "corptie_project_code_snapshot", metadata });
@@ -153,7 +153,7 @@ function storeFor(fixture, receipts) {
     assertLogicalWorkSessionBinding: () => ({ ...fixture.sessionContext, sessionId: "session:test" }),
     getLogicalSession: () => logical,
     getSession: () => ({ id: "session:test", sessionKind: "worker" }),
-    getWorkItem: () => ({ id: fixture.sessionContext.workItemId }),
+    getTask: () => ({ id: fixture.sessionContext.taskId }),
     putProjectCodeReceipt(record) { receipts.set(record.receiptId, structuredClone(record)); },
     getProjectCodeReceipt(receiptId, logicalSessionId) {
       const record = receipts.get(receiptId);

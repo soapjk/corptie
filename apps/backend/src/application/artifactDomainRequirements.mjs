@@ -1,7 +1,7 @@
 export const ARTIFACT_DOMAIN_ID = "artifacts";
 
 export class ArtifactDomainRequirements {
-  static forSessionRole({ sessionKind, roleCapabilities = [], workItemContract = null } = {}) {
+  static forSessionRole({ sessionKind, roleCapabilities = [], taskContract = null } = {}) {
     const canManage = roleCapabilities.includes("artifact:manage")
       || roleCapabilities.includes("objective:manage_artifacts");
     if (sessionKind === "worker") {
@@ -9,9 +9,9 @@ export class ArtifactDomainRequirements {
         requiredBeforeFirstTurn: Object.freeze([Object.freeze({
           domainId: ARTIFACT_DOMAIN_ID,
           minimumDomainVersion: 2,
-          reason: workItemContract?.artifactDeliveryRequired === false
+          reason: taskContract?.artifactDeliveryRequired === false
             ? "Worker Artifact evidence and pinned-reference reads"
-            : "Worker WorkItem delivery contract requires Artifact tools"
+            : "Worker Task delivery contract requires Artifact tools"
         })]),
         onDemandDomains: Object.freeze([])
       });

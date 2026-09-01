@@ -1,10 +1,10 @@
 import Testing
 @testable import CorptieMac
 
-struct WorkItemExecutionStartDecisionTests {
+struct CorptieTaskExecutionStartDecisionTests {
     @Test func resumesAnExistingSessionBeforeConsideringBoundAgent() {
         #expect(
-            WorkItemExecutionStartDecision.resolve(
+            CorptieTaskExecutionStartDecision.resolve(
                 status: "in_progress",
                 currentSessionId: "session:existing",
                 mainAgentId: "agent:bound"
@@ -14,7 +14,7 @@ struct WorkItemExecutionStartDecisionTests {
 
     @Test func createsSessionDirectlyWithBoundAgent() {
         #expect(
-            WorkItemExecutionStartDecision.resolve(
+            CorptieTaskExecutionStartDecision.resolve(
                 status: "todo",
                 currentSessionId: nil,
                 mainAgentId: "agent:bound"
@@ -24,7 +24,7 @@ struct WorkItemExecutionStartDecisionTests {
 
     @Test func asksForAgentOnlyWhenNoSessionOrBindingExists() {
         #expect(
-            WorkItemExecutionStartDecision.resolve(
+            CorptieTaskExecutionStartDecision.resolve(
                 status: "todo",
                 currentSessionId: nil,
                 mainAgentId: "  "
@@ -32,9 +32,9 @@ struct WorkItemExecutionStartDecisionTests {
         )
     }
 
-    @Test func completedWorkItemUsesAtomicRestoreBeforeExistingSessionResume() {
+    @Test func completedCorptieTaskUsesAtomicRestoreBeforeExistingSessionResume() {
         #expect(
-            WorkItemExecutionStartDecision.resolve(
+            CorptieTaskExecutionStartDecision.resolve(
                 status: "done",
                 currentSessionId: "session:existing",
                 mainAgentId: "agent:bound"

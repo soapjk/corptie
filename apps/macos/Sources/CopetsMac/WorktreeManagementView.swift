@@ -348,14 +348,14 @@ struct WorktreeManagementView: View {
                             }
                         }
                     }
-                    detailSection(L10n("WorkItem and Session")) {
+                    detailSection(L10n("CorptieTask and Session")) {
                         if worktree.associations.isEmpty {
-                            Text(L10n("No associated WorkItem or Session")).foregroundStyle(.secondary)
+                            Text(L10n("No associated CorptieTask or Session")).foregroundStyle(.secondary)
                         } else {
                             ForEach(worktree.associations, id: \.logicalSessionId) { association in
                                 VStack(alignment: .leading, spacing: 3) {
-                                    if let workItem = association.workItemTitle ?? association.workItemId {
-                                        Text(workItem).fontWeight(.medium)
+                                    if let task = association.taskTitle ?? association.taskId {
+                                        Text(task).fontWeight(.medium)
                                     }
                                     if let sessionId = association.sessionId {
                                         Button(association.title ?? sessionId) {
@@ -1040,7 +1040,7 @@ struct WorktreeCleanupConfirmationView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(L10nFormat("Clean up %d merged Worktrees?", worktrees.count))
                 .font(.title2.weight(.semibold))
-            Text(L10n("Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:"))
+            Text(L10n("Only these Worktrees, whose branches are merged into main and have no unfinished CorptieTask or active Session association, will be removed with their local branches:"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -1170,7 +1170,7 @@ private func localizedDeletionBlocker(_ blocker: ManagedWorktreeDeletionBlocker)
     case "UNCOMMITTED_CHANGES": L10n("This Worktree has uncommitted changes. Commit or discard them before deleting it.")
     case "NOT_MERGED_INTO_MAIN": L10n("This Worktree has commits that are not merged into main.")
     case "WORKTREE_BRANCH_AMBIGUOUS": L10n("The branch for this Worktree cannot be determined safely.")
-    case "WORK_ITEM_ASSOCIATED", "WORKTREE_IN_USE": blocker.reason
+    case "TASK_ASSOCIATED", "WORKTREE_IN_USE": blocker.reason
     default: blocker.reason
     }
 }

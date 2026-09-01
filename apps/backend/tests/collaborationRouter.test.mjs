@@ -69,7 +69,7 @@ test("offline 不参与路由 + collaboration_sessions 生命周期", async () =
     const session = store.createCollaborationSession({
       mode: "delegation",
       requesterObjectiveId: "o1",
-      requesterWorkItemId: "wi1",
+      requesterTaskId: "wi1",
       request: { description: "写个后端接口" }
     });
     assert.equal(session.status, "proposed");

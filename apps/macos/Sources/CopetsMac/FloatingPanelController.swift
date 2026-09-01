@@ -204,7 +204,7 @@ final class FloatingPanelController: NSObject {
 
         restoreListFrameForTransition(animated: true)
 
-        let workItem = DispatchWorkItem { [weak self] in
+        let task = DispatchWorkItem { [weak self] in
             guard let self else {
                 return
             }
@@ -214,8 +214,8 @@ final class FloatingPanelController: NSObject {
             }
             self.adjustListHeightForCurrentMeasurements(animated: true)
         }
-        pendingListTransitionUnlock = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
+        pendingListTransitionUnlock = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: task)
     }
 
     private func beginDetailTransition() {
@@ -666,13 +666,13 @@ final class FloatingPanelController: NSObject {
     private func scheduleResizeBounceCheck() {
         pendingResizeBounce?.cancel()
 
-        let workItem = DispatchWorkItem { [weak self] in
+        let task = DispatchWorkItem { [weak self] in
             Task { @MainActor in
                 self?.bounceHeightBackIfNeeded()
             }
         }
-        pendingResizeBounce = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: workItem)
+        pendingResizeBounce = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.24, execute: task)
     }
 
     private func saveCurrentDetailWindowSizeIfNeeded() {

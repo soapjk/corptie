@@ -79,7 +79,14 @@ export class CodexResetForecastMonitor {
   }
 
   persist() {
-    this.store?.setRuntimeState?.(STATE_KEY, this.state);
+    try {
+      this.store?.setRuntimeState?.(STATE_KEY, this.state);
+    } catch (error) {
+      // Data-root migration intentionally freezes persistent writes while the
+      // Store is handed off. This best-effort forecast must never crash or
+      // delay the authoritative maintenance/restart workflow.
+      if (error?.code !== "DATA_ROOT_MIGRATION_IN_PROGRESS") throw error;
+    }
   }
 }
 

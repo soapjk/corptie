@@ -141,7 +141,7 @@ enum SessionCollectionDiffer {
             || previous.agentId != next.agentId
             || previous.sessionKind != next.sessionKind
             || previous.objectiveId != next.objectiveId
-            || previous.workItemId != next.workItemId
+            || previous.taskId != next.taskId
             || previous.lastAgentMessageSequence != next.lastAgentMessageSequence
             || previous.lastReadMessageSequence != next.lastReadMessageSequence
             || previous.timelineRevision != next.timelineRevision {

@@ -23,15 +23,15 @@ async function fixture() {
     id: "objective:channel", name: "Channel", contributorAgentIds: ["agent:a", "agent:b"]
   });
   for (const endpoint of [
-    { provider: "provider:a", logical: "session:a", agent: "agent:a", item: "work_item:a" },
-    { provider: "provider:b", logical: "session:b", agent: "agent:b", item: "work_item:b" }
+    { provider: "provider:a", logical: "session:a", agent: "agent:a", item: "task:a" },
+    { provider: "provider:b", logical: "session:b", agent: "agent:b", item: "task:b" }
   ]) {
-    store.createWorkItem({
+    store.createTask({
       id: endpoint.item, objectiveId: objective.id, title: endpoint.item, mainAgentId: endpoint.agent
     }, { originType: "direct_user" });
     store.createSession({
       id: endpoint.provider, title: endpoint.provider, agentId: endpoint.agent,
-      sessionKind: "worker", objectiveId: objective.id, workItemId: endpoint.item, cwd: directory
+      sessionKind: "worker", objectiveId: objective.id, taskId: endpoint.item, cwd: directory
     });
     store.createLogicalSessionRoute({
       logicalSessionId: endpoint.logical,
@@ -134,35 +134,35 @@ test("Channel authorization creates one durable equal Session pair and supports 
   }
 });
 
-test("WorkItem creation origin is immutable provenance and does not create hierarchy", async () => {
+test("Task creation origin is immutable provenance and does not create hierarchy", async () => {
   const value = await fixture();
   try {
-    const item = value.store.createWorkItem({
-      id: "work_item:independent",
+    const item = value.store.createTask({
+      id: "task:independent",
       objectiveId: "objective:channel",
       title: "Independent"
     }, {
       originType: "session",
       creatorSessionId: "session:a",
-      creationContextWorkItemId: "work_item:a",
+      creationContextTaskId: "task:a",
       operationId: "create:independent"
     });
-    const origin = value.store.getWorkItemCreationOrigin(item.id);
+    const origin = value.store.getTaskCreationOrigin(item.id);
     assert.equal(origin.originType, "session");
     assert.equal(origin.creatorSessionId, "session:a");
-    assert.equal(origin.creationContextWorkItemId, "work_item:a");
-    const stored = value.store.getWorkItem(item.id);
-    assert.equal(stored.source_work_item_id, null);
-    assert.equal(stored.parent_work_item_id, null);
+    assert.equal(origin.creationContextTaskId, "task:a");
+    const stored = value.store.getTask(item.id);
+    assert.equal(stored.source_task_id, null);
+    assert.equal(stored.parent_task_id, null);
     assert.equal(stored.collaboration_relation, null);
-    assert.deepEqual(value.store.listWorkItemDependencies(item.id), []);
+    assert.deepEqual(value.store.listTaskDependencies(item.id), []);
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
   }
 });
 
-test("one authorization can provision the missing WorkItem and Session before activating the Channel", async () => {
+test("one authorization can provision the missing Task and Session before activating the Channel", async () => {
   const value = await fixture();
   try {
     const objectiveService = new ObjectiveApplicationService({ store: value.store });
@@ -171,11 +171,11 @@ test("one authorization can provision the missing WorkItem and Session before ac
       store: value.store,
       objectiveService,
       collaborationCore: value.service.collaborationCore,
-      startWorkItem: async ({ workItem, agent }) => {
-        launches.push({ workItemId: workItem.id, agentId: agent.agentId });
+      startTask: async ({ task, agent }) => {
+        launches.push({ taskId: task.id, agentId: agent.agentId });
         value.store.createSession({
           id: "provider:created", title: "Created peer", agentId: agent.agentId,
-          sessionKind: "worker", objectiveId: workItem.objective_id, workItemId: workItem.id,
+          sessionKind: "worker", objectiveId: task.objective_id, taskId: task.id,
           cwd: value.directory
         });
         value.store.createLogicalSessionRoute({
@@ -184,7 +184,7 @@ test("one authorization can provision the missing WorkItem and Session before ac
           providerId: "test-provider", boundCwd: value.directory, sessionName: "Created peer"
         });
         value.service.collaborationCore.bindSession({ agentId: agent.agentId, sessionId: "provider:created" });
-        value.store.bindSessionToWorkItem("provider:created", workItem.id, workItem.objective_id);
+        value.store.bindSessionToTask("provider:created", task.id, task.objective_id);
         return { id: "provider:created" };
       }
     });
@@ -197,18 +197,18 @@ test("one authorization can provision the missing WorkItem and Session before ac
       idempotencyKey: "provision:1"
     });
     assert.equal(pending.requestedRecipientSessionId, null);
-    assert.equal(value.store.getWorkItem(`work_item:channel:${pending.requestId}`), null);
+    assert.equal(value.store.getTask(`task:channel:${pending.requestId}`), null);
 
     const target = await provisioning.prepareChannelRequestTarget(pending);
     assert.equal(target.recipientSessionId, "session:created");
     assert.equal(target.created, true);
     assert.equal(launches.length, 1);
-    const origin = value.store.getWorkItemCreationOrigin(target.workItemId);
+    const origin = value.store.getTaskCreationOrigin(target.taskId);
     assert.equal(origin.creatorSessionId, "session:a");
-    assert.equal(origin.creationContextWorkItemId, "work_item:a");
-    const provisioned = value.store.getWorkItem(target.workItemId);
-    assert.equal(provisioned.parent_work_item_id, null);
-    assert.equal(provisioned.source_work_item_id, null);
+    assert.equal(origin.creationContextTaskId, "task:a");
+    const provisioned = value.store.getTask(target.taskId);
+    assert.equal(provisioned.parent_task_id, null);
+    assert.equal(provisioned.source_task_id, null);
 
     const confirmed = value.service.confirmRequest(pending.requestId, target, { type: "direct_user" });
     assert.equal(confirmed.status, "confirmed");

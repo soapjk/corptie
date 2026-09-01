@@ -18,8 +18,8 @@ import {
 
 test("approved RunReceipt v6 and CleanupReceipt v4 schema sections are fixed, parsed and closed", async () => {
   const fixtures = [
-    ["run-receipt-v6.schema.json", "RunReceipt", "eabcf91d8849a82bd5df3cb187213068521b5873446f636eb58af377f78e4c50", 6],
-    ["cleanup-receipt-v4.schema.json", "CleanupReceipt", "e432d1d53611f13c6c985c2126c082aacc917fc7458106d216b65b71112b819d", 4]
+    ["run-receipt-v6.schema.json", "RunReceipt", "c0a38268afbd37277ad0362a1c3addb4ab05b9aa206393a26af3c1bf6647dd58", 6],
+    ["cleanup-receipt-v4.schema.json", "CleanupReceipt", "846f1af4b72cdc06c4f0b5a54b15d593f767c2496f28f0cad0ec20ff0e6a6032", 4]
   ];
   for (const [name, type, hash, version] of fixtures) {
     const bytes = await readFile(new URL(`../src/contracts/${name}`, import.meta.url));

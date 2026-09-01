@@ -517,11 +517,11 @@ export class ToolHostMaterializationCoordinator {
       throw toolError("SESSION_BINDING_TOMBSTONED", "The Session binding is no longer active.", 410);
     }
     if (binding.sessionKind === "worker") {
-      if (!binding.sessionId || !binding.objectiveId || !binding.workItemId) {
+      if (!binding.sessionId || !binding.objectiveId || !binding.taskId) {
         throw toolError("ACTOR_NOT_BOUND", "Worker Session binding is incomplete.", 403);
       }
-      if (binding.currentWorkItemSessionId !== binding.sessionId) {
-        throw toolError("ACTOR_NOT_BOUND", "Worker Session is not the WorkItem current Session.", 403);
+      if (binding.currentTaskSessionId !== binding.sessionId) {
+        throw toolError("ACTOR_NOT_BOUND", "Worker Session is not the Task current Session.", 403);
       }
     }
     return binding;
@@ -600,8 +600,8 @@ export function authorizationScopeFingerprint(binding) {
     sessionId: binding.sessionId ?? null,
     sessionKind: binding.sessionKind,
     objectiveId: binding.objectiveId ?? null,
-    workItemId: binding.workItemId ?? null,
-    currentWorkItemSessionId: binding.currentWorkItemSessionId ?? null,
+    taskId: binding.taskId ?? null,
+    currentTaskSessionId: binding.currentTaskSessionId ?? null,
     providerBindingId: binding.providerBindingId,
     bindingState: binding.state,
     tombstoned: binding.tombstoned === true,
@@ -650,7 +650,7 @@ function catalogContext(binding) {
       sessionId: binding.sessionId ?? null,
       sessionKind: binding.sessionKind,
       objectiveId: binding.objectiveId ?? null,
-      workItemId: binding.workItemId ?? null,
+      taskId: binding.taskId ?? null,
       providerBindingId: binding.providerBindingId
     }
   };

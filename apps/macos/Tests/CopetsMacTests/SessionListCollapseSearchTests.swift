@@ -141,7 +141,7 @@ private func makeRow(
         agent: agent,
         agentId: agentId,
         sessionKind: kind,
-        workItemId: nil,
+        taskId: nil,
         status: .complete,
         progress: 1,
         summary: summary,

@@ -64,7 +64,7 @@ export async function migrateDataRoot({
   sourceLayout,
   targetLayout,
   sourceDatabase,
-  keyTables = ["objectives", "work_items", "sessions", "artifact_versions"],
+  keyTables = ["objectives", "tasks", "sessions", "artifact_versions"],
   beforeCommit,
   afterCommit,
   onPhase

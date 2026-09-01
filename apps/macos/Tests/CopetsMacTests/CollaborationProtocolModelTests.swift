@@ -51,8 +51,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "protocolVersion": "2.0",
           "sourceObjectiveId": "objective:source",
           "targetObjectiveId": "objective:target",
-          "sourceWorkItemId": "work_item:source",
-          "workItemId": "work_item:target",
+          "sourceTaskId": "task:source",
+          "taskId": "task:target",
           "initiatorAgentId": "agent:initiator",
           "recipientAgentId": "agent:recipient",
           "initiatorSessionId": "session:historical-initiator",
@@ -61,7 +61,7 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "recipientNameAtSend": "Recipient Worker Session",
           "routingVersion": 7,
           "routeStatus": "active",
-          "routingIntent": "existing_work_item_session",
+          "routingIntent": "existing_task_session",
           "artifactStatus": "pending",
           "acceptanceStatus": "pending",
           "initiatorBindingId": "binding:historical",
@@ -94,7 +94,7 @@ final class CollaborationProtocolModelTests: XCTestCase {
         XCTAssertEqual(task.initiatorNameAtSend, "Historical Initiator Session")
         XCTAssertEqual(task.recipientNameAtSend, "Recipient Worker Session")
         XCTAssertEqual(task.routingVersion, 7)
-        XCTAssertEqual(task.routingIntent, "existing_work_item_session")
+        XCTAssertEqual(task.routingIntent, "existing_task_session")
         XCTAssertEqual(task.idempotencyKey, "request:repair-identity")
     }
 
@@ -113,11 +113,11 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "initiatorSessionId": "logical:source",
           "initiatorSessionTitle": "Snapshot repair",
           "initiatorSessionKind": "worker",
-          "initiatorWorkItemId": "work_item:source",
+          "initiatorCorptieTaskId": "task:source",
           "recipientSessionId": "logical:target",
           "recipientSessionTitle": "One-hour shadow",
           "recipientSessionKind": "worker",
-          "recipientWorkItemId": "work_item:target",
+          "recipientCorptieTaskId": "task:target",
           "routeStatus": "active",
           "routingVersion": 3,
           "taskTitle": "Run shadow",
@@ -131,11 +131,11 @@ final class CollaborationProtocolModelTests: XCTestCase {
         XCTAssertEqual(confirmation.targetObjectiveName, "PolyMarket 实时套利")
         XCTAssertEqual(confirmation.recipientSessionTitle, "One-hour shadow")
         XCTAssertEqual(confirmation.recipientSessionKind, "worker")
-        XCTAssertEqual(confirmation.recipientWorkItemId, "work_item:target")
+        XCTAssertEqual(confirmation.recipientCorptieTaskId, "task:target")
         XCTAssertEqual(confirmation.routingVersion, 3)
     }
 
-    func testMessageEnvelopeDecodesObjectiveWorkItemPayloadAndErrorContract() throws {
+    func testMessageEnvelopeDecodesObjectiveCorptieTaskPayloadAndErrorContract() throws {
         let data = Data(#"""
         {
           "messageId": "message:1",
@@ -161,8 +161,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
               "targetAgentId": "agent:b",
               "sourceObjectiveId": "objective:a",
               "targetObjectiveId": "objective:b",
-              "sourceWorkItemId": "work_item:source",
-              "targetWorkItemId": "work_item:target"
+              "sourceTaskId": "task:source",
+              "targetTaskId": "task:target"
             },
             "taskId": "task:1",
             "payload": {
@@ -186,8 +186,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
         XCTAssertEqual(message.envelope?.recipient.sessionId, "session:b")
         XCTAssertEqual(message.envelope?.resources.sourceObjectiveId, "objective:a")
         XCTAssertEqual(message.envelope?.resources.targetObjectiveId, "objective:b")
-        XCTAssertEqual(message.envelope?.resources.sourceWorkItemId, "work_item:source")
-        XCTAssertEqual(message.envelope?.resources.targetWorkItemId, "work_item:target")
+        XCTAssertEqual(message.envelope?.resources.sourceTaskId, "task:source")
+        XCTAssertEqual(message.envelope?.resources.targetTaskId, "task:target")
         XCTAssertEqual(message.envelope?.payload.evidence?.count, 1)
         XCTAssertNil(message.envelope?.error)
     }

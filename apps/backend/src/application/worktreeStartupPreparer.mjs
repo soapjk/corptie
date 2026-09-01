@@ -16,9 +16,9 @@ export class WorktreeStartupPreparer {
   }
 
   async prepare(input) {
-    const workItem = input?.workItem ?? this.store.getWorkItem(input?.workItemId);
-    if (!workItem || workItem.id !== input.workItemId || workItem.main_workspace_id !== input.repositoryId) {
-      throw coded("START_REFERENCE_INVALID", "WorkItem Repository binding changed before Worktree preparation.", false);
+    const task = input?.task ?? this.store.getTask(input?.taskId);
+    if (!task || task.id !== input.taskId || task.main_workspace_id !== input.repositoryId) {
+      throw coded("START_REFERENCE_INVALID", "Task Repository binding changed before Worktree preparation.", false);
     }
     const owned = this.store.selectOne(
       `SELECT worktree_id FROM git_worktrees
@@ -35,7 +35,7 @@ export class WorktreeStartupPreparer {
       isDetached: prepared.isDetached,
       inventoryVersion: prepared.inventoryVersion,
       reused: true
-    } : await this.ensureWorkspace({ workItem, session: null });
+    } : await this.ensureWorkspace({ task, session: null });
     if (workspace.workspaceMode === "unborn-main") {
       throw coded("START_SOURCE_IDENTITY_UNAVAILABLE", "Unborn Repository has no commit/tree for a dedicated Work Session.", false);
     }

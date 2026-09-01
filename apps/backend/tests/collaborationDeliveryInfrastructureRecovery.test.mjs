@@ -27,21 +27,21 @@ async function fixture() {
     name: "Recovery",
     contributorAgentIds: ["agent-a", "agent-b"]
   });
-  const sourceWorkItem = store.createWorkItem({
-    id: "work_item:source",
+  const sourceTask = store.createTask({
+    id: "task:source",
     objectiveId: objective.id,
     title: "Source",
     mainAgentId: "agent-a"
   });
-  const targetWorkItem = store.createWorkItem({
-    id: "work_item:target",
+  const targetTask = store.createTask({
+    id: "task:target",
     objectiveId: objective.id,
     title: "Target",
     mainAgentId: "agent-b"
   });
-  for (const [providerSessionId, logicalSessionId, agentId, workItemId] of [
-    ["codex:thread-a", "session:thread-a", "agent-a", sourceWorkItem.id],
-    ["codex:thread-b", "session:thread-b", "agent-b", targetWorkItem.id]
+  for (const [providerSessionId, logicalSessionId, agentId, taskId] of [
+    ["codex:thread-a", "session:thread-a", "agent-a", sourceTask.id],
+    ["codex:thread-b", "session:thread-b", "agent-b", targetTask.id]
   ]) {
     store.createSession({
       id: providerSessionId,
@@ -49,7 +49,7 @@ async function fixture() {
       agentId,
       sessionKind: "worker",
       objectiveId: objective.id,
-      workItemId,
+      taskId,
       cwd: directory
     });
     store.createLogicalSessionRoute({
@@ -84,8 +84,8 @@ async function fixture() {
   });
   core.updateDelivery(delivery.deliveryId, { incrementAttempt: true });
   core.updateDelivery(delivery.deliveryId, { incrementAttempt: true });
-  store.enqueueAgentWorkItem({
-    workItemId: `delivery:${delivery.deliveryId}`,
+  store.enqueueAgentTask({
+    taskId: `delivery:${delivery.deliveryId}`,
     agentId: "agent-b",
     sessionId: "codex:thread-b",
     kind: "collaboration",
@@ -94,7 +94,7 @@ async function fixture() {
     source: { type: "collaboration", deliveryId: delivery.deliveryId },
     deliveryId: delivery.deliveryId
   });
-  store.updateAgentWorkItem(`delivery:${delivery.deliveryId}`, {
+  store.updateAgentTask(`delivery:${delivery.deliveryId}`, {
     status: "failed",
     lastError: missingRolloutError
   });
@@ -117,9 +117,9 @@ test("a repaired rollout requeues the exhausted delivery and existing Agent Work
     assert.equal(recovered[0].delivery.status, "pending");
     assert.equal(recovered[0].delivery.attemptCount, 0);
     assert.equal(value.core.listPendingDeliveries(100, 3).length, 1);
-    const work = value.store.getAgentWorkItemForDelivery(value.delivery.deliveryId);
+    const work = value.store.getAgentTaskForDelivery(value.delivery.deliveryId);
     assert.equal(work.status, "queued");
-    assert.equal(work.workItemId, `delivery:${value.delivery.deliveryId}`);
+    assert.equal(work.taskId, `delivery:${value.delivery.deliveryId}`);
     assert.match(logs[0], new RegExp(`deliveryId=${value.delivery.deliveryId}`));
     assert.equal(value.core.getTask(value.task.taskId).events.at(-1).type, "delivery_recovered");
 
@@ -145,7 +145,7 @@ test("a repaired rollout requeues the exhausted delivery and existing Agent Work
     assert.equal(value.core.getTask(value.task.taskId).events.at(-1).type, "delivery_succeeded");
 
     assert.deepEqual(recoverCollaborationDeliveriesAfterCodexRolloutRepair(options), []);
-    assert.equal(value.store.getAgentWorkItemForDelivery(value.delivery.deliveryId).workItemId, work.workItemId);
+    assert.equal(value.store.getAgentTaskForDelivery(value.delivery.deliveryId).taskId, work.taskId);
   } finally {
     if (value.store.saveTimer) clearTimeout(value.store.saveTimer);
     await rm(value.directory, { recursive: true, force: true });
@@ -155,7 +155,7 @@ test("a repaired rollout requeues the exhausted delivery and existing Agent Work
 test("recovery fails closed for unrelated errors and unrepaired threads", async () => {
   const value = await fixture();
   try {
-    value.store.updateAgentWorkItem(`delivery:${value.delivery.deliveryId}`, {
+    value.store.updateAgentTask(`delivery:${value.delivery.deliveryId}`, {
       lastError: "failed to resolve rollout path `/old/file`: permission denied"
     });
     assert.deepEqual(recoverCollaborationDeliveriesAfterCodexRolloutRepair({
@@ -166,7 +166,7 @@ test("recovery fails closed for unrelated errors and unrepaired threads", async 
     }), []);
     assert.equal(value.core.getDelivery(value.delivery.deliveryId).attemptCount, 3);
 
-    value.store.updateAgentWorkItem(`delivery:${value.delivery.deliveryId}`, {
+    value.store.updateAgentTask(`delivery:${value.delivery.deliveryId}`, {
       lastError: "failed to resolve rollout path `/old/sessions/rollout-thread-b.jsonl`: file does not exist"
     });
     assert.deepEqual(recoverCollaborationDeliveriesAfterCodexRolloutRepair({

@@ -635,7 +635,7 @@ test("pending collaboration confirmations are delivered exactly once on the firs
           collaborationConfirmationId: "confirmation-a",
           collaborationConfirmationStatus: "pending",
           collaborationRecipientName: "Target Agent",
-          collaborationTaskTitle: "Fix service",
+          collaborationRequestTitle: "Fix service",
           presentationText: "Please fix the service."
         }]
       };
@@ -682,7 +682,7 @@ test("collaboration requests and the receiving Session's follow-up are both proj
           collaborationSourceObjectiveName: "Peer Objective",
           collaborationTargetObjectiveId: "objective:current",
           collaborationTargetObjectiveName: "Current Objective",
-          collaborationTaskTitle: "Review API",
+          collaborationRequestTitle: "Review API",
           presentationText: "Please review the API.",
           text: "<peer_content>trusted envelope</peer_content>"
         }, {

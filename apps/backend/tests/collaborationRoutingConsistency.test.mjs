@@ -12,8 +12,8 @@ import { handleCollaborationHttpRequest } from "../src/collaboration/collaborati
 import { CollaborationHttpClient } from "../src/mcp/collaborationHttpClient.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-const LEGACY_DISCOVERY_WORK_ITEM = "work_item:1be73667-legacy-discovery";
-const AUTHORITATIVE_WORK_ITEM = "work_item:0aba863c-runtime-binding";
+const LEGACY_DISCOVERY_TASK = "task:1be73667-legacy-discovery";
+const AUTHORITATIVE_TASK = "task:0aba863c-runtime-binding";
 
 test("legacy Agent discovery delegates to the authoritative runtime binding and request fails closed on stale parent context", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-collaboration-routing-consistency-"));
@@ -38,21 +38,21 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     const marketCowObjective = objectives.createObjective({
       id: "objective:marketcow", name: "MarketCow", contributorAgentIds: [marketCow.agentId]
     });
-    objectives.createWorkItem({
-      id: LEGACY_DISCOVERY_WORK_ITEM, objectiveId: sourceObjective.id, title: "Expired discovery parent"
+    objectives.createTask({
+      id: LEGACY_DISCOVERY_TASK, objectiveId: sourceObjective.id, title: "Expired discovery parent"
     });
-    objectives.createWorkItem({
-      id: AUTHORITATIVE_WORK_ITEM, objectiveId: sourceObjective.id, title: "Authoritative runtime parent"
+    objectives.createTask({
+      id: AUTHORITATIVE_TASK, objectiveId: sourceObjective.id, title: "Authoritative runtime parent"
     });
     bindSession(store, core, {
       providerSessionId: "provider:legacy", logicalSessionId: "session:legacy",
       agentId: sourceAgent.agentId, objectiveId: sourceObjective.id,
-      workItemId: LEGACY_DISCOVERY_WORK_ITEM
+      taskId: LEGACY_DISCOVERY_TASK
     });
     bindSession(store, core, {
       providerSessionId: "provider:authoritative", logicalSessionId: "session:authoritative",
       agentId: sourceAgent.agentId, objectiveId: sourceObjective.id,
-      workItemId: AUTHORITATIVE_WORK_ITEM
+      taskId: AUTHORITATIVE_TASK
     });
     // Reproduce the production split: legacy Agent discovery points at the old
     // Provider cursor while the authenticated runtime is bound to the new Session.
@@ -66,15 +66,15 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       store,
       objectiveService: objectives,
       collaborationCore: core,
-      startWorkItem: async ({ workItem, agent }) => {
+      startTask: async ({ task, agent }) => {
         bindSession(store, core, {
-          providerSessionId: `provider:${workItem.id}`,
-          logicalSessionId: `session:${workItem.id}`,
+          providerSessionId: `provider:${task.id}`,
+          logicalSessionId: `session:${task.id}`,
           agentId: agent.agentId,
-          objectiveId: workItem.objective_id,
-          workItemId: workItem.id
+          objectiveId: task.objective_id,
+          taskId: task.id
         });
-        return { id: `provider:${workItem.id}` };
+        return { id: `provider:${task.id}` };
       }
     });
     const staged = [];
@@ -107,7 +107,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       sessionScope: {
         sessionId: "provider:authoritative",
         objectiveId: sourceObjective.id,
-        workItemId: AUTHORITATIVE_WORK_ITEM
+        taskId: AUTHORITATIVE_TASK
       }
     });
 
@@ -115,59 +115,59 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     const discovery = await authoritative.get("/internal/collaboration/agents");
     const discoveredSource = discovery.agents.find((agent) => agent.agentId === sourceAgent.agentId);
     assert.equal(capabilities.sourceSessionId, "session:authoritative");
-    assert.equal(capabilities.workItemId, AUTHORITATIVE_WORK_ITEM);
+    assert.equal(capabilities.taskId, AUTHORITATIVE_TASK);
     assert.ok(capabilities.actions.includes("collaboration.request"));
     assert.equal(discoveredSource.sessionId, capabilities.sourceSessionId);
-    assert.equal(discoveredSource.currentWorkItemId, capabilities.workItemId);
+    assert.equal(discoveredSource.currentTaskId, capabilities.taskId);
     assert.deepEqual(discoveredSource.runtimeBinding, {
       authoritative: true,
       sessionId: "session:authoritative",
       providerSessionId: "provider:authoritative",
       sessionKind: "worker",
       objectiveId: sourceObjective.id,
-      workItemId: AUTHORITATIVE_WORK_ITEM
+      taskId: AUTHORITATIVE_TASK
     });
 
-    const targetItemsBeforeFailure = store.listWorkItemsByObjective(marketCowObjective.id).length;
+    const targetItemsBeforeFailure = store.listTasksByObjective(marketCowObjective.id).length;
     const staleRuntime = new CollaborationHttpClient({
       baseUrl,
       agentId: sourceAgent.agentId,
       sessionScope: {
         sessionId: "provider:authoritative",
         objectiveId: sourceObjective.id,
-        workItemId: LEGACY_DISCOVERY_WORK_ITEM
+        taskId: LEGACY_DISCOVERY_TASK
       }
     });
     const staleHeaderCapabilities = await staleRuntime.get("/internal/collaboration/session-capabilities");
     const staleHeaderDiscovery = await staleRuntime.get("/internal/collaboration/agents");
-    assert.equal(staleHeaderCapabilities.workItemId, AUTHORITATIVE_WORK_ITEM);
+    assert.equal(staleHeaderCapabilities.taskId, AUTHORITATIVE_TASK);
     assert.equal(
-      staleHeaderDiscovery.agents.find((agent) => agent.agentId === sourceAgent.agentId).currentWorkItemId,
-      AUTHORITATIVE_WORK_ITEM
+      staleHeaderDiscovery.agents.find((agent) => agent.agentId === sourceAgent.agentId).currentTaskId,
+      AUTHORITATIVE_TASK
     );
     await assert.rejects(
       staleRuntime.post("/internal/collaboration/task-confirmations", marketCowSwitchRequest(marketCow, marketCowObjective)),
       (error) => error.code === "COLLABORATION_CONTEXT_MISMATCH"
         && error.status === 409
-        && error.message.includes(LEGACY_DISCOVERY_WORK_ITEM)
-        && error.message.includes(AUTHORITATIVE_WORK_ITEM)
+        && error.message.includes(LEGACY_DISCOVERY_TASK)
+        && error.message.includes(AUTHORITATIVE_TASK)
     );
     assert.equal(staged.length, 0);
     assert.equal(store.selectAll("SELECT * FROM collaboration_request_confirmations").length, 0);
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 0);
     assert.equal(core.listPendingDeliveries().length, 0);
-    assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
+    assert.equal(store.listTasksByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
     assert.equal(core.listInbox(marketCow.agentId).length, 0);
 
     store.db.run(
-      `INSERT INTO work_item_completion_authorizations
-       (operation_id, work_item_id, objective_id, source_type, nonce, validated_at)
+      `INSERT INTO task_completion_authorizations
+       (operation_id, task_id, objective_id, source_type, nonce, validated_at)
        VALUES ('fixture:terminal', ?, ?, 'direct_macos_ui_action', 'fixture:terminal', ?)`,
-      [AUTHORITATIVE_WORK_ITEM, sourceObjective.id, new Date().toISOString()]
+      [AUTHORITATIVE_TASK, sourceObjective.id, new Date().toISOString()]
     );
     store.db.run(
-      "UPDATE work_items SET status='done', completion_operation_id='fixture:terminal' WHERE id=?",
-      [AUTHORITATIVE_WORK_ITEM]
+      "UPDATE tasks SET lifecycle_state='done', completion_operation_id='fixture:terminal' WHERE id=?",
+      [AUTHORITATIVE_TASK]
     );
     const terminalCapabilities = await authoritative.get("/internal/collaboration/session-capabilities");
     assert.equal(terminalCapabilities.actions.includes("collaboration.request"), false);
@@ -175,15 +175,15 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       authoritative.post("/internal/collaboration/task-confirmations", marketCowSwitchRequest(marketCow, marketCowObjective)),
       (error) => error.code === "COLLABORATION_REQUEST_FORBIDDEN"
         && error.status === 403
-        && error.message.includes(AUTHORITATIVE_WORK_ITEM)
+        && error.message.includes(AUTHORITATIVE_TASK)
         && /terminal/.test(error.message)
     );
     assert.equal(staged.length, 0);
     assert.equal(store.selectAll("SELECT * FROM collaboration_request_confirmations").length, 0);
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 0);
     assert.equal(core.listPendingDeliveries().length, 0);
-    assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
-    store.db.run("UPDATE work_items SET status='todo' WHERE id=?", [AUTHORITATIVE_WORK_ITEM]);
+    assert.equal(store.listTasksByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
+    store.db.run("UPDATE tasks SET lifecycle_state='todo' WHERE id=?", [AUTHORITATIVE_TASK]);
 
     stagingError = Object.assign(new Error("Confirmation card staging failed."), { code: "CONFIRMATION_STAGING_FAILED" });
     await assert.rejects(
@@ -193,9 +193,9 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     stagingError = null;
     assert.equal(staged.length, 0);
     assert.equal(store.selectAll("SELECT * FROM collaboration_request_confirmations").length, 0);
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 0);
     assert.equal(core.listPendingDeliveries().length, 0);
-    assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
+    assert.equal(store.listTasksByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
     assert.equal(core.listInbox(marketCow.agentId).length, 0);
 
     const proposed = await authoritative.post(
@@ -205,8 +205,8 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     assert.ok(proposed.confirmation.confirmationId);
     assert.equal(proposed.confirmation.status, "pending");
     assert.equal(staged.length, 1);
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
-    assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 0);
+    assert.equal(store.listTasksByObjective(marketCowObjective.id).length, targetItemsBeforeFailure);
 
     const resolutionResponse = await fetch(
       `${baseUrl}/collaboration/confirmations/${encodeURIComponent(proposed.confirmation.confirmationId)}/confirm`,
@@ -217,8 +217,8 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     assert.ok(resolved.confirmation.taskId);
     const task = core.getTask(resolved.confirmation.taskId);
     assert.ok(task);
-    assert.ok(task.workItemId);
-    assert.equal(store.getWorkItem(task.workItemId).objective_id, marketCowObjective.id);
+    assert.ok(task.taskId);
+    assert.equal(store.getTask(task.targetTaskId).objective_id, marketCowObjective.id);
     assert.equal(task.recipientAgentId, marketCow.agentId);
     assert.ok(task.recipientSessionId);
     assert.equal(core.listPendingDeliveries().some((delivery) =>
@@ -226,14 +226,14 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       && core.getDeliveryEnvelope(delivery.deliveryId).task.taskId === task.taskId
     ), true);
     assert.equal(core.listInbox(task.recipientSessionId).some((item) => item.taskId === task.taskId), true);
-    assert.equal(store.listWorkItemsByObjective(marketCowObjective.id).length, targetItemsBeforeFailure + 1);
+    assert.equal(store.listTasksByObjective(marketCowObjective.id).length, targetItemsBeforeFailure + 1);
 
-    const taskCountAfterFirstApproval = store.selectAll("SELECT * FROM collaboration_tasks").length;
+    const taskCountAfterFirstApproval = store.selectAll("SELECT * FROM collaboration_requests").length;
     const stagedCountAfterFirstApproval = staged.length;
     const repeated = await authoritative.post("/internal/collaboration/task-confirmations", {
       recipientSessionId: task.recipientSessionId,
       targetObjectiveId: marketCowObjective.id,
-      workItemId: task.workItemId,
+      targetTaskId: task.targetTaskId,
       type: "question",
       title: "Follow up over the authorized exact Session route",
       summary: "The same source and target Sessions should not require another user confirmation.",
@@ -246,7 +246,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
     assert.equal(repeated.confirmation.recipientSessionId, task.recipientSessionId);
     assert.equal(staged.length, stagedCountAfterFirstApproval);
     assert.equal(
-      store.selectAll("SELECT * FROM collaboration_tasks").length,
+      store.selectAll("SELECT * FROM collaboration_requests").length,
       taskCountAfterFirstApproval + 1
     );
     assert.equal(core.listInbox(task.recipientSessionId).some((item) =>
@@ -257,9 +257,9 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       baseUrl,
       agentId: marketCow.agentId,
       sessionScope: {
-        sessionId: `provider:${task.workItemId}`,
+        sessionId: `provider:${task.targetTaskId}`,
         objectiveId: marketCowObjective.id,
-        workItemId: task.workItemId
+        taskId: task.targetTaskId
       }
     });
     const stagedCountBeforeReverseRoute = staged.length;
@@ -268,7 +268,7 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       targetObjectiveId: sourceObjective.id,
       type: "question",
       title: "Follow up through the trusted parent relationship",
-      summary: "The backend should derive the parent Task and Context from this WorkItem."
+      summary: "The backend should derive the parent Task and Context from this Task."
     });
     const repeatedTask = core.getTask(repeated.confirmation.taskId);
     assert.equal(child.confirmation.request.parentTaskId, repeatedTask.taskId);
@@ -303,12 +303,12 @@ test("collaboration request permission is absent and the endpoint returns a stru
     });
     bindSession(store, core, {
       providerSessionId: "provider:assistant", logicalSessionId: "session:assistant",
-      agentId: source.agentId, objectiveId: sourceObjective.id, workItemId: null,
+      agentId: source.agentId, objectiveId: sourceObjective.id, taskId: null,
       kind: "assistantChat"
     });
     const service = new SessionCollaborationService({
       store, objectiveService: objectives, collaborationCore: core,
-      startWorkItem: async () => { throw new Error("must not launch"); }
+      startTask: async () => { throw new Error("must not launch"); }
     });
     server = http.createServer((request, response) => {
       const url = new URL(request.url, `http://${request.headers.host}`);
@@ -332,9 +332,9 @@ test("collaboration request permission is absent and the endpoint returns a stru
         && /Objective Chat or Worker Session/.test(error.message)
     );
     assert.equal(store.selectAll("SELECT * FROM collaboration_request_confirmations").length, 0);
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 0);
     assert.equal(core.listPendingDeliveries().length, 0);
-    assert.equal(store.listWorkItemsByObjective(targetObjective.id).length, 0);
+    assert.equal(store.listTasksByObjective(targetObjective.id).length, 0);
     assert.equal(core.listInbox(target.agentId).length, 0);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
@@ -350,7 +350,7 @@ function bindSession(store, core, input) {
     agentId: input.agentId,
     sessionKind: input.kind ?? "worker",
     objectiveId: input.objectiveId,
-    workItemId: input.workItemId
+    taskId: input.taskId
   });
   store.createLogicalSessionRoute({
     logicalSessionId: input.logicalSessionId,

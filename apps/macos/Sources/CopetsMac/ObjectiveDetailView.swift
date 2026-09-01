@@ -111,7 +111,7 @@ struct ObjectiveDetailView: View {
 
                     Divider()
 
-                    ArtifactSectionView(objectiveId: objective.id, workItemId: nil)
+                    ArtifactSectionView(objectiveId: objective.id, taskId: nil)
 
                     DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
@@ -152,7 +152,7 @@ struct ObjectiveDetailView: View {
             }
             Button(L10n("取消"), role: .cancel) {}
         } message: {
-            Text(L10nFormat("Delete “%@”? All of its WorkItems will be deleted. This action cannot be undone.", objective.name))
+            Text(L10nFormat("Delete “%@”? All of its CorptieTasks will be deleted. This action cannot be undone.", objective.name))
         }
     }
 

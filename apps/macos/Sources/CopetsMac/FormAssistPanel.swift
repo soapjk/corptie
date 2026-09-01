@@ -3,7 +3,7 @@ import SwiftUI
 enum AssistFormType: String, Encodable {
     case agent
     case objective
-    case workItem
+    case task
 }
 
 struct AssistFormDraft: Decodable, Equatable {
@@ -29,7 +29,7 @@ struct AssistFormDraft: Decodable, Equatable {
             expected = ["name", "description", "role", "systemPrompt", "capabilities"]
         case AssistFormType.objective.rawValue:
             expected = ["name", "description", "idealState", "priority", "tags"]
-        case AssistFormType.workItem.rawValue:
+        case AssistFormType.task.rawValue:
             expected = ["title", "description", "acceptanceCriteria", "priority"]
         default:
             throw DecodingError.dataCorruptedError(
@@ -56,7 +56,7 @@ enum FormAssistOverwritePolicy {
             defaults = ["role": "independentContributor"]
         case .objective:
             defaults = [:]
-        case .workItem:
+        case .task:
             defaults = ["priority": "medium"]
         }
         return values.contains { key, value in

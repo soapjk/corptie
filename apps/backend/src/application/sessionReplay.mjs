@@ -82,7 +82,7 @@ export function forkSession(store, sessionId, atSeq, { newSessionId } = {}) {
     provider: sourceSession?.provider,
     status: "running",
     objectiveId: sourceSession?.objectiveId,
-    workItemId: sourceSession?.workItemId
+    taskId: sourceSession?.taskId
   });
 
   // 复制事件（appendSessionEvent 自动为新 session 分配连续 sequence）。

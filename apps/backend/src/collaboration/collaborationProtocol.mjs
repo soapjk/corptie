@@ -35,8 +35,8 @@ export function createCollaborationEnvelope(input) {
       targetAgentId: input.recipientAgentId,
       sourceObjectiveId: input.sourceObjectiveId,
       targetObjectiveId: input.targetObjectiveId,
-      sourceWorkItemId: input.sourceWorkItemId ?? null,
-      targetWorkItemId: input.workItemId
+      sourceTaskId: input.sourceTaskId ?? null,
+      targetTaskId: input.targetTaskId
     },
     taskId: input.taskId,
     payload: input.payload,
@@ -68,14 +68,14 @@ export function validateCollaborationEnvelope(input) {
   record(input.resources, "resources");
   exactFields(input.resources, "resources", [
     "sourceAgentId", "targetAgentId", "sourceObjectiveId", "targetObjectiveId",
-    "sourceWorkItemId", "targetWorkItemId"
+    "sourceTaskId", "targetTaskId"
   ]);
   text(input.resources.sourceAgentId, "resources.sourceAgentId");
   text(input.resources.targetAgentId, "resources.targetAgentId");
   text(input.resources.sourceObjectiveId, "resources.sourceObjectiveId");
   text(input.resources.targetObjectiveId, "resources.targetObjectiveId");
-  nullableText(input.resources.sourceWorkItemId, "resources.sourceWorkItemId");
-  text(input.resources.targetWorkItemId, "resources.targetWorkItemId");
+  nullableText(input.resources.sourceTaskId, "resources.sourceTaskId");
+  text(input.resources.targetTaskId, "resources.targetTaskId");
   record(input.payload, "payload");
   if (typeof input.payload.body !== "string" || !input.payload.body.trim()) {
     fail("INVALID_PAYLOAD", "payload.body", "Collaboration payload.body must be a non-empty string.");

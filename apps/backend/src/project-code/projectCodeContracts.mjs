@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 export const PROJECT_CODE_SCHEMA_ARTIFACT = Object.freeze({
   artifactId: "artifact:ee9b734f-799d-41b6-804f-9868697de511",
   version: 1,
-  contentHash: "920fa9b2952490e4e4c93c88ca2855c11aeac9ff615bea43f738feff7d6d93e9",
+  contentHash: "a288feb13a2c784e1267d4c40b44e1a0204c530c8f0b9910f0d9f2f52a9ccc76",
   relation: "implementation_spec"
 });
 
@@ -34,7 +34,7 @@ export const CLEANUP_RECEIPT_ARTIFACT = Object.freeze({
 export const TOOLSET_VALIDATION_ARTIFACT = Object.freeze({
   artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
   version: 1,
-  contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d",
+  contentHash: "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669",
   schemaVersion: 3
 });
 
@@ -51,8 +51,8 @@ let cachedToolsetSchema = null;
 const runIsolationSchemas = new Map();
 
 const RUN_ISOLATION_SCHEMA_HASHES = Object.freeze({
-  RunReceipt: "eabcf91d8849a82bd5df3cb187213068521b5873446f636eb58af377f78e4c50",
-  CleanupReceipt: "e432d1d53611f13c6c985c2126c082aacc917fc7458106d216b65b71112b819d"
+  RunReceipt: "c0a38268afbd37277ad0362a1c3addb4ab05b9aa206393a26af3c1bf6647dd58",
+  CleanupReceipt: "846f1af4b72cdc06c4f0b5a54b15d593f767c2496f28f0cad0ec20ff0e6a6032"
 });
 
 export async function loadProjectCodeReceiptSchema() {

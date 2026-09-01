@@ -10,8 +10,8 @@ export function defaultSessionTitleForAgent(agentName) {
   return `${normalizedName}_Session`;
 }
 
-export function defaultSessionTitleForWorkItem(workItemTitle, agentName = null) {
-  const normalizedTitle = String(workItemTitle ?? "").trim();
+export function defaultSessionTitleForTask(taskTitle, agentName = null) {
+  const normalizedTitle = String(taskTitle ?? "").trim();
   return normalizedTitle || defaultSessionTitleForAgent(agentName);
 }
 
