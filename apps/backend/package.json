@@ -9,7 +9,7 @@
     "mcp:collaboration": "node src/mcp/collaborationMcpServer.mjs",
     "start": "node src/server.mjs",
     "pretest": "npm run build:native",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "benchmark:scheduled-task-list": "node scripts/benchmark-scheduled-task-list.mjs",
     "benchmark:session-recovery": "node scripts/benchmark-session-recovery.mjs",
     "build:native": "cd native && cargo build --release && cp target/release/libcorptie_native.dylib corptie_native.node",

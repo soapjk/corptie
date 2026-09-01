@@ -70,18 +70,18 @@ export class ProjectCodeSearchApplicationService {
     const ownership = this.store.assertLogicalWorkSessionBinding(logicalSessionId);
     const logical = this.store.getLogicalSession(logicalSessionId);
     const session = ownership.sessionId ? this.store.getSession(ownership.sessionId) : null;
-    const workItem = this.store.getWorkItem(ownership.workItemId);
+    const task = this.store.getTask(ownership.taskId);
     const startupReceipt = this.startupReceipts.require(logicalSessionId);
-    if (!logical?.activeBinding || !session || !workItem
+    if (!logical?.activeBinding || !session || !task
       || startupReceipt.worktreeId !== logical.activeBinding.worktreeId
       || startupReceipt.canonicalWorktreePath !== logical.activeBinding.boundCwd
       || startupReceipt.objectiveId !== ownership.objectiveId
-      || startupReceipt.workItemId !== ownership.workItemId) {
+      || startupReceipt.taskId !== ownership.taskId) {
       throw contractError("STARTUP_BINDING_STALE", "Project-code request does not match the active Work Session route.");
     }
     const sessionContext = Object.freeze({
       objectiveId: ownership.objectiveId,
-      workItemId: ownership.workItemId,
+      taskId: ownership.taskId,
       logicalSessionId
     });
     const binding = Object.freeze({
@@ -94,7 +94,7 @@ export class ProjectCodeSearchApplicationService {
       workspaceResourceVersion: startupReceipt.workspaceResourceVersion,
       resourceVersion: startupReceipt.resourceVersion
     });
-    return Object.freeze({ logical, session, workItem, startupReceipt, sessionContext, binding });
+    return Object.freeze({ logical, session, task, startupReceipt, sessionContext, binding });
   }
 
   async #loadSnapshot(receiptId, context, signal) {
@@ -124,7 +124,7 @@ export class ProjectCodeSearchApplicationService {
       receiptType,
       logicalSessionId: context.sessionContext.logicalSessionId,
       objectiveId: context.sessionContext.objectiveId,
-      workItemId: context.sessionContext.workItemId,
+      taskId: context.sessionContext.taskId,
       repositoryId: receipt.repositoryId ?? context.startupReceipt.repositoryId,
       worktreeId: receipt.worktreeId ?? context.startupReceipt.worktreeId,
       sourceFingerprint: receipt.sourceFingerprint,

@@ -1,9 +1,7 @@
 import Foundation
 import CryptoKit
 
-// 控制台数据模型（15 Phase 5 净新增）。
-// 独立于现有 Models.swift 巨石，对齐后端 entityHttpApi 返回的 snake_case JSON
-// （Objective/WorkItem 字段名，见后端 corptieStore 的 objectives / work_items 表）。
+// 统一控制台数据模型，对齐后端 entityHttpApi 的 canonical camelCase DTO。
 
 struct Objective: Identifiable, Codable, Hashable {
     let id: String
@@ -30,84 +28,78 @@ struct GitRepository: Identifiable, Codable, Hashable {
     var lastValidatedAt: String?
 }
 
-struct WorkItem: Identifiable, Codable, Hashable {
+struct CorptieTask: Identifiable, Codable, Hashable {
     let id: String
     var objectiveId: String
     var title: String
     var description: String
+    var goal: String = ""
     var acceptanceCriteria: String
+    var verificationCriteria: String = ""
     var priority: String
-    var status: String
+    var lifecycleState: String
     var mainWorkspaceId: String?
     var mainAgentId: String?
     var currentSessionId: String?
     var executionStatus: String?
-    var acceptanceAssessment: WorkItemAcceptanceAssessment?
-    var completionSuggestion: WorkItemCompletionSuggestion?
-    var completionSource: WorkItemCompletionSource? = nil
-    var creationOrigin: WorkItemCreationOrigin? = nil
+    var acceptanceAssessment: CorptieTaskAcceptanceAssessment?
+    var completionSuggestion: CorptieTaskCompletionSuggestion?
+    var completionSource: CorptieTaskCompletionSource? = nil
+    var creationOrigin: CorptieTaskCreationOrigin? = nil
     var resourceVersion: Int = 1
+    var currentSnapshotId: String? = nil
+    var revision: Int = 1
     var createdAt: String
     var updatedAt: String
-
-    private enum CodingKeys: String, CodingKey {
-        case id, objectiveId, title, description, acceptanceCriteria, priority, status
-        case mainWorkspaceId, mainAgentId, currentSessionId, executionStatus
-        case acceptanceAssessment, completionSuggestion, completionSource, creationOrigin
-        case resourceVersion
-        case createdAt, updatedAt
-    }
 }
 
-extension WorkItem {
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        objectiveId = try container.decode(String.self, forKey: .objectiveId)
-        title = try container.decode(String.self, forKey: .title)
-        description = try container.decode(String.self, forKey: .description)
-        // Old databases contain NULL here. Treat absence, NULL, and a legacy
-        // non-string value as an empty criterion instead of rejecting the
-        // entire state snapshot.
-        acceptanceCriteria = (try? container.decodeIfPresent(String.self, forKey: .acceptanceCriteria)) ?? nil ?? ""
-        priority = try container.decode(String.self, forKey: .priority)
-        status = try container.decode(String.self, forKey: .status)
-        mainWorkspaceId = try container.decodeIfPresent(String.self, forKey: .mainWorkspaceId)
-        mainAgentId = try container.decodeIfPresent(String.self, forKey: .mainAgentId)
-        currentSessionId = try container.decodeIfPresent(String.self, forKey: .currentSessionId)
-        executionStatus = try container.decodeIfPresent(String.self, forKey: .executionStatus)
-        // A pre-contract collaboration object used this field for unrelated
-        // metadata. Drop only that invalid optional field; keep the WorkItem.
-        acceptanceAssessment = (try? container.decodeIfPresent(WorkItemAcceptanceAssessment.self, forKey: .acceptanceAssessment)) ?? nil
-        completionSuggestion = (try? container.decodeIfPresent(WorkItemCompletionSuggestion.self, forKey: .completionSuggestion)) ?? nil
-        completionSource = (try? container.decodeIfPresent(WorkItemCompletionSource.self, forKey: .completionSource)) ?? nil
-        creationOrigin = (try? container.decodeIfPresent(WorkItemCreationOrigin.self, forKey: .creationOrigin)) ?? nil
-        resourceVersion = try container.decodeIfPresent(Int.self, forKey: .resourceVersion) ?? 1
-        createdAt = try container.decode(String.self, forKey: .createdAt)
-        updatedAt = try container.decode(String.self, forKey: .updatedAt)
-    }
+struct CorptieTaskSnapshot: Identifiable, Codable, Hashable {
+    let id: String
+    let taskId: String
+    let version: Int
+    let title: String
+    let description: String
+    let goal: String
+    let acceptanceCriteria: String
+    let verificationCriteria: String
+    let acceptanceAssessment: CorptieTaskAcceptanceAssessment?
+    let completionEvidence: [CorptieTaskAcceptanceEvidence]
+    let executionSummary: String
+    let sourceMessageId: String?
+    let createdBySessionId: String
+    let contentHash: String
+    let createdAt: String
 }
 
-struct WorkItemCreationOrigin: Codable, Hashable {
-    let workItemId: String
+struct CorptieTaskSnapshotListEnvelope: Codable {
+    let snapshots: [CorptieTaskSnapshot]
+}
+
+struct CorptieTaskRevisionEnvelope: Codable {
+    let task: CorptieTask
+    let snapshot: CorptieTaskSnapshot
+}
+
+struct CorptieTaskCreationOrigin: Codable, Hashable {
+    let taskId: String
     let originType: String
     let creatorSessionId: String?
-    let creationContextWorkItemId: String?
+    let creationContextTaskId: String?
     let creationContextMessageId: String?
     let operationId: String?
     let createdAt: String
 }
 
-struct WorkItemCompletionSource: Codable, Hashable {
+struct CorptieTaskCompletionSource: Codable, Hashable {
     let sourceType: String
     let operationId: String?
     let completedAt: String?
 }
 
-struct WorkItemCompletionIntentReceipt: Codable, Hashable {
+struct CorptieTaskCompletionIntentReceipt: Codable, Hashable {
     let receiptId: String
     let intentToken: String
-    let workItemId: String
+    let taskId: String
     let objectiveId: String
     let interactionId: String
     let uiSurface: String
@@ -116,9 +108,9 @@ struct WorkItemCompletionIntentReceipt: Codable, Hashable {
     let purpose: String
 }
 
-struct WorkItemCompletionOperation: Codable, Hashable {
+struct CorptieTaskCompletionOperation: Codable, Hashable {
     let operationId: String
-    let workItemId: String
+    let taskId: String
     let objectiveId: String
     let result: String
     let sourceType: String
@@ -128,36 +120,36 @@ struct WorkItemCompletionOperation: Codable, Hashable {
     let createdAt: String
 }
 
-struct WorkItemCompletionEnvelope: Codable {
-    let workItem: WorkItem
-    let operation: WorkItemCompletionOperation
+struct CorptieTaskCompletionEnvelope: Codable {
+    let task: CorptieTask
+    let operation: CorptieTaskCompletionOperation
     let idempotentReplay: Bool
 }
 
 /// Immutable payload captured at the user's click. Background retry owns this
 /// value and never re-derives a target from navigation or current selection.
-struct WorkItemCompletionSubmission: Equatable {
-    let workItemId: String
+struct CorptieTaskCompletionSubmission: Equatable {
+    let taskId: String
     let objectiveId: String
     let displayedTitle: String
-    let receipt: WorkItemCompletionIntentReceipt
+    let receipt: CorptieTaskCompletionIntentReceipt
     let requestId: String
     let idempotencyKey: String
 
     static func freeze(
-        workItem: WorkItem,
-        receipt: WorkItemCompletionIntentReceipt,
+        task: CorptieTask,
+        receipt: CorptieTaskCompletionIntentReceipt,
         requestId: String,
         idempotencyKey: String
-    ) -> WorkItemCompletionSubmission? {
-        guard receipt.workItemId == workItem.id,
-              receipt.objectiveId == workItem.objectiveId,
+    ) -> CorptieTaskCompletionSubmission? {
+        guard receipt.taskId == task.id,
+              receipt.objectiveId == task.objectiveId,
               !requestId.isEmpty,
               !idempotencyKey.isEmpty else { return nil }
-        return WorkItemCompletionSubmission(
-            workItemId: workItem.id,
-            objectiveId: workItem.objectiveId,
-            displayedTitle: workItem.title,
+        return CorptieTaskCompletionSubmission(
+            taskId: task.id,
+            objectiveId: task.objectiveId,
+            displayedTitle: task.title,
             receipt: receipt,
             requestId: requestId,
             idempotencyKey: idempotencyKey
@@ -165,40 +157,40 @@ struct WorkItemCompletionSubmission: Equatable {
     }
 }
 
-struct WorkItemAcceptanceEvidence: Codable, Hashable {
+struct CorptieTaskAcceptanceEvidence: Codable, Hashable {
     let summary: String
     let reference: String
 }
 
-struct WorkItemAcceptanceResult: Codable, Hashable {
+struct CorptieTaskAcceptanceResult: Codable, Hashable {
     let criterion: String
     let verdict: String
-    let evidence: [WorkItemAcceptanceEvidence]
+    let evidence: [CorptieTaskAcceptanceEvidence]
 }
 
-struct WorkItemAcceptanceAssessment: Codable, Hashable {
+struct CorptieTaskAcceptanceAssessment: Codable, Hashable {
     let status: String
     let criteriaSnapshot: String
     let sourceSessionId: String
     let assessedAt: String
-    let results: [WorkItemAcceptanceResult]
+    let results: [CorptieTaskAcceptanceResult]
 }
 
-struct WorkItemCompletionSuggestion: Codable, Hashable {
+struct CorptieTaskCompletionSuggestion: Codable, Hashable {
     let recommended: Bool
     let sourceSessionId: String
     let assessedAt: String
     let criteriaSnapshot: String
-    let results: [WorkItemAcceptanceResult]
+    let results: [CorptieTaskAcceptanceResult]
 }
 
-struct WorkItemRetiredWorkspace: Codable, Hashable {
+struct CorptieTaskRetiredWorkspace: Codable, Hashable {
     let worktreeId: String
     let path: String
     let retiredAt: String
 }
 
-struct WorkItemWorktreeStatus: Decodable, Equatable {
+struct CorptieTaskWorktreeStatus: Decodable, Equatable {
     let status: String
     let sessionId: String?
     let repositoryId: String?
@@ -206,10 +198,10 @@ struct WorkItemWorktreeStatus: Decodable, Equatable {
     let canReclaim: Bool
     let blocker: String?
     let detail: String?
-    let retiredWorkspace: WorkItemRetiredWorkspace?
+    let retiredWorkspace: CorptieTaskRetiredWorkspace?
 }
 
-struct WorkItemDeletionRisk: Codable, Equatable, Identifiable {
+struct CorptieTaskDeletionRisk: Codable, Equatable, Identifiable {
     var id: String { code }
     let code: String
     let message: String
@@ -217,7 +209,7 @@ struct WorkItemDeletionRisk: Codable, Equatable, Identifiable {
     let commitCount: Int?
 }
 
-struct WorkItemDeletionWorktree: Codable, Equatable {
+struct CorptieTaskDeletionWorktree: Codable, Equatable {
     let worktreeId: String
     let path: String
     let branchName: String?
@@ -227,28 +219,28 @@ struct WorkItemDeletionWorktree: Codable, Equatable {
     let aheadOfMain: Int
 }
 
-struct WorkItemDeletionPlan: Codable, Equatable {
-    let workItemId: String
+struct CorptieTaskDeletionPlan: Codable, Equatable {
+    let taskId: String
     let status: String
     let retryable: Bool
     let associatedSessionCount: Int
-    let worktree: WorkItemDeletionWorktree?
-    let risks: [WorkItemDeletionRisk]
-    let blockers: [WorkItemDeletionRisk]
+    let worktree: CorptieTaskDeletionWorktree?
+    let risks: [CorptieTaskDeletionRisk]
+    let blockers: [CorptieTaskDeletionRisk]
 }
 
-struct WorkItemDeletionResult: Decodable {
+struct CorptieTaskDeletionResult: Decodable {
     let ok: Bool
-    let workItemId: String
+    let taskId: String
 }
 
-// 后端响应 envelope：GET /objectives → { objectives: [...] }；GET /work-items → { workItems: [...] }
+// 后端响应 envelope：GET /objectives → { objectives: [...] }；GET /tasks → { tasks: [...] }
 struct ObjectiveListEnvelope: Codable {
     let objectives: [Objective]
 }
 
-struct WorkItemListEnvelope: Codable {
-    let workItems: [WorkItem]
+struct CorptieTaskListEnvelope: Codable {
+    let tasks: [CorptieTask]
 }
 
 // 后端响应 envelope：GET /repositories → { repositories: [...] }
@@ -263,7 +255,7 @@ struct RepositoryDetectEnvelope: Codable {
 
 // 看板列（03 §14.3 混合看板：待办 / 进行中 / 评审 / 完成）
 // TODO(接 L10n)：列标题与状态文案后续接入 AppLanguage，第一版硬编码中文。
-enum WorkItemColumn: String, CaseIterable, Identifiable {
+enum CorptieTaskColumn: String, CaseIterable, Identifiable {
     case todo
     case inProgress
     case done
@@ -287,7 +279,7 @@ enum WorkItemColumn: String, CaseIterable, Identifiable {
     }
 
     // 后端 status 字符串 → 看板列（容错：未知值归「待开始」）
-    static func column(for status: String) -> WorkItemColumn {
+    static func column(for status: String) -> CorptieTaskColumn {
         switch status {
         case "todo", "pending", "ready": .todo
         case "in_progress", "doing", "running": .inProgress
@@ -297,15 +289,15 @@ enum WorkItemColumn: String, CaseIterable, Identifiable {
     }
 }
 
-// WorkItem 名下的 Session 轻量摘要（模块 F 下钻列表；避免 TaskSession 复杂解码）
-struct WorkItemSessionSummary: Identifiable, Codable, Hashable {
+// CorptieTask 名下的 Session 轻量摘要（模块 F 下钻列表；避免 TaskSession 复杂解码）
+struct CorptieTaskSessionSummary: Identifiable, Codable, Hashable {
     let id: String
     let title: String
     let status: String
     let updatedAt: String
 }
 
-enum WorkItemExecutionPresentation {
+enum CorptieTaskExecutionPresentation {
     @MainActor
     static func label(executionStatus: String?, sessionStatus: String?) -> String {
         switch sessionStatus ?? executionStatus {
@@ -326,7 +318,7 @@ struct StartupBindingReceipt: Codable, Hashable {
     let status: String
     let startupOperationId: String
     let objectiveId: String
-    let workItemId: String
+    let taskId: String
     let logicalSessionId: String
     let repositoryId: String
     let worktreeId: String
@@ -347,7 +339,7 @@ struct StartupBindingReceipt: Codable, Hashable {
     let receiptHash: String
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case schemaVersion, status, startupOperationId, objectiveId, workItemId, logicalSessionId
+        case schemaVersion, status, startupOperationId, objectiveId, taskId, logicalSessionId
         case repositoryId, worktreeId, canonicalWorktreePath, headIdentity, providerBindingId
         case bindingGeneration, sourceCommitOid, sourceTreeOid, baseRef, repositoryInventoryVersion
         case workspaceResourceVersion, resourceVersion, providerContextHash, phaseTimestamps
@@ -367,7 +359,7 @@ struct StartupBindingReceipt: Codable, Hashable {
         }
         startupOperationId = try container.decode(String.self, forKey: .startupOperationId)
         objectiveId = try container.decode(String.self, forKey: .objectiveId)
-        workItemId = try container.decode(String.self, forKey: .workItemId)
+        taskId = try container.decode(String.self, forKey: .taskId)
         logicalSessionId = try container.decode(String.self, forKey: .logicalSessionId)
         repositoryId = try container.decode(String.self, forKey: .repositoryId)
         worktreeId = try container.decode(String.self, forKey: .worktreeId)
@@ -394,7 +386,7 @@ struct StartupBindingReceipt: Codable, Hashable {
         receiptHash = try container.decode(String.self, forKey: .receiptHash)
         guard error == nil, bindingGeneration > 0, workspaceResourceVersion > 0, resourceVersion > 0,
               startupOperationId.hasPrefix("startup:"), objectiveId.hasPrefix("objective:"),
-              workItemId.hasPrefix("work_item:"), repositoryId.hasPrefix("repository:"),
+              taskId.hasPrefix("task:"), repositoryId.hasPrefix("repository:"),
               worktreeId.hasPrefix("worktree:"), providerBindingId.hasPrefix("startup-binding:"),
               logicalSessionId.hasPrefix("session:") || logicalSessionId.hasPrefix("logical:"),
               canonicalWorktreePath.hasPrefix("/"),
@@ -415,7 +407,7 @@ struct StartupBindingReceipt: Codable, Hashable {
         try container.encode(status, forKey: .status)
         try container.encode(startupOperationId, forKey: .startupOperationId)
         try container.encode(objectiveId, forKey: .objectiveId)
-        try container.encode(workItemId, forKey: .workItemId)
+        try container.encode(taskId, forKey: .taskId)
         try container.encode(logicalSessionId, forKey: .logicalSessionId)
         try container.encode(repositoryId, forKey: .repositoryId)
         try container.encode(worktreeId, forKey: .worktreeId)
@@ -553,13 +545,13 @@ struct StartupCompensation: Codable, Hashable {
     }
 }
 
-struct WorkItemStartupReady: Codable {
+struct CorptieTaskStartupReady: Codable {
     let status: String
     let idempotentReplay: Bool
     let receipt: StartupBindingReceipt
 
     init(from decoder: Decoder) throws {
-        try rejectUnknownStartupKeys(decoder, allowed: ["status", "idempotentReplay", "receipt"], context: "WorkItemStartupReady")
+        try rejectUnknownStartupKeys(decoder, allowed: ["status", "idempotentReplay", "receipt"], context: "CorptieTaskStartupReady")
         let container = try decoder.container(keyedBy: CodingKeys.self)
         status = try container.decode(String.self, forKey: .status)
         guard status == "ready" else {
@@ -594,9 +586,9 @@ private func rejectUnknownStartupKeys(
     }
 }
 
-// 后端响应 envelope：GET /work-items/:id/sessions → { sessions: [...] }
-struct WorkItemSessionListEnvelope: Codable {
-    let sessions: [WorkItemSessionSummary]
+// 后端响应 envelope：GET /tasks/:id/sessions → { sessions: [...] }
+struct CorptieTaskSessionListEnvelope: Codable {
+    let sessions: [CorptieTaskSessionSummary]
 }
 
 // 后端响应 envelope：POST /sessions / POST /agents/:id/sessions → { session: TaskSession }
@@ -606,11 +598,11 @@ struct SessionCreateEnvelope: Codable {
 
 struct WorkSessionCreateEnvelope: Codable {
     let session: TaskSession
-    let start: WorkItemStartupReady
+    let start: CorptieTaskStartupReady
 }
 
-struct WorkItemRestoreEnvelope: Decodable {
-    let workItem: WorkItem
+struct CorptieTaskRestoreEnvelope: Decodable {
+    let task: CorptieTask
 }
 
 // 后端错误响应：关联校验失败时同时返回稳定 code、field 与 expected。
@@ -619,7 +611,7 @@ struct EntityErrorEnvelope: Codable {
     let code: String?
     let field: String?
     let expected: String?
-    let deletion: WorkItemDeletionPlan?
+    let deletion: CorptieTaskDeletionPlan?
 
     var displayMessage: String {
         guard let field, let expected else { return error }
@@ -654,16 +646,16 @@ struct EntitySessionLaunchResult {
     }
 }
 
-struct EntityWorkItemRestoreResult {
-    let workItem: WorkItem?
+struct EntityCorptieTaskRestoreResult {
+    let task: CorptieTask?
     let error: EntityLaunchError?
 
-    static func success(_ workItem: WorkItem) -> Self {
-        Self(workItem: workItem, error: nil)
+    static func success(_ task: CorptieTask) -> Self {
+        Self(task: task, error: nil)
     }
 
     static func failure(message: String, code: String? = nil) -> Self {
-        Self(workItem: nil, error: EntityLaunchError(message: message, code: code))
+        Self(task: nil, error: EntityLaunchError(message: message, code: code))
     }
 }
 
@@ -672,7 +664,7 @@ struct MemoryItem: Identifiable, Codable, Hashable {
     let id: String
     let ownerType: String
     let ownerId: String
-    let workItemId: String?
+    let taskId: String?
     let kind: String
     let content: String
     let sourceType: String
@@ -696,7 +688,7 @@ struct MemoryItem: Identifiable, Codable, Hashable {
     let updatedAt: String?
 }
 
-enum WorkItemMemoryPresentationPolicy {
+enum CorptieTaskMemoryPresentationPolicy {
     static func shouldLoad(currentSessionId: String?) -> Bool {
         guard let currentSessionId else { return false }
         return !currentSessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

@@ -6,9 +6,9 @@ import XCTest
 
 final class WorktreeManagementNavigationTests: XCTestCase {
     func testWorktreeTabIsAnIndependentMainNavigationDestination() {
-        XCTAssertEqual(AppTab.allCases, [.console, .sessions, .automations, .worktrees, .sessionDSH, .agents])
+        XCTAssertEqual(AppTab.allCases, [.console, .automations, .worktrees, .sessionDSH, .agents])
         XCTAssertEqual(AppTab.worktrees.systemImage, "arrow.triangle.branch")
-        XCTAssertEqual(AppTab.worktrees.index, 3)
+        XCTAssertEqual(AppTab.worktrees.index, 2)
     }
 
     func testWorktreeAutomaticLoadWaitsForBackendAndSelectedTab() {
@@ -241,14 +241,14 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(view.contains("worktree.cleanup.confirmation.confirm"))
         XCTAssertTrue(view.contains("WorktreeCleanupConfirmationLayout.preferredHeight(for: worktrees.count)"))
         XCTAssertTrue(view.contains(".scrollIndicators(.automatic)"))
-        XCTAssertFalse(view.contains("Only these Worktrees, whose branches are merged into main and have no unfinished WorkItem or active Session association, will be removed with their local branches:\\n%@"))
+        XCTAssertFalse(view.contains("Only these Worktrees, whose branches are merged into main and have no unfinished CorptieTask or active Session association, will be removed with their local branches:\\n%@"))
         XCTAssertTrue(view.contains("HStack(spacing: 8)"))
         XCTAssertTrue(view.contains("Merge All into main"))
         XCTAssertTrue(view.contains("Clean Up Orphaned Worktrees"))
         XCTAssertFalse(view.contains("Blocked from cleanup (%d)"))
         XCTAssertFalse(view.contains("worktree.cleanup.blocker.\\(worktree.worktreeId)"))
         XCTAssertFalse(view.contains("Generate a reviewable local-only integration plan before anything is changed."))
-        XCTAssertFalse(view.contains("Remove merged Worktrees that have no unfinished WorkItem or active Session association."))
+        XCTAssertFalse(view.contains("Remove merged Worktrees that have no unfinished CorptieTask or active Session association."))
         XCTAssertTrue(view.contains("WorktreeCleanupResultView"))
         XCTAssertTrue(view.contains("Removed: %d   Skipped: %d   Failed: %d"))
         XCTAssertTrue(view.contains("worktree.cleanup.progress"))
@@ -476,8 +476,8 @@ final class WorktreeManagementNavigationTests: XCTestCase {
           "planFingerprint":"abc","error":"Resolve conflicts","createdAt":"2026-08-19T00:00:00Z",
           "updatedAt":"2026-08-19T00:01:00Z","confirmedAt":"2026-08-19T00:00:30Z","completedAt":null,
           "currentWorktreeId":"wt:feature","progress":{"completed":2,"total":3,"fraction":0.666},
-          "conflictResolution":{"status":"running","worktreeId":"wt:feature","conflictKey":"conflict:1","workspace":{"worktreeId":"wt:integration","path":"/integration","branchName":"integration/job-1","headOid":"main:1"},"workItemId":"work_item:conflict","sessionId":"session:conflict","agentId":"agent:one","agentName":"Conflict Agent"},
-          "conflictAutomation":{"status":"blocked","scopeWorktreeIds":["wt:feature","wt:next"],"completedWorktreeIds":[],"workItemId":"work_item:plan-conflicts","sessionId":"session:plan-conflicts","sessionName":"Resolve all plan conflicts","agentId":"agent:one","agentName":"Conflict Agent","workspaceId":"wt:integration","workspacePath":"/integration","currentWorktreeId":"wt:feature","blockedWorktreeId":"wt:feature","conflictFiles":["shared.swift"],"failureCode":"CONFLICT_AGENT_STOPPED","failureReason":"Agent stopped","startedAt":"2026-08-19T00:00:45Z","completedAt":null},
+          "conflictResolution":{"status":"running","worktreeId":"wt:feature","conflictKey":"conflict:1","workspace":{"worktreeId":"wt:integration","path":"/integration","branchName":"integration/job-1","headOid":"main:1"},"taskId":"task:conflict","sessionId":"session:conflict","agentId":"agent:one","agentName":"Conflict Agent"},
+          "conflictAutomation":{"status":"blocked","scopeWorktreeIds":["wt:feature","wt:next"],"completedWorktreeIds":[],"taskId":"task:plan-conflicts","sessionId":"session:plan-conflicts","sessionName":"Resolve all plan conflicts","agentId":"agent:one","agentName":"Conflict Agent","workspaceId":"wt:integration","workspacePath":"/integration","currentWorktreeId":"wt:feature","blockedWorktreeId":"wt:feature","conflictFiles":["shared.swift"],"failureCode":"CONFLICT_AGENT_STOPPED","failureReason":"Agent stopped","startedAt":"2026-08-19T00:00:45Z","completedAt":null},
           "audit":[{"at":"2026-08-19T00:01:00Z","event":"merge_paused","worktreeId":"wt:feature","code":"MERGE_CONFLICT"}],
           "plan":{"repositoryId":"repository:1","mainWorktreeId":"wt:main","mainPath":"/repo",
             "mainHeadBefore":"main:1","inventoryVersion":"inventory:1","mergeOrder":["wt:feature"],
@@ -501,7 +501,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertEqual(job.conflictResolution?.workspace.path, "/integration")
         XCTAssertEqual(job.currentConflictResolution?.sessionId, "session:conflict")
         XCTAssertEqual(job.conflictAutomation?.scopeWorktreeIds, ["wt:feature", "wt:next"])
-        XCTAssertEqual(job.conflictAutomation?.workItemId, "work_item:plan-conflicts")
+        XCTAssertEqual(job.conflictAutomation?.taskId, "task:plan-conflicts")
         XCTAssertEqual(job.conflictAutomation?.sessionId, "session:plan-conflicts")
         XCTAssertEqual(job.conflictAutomation?.workspacePath, "/integration")
         XCTAssertEqual(job.conflictAutomation?.blockedWorktreeId, "wt:feature")

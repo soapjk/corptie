@@ -68,7 +68,7 @@ async function fixture(options = {}) {
       };
     },
     enqueue: options.enqueue ?? ((work) => {
-      const result = store.enqueueAgentWorkItemWithResult(work);
+      const result = store.enqueueAgentTaskWithResult(work);
       if (result.inserted) queued.push(work);
       return result;
     }),
@@ -267,11 +267,11 @@ test("expiration is persisted, transitions before trigger evaluation, and permit
 test("one-time and interval due runs enqueue stable work without interrupting a busy Session", async () => {
   const f = await fixture();
   try {
-    f.store.enqueueAgentWorkItem({
-      workItemId: "busy", agentId: "agent:owner", sessionId: "session:stable",
+    f.store.enqueueAgentTask({
+      taskId: "busy", agentId: "agent:owner", sessionId: "session:stable",
       kind: "user", priority: 100, text: "busy", source: {}, createdAt: "2026-08-22T11:59:00Z"
     });
-    f.store.claimAgentWorkItem("busy");
+    f.store.claimAgentTask("busy");
     const once = f.service.create({
       logicalSessionId: "logical:stable", message: "wake once", scheduleType: "once",
       runAt: "2026-08-22T12:00:01Z", timezone: "UTC"
@@ -282,8 +282,8 @@ test("one-time and interval due runs enqueue stable work without interrupting a 
     assert.throws(() => f.service.cancel(once.taskId, f.actor),
       (error) => error.code === "TASK_NOT_MUTABLE");
     assert.equal(f.queued.length, 1);
-    assert.equal(f.store.getAgentWorkItem(f.queued[0].workItemId).status, "queued");
-    assert.equal(f.store.getRunningAgentWorkItemForSession("session:stable").workItemId, "busy");
+    assert.equal(f.store.getAgentTask(f.queued[0].taskId).status, "queued");
+    assert.equal(f.store.getRunningAgentTaskForSession("session:stable").taskId, "busy");
 
     const interval = f.service.create({
       logicalSessionId: "logical:stable", message: "wake interval", scheduleType: "interval",
@@ -377,7 +377,7 @@ test("missed schedules coalesce once, survive restart, and a lost receipt cannot
   const f = await fixture({ missedGraceMs: 500 });
   let throwsAfterInsert = true;
   f.service.enqueue = (work) => {
-    const result = f.store.enqueueAgentWorkItemWithResult(work);
+    const result = f.store.enqueueAgentTaskWithResult(work);
     if (throwsAfterInsert) {
       throwsAfterInsert = false;
       const error = new Error("receipt lost");
@@ -396,7 +396,7 @@ test("missed schedules coalesce once, survive restart, and a lost receipt cannot
     assert.equal(f.store.getScheduledSessionTask(task.taskId).lastRunStatus, "retry_wait");
     f.advance(2_000);
     await f.service.tick();
-    const work = f.store.listAgentWorkItemsForSession("session:stable")
+    const work = f.store.listAgentTasksForSession("session:stable")
       .filter((item) => item.source.type === "scheduled_session_task");
     assert.equal(work.length, 1);
     assert.match(work[0].source.deliveryId, /^scheduled_delivery:/);
@@ -479,7 +479,7 @@ test("concurrent dispatch after a lease expires commits one delivery and records
   let committed = 0;
   const enqueue = (work) => {
     attempts += 1;
-    const result = f.store.enqueueAgentWorkItemWithResult(work);
+    const result = f.store.enqueueAgentTaskWithResult(work);
     if (result.inserted) committed += 1;
     return result;
   };
@@ -512,7 +512,7 @@ test("concurrent dispatch after a lease expires commits one delivery and records
 
     assert.equal(attempts, 2);
     assert.equal(committed, 1);
-    const work = f.store.listAgentWorkItemsForSession("session:stable")
+    const work = f.store.listAgentTasksForSession("session:stable")
       .filter((item) => item.source.scheduledTaskId === task.taskId);
     assert.equal(work.length, 1);
     assert.equal(new Set(work.map((item) => item.source.deliveryId)).size, 1);
@@ -544,17 +544,17 @@ test("identical message actions deduplicate within one run while later interval 
     }, f.actor);
     f.advance(1_000);
     await f.service.tick();
-    assert.equal(f.store.listAgentWorkItemsForSession("session:stable")
+    assert.equal(f.store.listAgentTasksForSession("session:stable")
       .filter((item) => item.source.scheduledTaskId === duplicate.taskId).length, 1);
     const duplicateRun = f.store.listScheduledSessionRuns(duplicate.taskId)[0];
     assert.deepEqual(duplicateRun.actionResults.map((result) => result.status), ["queued", "deduplicated"]);
 
-    const firstCycle = f.store.listAgentWorkItemsForSession("session:stable")
+    const firstCycle = f.store.listAgentTasksForSession("session:stable")
       .find((item) => item.source.scheduledTaskId === interval.taskId);
     assert.ok(firstCycle);
     f.advance(10_000);
     await f.service.tick();
-    const intervalWork = f.store.listAgentWorkItemsForSession("session:stable")
+    const intervalWork = f.store.listAgentTasksForSession("session:stable")
       .filter((item) => item.source.scheduledTaskId === interval.taskId);
     assert.equal(intervalWork.length, 2);
     assert.notEqual(intervalWork[0].source.deliveryId, intervalWork[1].source.deliveryId);
@@ -705,7 +705,7 @@ test("condition tasks poll scripts until exit zero, then wake exactly once with 
       },
       enqueue: (work) => {
         f.queued.push(work);
-        return reopened.enqueueAgentWorkItem(work);
+        return reopened.enqueueAgentTask(work);
       },
       evaluateCondition: async () => observations.shift()
     });

@@ -32,7 +32,7 @@ import { fixture as createRunFixture } from "./runIsolationTestHelpers.mjs";
 
 const ROOT = "/Volumes/T9/.corptie/test-tmp";
 const OBJECTIVE_ID = "objective:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const WORK_ITEM_ID = "work_item:cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+const TASK_ID = "task:cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const AGENT_ID = "agent:dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 test("production HTTP composition runs bounded S1 and Search S6 through authoritative services", async (t) => {
@@ -68,12 +68,12 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
   const diagnosticOwnership = store.assertLogicalWorkSessionBinding(startup.receipt.logicalSessionId);
   const diagnosticBinding = store.getLogicalSession(startup.receipt.logicalSessionId).activeBinding;
   assert.equal(diagnosticOwnership.objectiveId, startup.receipt.objectiveId);
-  assert.equal(diagnosticOwnership.workItemId, startup.receipt.workItemId);
+  assert.equal(diagnosticOwnership.taskId, startup.receipt.taskId);
   assert.equal(diagnosticBinding.state, "active");
   assert.equal(diagnosticBinding.worktreeId, startup.receipt.worktreeId);
   assert.equal(diagnosticBinding.boundCwd, startup.receipt.canonicalWorktreePath);
   const initialized = await toolsets.service.initialize(source.directory, {
-    authenticatedSession: { logicalSessionId: startup.receipt.logicalSessionId, workItemId: startup.receipt.workItemId },
+    authenticatedSession: { logicalSessionId: startup.receipt.logicalSessionId, taskId: startup.receipt.taskId },
     idempotencyKey: "benchmark-production-toolset"
   });
   assert.equal(initialized.outcome, "passed");
@@ -84,7 +84,7 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
   try { resolvedPointer = projectToolsetValidationReceiptPointer(activeToolsetReceipt,
     activeToolsetReceipt.snapshotRef.sourceFingerprint, {
       logicalSessionId: startup.receipt.logicalSessionId, objectiveId: startup.receipt.objectiveId,
-      workItemId: startup.receipt.workItemId, repositoryId: startup.receipt.repositoryId,
+      taskId: startup.receipt.taskId, repositoryId: startup.receipt.repositoryId,
       worktreeId: startup.receipt.worktreeId
     }); } catch (error) { assert.fail(JSON.stringify(error.details)); }
   assert.ok(resolvedPointer);
@@ -280,10 +280,10 @@ async function establishWorkSession({ store, source }) {
     join(source.directory, ".git"), source.commitOid, now]);
   const objective = objectiveService.createObjective({ id: OBJECTIVE_ID, name: "Benchmark",
     contributorAgentIds: [agent.agentId], workspaceIds: [source.identity.repositoryId] });
-  const workItem = objectiveService.createWorkItem({ id: WORK_ITEM_ID, objectiveId: objective.id,
+  const task = objectiveService.createTask({ id: TASK_ID, objectiveId: objective.id,
     title: "Benchmark production", mainAgentId: agent.agentId, mainWorkspaceId: source.identity.repositoryId });
   const coordinator = new WorkSessionStartupCoordinator({ store, leaseOwner: "benchmark-test",
-    validateStart: async () => ({ workItem: store.getWorkItem(workItem.id), objective, agent, providerId: "test-provider" }),
+    validateStart: async () => ({ task: store.getTask(task.id), objective, agent, providerId: "test-provider" }),
     prepareWorktree: async ({ startupOperationId }) => ({ repositoryId: source.identity.repositoryId,
       worktreeId: source.identity.worktreeId, canonicalWorktreePath: source.directory,
       headIdentity: { kind: "branch", branch: "master" }, sourceCommitOid: source.commitOid,
@@ -293,7 +293,7 @@ async function establishWorkSession({ store, source }) {
     createSession: async ({ providerBindingId }) => {
       const session = store.createSession({ id: "session:benchmark", title: "Benchmark production",
         provider: "test-provider", agentId: agent.agentId, sessionKind: "worker",
-        objectiveId: objective.id, workItemId: workItem.id, cwd: source.directory });
+        objectiveId: objective.id, taskId: task.id, cwd: source.directory });
       store.createLogicalSessionRoute({ logicalSessionId: "logical:benchmark", legacySessionId: session.id,
         providerThreadId: "thread:benchmark", providerSessionId: "provider-session:benchmark",
         bindingId: providerBindingId, providerId: "test-provider", repositoryId: source.identity.repositoryId,
@@ -306,7 +306,7 @@ async function establishWorkSession({ store, source }) {
       acceptedAt: new Date().toISOString() }),
     inspectProviderBinding: async () => { throw Object.assign(new Error("not yet bound"), { code: "START_PROVIDER_BINDING_NOT_FOUND" }); },
     activateSession: async () => {}, compensateWorktree: async () => ({ removed: false }) });
-  return coordinator.start({ workItemId: workItem.id, requestedAgentId: agent.agentId,
+  return coordinator.start({ taskId: task.id, requestedAgentId: agent.agentId,
     providerId: "test-provider", idempotencyKey: "benchmark-startup", source: "test" });
 }
 

@@ -9,7 +9,7 @@ import {
   resolveSessionArchiveState
 } from "../src/domain/sessionArchivePolicy.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
-import { WorkItemCompletionService } from "../src/application/workItemCompletionService.mjs";
+import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
 
 test("the shared archive policy varies by Session kind", () => {
   assert.deepEqual(
@@ -19,9 +19,9 @@ test("the shared archive policy varies by Session kind", () => {
   assert.deepEqual(
     resolveSessionArchiveState(
       { sessionKind: "worker", archived: false },
-      { workItemStatus: "done" }
+      { taskStatus: "done" }
     ),
-    { archived: true, reason: "workItemCompleted" }
+    { archived: true, reason: "taskCompleted" }
   );
   assert.deepEqual(
     resolveSessionArchiveState({ sessionKind: "objectiveChat", archived: false }),
@@ -42,7 +42,7 @@ test("only Assistant Sessions allow manual archive operations", () => {
   }
 });
 
-test("Worker archive membership follows WorkItem completion and publishes live State changes", async () => {
+test("Worker archive membership follows Task completion and publishes live State changes", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-archive-policy-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -51,11 +51,11 @@ test("Worker archive membership follows WorkItem completion and publishes live S
   try {
     await store.initialize();
     store.createObjective({ id: "objective:one", name: "Objective" });
-    store.createWorkItem({
-      id: "work-item:one",
+    store.createTask({
+      id: "task:one",
       objectiveId: "objective:one",
       title: "Work item",
-      status: "in_progress"
+      lifecycleState: "in_progress"
     });
     store.upsertSession({
       id: "session:worker",
@@ -65,7 +65,7 @@ test("Worker archive membership follows WorkItem completion and publishes live S
       status: "complete",
       sessionKind: "worker",
       objectiveId: "objective:one",
-      workItemId: "work-item:one"
+      taskId: "task:one"
     });
     store.upsertSession({
       id: "session:assistant",
@@ -77,7 +77,7 @@ test("Worker archive membership follows WorkItem completion and publishes live S
     });
     const snapshot = () => ({
       sessions: store.listSessions({ archived: false }),
-      workItems: store.listWorkItems()
+      tasks: store.listTasks()
     });
     const sync = new StateSyncService({ store, snapshot });
 
@@ -93,29 +93,29 @@ test("Worker archive membership follows WorkItem completion and publishes live S
     );
 
     let revision = sync.snapshot().revision;
-    const completionService = new WorkItemCompletionService({ store });
-    const receipt = completionService.issueMacOSIntent("work-item:one", {
+    const completionService = new TaskCompletionService({ store });
+    const receipt = completionService.issueMacOSIntent("task:one", {
       requestId: "archive-completion-intent", interactionId: "archive-completion-click",
-      uiSurface: "work_item_completion_confirmation", displayedWorkItemId: "work-item:one",
-      displayedWorkItemTitle: "Work item", displayedAcceptanceStatus: "not_assessed"
+      uiSurface: "task_completion_confirmation", displayedTaskId: "task:one",
+      displayedTaskTitle: "Work item", displayedAcceptanceStatus: "not_assessed"
     }, { type: "user", id: "user:local-macos" });
-    completionService.completeFromMacOS("work-item:one", {
+    completionService.completeFromMacOS("task:one", {
       intentToken: receipt.intentToken, requestId: "archive-completion-intent",
       idempotencyKey: "archive-completion"
     });
     const completedChanges = sync.changesAfter(revision);
     assert.deepEqual(completedChanges.deletes.sessions, ["session:worker"]);
-    assert.equal(completedChanges.upserts.workItems[0].status, "done");
+    assert.equal(completedChanges.upserts.tasks[0].lifecycle_state, "done");
     assert.deepEqual(store.listSessions({ archived: false }), []);
     assert.deepEqual(
       store.listSessions({ archived: true })
         .filter((session) => session.sessionKind === "worker")
         .map(({ id, archived, archiveReason }) => ({ id, archived, archiveReason })),
-      [{ id: "session:worker", archived: true, archiveReason: "workItemCompleted" }]
+      [{ id: "session:worker", archived: true, archiveReason: "taskCompleted" }]
     );
 
     revision = completedChanges.revision;
-    store.updateWorkItem("work-item:one", { status: "in_progress" });
+    store.updateTask("task:one", { lifecycleState: "in_progress" });
     const reopenedChanges = sync.changesAfter(revision);
     assert.deepEqual(reopenedChanges.upserts.sessions.map((session) => session.id), ["session:worker"]);
     assert.equal(reopenedChanges.upserts.sessions[0].archived, false);

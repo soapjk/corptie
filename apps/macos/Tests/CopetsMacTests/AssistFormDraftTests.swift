@@ -11,7 +11,7 @@ final class AssistFormDraftTests: XCTestCase {
         )
         XCTAssertFalse(
             FormAssistOverwritePolicy.hasMeaningfulExistingContent(
-                formType: .workItem,
+                formType: .task,
                 values: ["title": "", "description": "", "priority": "medium"]
             )
         )
@@ -23,7 +23,7 @@ final class AssistFormDraftTests: XCTestCase {
         )
         XCTAssertTrue(
             FormAssistOverwritePolicy.hasMeaningfulExistingContent(
-                formType: .workItem,
+                formType: .task,
                 values: ["title": "", "description": "", "priority": "high"]
             )
         )
@@ -75,10 +75,10 @@ final class AssistFormDraftTests: XCTestCase {
         XCTAssertNil(objectiveDraft.fields["targetDate"])
     }
 
-    func testDecodesCompleteWorkItemDraft() throws {
+    func testDecodesCompleteCorptieTaskDraft() throws {
         let data = Data(#"""
         {
-          "formType": "workItem",
+          "formType": "task",
           "fields": {
             "title": "统一帮我写",
             "description": "一次填写所有字段。",
@@ -90,7 +90,7 @@ final class AssistFormDraftTests: XCTestCase {
         """#.utf8)
 
         let draft = try JSONDecoder().decode(AssistFormDraft.self, from: data)
-        XCTAssertEqual(draft.formType, AssistFormType.workItem.rawValue)
+        XCTAssertEqual(draft.formType, AssistFormType.task.rawValue)
         XCTAssertEqual(draft.fields["title"], "统一帮我写")
         XCTAssertEqual(draft.providerId, "test-provider")
     }

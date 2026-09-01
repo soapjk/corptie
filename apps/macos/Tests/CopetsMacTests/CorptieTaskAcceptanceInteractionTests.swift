@@ -1,26 +1,26 @@
 import Testing
 @testable import CorptieMac
 
-struct WorkItemAcceptanceInteractionTests {
-    @Test func completionRetrySkipsAnAlreadyCompletedWorkItem() {
+struct CorptieTaskAcceptanceInteractionTests {
+    @Test func completionRetrySkipsAnAlreadyCompletedCorptieTask() {
         for status in ["done", "complete", "completed"] {
-            #expect(WorkItemCompletionBackgroundDecision.resolve(status: status) == .alreadyCompleted)
+            #expect(CorptieTaskCompletionBackgroundDecision.resolve(status: status) == .alreadyCompleted)
         }
-        #expect(WorkItemCompletionBackgroundDecision.resolve(status: "in_progress") == .submit)
+        #expect(CorptieTaskCompletionBackgroundDecision.resolve(status: "in_progress") == .submit)
         for status in ["in_progress", "doing", "running"] {
-            #expect(WorkItemCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: status))
+            #expect(CorptieTaskCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: status))
         }
-        #expect(!WorkItemCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: "review"))
+        #expect(!CorptieTaskCompletionBackgroundDecision.requiresExplicitUserConfirmation(status: "review"))
     }
 
     @Test func statusOverrideUsesBackgroundSubmissionOnlyAfterTheRequiredConfirmation() {
-        #expect(WorkItemEditSubmissionPolicy.submitsInBackground(statusChanged: true))
-        #expect(!WorkItemEditSubmissionPolicy.submitsInBackground(statusChanged: false))
+        #expect(CorptieTaskEditSubmissionPolicy.submitsInBackground(statusChanged: true))
+        #expect(!CorptieTaskEditSubmissionPolicy.submitsInBackground(statusChanged: false))
     }
 
     @Test func passedAssessmentPresentsItsConclusionDetails() {
         let result = acceptanceResult(verdict: "passed")
-        let presentation = WorkItemAutomaticAcceptancePresentation.resolve(
+        let presentation = CorptieTaskAutomaticAcceptancePresentation.resolve(
             assessment: acceptanceAssessment(status: "passed", results: [result]),
             suggestion: nil
         )
@@ -31,7 +31,7 @@ struct WorkItemAcceptanceInteractionTests {
 
     @Test func failedAssessmentPresentsItsConclusionDetails() {
         let result = acceptanceResult(verdict: "failed")
-        let presentation = WorkItemAutomaticAcceptancePresentation.resolve(
+        let presentation = CorptieTaskAutomaticAcceptancePresentation.resolve(
             assessment: acceptanceAssessment(status: "not_proven", results: [result]),
             suggestion: nil
         )
@@ -41,7 +41,7 @@ struct WorkItemAcceptanceInteractionTests {
     }
 
     @Test func missingAssessmentPresentsExplicitEmptyStateData() {
-        let presentation = WorkItemAutomaticAcceptancePresentation.resolve(
+        let presentation = CorptieTaskAutomaticAcceptancePresentation.resolve(
             assessment: nil,
             suggestion: nil
         )
@@ -52,9 +52,9 @@ struct WorkItemAcceptanceInteractionTests {
 
     @Test func acceptanceReviewIsAvailableOnlyForAPassingSuggestion() {
         let result = acceptanceResult(verdict: "passed")
-        let item = makeAcceptanceWorkItem(
+        let item = makeAcceptanceCorptieTask(
             assessment: acceptanceAssessment(status: "passed", results: [result]),
-            suggestion: WorkItemCompletionSuggestion(
+            suggestion: CorptieTaskCompletionSuggestion(
                 recommended: true,
                 sourceSessionId: "session:acceptance",
                 assessedAt: "2026-08-20T00:00:00Z",
@@ -62,21 +62,21 @@ struct WorkItemAcceptanceInteractionTests {
                 results: [result]
             )
         )
-        #expect(WorkItemAcceptanceReviewState.resolve(item) == .passed)
-        #expect(WorkItemAcceptanceReviewState.resolve(
-            makeAcceptanceWorkItem(assessment: nil, suggestion: nil)
+        #expect(CorptieTaskAcceptanceReviewState.resolve(item) == .passed)
+        #expect(CorptieTaskAcceptanceReviewState.resolve(
+            makeAcceptanceCorptieTask(assessment: nil, suggestion: nil)
         ) == .unavailable)
     }
 
     @Test func rejectedAssessmentPresentsTheManualRejectionState() {
-        let item = makeAcceptanceWorkItem(
+        let item = makeAcceptanceCorptieTask(
             assessment: acceptanceAssessment(
                 status: "rejected",
                 results: [acceptanceResult(verdict: "passed")]
             ),
             suggestion: nil
         )
-        #expect(WorkItemAcceptanceReviewState.resolve(item) == .manuallyRejected)
+        #expect(CorptieTaskAcceptanceReviewState.resolve(item) == .manuallyRejected)
     }
 
     @Test func objectiveDiscussionOpensItsExistingBoundSession() {
@@ -96,18 +96,18 @@ struct WorkItemAcceptanceInteractionTests {
     }
 }
 
-private func makeAcceptanceWorkItem(
-    assessment: WorkItemAcceptanceAssessment?,
-    suggestion: WorkItemCompletionSuggestion?
-) -> WorkItem {
-    WorkItem(
-        id: "work_item:acceptance",
+private func makeAcceptanceCorptieTask(
+    assessment: CorptieTaskAcceptanceAssessment?,
+    suggestion: CorptieTaskCompletionSuggestion?
+) -> CorptieTask {
+    CorptieTask(
+        id: "task:acceptance",
         objectiveId: "objective:one",
         title: "Acceptance",
         description: "",
         acceptanceCriteria: "Criterion",
         priority: "medium",
-        status: "in_progress",
+        lifecycleState: "in_progress",
         mainWorkspaceId: nil,
         mainAgentId: nil,
         currentSessionId: nil,
@@ -121,9 +121,9 @@ private func makeAcceptanceWorkItem(
 
 private func acceptanceAssessment(
     status: String,
-    results: [WorkItemAcceptanceResult]
-) -> WorkItemAcceptanceAssessment {
-    WorkItemAcceptanceAssessment(
+    results: [CorptieTaskAcceptanceResult]
+) -> CorptieTaskAcceptanceAssessment {
+    CorptieTaskAcceptanceAssessment(
         status: status,
         criteriaSnapshot: "Criterion",
         sourceSessionId: "session:acceptance",
@@ -132,12 +132,12 @@ private func acceptanceAssessment(
     )
 }
 
-private func acceptanceResult(verdict: String) -> WorkItemAcceptanceResult {
-    WorkItemAcceptanceResult(
+private func acceptanceResult(verdict: String) -> CorptieTaskAcceptanceResult {
+    CorptieTaskAcceptanceResult(
         criterion: "Criterion",
         verdict: verdict,
         evidence: [
-            WorkItemAcceptanceEvidence(summary: "Verified", reference: "swift test")
+            CorptieTaskAcceptanceEvidence(summary: "Verified", reference: "swift test")
         ]
     )
 }
@@ -150,7 +150,7 @@ private func makeObjectiveSession(id: String, objectiveId: String) -> TaskSessio
         agentId: "agent:one",
         sessionKind: .objectiveChat,
         objectiveId: objectiveId,
-        workItemId: nil,
+        taskId: nil,
         status: .complete,
         progress: 1,
         summary: "",

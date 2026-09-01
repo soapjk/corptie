@@ -67,7 +67,7 @@ async function fixture() {
   return { directory, store, objectiveService };
 }
 
-test("objectiveChat is a distinct persisted Session kind bound to an Objective without a WorkItem", async () => {
+test("objectiveChat is a distinct persisted Session kind bound to an Objective without a Task", async () => {
   const { directory, store, objectiveService } = await fixture();
   try {
     const objective = objectiveService.createObjective({ name: "Objective Chat" });
@@ -75,7 +75,7 @@ test("objectiveChat is a distinct persisted Session kind bound to an Objective w
     const session = store.bindSessionToObjective("chat", objective.id);
     assert.equal(session.sessionKind, "objectiveChat");
     assert.equal(session.objectiveId, objective.id);
-    assert.equal(session.workItemId, null);
+    assert.equal(session.taskId, null);
     assert.equal(normalizeSessionKind("objectiveChat"), "objectiveChat");
     assert.equal(inferSessionKind({ objectiveId: objective.id }), "objectiveChat");
   } finally {
@@ -112,7 +112,7 @@ test("Objective Chat context is bounded and includes traceable Objective state",
     const objective = objectiveService.createObjective({
       name: "Ship feature", description: "Discuss and decompose", idealState: "Delivery remains reliable across every path"
     });
-    objectiveService.createWorkItem({ objectiveId: objective.id, title: "Backend" });
+    objectiveService.createTask({ objectiveId: objective.id, title: "Backend" });
     const context = new ObjectiveChatContextService({ store, characterBudget: 3_000 }).build(objective.id);
     assert.equal(context.objectiveId, objective.id);
     assert.ok(context.characters <= 3_100);
@@ -125,7 +125,7 @@ test("Objective Chat context is bounded and includes traceable Objective state",
   }
 });
 
-test("Objective Chat context delegates every code or repository mutation to a new WorkItem", async () => {
+test("Objective Chat context delegates every code or repository mutation to a new Task", async () => {
   const { directory, store, objectiveService } = await fixture();
   try {
     const objective = objectiveService.createObjective({ name: "Delegated implementation" });
@@ -135,9 +135,9 @@ test("Objective Chat context delegates every code or repository mutation to a ne
     assert.match(context.prompt, /requires any code change or repository-content mutation/);
     assert.match(context.prompt, /Do not switch or create a worktree/);
     assert.match(context.prompt, /do not edit, create, delete, rename, stage, commit/);
-    assert.match(context.prompt, /First create a new WorkItem in this Objective/);
+    assert.match(context.prompt, /First create a new Task in this Objective/);
     assert.match(context.prompt, /title, description, and acceptance criteria must record the concrete/);
-    assert.match(context.prompt, /assign and start that WorkItem so its Worker Session performs the actual changes and verification/);
+    assert.match(context.prompt, /assign and start that Task so its Worker Session performs the actual changes and verification/);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -163,33 +163,33 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
     const outsider = store.createAgent({ name: "Outside", role: "independentContributor", provider: "codex" });
     const objective = objectiveService.createObjective({ name: "Scoped", contributorAgentIds: [contributor.agentId, planner.agentId] });
     const other = objectiveService.createObjective({ name: "Other" });
-    const scopedItem = objectiveService.createWorkItem({ objectiveId: objective.id, title: "Scoped item" });
-    const otherItem = objectiveService.createWorkItem({ objectiveId: other.id, title: "Other item" });
+    const scopedItem = objectiveService.createTask({ objectiveId: objective.id, title: "Scoped item" });
+    const otherItem = objectiveService.createTask({ objectiveId: other.id, title: "Other item" });
     const starts = [];
     const service = new ObjectiveChatOperationService({
       store,
       objectiveService,
       contextService: new ObjectiveChatContextService({ store }),
-      startWorkItem: (input) => { starts.push(input); return { id: "worker" }; }
+      startTask: (input) => { starts.push(input); return { id: "worker" }; }
     });
     const metadata = { sessionKind: "objectiveChat", objectiveId: objective.id };
     const agents = await service.execute({ tool: "corptie_objective_agents_list", metadata, arguments: {} });
     assert.deepEqual(new Set(agents.map((agent) => agent.agentId)), new Set([contributor.agentId, planner.agentId]));
-    assert.equal(agents.find((agent) => agent.agentId === contributor.agentId).canStartWorkItem, true);
-    assert.equal(agents.find((agent) => agent.agentId === planner.agentId).canStartWorkItem, true);
+    assert.equal(agents.find((agent) => agent.agentId === contributor.agentId).canStartTask, true);
+    assert.equal(agents.find((agent) => agent.agentId === planner.agentId).canStartTask, true);
     assert.equal(agents.some((agent) => agent.agentId === outsider.agentId), false);
     const created = await service.execute({
-      tool: "corptie_objective_work_items_manage", metadata,
+      tool: "corptie_objective_tasks_manage", metadata,
       arguments: { action: "create", title: "New scoped item" }
     });
     assert.equal(created.objective_id, objective.id);
     await assert.rejects(() => service.execute({
-      tool: "corptie_objective_work_items_manage", metadata,
-      arguments: { action: "get", work_item_id: otherItem.id }
-    }), { code: "WORK_ITEM_OUTSIDE_OBJECTIVE" });
+      tool: "corptie_objective_tasks_manage", metadata,
+      arguments: { action: "get", task_id: otherItem.id }
+    }), { code: "TASK_OUTSIDE_OBJECTIVE" });
     await service.execute({
-      tool: "corptie_objective_work_item_start", metadata,
-      arguments: { work_item_id: scopedItem.id, agent_id: contributor.agentId }
+      tool: "corptie_objective_task_start", metadata,
+      arguments: { task_id: scopedItem.id, agent_id: contributor.agentId }
     });
     assert.equal(starts.length, 1);
   } finally {
@@ -198,7 +198,7 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
   }
 });
 
-test("Objective Chat dynamic tools expose no arbitrary WorkItem update or delete surface", () => {
+test("Objective Chat dynamic tools expose no arbitrary Task update or delete surface", () => {
   const names = objectiveChatDynamicTools.map((tool) => tool.name);
   assert.deepEqual(names, ["corptie_objective_context", "corptie_objective_agents_list"]);
   assert.equal(names.some((name) => name.includes("manage") || name.includes("delete") || name.includes("update")), false);

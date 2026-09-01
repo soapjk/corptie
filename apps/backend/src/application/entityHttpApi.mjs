@@ -1,10 +1,10 @@
-// 实体层 + hub 的 HTTP API（15 Phase 1-3 落地：objective/work_item/memory/hub 路由）。
+// 实体层 + hub 的 HTTP API（15 Phase 1-3 落地：objective/task/memory/hub 路由）。
 // 自包含（sendJson/readJson/apiError 本地定义，不依赖 server.mjs），与 collaborationHttpApi 同风格。
 
 import { registerGitRepository as registerGitRepositoryDefault } from "./gitRepositoryRegistrationService.mjs";
 import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
-import { presentWorkItemAcceptance } from "./workItemAcceptance.mjs";
+import { presentTaskAcceptance } from "./taskAcceptance.mjs";
 import { presentMemory } from "./memoryOperationService.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
@@ -25,25 +25,25 @@ export function handleEntityHttpRequest({
   memoryRecallService,
   memoryLifecycleService,
   assistantService,
-  startWorkItemExecution,
-  beginWorkItemExecution,
-  getWorkItemStartup,
+  startTaskExecution,
+  beginTaskExecution,
+  getTaskStartup,
   getSessionStartupBinding,
   launchAgentSession,
   launchObjectiveChatSession,
   createSession,
   backgroundAgentService,
   skillRegistryService,
-  inspectWorkItemWorktree,
-  reclaimWorkItemWorktree,
-  inspectWorkItemDeletion,
-  deleteWorkItemSafely,
-  restoreWorkItemExecution,
-  workItemCompletionService,
+  inspectTaskWorktree,
+  reclaimTaskWorktree,
+  inspectTaskDeletion,
+  deleteTaskSafely,
+  restoreTaskExecution,
+  taskCompletionService,
   resolveAgentAvailability,
   suggestAgentSessionTitle,
   onEntityChanged,
-  observeWorkItemPerformance = () => {},
+  observeTaskPerformance = () => {},
   observeFormAssistPerformance = () => {},
   registerGitRepository = registerGitRepositoryDefault,
   auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
@@ -84,8 +84,8 @@ export function handleEntityHttpRequest({
 
   const isEntityApi =
     path === "/objectives" || path.startsWith("/objectives/") ||
-    path === "/work-items" || path.startsWith("/work-items/") ||
-    path.startsWith("/work-item-completion-operations/") ||
+    path === "/tasks" || path.startsWith("/tasks/") ||
+    path.startsWith("/task-completion-operations/") ||
     path === "/repositories" || path === "/repositories/detect" ||
     path === "/memories" || path.startsWith("/memories/") || path === "/memory-audit" ||
     path.startsWith("/memory-audit/") || path === "/memory-recall-audit" || path === "/memory-recall" ||
@@ -93,7 +93,7 @@ export function handleEntityHttpRequest({
     path === "/skills" || path.startsWith("/skills/") ||
     path === "/assistant/chat" || path === "/assist/draft" || path === "/assist/form-draft" ||
     path === "/hub/search" || path === "/collaboration/route" ||
-    // 只拦截 POST /sessions（创建，供 WorkItem 执行绑定）；
+    // 只拦截 POST /sessions（创建，供 Task 执行绑定）；
     // DELETE /sessions/:id 一律交给 server.mjs 的完整删除链路
     // （会清理 provider 线程 + logical route + store，只删表行会导致会话“复活”）。
     (path === "/sessions" && request.method === "POST") ||
@@ -101,27 +101,27 @@ export function handleEntityHttpRequest({
 
   if (!isEntityApi) return false;
 
-  let activeWorkItemTiming = null;
+  let activeTaskTiming = null;
   let activeFormAssistTiming = null;
-  const beginWorkItemTiming = (operation, workItemId = null) => {
-    activeWorkItemTiming = {
+  const beginTaskTiming = (operation, taskId = null) => {
+    activeTaskTiming = {
       operation,
-      operationId: boundedHeaderText(request, "x-corptie-operation-id") || workItemId || randomUUID(),
-      workItemId,
+      operationId: boundedHeaderText(request, "x-corptie-operation-id") || taskId || randomUUID(),
+      taskId,
       startedAt: performance.now(),
       phases: {}
     };
-    return activeWorkItemTiming;
+    return activeTaskTiming;
   };
-  const finishWorkItemTiming = (outcome, error = null) => {
-    if (!activeWorkItemTiming) return;
-    const timing = activeWorkItemTiming;
-    activeWorkItemTiming = null;
+  const finishTaskTiming = (outcome, error = null) => {
+    if (!activeTaskTiming) return;
+    const timing = activeTaskTiming;
+    activeTaskTiming = null;
     try {
-      observeWorkItemPerformance({
+      observeTaskPerformance({
         operation: timing.operation,
         operationId: timing.operationId,
-        workItemId: timing.workItemId,
+        taskId: timing.taskId,
         outcome,
         ...(error ? { errorCode: error.code ?? "INTERNAL" } : {}),
         phases: timing.phases,
@@ -605,177 +605,189 @@ export function handleEntityHttpRequest({
         }
       }
 
-      const objectiveWorkItemsMatch = path.match(/^\/objectives\/([^/]+)\/work-items$/);
-      if (request.method === "GET" && objectiveWorkItemsMatch) {
-        const id = decodeURIComponent(objectiveWorkItemsMatch[1]);
+      const objectiveTasksMatch = path.match(/^\/objectives\/([^/]+)\/tasks$/);
+      if (request.method === "GET" && objectiveTasksMatch) {
+        const id = decodeURIComponent(objectiveTasksMatch[1]);
         return sendJson(response, 200, {
-          workItems: objectiveService.listWorkItemsByObjective(id)
-            .map((item) => presentWorkItemWithOrigin(objectiveService, item))
+          tasks: objectiveService.listTasksByObjective(id)
+            .map((item) => presentTaskWithOrigin(objectiveService, item))
         });
       }
 
-      // ---- WorkItem ----
-      if (request.method === "GET" && path === "/work-items") {
+      // ---- Task ----
+      if (request.method === "GET" && path === "/tasks") {
         return sendJson(response, 200, {
-          workItems: objectiveService.listWorkItems()
-            .map((item) => presentWorkItemWithOrigin(objectiveService, item))
+          tasks: objectiveService.listTasks()
+            .map((item) => presentTaskWithOrigin(objectiveService, item))
         });
       }
-      if (request.method === "POST" && path === "/work-items") {
-        const timing = beginWorkItemTiming("work-item.create");
+      if (request.method === "POST" && path === "/tasks") {
+        const timing = beginTaskTiming("task.create");
         let phaseStartedAt = performance.now();
         const input = await readJson(request);
-        timing.workItemId = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
+        timing.taskId = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
         timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         phaseStartedAt = performance.now();
-        const created = presentWorkItemWithOrigin(objectiveService, objectiveService.createWorkItem(input, {
+        const created = presentTaskWithOrigin(objectiveService, objectiveService.createTask(input, {
           creationOrigin: { originType: "direct_user" }
         }));
-        timing.workItemId = created.id;
+        timing.taskId = created.id;
         timing.phases.validateAndPersistMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         const result = sendJson(response, 201, created);
-        finishWorkItemTiming("succeeded");
+        finishTaskTiming("succeeded");
         return result;
       }
 
-      const workItemMatch = path.match(/^\/work-items\/([^/]+)$/);
-      if (workItemMatch) {
-        const id = decodeURIComponent(workItemMatch[1]);
+      const taskMatch = path.match(/^\/tasks\/([^/]+)$/);
+      if (taskMatch) {
+        const id = decodeURIComponent(taskMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, presentWorkItemWithOrigin(objectiveService, objectiveService.getWorkItem(id)));
+          return sendJson(response, 200, presentTaskWithOrigin(objectiveService, objectiveService.getTask(id)));
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
-          if (["done", "complete", "completed"].includes(String(input.status ?? "").toLowerCase())) {
-            if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
-            workItemCompletionService.rejectNonDirectAttempt(id, { callSurface: "macos_work_item_patch" });
+          if (input.lifecycleState === "done") {
+            if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
+            taskCompletionService.rejectNonDirectAttempt(id, { callSurface: "macos_task_patch" });
           }
           return sendJson(
             response,
             200,
-            presentWorkItemWithOrigin(objectiveService, objectiveService.updateWorkItem(id, input))
+            presentTaskWithOrigin(objectiveService, objectiveService.updateTask(id, input))
           );
         }
         if (request.method === "DELETE") {
-          if (typeof deleteWorkItemSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe WorkItem deletion is unavailable.", 503);
-          return sendJson(response, 200, await deleteWorkItemSafely(id, await readJson(request), localMacUserActor()));
+          if (typeof deleteTaskSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe Task deletion is unavailable.", 503);
+          return sendJson(response, 200, await deleteTaskSafely(id, await readJson(request), localMacUserActor()));
         }
       }
 
-      const workItemDeletionMatch = path.match(/^\/work-items\/([^/]+)\/deletion$/);
-      if (request.method === "GET" && workItemDeletionMatch) {
-        if (typeof inspectWorkItemDeletion !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem deletion inspection is unavailable.", 503);
-        return sendJson(response, 200, await inspectWorkItemDeletion(
-          decodeURIComponent(workItemDeletionMatch[1]), localMacUserActor()
+      const taskSnapshotsMatch = path.match(/^\/tasks\/([^/]+)\/snapshots$/);
+      if (request.method === "GET" && taskSnapshotsMatch) {
+        const id = decodeURIComponent(taskSnapshotsMatch[1]);
+        return sendJson(response, 200, { snapshots: objectiveService.listTaskSnapshots(id) });
+      }
+
+      const taskRevisionsMatch = path.match(/^\/tasks\/([^/]+)\/revisions$/);
+      if (request.method === "POST" && taskRevisionsMatch) {
+        const id = decodeURIComponent(taskRevisionsMatch[1]);
+        const result = objectiveService.reviseTask(id, await readJson(request));
+        return sendJson(response, 201, {
+          task: presentTaskWithOrigin(objectiveService, result.task),
+          snapshot: result.snapshot
+        });
+      }
+
+      const taskDeletionMatch = path.match(/^\/tasks\/([^/]+)\/deletion$/);
+      if (request.method === "GET" && taskDeletionMatch) {
+        if (typeof inspectTaskDeletion !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Task deletion inspection is unavailable.", 503);
+        return sendJson(response, 200, await inspectTaskDeletion(
+          decodeURIComponent(taskDeletionMatch[1]), localMacUserActor()
         ));
       }
 
-      const deleteWorkItemMatch = path.match(/^\/work-items\/([^/]+)\/actions\/delete$/);
-      if (request.method === "POST" && deleteWorkItemMatch) {
-        if (typeof deleteWorkItemSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe WorkItem deletion is unavailable.", 503);
+      const deleteTaskMatch = path.match(/^\/tasks\/([^/]+)\/actions\/delete$/);
+      if (request.method === "POST" && deleteTaskMatch) {
+        if (typeof deleteTaskSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe Task deletion is unavailable.", 503);
         const input = await readJson(request);
         rejectUnknownFields(input, new Set(["mode", "acknowledgeDataLoss", "confirmedBranchName"]));
-        return sendJson(response, 200, await deleteWorkItemSafely(
-          decodeURIComponent(deleteWorkItemMatch[1]), input, localMacUserActor()
+        return sendJson(response, 200, await deleteTaskSafely(
+          decodeURIComponent(deleteTaskMatch[1]), input, localMacUserActor()
         ));
       }
 
-      const acceptanceAssessmentMatch = path.match(/^\/work-items\/([^/]+)\/acceptance-assessment$/);
+      const acceptanceAssessmentMatch = path.match(/^\/tasks\/([^/]+)\/acceptance-assessment$/);
       if (request.method === "PUT" && acceptanceAssessmentMatch) {
         const id = decodeURIComponent(acceptanceAssessmentMatch[1]);
         const input = await readJson(request);
         return sendJson(
           response,
           200,
-          presentWorkItemAcceptance(objectiveService.recordAcceptanceAssessment(id, input))
+          presentTaskAcceptance(objectiveService.recordAcceptanceAssessment(id, input))
         );
       }
 
-      const completionIntentMatch = path.match(/^\/work-items\/([^/]+)\/completion-intents$/);
+      const completionIntentMatch = path.match(/^\/tasks\/([^/]+)\/completion-intents$/);
       if (request.method === "POST" && completionIntentMatch) {
-        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
+        if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
         const input = await readJson(request);
         rejectUnknownFields(input, new Set([
-          "requestId", "interactionId", "uiSurface", "displayedWorkItemId",
-          "displayedWorkItemTitle", "displayedAcceptanceStatus"
+          "requestId", "interactionId", "uiSurface", "displayedTaskId",
+          "displayedTaskTitle", "displayedAcceptanceStatus"
         ]));
-        return sendJson(response, 201, workItemCompletionService.issueMacOSIntent(
+        return sendJson(response, 201, taskCompletionService.issueMacOSIntent(
           decodeURIComponent(completionIntentMatch[1]), input, localMacUserActor()
         ));
       }
 
-      const completionConfirmationMatch = path.match(/^\/work-items\/([^/]+)\/confirm-completion$/);
+      const completionConfirmationMatch = path.match(/^\/tasks\/([^/]+)\/confirm-completion$/);
       if (request.method === "POST" && completionConfirmationMatch) {
         const id = decodeURIComponent(completionConfirmationMatch[1]);
         const input = await readJson(request);
-        if (Object.prototype.hasOwnProperty.call(input, "confirmed")) {
-          if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
-          workItemCompletionService.rejectNonDirectAttempt(id, { callSurface: "legacy_confirmed_true_http" });
-        }
         rejectUnknownFields(input, new Set(["intentToken", "requestId", "idempotencyKey"]));
-        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion is unavailable.", 503);
-        const result = workItemCompletionService.completeFromMacOS(id, input);
+        if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
+        const result = taskCompletionService.completeFromMacOS(id, input);
         return sendJson(response, 200, {
-          workItem: presentWorkItemAcceptance(result.workItem),
+          task: presentTaskAcceptance(result.task),
           operation: result.operation,
           idempotentReplay: result.idempotentReplay
         });
       }
 
-      const completionAuditMatch = path.match(/^\/work-items\/([^/]+)\/completion-audit$/);
+      const completionAuditMatch = path.match(/^\/tasks\/([^/]+)\/completion-audit$/);
       if (request.method === "GET" && completionAuditMatch) {
-        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion audit is unavailable.", 503);
+        if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion audit is unavailable.", 503);
         return sendJson(response, 200, {
-          operations: workItemCompletionService.listAudit(
+          operations: taskCompletionService.listAudit(
             decodeURIComponent(completionAuditMatch[1]), url.searchParams.get("limit")
           )
         });
       }
 
-      const completionOperationMatch = path.match(/^\/work-item-completion-operations\/([^/]+)$/);
+      const completionOperationMatch = path.match(/^\/task-completion-operations\/([^/]+)$/);
       if (request.method === "GET" && completionOperationMatch) {
-        if (!workItemCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem completion audit is unavailable.", 503);
+        if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion audit is unavailable.", 503);
         return sendJson(response, 200, {
-          operation: workItemCompletionService.getAuditOperation(
+          operation: taskCompletionService.getAuditOperation(
             decodeURIComponent(completionOperationMatch[1])
           )
         });
       }
 
-      const executionRestoreMatch = path.match(/^\/work-items\/([^/]+)\/actions\/restore$/);
+      const executionRestoreMatch = path.match(/^\/tasks\/([^/]+)\/actions\/restore$/);
       if (request.method === "POST" && executionRestoreMatch) {
-        if (typeof restoreWorkItemExecution !== "function") {
-          throw apiError("CAPABILITY_UNAVAILABLE", "WorkItem recovery is unavailable.", 503);
+        if (typeof restoreTaskExecution !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "Task recovery is unavailable.", 503);
         }
         const id = decodeURIComponent(executionRestoreMatch[1]);
-        const result = await restoreWorkItemExecution(id);
+        const result = await restoreTaskExecution(id);
         return sendJson(response, 200, {
           ...result,
-          workItem: presentWorkItemAcceptance(result.workItem)
+          task: presentTaskAcceptance(result.task)
         });
       }
 
-      const workItemWorktreeMatch = path.match(/^\/work-items\/([^/]+)\/worktree$/);
-      if (workItemWorktreeMatch) {
-        const id = decodeURIComponent(workItemWorktreeMatch[1]);
+      const taskWorktreeMatch = path.match(/^\/tasks\/([^/]+)\/worktree$/);
+      if (taskWorktreeMatch) {
+        const id = decodeURIComponent(taskWorktreeMatch[1]);
         if (request.method === "GET") {
-          if (typeof inspectWorkItemWorktree !== "function") {
+          if (typeof inspectTaskWorktree !== "function") {
             throw apiError("CAPABILITY_UNAVAILABLE", "Worktree inspection is unavailable.", 503);
           }
-          return sendJson(response, 200, await inspectWorkItemWorktree(id));
+          return sendJson(response, 200, await inspectTaskWorktree(id));
         }
       }
 
-      const reclaimWorktreeMatch = path.match(/^\/work-items\/([^/]+)\/worktree\/reclaim$/);
+      const reclaimWorktreeMatch = path.match(/^\/tasks\/([^/]+)\/worktree\/reclaim$/);
       if (request.method === "POST" && reclaimWorktreeMatch) {
-        if (typeof reclaimWorkItemWorktree !== "function") {
+        if (typeof reclaimTaskWorktree !== "function") {
           throw apiError("CAPABILITY_UNAVAILABLE", "Worktree reclamation is unavailable.", 503);
         }
         const id = decodeURIComponent(reclaimWorktreeMatch[1]);
-        return sendJson(response, 200, await reclaimWorkItemWorktree(id));
+        return sendJson(response, 200, await reclaimTaskWorktree(id));
       }
 
-      const acceptanceRejectionMatch = path.match(/^\/work-items\/([^/]+)\/reject-acceptance$/);
+      const acceptanceRejectionMatch = path.match(/^\/tasks\/([^/]+)\/reject-acceptance$/);
       if (request.method === "POST" && acceptanceRejectionMatch) {
         const id = decodeURIComponent(acceptanceRejectionMatch[1]);
         const input = await readJson(request);
@@ -783,26 +795,26 @@ export function handleEntityHttpRequest({
         return sendJson(
           response,
           200,
-          presentWorkItemAcceptance(
-            objectiveService.rejectWorkItemAcceptance(id, input)
+          presentTaskAcceptance(
+            objectiveService.rejectTaskAcceptance(id, input)
           )
         );
       }
 
-      const workItemSessionsMatch = path.match(/^\/work-items\/([^/]+)\/sessions$/);
-      if (request.method === "GET" && workItemSessionsMatch) {
-        const id = decodeURIComponent(workItemSessionsMatch[1]);
-        return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByWorkItem(id) });
+      const taskSessionsMatch = path.match(/^\/tasks\/([^/]+)\/sessions$/);
+      if (request.method === "GET" && taskSessionsMatch) {
+        const id = decodeURIComponent(taskSessionsMatch[1]);
+        return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByTask(id) });
       }
 
-      const workItemStartMatch = path.match(/^\/work-items\/([^/]+)\/start$/);
-      if (request.method === "POST" && workItemStartMatch) {
-        if (typeof beginWorkItemExecution !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
-        const workItemId = decodeURIComponent(workItemStartMatch[1]);
+      const taskStartMatch = path.match(/^\/tasks\/([^/]+)\/start$/);
+      if (request.method === "POST" && taskStartMatch) {
+        if (typeof beginTaskExecution !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
+        const taskId = decodeURIComponent(taskStartMatch[1]);
         const input = await readJson(request);
         rejectUnknownFields(input, new Set(["requestedAgentId", "providerId", "idempotencyKey", "title"]));
-        const startup = beginWorkItemExecution({
-          workItemId,
+        const startup = beginTaskExecution({
+          taskId,
           requestedAgentId: input.requestedAgentId,
           providerId: input.providerId,
           idempotencyKey: input.idempotencyKey,
@@ -813,12 +825,12 @@ export function handleEntityHttpRequest({
         return sendJson(response, startup.status === "ready" ? 200 : 202, startup);
       }
 
-      const workItemStartupMatch = path.match(/^\/work-items\/([^/]+)\/startup\/([^/]+)$/);
-      if (request.method === "GET" && workItemStartupMatch) {
-        if (typeof getWorkItemStartup !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
-        return sendJson(response, 200, getWorkItemStartup({
-          workItemId: decodeURIComponent(workItemStartupMatch[1]),
-          startupOperationId: decodeURIComponent(workItemStartupMatch[2])
+      const taskStartupMatch = path.match(/^\/tasks\/([^/]+)\/startup\/([^/]+)$/);
+      if (request.method === "GET" && taskStartupMatch) {
+        if (typeof getTaskStartup !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
+        return sendJson(response, 200, getTaskStartup({
+          taskId: decodeURIComponent(taskStartupMatch[1]),
+          startupOperationId: decodeURIComponent(taskStartupMatch[2])
         }));
       }
 
@@ -828,7 +840,7 @@ export function handleEntityHttpRequest({
         return sendJson(response, 200, getSessionStartupBinding(decodeURIComponent(sessionStartupMatch[1])));
       }
 
-      const dependencyMatch = path.match(/^\/work-items\/([^/]+)\/dependencies$/);
+      const dependencyMatch = path.match(/^\/tasks\/([^/]+)\/dependencies$/);
       if (dependencyMatch) {
         const id = decodeURIComponent(dependencyMatch[1]);
         if (request.method === "GET") {
@@ -836,33 +848,33 @@ export function handleEntityHttpRequest({
         }
         if (request.method === "POST") {
           const input = await readJson(request);
-          objectiveService.addDependency(id, input.targetWorkItemId, input.type);
+          objectiveService.addDependency(id, input.targetTaskId, input.type);
           return sendJson(response, 201, { ok: true });
         }
       }
 
-      // ---- Session（执行：真正启动模型 + 绑定 work_item + agent，1:1；换 Agent/重来时先提炼旧记忆）----
+      // ---- Session（执行：真正启动模型 + 绑定 task + agent，1:1；换 Agent/重来时先提炼旧记忆）----
       if (request.method === "POST" && path === "/sessions") {
-        const timing = beginWorkItemTiming("work-item.execute");
+        const timing = beginTaskTiming("task.execute");
         let phaseStartedAt = performance.now();
         const input = await readJson(request);
         timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         rejectSessionAvatarInput(input);
-        const workItemId = String(input.workItemId ?? "").trim();
-        timing.workItemId = workItemId || null;
+        const taskId = String(input.taskId ?? "").trim();
+        timing.taskId = taskId || null;
         const agentId = String(input.agentId ?? "").trim();
-        if (!workItemId && !agentId) {
-          activeWorkItemTiming = null;
+        if (!taskId && !agentId) {
+          activeTaskTiming = null;
           if (typeof createSession !== "function") {
             throw apiError("INTERNAL", "createSession is not configured.", 500);
           }
           const session = await createSession(input);
           return sendJson(response, 201, { session });
         }
-        if (!workItemId) throw apiError("INVALID_INPUT", "workItemId is required.", 400);
+        if (!taskId) throw apiError("INVALID_INPUT", "taskId is required.", 400);
         if (!agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
-        const workItem = objectiveService.getWorkItem(workItemId);
-        if (!workItem) throw apiError("WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
+        const task = objectiveService.getTask(taskId);
+        if (!task) throw apiError("TASK_NOT_FOUND", "Task not found.", 404);
         const agent = objectiveService.store.getAgent(agentId);
         if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
         if (agent.role !== "independentContributor") {
@@ -873,10 +885,10 @@ export function handleEntityHttpRequest({
           );
         }
         const providerId = requiredProviderId(input);
-        const objective = objectiveService.getObjective(workItem.objective_id);
-        objectiveService.store.assertWorkItemAssociations(
+        const objective = objectiveService.getObjective(task.objective_id);
+        objectiveService.store.assertTaskAssociations(
           {
-            mainWorkspaceId: workItem.main_workspace_id,
+            mainWorkspaceId: task.main_workspace_id,
             mainAgentId: agent.agentId
           },
           objective
@@ -884,12 +896,12 @@ export function handleEntityHttpRequest({
         timing.phases.validateReferencesMs = roundedMilliseconds(
           performance.now() - timing.startedAt - timing.phases.requestParseMs
         );
-        if (typeof startWorkItemExecution !== "function") {
-          throw apiError("INTERNAL", "startWorkItemExecution is not configured.", 500);
+        if (typeof startTaskExecution !== "function") {
+          throw apiError("INTERNAL", "startTaskExecution is not configured.", 500);
         }
         phaseStartedAt = performance.now();
-        const started = await startWorkItemExecution({
-          workItemId,
+        const started = await startTaskExecution({
+          taskId,
           requestedAgentId: agentId,
           providerId,
           title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
@@ -910,7 +922,7 @@ export function handleEntityHttpRequest({
             turnDispatch: started.turnDispatch ?? null
           }
         });
-        finishWorkItemTiming("succeeded");
+        finishTaskTiming("succeeded");
         return result;
       }
 
@@ -923,9 +935,9 @@ export function handleEntityHttpRequest({
           throw apiError("INVALID_INPUT", "ownerType and ownerId are required.", 400);
         }
         if (!global) validateMemoryOwnerReference(hubService.store, ownerType, ownerId);
-        if (ownerType === "work_item") {
-          const workItem = hubService.store.getWorkItem(ownerId);
-          if (!workItem.current_session_id) return sendJson(response, 200, { memories: [] });
+        if (ownerType === "task") {
+          const task = hubService.store.getTask(ownerId);
+          if (!task.current_session_id) return sendJson(response, 200, { memories: [] });
         }
         const includeRevoked = url.searchParams.get("includeRevoked") === "true";
         const query = String(url.searchParams.get("query") ?? "").trim().toLocaleLowerCase();
@@ -1031,7 +1043,7 @@ export function handleEntityHttpRequest({
           sessionId: url.searchParams.get("sessionId") ?? null,
           agentId: url.searchParams.get("agentId") ?? null,
           objectiveId: url.searchParams.get("objectiveId") ?? null,
-          workItemId: url.searchParams.get("workItemId") ?? null
+          taskId: url.searchParams.get("taskId") ?? null
         };
         validateMemoryRecallScope(hubService.store, scope);
         const phase = url.searchParams.get("phase") === "startup" ? "startup" : "explicit";
@@ -1051,7 +1063,7 @@ export function handleEntityHttpRequest({
         const memory = hubService.store.createMemory({
           ownerType: input.ownerType,
           ownerId: input.ownerId,
-          workItemId: input.ownerType === "work_item" ? input.ownerId : null,
+          taskId: input.ownerType === "task" ? input.ownerId : null,
           kind: input.kind,
           content: input.content,
           tags: input.tags,
@@ -1068,12 +1080,12 @@ export function handleEntityHttpRequest({
       // 从 Session 事件流提炼记忆（13 主路径）：MemoryExtractor 提取 + kind→owner 分流 + 乐观应用。
       if (request.method === "POST" && path === "/memories/extract") {
         const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["sessionId", "objectiveId", "workItemId", "agentId"]));
+        rejectUnknownFields(input, new Set(["sessionId", "objectiveId", "taskId", "agentId"]));
         const sessionId = String(input.sessionId ?? "").trim();
         if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
         const memories = await memoryExtractor.extractFromSession(sessionId, {
           objectiveId: input.objectiveId,
-          workItemId: input.workItemId,
+          taskId: input.taskId,
           agentId: input.agentId
         });
         return sendJson(response, 201, { memories });
@@ -1084,7 +1096,7 @@ export function handleEntityHttpRequest({
         const intent = url.searchParams.get("intent") ?? "";
         const scope = {
           objectiveId: url.searchParams.get("objectiveId") ?? undefined,
-          workItemId: url.searchParams.get("workItemId") ?? undefined,
+          taskId: url.searchParams.get("taskId") ?? undefined,
           agentId: url.searchParams.get("agentId") ?? undefined,
           sessionId: url.searchParams.get("sessionId") ?? undefined
         };
@@ -1102,7 +1114,7 @@ export function handleEntityHttpRequest({
       throw apiError("NOT_FOUND", "Entity endpoint not found.", 404);
     })
     .catch((error) => {
-      finishWorkItemTiming("failed", error);
+      finishTaskTiming("failed", error);
       finishFormAssistTiming("failed", error);
       const code = error.code ?? "INTERNAL";
       sendJson(response, error.statusCode ?? statusForCode(code), {
@@ -1139,7 +1151,7 @@ function rejectSessionAvatarInput(input) {
 }
 
 function statusForCode(code) {
-  if (["OBJECTIVE_NOT_FOUND", "WORK_ITEM_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND", "SKILL_NOT_FOUND", "MEMORY_NOT_FOUND"].includes(code)) return 404;
+  if (["OBJECTIVE_NOT_FOUND", "TASK_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND", "SKILL_NOT_FOUND", "MEMORY_NOT_FOUND"].includes(code)) return 404;
   if (["INTERNAL", "SKILL_CLEANUP_FAILED", "SKILL_DATABASE_DELETE_FAILED"].includes(code)) return 500;
   if ([
     "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "SKILL_HAS_ACTIVE_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
@@ -1164,7 +1176,7 @@ function validateMemoryInput(input = {}, store) {
       throw apiError("INVALID_INPUT", `Field "${field}" is required.`, 400);
     }
   }
-  if (!["agent", "objective", "work_item"].includes(input.ownerType)) {
+  if (!["agent", "objective", "task"].includes(input.ownerType)) {
     throw apiError("INVALID_MEMORY_SCOPE", `Unsupported memory ownerType: ${input.ownerType}`, 400);
   }
   if (!["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"].includes(input.kind)) {
@@ -1175,18 +1187,18 @@ function validateMemoryInput(input = {}, store) {
     throw apiError("INVALID_INPUT", "tags must be an array of non-empty strings.", 400);
   }
   validateMemoryOwnerReference(store, input.ownerType, input.ownerId);
-  if (input.ownerType === "work_item" && (typeof input.sourceSessionId !== "string" || !input.sourceSessionId.trim())) {
+  if (input.ownerType === "task" && (typeof input.sourceSessionId !== "string" || !input.sourceSessionId.trim())) {
     throw apiError(
       "INVALID_MEMORY_SOURCE_SESSION",
-      "sourceSessionId is required for work_item memories.",
+      "sourceSessionId is required for task memories.",
       400
     );
   }
-  if (input.ownerType === "work_item"
-    && store.getWorkItem(input.ownerId).current_session_id !== input.sourceSessionId.trim()) {
+  if (input.ownerType === "task"
+    && store.getTask(input.ownerId).current_session_id !== input.sourceSessionId.trim()) {
     throw apiError(
       "INVALID_MEMORY_SOURCE_SESSION",
-      "sourceSessionId must be the WorkItem's current bound Worker Session.",
+      "sourceSessionId must be the Task's current bound Worker Session.",
       400
     );
   }
@@ -1199,13 +1211,13 @@ function validateMemoryOwnerReference(store, ownerType, ownerId) {
     ? store.getAgent(normalizedOwnerId)
     : ownerType === "objective"
       ? store.getObjective(normalizedOwnerId)
-      : ownerType === "work_item"
-        ? store.getWorkItem(normalizedOwnerId)
+      : ownerType === "task"
+        ? store.getTask(normalizedOwnerId)
         : null;
   if (!record) {
     const code = ownerType === "agent" ? "AGENT_NOT_FOUND"
       : ownerType === "objective" ? "OBJECTIVE_NOT_FOUND"
-        : ownerType === "work_item" ? "WORK_ITEM_NOT_FOUND" : "INVALID_MEMORY_SCOPE";
+        : ownerType === "task" ? "TASK_NOT_FOUND" : "INVALID_MEMORY_SCOPE";
     throw apiError(code, `${ownerType} owner not found: ${normalizedOwnerId}`, code.endsWith("NOT_FOUND") ? 404 : 400);
   }
 }
@@ -1214,18 +1226,18 @@ function validateMemoryRecallScope(store, scope) {
   if (!scope.agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
   validateMemoryOwnerReference(store, "agent", scope.agentId);
   if (scope.objectiveId) validateMemoryOwnerReference(store, "objective", scope.objectiveId);
-  if (scope.workItemId) {
-    validateMemoryOwnerReference(store, "work_item", scope.workItemId);
-    const workItem = store.getWorkItem(scope.workItemId);
-    if (!scope.objectiveId || workItem.objective_id !== scope.objectiveId) {
-      throw apiError("MEMORY_SCOPE_MISMATCH", "WorkItem does not belong to the requested Objective.", 400);
+  if (scope.taskId) {
+    validateMemoryOwnerReference(store, "task", scope.taskId);
+    const task = store.getTask(scope.taskId);
+    if (!scope.objectiveId || task.objective_id !== scope.objectiveId) {
+      throw apiError("MEMORY_SCOPE_MISMATCH", "Task does not belong to the requested Objective.", 400);
     }
   }
   if (scope.sessionId) {
     const session = store.getSession(scope.sessionId);
     if (!session) throw apiError("SESSION_NOT_FOUND", `Session not found: ${scope.sessionId}`, 404);
     if (session.agentId !== scope.agentId || (scope.objectiveId && session.objectiveId !== scope.objectiveId)
-      || (scope.workItemId && session.workItemId !== scope.workItemId)) {
+      || (scope.taskId && session.taskId !== scope.taskId)) {
       throw apiError("MEMORY_SCOPE_MISMATCH", "Session does not match the requested Memory scope.", 400);
     }
   }
@@ -1313,8 +1325,8 @@ const FORM_DRAFT_SCHEMAS = Object.freeze({
     priority: 'Empty, or exactly one of "low", "medium", "high", "urgent"',
     tags: "Comma-separated tags"
   }),
-  workItem: Object.freeze({
-    title: "Short work-item title",
+  task: Object.freeze({
+    title: "Short task title",
     description: "Concrete implementation requirements and scope",
     acceptanceCriteria: "Markdown bullet list of verifiable acceptance criteria",
     priority: 'Exactly one of "low", "medium", "high"'
@@ -1407,7 +1419,7 @@ function parseGeneratedFormDraft(text, schema) {
     throw apiError("INVALID_GENERATED_DRAFT", "Generated title must not be empty.", 502);
   }
   if (Object.hasOwn(schema, "title") && !parsed.description.trim()) {
-    throw apiError("INVALID_GENERATED_DRAFT", "Generated work-item description must not be empty.", 502);
+    throw apiError("INVALID_GENERATED_DRAFT", "Generated task description must not be empty.", 502);
   }
   return Object.fromEntries(expected.map((key) => [key, parsed[key].trim()]));
 }
@@ -1426,10 +1438,10 @@ function validateGeneratedFormEnums(fields, schema) {
   }
 }
 
-function presentWorkItemWithOrigin(objectiveService, workItem) {
+function presentTaskWithOrigin(objectiveService, task) {
   return {
-    ...presentWorkItemAcceptance(workItem),
-    creationOrigin: objectiveService.store.getWorkItemCreationOrigin(workItem.id)
+    ...presentTaskAcceptance(task),
+    creationOrigin: objectiveService.store.getTaskCreationOrigin(task.id)
   };
 }
 

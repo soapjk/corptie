@@ -38,21 +38,21 @@ async function fixture() {
   await store.initialize();
   const agent = store.createAgent({ name: "Artifact E2E", provider: "receipt-provider" });
   store.createObjective({ id: "objective:e2e", name: "Artifact E2E", contributorAgentIds: [agent.agentId] });
-  store.createWorkItem({
-    id: "work_item:e2e", objectiveId: "objective:e2e", title: "Worker E2E", mainAgentId: agent.agentId
+  store.createTask({
+    id: "task:e2e", objectiveId: "objective:e2e", title: "Worker E2E", mainAgentId: agent.agentId
   });
   const sessions = [
-    { id: "session:worker-e2e", kind: "worker", workItemId: "work_item:e2e" },
-    { id: "session:objective-e2e", kind: "objectiveChat", workItemId: null }
+    { id: "session:worker-e2e", kind: "worker", taskId: "task:e2e" },
+    { id: "session:objective-e2e", kind: "objectiveChat", taskId: null }
   ];
   for (const session of sessions) {
     store.upsertSession({
       id: session.id, title: session.id, provider: "receipt-provider", status: "running",
       sessionKind: session.kind, agentId: agent.agentId, objectiveId: "objective:e2e",
-      workItemId: session.workItemId
+      taskId: session.taskId
     });
     if (session.kind === "worker") {
-      store.bindSessionToWorkItem(session.id, session.workItemId, "objective:e2e");
+      store.bindSessionToTask(session.id, session.taskId, "objective:e2e");
     } else {
       store.bindSessionToObjective(session.id, "objective:e2e");
     }
@@ -115,16 +115,16 @@ async function fixture() {
     const logical = store.getLogicalSession(logicalSessionId);
     const active = logical?.activeBinding;
     const session = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-    const workItem = session?.workItemId ? store.getWorkItem(session.workItemId) : null;
+    const task = session?.taskId ? store.getTask(session.taskId) : null;
     if (!active || !session) return null;
     return {
       logicalSessionId, providerBindingId: active.bindingId, providerId: active.providerId,
       providerSessionId: active.providerSessionId, routingVersion: active.routingVersion,
       state: active.state, isCurrent: logical.activeThreadId === active.providerThreadId,
       tombstoned: false, sessionId: session.id, sessionKind: session.sessionKind,
-      objectiveId: session.objectiveId, workItemId: session.workItemId,
-      currentWorkItemSessionId: workItem?.current_session_id ?? null,
-      agentId: session.agentId, authorizationRevision: workItem?.resource_version ?? 1
+      objectiveId: session.objectiveId, taskId: session.taskId,
+      currentTaskSessionId: task?.current_session_id ?? null,
+      agentId: session.agentId, authorizationRevision: task?.resource_version ?? 1
     };
   };
   const coordinator = new ToolHostMaterializationCoordinator({
@@ -195,7 +195,7 @@ test("Objective Chat search/load applies on demand and gateway dispatch reassert
     const metadata = {
       logicalSessionId, providerBindingId: binding.providerBindingId,
       sessionId: binding.sessionId, sessionKind: binding.sessionKind,
-      objectiveId: binding.objectiveId, workItemId: null
+      objectiveId: binding.objectiveId, taskId: null
     };
     const search = await value.toolHost.execute({
       tool: TOOL_CATALOG_SEARCH, actorId: value.agent.agentId, metadata,

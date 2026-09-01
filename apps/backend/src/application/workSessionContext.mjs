@@ -1,23 +1,23 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
-export function buildWorkSessionContext({ session, workItem, objective, artifactIndex = null, startupReceipt = null } = {}) {
-  if (!session || session.sessionKind !== "worker" || !workItem) return null;
-  if (session.workItemId !== workItem.id || session.objectiveId !== workItem.objective_id) {
-    const error = new Error("Worker Session context does not match its bound WorkItem.");
+export function buildWorkSessionContext({ session, task, objective, artifactIndex = null, startupReceipt = null } = {}) {
+  if (!session || session.sessionKind !== "worker" || !task) return null;
+  if (session.taskId !== task.id || session.objectiveId !== task.objective_id) {
+    const error = new Error("Worker Session context does not match its bound Task.");
     error.code = "WORK_SESSION_BINDING_MISMATCH";
     throw error;
   }
-  if (objective && objective.id !== workItem.objective_id) {
+  if (objective && objective.id !== task.objective_id) {
     const error = new Error("Worker Session context does not match its bound Objective.");
     error.code = "WORK_SESSION_BINDING_MISMATCH";
     throw error;
   }
   if (startupReceipt && (startupReceipt.schemaVersion !== 2
     || startupReceipt.status !== "ready"
-    || startupReceipt.workItemId !== workItem.id
-    || startupReceipt.objectiveId !== workItem.objective_id
-    || startupReceipt.repositoryId !== workItem.main_workspace_id
+    || startupReceipt.taskId !== task.id
+    || startupReceipt.objectiveId !== task.objective_id
+    || startupReceipt.repositoryId !== task.main_workspace_id
     || !validReceiptHash(startupReceipt)
     || (session.external?.cwd
       && resolve(session.external.cwd) !== resolve(startupReceipt.canonicalWorktreePath)))) {
@@ -27,23 +27,23 @@ export function buildWorkSessionContext({ session, workItem, objective, artifact
   }
 
   const lines = [
-    `<corptie_work_session_binding session_id="${xml(session.id)}" work_item_id="${xml(workItem.id)}" objective_id="${xml(workItem.objective_id)}">`,
-    "This is the authoritative WorkItem binding for execution ownership, evidence, and lifecycle operations in this Worker Session.",
-    "Handle requests within the bound WorkItem scope normally.",
-    "A direct user request may extend beyond the WorkItem title, description, or acceptance criteria. Continue handling that request when it is otherwise allowed. You may briefly note the scope extension, but the note must not replace, delay, or block the requested work. Never refuse a request solely because it is outside the bound WorkItem scope.",
-    "The WorkItem binding does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls. Apply those constraints normally; refuse, pause, or request authorization only when one of those constraints requires it, not merely because the request is outside the WorkItem scope.",
-    "An expanded request does not rebind this Session or authorize lifecycle operations on a different WorkItem.",
+    `<corptie_work_session_binding session_id="${xml(session.id)}" task_id="${xml(task.id)}" objective_id="${xml(task.objective_id)}">`,
+    "This is the authoritative Task binding for execution ownership, evidence, and lifecycle operations in this Worker Session.",
+    "Handle requests within the bound Task scope normally.",
+    "A direct user request may extend beyond the Task title, description, or acceptance criteria. Continue handling that request when it is otherwise allowed. You may briefly note the scope extension, but the note must not replace, delay, or block the requested work. Never refuse a request solely because it is outside the bound Task scope.",
+    "The Task binding does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls. Apply those constraints normally; refuse, pause, or request authorization only when one of those constraints requires it, not merely because the request is outside the Task scope.",
+    "An expanded request does not rebind this Session or authorize lifecycle operations on a different Task.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
     startupReceipt
       ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} generation=${startupReceipt.bindingGeneration} repository=${text(startupReceipt.repositoryId)} worktree=${text(startupReceipt.worktreeId)} receiptHash=${text(startupReceipt.receiptHash)}`
       : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",
-    "Use corptie_artifact_create for durable documents. Choose scope=objective for shared Objective resources or scope=work_item for this WorkItem's private resources; always supply a stable idempotency_key.",
-    "Every Work Session in this Objective may read and manage Objective-scoped Artifacts. Artifacts owned by another WorkItem are readable but immutable here; this WorkItem's Artifacts remain manageable.",
+    "Use corptie_artifact_create for durable documents. Choose scope=objective for shared Objective resources or scope=task for this Task's private resources; always supply a stable idempotency_key.",
+    "Every Work Session in this Objective may read and manage Objective-scoped Artifacts. Artifacts owned by another Task are readable but immutable here; this Task's Artifacts remain manageable.",
     "Use kind, category_path, tags, aliases, and keywords so later Sessions can locate the document through the Objective Artifact index and full-text search.",
     "",
-    `WorkItem title: ${text(workItem.title)}`,
-    workItem.description ? `WorkItem description:\n${text(workItem.description)}` : "",
-    workItem.acceptance_criteria ? `WorkItem acceptance criteria:\n${text(workItem.acceptance_criteria)}` : "",
+    `Task title: ${text(task.title)}`,
+    task.description ? `Task description:\n${text(task.description)}` : "",
+    task.acceptance_criteria ? `Task acceptance criteria:\n${text(task.acceptance_criteria)}` : "",
     objective?.name ? `Parent Objective: ${text(objective.name)}` : "",
     objective?.idealState ? `Objective ideal state:\n${text(objective.idealState)}` : "",
     artifactIndex?.items?.length ? [

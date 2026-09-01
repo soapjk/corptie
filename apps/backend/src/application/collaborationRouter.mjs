@@ -4,7 +4,7 @@
 //   score = w1·objective_relevance + w2·capability_match + w3·trust
 //         + w4·availability_weight - w5·load_penalty
 // 14.7 主动触发检测（四类，前三默认开、第四默认关）。
-// Delegation/Consultation 执行层复用 collaborationCore 的 collaboration_tasks 状态机。
+// Delegation/Consultation 执行层复用 collaborationCore 的 collaboration_requests 状态机。
 
 function parseJsonArray(json) {
   try {

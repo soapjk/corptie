@@ -275,7 +275,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
             _ = makeSessionGroups(
                 rows: rows,
                 agents: [],
-                workItems: [],
+                tasks: [],
                 objectives: [],
                 category: .assistant
             )
@@ -283,7 +283,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
         let groups = makeSessionGroups(
             rows: rows,
             agents: [],
-            workItems: [],
+            tasks: [],
             objectives: [],
             category: .assistant
         )
@@ -303,7 +303,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
             _ = makeSessionGroups(
                 rows: filtered,
                 agents: [],
-                workItems: [],
+                tasks: [],
                 objectives: [],
                 category: .assistant
             )

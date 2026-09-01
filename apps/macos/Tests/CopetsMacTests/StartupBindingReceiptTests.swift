@@ -6,7 +6,7 @@ import Testing
 struct StartupBindingReceiptTests {
     @Test func decodesAndVerifiesCompleteSchemaV2Receipt() throws {
         let payload = try readyPayload()
-        let decoded = try JSONDecoder().decode(WorkItemStartupReady.self, from: payload)
+        let decoded = try JSONDecoder().decode(CorptieTaskStartupReady.self, from: payload)
 
         #expect(decoded.status == "ready")
         #expect(decoded.receipt.schemaVersion == 2)
@@ -17,13 +17,13 @@ struct StartupBindingReceiptTests {
     @Test func rejectsUnknownRequiredEnumInsteadOfDisplayingReady() throws {
         var envelope = try readyObject()
         var receipt = try #require(envelope["receipt"] as? [String: Any])
-        receipt["headIdentity"] = ["kind": "future_kind", "branch": "workitem/one"]
+        receipt["headIdentity"] = ["kind": "future_kind", "branch": "task/one"]
         receipt["receiptHash"] = try hash(receipt)
         envelope["receipt"] = receipt
 
         let data = try JSONSerialization.data(withJSONObject: envelope, options: [.sortedKeys, .withoutEscapingSlashes])
         #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(WorkItemStartupReady.self, from: data)
+            try JSONDecoder().decode(CorptieTaskStartupReady.self, from: data)
         }
     }
 
@@ -35,7 +35,7 @@ struct StartupBindingReceiptTests {
         missing["receipt"] = missingReceipt
         let missingData = try JSONSerialization.data(withJSONObject: missing)
         #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(WorkItemStartupReady.self, from: missingData)
+            try JSONDecoder().decode(CorptieTaskStartupReady.self, from: missingData)
         }
 
         var invalid = try readyObject()
@@ -44,7 +44,7 @@ struct StartupBindingReceiptTests {
         invalid["receipt"] = invalidReceipt
         let invalidData = try JSONSerialization.data(withJSONObject: invalid)
         #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(WorkItemStartupReady.self, from: invalidData)
+            try JSONDecoder().decode(CorptieTaskStartupReady.self, from: invalidData)
         }
     }
 
@@ -56,7 +56,7 @@ struct StartupBindingReceiptTests {
         topLevel["receipt"] = topReceipt
         let topData = try JSONSerialization.data(withJSONObject: topLevel)
         #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(WorkItemStartupReady.self, from: topData)
+            try JSONDecoder().decode(CorptieTaskStartupReady.self, from: topData)
         }
 
         var nested = try readyObject()
@@ -68,7 +68,7 @@ struct StartupBindingReceiptTests {
         nested["receipt"] = nestedReceipt
         let nestedData = try JSONSerialization.data(withJSONObject: nested)
         #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(WorkItemStartupReady.self, from: nestedData)
+            try JSONDecoder().decode(CorptieTaskStartupReady.self, from: nestedData)
         }
     }
 
@@ -82,12 +82,12 @@ struct StartupBindingReceiptTests {
             "status": "ready",
             "startupOperationId": "startup:one",
             "objectiveId": "objective:one",
-            "workItemId": "work_item:one",
+            "taskId": "task:one",
             "logicalSessionId": "session:one",
             "repositoryId": "repository:one",
             "worktreeId": "worktree:one",
             "canonicalWorktreePath": "/Volumes/T9/worktrees/one",
-            "headIdentity": ["kind": "branch", "branch": "workitem/one"],
+            "headIdentity": ["kind": "branch", "branch": "task/one"],
             "providerBindingId": "startup-binding:one",
             "bindingGeneration": 1,
             "sourceCommitOid": String(repeating: "a", count: 40),

@@ -80,10 +80,10 @@ test("listPromotionCandidates 只返回满足置信度/用量阈值的能力类�
   const { store, directory } = await createStore();
   try {
     store.createObjective({ id: "o", name: "Objective" });
-    store.createWorkItem({ id: "w", objectiveId: "o", title: "WorkItem" });
+    store.createTask({ id: "w", objectiveId: "o", title: "Task" });
     store.createSession({
       id: "s", title: "Worker", provider: "codex-app-server", status: "running",
-      objectiveId: "o", workItemId: "w", agentId: "a1"
+      objectiveId: "o", taskId: "w", agentId: "a1"
     });
     // 合格：agent + skill + 高置信 + 高用量
     store.createMemory({ ownerType: "agent", ownerId: "a1", kind: "skill", content: "x", confidence: 0.9, usageCount: 6 });
@@ -93,7 +93,7 @@ test("listPromotionCandidates 只返回满足置信度/用量阈值的能力类�
     store.createMemory({ ownerType: "agent", ownerId: "a1", kind: "fact", content: "z", confidence: 0.9, usageCount: 6 });
     // 非 agent owner
     store.createMemory({
-      ownerType: "work_item", ownerId: "w", workItemId: "w", sourceSessionId: "s",
+      ownerType: "task", ownerId: "w", taskId: "w", sourceSessionId: "s",
       kind: "skill", content: "w", confidence: 0.9, usageCount: 6
     });
     // 已晋升

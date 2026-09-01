@@ -117,7 +117,7 @@ struct ScheduledSessionRun: Identifiable, Codable, Equatable, Sendable {
     let triggerReason: String
     let status: ScheduledSessionRunStatus
     let attemptCount: Int
-    let agentWorkItemId: String?
+    let agentCorptieTaskId: String?
     let targetTurnId: String?
     let bindingId: String?
     let providerSessionId: String?
@@ -142,7 +142,7 @@ struct ScheduledSessionRun: Identifiable, Codable, Equatable, Sendable {
         triggerReason: String,
         status: ScheduledSessionRunStatus,
         attemptCount: Int,
-        agentWorkItemId: String? = nil,
+        agentCorptieTaskId: String? = nil,
         targetTurnId: String? = nil,
         bindingId: String? = nil,
         providerSessionId: String? = nil,
@@ -166,7 +166,7 @@ struct ScheduledSessionRun: Identifiable, Codable, Equatable, Sendable {
         self.triggerReason = triggerReason
         self.status = status
         self.attemptCount = attemptCount
-        self.agentWorkItemId = agentWorkItemId
+        self.agentCorptieTaskId = agentCorptieTaskId
         self.targetTurnId = targetTurnId
         self.bindingId = bindingId
         self.providerSessionId = providerSessionId
@@ -194,7 +194,7 @@ struct AutomationRunStage: Codable, Equatable, Sendable {
 struct AutomationActionResult: Codable, Equatable, Sendable {
     let type: String
     let status: String
-    let workItemId: String?
+    let taskId: String?
     let completedAt: String?
 }
 

@@ -41,7 +41,7 @@ struct ProjectStatusRefreshLifecycleTests {
         let testFile = URL(fileURLWithPath: #filePath)
         let root = testFile.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let sessionsView = try String(
-            contentsOf: root.appendingPathComponent("Sources/CopetsMac/SessionsView.swift"),
+            contentsOf: root.appendingPathComponent("Sources/CopetsMac/UnifiedConsoleView.swift"),
             encoding: .utf8
         )
 

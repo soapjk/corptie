@@ -6,7 +6,7 @@ test("archived Session runtime release waits for unsettled work and preserves pe
   let busy = true;
   const scheduled = [];
   const calls = [];
-  const session = { id: "session:worker", archived: true, workItemId: "work-item:one" };
+  const session = { id: "session:worker", archived: true, taskId: "task:one" };
   const service = new SessionRuntimeReleaseService({
     store: {
       getSession: () => session,
@@ -27,7 +27,7 @@ test("archived Session runtime release waits for unsettled work and preserves pe
     logger: { warn() {} }
   });
 
-  const release = service.request(session.id, "work-item-completed");
+  const release = service.request(session.id, "task-completed");
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(calls.length, 0);
   assert.equal(scheduled.length, 1);
@@ -37,7 +37,7 @@ test("archived Session runtime release waits for unsettled work and preserves pe
   assert.deepEqual(await release, { status: "released", result: { status: "disconnected" } });
   assert.deepEqual(calls, [[session.id, {
     source: "session-archive-runtime-release",
-    reason: "work-item-completed"
+    reason: "task-completed"
   }]]);
 });
 
@@ -66,11 +66,11 @@ test("unarchiving cancels a pending runtime release", async () => {
   assert.equal(scheduled.length, 0);
 });
 
-test("completed WorkItem and startup reconciliation select only archived Sessions", () => {
+test("completed Task and startup reconciliation select only archived Sessions", () => {
   const requested = [];
   const sessions = [
-    { id: "session:worker", archived: true, archiveReason: "workItemCompleted", workItemId: "work-item:one" },
-    { id: "session:manual", archived: true, archiveReason: "manual", workItemId: null }
+    { id: "session:worker", archived: true, archiveReason: "taskCompleted", taskId: "task:one" },
+    { id: "session:manual", archived: true, archiveReason: "manual", taskId: null }
   ];
   const service = new SessionRuntimeReleaseService({
     store: {
@@ -83,11 +83,11 @@ test("completed WorkItem and startup reconciliation select only archived Session
   });
   service.request = (id, reason) => { requested.push([id, reason]); return Promise.resolve(); };
 
-  assert.equal(service.releaseCompletedWorkItemSessions("work-item:one"), 1);
+  assert.equal(service.releaseCompletedTaskSessions("task:one"), 1);
   assert.equal(service.reconcileArchivedSessions(), 2);
   assert.deepEqual(requested, [
-    ["session:worker", "work-item-completed"],
-    ["session:worker", "workItemCompleted"],
+    ["session:worker", "task-completed"],
+    ["session:worker", "taskCompleted"],
     ["session:manual", "manual"]
   ]);
 });

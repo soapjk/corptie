@@ -1,18 +1,18 @@
 export function shouldReportAgentWorkQueued({
   sessionHasActiveRun = false,
-  hasRunningWorkItem = false,
-  queuedWorkItemsAhead = 0
+  hasRunningTask = false,
+  queuedTasksAhead = 0
 } = {}) {
   return Boolean(
     sessionHasActiveRun
-    || hasRunningWorkItem
-    || Number(queuedWorkItemsAhead) > 0
+    || hasRunningTask
+    || Number(queuedTasksAhead) > 0
   );
 }
 
-export function interruptedAgentWorkRecoveryPatch(workItem) {
-  if (!workItem || workItem.status !== "running") return null;
-  if (workItem.source?.type === "workspace-continuation") {
+export function interruptedAgentWorkRecoveryPatch(task) {
+  if (!task || task.status !== "running") return null;
+  if (task.source?.type === "workspace-continuation") {
     return {
       status: "queued",
       startedAt: null,
@@ -20,7 +20,7 @@ export function interruptedAgentWorkRecoveryPatch(workItem) {
       lastError: "Provider stopped before the workspace continuation settled; it was requeued."
     };
   }
-  if (workItem.targetTurnId) {
+  if (task.targetTurnId) {
     return {
       status: "cancelled",
       lastError: "Provider stopped after dispatch; message was not resent."
@@ -34,14 +34,14 @@ export function interruptedAgentWorkRecoveryPatch(workItem) {
   };
 }
 
-export function assertAgentWorkSessionReference(workItem, reference) {
-  if (!workItem?.sessionId || !reference?.sessionId || workItem.sessionId !== reference.sessionId) {
+export function assertAgentWorkSessionReference(task, reference) {
+  if (!task?.sessionId || !reference?.sessionId || task.sessionId !== reference.sessionId) {
     const error = new Error("Queued Agent work resolved to a different product Session.");
     error.code = "AGENT_WORK_ROUTE_MISMATCH";
     throw error;
   }
-  if (workItem.source?.type !== "workspace-continuation") return reference;
-  const source = workItem.source;
+  if (task.source?.type !== "workspace-continuation") return reference;
+  const source = task.source;
   if (source.productSessionId !== reference.sessionId
     || source.logicalSessionId !== reference.logicalSessionId
     || source.bindingId !== reference.bindingId

@@ -990,7 +990,7 @@ function attemptFixture(overrides = {}) {
     sourceRoutingVersion: 1, sourceBindingGeneration: 1, targetBindingGeneration: 2,
     capabilityRevision: "test:1", boundarySequence: 12, boundaryTurnId: "turn:6",
     repositoryId: null, workspaceId: null, worktreeId: null, boundCwd: "/repo",
-    objectiveId: null, workItemId: null, instructionSources: [], permissionSnapshot: {},
+    objectiveId: null, taskId: null, instructionSources: [], permissionSnapshot: {},
     toolCatalog: {}, artifactReferences: [], strategy: null, manifestHash: null, state: "frozen",
     contextReferences: [],
     cancelRequested: false, replacement: null, error: null, metrics: {},

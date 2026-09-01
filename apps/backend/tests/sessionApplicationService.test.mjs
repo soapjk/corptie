@@ -306,7 +306,7 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
     {
       actorId: "agent:one",
       objectiveId: "objective:one",
-      workItemId: "work_item:one",
+      taskId: "task:one",
       sessionKind: "worker"
     }
   );
@@ -326,7 +326,7 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
   assert.deepEqual(toolHostContexts[1], {
     actorId: "agent:one",
     objectiveId: "objective:one",
-    workItemId: "work_item:one",
+    taskId: "task:one",
     sessionKind: "worker",
     purpose: "session-create-finalization",
     sessionId: "session:new",
@@ -490,7 +490,7 @@ test("unusable replacement cleanup removes the local Session even when the Provi
   });
 
   const deleted = await service.deleteUnusableSession("logical-missing", {
-    source: "work-item-self-repair",
+    source: "task-self-repair",
     replacementSessionId: "legacy-replacement"
   });
 

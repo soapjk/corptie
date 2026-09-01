@@ -194,7 +194,7 @@
         "artifactRef",
         "startupBindingRef",
         "objectiveId",
-        "workItemId",
+        "taskId",
         "logicalSessionId",
         "repositoryId",
         "worktreeId",
@@ -231,7 +231,7 @@
           "minLength": 1,
           "maxLength": 512
         },
-        "workItemId": {
+        "taskId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 512

@@ -1,4 +1,4 @@
-import { COLLABORATION_RELATION_TYPES, workItemPatchSchema } from "../domain/workItemToolSchema.mjs";
+import { COLLABORATION_RELATION_TYPES, taskPatchSchema } from "../domain/taskToolSchema.mjs";
 
 function tool(name, description, properties, required = [], schemaExtensions = {}) {
   return Object.freeze({
@@ -20,7 +20,7 @@ const id = (description) => ({ type: "string", minLength: 1, description });
 const openObject = { type: "object", additionalProperties: true };
 const nullableString = { type: ["string", "null"] };
 const stringArray = { type: "array", items: { type: "string" } };
-const artifactVisibility = { type: "string", enum: ["objective_private", "work_item_private", "session_private", "repository_tracked"] };
+const artifactVisibility = { type: "string", enum: ["objective_private", "task_private", "session_private", "repository_tracked"] };
 const artifactRelation = { type: "string", enum: ["implementation_spec", "security_requirement", "test_plan", "research_evidence", "handoff", "acceptance_evidence"] };
 const objectivePatch = {
   type: "object",
@@ -74,26 +74,26 @@ export const platformDynamicTools = Object.freeze([
     ["action"]
   ),
   tool(
-    "corptie_platform_work_items_manage",
-    "List, inspect, create, edit, delete, or manage dependencies for WorkItems.",
+    "corptie_platform_tasks_manage",
+    "List, inspect, create, edit, delete, or manage dependencies for Tasks.",
     {
       action: {
         type: "string",
         enum: ["list", "get", "create", "update", "delete", "dependencies", "add_dependency", "remove_dependency"]
       },
-      work_item_id: id("WorkItem id."),
-      target_work_item_id: id("Dependency target WorkItem id."),
+      task_id: id("Task id."),
+      target_task_id: id("Dependency target Task id."),
       objective_id: id("Owning Objective id for create or list filtering."),
       title: { type: "string", minLength: 1 },
       dependency_type: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] },
-      patch: workItemPatchSchema
+      patch: taskPatchSchema
     },
     ["action"],
     {
       allOf: [
         {
           if: { properties: { action: { const: "get" } }, required: ["action"] },
-          then: { required: ["work_item_id"] }
+          then: { required: ["task_id"] }
         },
         {
           if: { properties: { action: { const: "create" } }, required: ["action"] },
@@ -101,22 +101,22 @@ export const platformDynamicTools = Object.freeze([
         },
         {
           if: { properties: { action: { const: "update" } }, required: ["action"] },
-          then: { required: ["work_item_id", "patch"] }
+          then: { required: ["task_id", "patch"] }
         },
         {
           if: { properties: { action: { const: "delete" } }, required: ["action"] },
-          then: { required: ["work_item_id"] }
+          then: { required: ["task_id"] }
         },
         {
           if: { properties: { action: { const: "dependencies" } }, required: ["action"] },
-          then: { required: ["work_item_id"] }
+          then: { required: ["task_id"] }
         },
         {
           if: {
             properties: { action: { enum: ["add_dependency", "remove_dependency"] } },
             required: ["action"]
           },
-          then: { required: ["work_item_id", "target_work_item_id"] }
+          then: { required: ["task_id", "target_task_id"] }
         }
       ]
     }
@@ -136,7 +136,7 @@ export const platformDynamicTools = Object.freeze([
       session_id: id("Session id for all operations except list and create."),
       agent_id: id("Agent that owns a newly created Session."),
       provider_id: id("Agent Provider for a newly created Session."),
-      work_item_id: id("Optional WorkItem for a new Worker Session."),
+      task_id: id("Optional Task for a new Worker Session."),
       title: { type: "string" },
       prompt: { type: "string" },
       message: { type: "string", minLength: 1 },
@@ -163,13 +163,13 @@ export const platformDynamicTools = Object.freeze([
       title: { type: "string", minLength: 1 }, summary: { type: "string" }, content: { type: "string" },
       query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 65536 },
       offset: { type: "integer", minimum: 0 }, version: { type: "integer", minimum: 1 },
-      visibility: artifactVisibility, bound_work_item_id: id("Same-Objective WorkItem id."),
-      scope: { type: "string", enum: ["objective", "work_item"] }, kind: { type: "string" },
+      visibility: artifactVisibility, bound_task_id: id("Same-Objective Task id."),
+      scope: { type: "string", enum: ["objective", "task"] }, kind: { type: "string" },
       category_path: { type: "string" }, tags: stringArray, aliases: stringArray, keywords: stringArray,
       kinds: stringArray, category_prefix: { type: "string" },
       bound_session_id: id("Same-Objective Session id."), repository_locator: { type: "string", minLength: 1 },
       mime_type: { type: "string", minLength: 1 }, approval_status: { type: "string", enum: ["draft", "approved"] },
-      work_item_id: id("Same-Objective WorkItem reference target."), session_id: id("Same-Objective Session reference target."),
+      task_id: id("Same-Objective Task reference target."), session_id: id("Same-Objective Session reference target."),
       relation: artifactRelation, required: { type: "boolean" }, version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
       reason: { type: "string", minLength: 1 }, source_path: { type: "string", minLength: 1 },
       destination_path: { type: "string", minLength: 1 }, confirmation_id: id("Server-issued confirmation record id."),
@@ -180,12 +180,12 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_collaboration_manage",
-    "Discover exact Session actors, create target WorkItems and Worker Sessions, and stage formal Session-to-Session collaboration for real user confirmation.",
+    "Discover exact Session actors, create target Tasks and Worker Sessions, and stage formal Session-to-Session collaboration for real user confirmation.",
     {
-      action: { type: "string", enum: ["discover_sessions", "get_session", "create_work_item", "start_worker", "request"] },
+      action: { type: "string", enum: ["discover_sessions", "get_session", "create_task", "start_worker", "request"] },
       session_id: id("Exact logical or Provider Session id."), objective_id: id("Explicit target Objective id."),
       agent_id: id("Agent resource used to configure a Worker Session; never a message recipient."),
-      work_item_id: id("Target WorkItem id."), title: { type: "string", minLength: 1 }, description: { type: "string" },
+      task_id: id("Target Task id."), title: { type: "string", minLength: 1 }, description: { type: "string" },
       acceptance_criteria: { type: "array", items: { type: "string" } }, priority: { type: "string", enum: ["low", "medium", "high", "urgent"] },
       provider_id: id("Provider resource for Worker Session creation."), summary: { type: "string", minLength: 1 },
       type: { type: "string", enum: ["question", "change_request"] }, max_iterations: { type: "integer", minimum: 1 },

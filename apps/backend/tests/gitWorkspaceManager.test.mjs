@@ -954,25 +954,25 @@ test("one plan advances and reuses the same clean Integration Worktree for later
   }
 });
 
-test("ensures one deterministic WorkItem Worktree and reuses it on retry", async () => {
-  const fixture = await createFixture("workitem-worktree");
+test("ensures one deterministic Task Worktree and reuses it on retry", async () => {
+  const fixture = await createFixture("task-worktree");
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") }
   });
   try {
-    const created = await manager.ensureWorkItemWorktreeForProject({
+    const created = await manager.ensureTaskWorktreeForProject({
       repositoryId: fixture.repositoryId,
       workingDirectory: fixture.repository,
-      workItemId: "work_item:one"
+      taskId: "task:one"
     });
-    const retried = await manager.ensureWorkItemWorktreeForProject({
+    const retried = await manager.ensureTaskWorktreeForProject({
       repositoryId: fixture.repositoryId,
       workingDirectory: fixture.repository,
-      workItemId: "work_item:one"
+      taskId: "task:one"
     });
 
-    assert.equal(created.branchName, "workitem/one");
+    assert.equal(created.branchName, "task/one");
     assert.equal(created.reused, false);
     assert.equal(retried.reused, true);
     assert.equal(retried.worktreeId, created.worktreeId);
@@ -980,24 +980,24 @@ test("ensures one deterministic WorkItem Worktree and reuses it on retry", async
     const root = join(fixture.directory, `.corptie-worktrees-${fixture.repositoryId.split(":").at(-1)}`);
     assert.equal(created.path, await realpath(join(root, "one")));
     assert.equal((await gitOutput(["rev-parse", "HEAD"], created.path)).trim(), created.headOid);
-    assert.equal((await gitOutput(["branch", "--show-current"], created.path)).trim(), "workitem/one");
+    assert.equal((await gitOutput(["branch", "--show-current"], created.path)).trim(), "task/one");
   } finally {
     await fixture.close();
   }
 });
 
-test("an unborn repository starts its first WorkItem in the main checkout without inventing a commit", async () => {
-  const fixture = await createFixture("workitem-unborn", { initialCommit: false });
+test("an unborn repository starts its first Task in the main checkout without inventing a commit", async () => {
+  const fixture = await createFixture("task-unborn", { initialCommit: false });
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") }
   });
   await writeFile(join(fixture.repository, "untracked-project.txt"), "bootstrap project\n");
   try {
-    const prepared = await manager.ensureWorkItemWorktreeForProject({
+    const prepared = await manager.ensureTaskWorktreeForProject({
       repositoryId: fixture.repositoryId,
       workingDirectory: fixture.repository,
-      workItemId: "work_item:bootstrap"
+      taskId: "task:bootstrap"
     });
 
     assert.equal(prepared.worktreeId, (await inspectGitWorkspace(fixture.repository)).worktreeId);
@@ -1014,8 +1014,8 @@ test("an unborn repository starts its first WorkItem in the main checkout withou
   }
 });
 
-test("creates WorkItem Worktrees inside a missing managed non-nested root for paths with spaces and non-ASCII characters", async () => {
-  const fixture = await createFixture("workitem-unicode", { repositoryName: "主项目 repo" });
+test("creates Task Worktrees inside a missing managed non-nested root for paths with spaces and non-ASCII characters", async () => {
+  const fixture = await createFixture("task-unicode", { repositoryName: "主项目 repo" });
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") }
@@ -1023,14 +1023,14 @@ test("creates WorkItem Worktrees inside a missing managed non-nested root for pa
   const root = join(fixture.directory, `.corptie-worktrees-${fixture.repositoryId.split(":").at(-1)}`);
   try {
     await assert.rejects(() => realpath(root), { code: "ENOENT" });
-    const created = await manager.ensureWorkItemWorktreeForProject({
+    const created = await manager.ensureTaskWorktreeForProject({
       repositoryId: fixture.repositoryId,
       workingDirectory: fixture.repository,
-      workItemId: "work_item:路径 one"
+      taskId: "task:路径 one"
     });
 
     assert.equal(created.path, await realpath(join(root, "one-0b60f425b4")));
-    assert.equal(created.branchName, "workitem/one-0b60f425b4");
+    assert.equal(created.branchName, "task/one-0b60f425b4");
     assert.equal((await gitOutput(["rev-parse", "--show-toplevel"], created.path)).trim(), created.path);
     assert.equal((await gitOutput(["status", "--porcelain=v1"], created.path)).trim(), "");
   } finally {
@@ -1038,22 +1038,22 @@ test("creates WorkItem Worktrees inside a missing managed non-nested root for pa
   }
 });
 
-test("allocates distinct WorkItem Worktrees for names that normalize to the same readable suffix", async () => {
-  const fixture = await createFixture("workitem-distinct");
+test("allocates distinct Task Worktrees for names that normalize to the same readable suffix", async () => {
+  const fixture = await createFixture("task-distinct");
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") }
   });
   try {
-    const first = await manager.ensureWorkItemWorktreeForProject({
+    const first = await manager.ensureTaskWorktreeForProject({
       repositoryId: fixture.repositoryId,
       workingDirectory: fixture.repository,
-      workItemId: "work_item:duplicate name"
+      taskId: "task:duplicate name"
     });
-    const second = await manager.ensureWorkItemWorktreeForProject({
+    const second = await manager.ensureTaskWorktreeForProject({
       repositoryId: fixture.repositoryId,
       workingDirectory: fixture.repository,
-      workItemId: "work_item:duplicate-name"
+      taskId: "task:duplicate-name"
     });
 
     assert.notEqual(first.path, second.path);
@@ -1065,19 +1065,19 @@ test("allocates distinct WorkItem Worktrees for names that normalize to the same
   }
 });
 
-test("refuses a managed WorkItem Worktree root nested inside any registered Worktree", async () => {
-  const fixture = await createFixture("workitem-nested-root");
+test("refuses a managed Task Worktree root nested inside any registered Worktree", async () => {
+  const fixture = await createFixture("task-nested-root");
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") },
-    workItemWorktreesRoot: join(fixture.repository, ".corptie", "worktrees")
+    taskWorktreesRoot: join(fixture.repository, ".corptie", "worktrees")
   });
   try {
     await assert.rejects(
-      () => manager.ensureWorkItemWorktreeForProject({
+      () => manager.ensureTaskWorktreeForProject({
         repositoryId: fixture.repositoryId,
         workingDirectory: fixture.repository,
-        workItemId: "work_item:nested"
+        taskId: "task:nested"
       }),
       /must not be nested inside another Git Worktree/
     );
@@ -1088,7 +1088,7 @@ test("refuses a managed WorkItem Worktree root nested inside any registered Work
 });
 
 test("reports an explicit error when the managed Worktree target is occupied", async () => {
-  const fixture = await createFixture("workitem-conflict");
+  const fixture = await createFixture("task-conflict");
   const manager = new GitWorkspaceManager({
     store: fixture.store,
     transitions: { switchWorkspace: async () => assert.fail("must not switch") }
@@ -1098,15 +1098,15 @@ test("reports an explicit error when the managed Worktree target is occupied", a
   try {
     await mkdir(occupied, { recursive: true });
     await assert.rejects(
-      () => manager.ensureWorkItemWorktreeForProject({
+      () => manager.ensureTaskWorktreeForProject({
         repositoryId: fixture.repositoryId,
         workingDirectory: fixture.repository,
-        workItemId: "work_item:occupied"
+        taskId: "task:occupied"
       }),
       (error) => error?.message?.includes("worktree target path already exists:")
         && error.message.endsWith("/occupied")
     );
-    await assert.rejects(() => gitOutput(["show-ref", "--verify", "refs/heads/workitem/occupied"], fixture.repository));
+    await assert.rejects(() => gitOutput(["show-ref", "--verify", "refs/heads/task/occupied"], fixture.repository));
   } finally {
     await fixture.close();
   }

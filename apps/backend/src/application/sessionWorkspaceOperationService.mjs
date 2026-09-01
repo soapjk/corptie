@@ -211,12 +211,12 @@ export class SessionWorkspaceOperationService {
     this.store.db.run(
       `INSERT INTO workspace_creation_requests (
         operation_id, idempotency_key, input_fingerprint, actor_agent_id,
-        source_session_id, logical_session_id, objective_id, work_item_id,
+        source_session_id, logical_session_id, objective_id, task_id,
         repository_id, target_path, status, failure_stage, request_json, result_json,
         error_code, error_message, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'workspace_creation', ?, NULL, NULL, NULL, ?, ?)`,
       [operationId, idempotencyKey, fingerprint, actorId, scope.session.id,
-        scope.logical.logicalSessionId, scope.session.objectiveId, scope.session.workItemId ?? null,
+        scope.logical.logicalSessionId, scope.session.objectiveId, scope.session.taskId ?? null,
         scope.logical.repositoryId, targetPath, JSON.stringify(input), timestamp, timestamp]
     );
     this.store.scheduleSave();
@@ -257,10 +257,10 @@ export class SessionWorkspaceOperationService {
         "context_validation"
       );
     }
-    if (session.workItemId && metadata?.workItemId !== session.workItemId) {
+    if (session.taskId && metadata?.taskId !== session.taskId) {
       throw coded(
-        "WORKSPACE_WORK_ITEM_CONTEXT_MISMATCH",
-        `Request WorkItem context does not match source Session ${logical.logicalSessionId}.`,
+        "WORKSPACE_TASK_CONTEXT_MISMATCH",
+        `Request Task context does not match source Session ${logical.logicalSessionId}.`,
         403,
         "context_validation"
       );
@@ -310,7 +310,7 @@ export class SessionWorkspaceOperationService {
       actorAgentId: actorId ?? null,
       sourceSessionId: metadata?.sessionId ?? null,
       objectiveId: metadata?.objectiveId ?? null,
-      workItemId: metadata?.workItemId ?? null,
+      taskId: metadata?.taskId ?? null,
       targetPath: input?.target_path ?? null,
       failureStage: error.stage ?? "context_validation",
       errorCode: error.code ?? "WORKSPACE_REQUEST_REJECTED",
@@ -328,7 +328,7 @@ function context(scope) {
     sourceSessionId: scope.logical.logicalSessionId,
     providerSessionId: scope.session.id,
     objectiveId: scope.session.objectiveId,
-    workItemId: scope.session.workItemId ?? null,
+    taskId: scope.session.taskId ?? null,
     repositoryId: scope.logical.repositoryId
   };
 }

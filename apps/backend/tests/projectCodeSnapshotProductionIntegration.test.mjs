@@ -21,7 +21,7 @@ test("production composition invokes and persists one authoritative current-Work
     assertLogicalWorkSessionBinding: () => ({ ...fixture.sessionContext, sessionId: "session:test" }),
     getLogicalSession: () => logical,
     getSession: () => ({ id: "session:test", sessionKind: "worker" }),
-    getWorkItem: () => ({ id: fixture.sessionContext.workItemId }),
+    getTask: () => ({ id: fixture.sessionContext.taskId }),
     putProjectCodeReceipt: (record) => persisted.push(structuredClone(record))
   };
   const service = new ProjectCodeSnapshotApplicationService({

@@ -25,7 +25,7 @@ enum SessionContextReferenceType: String, Codable, CaseIterable, Sendable {
     case localFile
     case webURL
     case objective
-    case workItem
+    case task
     case agent
     case session
 }
@@ -66,7 +66,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let agentId: String?
     var sessionKind: SessionKind? = nil
     var objectiveId: String? = nil
-    var workItemId: String? = nil
+    var taskId: String? = nil
     let status: TaskStatus
     var executionStatus: String? = nil
     var deliveryStatus: String? = nil
@@ -114,7 +114,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
 
     var resolvedSessionKind: SessionKind {
         if let sessionKind { return sessionKind }
-        if workItemId?.isEmpty == false { return .worker }
+        if taskId?.isEmpty == false { return .worker }
         return objectiveId?.isEmpty == false ? .objectiveChat : .legacy
     }
 
@@ -204,11 +204,11 @@ struct PendingCollaborationConfirmation: Codable, Equatable, Sendable {
     let initiatorSessionId: String?
     let initiatorSessionTitle: String?
     let initiatorSessionKind: String?
-    let initiatorWorkItemId: String?
+    let initiatorCorptieTaskId: String?
     let recipientSessionId: String?
     let recipientSessionTitle: String?
     let recipientSessionKind: String?
-    let recipientWorkItemId: String?
+    let recipientCorptieTaskId: String?
     let routeStatus: String?
     let routingVersion: Int?
     let taskTitle: String
@@ -435,8 +435,8 @@ struct ProjectIntegrationCandidate: Identifiable, Decodable, Equatable, Sendable
     let path: String
     let branchName: String?
     let headOid: String?
-    let workItemId: String?
-    let workItemTitle: String?
+    let taskId: String?
+    let taskTitle: String?
 }
 
 struct ProjectIntegrationExcludedCandidate: Identifiable, Decodable, Equatable, Sendable {
@@ -445,8 +445,8 @@ struct ProjectIntegrationExcludedCandidate: Identifiable, Decodable, Equatable, 
     let path: String
     let branchName: String?
     let headOid: String?
-    let workItemId: String?
-    let workItemTitle: String?
+    let taskId: String?
+    let taskTitle: String?
     let reason: String
 }
 
@@ -467,7 +467,7 @@ struct ProjectIntegrationRun: Identifiable, Decodable, Equatable, Sendable {
     let integrationWorktreeId: String?
     let integrationWorktreePath: String?
     let integrationBranch: String?
-    let conflictWorkItemId: String?
+    let conflictCorptieTaskId: String?
     let conflictSessionId: String?
     let error: String?
     let items: [ProjectIntegrationRunItem]
@@ -481,8 +481,8 @@ struct ProjectIntegrationRunItem: Identifiable, Decodable, Equatable, Sendable {
     var id: String { worktreeId }
     let runId: String
     let worktreeId: String
-    let workItemId: String
-    let workItemTitle: String
+    let taskId: String
+    let taskTitle: String
     let branchName: String?
     let sourceHeadOid: String
     let ordinal: Int
@@ -501,9 +501,9 @@ struct ProjectIntegrationCounts: Decodable, Equatable, Sendable {
     let pending: Int
 }
 
-struct ProjectIntegrationConflictWorkItemResponse: Decodable, Sendable {
+struct ProjectIntegrationConflictCorptieTaskResponse: Decodable, Sendable {
     let run: ProjectIntegrationRun
-    let workItem: WorkItem
+    let task: CorptieTask
     let session: TaskSession?
     let reused: Bool
 }
@@ -795,7 +795,7 @@ struct CollaborationAgent: Identifiable, Decodable, Equatable {
     let systemPrompt: String?
     let currentSessionId: String?
     let currentObjectiveId: String?
-    let currentWorkItemId: String?
+    let currentCorptieTaskId: String?
     let objectiveIds: [String]?
     let createdAt: String
     let updatedAt: String
@@ -826,10 +826,10 @@ struct CollaborationTask: Identifiable, Decodable, Equatable {
     let sourceObjectiveName: String?
     let targetObjectiveId: String?
     let targetObjectiveName: String?
-    let sourceWorkItemId: String?
-    let sourceWorkItemTitle: String?
-    let workItemId: String?
-    let workItemTitle: String?
+    let sourceTaskId: String?
+    let sourceTaskTitle: String?
+    let targetTaskId: String?
+    let taskTitle: String?
     let initiatorAgentId: String
     let recipientAgentId: String
     let initiatorSessionId: String?
@@ -899,8 +899,8 @@ struct CollaborationMessageResources: Decodable, Equatable {
     let targetAgentId: String
     let sourceObjectiveId: String
     let targetObjectiveId: String
-    let sourceWorkItemId: String?
-    let targetWorkItemId: String
+    let sourceTaskId: String?
+    let targetTaskId: String
 }
 
 struct CollaborationMessagePayload: Decodable, Equatable {
@@ -1398,7 +1398,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var processingError: String? = nil
     var sourceType: String? = nil
     var localVisibility: String? = nil
-    var workItemId: String? = nil
+    var taskId: String? = nil
     var collaborationTaskId: String? = nil
     var presentationRole: String? = nil
     var presentationText: String? = nil
@@ -1417,8 +1417,8 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     var collaborationSourceObjectiveName: String? = nil
     var collaborationTargetObjectiveId: String? = nil
     var collaborationTargetObjectiveName: String? = nil
-    var collaborationSourceWorkItemId: String? = nil
-    var collaborationTargetWorkItemId: String? = nil
+    var collaborationSourceCorptieTaskId: String? = nil
+    var collaborationTargetCorptieTaskId: String? = nil
     var collaborationRelation: String? = nil
     var collaborationRouteStatus: String? = nil
     var collaborationRoutingVersion: Int? = nil

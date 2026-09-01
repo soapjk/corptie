@@ -17,12 +17,21 @@ const REQUIRED_CONFIG = Object.freeze({
 
 export function resolveCorptieRuntimePaths(options = {}) {
   const home = resolve(options.homeDir ?? os.homedir());
-  const corptieHome = resolve(options.corptieHome ?? process.env.CORPTIE_HOME ?? join(home, ".corptie"));
+  const hasExplicitRoot = options.homeDir != null || options.corptieHome != null;
+  const corptieHome = resolve(
+    options.corptieHome
+      ?? (options.homeDir != null ? join(home, ".corptie") : process.env.CORPTIE_HOME)
+      ?? join(home, ".corptie")
+  );
   const environmentName = options.environmentName === "development" ? "development" : "production";
   const runtimeRoot = environmentName === "development"
     ? join(corptieHome, "development", "runtimes", "codex")
     : join(corptieHome, "runtimes", "codex");
-  const codexHome = resolve(options.codexHome ?? process.env.CORPTIE_CODEX_HOME ?? runtimeRoot);
+  const codexHome = resolve(
+    options.codexHome
+      ?? (hasExplicitRoot ? runtimeRoot : process.env.CORPTIE_CODEX_HOME)
+      ?? runtimeRoot
+  );
   const agentMemory = resolveCorptieAgentMemoryPaths({ homeDir: home, corptieHome, environmentName });
 
   return {

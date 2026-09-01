@@ -2,11 +2,11 @@ import { validateDependencyGate } from "./dependencyContractManifest.mjs";
 import { contractError } from "./receiptContracts.mjs";
 
 const REQUEST_FIELDS = Object.freeze([
-  "logicalSessionId", "workItemId", "repositoryId", "worktreeId", "action",
+  "logicalSessionId", "taskId", "repositoryId", "worktreeId", "action",
   "bindingId", "bindingGeneration"
 ]);
 const AUTHORITY_FIELDS = Object.freeze([
-  "logicalSessionId", "workItemId", "repositoryId", "worktreeId",
+  "logicalSessionId", "taskId", "repositoryId", "worktreeId",
   "bindingId", "bindingGeneration", "startupBindingReceiptRef",
   "repositorySourceSnapshotReceiptRef", "toolsetValidationReceiptPointer"
 ]);
@@ -22,7 +22,7 @@ export class RunIsolationAuthorityResolver {
 
   async resolve(request) {
     assertClosedObject(request, REQUEST_FIELDS, "RUN_AUTHORITY_SCHEMA_INVALID", "RunIsolation authority request");
-    for (const field of ["logicalSessionId", "workItemId", "repositoryId", "worktreeId", "bindingId"]) {
+    for (const field of ["logicalSessionId", "taskId", "repositoryId", "worktreeId", "bindingId"]) {
       if (typeof request[field] !== "string" || request[field].length === 0) {
         throw contractError("RUN_AUTHORITY_SCHEMA_INVALID", `${field} is required by the authenticated authority request.`);
       }
@@ -39,7 +39,7 @@ export class RunIsolationAuthorityResolver {
       throw contractError("DEPENDENCY_CONTRACT_UNRESOLVED", "Authoritative Startup/Snapshot/Toolset receipt references are unavailable.");
     }
     assertClosedObject(authority, AUTHORITY_FIELDS, "RUN_AUTHORITY_SCHEMA_INVALID", "RunIsolation authority result");
-    for (const field of ["logicalSessionId", "workItemId", "repositoryId", "worktreeId"]) {
+    for (const field of ["logicalSessionId", "taskId", "repositoryId", "worktreeId"]) {
       if (authority[field] !== request[field]) throw contractError("RUN_UNAUTHORIZED", `${field} differs from the authenticated Session and active Worktree.`);
     }
     if (authority.bindingId !== request.bindingId || authority.bindingGeneration !== request.bindingGeneration) {

@@ -2,17 +2,17 @@
 //
 // - 提取结果仅作为不可信候选落库；未经可信来源确认不得自动应用或晋升。
 // - kind → owner 分流（13 归属规则）：能力类（skill/procedure/dev_experience）→ Agent 进化记忆；
-//   其余（fact/lesson/preference/feedback/episodic）→ 工作记忆（work_item > objective 兜底）。
+//   其余（fact/lesson/preference/feedback/episodic）→ 工作记忆（task > objective 兜底）。
 // - classify 可注入 LLM 实现，默认用规则版 defaultClassify。
 
 const ABILITY_KINDS = new Set(["skill", "procedure", "dev_experience"]);
 
-export function ownerForKind(kind, { objectiveId, workItemId, agentId }) {
+export function ownerForKind(kind, { objectiveId, taskId, agentId }) {
   // 能力类记忆必须归属到某个 Agent（owner_id NOT NULL）；缺失 agentId 时无法归属，返回 null 由调用方跳过。
   if (ABILITY_KINDS.has(kind)) {
     return agentId ? { ownerType: "agent", ownerId: agentId } : null;
   }
-  if (workItemId) return { ownerType: "work_item", ownerId: workItemId };
+  if (taskId) return { ownerType: "task", ownerId: taskId };
   if (objectiveId) return { ownerType: "objective", ownerId: objectiveId };
   return agentId ? { ownerType: "agent", ownerId: agentId } : null;
 }
@@ -155,7 +155,7 @@ export class MemoryExtractor {
         this.store.createMemory({
           ownerType: owner.ownerType,
           ownerId: owner.ownerId,
-          workItemId: owner.ownerType === "work_item" ? scope.workItemId : null,
+          taskId: owner.ownerType === "task" ? scope.taskId : null,
           kind: result.kind,
           content: result.content,
           sourceType: "extracted",
@@ -175,26 +175,26 @@ export class MemoryExtractor {
   resolveExecutionScope(sessionId, claimedScope = {}) {
     const session = this.store.getSession(sessionId);
     if (!session) throw memoryExtractionError("SESSION_NOT_FOUND", `Session not found: ${sessionId}`);
-    if (session.sessionKind !== "worker" || !session.workItemId || !session.objectiveId) {
+    if (session.sessionKind !== "worker" || !session.taskId || !session.objectiveId) {
       throw memoryExtractionError(
-        "WORK_ITEM_SESSION_REQUIRED",
-        "WorkItem memory extraction requires a bound Worker Session."
+        "TASK_SESSION_REQUIRED",
+        "Task memory extraction requires a bound Worker Session."
       );
     }
-    const workItem = this.store.getWorkItem(session.workItemId);
-    if (!workItem || workItem.objective_id !== session.objectiveId
-      || workItem.current_session_id !== session.id) {
+    const task = this.store.getTask(session.taskId);
+    if (!task || task.objective_id !== session.objectiveId
+      || task.current_session_id !== session.id) {
       throw memoryExtractionError(
-        "INVALID_WORK_ITEM_SESSION",
-        "The Session is not the WorkItem's current bound execution Session."
+        "INVALID_TASK_SESSION",
+        "The Session is not the Task's current bound execution Session."
       );
     }
     const derived = {
       objectiveId: session.objectiveId,
-      workItemId: session.workItemId,
-      agentId: session.agentId ?? workItem.main_agent_id ?? null
+      taskId: session.taskId,
+      agentId: session.agentId ?? task.main_agent_id ?? null
     };
-    for (const key of ["objectiveId", "workItemId", "agentId"]) {
+    for (const key of ["objectiveId", "taskId", "agentId"]) {
       const claimed = typeof claimedScope[key] === "string" ? claimedScope[key].trim() : "";
       if (claimed && claimed !== derived[key]) {
         throw memoryExtractionError(

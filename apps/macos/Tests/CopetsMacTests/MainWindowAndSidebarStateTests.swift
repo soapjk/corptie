@@ -10,6 +10,7 @@ struct MainWindowAndSidebarStateTests {
         let router = AppTabRouter()
 
         for tab in AppTab.allCases {
+            router.sidebarState(for: tab).visibility = .all
             #expect(router.sidebarState(for: tab).isVisible)
         }
 
@@ -19,9 +20,9 @@ struct MainWindowAndSidebarStateTests {
             #expect(router.sidebarState(for: tab).isVisible)
         }
 
-        router.selectTab(.sessions)
-        router.sidebarState(for: .sessions).toggle()
-        #expect(!router.sidebarState(for: .sessions).isVisible)
+        router.selectTab(.worktrees)
+        router.sidebarState(for: .worktrees).toggle()
+        #expect(!router.sidebarState(for: .worktrees).isVisible)
         router.selectTab(.console)
         #expect(!router.sidebarState(for: .console).isVisible)
         #expect(router.sidebarState(for: .automations).isVisible)
@@ -34,6 +35,7 @@ struct MainWindowAndSidebarStateTests {
 
         for tab in AppTab.allCases {
             let state = router.sidebarState(for: tab)
+            state.visibility = .all
             state.toggle()
             #expect(!state.isVisible)
             state.toggle()
@@ -44,7 +46,8 @@ struct MainWindowAndSidebarStateTests {
 
     @Test
     func sessionSidebarNativeButtonRemainsOperableAcrossRepeatedCloseOpenCycles() {
-        let state = TabSidebarState(tab: .sessions)
+        let state = TabSidebarState(tab: .console)
+        state.visibility = .all
         let button = MainWindowSidebarNSButton(sidebarState: state)
 
         #expect(!button.isHidden)
@@ -89,8 +92,10 @@ struct MainWindowAndSidebarStateTests {
 
     @Test
     func nativeSidebarButtonRebindsWithoutOverwritingAnotherTabsState() {
-        let sessions = TabSidebarState(tab: .sessions)
+        let sessions = TabSidebarState(tab: .automations)
         let console = TabSidebarState(tab: .console)
+        sessions.visibility = .all
+        console.visibility = .all
         let button = MainWindowSidebarNSButton(sidebarState: sessions)
 
         button.performClick(nil)
@@ -161,13 +166,21 @@ struct MainWindowAndSidebarStateTests {
         #expect(mainTab.contains("setAccessibilityValue(L10n(isVisible ? \"Expanded\" : \"Collapsed\"))"))
         #expect(mainTab.contains(".environmentObject(router.sidebarState(for: tab))"))
 
-        for fileName in ["WarRoomView.swift", "SessionsView.swift", "AutomationsView.swift", "WorktreeManagementView.swift"] {
+        for fileName in ["WarRoomView.swift", "AutomationsView.swift", "WorktreeManagementView.swift"] {
             let contents = try String(
                 contentsOf: sourceRoot.appendingPathComponent(fileName),
                 encoding: .utf8
             )
             #expect(contents.contains("NavigationSplitView(columnVisibility: $sidebarState.visibility)"))
         }
+
+        let unifiedConsole = try String(
+            contentsOf: sourceRoot.appendingPathComponent("UnifiedConsoleView.swift"),
+            encoding: .utf8
+        )
+        #expect(unifiedConsole.contains("HStack(spacing: 0)"))
+        #expect(unifiedConsole.contains("objectiveRail"))
+        #expect(unifiedConsole.contains("unifiedTaskSidebar"))
 
         let agents = try String(
             contentsOf: sourceRoot.appendingPathComponent("AgentManagementView.swift"),

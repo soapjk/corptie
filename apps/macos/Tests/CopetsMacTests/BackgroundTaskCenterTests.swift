@@ -26,16 +26,16 @@ final class BackgroundTaskCenterTests: XCTestCase {
     func testFailureRemainsVisibleAndRetryUsesSameOperation() async throws {
         let center = BackgroundTaskCenter()
         var invocationCount = 0
-        XCTAssertTrue(center.start(id: "work_item:stable", title: "Create WorkItem") {
+        XCTAssertTrue(center.start(id: "task:stable", title: "Create CorptieTask") {
             invocationCount += 1
             if invocationCount == 1 { return .failure("Backend unavailable") }
             return .success("Created")
         })
 
-        try await waitForState(.failed, id: "work_item:stable", center: center)
+        try await waitForState(.failed, id: "task:stable", center: center)
         XCTAssertEqual(center.records.first?.detail, "Backend unavailable")
-        XCTAssertTrue(center.retry(id: "work_item:stable"))
-        try await waitForState(.succeeded, id: "work_item:stable", center: center)
+        XCTAssertTrue(center.retry(id: "task:stable"))
+        try await waitForState(.succeeded, id: "task:stable", center: center)
         XCTAssertEqual(invocationCount, 2)
     }
 

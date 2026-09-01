@@ -223,7 +223,7 @@ function closedPayload(type, payload) {
 function requestIdentity(request) { return Object.fromEntries(["experimentId", "attemptId", "sampleId", "pairIndex", "mode", "variant"]
   .map((field) => [field, request?.[field] ?? null])); }
 function authenticatedSession(authority) { return { logicalSessionId: authority.startup.logicalSessionId,
-  workItemId: authority.startup.workItemId, repositoryId: authority.startup.repositoryId, worktreeId: authority.startup.worktreeId }; }
+  taskId: authority.startup.taskId, repositoryId: authority.startup.repositoryId, worktreeId: authority.startup.worktreeId }; }
 function searchScenarioId(request) { return `benchmark_search:${contentHash(request.attemptId).slice(0, 32)}`; }
 function findSearchReceipt(store, logicalSessionId, scenarioId) {
   const row = store.selectOne?.(`SELECT receipt_json FROM project_code_receipts

@@ -40,8 +40,8 @@ export class ProviderEventProjector {
         )
       : null;
     const correlatedWork = event.turnId
-      ? this.store.getAgentWorkItemForTurn?.(sessionId, event.turnId)
-        ?? this.store.claimRunningAgentWorkItemForProviderTurn?.(sessionId, event.turnId)
+      ? this.store.getAgentTaskForTurn?.(sessionId, event.turnId)
+        ?? this.store.claimRunningAgentTaskForProviderTurn?.(sessionId, event.turnId)
       : null;
     let timelineChanged = false;
     let usage = null;
@@ -160,7 +160,7 @@ export class ProviderEventProjector {
     };
   }
 
-  persistItem(sessionId, item, bindingId, delivery = null, workItem = null) {
+  persistItem(sessionId, item, bindingId, delivery = null, task = null) {
     if (!item?.id) return false;
     let canonicalItem = item;
     if (item.type === "userMessage" && delivery) {
@@ -170,23 +170,23 @@ export class ProviderEventProjector {
         turnId: delivery.providerTurnId ?? item.turnId,
         status: delivery.status
       };
-    } else if (item.type === "userMessage" && workItem) {
-      const canonicalId = workItem.kind === "user"
-        ? (workItem.source?.messageId ?? workItem.workItemId)
-        : `work:${workItem.workItemId}`;
+    } else if (item.type === "userMessage" && task) {
+      const canonicalId = task.kind === "user"
+        ? (task.source?.messageId ?? task.taskId)
+        : `work:${task.taskId}`;
       const existing = this.store.getSessionItem?.(sessionId, canonicalId);
       canonicalItem = {
         ...item,
         id: canonicalId,
-        turnId: workItem.targetTurnId ?? item.turnId,
+        turnId: task.targetTurnId ?? item.turnId,
         title: existing?.title ?? item.title,
-        status: workItem.status,
+        status: task.status,
         presentationRole: existing?.presentationRole ?? item.presentationRole,
         presentationText: existing?.presentationText ?? item.presentationText,
         rawMetadataJSON: mergedItemMetadata(existing?.rawMetadataJSON, item.rawMetadataJSON, {
-          workItemId: workItem.workItemId,
-          sourceChannel: workItem.source?.type ?? null,
-          collaborationTaskId: workItem.source?.taskId ?? null
+          taskId: task.taskId,
+          sourceChannel: task.source?.type ?? null,
+          collaborationRequestId: task.source?.taskId ?? null
         })
       };
     }

@@ -42,7 +42,7 @@ export class GitWorkspaceManager {
     this.inspectionCacheTtlMs = options.inspectionCacheTtlMs ?? 5_000;
     this.now = options.now ?? (() => Date.now());
     this.createSnapshot = options.createSnapshot ?? createGitWorkspaceSnapshot;
-    this.workItemWorktreesRoot = options.workItemWorktreesRoot ?? null;
+    this.taskWorktreesRoot = options.taskWorktreesRoot ?? null;
     this.inspectionCache = new Map();
     this.inspectionsInFlight = new Map();
     this.inspectionMetrics = {
@@ -685,13 +685,13 @@ export class GitWorkspaceManager {
     };
   }
 
-  async ensureWorkItemWorktreeForProject(input) {
+  async ensureTaskWorktreeForProject(input) {
     const repositoryId = requiredText(input.repositoryId, "repositoryId");
-    const workItemId = requiredText(input.workItemId, "workItemId");
+    const taskId = requiredText(input.taskId, "taskId");
     const workingDirectory = absolutePath(input.workingDirectory);
     let snapshot = await createGitWorkspaceSnapshot(workingDirectory);
     if (snapshot.repository.id !== repositoryId) {
-      throw new Error("The WorkItem project no longer belongs to the registered repository.");
+      throw new Error("The Task project no longer belongs to the registered repository.");
     }
     let main = snapshot.worktrees.find((worktree) => worktree.isMain && worktree.availability === "available");
     if (!main) throw new Error("The repository's main worktree is unavailable.");
@@ -703,14 +703,14 @@ export class GitWorkspaceManager {
     // checkout for this bootstrap state and make the exception auditable.
     if (!main.headOid) {
       this.store.upsertGitWorkspaceSnapshot(snapshot);
-      return presentEnsuredWorkItemWorkspace(main, true, null, "unborn-main");
+      return presentEnsuredTaskWorkspace(main, true, null, "unborn-main");
     }
 
-    const suffix = workItemWorkspaceSuffix(workItemId);
-    const branchName = `workitem/${suffix}`;
-    const configuredRoot = typeof this.workItemWorktreesRoot === "function"
-      ? this.workItemWorktreesRoot({ repositoryId, workItemId, mainPath: main.path })
-      : this.workItemWorktreesRoot;
+    const suffix = taskWorkspaceSuffix(taskId);
+    const branchName = `task/${suffix}`;
+    const configuredRoot = typeof this.taskWorktreesRoot === "function"
+      ? this.taskWorktreesRoot({ repositoryId, taskId, mainPath: main.path })
+      : this.taskWorktreesRoot;
     const worktreesRoot = configuredRoot
       ? absolutePath(configuredRoot)
       : resolve(dirname(main.path), `.corptie-worktrees-${repositoryId.split(":").at(-1)}`);
@@ -720,7 +720,7 @@ export class GitWorkspaceManager {
       const registeredPath = resolve(worktree.canonicalPath || worktree.path);
       return registeredPath !== canonicalTargetPath && pathContains(registeredPath, canonicalTargetPath);
     })) {
-      throw new Error("The managed WorkItem Worktree root must not be nested inside another Git Worktree.");
+      throw new Error("The managed Task Worktree root must not be nested inside another Git Worktree.");
     }
     const matchingBranch = (worktree) => worktree.branchName === branchName;
     const matchingPath = (worktree) => resolve(worktree.path) === targetPath;
@@ -728,13 +728,13 @@ export class GitWorkspaceManager {
       const byBranch = worktrees.find(matchingBranch);
       const byPath = worktrees.find(matchingPath);
       if (byPath && byPath.branchName !== branchName) {
-        throw new Error(`The WorkItem Worktree path is already bound to branch ${byPath.branchName ?? "<detached>"}.`);
+        throw new Error(`The Task Worktree path is already bound to branch ${byPath.branchName ?? "<detached>"}.`);
       }
       return byBranch ?? byPath;
     };
     let existing = resolveExisting(snapshot.worktrees);
     if (existing?.availability === "available") {
-      return presentEnsuredWorkItemWorkspace(existing, true, null);
+      return presentEnsuredTaskWorkspace(existing, true, null);
     }
 
     if (existing) {
@@ -745,7 +745,7 @@ export class GitWorkspaceManager {
       if (!main) throw new Error("The repository's main worktree is unavailable.");
       existing = resolveExisting(snapshot.worktrees);
       if (existing?.availability === "available") {
-        return presentEnsuredWorkItemWorkspace(existing, true, null);
+        return presentEnsuredTaskWorkspace(existing, true, null);
       }
     }
 
@@ -758,28 +758,28 @@ export class GitWorkspaceManager {
       ? [targetPath, branchName]
       : ["-b", branchName, targetPath, main.headOid];
     try {
-      this.invalidateInspectionCache(input.repositoryId, "create_work_item_worktree");
+      this.invalidateInspectionCache(input.repositoryId, "create_task_worktree");
       await this.execFile(
         "git",
         ["-C", main.path, "worktree", "add", ...args],
         { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
       );
     } catch (error) {
-      throw new Error(safeGitError(error, "Could not create the WorkItem Worktree"));
+      throw new Error(safeGitError(error, "Could not create the Task Worktree"));
     }
 
     const updated = await createGitWorkspaceSnapshot(targetPath);
     this.store.upsertGitWorkspaceSnapshot(updated);
     const created = resolveExisting(updated.worktrees);
     if (!created || created.availability !== "available") {
-      throw new Error("The WorkItem Worktree was created but could not be inventoried.");
+      throw new Error("The Task Worktree was created but could not be inventoried.");
     }
     const sharedAgentConfiguration = await linkSharedAgentConfiguration({
       mainPath: main.canonicalPath || main.path,
       targetPath: created.canonicalPath || created.path,
       commonGitDir: updated.repository.commonGitDirCanonicalPath
     });
-    return presentEnsuredWorkItemWorkspace(created, false, sharedAgentConfiguration);
+    return presentEnsuredTaskWorkspace(created, false, sharedAgentConfiguration);
   }
 
   async prepareIntegrationConflictResolutionForProject(input) {
@@ -1488,8 +1488,8 @@ function deletionSafetyError(code, message) {
   return error;
 }
 
-function workItemWorkspaceSuffix(workItemId) {
-  const identifier = String(workItemId).replace(/^work[_-]?item:/i, "");
+function taskWorkspaceSuffix(taskId) {
+  const identifier = String(taskId).replace(/^task:/i, "");
   const normalized = identifier
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
@@ -1499,7 +1499,7 @@ function workItemWorkspaceSuffix(workItemId) {
   return `${readable}-${digest}`;
 }
 
-function presentEnsuredWorkItemWorkspace(
+function presentEnsuredTaskWorkspace(
   worktree,
   reused,
   sharedAgentConfiguration,

@@ -29,7 +29,7 @@ function memoryFixture({
   const jobs = new Map();
   let sequence = 0;
   const repository = { id: "repository:1", commonGitDirCanonicalPath: "/repo/.git" };
-  const workItems = new Map();
+  const tasks = new Map();
   const worktrees = [
     {
       worktreeId: "wt:main", path: "/repo", isMain: true, availability: "available",
@@ -88,7 +88,7 @@ function memoryFixture({
     getSession: (id) => id?.startsWith("session:conflict")
       ? { id, status: conflictSessionStatus }
       : (id === "session:active" ? { id, status: "running" } : null),
-    getWorkItem: (id) => workItems.get(id) ?? null
+    getTask: (id) => tasks.get(id) ?? null
   };
   const calls = [];
   const removalInputs = [];
@@ -192,10 +192,10 @@ function memoryFixture({
       const launchError = launchConflictErrors.shift();
       if (launchError) throw launchError;
       const existing = input.job.conflictAutomation;
-      if (existing?.workItemId && existing?.sessionId) {
+      if (existing?.taskId && existing?.sessionId) {
         calls.push(`continue-session:${existing.sessionId}`);
         return {
-          workItemId: existing.workItemId,
+          taskId: existing.taskId,
           sessionId: existing.sessionId,
           sessionName: existing.sessionName,
           agentId: existing.agentId,
@@ -204,9 +204,9 @@ function memoryFixture({
         };
       }
       launchedSession += 1;
-      calls.push("create-plan-work-item");
+      calls.push("create-plan-task");
       return {
-        workItemId: `work_item:conflict:${launchedSession}`,
+        taskId: `task:conflict:${launchedSession}`,
         sessionId: launchedSession === 1 ? "session:conflict" : `session:conflict:${launchedSession}`,
         sessionName: launchedSession === 1 ? "Resolve conflicts" : `Resolve conflicts ${launchedSession}`,
         agentId: "agent:one", agentName: "Conflict Agent", reused: false
@@ -221,7 +221,7 @@ function memoryFixture({
     },
     onDeletionFailure: (failure) => deletionFailures.push(structuredClone(failure))
   });
-  return { service, store, calls, worktrees, workItems, removalInputs, deletionFailures };
+  return { service, store, calls, worktrees, tasks, removalInputs, deletionFailures };
 }
 
 test("repository listing uses the lightweight summary while preflight keeps the deep inspection", async () => {
@@ -287,15 +287,15 @@ test("repository summary counts only currently available Worktrees", () => {
   assert.equal(repository.availability, "available");
 });
 
-test("completed WorkItem bindings stop occupying a Worktree after their Session settles", async () => {
-  const { service, calls, worktrees, workItems, removalInputs } = memoryFixture({
+test("completed Task bindings stop occupying a Worktree after their Session settles", async () => {
+  const { service, calls, worktrees, tasks, removalInputs } = memoryFixture({
     mainDirty: false,
     featureAlreadyMerged: true,
     featureDirty: false
   });
-  workItems.set("work_item:done", { id: "work_item:done", title: "Finished", status: "done" });
+  tasks.set("task:done", { id: "task:done", title: "Finished", status: "done" });
   worktrees[1].sessions = [{
-    logicalSessionId: "logical:done", sessionId: null, active: false, workItemId: "work_item:done"
+    logicalSessionId: "logical:done", sessionId: null, active: false, taskId: "task:done"
   }];
 
   const detail = await service.repository("repository:1");
@@ -308,60 +308,60 @@ test("completed WorkItem bindings stop occupying a Worktree after their Session 
   assert.deepEqual(removalInputs[0].ignoreLogicalSessionIds, ["logical:done"]);
 });
 
-test("a running Session still blocks deletion after its WorkItem completes", async () => {
-  const { service, calls, worktrees, workItems } = memoryFixture({
+test("a running Session still blocks deletion after its Task completes", async () => {
+  const { service, calls, worktrees, tasks } = memoryFixture({
     mainDirty: false,
     featureAlreadyMerged: true,
     featureDirty: false
   });
-  workItems.set("work_item:done", { id: "work_item:done", title: "Finished", status: "completed" });
+  tasks.set("task:done", { id: "task:done", title: "Finished", status: "completed" });
   worktrees[1].sessions = [{
-    logicalSessionId: "logical:done", sessionId: null, active: true, workItemId: "work_item:done"
+    logicalSessionId: "logical:done", sessionId: null, active: true, taskId: "task:done"
   }];
 
   const detail = await service.repository("repository:1");
-  assert.deepEqual(detail.project.worktrees[1].associations.map((entry) => entry.workItemId), [null]);
+  assert.deepEqual(detail.project.worktrees[1].associations.map((entry) => entry.taskId), [null]);
   await assert.rejects(() => service.deleteWorktree("repository:1", "wt:feature"), {
     code: "WORKTREE_IN_USE"
   });
   assert.deepEqual(calls, []);
 });
 
-test("detail and deletion share effective WorkItem associations and report an actionable failure", async () => {
-  const { service, calls, worktrees, workItems, deletionFailures } = memoryFixture({
+test("detail and deletion share effective Task associations and report an actionable failure", async () => {
+  const { service, calls, worktrees, tasks, deletionFailures } = memoryFixture({
     mainDirty: false,
     featureAlreadyMerged: true,
     featureDirty: false
   });
-  workItems.set("work_item:active", {
-    id: "work_item:active", title: "Repair workspace routing", status: "in_progress"
+  tasks.set("task:active", {
+    id: "task:active", title: "Repair workspace routing", status: "in_progress"
   });
   worktrees[1].sessions = [{
-    logicalSessionId: "logical:active-work-item", sessionId: null, active: false,
-    workItemId: "work_item:active"
+    logicalSessionId: "logical:active-task", sessionId: null, active: false,
+    taskId: "task:active"
   }];
 
   const detail = await service.repository("repository:1");
   const associations = detail.project.worktrees[1].associations;
-  assert.deepEqual(associations.map((entry) => entry.workItemId), ["work_item:active"]);
+  assert.deepEqual(associations.map((entry) => entry.taskId), ["task:active"]);
   assert.deepEqual(detail.project.worktrees[1].deletionBlocker, {
-    code: "WORK_ITEM_ASSOCIATED",
-    reason: "This Worktree is still associated with WorkItem “Repair workspace routing” (work_item:active). Complete or move it before deleting the Worktree."
+    code: "TASK_ASSOCIATED",
+    reason: "This Worktree is still associated with Task “Repair workspace routing” (task:active). Complete or move it before deleting the Worktree."
   });
 
   await assert.rejects(
     () => service.deleteWorktree("repository:1", "wt:feature"),
-    (error) => error.code === "WORK_ITEM_ASSOCIATED"
+    (error) => error.code === "TASK_ASSOCIATED"
       && error.message.includes("Repair workspace routing")
-      && error.message.includes("work_item:active")
+      && error.message.includes("task:active")
       && error.message.includes("Complete or move it")
   );
   assert.deepEqual(calls, []);
   assert.deepEqual(deletionFailures, [{
     repositoryId: "repository:1",
     worktreeId: "wt:feature",
-    code: "WORK_ITEM_ASSOCIATED",
-    reason: "This Worktree is still associated with WorkItem “Repair workspace routing” (work_item:active). Complete or move it before deleting the Worktree."
+    code: "TASK_ASSOCIATED",
+    reason: "This Worktree is still associated with Task “Repair workspace routing” (task:active). Complete or move it before deleting the Worktree."
   }]);
 });
 
@@ -596,7 +596,7 @@ test("a paused merge conflict launches an Agent and resumes automatically when i
   assert.deepEqual(calls.slice(-3), [
     "prepare-conflict:feature:1:commit",
     "launch-agent:wt:feature",
-    "create-plan-work-item"
+    "create-plan-task"
   ]);
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_workspace_created"));
   assert.ok(delegated.audit.some((entry) => entry.event === "conflict_agent_started"));
@@ -752,9 +752,9 @@ test("one Agent trigger resolves successive conflicting Worktrees across the com
   assert.equal(completed.conflictAutomation.status, "completed");
   assert.deepEqual(completed.conflictAutomation.completedWorktreeIds, ["wt:feature", "wt:feature-two"]);
   assert.equal(calls.filter((call) => call.startsWith("launch-agent:")).length, 2);
-  assert.equal(calls.filter((call) => call === "create-plan-work-item").length, 1);
+  assert.equal(calls.filter((call) => call === "create-plan-task").length, 1);
   assert.deepEqual(calls.filter((call) => call.startsWith("continue-session:")), ["continue-session:session:conflict"]);
-  assert.equal(completed.conflictAutomation.workItemId, "work_item:conflict:1");
+  assert.equal(completed.conflictAutomation.taskId, "task:conflict:1");
   assert.equal(completed.conflictAutomation.sessionId, "session:conflict");
   assert.equal(completed.plan.items.find((item) => item.worktreeId === "wt:feature-two").mergeStatus, "recovered");
   assert.equal(completed.audit.filter((entry) => entry.event === "conflict_resolution_verified").length, 2);
@@ -794,7 +794,7 @@ test("a later automatic conflict blocker is explicit and retry skips already mer
   assert.equal(completed.conflictAutomation.status, "completed");
   assert.equal(calls.filter((call) => call === "merge:integration:feature:1").length, 1);
   assert.equal(calls.filter((call) => call === "launch-agent:wt:feature-two").length, 2);
-  assert.equal(calls.filter((call) => call === "create-plan-work-item").length, 1);
+  assert.equal(calls.filter((call) => call === "create-plan-task").length, 1);
   assert.equal(calls.filter((call) => call === "continue-session:session:conflict").length, 1);
 });
 
@@ -952,7 +952,7 @@ test("cleanup removes only confirmed merged clean unassociated Worktrees and rep
     { ...structuredClone(worktrees[1]), worktreeId: "wt:dirty", path: "/repo-dirty", branchName: "feature/dirty", dirty: true },
     {
       ...structuredClone(worktrees[1]), worktreeId: "wt:owned", path: "/repo-owned", branchName: "feature/owned",
-      sessions: [{ logicalSessionId: "logical:owned", sessionId: null, active: true, workItemId: "work_item:owned" }]
+      sessions: [{ logicalSessionId: "logical:owned", sessionId: null, active: true, taskId: "task:owned" }]
     }
   );
 
@@ -961,32 +961,32 @@ test("cleanup removes only confirmed merged clean unassociated Worktrees and rep
   assert.deepEqual(result.counts, { removed: 1, skipped: 3, failed: 0 });
   assert.deepEqual(result.removed.map((entry) => entry.worktreeId), ["wt:feature"]);
   assert.deepEqual(new Set(result.skipped.map((entry) => entry.code)), new Set([
-    "NOT_MERGED_INTO_MAIN", "UNCOMMITTED_CHANGES", "WORK_ITEM_ASSOCIATED"
+    "NOT_MERGED_INTO_MAIN", "UNCOMMITTED_CHANGES", "TASK_ASSOCIATED"
   ]));
   assert.deepEqual(calls, ["remove:wt:feature"]);
 });
 
-test("cleanup scan and execution share association rules for none, completed, and unfinished WorkItems", async () => {
-  const { service, calls, worktrees, workItems, removalInputs } = memoryFixture({
+test("cleanup scan and execution share association rules for none, completed, and unfinished Tasks", async () => {
+  const { service, calls, worktrees, tasks, removalInputs } = memoryFixture({
     mainDirty: false,
     featureAlreadyMerged: true,
     featureDirty: false
   });
   const template = structuredClone(worktrees[1]);
-  workItems.set("work_item:done", { id: "work_item:done", title: "Finished migration", status: "completed" });
-  workItems.set("work_item:active", { id: "work_item:active", title: "Repair routing", status: "in_progress" });
+  tasks.set("task:done", { id: "task:done", title: "Finished migration", status: "completed" });
+  tasks.set("task:active", { id: "task:active", title: "Repair routing", status: "in_progress" });
   worktrees.push(
     {
       ...structuredClone(template), worktreeId: "wt:completed", path: "/repo-completed",
       branchName: "feature/completed", sessions: [{
-        logicalSessionId: "logical:completed", sessionId: null, active: false, workItemId: "work_item:done"
+        logicalSessionId: "logical:completed", sessionId: null, active: false, taskId: "task:done"
       }]
     },
     {
       ...structuredClone(template), worktreeId: "wt:active", path: "/repo-active",
       branchName: "feature/active", sessions: [{
-        logicalSessionId: "logical:active-work-item", sessionId: null, active: false,
-        workItemId: "work_item:active"
+        logicalSessionId: "logical:active-task", sessionId: null, active: false,
+        taskId: "task:active"
       }]
     }
   );
@@ -996,8 +996,8 @@ test("cleanup scan and execution share association rules for none, completed, an
   assert.deepEqual(scanCandidates.map((worktree) => worktree.worktreeId), ["wt:feature", "wt:completed"]);
   assert.equal(scan.project.worktrees.find((worktree) => worktree.worktreeId === "wt:completed").associations.length, 0);
   assert.deepEqual(scan.project.worktrees.find((worktree) => worktree.worktreeId === "wt:active").deletionBlocker, {
-    code: "WORK_ITEM_ASSOCIATED",
-    reason: "This Worktree is still associated with WorkItem “Repair routing” (work_item:active). Complete or move it before deleting the Worktree."
+    code: "TASK_ASSOCIATED",
+    reason: "This Worktree is still associated with Task “Repair routing” (task:active). Complete or move it before deleting the Worktree."
   });
 
   const result = await service.cleanupMergedWorktrees("repository:1", {
@@ -1007,7 +1007,7 @@ test("cleanup scan and execution share association rules for none, completed, an
   assert.deepEqual(result.counts, { removed: scanCandidates.length, skipped: 1, failed: 0 });
   assert.deepEqual(result.removed.map((entry) => entry.worktreeId), ["wt:completed", "wt:feature"]);
   assert.deepEqual(result.skipped.map((entry) => ({ worktreeId: entry.worktreeId, code: entry.code })), [
-    { worktreeId: "wt:active", code: "WORK_ITEM_ASSOCIATED" }
+    { worktreeId: "wt:active", code: "TASK_ASSOCIATED" }
   ]);
   assert.deepEqual(calls, ["remove:wt:completed", "remove:wt:feature"]);
   assert.deepEqual(removalInputs.find((input) => input.worktreeId === "wt:feature").ignoreLogicalSessionIds, []);
@@ -1016,8 +1016,8 @@ test("cleanup scan and execution share association rules for none, completed, an
   ]);
 });
 
-test("cleanup reports the latest WorkItem blocker when association state changes after scan", async () => {
-  const { service, calls, worktrees, workItems } = memoryFixture({
+test("cleanup reports the latest Task blocker when association state changes after scan", async () => {
+  const { service, calls, worktrees, tasks } = memoryFixture({
     mainDirty: false,
     featureAlreadyMerged: true,
     featureDirty: false
@@ -1025,9 +1025,9 @@ test("cleanup reports the latest WorkItem blocker when association state changes
   const scan = await service.repository("repository:1");
   assert.equal(scan.project.worktrees[1].deletionBlocker, null);
 
-  workItems.set("work_item:new", { id: "work_item:new", title: "New follow-up", status: "todo" });
+  tasks.set("task:new", { id: "task:new", title: "New follow-up", status: "todo" });
   worktrees[1].sessions = [{
-    logicalSessionId: "logical:new", sessionId: null, active: false, workItemId: "work_item:new"
+    logicalSessionId: "logical:new", sessionId: null, active: false, taskId: "task:new"
   }];
 
   const result = await service.cleanupMergedWorktrees("repository:1", { worktreeIds: ["wt:feature"] });
@@ -1038,8 +1038,8 @@ test("cleanup reports the latest WorkItem blocker when association state changes
     branchName: "feature/one",
     path: "/repo-feature",
     status: "skipped",
-    code: "WORK_ITEM_ASSOCIATED",
-    reason: "This Worktree is still associated with WorkItem “New follow-up” (work_item:new). Complete or move it before deleting the Worktree.",
+    code: "TASK_ASSOCIATED",
+    reason: "This Worktree is still associated with Task “New follow-up” (task:new). Complete or move it before deleting the Worktree.",
     removal: null
   }]);
   assert.deepEqual(calls, []);
@@ -1087,7 +1087,7 @@ test("integration job, per-item state, and audit survive Store restart", async (
         plan: { items: [{ worktreeId: "wt:2", mergeStatus: "conflict" }] },
         conflictAutomation: {
           status: "running", scopeWorktreeIds: ["wt:2"], completedWorktreeIds: [],
-          workItemId: "work_item:plan-conflicts", sessionId: "session:plan-conflicts",
+          taskId: "task:plan-conflicts", sessionId: "session:plan-conflicts",
           currentWorktreeId: "wt:2", blockedWorktreeId: null,
           conflictFiles: ["shared.swift"], failureCode: null, failureReason: null
         },
@@ -1108,7 +1108,7 @@ test("integration job, per-item state, and audit survive Store restart", async (
     assert.deepEqual(recoveredQueued.details.audit, [{ event: "paused" }]);
     assert.equal(recoveredStopping.details.replanAfterCancel, true);
     assert.equal(recoveredAutomatic.details.conflictAutomation.status, "running");
-    assert.equal(recoveredAutomatic.details.conflictAutomation.workItemId, "work_item:plan-conflicts");
+    assert.equal(recoveredAutomatic.details.conflictAutomation.taskId, "task:plan-conflicts");
     assert.equal(recoveredAutomatic.details.conflictAutomation.sessionId, "session:plan-conflicts");
     assert.deepEqual(recoveredAutomatic.details.conflictAutomation.conflictFiles, ["shared.swift"]);
   } finally {

@@ -330,7 +330,7 @@ struct SkillRegistryRow: View {
     }
 }
 
-// 单个 Agent 的网格卡片：Assistant 直接建聊天；IC 选择 WorkItem 后建 Worker Session。
+// 单个 Agent 的网格卡片：Assistant 直接建聊天；IC 选择 CorptieTask 后建 Worker Session。
 struct AgentCard: View {
     let agent: Agent
     var onStartSession: (() -> Void)? = nil

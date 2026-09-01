@@ -14,14 +14,14 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
   const objectiveId = session?.objectiveId ?? session?.objective_id ?? null;
   const sessionKind = session?.sessionKind ?? session?.session_kind ?? null;
   const sessionId = session?.id ?? null;
-  const workItemId = session?.workItemId ?? session?.work_item_id ?? null;
+  const taskId = session?.taskId ?? session?.task_id ?? null;
   if (!store || !objectiveId || !sessionId || !["worker", "objectiveChat"].includes(sessionKind)) {
     return emptyIndex(sessionKind);
   }
   const references = store.listArtifactReferences({ includeRevoked: false }).filter((reference) =>
     reference.objectiveId === objectiveId
     && ((reference.sessionId && reference.sessionId === sessionId)
-      || (sessionKind === "worker" && reference.workItemId && reference.workItemId === workItemId))
+      || (sessionKind === "worker" && reference.taskId && reference.taskId === taskId))
   );
   const byArtifact = new Map();
   for (const reference of references) {
@@ -63,9 +63,9 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
       access: {
         read: true,
         write: sessionKind === "objectiveChat" || artifact.scope === "objective"
-          || (artifact.scope === "work_item" && artifact.boundWorkItemId === workItemId),
+          || (artifact.scope === "task" && artifact.boundTaskId === taskId),
         delete: sessionKind === "objectiveChat" || artifact.scope === "objective"
-          || (artifact.scope === "work_item" && artifact.boundWorkItemId === workItemId)
+          || (artifact.scope === "task" && artifact.boundTaskId === taskId)
       },
       pendingUpdate: pending,
       authorizedAt: activeReferences.reduce((latest, reference) =>

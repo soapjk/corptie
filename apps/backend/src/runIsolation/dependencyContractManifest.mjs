@@ -9,8 +9,8 @@ const fixed = (value) => Object.freeze({ status: "resolved", approvalStatus: "ap
 
 export const DEPENDENCY_CONTRACT_MANIFEST = Object.freeze({
   startupBinding: fixed({ owner: "worktree_startup", receiptType: "StartupBindingReceipt", schemaVersion: 2, artifactId: "artifact:7f26689a-5b9a-4b32-ad86-ad93c0be2949", version: 1, contentHash: "472b8c34180f2c1e7f7b59d7e2c8fc620ec515971a56e5f8ecae6fe69a0aced2" }),
-  repositorySourceSnapshot: fixed({ owner: "repository_source_snapshot", receiptType: "RepositorySourceSnapshotReceipt", schemaVersion: 1, artifactId: "artifact:ee9b734f-799d-41b6-804f-9868697de511", version: 1, contentHash: "920fa9b2952490e4e4c93c88ca2855c11aeac9ff615bea43f738feff7d6d93e9" }),
-  toolsetValidation: fixed({ owner: "project_toolset", receiptType: "ToolsetValidationReceipt", schemaVersion: 3, artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3", version: 1, contentHash: "11211c8f21c166f50e38f07b99650e000e32f703f5417a613ffe8775e1a4a54d" }),
+  repositorySourceSnapshot: fixed({ owner: "repository_source_snapshot", receiptType: "RepositorySourceSnapshotReceipt", schemaVersion: 1, artifactId: "artifact:ee9b734f-799d-41b6-804f-9868697de511", version: 1, contentHash: "a288feb13a2c784e1267d4c40b44e1a0204c530c8f0b9910f0d9f2f52a9ccc76" }),
+  toolsetValidation: fixed({ owner: "project_toolset", receiptType: "ToolsetValidationReceipt", schemaVersion: 3, artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3", version: 1, contentHash: "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669" }),
   runCleanup: fixed({ owner: "run_isolation", receiptTypes: Object.freeze({ RunReceipt: 6, CleanupReceipt: 4 }), artifactId: "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f", version: 1, contentHash: "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951" })
 });
 
@@ -47,7 +47,7 @@ export function projectToolsetValidationReceiptPointer(receipt, sourceFingerprin
   if (Date.parse(receipt.finishedAt) < Date.parse(receipt.startedAt) || (receipt.expiresAt !== null && Date.parse(receipt.expiresAt) <= now.getTime())) {
     throw contractError("RUN_TOOLSET_SCHEMA_INVALID", "ToolsetValidationReceipt is expired or has invalid timestamps.");
   }
-  for (const field of ["logicalSessionId", "objectiveId", "workItemId", "repositoryId", "worktreeId"]) {
+  for (const field of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]) {
     if (Object.hasOwn(authority, field) && authority[field] !== receipt.identity[field]) throw contractError("RUN_TOOLSET_SCHEMA_INVALID", `${field} differs from the authenticated Run identity.`);
   }
   const projected = { receiptId: receipt.receiptId, receiptHash: receipt.receiptHash, resourceVersion: receipt.resourceVersion, toolsetVersion: receipt.toolsetVersion, validationPlanIdentity: receipt.validationPlanIdentity, sourceFingerprint: receipt.snapshotRef?.sourceFingerprint };
@@ -77,16 +77,16 @@ export function verifyRepositorySourceSnapshotReceipt(receipt, reference, author
   validateRepositorySourceSnapshotReceipt(receipt);
   assertFixedReceiptRef(receipt.artifactRef, manifest.repositorySourceSnapshot, "SOURCE_SNAPSHOT_SCHEMA_INVALID");
   for (const field of ["receiptId", "receiptHash", "schemaVersion", "resourceVersion", "sourceFingerprint"]) if (reference[field] !== receipt[field]) throw contractError("SOURCE_SNAPSHOT_HASH_MISMATCH", `${field} differs from the resolved RepositorySourceSnapshotReceipt.`);
-  for (const field of ["objectiveId", "workItemId", "logicalSessionId", "repositoryId", "worktreeId"]) if (Object.hasOwn(authority, field) && authority[field] !== receipt[field]) throw contractError("SOURCE_SNAPSHOT_IDENTITY_MISMATCH", `${field} differs from the authenticated Run identity.`);
+  for (const field of ["objectiveId", "taskId", "logicalSessionId", "repositoryId", "worktreeId"]) if (Object.hasOwn(authority, field) && authority[field] !== receipt[field]) throw contractError("SOURCE_SNAPSHOT_IDENTITY_MISMATCH", `${field} differs from the authenticated Run identity.`);
   return receipt;
 }
 
 export function validateStartupBindingReceipt(receipt, reference, authority) {
-  const required = ["startupOperationId","objectiveId","workItemId","logicalSessionId","repositoryId","worktreeId","canonicalWorktreePath","headIdentity","providerBindingId","bindingGeneration","sourceCommitOid","sourceTreeOid","baseRef","repositoryInventoryVersion","workspaceResourceVersion","resourceVersion","providerContextHash","phaseTimestamps","compensation","error","receiptHash","schemaVersion","status"];
+  const required = ["startupOperationId","objectiveId","taskId","logicalSessionId","repositoryId","worktreeId","canonicalWorktreePath","headIdentity","providerBindingId","bindingGeneration","sourceCommitOid","sourceTreeOid","baseRef","repositoryInventoryVersion","workspaceResourceVersion","resourceVersion","providerContextHash","phaseTimestamps","compensation","error","receiptHash","schemaVersion","status"];
   if (!receipt || Object.keys(receipt).some((key) => !required.includes(key)) || required.some((key) => !Object.hasOwn(receipt, key))) throw contractError("STARTUP_BINDING_IDENTITY_MISMATCH", "StartupBindingReceipt field set differs from the fixed contract projection.");
   if (receipt.schemaVersion !== 2 || receipt.status !== "ready" || receipt.error !== null) throw contractError("STARTUP_BINDING_NOT_READY", "StartupBindingReceipt must be schemaVersion 2 ready.");
   if (receipt.startupOperationId !== reference.startupOperationId || receipt.receiptHash !== reference.receiptHash || receipt.resourceVersion !== reference.resourceVersion || receiptHash(receipt) !== receipt.receiptHash) throw contractError("DEPENDENCY_CONTRACT_HASH_MISMATCH", "StartupBindingReceipt reference or canonical hash mismatches.");
-  for (const field of ["objectiveId","workItemId","logicalSessionId","repositoryId","worktreeId","providerBindingId","bindingGeneration","sourceCommitOid","sourceTreeOid","repositoryInventoryVersion","workspaceResourceVersion","resourceVersion"]) if (Object.hasOwn(authority, field) && authority[field] !== receipt[field]) throw contractError("STARTUP_BINDING_STALE", `${field} is stale against authoritative binding.`);
+  for (const field of ["objectiveId","taskId","logicalSessionId","repositoryId","worktreeId","providerBindingId","bindingGeneration","sourceCommitOid","sourceTreeOid","repositoryInventoryVersion","workspaceResourceVersion","resourceVersion"]) if (Object.hasOwn(authority, field) && authority[field] !== receipt[field]) throw contractError("STARTUP_BINDING_STALE", `${field} is stale against authoritative binding.`);
   return receipt;
 }
 

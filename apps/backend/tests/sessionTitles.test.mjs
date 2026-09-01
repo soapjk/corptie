@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   assertSessionTitleAvailable,
   defaultSessionTitleForAgent,
-  defaultSessionTitleForWorkItem,
+  defaultSessionTitleForTask,
   defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   findSessionTitleConflict,
@@ -33,9 +33,9 @@ test("Agent session defaults use underscore suffixes and skip every occupied num
   );
 });
 
-test("Worker Session defaults use the WorkItem title instead of the Agent suffix", () => {
-  assert.equal(defaultSessionTitleForWorkItem("  修复会话命名  ", "Builder"), "修复会话命名");
-  assert.equal(defaultSessionTitleForWorkItem("", "Builder"), "Builder_Session");
+test("Worker Session defaults use the Task title instead of the Agent suffix", () => {
+  assert.equal(defaultSessionTitleForTask("  修复会话命名  ", "Builder"), "修复会话命名");
+  assert.equal(defaultSessionTitleForTask("", "Builder"), "Builder_Session");
 });
 
 test("session title matching ignores surrounding whitespace, case and Unicode width", () => {

@@ -157,7 +157,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         collaboration.collaborationRecipientSessionTitle = "Sessions UI"
         collaboration.collaborationRecipientSessionId = "session:ui"
         collaboration.collaborationRecipientSessionKind = "worker"
-        collaboration.collaborationTargetWorkItemId = "work_item:ui"
+        collaboration.collaborationTargetCorptieTaskId = "task:ui"
         collaboration.collaborationInitiatorSessionTitle = "Platform Objective Chat"
         collaboration.collaborationInitiatorSessionId = "session:platform"
         collaboration.collaborationInitiatorSessionKind = "objectiveChat"
@@ -198,13 +198,13 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertFalse(visibleContent.contains("session:ui"))
         XCTAssertFalse(visibleContent.contains("objective:platform"))
         XCTAssertFalse(visibleContent.contains("objective:macos"))
-        XCTAssertFalse(visibleContent.contains("work_item:ui"))
+        XCTAssertFalse(visibleContent.contains("task:ui"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Please review the API contract."))
         XCTAssertEqual(presentation.messageText, "Please review the API contract.")
     }
 
     @MainActor
-    func testCollaborationConfirmationShowsPendingWorkItemInsteadOfInventingTargetSession() throws {
+    func testCollaborationConfirmationShowsPendingCorptieTaskInsteadOfInventingTargetSession() throws {
         var confirmation = item(
             id: "collaboration-confirmation",
             type: "collaborationConfirmation",
@@ -226,11 +226,11 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             currentSessionTitle: "Source Worker"
         ))
 
-        XCTAssertEqual(presentation.route.destinationKind, .newWorkItem)
-        XCTAssertEqual(presentation.route.routeLabel, L10n("将创建新的 WorkItem"))
+        XCTAssertEqual(presentation.route.destinationKind, .newCorptieTask)
+        XCTAssertEqual(presentation.route.routeLabel, L10n("将创建新的 CorptieTask"))
         XCTAssertEqual(presentation.route.sourceSession, "Session · Source Worker")
         XCTAssertEqual(presentation.route.sourceObjective, "Objective · Platform")
-        XCTAssertEqual(presentation.route.targetName, "WorkItem · Repair delivery")
+        XCTAssertEqual(presentation.route.targetName, "CorptieTask · Repair delivery")
         XCTAssertEqual(presentation.route.targetObjective, "Objective · macOS")
         let visibleContent = [
             presentation.bodyMarkdown,

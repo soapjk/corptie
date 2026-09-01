@@ -24,7 +24,7 @@ export class BenchmarkControlStore {
     db.run(`CREATE TABLE IF NOT EXISTS benchmark_experiments (
       record_id TEXT PRIMARY KEY, schema_version INTEGER NOT NULL, resource_version INTEGER NOT NULL,
       content_hash TEXT NOT NULL, created_by_session_id TEXT NOT NULL, created_at TEXT NOT NULL,
-      objective_id TEXT NOT NULL, work_item_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
+      objective_id TEXT NOT NULL, task_id TEXT NOT NULL, idempotency_key TEXT NOT NULL,
       plan_hash TEXT NOT NULL, status TEXT NOT NULL, payload_json TEXT NOT NULL,
       UNIQUE(created_by_session_id, idempotency_key)
     ) STRICT`);
@@ -65,7 +65,7 @@ export class BenchmarkControlStore {
       content_hash TEXT NOT NULL, created_by_session_id TEXT NOT NULL, created_at TEXT NOT NULL,
       experiment_id TEXT NOT NULL, report_id TEXT NOT NULL, action TEXT NOT NULL, payload_json TEXT NOT NULL
     ) STRICT`);
-    db.run("CREATE INDEX IF NOT EXISTS idx_benchmark_experiments_scope ON benchmark_experiments(objective_id, work_item_id, created_at DESC)");
+    db.run("CREATE INDEX IF NOT EXISTS idx_benchmark_experiments_scope ON benchmark_experiments(objective_id, task_id, created_at DESC)");
     db.run("CREATE INDEX IF NOT EXISTS idx_benchmark_attempts_experiment ON benchmark_attempts(experiment_id, created_at)");
     db.run("CREATE INDEX IF NOT EXISTS idx_benchmark_decisions_experiment ON benchmark_gate_decisions(experiment_id, created_at DESC)");
   }
@@ -92,18 +92,18 @@ export class BenchmarkControlStore {
     const recordId = `experiment:${contentHash({ logicalSessionId: scope.logicalSessionId, idempotencyKey: input.idempotencyKey }).slice(0, 32)}`;
     const payload = { experimentId: recordId, definition, manifestIdentity: input.manifestIdentity, scope };
     const createdAt = this.now();
-    this.#db().run(`INSERT INTO benchmark_experiments VALUES (?, 1, 1, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`, [recordId, contentHash(payload), scope.logicalSessionId, createdAt, scope.objectiveId, scope.workItemId, input.idempotencyKey, planHash, JSON.stringify(payload)]);
+    this.#db().run(`INSERT INTO benchmark_experiments VALUES (?, 1, 1, ?, ?, ?, ?, ?, ?, ?, 'planned', ?)`, [recordId, contentHash(payload), scope.logicalSessionId, createdAt, scope.objectiveId, scope.taskId, input.idempotencyKey, planHash, JSON.stringify(payload)]);
     return this.getExperiment(scope, recordId);
   }
 
   getExperiment(scope, experimentId) {
     const row = this.#get("benchmark_experiments", experimentId);
-    if (!row || row.objective_id !== scope.objectiveId || row.work_item_id !== scope.workItemId || row.created_by_session_id !== scope.logicalSessionId) throw benchmarkError("BENCHMARK_EXPERIMENT_NOT_FOUND", "Experiment is not visible to this Session.", "store", { statusCode: 404 });
+    if (!row || row.objective_id !== scope.objectiveId || row.task_id !== scope.taskId || row.created_by_session_id !== scope.logicalSessionId) throw benchmarkError("BENCHMARK_EXPERIMENT_NOT_FOUND", "Experiment is not visible to this Session.", "store", { statusCode: 404 });
     return present(row);
   }
 
   listExperiments(scope) {
-    return this.#db().all("SELECT * FROM benchmark_experiments WHERE objective_id=? AND work_item_id=? AND created_by_session_id=? ORDER BY created_at DESC", [scope.objectiveId, scope.workItemId, scope.logicalSessionId], "BenchmarkControlStore.listExperiments").map(present);
+    return this.#db().all("SELECT * FROM benchmark_experiments WHERE objective_id=? AND task_id=? AND created_by_session_id=? ORDER BY created_at DESC", [scope.objectiveId, scope.taskId, scope.logicalSessionId], "BenchmarkControlStore.listExperiments").map(present);
   }
 
   transitionExperiment(scope, experimentId, expectedResourceVersion, status, patch = {}) {

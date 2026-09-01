@@ -1,8 +1,8 @@
-// Product-level Workspace preparation for WorkItem execution. A first execution
+// Product-level Workspace preparation for Task execution. A first execution
 // has no Session route to recover, so it can go straight to the validating,
 // idempotent Worktree ensure operation. Existing Sessions still require a full
 // inventory because their previous logical route may be reusable or repairable.
-export class WorkItemWorkspaceService {
+export class TaskWorkspaceService {
   constructor(options = {}) {
     this.store = options.store;
     this.requireProject = options.requireProject;
@@ -12,17 +12,17 @@ export class WorkItemWorkspaceService {
     this.accessWorkspace = options.accessWorkspace ?? ((path) => access(path, constants.R_OK | constants.W_OK));
     for (const method of ["requireProject", "inspectProject", "ensureWorktree", "restoreMissingWorktree"]) {
       if (typeof this[method] !== "function") {
-        throw new TypeError(`WorkItemWorkspaceService requires ${method}().`);
+        throw new TypeError(`TaskWorkspaceService requires ${method}().`);
       }
     }
     if (!this.store || typeof this.store.getLogicalSessionByLegacySessionId !== "function") {
-      throw new TypeError("WorkItemWorkspaceService requires a Store with logical Session routes.");
+      throw new TypeError("TaskWorkspaceService requires a Store with logical Session routes.");
     }
   }
 
-  async ensure({ workItem, session = null }) {
-    const repositoryId = typeof workItem?.main_workspace_id === "string"
-      ? workItem.main_workspace_id.trim()
+  async ensure({ task, session = null }) {
+    const repositoryId = typeof task?.main_workspace_id === "string"
+      ? task.main_workspace_id.trim()
       : "";
     if (!repositoryId) throw workspaceRequiredError();
 
@@ -48,7 +48,7 @@ export class WorkItemWorkspaceService {
         ...(await this.ensureWorktree({
           repositoryId,
           workingDirectory: project.mainPath,
-          workItemId: workItem.id
+          taskId: task.id
         })),
         requiresSessionTransition: false
       };
@@ -82,7 +82,7 @@ export class WorkItemWorkspaceService {
           requiresSessionTransition: true
         };
       } catch (error) {
-        throw worktreeRebuildError(workItem.id, error);
+        throw worktreeRebuildError(task.id, error);
       }
     }
     try {
@@ -90,13 +90,13 @@ export class WorkItemWorkspaceService {
         ...(await this.ensureWorktree({
           repositoryId,
           workingDirectory: project.mainPath,
-          workItemId: workItem.id
+          taskId: task.id
         })),
         rebuilt: true,
         requiresSessionTransition: true
       };
     } catch (error) {
-      throw worktreeRebuildError(workItem.id, error);
+      throw worktreeRebuildError(task.id, error);
     }
   }
 }
@@ -123,11 +123,11 @@ function workspaceUnavailableError(path, cause) {
   return error;
 }
 
-function worktreeRebuildError(workItemId, cause) {
+function worktreeRebuildError(taskId, cause) {
   const detail = typeof cause?.message === "string" && cause.message.trim()
     ? cause.message.trim()
     : "Git did not provide a failure reason.";
-  const error = new Error(`无法基于 WorkItem ${workItemId} 的任务分支重建 Worktree：${detail}`);
+  const error = new Error(`无法基于 Task ${taskId} 的任务分支重建 Worktree：${detail}`);
   error.code = "WORKTREE_REBUILD_FAILED";
   error.statusCode = 409;
   error.cause = cause;

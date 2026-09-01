@@ -9,7 +9,11 @@ const LEGACY_CODEX_CONTEXT = /# Corptie runtime context\n\n- You are running ins
 
 export function resolveCorptieAgentMemoryPaths(options = {}) {
   const home = resolve(options.homeDir ?? os.homedir());
-  const corptieHome = resolve(options.corptieHome ?? process.env.CORPTIE_HOME ?? join(home, ".corptie"));
+  const corptieHome = resolve(
+    options.corptieHome
+      ?? (options.homeDir != null ? join(home, ".corptie") : process.env.CORPTIE_HOME)
+      ?? join(home, ".corptie")
+  );
   const environmentName = options.environmentName === "development" ? "development" : "production";
   const runtimesRoot = environmentName === "development"
     ? join(corptieHome, "development", "runtimes")

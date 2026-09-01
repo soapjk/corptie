@@ -222,13 +222,13 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             metadata: "Processing · 08/20, 14:30",
             isCollaboration: true,
             collaborationRoute: NativeCollaborationRoutePresentation(
-                destinationKind: .newWorkItem,
-                routeLabel: "A new WorkItem will be created",
+                destinationKind: .newCorptieTask,
+                routeLabel: "A new CorptieTask will be created",
                 sourceLabel: "Source",
                 sourceSession: "Session · Platform planning",
                 sourceObjective: "Objective · Platform",
                 targetLabel: "Target",
-                targetName: "WorkItem · Review API",
+                targetName: "CorptieTask · Review API",
                 targetObjective: "Objective · macOS"
             ),
             expandableTurnId: nil,

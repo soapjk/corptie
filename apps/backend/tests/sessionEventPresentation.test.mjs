@@ -80,8 +80,8 @@ test("Automation timeline projection only admits created, due, and queued events
 });
 
 test("collaboration cards require a queryable task and complete envelope", () => {
-  const workItem = { kind: "collaboration", source: { taskId: "task:valid" } };
-  const task = { taskId: "task:valid" };
+  const task = { kind: "collaboration", source: { taskId: "task:valid" } };
+  const collaborationTask = { taskId: "task:valid" };
   const envelope = {
     task: { taskId: "task:valid", sourceObjectiveId: "objective:source", targetObjectiveId: "objective:target" },
     message: {
@@ -94,8 +94,8 @@ test("collaboration cards require a queryable task and complete envelope", () =>
       }
     }
   };
-  assert.equal(collaborationEnvelopeFailure({ workItem, task, envelope }), null);
-  assert.equal(collaborationEnvelopeFailure({ workItem, task: null, envelope }), "task_not_found");
-  assert.equal(collaborationEnvelopeFailure({ workItem, task, envelope: { ...envelope, message: { ...envelope.message, body: "" } } }), "missing_message_body");
-  assert.equal(collaborationEnvelopeFailure({ workItem: { ...workItem, source: {} }, task, envelope }), "missing_task_id");
+  assert.equal(collaborationEnvelopeFailure({ task, collaborationTask, envelope }), null);
+  assert.equal(collaborationEnvelopeFailure({ task, collaborationTask: null, envelope }), "task_not_found");
+  assert.equal(collaborationEnvelopeFailure({ task, collaborationTask, envelope: { ...envelope, message: { ...envelope.message, body: "" } } }), "missing_message_body");
+  assert.equal(collaborationEnvelopeFailure({ task: { ...task, source: {} }, collaborationTask, envelope }), "missing_task_id");
 });

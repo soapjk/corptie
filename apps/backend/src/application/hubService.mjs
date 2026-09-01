@@ -1,6 +1,6 @@
 // 统一检索 hub（12）：记忆检索 + 工具/技能发现 + 去抖缓存 + none 三岔路。
 //
-// - retrieveMemory：按 owner 作用域（work_item > objective > agent）收集记忆，
+// - retrieveMemory：按 owner 作用域（task > objective > agent）收集记忆，
 //   优先 embedding 语义召回（embedder 注入），回退关键词匹配；confidence 加权排序。
 // - search：发现工具/技能，先查去抖缓存（命中/否定结果都缓存），未命中则 discover 并缓存。
 // - discover 命中否定的 none 三岔路（proposeSkill 起草技能 / justDoIt 自干 / 用户门禁）由调用方裁决。
@@ -103,9 +103,9 @@ export class HubService {
 
   // 记忆检索（12）：作用域聚合 → embedding 召回（回退关键词）→ confidence 加权排序。
   async retrieveMemory(intent, scope = {}, options = {}) {
-    const { objectiveId, workItemId, agentId } = scope;
+    const { objectiveId, taskId, agentId } = scope;
     const memories = [];
-    if (workItemId) memories.push(...this.store.listMemoriesByOwner("work_item", workItemId));
+    if (taskId) memories.push(...this.store.listMemoriesByOwner("task", taskId));
     if (objectiveId) memories.push(...this.store.listMemoriesByOwner("objective", objectiveId));
     if (agentId) memories.push(...this.store.listMemoriesByOwner("agent", agentId));
 
@@ -128,7 +128,7 @@ export class HubService {
   }
 
   async rankMemory(intent, memories, options = {}) {
-    const scopePriority = { work_item: 3, objective: 2, agent: 1 };
+    const scopePriority = { task: 3, objective: 2, agent: 1 };
     const scored = await this.scoreMemories(intent, memories, options);
     return scored.sort((left, right) => right.score - left.score
       || (scopePriority[right.memory.owner_type] ?? 0) - (scopePriority[left.memory.owner_type] ?? 0)
@@ -202,14 +202,14 @@ export class HubService {
 
   // 工具/技能发现 + 去抖缓存
   search(intent, scope = {}, _options = {}) {
-    const { objectiveId, workItemId, sessionId, agentId } = scope;
+    const { objectiveId, taskId, sessionId, agentId } = scope;
     const intentHash = this.hashIntent(intent);
     const cached = this.store.getHubIntentCache(intentHash, { agentId });
     if (cached) {
       return { ...JSON.parse(cached.result_json || "{}"), cached: true };
     }
     const result = this.discover(intent, scope);
-    this.store.cacheHubIntent({ sessionId, workItemId, objectiveId, agentId, intentHash, result });
+    this.store.cacheHubIntent({ sessionId, taskId, objectiveId, agentId, intentHash, result });
     return { ...result, cached: false };
   }
 
