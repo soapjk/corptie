@@ -2,6 +2,16 @@ import Combine
 import AppKit
 import SwiftUI
 
+enum ConsoleNavigationCardWidthPolicy {
+    static let minimumTaskColumnWidth = 220.0
+    static let defaultTaskColumnWidth = 300.0
+    static let maximumTaskColumnWidth = 520.0
+
+    static func clamped(_ width: Double) -> Double {
+        min(max(width, minimumTaskColumnWidth), maximumTaskColumnWidth)
+    }
+}
+
 // 统一控制台：Objective/Assistant 导航、Task 列、消息列和详情列。
 //   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，纸面卡片质感）
 //   中 content  — 对话（复用旧版 DetailView，吃满剩余宽度，纸面卡片质感）
@@ -57,6 +67,12 @@ struct UnifiedConsoleView: View {
     @State private var isSearching = false
     @State private var searchText = ""
     @FocusState private var isSearchFieldFocused: Bool
+    @AppStorage(
+        "console.navigationCard.taskColumnWidth",
+        store: CorptieAppEnvironment.userDefaults
+    ) private var storedTaskColumnWidth = ConsoleNavigationCardWidthPolicy.defaultTaskColumnWidth
+    @State private var navigationResizeStartWidth: Double?
+    @State private var isHoveringNavigationResizeHandle = false
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
     private static let recentSessionIdsKey = "sessions.recentSessionIds"
@@ -218,10 +234,9 @@ struct UnifiedConsoleView: View {
             objectiveRail
                 .frame(width: 64)
 
-            Divider()
-
             unifiedTaskSidebar
-                .frame(width: TwoPaneLayoutMetrics.sidebarWidth)
+                .frame(width: taskColumnWidth)
+                .background(taskColumnBackground)
         }
         .frame(maxHeight: .infinity)
         .clipShape(
@@ -245,6 +260,47 @@ struct UnifiedConsoleView: View {
             .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
         }
         .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
+        .overlay(alignment: .trailing) {
+            navigationResizeHandle
+        }
+    }
+
+    private var taskColumnWidth: CGFloat {
+        CGFloat(ConsoleNavigationCardWidthPolicy.clamped(storedTaskColumnWidth))
+    }
+
+    private var taskColumnBackground: Color {
+        Color(nsColor: .controlBackgroundColor).opacity(0.58)
+    }
+
+    private var navigationResizeHandle: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 10)
+            .contentShape(Rectangle())
+            .overlay {
+                Capsule()
+                    .fill(Color.secondary.opacity(isHoveringNavigationResizeHandle ? 0.42 : 0))
+                    .frame(width: 2, height: 34)
+            }
+            .onHover { hovering in
+                isHoveringNavigationResizeHandle = hovering
+                (hovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
+            }
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        let startWidth = navigationResizeStartWidth ?? storedTaskColumnWidth
+                        navigationResizeStartWidth = startWidth
+                        storedTaskColumnWidth = ConsoleNavigationCardWidthPolicy.clamped(
+                            startWidth + Double(value.translation.width)
+                        )
+                    }
+                    .onEnded { _ in
+                        navigationResizeStartWidth = nil
+                    }
+            )
+            .help(L10n("Drag to resize the Objective and Task card"))
     }
 
     private var objectiveRail: some View {
@@ -318,8 +374,16 @@ struct UnifiedConsoleView: View {
         isSelected: Bool
     ) -> some View {
         ZStack {
+            if isSelected {
+                ConnectedObjectiveTabShape(cornerRadius: 14)
+                    .fill(taskColumnBackground)
+                    .frame(width: 60, height: 50)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+
             RoundedRectangle(cornerRadius: isSelected ? 13 : 20, style: .continuous)
                 .fill(isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+                .frame(width: 42, height: 42)
             if let systemImage {
                 Image(systemName: systemImage)
                     .font(.system(size: 16, weight: .semibold))
@@ -330,7 +394,7 @@ struct UnifiedConsoleView: View {
             }
         }
         .foregroundStyle(isSelected ? Color.white : Color.primary)
-        .frame(width: 42, height: 42)
+        .frame(width: 64, height: 50)
         .contentShape(Rectangle())
         .help(label)
         .accessibilityLabel(label)
@@ -1285,6 +1349,29 @@ struct UnifiedConsoleView: View {
         }
     }
 
+}
+
+private struct ConnectedObjectiveTabShape: Shape {
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY + radius),
+            control: CGPoint(x: rect.minX, y: rect.minY)
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY)
+        )
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
+    }
 }
 
 enum SessionReadAcknowledgementPolicy {

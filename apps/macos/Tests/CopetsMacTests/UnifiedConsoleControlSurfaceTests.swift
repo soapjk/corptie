@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import CorptieMac
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
@@ -52,6 +53,28 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(card.contains(".regularMaterial"))
         #expect(card.contains(".shadow("))
         #expect(source.components(separatedBy: ".scrollContentBackground(.hidden)").count - 1 >= 3)
+    }
+
+    @Test
+    func navigationCardWidthIsResizableAndPersisted() throws {
+        #expect(ConsoleNavigationCardWidthPolicy.clamped(120) == 220)
+        #expect(ConsoleNavigationCardWidthPolicy.clamped(360) == 360)
+        #expect(ConsoleNavigationCardWidthPolicy.clamped(800) == 520)
+
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(source.contains("console.navigationCard.taskColumnWidth"))
+        #expect(source.contains("DragGesture(minimumDistance: 0)"))
+        #expect(source.contains("NSCursor.resizeLeftRight"))
+    }
+
+    @Test
+    func selectedObjectiveUsesAConnectedFolderTabShape() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+
+        #expect(source.contains("ConnectedObjectiveTabShape(cornerRadius: 14)"))
+        #expect(source.contains(".fill(taskColumnBackground)"))
+        #expect(source.contains("private struct ConnectedObjectiveTabShape: Shape"))
+        #expect(!source.contains("objectiveRail\n                .frame(width: 64)\n\n            Divider()"))
     }
 
     private func source(named name: String) throws -> String {
