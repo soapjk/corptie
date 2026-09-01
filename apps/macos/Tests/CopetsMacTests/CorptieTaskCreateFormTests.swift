@@ -37,6 +37,18 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         ))
     }
 
+    func testMissingTitleUsesTaskTerminology() {
+        XCTAssertEqual(
+            CorptieTaskCreateFormPolicy.validationMessage(
+                title: "",
+                detail: "Implement the feature",
+                workspaceId: "repository:one",
+                agentId: "agent:one"
+            ),
+            L10n("请输入 Task 标题。")
+        )
+    }
+
     func testExecutionPresentationShowsNotStartedAndRunning() {
         XCTAssertEqual(
             CorptieTaskExecutionPresentation.label(executionStatus: "idle", sessionStatus: nil),
