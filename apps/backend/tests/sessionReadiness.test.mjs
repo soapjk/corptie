@@ -74,3 +74,21 @@ test("Provider preparation and Tool confirmation produce explicit Not Ready reas
   assert.equal(toolFailure.readiness, "not_ready");
   assert.equal(toolFailure.notReadyReason.code, "PROVIDER_TOOL_APPLICATION_UNCONFIRMED");
 });
+
+test("an unverified post-restart binding blocks sending independently from Provider readiness", () => {
+  const session = withSessionReadiness(sendable, {
+    logicalSession: { activeBinding: { bindingId: "binding:empty" } },
+    requireActiveBinding: true,
+    providerRuntime: { state: "ready" },
+    bindingRuntime: {
+      state: "not_ready",
+      reasonCode: "BINDING_RUNTIME_VERIFYING",
+      message: "Verifying empty Provider binding.",
+      retryable: true
+    }
+  });
+
+  assert.equal(session.readiness, "not_ready");
+  assert.equal(session.notReadyReason.code, "BINDING_RUNTIME_VERIFYING");
+  assert.equal(session.actions.send.available, false);
+});

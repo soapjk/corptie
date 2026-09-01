@@ -50,6 +50,13 @@ export function resolveSessionReadiness(session, context = {}) {
   if (!context.logicalSession?.activeBinding && context.requireActiveBinding === true) {
     return notReady("SESSION_BINDING_NOT_FOUND", "The Session has no active Provider binding.", true);
   }
+  if (context.bindingRuntime?.state && context.bindingRuntime.state !== READY) {
+    return notReady(
+      context.bindingRuntime.reasonCode ?? "BINDING_RUNTIME_VERIFYING",
+      context.bindingRuntime.message ?? "The Session binding is being verified after the Provider restarted.",
+      context.bindingRuntime.retryable !== false
+    );
+  }
   if (context.providerRuntime?.state && context.providerRuntime.state !== READY) {
     return notReady(
       context.providerRuntime.reasonCode ?? "PROVIDER_INITIALIZING",
@@ -102,4 +109,3 @@ function messageForActionReason(reason) {
     default: return "This Session cannot accept messages right now.";
   }
 }
-
