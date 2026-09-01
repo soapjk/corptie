@@ -32,7 +32,15 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
     if (objectiveList) {
       const objectiveId = decodeURIComponent(objectiveList[1]);
       const context = localContext(objectiveId);
-      if (request.method === "GET") return sendJson(response, 200, { artifacts: service.list(context, { includeRevoked: url.searchParams.get("includeRevoked") === "true" }) });
+      if (request.method === "GET") {
+        const includeRevoked = url.searchParams.get("includeRevoked") === "true";
+        const limit = boundedQueryInteger(url, "limit", 1, 200, 100);
+        const offset = boundedQueryInteger(url, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
+        const artifacts = service.list(context, { includeRevoked, limit, offset });
+        const totalCount = service.store.countArtifactsByObjective(objectiveId, { includeRevoked });
+        const nextOffset = offset + artifacts.length < totalCount ? offset + artifacts.length : null;
+        return sendJson(response, 200, { artifacts, totalCount, nextOffset });
+      }
       if (request.method === "POST") {
         const input = await readJson(request);
         const artifact = input.importPath

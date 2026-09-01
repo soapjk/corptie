@@ -80,6 +80,7 @@ import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
+import { migrateStoreOffMainThread, optimizeStoreOffMainThread } from "./store/storeMigrationRunner.mjs";
 import { BenchmarkControlPlane } from "./benchmark/controlPlane.mjs";
 import { handleBenchmarkHttpRequest } from "./benchmark/httpApi.mjs";
 import { createArtifactEvidencePort } from "./benchmark/ports.mjs";
@@ -318,6 +319,7 @@ let stateSyncPublishTimer = null;
 let timelineChangePublisher = null;
 let mockProgressTimer = null;
 let stateSyncService = null;
+let backendStoreReady = false;
 const sessionStateDiagnostics = new SessionStateDiagnostics();
 let taskExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
@@ -1564,12 +1566,12 @@ const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
     return attempt;
   },
   maxCandidates: 32,
-  concurrency: 2
+  concurrency: 4
 });
 const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
   store,
   providerId: "codex-app-server",
-  concurrency: 2,
+  concurrency: 4,
   onChanged: (candidate) => store.touchSessionProjectionDependency(candidate.sessionId),
   ensureUsable: async (candidate) => {
     let logical = store.getLogicalSession(candidate.logicalSessionId);
@@ -2538,14 +2540,9 @@ function sessionTitleForWorkspace(value, cwd) {
 }
 
 function knownSessionsForTitleValidation() {
-  const byId = new Map();
-  for (const session of visibleStoredSessionProjections(store, [
-    ...store.listSessions({ archived: false }),
-    ...store.listSessions({ archived: true })
-  ])) {
-    if (session?.id) byId.set(session.id, session);
-  }
-  return Array.from(byId.values());
+  // Title validation needs only two scalar columns. Never deserialize every
+  // archived Session projection (including Provider metadata) for this check.
+  return store.listSessionTitleIdentities();
 }
 
 async function ensureLogicalRouteForProviderSession(session, providerId, options = {}) {
@@ -3507,29 +3504,30 @@ function controlPlaneSnapshot() {
   // restored. Keeping them here made every archived row a permanent client
   // subscription despite the active-only synchronization contract.
   const persisted = activeStoredSessionProjections(store);
-  const latestMessageTimes = store.listLatestSessionMessageTimes();
-  const messageCursors = store.listSessionMessageCursors();
-  const timelineRevisions = store.listSessionTimelineRevisions();
+  const residentSessionIds = persisted.map((session) => session.id);
+  const latestMessageTimes = store.listLatestSessionMessageTimes(residentSessionIds);
+  const messageCursors = store.listSessionMessageCursors(residentSessionIds);
+  const timelineRevisions = store.listSessionTimelineRevisions(residentSessionIds);
+  const residentTasks = store.listTasks({ includeCompleted: false });
   const sessionsById = new Map(persisted.map((session) => [
     session.id,
-    withSessionMessageCursors(
-      withLastMessageTimestamp(
-    decorateSessionForClient(session),
-        latestMessageTimes.get(session.id)
-      ),
-      messageCursors.get(session.id),
-      timelineRevisions.get(session.id)
-    )
+    presentControlPlaneSession(session, {
+      latestMessageTime: latestMessageTimes.get(session.id),
+      messageCursor: messageCursors.get(session.id),
+      timelineRevision: timelineRevisions.get(session.id)
+    })
   ]));
   if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
     const openclacky = [...sessionsById.values()].filter((s) => s.id.startsWith("openclacky:"));
     const detail = openclacky.map((s) => `${s.id.slice(10, 18)}:${s.status}`).join(",");
-    console.log(`[snapshot] sessions=${sessionsById.size} tasks=${store.listTasks().length} ` +
+    console.log(`[snapshot] sessions=${sessionsById.size} tasks=${residentTasks.length} ` +
       `openclacky=[${detail}]`);
   }
   return {
     sessions: sortSessionsForList([...sessionsById.values()]),
-    tasks: store.listTasks().map(presentTaskAcceptance),
+    // Completed Work Items are cold history. The Work Room loads them through
+    // the explicit 50-row Task cursor API only when the user opens that view.
+    tasks: residentTasks.map(presentTaskAcceptance),
     objectives: store.listObjectives(),
     agents: store.listAgents().map((agent) => ({
       ...agent,
@@ -3537,12 +3535,56 @@ function controlPlaneSnapshot() {
     })),
     skills: store.listRegistrySkills(),
     repositories: store.listGitRepositories(),
-    integrationRuns: store.listProjectIntegrationRuns().map((run) => (
+    integrationRuns: store.listProjectIntegrationRuns(50).map((run) => (
       presentProjectIntegrationRun(run, {
         resolveTask: (taskId) => store.getTask(taskId)
       })
     ))
   };
+}
+
+function presentControlPlaneSession(session, {
+  latestMessageTime = null,
+  messageCursor = null,
+  timelineRevision = 0
+} = {}) {
+  return withSessionMessageCursors(
+    withLastMessageTimestamp(decorateSessionForClient(session), latestMessageTime),
+    messageCursor,
+    timelineRevision
+  );
+}
+
+function readControlPlaneEntity(entityType, entityId) {
+  switch (entityType) {
+    case "session": {
+      const session = store.getSession(entityId);
+      if (!session || session.archived === true) return null;
+      return presentControlPlaneSession(session, {
+        latestMessageTime: store.listLatestSessionMessageTimes([entityId]).get(entityId),
+        messageCursor: store.listSessionMessageCursors([entityId]).get(entityId),
+        timelineRevision: store.sessionTimelineRevision(entityId)
+      });
+    }
+    case "task": {
+      const task = store.getTask(entityId);
+      return task && task.lifecycle_state !== "done" ? presentTaskAcceptance(task) : null;
+    }
+    case "objective": return store.getObjective(entityId);
+    case "agent": {
+      const agent = store.getAgent(entityId);
+      return agent ? { ...agent, skillIds: store.listRegistrySkillIdsForAgent(agent.agentId) } : null;
+    }
+    case "skill": return store.getRegistrySkill(entityId);
+    case "repository": return store.getGitRepository(entityId);
+    case "integrationRun": {
+      const run = store.getProjectIntegrationRun(entityId);
+      return run ? presentProjectIntegrationRun(run, {
+        resolveTask: (taskId) => store.getTask(taskId)
+      }) : null;
+    }
+    default: return null;
+  }
 }
 
 function writeStateSyncFrame(response, name, data) {
@@ -4667,10 +4709,8 @@ async function loadClaudeModels(options = {}) {
 
   try {
     const models = await warm.query((async function* () {})()).supportedModels();
-    const activeSession = [
-      ...store.listSessions({ archived: false }),
-      ...store.listSessions({ archived: true })
-    ].find((session) => session.external?.provider === "claude-sdk" && session.external?.currentModel);
+    const activeSession = store.listSessions({ archived: false })
+      .find((session) => session.external?.provider === "claude-sdk" && session.external?.currentModel);
     const payload = {
       currentModel: activeSession?.external?.currentModel ?? null,
       currentReasoningLevel: null,
@@ -4960,6 +5000,38 @@ function listGatewaySessions(options = {}) {
     ...session,
     sessionKind: session.sessionKind ?? "legacy"
   }));
+}
+
+function listGatewaySessionPage(options = {}) {
+  const page = store.listSessionPage(options);
+  return {
+    ...page,
+    items: page.items.map((session) => decorateSessionForClient({
+      ...session,
+      sessionKind: session.sessionKind ?? "legacy"
+    }))
+  };
+}
+
+function encodeSessionPageCursor(cursor) {
+  return cursor
+    ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url")
+    : null;
+}
+
+function decodeSessionPageCursor(value) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (typeof parsed?.updatedAt !== "string" || !parsed.updatedAt
+      || typeof parsed?.id !== "string" || !parsed.id) throw new Error("invalid");
+    return { updatedAt: parsed.updatedAt, id: parsed.id };
+  } catch {
+    const error = new Error("Invalid Session page cursor.");
+    error.code = "INVALID_SESSION_CURSOR";
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 function describeGatewaySession(session) {
@@ -5445,7 +5517,7 @@ function completeTaskForSession(agentId, input = {}, metadata = {}) {
 // 此处把每个已绑定当前活跃 session 的 Task 状态对齐到 session 状态。
 function reconcileEntityTasksAtStartup() {
   let aligned = 0;
-  for (const task of store.listTasks()) {
+  for (const task of store.listTasks({ includeCompleted: false })) {
     if (!task.current_session_id) continue;
     const session = store.getSession(task.current_session_id);
     if (!session) continue;
@@ -5877,7 +5949,7 @@ async function manageCodexTurnChanges(reference, turnId, action) {
     || store.getSession(reference.sessionId)?.external?.cwd;
   if (!cwd) throw new Error("The task working directory is unavailable.");
 
-  const items = store.getItemsForTurn(reference.sessionId, turnId, "codex-app-server");
+  const items = store.getFileChangeItemsForTurn(reference.sessionId, turnId, "codex-app-server");
   const changes = safeTurnFileChanges(items, cwd);
   const diff = turnDiffFor(items, changes);
   if (action === "review") {
@@ -6906,7 +6978,7 @@ async function selfRepairTaskSession(sessionId, failedWork, error) {
 
 async function repairBrokenTaskSessionsAtStartup() {
   let repaired = 0;
-  for (const task of store.listTasks()) {
+  for (const task of store.listTasks({ includeCompleted: false })) {
     if (!incompleteTaskCanSelfRepair(task) || !task.current_session_id) continue;
     const failures = store.listAgentTasksForSession(task.current_session_id, { statuses: ["failed"] });
     const failedWork = failures.find((item) => historicalProviderSessionUnavailable(item.lastError));
@@ -8643,6 +8715,18 @@ function trackStartupMaintenance(promise) {
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
 
+  if (!backendStoreReady && !(
+    request.method === "GET"
+    && ["/health", "/events", "/settings"].includes(url.pathname)
+  )) {
+    sendJson(response, 503, {
+      error: "The Backend transport is connected and the local Store is initializing.",
+      code: "BACKEND_STORE_INITIALIZING",
+      retryable: true
+    });
+    return;
+  }
+
   if (store.migrationInProgress
     && !((request.method === "GET" && (
       url.pathname === "/health"
@@ -9002,6 +9086,7 @@ function route(request, response) {
       service: "corptie-backend",
       version: "0.5.4",
       time: now(),
+      storeReady: backendStoreReady,
       maintenance: store.migrationInProgress,
       dataRootMigration: dataRootMigrationCoordinator.status()
     });
@@ -9247,8 +9332,9 @@ function route(request, response) {
   }
 
   if (request.method === "GET" && url.pathname === "/session-timelines/revisions") {
+    const activeSessionIds = activeStoredSessionProjections(store).map((session) => session.id);
     sendJson(response, 200, {
-      sessions: [...store.listSessionTimelineRevisions()].map(([sessionId, revision]) => ({
+      sessions: [...store.listSessionTimelineRevisions(activeSessionIds)].map(([sessionId, revision]) => ({
         sessionId,
         timelineRevision: revision
       }))
@@ -9821,11 +9907,36 @@ function route(request, response) {
   if (request.method === "GET" && url.pathname === "/sessions") {
     const includeMock = url.searchParams.get("includeMock") === "true";
     const archived = url.searchParams.get("archived") === "true";
+    let cursor;
+    try {
+      cursor = decodeSessionPageCursor(url.searchParams.get("cursor"));
+    } catch (error) {
+      sendJson(response, 400, { error: error.message, code: error.code });
+      return;
+    }
+    const requestedLimit = Number(url.searchParams.get("limit") ?? 50);
+    const limit = Number.isSafeInteger(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 100)
+      : 50;
+    const requestedSessionKind = url.searchParams.get("sessionKind");
+    const sessionKind = requestedSessionKind && ["assistantChat", "objectiveChat", "worker"].includes(requestedSessionKind)
+      ? requestedSessionKind
+      : null;
+    if (requestedSessionKind && !sessionKind) {
+      sendJson(response, 400, {
+        error: "Invalid Session kind filter.",
+        code: "INVALID_SESSION_KIND"
+      });
+      return;
+    }
+    const sessionId = url.searchParams.get("sessionId")?.trim() || null;
     const mockSessions = includeMock ? Array.from(sessions.values()) : [];
-    const latestMessageTimes = store.listLatestSessionMessageTimes();
-    const messageCursors = store.listSessionMessageCursors();
-    const timelineRevisions = store.listSessionTimelineRevisions();
-    const providerSessions = listGatewaySessions({ archived }).map((session) =>
+    const providerPage = listGatewaySessionPage({ archived, cursor, limit, sessionKind, sessionId });
+    const pageSessionIds = providerPage.items.map((session) => session.id);
+    const latestMessageTimes = store.listLatestSessionMessageTimes(pageSessionIds);
+    const messageCursors = store.listSessionMessageCursors(pageSessionIds);
+    const timelineRevisions = store.listSessionTimelineRevisions(pageSessionIds);
+    const providerSessions = providerPage.items.map((session) =>
       withSessionMessageCursors(
         withLastMessageTimestamp(session, latestMessageTimes.get(session.id)),
         messageCursors.get(session.id),
@@ -9850,6 +9961,11 @@ function route(request, response) {
         ok: true,
         count: archived ? 0 : mockSessions.length,
         included: includeMock && !archived
+      },
+      page: {
+        limit,
+        hasMore: providerPage.hasMore,
+        nextCursor: encodeSessionPageCursor(providerPage.nextCursor)
       }
     });
     return;
@@ -10689,6 +10805,25 @@ server.on("upgrade", (request, socket, head) => {
   }
 });
 
+// The loopback transport is the fixed-cost application connection boundary.
+// Store migration and every data-dependent initialization happen only after
+// the port is accepting health/SSE requests; other APIs return an explicit,
+// retryable initialization state until their local authority is ready.
+await new Promise((resolve, reject) => {
+  const onError = (error) => {
+    server.off("listening", onListening);
+    reject(error);
+  };
+  const onListening = () => {
+    server.off("error", onError);
+    resolve();
+  };
+  server.once("error", onError);
+  server.once("listening", onListening);
+  server.listen(port, "127.0.0.1");
+});
+console.log(`Corptie backend (${environmentName}) transport listening on http://127.0.0.1:${port}`);
+
 async function resumeSessionRecoveryAttemptsAtStartup() {
   const attempts = store.listResumableSessionRecoveryAttempts();
   let cursor = 0;
@@ -10714,7 +10849,17 @@ async function resumeSessionRecoveryAttemptsAtStartup() {
   ));
 }
 
-await store.initialize();
+// SQLite schema work is synchronous inside a connection. Run it in a Worker so
+// a large production database cannot starve the already-open health/SSE
+// transport. The main-thread Store opens only after the migration lock is
+// released and skips the already-completed schema pass.
+await store.resolveDataPath();
+await migrateStoreOffMainThread({
+  dbPath: store.dbPath,
+  configPath: store.configPath,
+  dataRoot: store.dataRoot
+});
+await store.initialize({ resolveDataPath: false, performMigrations: false });
 benchmarkControlPlane.initialize();
 if (runIsolationCoordinator) {
   await mkdir(runIsolationDataRoot, { recursive: true, mode: 0o700 });
@@ -10724,29 +10869,19 @@ if (runIsolationCoordinator) {
 await dataRootMigrationCoordinator.initialize();
 const telemetryConfiguration = turnObservability.initialize();
 console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
-const recoveredArtifactContentOperations = await artifactService.initialize();
-if (recoveredArtifactContentOperations.length > 0) {
-  console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
-}
-const recoveredInterruptedTaskStarts = workSessionStartupCoordinator.recoverInterruptedStarts();
-if (recoveredInterruptedTaskStarts > 0) {
-  console.warn(`[task-start-recovery] ${JSON.stringify({
-    recoveredInterruptedTaskStarts
-  })}`);
-}
-const recoveredProjectToolsets = await projectToolsetInitializer.recoverAll();
-if (recoveredProjectToolsets.length > 0) {
-  console.warn(`[project-toolset-recovery] ${JSON.stringify({ recoveredOperations: recoveredProjectToolsets.length })}`);
-}
+// Only establish the local Artifact directories before the readiness boundary.
+// File traversal, orphan audits, FTS rebuilds, and usage reconciliation are
+// maintenance and must never delay the loopback listener.
+await artifactService.initialize({ performMaintenance: false });
 const collaborationMigration = collaborationCore.initialize();
 if (collaborationMigration.status === "applied") {
   console.log(`[collaboration-migration] id=${collaborationMigration.migrationId} migratedTasks=${collaborationMigration.migratedTaskCount}`);
 }
-const recoveredWorktreeIntegrationJobs = await worktreeIntegrationJobService.recover();
-if (recoveredWorktreeIntegrationJobs > 0) {
-  console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
-}
-stateSyncService = new StateSyncService({ store, snapshot: controlPlaneSnapshot });
+stateSyncService = new StateSyncService({
+  store,
+  snapshot: controlPlaneSnapshot,
+  readEntity: readControlPlaneEntity
+});
 timelineChangePublisher = new SessionTimelineChangePublisher({
   emit: ({ sessionId, timelineRevision }) => emitEvent("SessionTimelineChanged", {
     sessionId,
@@ -10771,10 +10906,7 @@ if (detachedOrphanedAgents.length > 0) {
 }
 activateStoredBackendLogging();
 console.log(`[store] SQLite ready at ${store.dbPath}`);
-const initiallyStoredSessions = [
-  ...store.listSessions({ archived: false }),
-  ...store.listSessions({ archived: true })
-];
+const initiallyStoredSessions = store.listSessions({ archived: false });
 // Stable product Sessions are already authoritative. Physical Provider rows
 // may remain for route audit but never repair product state at startup.
 const allStoredSessionsAtStartup = initiallyStoredSessions;
@@ -10792,10 +10924,6 @@ for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
   console.log(`[session-title] renamed historical duplicate session=${previous.id} from=${JSON.stringify(previous.title)} to=${JSON.stringify(unique.title)}`);
 }
 storedSessionsAtStartup = uniqueStoredSessionsAtStartup;
-const emptyCodexBindingPreparation = emptyCodexBindingPreflight.prepare();
-if (emptyCodexBindingPreparation.candidates > 0) {
-  console.info(`[empty-binding-preflight] pending=${emptyCodexBindingPreparation.candidates}`);
-}
 // Scope the dedicated Codex home to Corptie's process tree. A Codex process
 // launched independently from Terminal continues to use the user's native
 // ~/.codex home.
@@ -10819,7 +10947,6 @@ for (const storedSession of storedSessionsAtStartup) {
 // product state by reading Provider history or a Provider Session snapshot.
 publishProviderEventOutbox(store.listPendingEventOutbox(500));
 workspaceContinuationCoordinator.recover();
-reconcileEntityTasksAtStartup();
 const knownActiveWorktrees = new Map();
 for (const storedSession of storedSessionsAtStartup) {
   const logical = store.getLogicalSessionByLegacySessionId(storedSession.id);
@@ -10839,24 +10966,56 @@ if (process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
   mockProgressTimer.unref?.();
 }
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
+function startBackendRuntime() {
+  console.log(`Corptie backend (${environmentName}) Store ready on http://127.0.0.1:${port}`);
   // Store-backed APIs and state streams are the Backend readiness boundary.
   // Provider runtimes, recovery, and route verification are optional
   // capabilities: start them only after the frontend can connect, and contain
   // every failure inside the affected background capability.
+  setImmediate(() => {
+    trackStartupMaintenance(optimizeStoreOffMainThread({
+      dbPath: store.dbPath,
+      configPath: store.configPath,
+      dataRoot: store.dataRoot
+    }).then(() => {
+      console.log("[sqlite] background query planner optimization completed");
+    }).catch((error) => {
+      console.warn(`[sqlite] background query planner optimization failed error=${error?.message ?? error}`);
+    }));
+  });
   setImmediate(() => {
     const reconciled = store.reconcileInterruptedSessionExecutionAtStartup();
     if (Object.values(reconciled).some((count) => count > 0)) {
       console.warn(`[startup-interruption-reconcile] ${JSON.stringify(reconciled)}`);
     }
     trackStartupMaintenance(runProviderStartupMaintenance([...knownActiveWorktrees.values()]));
+    trackStartupMaintenance(worktreeIntegrationJobService.recover()
+      .then((recoveredWorktreeIntegrationJobs) => {
+        if (recoveredWorktreeIntegrationJobs > 0) {
+          console.log(`[worktree-integration] queued ${recoveredWorktreeIntegrationJobs} persisted task(s) for recovery`);
+        }
+      })
+      .catch((error) => {
+        console.warn(`[worktree-integration] startup recovery failed error=${error?.message ?? error}`);
+      }));
+    reconcileEntityTasksAtStartup();
     scheduledSessionTaskService.start();
     agentWorkQueueInterval = setInterval(() => {
       tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
     }, 2000);
     agentWorkQueueInterval.unref?.();
     tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
+  });
+  setImmediate(() => {
+    trackStartupMaintenance(artifactService.runStartupMaintenance()
+      .then((recoveredArtifactContentOperations) => {
+        if (recoveredArtifactContentOperations.length > 0) {
+          console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
+        }
+      })
+      .catch((error) => {
+        console.warn(`[artifact-recovery] startup maintenance failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
+      }));
   });
   // Provider callbacks converge truth into SQLite before wake publication.
   // There is intentionally no periodic read/repair loop here.
@@ -10913,9 +11072,24 @@ server.listen(port, "127.0.0.1", () => {
         console.warn(`[legacy-history-repair] run failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
       }));
   });
-});
+}
+
+backendStoreReady = true;
+emitEvent("BackendStoreReady", { ready: true, time: now() }, { recordSessionEvent: false });
+startBackendRuntime();
 
 async function runProviderStartupMaintenance(knownWorktrees) {
+  const recoveredInterruptedTaskStarts = workSessionStartupCoordinator.recoverInterruptedStarts();
+  if (recoveredInterruptedTaskStarts > 0) {
+    console.warn(`[task-start-recovery] ${JSON.stringify({ recoveredInterruptedTaskStarts })}`);
+  }
+  const recoveredProjectToolsets = await runContainedStartupOperation(
+    "project-toolset-recovery",
+    () => projectToolsetInitializer.recoverAll()
+  );
+  if (recoveredProjectToolsets?.length > 0) {
+    console.warn(`[project-toolset-recovery] ${JSON.stringify({ recoveredOperations: recoveredProjectToolsets.length })}`);
+  }
   const [corptieCodexRuntime] = await Promise.all([
     runContainedStartupOperation("codex-runtime", async () => {
       const runtime = await ensureCorptieCodexRuntime({
@@ -10931,6 +11105,13 @@ async function runProviderStartupMaintenance(knownWorktrees) {
         console.warn(`[codex-runtime] repaired migrated rollout paths count=${runtime.rolloutPathRepair.repairedCount} backups=${runtime.rolloutPathRepair.backups.length}`);
       }
       console.log(`[codex-runtime] ready home=${runtime.codexHome} auth=${runtime.authAvailable ? "available" : "missing"} agents=${runtime.agentsAvailable ? "ready" : "missing"} skill=${runtime.skillAvailable ? "ready" : "missing"} mcp=${runtime.mcpAvailable ? "ready" : "missing"}`);
+      // Candidate discovery is deliberately post-listen and happens while the
+      // Provider is still globally Not Ready. This preserves immediate App ↔
+      // Backend connection without exposing zero-Turn bindings as sendable.
+      const preparation = emptyCodexBindingPreflight.prepare();
+      if (preparation.candidates > 0) {
+        console.info(`[empty-binding-preflight] pending=${preparation.candidates}`);
+      }
       setProviderRuntimeReadiness("codex-app-server", { state: "ready" });
       return runtime;
     }, "codex-app-server"),
@@ -10961,26 +11142,23 @@ async function runProviderStartupMaintenance(knownWorktrees) {
       console.warn(`[collaboration-recovery] requeued ${recovered.length} exhausted Delivery item(s) after Codex rollout relocation repair`);
     }
   }
-  // This remains post-listen background maintenance, but it must not race the
-  // recovery path against the same Provider process initialize().
-  const toolBootstrapSummary = await runContainedStartupOperation(
-    "tool-bootstrap-preflight",
-    () => toolBootstrapBindingPreflight.run()
-  );
-  if (toolBootstrapSummary?.scanned > 0) {
-    console.info(`[tool-bootstrap-preflight] ${JSON.stringify(toolBootstrapSummary)}`);
-  }
-  const emptyBindingSummary = await runContainedStartupOperation(
-    "empty-binding-preflight",
-    () => emptyCodexBindingPreflight.run()
-  );
-  if (emptyBindingSummary?.scanned > 0) {
-    console.info(`[empty-binding-preflight] ${JSON.stringify(emptyBindingSummary)}`);
-  }
   const operations = [
-    runContainedStartupOperation("archived-session-runtime-release", async () => {
-      const scheduled = sessionRuntimeReleaseService.reconcileArchivedSessions();
-      if (scheduled > 0) console.info(`[session-runtime-release] scheduled archived=${scheduled}`);
+    runContainedStartupOperation("active-session-binding-preflight", async () => {
+      // Active empty bindings are proactively warmed after Backend readiness.
+      // Complete this pass before the broader Tool bootstrap scan so both
+      // recovery paths never race the same Provider binding.
+      const emptyBindingSummary = await emptyCodexBindingPreflight.run();
+      if (emptyBindingSummary?.scanned > 0) {
+        console.info(`[empty-binding-preflight] ${JSON.stringify({
+          scanned: emptyBindingSummary.scanned,
+          ready: emptyBindingSummary.ready,
+          failed: emptyBindingSummary.failed
+        })}`);
+      }
+      const toolBootstrapSummary = await toolBootstrapBindingPreflight.run();
+      if (toolBootstrapSummary?.scanned > 0) {
+        console.info(`[tool-bootstrap-preflight] ${JSON.stringify(toolBootstrapSummary)}`);
+      }
     }),
     runContainedStartupOperation("codex-reset-monitor", async () => {
       codexResetForecastMonitor.start();
@@ -11005,6 +11183,13 @@ async function runProviderStartupMaintenance(knownWorktrees) {
     ))
   ];
   await Promise.all(operations);
+  // Historical runtime cleanup uses the same Provider transport as active
+  // binding verification. Start it only after active Sessions are ready, and
+  // let the release service enforce a small concurrency window.
+  await runContainedStartupOperation("archived-session-runtime-release", async () => {
+    const scheduled = sessionRuntimeReleaseService.reconcileArchivedSessions();
+    if (scheduled > 0) console.info(`[session-runtime-release] scheduled archived=${scheduled}`);
+  });
 }
 
 async function runContainedStartupOperation(name, operation, providerId = null) {

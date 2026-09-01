@@ -20,6 +20,8 @@ final class ArtifactAPIClient: ObservableObject {
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var requestTokens: [String: UUID] = [:]
     private var publishIdempotencyKeys: [String: String] = [:]
+    private var objectiveNextOffsets: [String: Int] = [:]
+    private var taskNextOffsets: [String: Int] = [:]
     private var externalRefreshTask: Task<Void, Never>?
     private static let requestTimeout: TimeInterval = 5
 
@@ -61,11 +63,17 @@ final class ArtifactAPIClient: ObservableObject {
         let previous = objectiveLoadStates[objectiveId]?.value ?? artifactsByObjective[objectiveId]
         objectiveLoadStates[objectiveId] = .loading(previousValue: previous)
         do {
-            let envelope: ArtifactListEnvelope = try await get("objectives/\(objectiveId)/artifacts")
+            var components = URLComponents(
+                url: Self.endpointURL(baseURL: baseURL, path: "objectives/\(objectiveId)/artifacts"),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = [URLQueryItem(name: "limit", value: "100")]
+            let envelope: ArtifactListEnvelope = try await get(components.url!)
             try Self.validateArtifactEnvelope(envelope)
             try Task.checkCancellation()
             guard requestTokens[key] == token else { return }
             artifactsByObjective[objectiveId] = envelope.artifacts
+            objectiveNextOffsets[objectiveId] = envelope.nextOffset
             objectiveLoadStates[objectiveId] = .loaded(envelope.artifacts)
         } catch is CancellationError {
             return
@@ -82,27 +90,18 @@ final class ArtifactAPIClient: ObservableObject {
         let previous = taskLoadStates[taskId]?.value ?? artifactsByCorptieTask[taskId]
         taskLoadStates[taskId] = .loading(previousValue: previous)
         do {
-            var artifacts: [ObjectiveArtifact] = []
-            var offset = 0
-            repeat {
-                var components = URLComponents(
-                    url: Self.endpointURL(baseURL: baseURL, path: "tasks/\(taskId)/artifacts"),
-                    resolvingAgainstBaseURL: false
-                )!
-                components.queryItems = [
-                    URLQueryItem(name: "limit", value: "100"),
-                    URLQueryItem(name: "offset", value: String(offset))
-                ]
-                let envelope: ArtifactListEnvelope = try await get(components.url!)
-                try Self.validateArtifactEnvelope(envelope)
-                try Task.checkCancellation()
-                guard requestTokens[key] == token else { return }
-                artifacts.append(contentsOf: envelope.artifacts)
-                guard let nextOffset = envelope.nextOffset else { break }
-                offset = nextOffset
-            } while true
-            artifactsByCorptieTask[taskId] = artifacts
-            taskLoadStates[taskId] = .loaded(artifacts)
+            var components = URLComponents(
+                url: Self.endpointURL(baseURL: baseURL, path: "tasks/\(taskId)/artifacts"),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = [URLQueryItem(name: "limit", value: "100")]
+            let envelope: ArtifactListEnvelope = try await get(components.url!)
+            try Self.validateArtifactEnvelope(envelope)
+            try Task.checkCancellation()
+            guard requestTokens[key] == token else { return }
+            artifactsByCorptieTask[taskId] = envelope.artifacts
+            taskNextOffsets[taskId] = envelope.nextOffset
+            taskLoadStates[taskId] = .loaded(envelope.artifacts)
         } catch is CancellationError {
             return
         } catch {
@@ -113,6 +112,48 @@ final class ArtifactAPIClient: ObservableObject {
 
     func cancelRefresh(taskId: String) {
         requestTokens.removeValue(forKey: "task:\(taskId)")
+    }
+
+    func hasMore(objectiveId: String, taskId: String?) -> Bool {
+        if let taskId { return taskNextOffsets[taskId] != nil }
+        return objectiveNextOffsets[objectiveId] != nil
+    }
+
+    func loadMore(objectiveId: String, taskId: String?) async {
+        let offset: Int?
+        if let taskId { offset = taskNextOffsets[taskId] }
+        else { offset = objectiveNextOffsets[objectiveId] }
+        guard let offset else { return }
+        let path = taskId.map { "tasks/\($0)/artifacts" } ?? "objectives/\(objectiveId)/artifacts"
+        do {
+            var components = URLComponents(
+                url: Self.endpointURL(baseURL: baseURL, path: path),
+                resolvingAgainstBaseURL: false
+            )!
+            components.queryItems = [
+                URLQueryItem(name: "limit", value: "100"),
+                URLQueryItem(name: "offset", value: String(offset))
+            ]
+            let envelope: ArtifactListEnvelope = try await get(components.url!)
+            try Self.validateArtifactEnvelope(envelope)
+            if let taskId {
+                var known = Set((artifactsByCorptieTask[taskId] ?? []).map(\.artifactId))
+                artifactsByCorptieTask[taskId, default: []].append(
+                    contentsOf: envelope.artifacts.filter { known.insert($0.artifactId).inserted }
+                )
+                taskNextOffsets[taskId] = envelope.nextOffset
+                taskLoadStates[taskId] = .loaded(artifactsByCorptieTask[taskId] ?? [])
+            } else {
+                var known = Set((artifactsByObjective[objectiveId] ?? []).map(\.artifactId))
+                artifactsByObjective[objectiveId, default: []].append(
+                    contentsOf: envelope.artifacts.filter { known.insert($0.artifactId).inserted }
+                )
+                objectiveNextOffsets[objectiveId] = envelope.nextOffset
+                objectiveLoadStates[objectiveId] = .loaded(artifactsByObjective[objectiveId] ?? [])
+            }
+        } catch {
+            errorMessage = Self.displayMessage(for: error)
+        }
     }
 
     func detail(artifact: ObjectiveArtifact, version: Int, offset: Int = 0, turnExecutionId: String) async -> ArtifactDetailEnvelope? {

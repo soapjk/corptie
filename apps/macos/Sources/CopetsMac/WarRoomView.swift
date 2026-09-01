@@ -278,7 +278,8 @@ struct WarRoomView: View {
                 selectedCorptieTaskId: $selectedCorptieTaskId,
                 pendingDeletionIds: pendingDeletionIds,
                 onRequestDeletion: { item in Task { await prepareDeletion(item) } },
-                onRequestReload: { tasksReloadToken &+= 1 }
+                onRequestReload: { tasksReloadToken &+= 1 },
+                onRequestLoadMore: loadMoreTasks
             )
         } else if let objective = client.objectives.first(where: { $0.id == selectedObjectiveId }) {
             CorptieTaskBoardView(
@@ -287,10 +288,17 @@ struct WarRoomView: View {
                 selectedCorptieTaskId: $selectedCorptieTaskId,
                 pendingDeletionIds: pendingDeletionIds,
                 onRequestDeletion: { item in Task { await prepareDeletion(item) } },
-                onRequestReload: { tasksReloadToken &+= 1 }
+                onRequestReload: { tasksReloadToken &+= 1 },
+                onRequestLoadMore: loadMoreTasks
             )
         } else {
             ContentUnavailableView(L10n("选择目标"), systemImage: "sidebar.left")
+        }
+    }
+
+    private func loadMoreTasks() async {
+        if let loaded = await client.loadMoreBrowsedTasks() {
+            tasks = loaded
         }
     }
 
@@ -653,6 +661,7 @@ struct CorptieTaskBoardView: View {
     let pendingDeletionIds: Set<String>
     let onRequestDeletion: (CorptieTask) -> Void
     var onRequestReload: () -> Void = {}
+    var onRequestLoadMore: () async -> Void = {}
     @State private var boardItems: [CorptieTask] = []
     @State private var isCreating = false
     @State private var isCreatingObjectiveChat = false
@@ -695,6 +704,12 @@ struct CorptieTaskBoardView: View {
                         )
                     )
                 }
+            }
+            if client.browsedTasksHasMore {
+                Button(L10n("加载更多工作项")) {
+                    Task { await onRequestLoadMore() }
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .padding()

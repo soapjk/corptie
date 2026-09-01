@@ -235,6 +235,11 @@ final class BackendClient: ObservableObject {
     private(set) var restartingSessionIds: Set<String> { get { sessionCommandController.restartingSessionIds } set { sessionCommandController.restartingSessionIds = newValue } }
     private(set) var restartActivityBySessionId: [String: SessionRestartActivity] { get { sessionCommandController.restartActivityBySessionId } set { sessionCommandController.restartActivityBySessionId = newValue } }
     @Published private(set) var isLoadingArchivedSessions = false
+    @Published private(set) var isLoadingMoreArchivedSessions = false
+    @Published private(set) var archivedSessionsHasMore = false
+    @Published private(set) var archivedSessionsLoadError: String?
+    private var archivedSessionsNextCursor: String?
+    private var archivedSessionsKind: SessionKind?
     private(set) var selectedSessionUsage: SessionUsageResponse? {
         get { supplementaryDataController.selectedSessionUsage }
         set { supplementaryDataController.selectedSessionUsage = newValue }
@@ -326,6 +331,7 @@ final class BackendClient: ObservableObject {
         }
     )
     private var globalEventCursor = 0
+    private var sessionEventStreamConnected = false
     private static let historyPageSize = 200
     private var timelineWindowLoadSessionIDs = Set<String>()
     private var earlierHistoryLoadSessionIDs = Set<String>()
@@ -458,13 +464,15 @@ final class BackendClient: ObservableObject {
                         throw URLError(.badServerResponse)
                     }
                     self.markBackendConnectedFromSessionStream()
-                    await self.reconcileTimelineRevisionIndex()
-                    if let selectedSession = self.selectedSession {
-                        async let automationLoad: Void = self.loadAutomations()
-                        async let scheduledTaskLoad: Void = self.loadScheduledTasks(for: selectedSession)
-                        _ = await (automationLoad, scheduledTaskLoad)
-                    } else {
-                        await self.loadAutomations()
+                    if self.appState.isReachable {
+                        await self.reconcileTimelineRevisionIndex()
+                        if let selectedSession = self.selectedSession {
+                            async let automationLoad: Void = self.loadAutomations()
+                            async let scheduledTaskLoad: Void = self.loadScheduledTasks(for: selectedSession)
+                            _ = await (automationLoad, scheduledTaskLoad)
+                        } else {
+                            await self.loadAutomations()
+                        }
                     }
                     for try await event in ServerSentEventStream.events(from: bytes) {
                         if Task.isCancelled {
@@ -486,10 +494,12 @@ final class BackendClient: ObservableObject {
                             self.globalEventCursor = max(self.globalEventCursor, eventID)
                         }
                     }
+                    self.markBackendSessionStreamDisconnected()
                 } catch {
                     if Task.isCancelled {
                         return
                     }
+                    self.markBackendSessionStreamDisconnected()
                     try? await Task.sleep(for: .seconds(2))
                 }
             }
@@ -501,16 +511,15 @@ final class BackendClient: ObservableObject {
         lastError = nil
     }
 
-    /// Authoritative connection transition driven by the sync engine's
-    /// reachability signal. `reachable == true` means the server answered a
-    /// snapshot/change-set; `false` is a real disconnect or launch race that
-    /// must be surfaced (and recovered) through the UI.
+    /// The UI connection light represents the fixed-cost Backend transport.
+    /// Store reachability is additive: it enables data surfaces, but a 503
+    /// while SQLite is still initializing must not turn an established SSE
+    /// connection back into "server disconnected".
     private func applyConnectionState(reachable: Bool) {
-        if reachable {
-            isOnline = true
+        isOnline = reachable || sessionEventStreamConnected
+        if isOnline {
             if lastError != nil { lastError = nil }
         } else {
-            isOnline = false
             if let syncError = appState.syncError, lastError != syncError {
                 lastError = syncError
             }
@@ -519,10 +528,17 @@ final class BackendClient: ObservableObject {
 
     /// The canonical Session SSE stream (`/events`) established a connection.
     /// Reconcile any stale transport error from startup requests that raced the
-    /// production launch agent. Kept separate from `applyConnectionState` so a
-    /// stream connection never masks a genuinely failed state sync.
+    /// production launch agent. Store-backed features remain gated by their own
+    /// readiness/state even while the transport is connected.
     func markBackendConnectedFromSessionStream() {
+        sessionEventStreamConnected = true
+        isOnline = true
         if lastError != nil { lastError = nil }
+    }
+
+    private func markBackendSessionStreamDisconnected() {
+        sessionEventStreamConnected = false
+        applyConnectionState(reachable: appState.isReachable)
     }
 
     func dismissProjectWorktreeActionError() {
@@ -562,6 +578,23 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "BackendStoreReady" {
+            // Startup requests are allowed to receive a retryable 503 while the
+            // migration Worker is running. Reissue their authoritative reads as
+            // soon as the Store crosses its independent readiness boundary.
+            await AppStateSyncController.shared.refreshSnapshot()
+            await loadSettings()
+            await syncNewSessionDefaultsFromPreferences(force: true)
+            await loadProviders()
+            if let providerId = defaultSessionProviderId,
+               agentProviders.descriptor(matching: providerId)?.supports("configuration.model.list") == true {
+                await loadModels(for: providerId)
+            }
+            await reconcileTimelineRevisionIndex()
+            await loadAutomations()
+            if let selectedSession { await loadScheduledTasks(for: selectedSession) }
+            return
+        }
         if eventName == "EventReplayRequired" {
             // The bounded wake-event buffer cannot cover this cursor. State and
             // timelines have their own durable authorities, so repair those
@@ -1415,20 +1448,83 @@ final class BackendClient: ObservableObject {
         SessionPresentationCache.shared.prune(to: residentSessionIDs)
     }
 
-    func refreshArchivedSessions() async {
+    func refreshArchivedSessions(sessionKind: SessionKind? = nil) async {
+        guard !isLoadingArchivedSessions, !isLoadingMoreArchivedSessions else { return }
+        archivedSessionsKind = sessionKind
         isLoadingArchivedSessions = true
         defer { isLoadingArchivedSessions = false }
+        await loadArchivedSessionPage(reset: true)
+    }
 
+    func loadMoreArchivedSessions() async {
+        guard archivedSessionsHasMore,
+              archivedSessionsNextCursor != nil,
+              !isLoadingArchivedSessions,
+              !isLoadingMoreArchivedSessions else { return }
+        isLoadingMoreArchivedSessions = true
+        defer { isLoadingMoreArchivedSessions = false }
+        await loadArchivedSessionPage(reset: false)
+    }
+
+    /// Resolves one archived Session through an indexed lookup. Deep links do
+    /// not walk every archive page just to locate a single durable Session.
+    func loadArchivedSession(id: String) async -> TaskSession? {
         do {
             var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false)!
-            components.queryItems = [URLQueryItem(name: "archived", value: "true")]
+            components.queryItems = [
+                URLQueryItem(name: "archived", value: "true"),
+                URLQueryItem(name: "sessionId", value: id),
+                URLQueryItem(name: "limit", value: "1")
+            ]
+            let (data, response) = try await URLSession.shared.data(from: components.url!)
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                throw URLError(.badServerResponse)
+            }
+            guard let session = try JSONDecoder().decode(SessionsResponse.self, from: data).sessions.first,
+                  session.archived == true else { return nil }
+            if let index = archivedSessions.firstIndex(where: { $0.id == session.id }) {
+                archivedSessions[index] = session
+            } else {
+                archivedSessions.append(session)
+            }
+            archivedSessionsLoadError = nil
+            return session
+        } catch {
+            archivedSessionsLoadError = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func loadArchivedSessionPage(reset: Bool) async {
+        do {
+            var components = URLComponents(url: baseURL.appending(path: "sessions"), resolvingAgainstBaseURL: false)!
+            var queryItems = [
+                URLQueryItem(name: "archived", value: "true"),
+                URLQueryItem(name: "limit", value: "50")
+            ]
+            if let archivedSessionsKind {
+                queryItems.append(URLQueryItem(name: "sessionKind", value: archivedSessionsKind.rawValue))
+            }
+            if !reset, let archivedSessionsNextCursor {
+                queryItems.append(URLQueryItem(name: "cursor", value: archivedSessionsNextCursor))
+            }
+            components.queryItems = queryItems
             let (data, response) = try await URLSession.shared.data(from: components.url!)
             guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }
 
             let decoded = try JSONDecoder().decode(SessionsResponse.self, from: data)
-            let explicitlyArchivedSessions = decoded.sessions.filter { $0.archived == true }
+            let pageSessions = decoded.sessions.filter { $0.archived == true }
+            let explicitlyArchivedSessions: [TaskSession]
+            if reset {
+                explicitlyArchivedSessions = pageSessions
+            } else {
+                var byID = Dictionary(uniqueKeysWithValues: archivedSessions.map { ($0.id, $0) })
+                pageSessions.forEach { byID[$0.id] = $0 }
+                explicitlyArchivedSessions = archivedSessions.compactMap { byID.removeValue(forKey: $0.id) }
+                    + pageSessions.compactMap { byID.removeValue(forKey: $0.id) }
+            }
             if archivedSessions != explicitlyArchivedSessions {
                 let selectedID = sessionSelectionController.selectedSessionID
                 let previousSelected = selectedID.flatMap { id in
@@ -1442,11 +1538,15 @@ final class BackendClient: ObservableObject {
                     sessionSelectionController.notifySelectedSessionChanged(selectedID)
                 }
             }
+            archivedSessionsHasMore = decoded.page?.hasMore ?? false
+            archivedSessionsNextCursor = decoded.page?.nextCursor
+            archivedSessionsLoadError = nil
             if lastError != nil {
                 lastError = nil
             }
         } catch {
             let message = error.localizedDescription
+            archivedSessionsLoadError = message
             if lastError != message {
                 lastError = message
             }
@@ -3667,7 +3767,7 @@ final class BackendClient: ObservableObject {
                 if selectedSession?.id == session.id {
                     closeDetail()
                 }
-                await refreshArchivedSessions()
+                await refreshArchivedSessions(sessionKind: archivedSessionsKind)
             } catch {
                 lastError = error.localizedDescription
             }
@@ -3796,7 +3896,7 @@ final class BackendClient: ObservableObject {
                 if selectedSession?.id == session.id {
                     closeDetail()
                 }
-                await refreshArchivedSessions()
+                await refreshArchivedSessions(sessionKind: archivedSessionsKind)
             } catch {
                 lastError = error.localizedDescription
             }

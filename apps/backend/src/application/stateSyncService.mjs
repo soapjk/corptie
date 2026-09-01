@@ -21,12 +21,13 @@ const ENTITY_ID = Object.freeze({
 export const STATE_COLLECTIONS = Object.freeze(Object.values(ENTITY_COLLECTION));
 
 export class StateSyncService {
-  constructor({ store, snapshot }) {
+  constructor({ store, snapshot, readEntity = null }) {
     if (!store || typeof snapshot !== "function") {
       throw new Error("StateSyncService requires store and snapshot.");
     }
     this.store = store;
     this.snapshotProvider = snapshot;
+    this.entityReader = typeof readEntity === "function" ? readEntity : null;
     this.cachedSnapshot = null;
     this.snapshotBuilds = 0;
   }
@@ -71,11 +72,10 @@ export class StateSyncService {
     if (rows.length === 0 || rows.at(-1).revision !== currentRevision) {
       return { snapshotRequired: true, currentRevision };
     }
-    const projected = this.snapshot();
-    if (projected.revision !== currentRevision) {
-      return { snapshotRequired: true, currentRevision: projected.revision };
-    }
-    const state = projected.state;
+    // Existing clients normally need only the entities named by the durable
+    // change log. Hydrate those rows directly instead of rebuilding every
+    // control-plane collection for one Session progress update.
+    const state = this.entityReader ? null : this.snapshot().state;
     const latestByEntity = new Map();
     for (const row of rows) {
       latestByEntity.set(`${row.entityType}\0${row.entityId}`, row);
@@ -90,7 +90,9 @@ export class StateSyncService {
       }
       const collection = ENTITY_COLLECTION[row.entityType];
       if (!collection) continue;
-      const entity = state[collection].find((candidate) => ENTITY_ID[collection](candidate) === row.entityId);
+      const entity = this.entityReader
+        ? this.entityReader(row.entityType, row.entityId)
+        : state[collection].find((candidate) => ENTITY_ID[collection](candidate) === row.entityId);
       if (row.operation === "delete") {
         deletes[collection].push(row.entityId);
         if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
@@ -107,6 +109,10 @@ export class StateSyncService {
           console.log(`[state-sync] DELETE ${collection} ${row.entityId} (absent from projection) rev=${currentRevision}`);
         }
       }
+    }
+    const deliveredRevision = this.store.stateRevision();
+    if (deliveredRevision !== currentRevision) {
+      return { snapshotRequired: true, currentRevision: deliveredRevision };
     }
     if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
       const summary = Object.fromEntries(

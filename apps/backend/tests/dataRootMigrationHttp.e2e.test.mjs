@@ -100,7 +100,7 @@ async function waitForHealth(port, child) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}/health`);
-      if (response.ok) return;
+      if (response.ok && (await response.json()).storeReady === true) return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

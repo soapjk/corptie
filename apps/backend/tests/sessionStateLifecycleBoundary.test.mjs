@@ -198,7 +198,7 @@ test("startup recovery runs after readiness and waits for isolated Provider runt
   );
 
   const helperBegin = source.indexOf("async function resumeSessionRecoveryAttemptsAtStartup");
-  const helperEnd = source.indexOf("\nawait store.initialize()", helperBegin);
+  const helperEnd = source.indexOf("\nawait store.resolveDataPath()", helperBegin);
   const helperBody = source.slice(helperBegin, helperEnd);
   assert.match(helperBody, /await sessionRecoveryCoordinator\.recover/);
   assert.match(helperBody, /Math\.min\(2, attempts\.length\)/);

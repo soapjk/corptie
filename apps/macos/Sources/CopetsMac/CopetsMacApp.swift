@@ -1482,7 +1482,7 @@ struct SettingsView: View {
         }
         .onChange(of: selectedTab) { _, tab in
             guard tab == .archivedSessions else { return }
-            Task { await backendClient.refreshArchivedSessions() }
+            Task { await backendClient.refreshArchivedSessions(sessionKind: .assistantChat) }
         }
         .sheet(
             isPresented: Binding(
@@ -1948,7 +1948,7 @@ struct SettingsView: View {
                 }
 
                 Button(L10n("Refresh"), systemImage: "arrow.clockwise") {
-                    Task { await backendClient.refreshArchivedSessions() }
+                    Task { await backendClient.refreshArchivedSessions(sessionKind: .assistantChat) }
                 }
                 .disabled(backendClient.isLoadingArchivedSessions)
             }
@@ -2002,8 +2002,48 @@ struct SettingsView: View {
                 }
                 .listStyle(.inset)
             }
+
+            if backendClient.archivedSessionsHasMore
+                || backendClient.isLoadingMoreArchivedSessions
+                || backendClient.archivedSessionsLoadError != nil {
+                archivedSessionPaginationFooter
+            }
         }
         .padding(.top, 8)
+    }
+
+    private var archivedSessionPaginationFooter: some View {
+        HStack(spacing: 10) {
+            if backendClient.isLoadingMoreArchivedSessions {
+                ProgressView()
+                    .controlSize(.small)
+                Text(L10n("Loading more archived sessions…"))
+            } else if let error = backendClient.archivedSessionsLoadError {
+                Text(L10nFormat("Could not load more archived sessions: %@", error))
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                Spacer()
+                Button(L10n("Retry")) {
+                    Task {
+                        if backendClient.archivedSessionsHasMore {
+                            await backendClient.loadMoreArchivedSessions()
+                        } else {
+                            await backendClient.refreshArchivedSessions(sessionKind: .assistantChat)
+                        }
+                    }
+                }
+            } else {
+                Text(L10n("More archived sessions are available."))
+                Spacer()
+                Button(L10n("Load More")) {
+                    Task { await backendClient.loadMoreArchivedSessions() }
+                }
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(CorptiePalette.secondaryText)
+        .padding(.horizontal, 10)
+        .padding(.bottom, 8)
     }
 
     private var manuallyArchivedSessions: [TaskSession] {

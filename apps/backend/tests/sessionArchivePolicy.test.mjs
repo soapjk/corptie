@@ -75,6 +75,24 @@ test("Worker archive membership follows Task completion and publishes live State
       status: "complete",
       sessionKind: "assistantChat"
     });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:worker",
+      legacySessionId: "session:worker",
+      providerThreadId: "thread:worker",
+      providerSessionId: "thread:worker",
+      providerId: "codex-app-server",
+      boundCwd: directory,
+      sessionName: "Worker"
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:assistant",
+      legacySessionId: "session:assistant",
+      providerThreadId: "thread:assistant",
+      providerSessionId: "thread:assistant",
+      providerId: "codex-app-server",
+      boundCwd: directory,
+      sessionName: "Assistant"
+    });
     const snapshot = () => ({
       sessions: store.listSessions({ archived: false }),
       tasks: store.listTasks()
@@ -87,6 +105,10 @@ test("Worker archive membership follows Task completion and publishes live State
     );
     assert.equal(store.archiveSession("session:assistant", true).archiveReason, "manual");
     assert.deepEqual(store.listSessions({ archived: false }).map((session) => session.id), ["session:worker"]);
+    assert.deepEqual(
+      store.listEmptyActiveProviderBindings("codex-app-server").map((binding) => binding.sessionId),
+      ["session:worker"]
+    );
     assert.deepEqual(
       store.listSessions({ archived: true }).map((session) => session.id),
       ["session:assistant"]
@@ -108,11 +130,49 @@ test("Worker archive membership follows Task completion and publishes live State
     assert.equal(completedChanges.upserts.tasks[0].lifecycle_state, "done");
     assert.deepEqual(store.listSessions({ archived: false }), []);
     assert.deepEqual(
+      store.listEmptyActiveProviderBindings("codex-app-server").map((binding) => binding.sessionId),
+      [],
+      "a completed Worker Session must not enter active runtime prewarming"
+    );
+    assert.deepEqual(
       store.listSessions({ archived: true })
         .filter((session) => session.sessionKind === "worker")
         .map(({ id, archived, archiveReason }) => ({ id, archived, archiveReason })),
       [{ id: "session:worker", archived: true, archiveReason: "taskCompleted" }]
     );
+    const firstArchivePage = store.listSessionPage({ archived: true, limit: 1 });
+    assert.equal(firstArchivePage.items.length, 1);
+    assert.equal(firstArchivePage.hasMore, true);
+    assert.ok(firstArchivePage.nextCursor);
+    const secondArchivePage = store.listSessionPage({
+      archived: true,
+      limit: 1,
+      cursor: firstArchivePage.nextCursor
+    });
+    assert.equal(secondArchivePage.items.length, 1);
+    assert.notEqual(secondArchivePage.items[0].id, firstArchivePage.items[0].id);
+    assert.equal(secondArchivePage.hasMore, false);
+    const workerArchivePage = store.listSessionPage({
+      archived: true,
+      sessionKind: "worker",
+      limit: 50
+    });
+    assert.deepEqual(workerArchivePage.items.map((session) => session.id), ["session:worker"]);
+    assert.equal(workerArchivePage.hasMore, false);
+    const directArchiveLookup = store.listSessionPage({
+      archived: true,
+      sessionId: "session:assistant",
+      limit: 1
+    });
+    assert.deepEqual(directArchiveLookup.items.map((session) => session.id), ["session:assistant"]);
+    assert.equal(directArchiveLookup.hasMore, false);
+    assert.deepEqual(
+      [...store.listSessionTimelineRevisions(["session:worker"]).keys()],
+      ["session:worker"],
+      "resident metadata queries must stay bounded to the requested Session window"
+    );
+    assert.deepEqual([...store.listSessionMessageCursors(["session:worker"]).keys()], ["session:worker"]);
+    assert.deepEqual([...store.listLatestSessionMessageTimes(["session:worker"]).keys()], []);
 
     revision = completedChanges.revision;
     store.updateTask("task:one", { lifecycleState: "in_progress" });

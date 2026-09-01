@@ -887,6 +887,41 @@ test("late events from a superseded binding generation are quarantined", async (
   }
 });
 
+test("Store recovery reads a bounded head/checkpoint/tail sample and compacts completion payloads", async () => {
+  const fixture = await storeFixture();
+  try {
+    for (let sequence = 1; sequence <= 600; sequence += 1) {
+      appendEvent(fixture.store, {
+        sequence,
+        type: sequence % 2 === 1 ? "user/message" : "assistant/message",
+        payload: { text: `bounded recovery message ${sequence}`, turnId: `turn:${sequence}` }
+      });
+    }
+    appendEvent(fixture.store, {
+      sequence: 601,
+      type: "turn.completed",
+      payload: {
+        turnId: "turn:601",
+        hasAgentMessage: true,
+        summary: "compact final answer",
+        items: Array.from({ length: 500 }, (_, index) => ({
+          type: "commandExecution", text: "x".repeat(2_000), index
+        }))
+      }
+    });
+
+    const sample = fixture.store.listSessionRecoveryEventSample("session:recovery", 601);
+    assert.equal(sample.truncated, true);
+    assert.ok(sample.events.length <= 253);
+    assert.equal(sample.events[0].sequence, 1);
+    assert.equal(sample.events.at(-1).sequence, 601);
+    assert.equal(sample.events.at(-1).payload.item.text, "compact final answer");
+    assert.equal(Object.hasOwn(sample.events.at(-1).payload, "items"), false);
+  } finally {
+    await fixture.close();
+  }
+});
+
 function recoveryPort(calls, store, options = {}) {
   return new ProviderSessionRecoveryPort({
     createReplacement: async () => {

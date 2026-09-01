@@ -495,9 +495,16 @@ export class SessionRecoveryCoordinator {
     attempt = normalizeSessionRecoveryAttempt(
       this.store.claimSessionRecoveryBoundary(attempt.attemptId)
     );
-    const timelineEvents = this.store.listSessionEventsThrough(attempt.sessionId, attempt.boundarySequence);
+    const recoveryHistory = typeof this.store.listSessionRecoveryEventSample === "function"
+      ? this.store.listSessionRecoveryEventSample(attempt.sessionId, attempt.boundarySequence)
+      : { events: this.store.listSessionEventsThrough(attempt.sessionId, attempt.boundarySequence), truncated: false };
+    const timelineEvents = recoveryHistory.events;
     const planStarted = performance.now();
-    let plan = planReplay({ attempt, timelineEvents, capabilities });
+    // A sampled history must never be mistaken for a complete short history.
+    // Forcing the full-replay threshold to zero selects a traceable checkpoint
+    // tail when available and otherwise produces the bounded handoff strategy.
+    const thresholds = recoveryHistory.truncated ? { fullReplayMaximum: 0 } : {};
+    let plan = planReplay({ attempt, timelineEvents, capabilities, thresholds });
     if (plan.strategy === "handoff_only" && this.compressHandoff) {
       const sourceEntries = replayEntriesFromTimeline(timelineEvents);
       const source = buildSessionRecoveryHandoffSource(sourceEntries, {
@@ -505,7 +512,10 @@ export class SessionRecoveryCoordinator {
       });
       try {
         const handoff = normalizeSessionRecoveryHandoff(await this.compressHandoff({ attempt, source }));
-        plan = planReplay({ attempt, timelineEvents, capabilities, handoff: { value: handoff, mode: "background_agent", source } });
+        plan = planReplay({
+          attempt, timelineEvents, capabilities, thresholds,
+          handoff: { value: handoff, mode: "background_agent", source }
+        });
       } catch (error) {
         this.observe({ type: "SessionRecoveryHandoffCompressionFailed",
           attemptId: attempt.attemptId,

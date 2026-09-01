@@ -241,6 +241,8 @@ struct ObjectiveListEnvelope: Codable {
 
 struct CorptieTaskListEnvelope: Codable {
     let tasks: [CorptieTask]
+    let hasMore: Bool?
+    let nextCursor: String?
 }
 
 // 后端响应 envelope：GET /repositories → { repositories: [...] }
@@ -698,6 +700,8 @@ enum CorptieTaskMemoryPresentationPolicy {
 // 后端响应 envelope：GET /memories?ownerType=&ownerId= → { memories: [...] }
 struct MemoryListEnvelope: Codable {
     let memories: [MemoryItem]
+    let hasMore: Bool?
+    let nextCursor: String?
 }
 
 struct MemoryEnvelope: Codable {

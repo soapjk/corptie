@@ -231,10 +231,47 @@ struct UnifiedConsoleView: View {
             } else {
                 assistantSessionList
             }
+
+            if isShowingWorkerArchive,
+               backendClient.archivedSessionsHasMore
+                || backendClient.isLoadingMoreArchivedSessions
+                || backendClient.archivedSessionsLoadError != nil {
+                archivedWorkerPaginationBar
+            }
         }
         .sheet(isPresented: $showNewSessionCreation) {
             NewSessionCreationSheet()
         }
+    }
+
+    private var archivedWorkerPaginationBar: some View {
+        HStack(spacing: 7) {
+            if backendClient.isLoadingMoreArchivedSessions {
+                ProgressView().controlSize(.small)
+                Text(L10n("Loading more…"))
+            } else if backendClient.archivedSessionsLoadError != nil {
+                Text(L10n("More sessions could not be loaded."))
+                Spacer()
+                Button(L10n("Retry")) {
+                    Task {
+                        if backendClient.archivedSessionsHasMore {
+                            await backendClient.loadMoreArchivedSessions()
+                        } else {
+                            await backendClient.refreshArchivedSessions(sessionKind: .worker)
+                        }
+                    }
+                }
+            } else {
+                Text(L10n("More archived sessions"))
+                Spacer()
+                Button(L10n("Load More")) {
+                    Task { await backendClient.loadMoreArchivedSessions() }
+                }
+            }
+        }
+        .font(.system(size: 10, weight: .medium))
+        .foregroundStyle(.secondary)
+        .padding(8)
     }
 
     private var selectedObjective: Objective? {
@@ -289,7 +326,36 @@ struct UnifiedConsoleView: View {
         .listStyle(.sidebar)
     }
 
+    @ViewBuilder
     private func objectiveTaskList(_ objective: Objective) -> some View {
+        if isShowingWorkerArchive {
+            archivedWorkerSessionList(objective)
+        } else {
+            activeObjectiveTaskList(objective)
+        }
+    }
+
+    private func archivedWorkerSessionList(_ objective: Objective) -> some View {
+        let rows = searchFilteredRows.filter { row in
+            guard row.session.resolvedSessionKind == .worker else { return false }
+            if row.session.objectiveId == objective.id { return true }
+            guard let taskId = row.session.taskId else { return false }
+            return entityClient.tasks.first(where: { $0.id == taskId })?.objectiveId == objective.id
+        }
+        return List {
+            if rows.isEmpty {
+                Text(L10n("No Archived Sessions"))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(rows) { row in
+                    sessionRow(row)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+    }
+
+    private func activeObjectiveTaskList(_ objective: Objective) -> some View {
         List {
             Section {
                 if let row = objectiveChatRows.first {
@@ -519,8 +585,7 @@ struct UnifiedConsoleView: View {
                 // A global snapshot intentionally contains active Sessions
                 // only. A deep link may explicitly target an archive, so fall
                 // back to the Corptie-local archive endpoint on demand.
-                await backendClient.refreshArchivedSessions()
-                resolved = sessionMatchingPendingSelection(pendingId, in: backendClient.archivedSessions)
+                resolved = await backendClient.loadArchivedSession(id: pendingId)
             }
             if let session = resolved {
                 selectedCategory = SessionCategory(session: session)
@@ -921,7 +986,7 @@ struct UnifiedConsoleView: View {
             } else {
                 restoreSelection(for: .worker)
             }
-            Task { await backendClient.refreshArchivedSessions() }
+            Task { await backendClient.refreshArchivedSessions(sessionKind: .worker) }
         } else {
             restoreSelection(for: .worker)
         }
