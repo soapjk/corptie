@@ -304,14 +304,18 @@ struct UnifiedConsoleView: View {
     }
 
     private var objectiveRail: some View {
-        VStack(spacing: 8) {
+        let unreadSummary = ObjectiveRailUnreadSummary(
+            sessions: sessionIndexStore.rows.map(\.session)
+        )
+        return VStack(spacing: 8) {
             Button {
                 selectAssistantSpace()
             } label: {
                 consoleRailIcon(
                     systemImage: "sparkles",
                     label: L10n("Assistant"),
-                    isSelected: selectedObjectiveId == nil
+                    isSelected: selectedObjectiveId == nil,
+                    hasUnread: unreadSummary.hasUnreadAssistantSessions
                 )
             }
             .buttonStyle(.plain)
@@ -319,51 +323,69 @@ struct UnifiedConsoleView: View {
             Divider()
                 .padding(.horizontal, 10)
 
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(entityClient.objectives) { objective in
-                        Button {
-                            selectObjectiveSpace(objective.id)
-                        } label: {
-                            consoleRailIcon(
-                                text: objectiveInitials(objective.name),
-                                label: objective.name,
-                                isSelected: selectedObjectiveId == objective.id
-                            )
-                            .contextMenu {
-                                Button(L10n("编辑"), systemImage: "square.and.pencil") {
-                                    objectivePendingEdit = objective
-                                }
-                                Divider()
-                                Button(L10n("删除"), systemImage: "trash", role: .destructive) {
-                                    objectivePendingDeletion = objective
+            ScrollViewReader { scrollProxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: 8) {
+                        ForEach(entityClient.objectives) { objective in
+                            Button {
+                                selectObjectiveSpace(objective.id)
+                            } label: {
+                                consoleRailIcon(
+                                    text: objectiveInitials(objective.name),
+                                    label: objective.name,
+                                    isSelected: selectedObjectiveId == objective.id,
+                                    hasUnread: unreadSummary.objectiveIDs.contains(objective.id)
+                                )
+                                .contextMenu {
+                                    Button(L10n("编辑"), systemImage: "square.and.pencil") {
+                                        objectivePendingEdit = objective
+                                    }
+                                    Divider()
+                                    Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+                                        objectivePendingDeletion = objective
+                                    }
                                 }
                             }
+                            .buttonStyle(.plain)
+                            .id(objective.id)
                         }
-                        .buttonStyle(.plain)
                     }
+                    .padding(.vertical, 10)
                 }
-                .padding(.vertical, 2)
+                .mask(objectiveRailScrollMask)
+                .onAppear {
+                    scrollSelectedObjectiveIntoView(using: scrollProxy, animated: false)
+                }
+                .onChange(of: selectedObjectiveId) { _, _ in
+                    scrollSelectedObjectiveIntoView(using: scrollProxy, animated: true)
+                }
             }
 
-            Divider()
-                .padding(.horizontal, 10)
-
-            Button {
-                isCreatingObjective = true
-            } label: {
-                consoleRailIcon(
-                    systemImage: "plus",
-                    label: L10n("New Objective"),
-                    isSelected: false
-                )
-            }
-            .buttonStyle(.plain)
-            .help(L10n("New Objective"))
-
-            Spacer(minLength: 0)
         }
         .padding(.vertical, 10)
+    }
+
+    private var objectiveRailScrollMask: some View {
+        VStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                .frame(height: 10)
+            Rectangle().fill(.black)
+            LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                .frame(height: 10)
+        }
+    }
+
+    private func scrollSelectedObjectiveIntoView(
+        using proxy: ScrollViewProxy,
+        animated: Bool
+    ) {
+        guard let selectedObjectiveId else { return }
+        let action = { proxy.scrollTo(selectedObjectiveId, anchor: .center) }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.18), action)
+        } else {
+            action()
+        }
     }
 
     @ViewBuilder
@@ -371,18 +393,12 @@ struct UnifiedConsoleView: View {
         systemImage: String? = nil,
         text: String? = nil,
         label: String,
-        isSelected: Bool
+        isSelected: Bool,
+        hasUnread: Bool
     ) -> some View {
         ZStack {
-            if isSelected {
-                ConnectedObjectiveTabShape(cornerRadius: 14)
-                    .fill(taskColumnBackground)
-                    .frame(width: 60, height: 50)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-
-            RoundedRectangle(cornerRadius: isSelected ? 13 : 20, style: .continuous)
-                .fill(isSelected ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
+            Circle()
+                .fill(Color(nsColor: .controlBackgroundColor))
                 .frame(width: 42, height: 42)
             if let systemImage {
                 Image(systemName: systemImage)
@@ -393,12 +409,28 @@ struct UnifiedConsoleView: View {
                     .lineLimit(1)
             }
         }
-        .foregroundStyle(isSelected ? Color.white : Color.primary)
+        .foregroundStyle(Color.primary)
         .frame(width: 64, height: 50)
+        .overlay(alignment: .leading) {
+            if isSelected || hasUnread {
+                Capsule()
+                    .fill(isSelected ? Color.accentColor.opacity(0.78) : Color.red)
+                    .frame(
+                        width: isSelected ? 4 : 8,
+                        height: isSelected ? 24 : 8
+                    )
+                    .padding(.leading, 2)
+                    .transition(.scale(scale: 0.72).combined(with: .opacity))
+            }
+        }
         .contentShape(Rectangle())
         .help(label)
         .accessibilityLabel(label)
-        .animation(.easeInOut(duration: 0.12), value: isSelected)
+        .accessibilityValue(
+            isSelected ? L10n("Selected") : (hasUnread ? L10n("Unread Session") : "")
+        )
+        .animation(.easeInOut(duration: 0.15), value: isSelected)
+        .animation(.easeInOut(duration: 0.15), value: hasUnread)
     }
 
     private func objectiveInitials(_ name: String) -> String {
@@ -414,7 +446,6 @@ struct UnifiedConsoleView: View {
                     .lineLimit(1)
                 Spacer(minLength: 4)
                 searchToggleButton
-                newTaskOrChatToolbarButton
             }
             .padding(8)
 
@@ -436,6 +467,10 @@ struct UnifiedConsoleView: View {
                 || backendClient.archivedSessionsLoadError != nil {
                 archivedWorkerPaginationBar
             }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            floatingCreationMenu
+                .padding(12)
         }
         .sheet(isPresented: $showNewSessionCreation) {
             NewSessionCreationSheet()
@@ -583,16 +618,6 @@ struct UnifiedConsoleView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
-        .overlay(alignment: .bottom) {
-            HStack {
-                Text(L10n("Completed Tasks remain available until archived."))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(10)
-            .background(.ultraThinMaterial)
-        }
     }
 
     private func taskRow(_ task: CorptieTask) -> some View {
@@ -604,14 +629,9 @@ struct UnifiedConsoleView: View {
                 Circle()
                     .fill(taskStatusColor(task.lifecycleState))
                     .frame(width: 7, height: 7)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(task.title)
-                        .font(.system(size: 12, weight: .semibold))
-                        .lineLimit(2)
-                    Text(session == nil ? L10n("Not started") : task.lifecycleState)
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                }
+                Text(task.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
                 Spacer(minLength: 0)
             }
             .padding(.vertical, 4)
@@ -629,8 +649,9 @@ struct UnifiedConsoleView: View {
         }
         .buttonStyle(.plain)
         .listRowBackground(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(selectedTaskId == task.id ? Color.accentColor.opacity(0.09) : Color.clear)
+                .padding(.horizontal, 8)
         )
     }
 
@@ -1072,21 +1093,35 @@ struct UnifiedConsoleView: View {
         backendClient.select(session: session)
     }
 
-    private var newTaskOrChatToolbarButton: some View {
-        Button {
+    private var floatingCreationMenu: some View {
+        Menu {
             if selectedObjective == nil {
-                showNewSessionCreation = true
+                Button(L10n("New Assistant Session"), systemImage: "bubble.left.and.bubble.right") {
+                    showNewSessionCreation = true
+                }
             } else {
-                isCreatingTask = true
+                Button(L10n("New Task"), systemImage: "checklist") {
+                    isCreatingTask = true
+                }
+            }
+
+            Divider()
+
+            Button(L10n("New Objective"), systemImage: "scope") {
+                isCreatingObjective = true
             }
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 22, height: 22)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.primary)
+                .frame(width: 42, height: 42)
+                .contentShape(Circle())
+                .modifier(FloatingCreationButtonGlassModifier())
         }
-        .buttonStyle(.plain)
-        .help(L10n(selectedObjective == nil ? "New Assistant Session" : "New Task"))
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(L10n("Create"))
     }
 
     private var workerSessionFunctionBar: some View {
@@ -1334,7 +1369,6 @@ struct UnifiedConsoleView: View {
                         .frame(maxWidth: 360)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
 
                 SessionCorptieTaskDetailCard(taskId: task.id)
                     .frame(width: 280)
@@ -1351,26 +1385,44 @@ struct UnifiedConsoleView: View {
 
 }
 
-private struct ConnectedObjectiveTabShape: Shape {
-    let cornerRadius: CGFloat
+struct ObjectiveRailUnreadSummary: Equatable {
+    let hasUnreadAssistantSessions: Bool
+    let objectiveIDs: Set<String>
 
-    func path(in rect: CGRect) -> Path {
-        let radius = min(cornerRadius, rect.width / 2, rect.height / 2)
-        var path = Path()
-        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.minY))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX, y: rect.minY + radius),
-            control: CGPoint(x: rect.minX, y: rect.minY)
-        )
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - radius))
-        path.addQuadCurve(
-            to: CGPoint(x: rect.minX + radius, y: rect.maxY),
-            control: CGPoint(x: rect.minX, y: rect.maxY)
-        )
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.closeSubpath()
-        return path
+    init(sessions: [TaskSession]) {
+        var hasUnreadAssistantSessions = false
+        var objectiveIDs = Set<String>()
+
+        for session in sessions where isSessionUnread(session)
+            && session.hasValidProductClassification
+            && session.archived != true {
+            if session.resolvedSessionKind == .assistantChat {
+                hasUnreadAssistantSessions = true
+            } else if let objectiveID = session.objectiveId, !objectiveID.isEmpty {
+                objectiveIDs.insert(objectiveID)
+            }
+        }
+
+        self.hasUnreadAssistantSessions = hasUnreadAssistantSessions
+        self.objectiveIDs = objectiveIDs
+    }
+}
+
+private struct FloatingCreationButtonGlassModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .glassEffect(.regular.interactive(), in: .circle)
+        } else {
+            content
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay {
+                    Circle()
+                        .stroke(Color(nsColor: .separatorColor).opacity(0.38), lineWidth: 1)
+                }
+                .shadow(color: Color.black.opacity(0.12), radius: 7, x: 0, y: 3)
+        }
     }
 }
 
