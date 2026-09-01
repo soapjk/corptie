@@ -36,6 +36,24 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!source.contains("Provider 会话恢复限制"))
     }
 
+    @Test
+    func objectiveAndTaskColumnsShareOneNavigationCard() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let cardStart = try #require(source.range(of: "private var consoleNavigationCard: some View"))
+        let cardEnd = try #require(source.range(
+            of: "private var objectiveRail: some View",
+            range: cardStart.lowerBound..<source.endIndex
+        ))
+        let card = source[cardStart.lowerBound..<cardEnd.lowerBound]
+
+        #expect(card.contains("objectiveRail"))
+        #expect(card.contains("unifiedTaskSidebar"))
+        #expect(card.contains("RoundedRectangle("))
+        #expect(card.contains(".regularMaterial"))
+        #expect(card.contains(".shadow("))
+        #expect(source.components(separatedBy: ".scrollContentBackground(.hidden)").count - 1 >= 3)
+    }
+
     private func source(named name: String) throws -> String {
         let testsURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testsURL

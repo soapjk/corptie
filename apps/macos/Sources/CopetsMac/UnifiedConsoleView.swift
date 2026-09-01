@@ -67,12 +67,9 @@ struct UnifiedConsoleView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            objectiveRail
-                .frame(width: 64)
-            Divider()
-            unifiedTaskSidebar
-                .frame(width: TwoPaneLayoutMetrics.sidebarWidth)
-            Divider()
+            consoleNavigationCard
+                .padding(.leading, TwoPaneLayoutMetrics.contentPadding)
+                .padding(.vertical, TwoPaneLayoutMetrics.contentPadding)
             sessionConversation
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -216,6 +213,40 @@ struct UnifiedConsoleView: View {
         }
     }
 
+    private var consoleNavigationCard: some View {
+        HStack(spacing: 0) {
+            objectiveRail
+                .frame(width: 64)
+
+            Divider()
+
+            unifiedTaskSidebar
+                .frame(width: TwoPaneLayoutMetrics.sidebarWidth)
+        }
+        .frame(maxHeight: .infinity)
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                style: .continuous
+            )
+        )
+        .background(
+            .regularMaterial,
+            in: RoundedRectangle(
+                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                style: .continuous
+            )
+            .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
+    }
+
     private var objectiveRail: some View {
         VStack(spacing: 8) {
             Button {
@@ -277,7 +308,6 @@ struct UnifiedConsoleView: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 10)
-        .background(Color(nsColor: .underPageBackgroundColor).opacity(0.45))
     }
 
     @ViewBuilder
@@ -428,6 +458,7 @@ struct UnifiedConsoleView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
     }
 
     @ViewBuilder
@@ -457,6 +488,7 @@ struct UnifiedConsoleView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
     }
 
     private func activeObjectiveTaskList(_ objective: Objective) -> some View {
@@ -486,6 +518,7 @@ struct UnifiedConsoleView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
         .overlay(alignment: .bottom) {
             HStack {
                 Text(L10n("Completed Tasks remain available until archived."))
