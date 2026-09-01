@@ -7,11 +7,17 @@ struct UnifiedConsoleControlSurfaceTests {
     func objectiveRailAndTaskToolbarExposeTheCorrectCreationFlows() throws {
         let unifiedSource = try source(named: "UnifiedConsoleView.swift")
 
+        #expect(unifiedSource.contains("floatingCreationMenu"))
         #expect(unifiedSource.contains("isCreatingObjective = true"))
         #expect(unifiedSource.contains("ObjectiveCreateView()"))
         #expect(unifiedSource.contains("isCreatingTask = true"))
         #expect(unifiedSource.contains("CorptieTaskCreateView("))
-        #expect(unifiedSource.contains("selectedObjective == nil ? \"New Assistant Session\" : \"New Task\""))
+        #expect(unifiedSource.contains("Button(L10n(\"New Assistant Session\")"))
+        #expect(unifiedSource.contains("Button(L10n(\"New Task\")"))
+        #expect(unifiedSource.contains("Button(L10n(\"New Objective\")"))
+        #expect(unifiedSource.contains(".overlay(alignment: .bottomTrailing)"))
+        #expect(unifiedSource.contains("FloatingCreationButtonGlassModifier"))
+        #expect(!unifiedSource.contains("Completed Tasks remain available until archived."))
 
         let createSource = try source(named: "CorptieTaskCreateView.swift")
         #expect(createSource.contains("Text(L10n(\"新建 Task\"))"))
@@ -65,16 +71,116 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("console.navigationCard.taskColumnWidth"))
         #expect(source.contains("DragGesture(minimumDistance: 0)"))
         #expect(source.contains("NSCursor.resizeLeftRight"))
+        #expect(source.contains(".overlay(alignment: .trailing) {\n            navigationResizeHandle"))
     }
 
     @Test
-    func selectedObjectiveUsesAConnectedFolderTabShape() throws {
+    func selectedObjectiveUsesADiscordStyleEdgePill() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let iconStart = try #require(source.range(of: "private func consoleRailIcon("))
+        let iconEnd = try #require(source.range(
+            of: "private func objectiveInitials",
+            range: iconStart.lowerBound..<source.endIndex
+        ))
+        let icon = source[iconStart.lowerBound..<iconEnd.lowerBound]
+
+        #expect(icon.contains(".overlay(alignment: .leading)"))
+        #expect(icon.contains("Capsule()"))
+        #expect(icon.contains("isSelected || hasUnread"))
+        #expect(icon.contains("isSelected ? Color.accentColor.opacity(0.78) : Color.red"))
+        #expect(icon.contains("width: isSelected ? 4 : 8"))
+        #expect(icon.contains("height: isSelected ? 24 : 8"))
+        #expect(icon.contains(".padding(.leading, 2)"))
+        #expect(!source.contains("CurvedSidebarLinkHighlight"))
+        #expect(!source.contains("ConnectedObjectiveBodyShape"))
+    }
+
+    @Test
+    func objectiveRailAggregatesUnreadSessionsByOwner() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
 
-        #expect(source.contains("ConnectedObjectiveTabShape(cornerRadius: 14)"))
-        #expect(source.contains(".fill(taskColumnBackground)"))
-        #expect(source.contains("private struct ConnectedObjectiveTabShape: Shape"))
-        #expect(!source.contains("objectiveRail\n                .frame(width: 64)\n\n            Divider()"))
+        #expect(source.contains("struct ObjectiveRailUnreadSummary: Equatable"))
+        #expect(source.contains("session.resolvedSessionKind == .assistantChat"))
+        #expect(source.contains("objectiveIDs.insert(objectiveID)"))
+        #expect(source.contains("session.archived != true"))
+        #expect(source.contains("unreadSummary.hasUnreadAssistantSessions"))
+        #expect(source.contains("unreadSummary.objectiveIDs.contains(objective.id)"))
+    }
+
+    @Test
+    func selectedObjectiveDoesNotRestyleItsAvatar() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let iconStart = try #require(source.range(of: "private func consoleRailIcon("))
+        let iconEnd = try #require(source.range(
+            of: "private func objectiveInitials",
+            range: iconStart.lowerBound..<source.endIndex
+        ))
+        let icon = source[iconStart.lowerBound..<iconEnd.lowerBound]
+        let avatarEnd = try #require(icon.range(of: ".foregroundStyle(Color.primary)"))
+        let avatar = icon[icon.startIndex..<avatarEnd.lowerBound]
+
+        #expect(avatar.contains("Circle()"))
+        #expect(avatar.contains(".fill(Color(nsColor: .controlBackgroundColor))"))
+        #expect(!avatar.contains("isSelected ? Color.clear"))
+        #expect(!avatar.contains("Color.accentColor"))
+    }
+
+    @Test
+    func objectiveRailScrollsWithoutIndicatorsAndKeepsSelectionVisible() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+
+        #expect(source.contains("ScrollView(.vertical, showsIndicators: false)"))
+        #expect(source.contains("private var objectiveRailScrollMask: some View"))
+        #expect(source.contains("proxy.scrollTo(selectedObjectiveId, anchor: .center)"))
+        #expect(source.contains(".padding(.vertical, 10)"))
+        #expect(!source.contains("ObjectiveRailItemFramePreferenceKey"))
+    }
+
+    @Test
+    func selectedTaskUsesACompactInsetLowRadiusBackground() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "private func taskRow("))
+        let rowEnd = try #require(source.range(
+            of: "private func openTask(",
+            range: rowStart.lowerBound..<source.endIndex
+        ))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+
+        #expect(row.contains("RoundedRectangle(cornerRadius: 5, style: .continuous)"))
+        #expect(row.contains(".padding(.horizontal, 8)"))
+        #expect(!row.contains("RoundedRectangle(cornerRadius: 10"))
+    }
+
+    @Test
+    func taskRowsUseOneLineAndDoNotExposeSessionStartupAsTaskState() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "private func taskRow("))
+        let rowEnd = try #require(source.range(
+            of: "private func openTask(",
+            range: rowStart.lowerBound..<source.endIndex
+        ))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+
+        #expect(row.contains("Text(task.title)"))
+        #expect(row.contains(".lineLimit(1)"))
+        #expect(!row.contains("L10n(\"Not started\")"))
+        #expect(!row.contains("Text(session == nil"))
+        #expect(!row.contains("Text(task.lifecycleState)"))
+    }
+
+    @Test
+    func pendingSessionMessageAreaDoesNotAddAnEmptyStateCard() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let pendingStart = try #require(source.range(of: "} else if let task = selectedTask {"))
+        let pendingEnd = try #require(source.range(
+            of: "} else {\n            ContentUnavailableView(",
+            range: pendingStart.lowerBound..<source.endIndex
+        ))
+        let pendingState = source[pendingStart.lowerBound..<pendingEnd.lowerBound]
+
+        #expect(pendingState.contains("The companion Work Session is being prepared."))
+        #expect(!pendingState.contains(".background(.regularMaterial"))
+        #expect(!pendingState.contains("RoundedRectangle(cornerRadius: 12"))
     }
 
     private func source(named name: String) throws -> String {
