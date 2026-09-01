@@ -3742,6 +3742,7 @@ struct DetailView: View {
             .overlay(alignment: .top) {
                 EarlierHistoryStatusView(
                     state: earlierHistoryLoadState,
+                    canLoadEarlier: canLoadEarlierMessages,
                     showsExhaustedFeedback: showsHistoryExhaustedFeedback,
                     retry: loadEarlierMessagesIfNeeded
                 )
@@ -4103,6 +4104,12 @@ struct DetailView: View {
 
     private func loadEarlierMessagesForUnderfilledViewport() {
         loadEarlierMessages(preservingLatestFollow: true)
+    }
+
+    private var canLoadEarlierMessages: Bool {
+        guard let detail = displayedDetail else { return false }
+        let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
+        return cachedTotalDisplayEntryCount > visibleWeight || detail.hasMoreHistory == true
     }
 
     private func loadEarlierMessages(preservingLatestFollow: Bool) {
@@ -4588,6 +4595,7 @@ struct DetailView: View {
 
 private struct EarlierHistoryStatusView: View {
     let state: EarlierHistoryLoadState
+    let canLoadEarlier: Bool
     let showsExhaustedFeedback: Bool
     let retry: () -> Void
 
@@ -4619,6 +4627,15 @@ private struct EarlierHistoryStatusView: View {
                 Text(L10n("The earliest message is displayed"))
             }
             .allowsHitTesting(false)
+        case .idle where canLoadEarlier, .exhausted where canLoadEarlier:
+            Button(action: retry) {
+                statusCapsule {
+                    Image(systemName: "clock.arrow.circlepath")
+                    Text(L10n("Load earlier messages"))
+                }
+            }
+            .buttonStyle(.plain)
+            .help(L10n("Load earlier messages"))
         case .idle, .exhausted:
             EmptyView()
         }
