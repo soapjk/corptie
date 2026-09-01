@@ -12,6 +12,7 @@ export class CodexProviderRuntime {
   confirmThreadToolPlan(...args) { return this.client.confirmThreadToolPlan(...args); }
   restoreThreadToolPlanConfirmation(...args) { return this.client.restoreThreadToolPlanConfirmation(...args); }
   close(...args) { return this.client.close(...args); }
+  archiveThread(...args) { return this.client.archiveThread(...args); }
   deleteThread(...args) { return this.client.deleteThread(...args); }
   execResumeThread(...args) { return this.client.execResumeThread(...args); }
   ensureThreadResumed(...args) { return this.client.ensureThreadResumed(...args); }
@@ -29,6 +30,7 @@ export class CodexProviderRuntime {
   startTurn(...args) { return this.client.startTurn(...args); }
   tokenUsageForThread(...args) { return this.client.tokenUsageForThread(...args); }
   updateThreadSettings(...args) { return this.client.updateThreadSettings(...args); }
+  unarchiveThread(...args) { return this.client.unarchiveThread(...args); }
 }
 
 export function createCodexProviderRuntime(options = {}) {

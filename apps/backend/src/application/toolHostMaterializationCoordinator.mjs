@@ -610,11 +610,18 @@ export function authorizationScopeFingerprint(binding) {
 }
 
 function desiredDomains(binding, explicit, current = null) {
-  const domains = new Set(Array.isArray(explicit) ? explicit : []);
-  for (const domain of current?.desiredDomains ?? []) domains.add(domain.domainId);
-  for (const domain of current?.appliedDomains ?? []) domains.add(domain.domainId);
+  const domains = new Set((Array.isArray(explicit) ? explicit : []).map(canonicalToolDomainId));
+  for (const domain of current?.desiredDomains ?? []) domains.add(canonicalToolDomainId(domain.domainId));
+  for (const domain of current?.appliedDomains ?? []) domains.add(canonicalToolDomainId(domain.domainId));
   if (binding.sessionKind === "worker") domains.add("artifacts");
   return [...domains].sort();
+}
+
+function canonicalToolDomainId(domainId) {
+  // Product taxonomy renamed WorkItem to Task. Persisted Tool materialization
+  // receipts from before that cutover remain valid intent, but must resolve to
+  // the canonical catalog domain before lookup and replacement planning.
+  return domainId === "work-item-acceptance" ? "task-acceptance" : domainId;
 }
 
 function materializedDomains(catalog, context, snapshot, desiredDomainIds, surface) {

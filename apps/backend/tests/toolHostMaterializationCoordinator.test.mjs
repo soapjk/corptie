@@ -428,6 +428,21 @@ test("catalog search tokenizes natural-language intent and normalized domain hin
       execute: () => null
     });
 
+    const materialized = await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      desiredDomains: ["work-item-acceptance"]
+    });
+    assert.equal(materialized.status, "applied");
+    assert.equal(
+      materialized.record.appliedDomains.some((domain) => domain.domainId === "task-acceptance"),
+      true
+    );
+    assert.equal(
+      materialized.record.appliedDomains.some((domain) => domain.domainId === "work-item-acceptance"),
+      false
+    );
+
     const result = await value.coordinator.search({
       logicalSessionId: value.binding.logicalSessionId,
       providerBindingId: value.binding.providerBindingId,

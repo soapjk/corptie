@@ -201,6 +201,45 @@ test("handoff-only recovery replaces truncation with a structured compressed che
   }
 });
 
+test("startup recovery can select the bounded deterministic handoff without model compression", async () => {
+  const fixture = await storeFixture();
+  try {
+    for (let sequence = 1; sequence <= 40; sequence += 1) {
+      appendEvent(fixture.store, {
+        sequence,
+        type: sequence % 2 === 1 ? "user/message" : "assistant/message",
+        payload: { text: `message ${sequence} contains meaningful project context` }
+      });
+    }
+    let compressionCalls = 0;
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort([], fixture.store),
+      resolveProviderDescriptor: () => ({
+        id: "test-provider",
+        metadata: { sessionRecovery: { revision: "test-provider:handoff:1", capabilities: ["system_context_injection"] } }
+      }),
+      compressHandoff: async () => {
+        compressionCalls += 1;
+        throw new Error("startup must not invoke the Background Agent");
+      }
+    });
+
+    const committed = await coordinator.recover({
+      logicalSessionId: "logical:recovery",
+      providerId: "test-provider",
+      idempotencyKey: "deterministic-startup-handoff",
+      compressHandoff: false
+    });
+
+    assert.equal(compressionCalls, 0);
+    assert.equal(committed.strategy, "handoff_only");
+    assert.equal(committed.manifest.entries[0].metadata.compressionMode, "extractive_fallback");
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("planner maps real persisted Timeline payloads without duplicating Provider user echoes", () => {
   const plan = planReplay({
     attempt: attemptFixture({ boundarySequence: 4 }),

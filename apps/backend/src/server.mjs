@@ -1605,7 +1605,13 @@ const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
       providerId: binding.providerId,
       sourceBindingId: binding.bindingId,
       idempotencyKey: `startup-empty-binding-recovery:v1:${binding.bindingId}`,
-      reason: "PROVIDER_EMPTY_BINDING_UNAVAILABLE"
+      reason: "PROVIDER_EMPTY_BINDING_UNAVAILABLE",
+      // A prewarmed thread/start has no durable rollout until its first Turn,
+      // so the next Provider process may need to replace it again. Startup
+      // prewarming must use the Recovery planner's bounded deterministic
+      // handoff instead of paying for a 30–45 second model compression on
+      // every launch. Explicit user-triggered Recovery keeps compression.
+      compressHandoff: false
     });
     logical = store.getLogicalSession(candidate.logicalSessionId);
     binding = logical?.activeBinding ?? null;
@@ -4181,7 +4187,8 @@ function desiredToolDomainIds(materialization = null) {
     ...(materialization?.desiredDomains ?? []),
     ...(materialization?.appliedDomains ?? [])
   ].map((domain) => typeof domain === "string" ? domain : domain?.domainId)
-    .filter(Boolean))].sort();
+    .filter(Boolean)
+    .map((domainId) => domainId === "work-item-acceptance" ? "task-acceptance" : domainId))].sort();
 }
 
 function objectiveChatInstructions(metadata) {
@@ -10836,7 +10843,8 @@ async function resumeSessionRecoveryAttemptsAtStartup() {
           logicalSessionId: attempt.logicalSessionId,
           providerId: attempt.providerId,
           idempotencyKey: attempt.idempotencyKey,
-          attemptId: attempt.attemptId
+          attemptId: attempt.attemptId,
+          compressHandoff: !attempt.idempotencyKey.startsWith("startup-empty-binding-recovery:")
         });
       } catch (error) {
         console.warn(`[session-recovery] startup resume failed attempt=${attempt.attemptId} code=${error.code ?? "SESSION_RECOVERY_FAILED"}`);

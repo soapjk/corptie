@@ -505,7 +505,7 @@ export class SessionRecoveryCoordinator {
     // tail when available and otherwise produces the bounded handoff strategy.
     const thresholds = recoveryHistory.truncated ? { fullReplayMaximum: 0 } : {};
     let plan = planReplay({ attempt, timelineEvents, capabilities, thresholds });
-    if (plan.strategy === "handoff_only" && this.compressHandoff) {
+    if (plan.strategy === "handoff_only" && this.compressHandoff && input.compressHandoff !== false) {
       const sourceEntries = replayEntriesFromTimeline(timelineEvents);
       const source = buildSessionRecoveryHandoffSource(sourceEntries, {
         characterBudget: recoveryHandoffCharacterBudget(capabilities.maxContextTokens)
