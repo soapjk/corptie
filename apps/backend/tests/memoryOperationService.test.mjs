@@ -25,10 +25,10 @@ async function fixture(options = {}) {
     name: "Bound Objective",
     contributorAgentIds: [agent.agentId]
   });
-  store.createWorkItem({
-    id: "work_item:bound",
+  store.createTask({
+    id: "task:bound",
     objectiveId: "objective:bound",
-    title: "Bound WorkItem",
+    title: "Bound Task",
     mainAgentId: agent.agentId
   });
   store.upsertSession({
@@ -39,9 +39,9 @@ async function fixture(options = {}) {
     sessionKind: "worker",
     agentId: agent.agentId,
     objectiveId: "objective:bound",
-    workItemId: "work_item:bound"
+    taskId: "task:bound"
   });
-  store.bindSessionToWorkItem("session:current", "work_item:bound", "objective:bound");
+  store.bindSessionToTask("session:current", "task:bound", "objective:bound");
   core.bindSession({ agentId: agent.agentId, sessionId: "session:current" });
   const hubService = new HubService({ store });
   const service = new MemoryOperationService({
@@ -64,7 +64,7 @@ function call(service, actorId, tool, arguments_, metadata = {}) {
   });
 }
 
-test("manual remember defaults to the most-specific current WorkItem and preserves provenance", async () => {
+test("manual remember defaults to the most-specific current Task and preserves provenance", async () => {
   const f = await fixture();
   try {
     const remembered = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
@@ -72,8 +72,8 @@ test("manual remember defaults to the most-specific current WorkItem and preserv
       kind: "preference",
       tags: ["style"]
     });
-    assert.equal(remembered.memory.ownerType, "work_item");
-    assert.equal(remembered.memory.ownerId, "work_item:bound");
+    assert.equal(remembered.memory.ownerType, "task");
+    assert.equal(remembered.memory.ownerId, "task:bound");
     assert.equal(remembered.memory.sourceType, "user");
     assert.equal(remembered.memory.sourceSessionId, "session:current");
     assert.deepEqual(remembered.memory.sourceEventSeqs, [1]);
@@ -84,7 +84,7 @@ test("manual remember defaults to the most-specific current WorkItem and preserv
     const nextSessionRecall = await f.hubService.retrieveMemory("summarize changes", {
       agentId: f.agent.agentId,
       objectiveId: "objective:bound",
-      workItemId: "work_item:bound"
+      taskId: "task:bound"
     }, { touch: false });
     assert.equal(nextSessionRecall[0].id, remembered.memory.id);
     const startupContext = await new AgentContextService({
@@ -92,7 +92,7 @@ test("manual remember defaults to the most-specific current WorkItem and preserv
       hubService: f.hubService
     }).buildAgentContext(f.agent.agentId, {
       intent: "",
-      scope: { objectiveId: "objective:bound", workItemId: "work_item:bound" }
+      scope: { objectiveId: "objective:bound", taskId: "task:bound" }
     });
     assert.match(startupContext.instructions, /Always summarize changes concisely/);
   } finally {
@@ -101,7 +101,7 @@ test("manual remember defaults to the most-specific current WorkItem and preserv
   }
 });
 
-test("remember derives Objective/WorkItem owners and rejects every unbound scope", async () => {
+test("remember derives Objective/Task owners and rejects every unbound scope", async () => {
   const f = await fixture();
   try {
     const objective = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
@@ -110,12 +110,12 @@ test("remember derives Objective/WorkItem owners and rejects every unbound scope
       scope: "objective"
     });
     assert.equal(objective.memory.ownerId, "objective:bound");
-    const workItem = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
+    const task = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
       content: "Bound work item lesson",
       kind: "lesson",
-      scope: "work_item"
+      scope: "task"
     });
-    assert.equal(workItem.memory.ownerId, "work_item:bound");
+    assert.equal(task.memory.ownerId, "task:bound");
 
     f.store.upsertSession({
       id: "session:assistant",
@@ -375,7 +375,7 @@ test("automatic extraction and manual memory use distinct source_type with exact
     const extracted = await new MemoryExtractor({ store: f.store }).extractFromSession("session:current", {
       agentId: f.agent.agentId,
       objectiveId: "objective:bound",
-      workItemId: "work_item:bound"
+      taskId: "task:bound"
     });
     assert.equal(extracted[0].source_type, "extracted");
     assert.equal(extracted[0].source_session_id, "session:current");

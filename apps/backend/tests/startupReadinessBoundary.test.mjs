@@ -29,8 +29,8 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     "openClackyManager.start()",
     "codexResetForecastMonitor.start()",
     "await resumeSessionRecoveryAttemptsAtStartup()",
-    "await repairBrokenWorkItemSessionsAtStartup()",
-    "await deleteHistoricalUnusableWorkItemSessionsAtStartup()",
+    "await repairBrokenTaskSessionsAtStartup()",
+    "await deleteHistoricalUnusableTaskSessionsAtStartup()",
     "await sessionProviderSwitchCoordinator.completeProviderSwitch",
     "await runtime.manager.recoverWorkspaceTransition",
     "await reconcileMovedWorkspaceRoutes",
@@ -56,7 +56,7 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     "ensureCorptieClaudeRuntime",
     "ensureCorptieOpenClackyRuntime",
     "resumeSessionRecoveryAttemptsAtStartup",
-    "repairBrokenWorkItemSessionsAtStartup",
+    "repairBrokenTaskSessionsAtStartup",
     "recoverPendingWorkspaceTransitions",
     "reconcileMovedWorkspaceRoutes",
     "toolBootstrapBindingPreflight.run"
@@ -82,7 +82,7 @@ test("startup settles durable nonterminal work before runtime queue draining", a
   assert.ok(reconcileIndex > listenIndex, "restart reconciliation must not delay the listener");
   assert.ok(providerMaintenanceIndex > reconcileIndex, "reconciliation must settle old work before Provider recovery starts");
   assert.ok(firstQueueTickIndex > reconcileIndex, "the runtime queue must not drain before restart reconciliation");
-  assert.ok(tickDefinition.includes("runtimeQueuedWorkItemsBySession.keys()"));
+  assert.ok(tickDefinition.includes("runtimeQueuedTasksBySession.keys()"));
   assert.equal(
     tickDefinition.includes("listSessionIdsWithUnsettledAgentWork"),
     false,

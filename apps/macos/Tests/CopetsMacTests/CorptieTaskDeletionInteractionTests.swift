@@ -2,13 +2,13 @@ import Foundation
 import Testing
 @testable import CorptieMac
 
-struct WorkItemDeletionInteractionTests {
+struct CorptieTaskDeletionInteractionTests {
     @Test
-    func workItemCardsExposeTheSafeDeletionFlowFromAContextMenu() throws {
+    func taskCardsExposeTheSafeDeletionFlowFromAContextMenu() throws {
         let contents = try warRoomSource()
 
         #expect(contents.contains(".contextMenu {"))
-        #expect(contents.contains("Label(L10n(\"删除 WorkItem\"), systemImage: \"trash\")"))
+        #expect(contents.contains("Label(L10n(\"删除 CorptieTask\"), systemImage: \"trash\")"))
         #expect(contents.contains("onRequestDeletion(item)"))
         #expect(contents.contains(".disabled(pendingDeletionIds.contains(item.id))"))
     }
@@ -25,26 +25,26 @@ struct WorkItemDeletionInteractionTests {
 
         let dismiss = try #require(functionBody.range(of: "deletionPresentation = nil"))
         let backgroundTask = try #require(functionBody.range(of: "Task {"))
-        let request = try #require(functionBody.range(of: "client.deleteWorkItem("))
+        let request = try #require(functionBody.range(of: "client.deleteCorptieTask("))
         #expect(dismiss.lowerBound < backgroundTask.lowerBound)
         #expect(backgroundTask.lowerBound < request.lowerBound)
         #expect(functionBody.contains("phase: .deleting"))
         #expect(functionBody.contains("phase: .failure"))
-        #expect(functionBody.contains("retryItem: workItem"))
+        #expect(functionBody.contains("retryItem: task"))
         #expect(functionBody.contains("if deleted"))
-        #expect(functionBody.contains("workItems.removeAll { $0.id == workItem.id }"))
+        #expect(functionBody.contains("tasks.removeAll { $0.id == task.id }"))
     }
 
     @Test
     func deletionFailureEnvelopeKeepsTheBackendReasonForPresentation() throws {
-        let data = Data(#"{"error":"WorkItem 仍绑定不可随之删除的 Artifact：验收证据。","code":"WORK_ITEM_DELETE_BLOCKED"}"#.utf8)
+        let data = Data(#"{"error":"CorptieTask 仍绑定不可随之删除的 Artifact：验收证据。","code":"TASK_DELETE_BLOCKED"}"#.utf8)
         let envelope = try JSONDecoder().decode(EntityErrorEnvelope.self, from: data)
-        #expect(envelope.code == "WORK_ITEM_DELETE_BLOCKED")
-        #expect(envelope.displayMessage == "WorkItem 仍绑定不可随之删除的 Artifact：验收证据。")
+        #expect(envelope.code == "TASK_DELETE_BLOCKED")
+        #expect(envelope.displayMessage == "CorptieTask 仍绑定不可随之删除的 Artifact：验收证据。")
 
         let clientSource = try entityAPIClientSource()
-        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to inspect WorkItem deletion.\")"))
-        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to delete WorkItem.\")"))
+        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to inspect CorptieTask deletion.\")"))
+        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to delete CorptieTask.\")"))
     }
 
     @Test

@@ -10,10 +10,9 @@ enum TwoPaneLayoutMetrics {
     static let cardCornerRadius: CGFloat = 12
 }
 
-// 顶层 Tab 枚举：控制台 / Sessions / Agents（设置已移至右上角齿轮入口的独立页面）。
+// 顶层 Tab 枚举。会话已经并入统一控制台，不再保留独立 Sessions 入口。
 enum AppTab: String, CaseIterable, Identifiable {
     case console
-    case sessions
     case automations
     case worktrees
     case sessionDSH
@@ -25,18 +24,16 @@ enum AppTab: String, CaseIterable, Identifiable {
     var index: Int {
         switch self {
         case .console: 0
-        case .sessions: 1
-        case .automations: 2
-        case .worktrees: 3
-        case .sessionDSH: 4
-        case .agents: 5
+        case .automations: 1
+        case .worktrees: 2
+        case .sessionDSH: 3
+        case .agents: 4
         }
     }
 
     @MainActor var title: String {
         switch self {
         case .console: L10n("Console")
-        case .sessions: L10n("Sessions")
         case .automations: L10n("Automations")
         case .worktrees: L10n("Worktrees")
         case .sessionDSH: L10n("Session DSH")
@@ -47,7 +44,6 @@ enum AppTab: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .console: "square.grid.2x2"
-        case .sessions: "bubble.left.and.bubble.right"
         case .automations: "bolt.badge.clock"
         case .worktrees: "arrow.triangle.branch"
         case .sessionDSH: "globe"
@@ -334,9 +330,7 @@ private struct MainTabPageHost: NSViewRepresentable {
             let root: AnyView
             switch tab {
             case .console:
-                root = AnyView(WarRoomView())
-            case .sessions:
-                root = AnyView(SessionsView())
+                root = AnyView(UnifiedConsoleView())
             case .automations:
                 root = AnyView(AutomationsView())
             case .worktrees:
@@ -752,7 +746,7 @@ final class AppTabRouter: ObservableObject {
     func openSession(_ sessionId: String) {
         navigationError = nil
         pendingSessionId = sessionId
-        selectTab(.sessions)
+        selectTab(.console)
     }
 
     func openAutomation(_ automationId: String) {

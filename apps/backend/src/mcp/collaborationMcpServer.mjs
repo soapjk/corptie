@@ -14,7 +14,7 @@ async function main() {
       sessionId: required(process.env.CORPTIE_SESSION_ID, "CORPTIE_SESSION_ID"),
       providerBindingId: required(process.env.CORPTIE_PROVIDER_BINDING_ID, "CORPTIE_PROVIDER_BINDING_ID"),
       objectiveId: process.env.CORPTIE_OBJECTIVE_ID,
-      workItemId: process.env.CORPTIE_WORK_ITEM_ID
+      taskId: process.env.CORPTIE_TASK_ID
     }
   });
   await createCatalogBackedMcpServer({ client }).connect(new StdioServerTransport());

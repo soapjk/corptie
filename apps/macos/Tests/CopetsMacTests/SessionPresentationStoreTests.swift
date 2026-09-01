@@ -78,7 +78,11 @@ final class SessionPresentationCacheTests: XCTestCase {
         XCTAssertEqual(store.cacheRevision, 0)
         store.store(cache)
         XCTAssertEqual(store.cacheRevision, 1)
-        XCTAssertEqual(store.cache(for: fixture.session.id)?.displayEntries.count, 7)
+        XCTAssertEqual(
+            store.cache(for: fixture.session.id)?.displayEntries.reduce(0) { $0 + $1.displayWeight },
+            7,
+            "The limit is a display-weight budget; zero-weight process rows may remain attached"
+        )
 
         store.store(cache)
         XCTAssertEqual(store.cacheRevision, 1, "An identical projection must not invalidate the Session surface")

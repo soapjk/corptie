@@ -1,7 +1,7 @@
 import { benchmarkError, contentHash } from "./canonical.mjs";
 import { DEPENDENCY_MANIFEST_IDENTITY, validateReceiptEnvelope } from "./contracts.mjs";
 
-const CHAIN_FIELDS = ["objectiveId", "workItemId", "logicalSessionId", "providerBindingId", "providerBindingGeneration", "repositoryId", "worktreeId", "catalogVersion", "toolsetVersion", "sourceFingerprint", "runId", "observationId"];
+const CHAIN_FIELDS = ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "providerBindingGeneration", "repositoryId", "worktreeId", "catalogVersion", "toolsetVersion", "sourceFingerprint", "runId", "observationId"];
 
 export class TelemetryCorrelator {
   correlate({ attemptId, receipts, evidenceRefs = [], expectedScope, now = Date.now() }) {
@@ -22,16 +22,16 @@ export class TelemetryCorrelator {
     const observation = payload(byType, "Observation");
     const observationExport = payload(byType, "ObservationExport");
     const chain = {
-      objectiveId: startup.objectiveId, workItemId: startup.workItemId, logicalSessionId: startup.logicalSessionId,
+      objectiveId: startup.objectiveId, taskId: startup.taskId, logicalSessionId: startup.logicalSessionId,
       providerBindingId: startup.providerBindingId, providerBindingGeneration: startup.bindingGeneration,
       repositoryId: startup.repositoryId, worktreeId: startup.worktreeId, catalogVersion: toolHost.appliedCatalogVersion,
       toolsetVersion: toolset.toolsetVersion, sourceFingerprint: snapshot.sourceFingerprint, runId: run.runId,
       observationId: observation.observationId
     };
     for (const field of CHAIN_FIELDS) if (chain[field] == null || chain[field] === "") throw benchmarkError("ATTEMPT_IDENTITY_INCOMPLETE", `Attempt identity is missing ${field}.`, "correlation");
-    if (expectedScope && (chain.logicalSessionId !== expectedScope.logicalSessionId || chain.objectiveId !== expectedScope.objectiveId || chain.workItemId !== expectedScope.workItemId)) mismatch("Authenticated Session scope does not match receipts.");
+    if (expectedScope && (chain.logicalSessionId !== expectedScope.logicalSessionId || chain.objectiveId !== expectedScope.objectiveId || chain.taskId !== expectedScope.taskId)) mismatch("Authenticated Session scope does not match receipts.");
     same(chain.logicalSessionId, snapshot.logicalSessionId, toolset.identity?.logicalSessionId, run.logicalSessionId, cleanup.logicalSessionId, observation.identity?.logicalSessionId);
-    same(chain.workItemId, snapshot.workItemId, toolset.identity?.workItemId, run.workItemId, cleanup.workItemId, observation.identity?.workItemId);
+    same(chain.taskId, snapshot.taskId, toolset.identity?.taskId, run.taskId, cleanup.taskId, observation.identity?.taskId);
     same(chain.repositoryId, snapshot.repositoryId, toolset.identity?.repositoryId, run.repositoryId, cleanup.repositoryId, observation.identity?.repositoryId);
     same(chain.worktreeId, snapshot.worktreeId, toolset.identity?.worktreeId, run.worktreeId, cleanup.worktreeId, observation.identity?.worktreeId);
     same(chain.providerBindingId, toolHost.providerBindingId, observation.identity?.providerBindingId);

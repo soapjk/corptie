@@ -462,7 +462,7 @@ test("deleting a Session retains an inert tombstone and audit events without all
   }
 });
 
-test("deleting a Worker Session clears its active WorkItem pointer but retains audit identity", async () => {
+test("deleting a Worker Session clears its active Task pointer but retains audit identity", async () => {
   const { store, directory } = await createStore();
   try {
     store.upsertSession({
@@ -473,23 +473,23 @@ test("deleting a Worker Session clears its active WorkItem pointer but retains a
       status: "complete"
     });
     store.createObjective({ id: "objective:worker", name: "Objective" });
-    store.createWorkItem({
-      id: "work-item:worker",
+    store.createTask({
+      id: "task:worker",
       objectiveId: "objective:worker",
       title: "Work item"
     });
-    store.bindSessionToWorkItem("session:worker", "work-item:worker", "objective:worker");
-    assert.equal(store.getWorkItem("work-item:worker").current_session_id, "session:worker");
+    store.bindSessionToTask("session:worker", "task:worker", "objective:worker");
+    assert.equal(store.getTask("task:worker").current_session_id, "session:worker");
 
     store.deleteSession("session:worker");
 
-    assert.equal(store.getWorkItem("work-item:worker").current_session_id, null);
+    assert.equal(store.getTask("task:worker").current_session_id, null);
     const tombstone = store.selectOne(
-      "SELECT objective_id, work_item_id FROM sessions WHERE id = ?",
+      "SELECT objective_id, task_id FROM sessions WHERE id = ?",
       ["session:worker"]
     );
     assert.equal(tombstone.objective_id, "objective:worker");
-    assert.equal(tombstone.work_item_id, "work-item:worker");
+    assert.equal(tombstone.task_id, "task:worker");
     assert.deepEqual(store.sessionAssociationIssues(), []);
   } finally {
     await store.close();

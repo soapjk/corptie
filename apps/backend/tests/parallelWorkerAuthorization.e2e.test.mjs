@@ -6,7 +6,7 @@ import test from "node:test";
 import { ArtifactService } from "../src/application/artifactService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-test("same Agent parallel Workers authorize only exact Session/WorkItem bindings and ignore recency", async () => {
+test("same Agent parallel Workers authorize only exact Session/Task bindings and ignore recency", async () => {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-parallel-worker-"));
   const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });
   try {
@@ -14,22 +14,22 @@ test("same Agent parallel Workers authorize only exact Session/WorkItem bindings
     const agent = store.createAgent({ name: "Shared Worker", provider: "codex-app-server" });
     store.createObjective({ id: "objective:parallel", name: "Parallel", contributorAgentIds: [agent.agentId] });
     for (const suffix of ["a", "b"]) {
-      store.createWorkItem({
-        id: `work_item:${suffix}`, objectiveId: "objective:parallel",
+      store.createTask({
+        id: `task:${suffix}`, objectiveId: "objective:parallel",
         title: `Work ${suffix}`, mainAgentId: agent.agentId
       });
       store.upsertSession({
         id: `session:${suffix}`, title: `Session ${suffix}`, provider: "codex-app-server",
         status: "running", sessionKind: "worker", agentId: agent.agentId,
-        objectiveId: "objective:parallel", workItemId: `work_item:${suffix}`
+        objectiveId: "objective:parallel", taskId: `task:${suffix}`
       });
-      store.bindSessionToWorkItem(`session:${suffix}`, `work_item:${suffix}`, "objective:parallel");
+      store.bindSessionToTask(`session:${suffix}`, `task:${suffix}`, "objective:parallel");
     }
     const service = new ArtifactService({ store, contentRoot: join(directory, "artifacts") });
     await service.initialize();
     const context = (suffix) => ({
       actorId: agent.agentId, sessionId: `session:${suffix}`,
-      objectiveId: "objective:parallel", workItemId: `work_item:${suffix}`
+      objectiveId: "objective:parallel", taskId: `task:${suffix}`
     });
     const artifactA = await service.create(context("a"), {
       title: "A only", content: "a", idempotencyKey: "artifact-a"
@@ -52,7 +52,7 @@ test("same Agent parallel Workers authorize only exact Session/WorkItem bindings
     store.updateAgent(agent.agentId, { currentSessionId: "session:b" });
     assert.equal((await service.get(context("a"), artifactA.artifactId, pinned(artifactA))).content, "a");
     assert.equal((await service.get(context("b"), artifactB.artifactId, pinned(artifactB))).content, "b");
-    store.db.run("UPDATE work_items SET current_session_id = NULL WHERE id = ?", ["work_item:a"]);
+    store.db.run("UPDATE tasks SET current_session_id = NULL WHERE id = ?", ["task:a"]);
     await assert.rejects(() => service.get(context("a"), artifactA.artifactId, pinned(artifactA)), {
       code: "ARTIFACT_SESSION_BINDING_INVALID"
     });

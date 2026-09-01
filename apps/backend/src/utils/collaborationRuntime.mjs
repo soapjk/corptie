@@ -23,7 +23,7 @@ export function collaborationMcpEnvironment({
     CORPTIE_PROVIDER_BINDING_ID: metadata?.providerBindingId ?? "",
     CORPTIE_SESSION_KIND: metadata?.sessionKind ?? "",
     CORPTIE_OBJECTIVE_ID: metadata?.objectiveId ?? "",
-    CORPTIE_WORK_ITEM_ID: metadata?.workItemId ?? "",
+    CORPTIE_TASK_ID: metadata?.taskId ?? "",
     ...(metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
       ? {
           CORPTIE_OBJECTIVE_CHAT_ID: metadata.objectiveId,

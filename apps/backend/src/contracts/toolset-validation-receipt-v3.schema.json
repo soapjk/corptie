@@ -64,7 +64,7 @@
       "required": [
         "logicalSessionId",
         "objectiveId",
-        "workItemId",
+        "taskId",
         "repositoryId",
         "worktreeId",
         "startupBindingRef"
@@ -79,7 +79,7 @@
           "type": "string",
           "pattern": "^objective:[0-9a-f-]+$"
         },
-        "workItemId": {
+        "taskId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 512

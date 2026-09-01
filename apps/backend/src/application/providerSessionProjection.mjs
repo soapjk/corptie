@@ -9,7 +9,7 @@ export function persistProviderSessionProjection(store, session, {
   agentId = null,
   sessionKind = null,
   objectiveId = null,
-  workItemId = null
+  taskId = null
 } = {}) {
   if (!store?.db || !session?.id) return null;
   const suppliedSessionKind = sessionKind ?? session.sessionKind;
@@ -19,7 +19,7 @@ export function persistProviderSessionProjection(store, session, {
   const resolvedSessionKind = inferSessionKind({
     sessionKind: suppliedSessionKind,
     objectiveId: objectiveId ?? session.objectiveId,
-    workItemId: workItemId ?? session.workItemId
+    taskId: taskId ?? session.taskId
   });
   if (!isProductSessionKind(resolvedSessionKind)) {
     const error = new TypeError(`Provider Session ${session.id} has no valid product classification.`);
@@ -35,7 +35,7 @@ export function persistProviderSessionProjection(store, session, {
     agentId: agentId ?? session.agentId ?? null,
     sessionKind: resolvedSessionKind,
     objectiveId: objectiveId ?? session.objectiveId ?? null,
-    workItemId: workItemId ?? session.workItemId ?? null
+    taskId: taskId ?? session.taskId ?? null
   });
   return store.getSession(session.id);
 }

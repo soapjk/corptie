@@ -6,20 +6,20 @@ const OBJECTIVE_CREATE_FIELDS = [
 
 const OBJECTIVE_UPDATE_FIELDS = OBJECTIVE_CREATE_FIELDS.filter((field) => field !== "id");
 
-const WORK_ITEM_CREATE_FIELDS = [
-  "id", "objectiveId", "title", "description", "acceptanceCriteria", "priority",
-  "status", "mainWorkspaceId", "mainAgentId"
+const TASK_CREATE_FIELDS = [
+  "id", "objectiveId", "title", "description", "goal", "acceptanceCriteria",
+  "verificationCriteria", "priority", "lifecycleState", "mainWorkspaceId", "mainAgentId"
 ];
 
-const WORK_ITEM_UPDATE_FIELDS = WORK_ITEM_CREATE_FIELDS.filter(
+const TASK_UPDATE_FIELDS = TASK_CREATE_FIELDS.filter(
   (field) => field !== "id" && field !== "objectiveId"
 );
 
 export const ENTITY_FIELD_ALLOWLISTS = Object.freeze({
   objectiveCreate: Object.freeze(OBJECTIVE_CREATE_FIELDS),
   objectiveUpdate: Object.freeze(OBJECTIVE_UPDATE_FIELDS),
-  workItemCreate: Object.freeze(WORK_ITEM_CREATE_FIELDS),
-  workItemUpdate: Object.freeze(WORK_ITEM_UPDATE_FIELDS)
+  taskCreate: Object.freeze(TASK_CREATE_FIELDS),
+  taskUpdate: Object.freeze(TASK_UPDATE_FIELDS)
 });
 
 export class EntityValidationError extends TypeError {
@@ -60,10 +60,10 @@ export function validateObjectiveInput(input, operation = "create") {
   return normalized;
 }
 
-export function validateWorkItemInput(input, operation = "create") {
+export function validateTaskInput(input, operation = "create") {
   const allowed = operation === "update"
-    ? ENTITY_FIELD_ALLOWLISTS.workItemUpdate
-    : ENTITY_FIELD_ALLOWLISTS.workItemCreate;
+    ? ENTITY_FIELD_ALLOWLISTS.taskUpdate
+    : ENTITY_FIELD_ALLOWLISTS.taskCreate;
   assertRecord(input, operation === "update" ? "patch" : "input");
   assertKnownFields(input, allowed, operation);
 
@@ -72,23 +72,25 @@ export function validateWorkItemInput(input, operation = "create") {
   if (has(input, "objectiveId")) normalized.objectiveId = string(input.objectiveId, "objectiveId", { nonEmpty: true, trim: true });
   if (has(input, "title")) normalized.title = string(input.title, "title", { nonEmpty: true, trim: true });
   if (has(input, "description")) normalized.description = string(input.description, "description");
+  if (has(input, "goal")) normalized.goal = string(input.goal, "goal");
   if (has(input, "acceptanceCriteria")) normalized.acceptanceCriteria = string(input.acceptanceCriteria, "acceptanceCriteria");
+  if (has(input, "verificationCriteria")) normalized.verificationCriteria = string(input.verificationCriteria, "verificationCriteria");
   if (has(input, "priority")) normalized.priority = string(input.priority, "priority", { nonEmpty: true, trim: true });
-  if (has(input, "status")) normalized.status = string(input.status, "status", { nonEmpty: true, trim: true });
-  if (has(input, "priority") && !WORK_ITEM_PRIORITIES.includes(normalized.priority)) {
-    throw new EntityValidationError("INVALID_PRIORITY", "priority", WORK_ITEM_PRIORITIES.join(" | "), input.priority);
+  if (has(input, "lifecycleState")) normalized.lifecycleState = string(input.lifecycleState, "lifecycleState", { nonEmpty: true, trim: true });
+  if (has(input, "priority") && !TASK_PRIORITIES.includes(normalized.priority)) {
+    throw new EntityValidationError("INVALID_PRIORITY", "priority", TASK_PRIORITIES.join(" | "), input.priority);
   }
-  if (has(input, "status") && !WORK_ITEM_STATUSES.includes(normalized.status)) {
-    throw new EntityValidationError("INVALID_STATUS", "status", WORK_ITEM_STATUSES.join(" | "), input.status);
+  if (has(input, "lifecycleState") && !TASK_LIFECYCLE_STATES.includes(normalized.lifecycleState)) {
+    throw new EntityValidationError("INVALID_LIFECYCLE_STATE", "lifecycleState", TASK_LIFECYCLE_STATES.join(" | "), input.lifecycleState);
   }
   if (has(input, "mainWorkspaceId")) normalized.mainWorkspaceId = optionalString(input.mainWorkspaceId, "mainWorkspaceId", { trim: true });
   if (has(input, "mainAgentId")) normalized.mainAgentId = optionalString(input.mainAgentId, "mainAgentId", { trim: true });
 
   if (operation === "create" && !has(input, "objectiveId")) {
-    throw new EntityValidationError("INVALID_FIELD_TYPE", "objectiveId", "non-empty string", undefined, "WorkItem objectiveId is required.");
+    throw new EntityValidationError("INVALID_FIELD_TYPE", "objectiveId", "non-empty string", undefined, "Task objectiveId is required.");
   }
   if (operation === "create" && !has(input, "title")) {
-    throw new EntityValidationError("INVALID_FIELD_TYPE", "title", "non-empty string", undefined, "WorkItem title is required.");
+    throw new EntityValidationError("INVALID_FIELD_TYPE", "title", "non-empty string", undefined, "Task title is required.");
   }
   return normalized;
 }
@@ -190,4 +192,4 @@ function scalarPreview(value) {
 function has(input, field) {
   return Object.prototype.hasOwnProperty.call(input, field);
 }
-import { WORK_ITEM_PRIORITIES, WORK_ITEM_STATUSES } from "./workItemToolSchema.mjs";
+import { TASK_PRIORITIES, TASK_LIFECYCLE_STATES } from "./taskToolSchema.mjs";

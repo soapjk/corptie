@@ -92,7 +92,7 @@ test("forkSession 复制 [0, atSeq] 事件到新 Session", async () => {
     // 原 session 不受影响（仍是 3 条）
     assert.equal(store.listSessionEvents("s1").length, 3);
 
-    // 新 session 存在且指向同一 workItem（此处为 null）
+    // 新 session 存在且指向同一 task（此处为 null）
     const forkedSession = store.getSession(newId);
     assert.ok(forkedSession, "fork 后的 session 应存在");
   } finally {

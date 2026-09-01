@@ -32,7 +32,7 @@ struct ScheduledSessionModelTests {
                 "scheduledFor":"2026-08-22T13:00:00.000Z",
                 "triggerKind":"scheduled","triggerReason":"schedule_due",
                 "status":"queued","attemptCount":1,
-                "agentWorkItemId":"agent_work:1","targetTurnId":null,
+                "agentCorptieTaskId":"agent_work:1","targetTurnId":null,
                 "errorCode":null,"errorMessage":null,
                 "claimedAt":"2026-08-22T13:00:00.000Z",
                 "queuedAt":"2026-08-22T13:00:01.000Z",
@@ -48,7 +48,7 @@ struct ScheduledSessionModelTests {
 
         #expect(task.message == "检查状态")
         #expect(task.presentationStatus == .queued)
-        #expect(task.runs.first?.agentWorkItemId == "agent_work:1")
+        #expect(task.runs.first?.agentCorptieTaskId == "agent_work:1")
         #expect(task.runs.first?.status.presentation == .queued)
         #expect(task.createdAt == "2026-08-22T12:00:00.000Z")
         #expect(task.lastRunAt == "2026-08-23T00:30:00.000Z")
@@ -447,7 +447,7 @@ final class ScheduledSessionUITests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac")
         let sessionsView = try String(
-            contentsOf: sourceRoot.appendingPathComponent("SessionsView.swift"),
+            contentsOf: sourceRoot.appendingPathComponent("UnifiedConsoleView.swift"),
             encoding: .utf8
         )
         let conversationView = try String(
@@ -455,7 +455,7 @@ final class ScheduledSessionUITests: XCTestCase {
             encoding: .utf8
         )
 
-        let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private var sessionCard: some View"))
+        let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private func sessionCard(decoratesSurface: Bool) -> some View"))
         let statusRange = try XCTUnwrap(
             sessionsView.range(
                 of: "statusCard",

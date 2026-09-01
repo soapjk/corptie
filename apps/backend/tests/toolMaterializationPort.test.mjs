@@ -38,7 +38,7 @@ async function fixture(options = {}) {
     providerId: "fake", providerSessionId: "thread:one", routingVersion: 1,
     state: "active", isCurrent: true, tombstoned: false,
     sessionId: "session:one", sessionKind: "objectiveChat", objectiveId: "objective:one",
-    workItemId: null, currentWorkItemSessionId: null, authorizationRevision: 1
+    taskId: null, currentTaskSessionId: null, authorizationRevision: 1
   };
   let applyCount = 0;
   const capability = options.capability ?? {

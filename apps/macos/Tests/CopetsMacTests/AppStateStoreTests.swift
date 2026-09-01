@@ -167,7 +167,7 @@ struct AppStateStoreTests {
           "revision": 12,
           "state": {
             "sessions": [],
-            "workItems": [],
+            "tasks": [],
             "objectives": [],
             "agents": [],
             "skills": [],
@@ -182,14 +182,14 @@ struct AppStateStoreTests {
               "integrationWorktreeId": null,
               "integrationWorktreePath": null,
               "integrationBranch": null,
-              "conflictWorkItemId": null,
+              "conflictCorptieTaskId": null,
               "conflictSessionId": null,
               "error": null,
               "items": [{
                 "runId": "integration:1",
                 "worktreeId": "worktree:1",
-                "workItemId": "work_item:1",
-                "workItemTitle": "Memory tools",
+                "taskId": "task:1",
+                "taskTitle": "Memory tools",
                 "branchName": "feature/memory-tools",
                 "sourceHeadOid": "source:1",
                 "ordinal": 0,
@@ -219,13 +219,13 @@ struct AppStateStoreTests {
         let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: Data(payload.utf8))
 
         #expect(snapshot.state.integrationRuns.first?.counts.total == 1)
-        #expect(snapshot.state.integrationRuns.first?.items.first?.workItemTitle == "Memory tools")
+        #expect(snapshot.state.integrationRuns.first?.items.first?.taskTitle == "Memory tools")
     }
 
     @Test func snapshotDecodeErrorNamesTheMissingContractPath() {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let payload = Data(#"{"revision":1,"state":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[{}]}}"#.utf8)
+        let payload = Data(#"{"revision":1,"state":{"sessions":[],"tasks":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[{}]}}"#.utf8)
 
         do {
             _ = try decoder.decode(StateSnapshotEnvelope.self, from: payload)
@@ -237,20 +237,18 @@ struct AppStateStoreTests {
         }
     }
 
-    @Test func snapshotToleratesLegacyWorkItemAcceptanceShapeAndNullCriteria() throws {
-        let payload = Data(#"{"revision":13,"state":{"sessions":[],"workItems":[{"id":"work_item:legacy","objectiveId":"objective:1","title":"Legacy collaboration item","description":"","acceptanceCriteria":null,"priority":"medium","status":"done","mainWorkspaceId":null,"mainAgentId":null,"currentSessionId":null,"executionStatus":null,"acceptanceAssessment":{"status":"passed","source":"collaboration","collaborationTaskId":"task:1","assessedAt":"2026-08-19T23:59:34.703Z"},"completionSuggestion":null,"createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:01:00Z"}],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]}}"#.utf8)
+    @Test func snapshotRejectsLegacyCorptieTaskShape() {
+        let payload = Data(#"{"revision":13,"state":{"sessions":[],"tasks":[{"id":"task:legacy","objectiveId":"objective:1","title":"Legacy collaboration item","description":"","acceptanceCriteria":null,"priority":"medium","status":"done","mainWorkspaceId":null,"mainAgentId":null,"currentSessionId":null,"executionStatus":null,"acceptanceAssessment":{"status":"passed","source":"collaboration","collaborationTaskId":"task:1","assessedAt":"2026-08-19T23:59:34.703Z"},"completionSuggestion":null,"createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:01:00Z"}],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]}}"#.utf8)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
 
-        let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: payload)
-
-        #expect(snapshot.state.workItems.count == 1)
-        #expect(snapshot.state.workItems[0].acceptanceCriteria == "")
-        #expect(snapshot.state.workItems[0].acceptanceAssessment == nil)
+        #expect(throws: DecodingError.self) {
+            _ = try decoder.decode(StateSnapshotEnvelope.self, from: payload)
+        }
     }
 
     @Test func changeSetDecodesArtifactInvalidationsWithoutEmbeddingArtifactPayloads() throws {
-        let payload = Data(#"{"snapshotRequired":false,"baseRevision":20,"revision":22,"upserts":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]},"deletes":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]},"artifactInvalidations":["artifact:one"]}"#.utf8)
+        let payload = Data(#"{"snapshotRequired":false,"baseRevision":20,"revision":22,"upserts":{"sessions":[],"tasks":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]},"deletes":{"sessions":[],"tasks":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]},"artifactInvalidations":["artifact:one"]}"#.utf8)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
 
@@ -262,13 +260,13 @@ struct AppStateStoreTests {
 
 private extension ControlPlaneStatePayload {
     static func fixture(sessions: [TaskSession] = []) -> Self {
-        .init(sessions: sessions, workItems: [], objectives: [], agents: [], skills: [], repositories: [], integrationRuns: [])
+        .init(sessions: sessions, tasks: [], objectives: [], agents: [], skills: [], repositories: [], integrationRuns: [])
     }
 }
 
 private extension StateEntityDeletes {
     static func fixture() -> Self {
-        .init(sessions: [], workItems: [], objectives: [], agents: [], skills: [], repositories: [], integrationRuns: [])
+        .init(sessions: [], tasks: [], objectives: [], agents: [], skills: [], repositories: [], integrationRuns: [])
     }
 }
 
@@ -282,7 +280,7 @@ private extension TaskSession {
     ) -> Self {
         .init(
             id: id, title: title, agent: "Codex", agentId: nil, sessionKind: .worker,
-            objectiveId: nil, workItemId: nil, status: status, progress: 0,
+            objectiveId: nil, taskId: nil, status: status, progress: 0,
             summary: "", suggestedOptions: nil, suggestedPrompt: nil, activityStatus: nil,
             updatedAt: updatedAt, accent: .cyan, archived: false,
             pinned: false, sortOrder: 0, capabilities: nil,

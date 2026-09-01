@@ -4,7 +4,7 @@ import test from "node:test";
 
 import { handleArtifactHttpRequest } from "../src/application/artifactHttpApi.mjs";
 
-test("WorkItem Artifact HTTP list preserves the scoped service projection", async () => {
+test("Task Artifact HTTP list preserves the scoped service projection", async () => {
   const artifact = {
     artifactId: "artifact:one", currentVersion: 1, approvedVersion: null, resourceVersion: 4,
     versions: [{ version: 1, approvalStatus: "draft" }],
@@ -15,24 +15,24 @@ test("WorkItem Artifact HTTP list preserves the scoped service projection", asyn
   const calls = [];
   const service = {
     store: {
-      getWorkItem: (id) => id === "work_item:one" ? { id, objective_id: "objective:one" } : null,
-      countArtifactsReferencedByWorkItem: () => 1
+      getTask: (id) => id === "task:one" ? { id, objective_id: "objective:one" } : null,
+      countArtifactsReferencedByTask: () => 1
     },
-    listForWorkItem(context, workItemId) {
-      calls.push({ context, workItemId });
+    listForTask(context, taskId) {
+      calls.push({ context, taskId });
       return [artifact];
     }
   };
-  const result = await exchange({ method: "GET", path: "/work-items/work_item%3Aone/artifacts", service });
+  const result = await exchange({ method: "GET", path: "/tasks/task%3Aone/artifacts", service });
   assert.equal(result.statusCode, 200);
   assert.deepEqual(result.body, { artifacts: [artifact], totalCount: 1, nextOffset: null });
-  assert.equal(calls[0].workItemId, "work_item:one");
+  assert.equal(calls[0].taskId, "task:one");
 });
 
-test("WorkItem private publish HTTP maps optimistic pin and idempotency fields", async () => {
+test("Task private publish HTTP maps optimistic pin and idempotency fields", async () => {
   let received = null;
   const service = {
-    store: { getWorkItem: () => ({ objective_id: "objective:one" }) },
+    store: { getTask: () => ({ objective_id: "objective:one" }) },
     async publishAndRepin(context, artifactId, input) {
       received = { context, artifactId, input };
       return { artifactId, version: { version: 2 }, reference: { pinnedVersion: 2 }, operationStatus: "completed" };
@@ -44,12 +44,12 @@ test("WorkItem private publish HTTP maps optimistic pin and idempotency fields",
     expectedPinnedHash: "a".repeat(64), idempotencyKey: "publish-v2"
   };
   const result = await exchange({
-    method: "POST", path: "/work-items/work_item%3Aone/artifacts/artifact%3Aone/publish",
+    method: "POST", path: "/tasks/task%3Aone/artifacts/artifact%3Aone/publish",
     service, body: input
   });
   assert.equal(result.statusCode, 201);
   assert.equal(received.artifactId, "artifact:one");
-  assert.equal(received.input.workItemId, "work_item:one");
+  assert.equal(received.input.taskId, "task:one");
   assert.equal(received.input.expectedResourceVersion, 4);
   assert.equal(received.input.expectedPinnedHash, input.expectedPinnedHash);
   assert.equal(received.input.idempotencyKey, "publish-v2");

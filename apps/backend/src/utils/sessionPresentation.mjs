@@ -14,7 +14,7 @@ export function mergeStoredSessionPresentation(session, stored) {
     agentId: nonEmptyText(stored.agentId) || session.agentId || null,
     sessionKind: stored.sessionKind ?? session.sessionKind ?? "legacy",
     objectiveId: nonEmptyText(stored.objectiveId) || session.objectiveId || null,
-    workItemId: nonEmptyText(stored.workItemId) || session.workItemId || null,
+    taskId: nonEmptyText(stored.taskId) || session.taskId || null,
     archived: stored.archived,
     pinned: stored.pinned,
     sortOrder: stored.sortOrder,
@@ -141,11 +141,11 @@ export function composeStoredSessionList({
   ];
   return candidates
     .filter((session) => resolveSessionArchiveState(session, {
-      workItemStatus: session?.workItemStatus
+      taskStatus: session?.taskStatus
     }).archived === archived)
     .map((session) => {
       const archiveState = resolveSessionArchiveState(session, {
-        workItemStatus: session?.workItemStatus
+        taskStatus: session?.taskStatus
       });
       return {
         ...session,

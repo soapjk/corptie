@@ -17,8 +17,8 @@ function envelope(overrides = {}) {
     recipientSessionId: "session:b",
     sourceObjectiveId: "objective:a",
     targetObjectiveId: "objective:b",
-    sourceWorkItemId: "work_item:source",
-    workItemId: "work_item:target",
+    sourceTaskId: "task:source",
+    targetTaskId: "task:target",
     payload: { body: "Implement the requested change.", evidence: [], resourceVersion: "v1" },
     timestamp: "2026-08-20T00:00:00.000Z",
     error: null,
@@ -36,8 +36,8 @@ test("protocol v3 makes Sessions the actors and keeps other entities as resource
     targetAgentId: "agent:b",
     sourceObjectiveId: "objective:a",
     targetObjectiveId: "objective:b",
-    sourceWorkItemId: "work_item:source",
-    targetWorkItemId: "work_item:target"
+    sourceTaskId: "task:source",
+    targetTaskId: "task:target"
   });
   assert.equal(value.error, null);
 });

@@ -144,12 +144,12 @@ enum ManagedWorktreeDeletionPolicy {
         }
         if worktree.mergedIntoMain != true { return .init(code: "NOT_MERGED_INTO_MAIN", reason: "This Worktree has commits that are not merged into main.") }
         if worktree.isDetached || worktree.branchName == nil { return .init(code: "WORKTREE_BRANCH_AMBIGUOUS", reason: "The branch for this Worktree cannot be determined safely.") }
-        let workItemAssociations = worktree.associations.filter { $0.workItemId != nil }
-        if !workItemAssociations.isEmpty {
-            let labels = associationLabels(workItemAssociations, title: \ManagedWorktreeAssociation.workItemTitle, id: \ManagedWorktreeAssociation.workItemId)
+        let taskAssociations = worktree.associations.filter { $0.taskId != nil }
+        if !taskAssociations.isEmpty {
+            let labels = associationLabels(taskAssociations, title: \ManagedWorktreeAssociation.taskTitle, id: \ManagedWorktreeAssociation.taskId)
             return .init(
-                code: "WORK_ITEM_ASSOCIATED",
-                reason: "This Worktree is still associated with WorkItem\(labels.count == 1 ? "" : "s") \(labels.joined(separator: ", ")). Complete or move \(labels.count == 1 ? "it" : "them") before deleting the Worktree."
+                code: "TASK_ASSOCIATED",
+                reason: "This Worktree is still associated with CorptieTask\(labels.count == 1 ? "" : "s") \(labels.joined(separator: ", ")). Complete or move \(labels.count == 1 ? "it" : "them") before deleting the Worktree."
             )
         }
         if !worktree.associations.isEmpty {
@@ -256,8 +256,8 @@ struct ManagedWorktreeAssociation: Decodable, Equatable, Sendable {
     let sessionId: String?
     let title: String?
     let active: Bool
-    let workItemId: String?
-    let workItemTitle: String?
+    let taskId: String?
+    let taskTitle: String?
 }
 
 struct WorktreeIntegrationJobEnvelope: Decodable, Sendable {
@@ -310,7 +310,7 @@ struct WorktreeConflictAutomation: Decodable, Equatable, Sendable {
     let status: String
     let scopeWorktreeIds: [String]
     let completedWorktreeIds: [String]
-    let workItemId: String?
+    let taskId: String?
     let sessionId: String?
     let sessionName: String?
     let agentId: String?
@@ -342,7 +342,7 @@ struct WorktreeConflictResolution: Decodable, Equatable, Sendable {
     let worktreeId: String?
     let conflictKey: String?
     let workspace: WorktreeConflictResolutionWorkspace
-    let workItemId: String?
+    let taskId: String?
     let sessionId: String?
     let agentId: String?
     let agentName: String?

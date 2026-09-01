@@ -1,4 +1,4 @@
-import { historicalProviderSessionUnavailable } from "./workItemSessionRepairPolicy.mjs";
+import { historicalProviderSessionUnavailable } from "./taskSessionRepairPolicy.mjs";
 
 export function recoverCollaborationDeliveriesAfterCodexRolloutRepair(options = {}) {
   const core = options.core;
@@ -14,11 +14,11 @@ export function recoverCollaborationDeliveriesAfterCodexRolloutRepair(options = 
   const recovered = [];
   for (const threadId of repairedThreadIds) {
     const providerSessionId = `codex:${threadId}`;
-    const failedWorkItems = store.listAgentWorkItemsForSession(providerSessionId, { statuses: ["failed"] });
-    for (const workItem of failedWorkItems) {
-      if (workItem.kind !== "collaboration" || !workItem.deliveryId
-          || !historicalProviderSessionUnavailable(workItem.lastError)) continue;
-      const delivery = core.getDelivery(workItem.deliveryId);
+    const failedTasks = store.listAgentTasksForSession(providerSessionId, { statuses: ["failed"] });
+    for (const task of failedTasks) {
+      if (task.kind !== "collaboration" || !task.deliveryId
+          || !historicalProviderSessionUnavailable(task.lastError)) continue;
+      const delivery = core.getDelivery(task.deliveryId);
       if (delivery?.status !== "failed"
           || !historicalProviderSessionUnavailable(delivery.lastError)) continue;
 
@@ -27,7 +27,7 @@ export function recoverCollaborationDeliveriesAfterCodexRolloutRepair(options = 
         "codex_rollout_path_relocated"
       );
       if (!retried) continue;
-      store.updateAgentWorkItem(workItem.workItemId, {
+      store.updateAgentTask(task.taskId, {
         status: "queued",
         startedAt: null,
         completedAt: null,
@@ -38,7 +38,7 @@ export function recoverCollaborationDeliveriesAfterCodexRolloutRepair(options = 
         `[collaboration-recovery] event=delivery_requeued deliveryId=${delivery.deliveryId} `
         + `providerSessionId=${providerSessionId} reason=codex_rollout_path_relocated`
       );
-      recovered.push({ delivery: retried, workItemId: workItem.workItemId, providerSessionId });
+      recovered.push({ delivery: retried, taskId: task.taskId, providerSessionId });
     }
   }
   return recovered;

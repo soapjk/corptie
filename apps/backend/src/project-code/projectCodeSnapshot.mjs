@@ -26,7 +26,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const startupFields = new Set([
-  "schemaVersion", "status", "startupOperationId", "objectiveId", "workItemId", "logicalSessionId",
+  "schemaVersion", "status", "startupOperationId", "objectiveId", "taskId", "logicalSessionId",
   "repositoryId", "worktreeId", "canonicalWorktreePath", "headIdentity", "providerBindingId",
   "bindingGeneration", "sourceCommitOid", "sourceTreeOid", "baseRef", "repositoryInventoryVersion",
   "workspaceResourceVersion", "resourceVersion", "providerContextHash", "phaseTimestamps",
@@ -103,7 +103,7 @@ export class RepositorySourceSnapshotBuilder {
       artifactRef: snapshotArtifactRef(),
       startupBindingRef: startupBindingRef(input.startupReceipt),
       objectiveId: input.startupReceipt.objectiveId,
-      workItemId: input.startupReceipt.workItemId,
+      taskId: input.startupReceipt.taskId,
       logicalSessionId: input.startupReceipt.logicalSessionId,
       repositoryId: input.startupReceipt.repositoryId,
       worktreeId: input.startupReceipt.worktreeId,
@@ -385,7 +385,7 @@ function assertStartupAuthority(receipt, binding, sessionContext) {
   if (receipt.schemaVersion !== 2 || receipt.status !== "ready" || receipt.error !== null) {
     throw contractError("STARTUP_BINDING_MISMATCH", "Startup binding is not an approved ready schemaVersion 2 receipt.");
   }
-  for (const field of ["objectiveId", "workItemId", "logicalSessionId"]) {
+  for (const field of ["objectiveId", "taskId", "logicalSessionId"]) {
     if (receipt[field] !== sessionContext?.[field]) {
       throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} does not match the authenticated Session binding.`);
     }

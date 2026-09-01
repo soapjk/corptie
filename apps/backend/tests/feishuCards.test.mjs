@@ -74,7 +74,7 @@ test("collaboration confirmation cards send explicit confirm and reject callback
       collaborationSourceObjectiveName: "结算稳定性",
       collaborationTargetObjectiveId: "objective:payments",
       collaborationTargetObjectiveName: "支付可靠性",
-      collaborationTaskTitle: "修复支付回调",
+      collaborationRequestTitle: "修复支付回调",
       presentationText: "请修复重复回调问题。",
       collaborationAcceptanceCriteria: ["重复事件只处理一次"]
     }
@@ -130,7 +130,7 @@ test("inbound collaboration messages use presentation text instead of the truste
       collaborationSourceObjectiveName: "Checkout Reliability",
       collaborationTargetObjectiveId: "objective:payments",
       collaborationTargetObjectiveName: "Payment Reliability",
-      collaborationTaskTitle: "Investigate callback",
+      collaborationRequestTitle: "Investigate callback",
       presentationText: "Only the task-scoped request is shown.",
       text: "<peer_content>internal envelope</peer_content>"
     }
@@ -147,7 +147,7 @@ test("session list is a Card 2.0 card with direct session callbacks", () => {
     botId: "bot-a",
     sessions: [
       { id: "session-current", title: "Current", status: "running", agentName: "Corptie", external: { cwd: "/tmp/current" } },
-      { id: "session-free", title: "Free", status: "idle", agentName: "研究员", workItemTitle: "调研支付链路", external: { cwd: "/tmp/free" } },
+      { id: "session-free", title: "Free", status: "idle", agentName: "研究员", taskTitle: "调研支付链路", external: { cwd: "/tmp/free" } },
       { id: "session-busy", title: "Busy", status: "idle" }
     ],
     assignments: [
@@ -171,11 +171,11 @@ test("session list is a Card 2.0 card with direct session callbacks", () => {
   assert.ok(buttons.some((button) => button.behaviors?.[0]?.value?.corptie_action === "detach_session"));
   const content = JSON.stringify(card);
   assert.match(content, /Agent：研究员/);
-  assert.match(content, /WorkItem：调研支付链路/);
+  assert.match(content, /Task：调研支付链路/);
   assert.doesNotMatch(content, /\/tmp\/current|\/tmp\/free/);
 });
 
-test("session list resolves Agent and optional WorkItem presentation before rendering", async () => {
+test("session list resolves Agent and optional Task presentation before rendering", async () => {
   const manager = new FeishuGatewayManager({
     store: {
       listFeishuAssignments: () => [],
@@ -186,12 +186,12 @@ test("session list resolves Agent and optional WorkItem presentation before rend
       title: "移动端会话",
       status: "idle",
       agentId: "agent-a",
-      workItemId: "work-item-a",
+      taskId: "task-a",
       external: { cwd: "/Users/example/private-project" }
     }],
     describeSession: (session) => ({
       agentName: session.agentId === "agent-a" ? "移动端 Agent" : null,
-      workItemTitle: session.workItemId === "work-item-a" ? "处理飞书体验" : null
+      taskTitle: session.taskId === "task-a" ? "处理飞书体验" : null
     })
   });
 
@@ -199,7 +199,7 @@ test("session list resolves Agent and optional WorkItem presentation before rend
   const content = JSON.stringify(card);
   assert.match(content, /移动端会话/);
   assert.match(content, /Agent：移动端 Agent/);
-  assert.match(content, /WorkItem：处理飞书体验/);
+  assert.match(content, /Task：处理飞书体验/);
   assert.doesNotMatch(content, /private-project|Users\/example/);
 });
 
@@ -215,19 +215,19 @@ test("the Feishu /sessions command requests and displays only unarchived session
     listSessions: async (options) => {
       listOptions.push(options);
       return [
-        { id: "session-active-a", title: "Active A", status: "idle", archived: false, sessionKind: "worker", workItemId: "work-item-active-a" },
-        { id: "session-explicitly-archived", title: "Explicitly Archived", status: "complete", archived: true, sessionKind: "worker", workItemId: "work-item-active-archived" },
-        { id: "session-completed-a", title: "Completed A", status: "complete", archived: false, sessionKind: "worker", workItemId: "work-item-completed-a" },
+        { id: "session-active-a", title: "Active A", status: "idle", archived: false, sessionKind: "worker", taskId: "task-active-a" },
+        { id: "session-explicitly-archived", title: "Explicitly Archived", status: "complete", archived: true, sessionKind: "worker", taskId: "task-active-archived" },
+        { id: "session-completed-a", title: "Completed A", status: "complete", archived: false, sessionKind: "worker", taskId: "task-completed-a" },
         { id: "session-active-b", title: "Active B", status: "running", sessionKind: "assistantChat" },
-        { id: "session-completed-legacy", title: "Completed Legacy", status: "complete", workItemId: "work-item-completed-legacy" },
-        { id: "session-active-c", title: "Active C", status: "blocked", archived: false, sessionKind: "worker", workItemId: "work-item-active-c" }
+        { id: "session-completed-legacy", title: "Completed Legacy", status: "complete", taskId: "task-completed-legacy" },
+        { id: "session-active-c", title: "Active C", status: "blocked", archived: false, sessionKind: "worker", taskId: "task-active-c" }
       ];
     },
     describeSession: (session) => {
       describedSessionIds.push(session.id);
       return {
         agentName: `Agent for ${session.title}`,
-        workItemStatus: session.id.startsWith("session-completed") ? "completed" : "in_progress"
+        taskStatus: session.id.startsWith("session-completed") ? "completed" : "in_progress"
       };
     }
   });
@@ -271,11 +271,11 @@ test("Feishu session lists preserve the existing empty state when every session 
     },
     listSessions: async () => [
       { id: "session-explicitly-archived", title: "Explicitly Archived", status: "complete", archived: true },
-      { id: "session-completed-work-item", title: "Completed WorkItem", status: "complete", archived: false, sessionKind: "worker", workItemId: "work-item-done" }
+      { id: "session-completed-task", title: "Completed Task", status: "complete", archived: false, sessionKind: "worker", taskId: "task-done" }
     ],
     describeSession: (session) => {
       describedSessionIds.push(session.id);
-      return { workItemStatus: "done" };
+      return { taskStatus: "done" };
     }
   });
 
@@ -287,9 +287,9 @@ test("Feishu session lists preserve the existing empty state when every session 
     button.behaviors?.[0]?.value?.corptie_action === "select_session"
   ), false);
   assert.match(cardContent, /暂时没有可用会话/);
-  assert.doesNotMatch(cardContent, /Explicitly Archived|Completed WorkItem/);
+  assert.doesNotMatch(cardContent, /Explicitly Archived|Completed Task/);
   assert.equal(text, "这台电脑上暂时没有可用会话。");
-  assert.deepEqual(describedSessionIds, ["session-completed-work-item", "session-completed-work-item"]);
+  assert.deepEqual(describedSessionIds, ["session-completed-task", "session-completed-task"]);
 });
 
 test("session card paginates long lists", () => {

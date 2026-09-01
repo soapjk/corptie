@@ -48,14 +48,14 @@ function ensureFixtureSessions(core) {
   const targetObjective = store.getObjective("objective:journal-fixture") ?? store.createObjective({
     id: "objective:journal-fixture", name: "Journal", contributorAgentIds: ["journal-agent"]
   });
-  for (const [agentId, providerId, logicalId, objective, workItemId, title] of [
-    ["research-agent", "provider:research-fixture", "session:research-fixture", sourceObjective, "work_item:research-fixture", "Research Session"],
-    ["journal-agent", "provider:journal-fixture", "session:journal-fixture", targetObjective, "work_item:journal-fixture", "Journal Session"]
+  for (const [agentId, providerId, logicalId, objective, taskId, title] of [
+    ["research-agent", "provider:research-fixture", "session:research-fixture", sourceObjective, "task:research-fixture", "Research Session"],
+    ["journal-agent", "provider:journal-fixture", "session:journal-fixture", targetObjective, "task:journal-fixture", "Journal Session"]
   ]) {
-    if (!store.getWorkItem(workItemId)) store.createWorkItem({ id: workItemId, objectiveId: objective.id, title, mainAgentId: agentId });
+    if (!store.getTask(taskId)) store.createTask({ id: taskId, objectiveId: objective.id, title, mainAgentId: agentId });
     if (!store.getSession(providerId)) store.createSession({
       id: providerId, title, agentId, sessionKind: "worker", objectiveId: objective.id,
-      workItemId, cwd: process.cwd()
+      taskId, cwd: process.cwd()
     });
     if (!store.getLogicalSession(logicalId)) store.createLogicalSessionRoute({
       logicalSessionId: logicalId, legacySessionId: providerId, providerThreadId: providerId,
@@ -104,7 +104,7 @@ test("Phase 1 migration creates every collaboration table", async () => {
       "services",
       "service_consumers",
       "collaboration_contexts",
-      "collaboration_tasks",
+      "collaboration_requests",
       "collaboration_request_confirmations",
       "collaboration_participants",
       "collaboration_messages",
@@ -112,7 +112,7 @@ test("Phase 1 migration creates every collaboration table", async () => {
       "collaboration_deliveries",
       "collaboration_channels",
       "collaboration_events",
-      "agent_work_items"
+      "agent_operations"
     ]) {
       assert.ok(names.includes(table), `missing ${table}`);
     }
@@ -122,16 +122,16 @@ test("Phase 1 migration creates every collaboration table", async () => {
   });
 });
 
-test("a collaboration Task is resolved from its explicit WorkItem relationship", async () => {
+test("a collaboration Task is resolved from its explicit Task relationship", async () => {
   await withFixture(async ({ core }) => {
     seedAgentsAndService(core);
     const task = newTask(core, { contextId: "context:trusted" });
 
-    const resolved = core.getTaskForWorkItem(task.workItemId);
+    const resolved = core.getTaskForTask(task.targetTaskId);
 
     assert.equal(resolved.taskId, task.taskId);
     assert.equal(resolved.contextId, "context:trusted");
-    assert.equal(core.getTaskForWorkItem("work_item:missing"), null);
+    assert.equal(core.getTaskForTask("task:missing"), null);
   });
 });
 
@@ -160,7 +160,7 @@ test("legacy collaboration with multiple candidate Sessions remains explicitly u
       core.bindSession({ agentId: "journal-agent", sessionId: `provider:journal:${suffix}` });
     }
     store.db.run(
-      "UPDATE collaboration_tasks SET protocol_version='1.0', recipient_session_id=NULL, route_status='active' WHERE task_id=?",
+      "UPDATE collaboration_requests SET protocol_version='1.0', recipient_session_id=NULL, route_status='active' WHERE task_id=?",
       [task.taskId]
     );
     store.migrateCollaborationSessionIdentities();
@@ -192,13 +192,13 @@ test("a staged request creates no task until deterministic user confirmation", a
     assert.equal(confirmation.recipientAgentName, "Journal Agent");
     assert.equal(confirmation.sourceSessionId, "provider:research-fixture");
     assert.equal(confirmation.sourceTurnId, "turn-1");
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 0);
     assert.equal(store.selectAll("SELECT * FROM collaboration_deliveries").length, 0);
 
     const resolved = core.confirmTaskConfirmation(confirmation.confirmationId);
     assert.equal(resolved.status, "confirmed");
     assert.ok(resolved.taskId);
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 1);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 1);
     assert.equal(store.selectAll("SELECT * FROM collaboration_deliveries").length, 1);
     assert.equal(core.confirmTaskConfirmation(confirmation.confirmationId).taskId, resolved.taskId);
   });
@@ -265,15 +265,15 @@ test("confirmation snapshots keep registry Agent identity separate from exact Se
     store.createAgent({ id: "agent:other", name: "Other Agent", role: "independentContributor" });
     const sourceObjective = store.createObjective({ id: "objective:source", name: "MarketCow", contributorAgentIds: [sourceAgent.agentId] });
     const targetObjective = store.createObjective({ id: "objective:target", name: "PolyMarket 实时套利", contributorAgentIds: [sourceAgent.agentId] });
-    const sourceWorkItem = store.createWorkItem({ objectiveId: sourceObjective.id, title: "Snapshot repair", mainAgentId: sourceAgent.agentId });
-    const targetWorkItem = store.createWorkItem({ objectiveId: targetObjective.id, title: "One-hour shadow", mainAgentId: sourceAgent.agentId });
+    const sourceTask = store.createTask({ objectiveId: sourceObjective.id, title: "Snapshot repair", mainAgentId: sourceAgent.agentId });
+    const targetTask = store.createTask({ objectiveId: targetObjective.id, title: "One-hour shadow", mainAgentId: sourceAgent.agentId });
     for (const route of [
-      { provider: "provider:source", logical: "logical:source", title: "修复 PolyMarket snapshot/bootstrap", objectiveId: sourceObjective.id, workItemId: sourceWorkItem.id },
-      { provider: "provider:target", logical: "logical:target", title: "金融工具开发专家_Session", objectiveId: targetObjective.id, workItemId: targetWorkItem.id }
+      { provider: "provider:source", logical: "logical:source", title: "修复 PolyMarket snapshot/bootstrap", objectiveId: sourceObjective.id, taskId: sourceTask.id },
+      { provider: "provider:target", logical: "logical:target", title: "金融工具开发专家_Session", objectiveId: targetObjective.id, taskId: targetTask.id }
     ]) {
       store.createSession({
         id: route.provider, title: route.title, agentId: sourceAgent.agentId,
-        sessionKind: "worker", objectiveId: route.objectiveId, workItemId: route.workItemId
+        sessionKind: "worker", objectiveId: route.objectiveId, taskId: route.taskId
       });
       store.createLogicalSessionRoute({
         logicalSessionId: route.logical, legacySessionId: route.provider,
@@ -292,8 +292,8 @@ test("confirmation snapshots keep registry Agent identity separate from exact Se
       recipientSessionId: "logical:target",
       sourceObjectiveId: sourceObjective.id,
       targetObjectiveId: targetObjective.id,
-      sourceWorkItemId: sourceWorkItem.id,
-      workItemId: targetWorkItem.id,
+      sourceTaskId: sourceTask.id,
+      taskId: targetTask.id,
       title: "Run shadow",
       summary: "Use the target Objective context."
     });
@@ -304,8 +304,8 @@ test("confirmation snapshots keep registry Agent identity separate from exact Se
     assert.equal(confirmation.recipientSessionTitle, "金融工具开发专家_Session");
     assert.equal(confirmation.sourceObjectiveName, "MarketCow");
     assert.equal(confirmation.targetObjectiveName, "PolyMarket 实时套利");
-    assert.equal(confirmation.initiatorWorkItemId, sourceWorkItem.id);
-    assert.equal(confirmation.recipientWorkItemId, targetWorkItem.id);
+    assert.equal(confirmation.initiatorTaskId, sourceTask.id);
+    assert.equal(confirmation.recipientTaskId, targetTask.id);
 
     assert.throws(() => core.proposeTask({
       initiatorAgentId: sourceAgent.agentId,
@@ -333,7 +333,7 @@ test("rejecting a staged request never creates a task or delivery", async () => 
     });
     const rejected = core.rejectTaskConfirmation(confirmation.confirmationId);
     assert.equal(rejected.status, "rejected");
-    assert.equal(store.selectAll("SELECT * FROM collaboration_tasks").length, 0);
+    assert.equal(store.selectAll("SELECT * FROM collaboration_requests").length, 0);
     assert.equal(store.selectAll("SELECT * FROM collaboration_deliveries").length, 0);
   });
 });
@@ -496,7 +496,7 @@ test("task creation is idempotent and atomically creates message, delivery, part
     assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM collaboration_session_participants").count, 2);
     assert.throws(
       () => store.db.run(
-        "UPDATE collaboration_tasks SET recipient_session_id=NULL WHERE task_id=?",
+        "UPDATE collaboration_requests SET recipient_session_id=NULL WHERE task_id=?",
         [first.taskId]
       ),
       /COLLABORATION_V3_DISTINCT_SESSIONS_REQUIRED/
@@ -514,7 +514,7 @@ test("task creation is idempotent and atomically creates message, delivery, part
   });
 });
 
-test("Objective-to-Objective collaboration creates and drives the target WorkItem", async () => {
+test("Objective-to-Objective collaboration creates and drives the target Task", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
     ensureFixtureSessions(core);
@@ -526,7 +526,7 @@ test("Objective-to-Objective collaboration creates and drives the target WorkIte
       recipientSessionId: "session:journal-fixture",
       sourceObjectiveId: "objective:research-fixture",
       targetObjectiveId: "objective:journal-fixture",
-      sourceWorkItemId: "work_item:research-fixture",
+      sourceTaskId: "task:research-fixture",
       type: "change_request",
       title: "Fix stale completion state",
       summary: "Update the journal completion projection.",
@@ -536,229 +536,41 @@ test("Objective-to-Objective collaboration creates and drives the target WorkIte
     assert.equal(task.protocolVersion, "3.0");
     assert.equal(task.sourceObjectiveId, "objective:research-fixture");
     assert.equal(task.targetObjectiveId, "objective:journal-fixture");
-    assert.equal(task.sourceWorkItemId, "work_item:research-fixture");
-    assert.equal(task.workItemId, "work_item:journal-fixture");
-    assert.equal(store.getWorkItem(task.workItemId).status, "todo");
-    assert.equal(store.getWorkItem(task.workItemId).main_agent_id, "journal-agent");
+    assert.equal(task.sourceTaskId, "task:research-fixture");
+    assert.equal(task.targetTaskId, "task:journal-fixture");
+    assert.equal(store.getTask(task.targetTaskId).lifecycle_state, "todo");
+    assert.equal(store.getTask(task.targetTaskId).main_agent_id, "journal-agent");
     assert.equal(task.messages[0].envelope.resources.sourceObjectiveId, "objective:research-fixture");
     assert.equal(task.messages[0].envelope.error, null);
 
     task = core.accept(task.taskId, "journal-agent", "session:journal-fixture");
     task = core.startWorking(task.taskId, "journal-agent", "session:journal-fixture");
-    assert.equal(store.getWorkItem(task.workItemId).status, "todo");
-    assert.equal(store.getWorkItem(task.workItemId).execution_status, "running");
+    assert.equal(store.getTask(task.targetTaskId).lifecycle_state, "todo");
+    assert.equal(store.getTask(task.targetTaskId).execution_status, "running");
     task = core.submitResult(task.taskId, "journal-agent", {
       actorSessionId: "session:journal-fixture",
       body: "Projection fixed.",
       artifact: { type: "patch", name: "projection patch", uri: "local-artifact://projection.patch" }
     });
-    assert.equal(store.getWorkItem(task.workItemId).status, "todo");
-    assert.equal(store.getWorkItem(task.workItemId).execution_status, "awaiting_acceptance");
+    assert.equal(store.getTask(task.targetTaskId).lifecycle_state, "todo");
+    assert.equal(store.getTask(task.targetTaskId).execution_status, "awaiting_acceptance");
     assert.equal(task.messages.at(-1).envelope.resources.sourceObjectiveId, "objective:journal-fixture");
     assert.equal(task.messages.at(-1).envelope.resources.targetObjectiveId, "objective:research-fixture");
     task = core.beginVerification(task.taskId, "research-agent", "session:research-fixture");
     task = core.complete(task.taskId, "research-agent", "Verified.", { actorSessionId: "session:research-fixture" });
-    assert.equal(store.getWorkItem(task.workItemId).status, "todo");
-    assert.equal(store.getWorkItem(task.workItemId).execution_status, "completed");
-    assert.deepEqual(JSON.parse(store.getWorkItem(task.workItemId).acceptance_assessment_json), {});
+    assert.equal(store.getTask(task.targetTaskId).lifecycle_state, "todo");
+    assert.equal(store.getTask(task.targetTaskId).execution_status, "completed");
+    assert.deepEqual(JSON.parse(store.getTask(task.targetTaskId).acceptance_assessment_json), {});
   });
 });
 
-test("bounded startup reconcile restores only evidenced legacy Task projection pollution", async () => {
-  await withFixture(async ({ core, store }) => {
-    seedAgentsAndService(core);
-    let task = newTask(core, { title: "Repair legacy projection" });
-    const workItemId = task.workItemId;
-    task = core.accept(task.taskId, "journal-agent", "session:journal-fixture");
-    task = core.startWorking(task.taskId, "journal-agent", "session:journal-fixture");
-    task = core.cancel(task.taskId, "research-agent", "Request withdrawn", "session:research-fixture");
-    assert.equal(task.status, "canceled");
-    assert.equal(store.getWorkItem(workItemId).status, "todo");
-
-    const unrelatedAssessment = {
-      status: "passed",
-      criteriaSnapshot: "- Independently verified",
-      sourceSessionId: "session:research-fixture",
-      assessedAt: "2026-07-17T00:00:30.000Z",
-      results: [{
-        criterion: "Independently verified",
-        verdict: "passed",
-        evidence: [{ summary: "Independent evidence", reference: "local://independent" }]
-      }]
-    };
-    store.updateWorkItem(workItemId, { acceptanceAssessment: unrelatedAssessment });
-
-    // Recreate the exact legacy corruption shape after disabling the new guard
-    // in this isolated fixture. The terminal Task event is durable evidence
-    // that the retired projector ran; no explicit cancellation audit exists.
-    store.db.run("DROP TRIGGER work_item_cancellation_guard");
-    store.db.run(
-      `UPDATE work_items SET status='canceled', canceled_at=NULL, cancel_reason=NULL,
-       resource_version=resource_version+1, updated_at=? WHERE id=?`,
-      [task.updatedAt, workItemId]
-    );
-    const polluted = store.getWorkItem(workItemId);
-    const preserved = {
-      currentSessionId: polluted.current_session_id,
-      mainWorkspaceId: polluted.main_workspace_id,
-      mainAgentId: polluted.main_agent_id,
-      assessment: polluted.acceptance_assessment_json
-    };
-
-    core.initialize();
-    const repaired = store.getWorkItem(workItemId);
-    assert.equal(repaired.status, "in_progress");
-    assert.equal(repaired.execution_status, "failed");
-    assert.equal(repaired.canceled_at, null);
-    assert.equal(repaired.cancel_reason, null);
-    assert.equal(repaired.acceptance_assessment_json, preserved.assessment);
-    assert.equal(repaired.current_session_id, preserved.currentSessionId);
-    assert.equal(repaired.main_workspace_id, preserved.mainWorkspaceId);
-    assert.equal(repaired.main_agent_id, preserved.mainAgentId);
-    const [audit] = store.selectAll(
-      "SELECT * FROM work_item_status_repair_audit WHERE work_item_id=?",
-      [workItemId]
-    );
-    assert.equal(audit.source_task_id, task.taskId);
-    assert.equal(audit.previous_status, "canceled");
-    assert.equal(audit.restored_status, "in_progress");
-    assert.equal(JSON.parse(audit.evidence_json).eventType, "task_canceled");
-    assert.equal(JSON.parse(audit.evidence_json).acceptanceAssessment.action, "preserved");
-
-    const versionAfterRepair = repaired.resource_version;
-    core.initialize();
-    assert.equal(store.getWorkItem(workItemId).resource_version, versionAfterRepair);
-    assert.equal(store.selectAll(
-      "SELECT * FROM work_item_status_repair_audit WHERE work_item_id=?",
-      [workItemId]
-    ).length, 1);
-
-    const followup = newTask(core, { title: "Follow-up after repair" });
-    assert.equal(followup.workItemId, workItemId);
-    assert.equal(followup.routeStatus, "active");
-  });
-});
-
-test("reconcile downgrades only an exact Worker self-report after initiator escalation", async () => {
-  await withFixture(async ({ core, store }) => {
-    seedAgentsAndService(core);
-    let task = newTask(core, { title: "Escalated Worker self-report", maxIterations: 3 });
-    const workItemId = task.workItemId;
-    const criteriaSnapshot = "- Initiator independently accepts the delivered result";
-    const workerAssessment = {
-      status: "passed",
-      criteriaSnapshot,
-      sourceSessionId: "provider:journal-fixture",
-      assessedAt: "2026-07-17T00:00:10.000Z",
-      results: [{
-        criterion: "Initiator independently accepts the delivered result",
-        verdict: "passed",
-        evidence: [{ summary: "Worker self-report", reference: "local://worker-report" }]
-      }]
-    };
-    store.updateWorkItem(workItemId, {
-      acceptanceCriteria: criteriaSnapshot,
-      acceptanceAssessment: workerAssessment
-    });
-    task = core.accept(task.taskId, "journal-agent", "session:journal-fixture");
-    for (let iteration = 1; iteration <= 3; iteration += 1) {
-      task = core.startWorking(task.taskId, "journal-agent", "session:journal-fixture");
-      task = core.submitResult(task.taskId, "journal-agent", {
-        actorSessionId: "session:journal-fixture",
-        body: `Worker result ${iteration}`,
-        artifact: {
-          artifactId: `worker-result-${iteration}`,
-          type: "patch",
-          name: `Worker result ${iteration}`,
-          uri: `local://worker-result-${iteration}`
-        }
-      });
-      task = core.beginVerification(task.taskId, "research-agent", "session:research-fixture");
-      task = core.requestRevision(
-        task.taskId,
-        "research-agent",
-        `Initiator rejected iteration ${iteration}`,
-        { actorSessionId: "session:research-fixture" }
-      );
-    }
-    assert.equal(task.status, "escalated");
-    assert.equal(task.acceptanceStatus, "rejected");
-
-    store.db.run("DROP TRIGGER work_item_cancellation_guard");
-    store.db.run(
-      `UPDATE work_items SET status='canceled', canceled_at=NULL, cancel_reason=NULL,
-       resource_version=resource_version+1, updated_at=? WHERE id=?`,
-      [task.updatedAt, workItemId]
-    );
-
-    const result = store.reconcileLegacyCollaborationWorkItemStatusPollution({
-      repairedAt: "2026-07-17T00:01:00.000Z",
-      objectiveId: "objective:journal-fixture",
-      workItemId
-    });
-    assert.equal(result.scanned, 1);
-    assert.equal(result.repaired.length, 1);
-    const repaired = store.getWorkItem(workItemId);
-    assert.equal(repaired.status, "in_progress");
-    assert.equal(repaired.execution_status, "failed");
-    const assessment = JSON.parse(repaired.acceptance_assessment_json);
-    assert.equal(assessment.status, "not_proven");
-    assert.equal(assessment.sourceSessionId, workerAssessment.sourceSessionId);
-    assert.deepEqual(assessment.results, workerAssessment.results);
-    assert.equal(assessment.invalidation.code, "COLLABORATION_INITIATOR_REVIEW_NOT_ACCEPTED");
-    assert.equal(assessment.invalidation.taskId, task.taskId);
-    assert.equal(assessment.invalidation.recipientSessionId, "session:journal-fixture");
-    assert.equal(assessment.invalidation.initiatorSessionId, "session:research-fixture");
-    const [audit] = store.selectAll(
-      "SELECT * FROM work_item_status_repair_audit WHERE work_item_id=?",
-      [workItemId]
-    );
-    const evidence = JSON.parse(audit.evidence_json);
-    assert.equal(evidence.acceptanceAssessment.action, "downgraded_to_not_proven");
-    assert.equal(evidence.acceptanceAssessment.sourceMatchedRecipient, true);
-    assert.match(evidence.acceptanceAssessment.priorSha256, /^[a-f0-9]{64}$/);
-
-    const versionAfterRepair = repaired.resource_version;
-    assert.deepEqual(store.reconcileLegacyCollaborationWorkItemStatusPollution(), {
-      scanned: 0,
-      repaired: []
-    });
-    assert.equal(store.getWorkItem(workItemId).resource_version, versionAfterRepair);
-
-    const followup = newTask(core, { title: "Continue after escalated review" });
-    assert.equal(followup.type, "change_request");
-    assert.equal(followup.workItemId, workItemId);
-    assert.equal(followup.recipientSessionId, "session:journal-fixture");
-    assert.equal(followup.routeStatus, "active");
-  });
-});
-
-test("reconcile fails closed without proof of the previous WorkItem review state", async () => {
-  await withFixture(async ({ core, store }) => {
-    seedAgentsAndService(core);
-    const task = newTask(core, { title: "Ambiguous rejection" });
-    core.reject(task.taskId, "journal-agent", "Not accepted", "session:journal-fixture");
-    store.db.run("DROP TRIGGER work_item_cancellation_guard");
-    store.db.run(
-      `UPDATE work_items SET status='canceled', canceled_at=NULL, cancel_reason=NULL,
-       resource_version=resource_version+1 WHERE id=?`,
-      [task.workItemId]
-    );
-
-    const result = store.reconcileLegacyCollaborationWorkItemStatusPollution();
-    assert.deepEqual(result, { scanned: 0, repaired: [] });
-    assert.equal(store.getWorkItem(task.workItemId).status, "canceled");
-    assert.equal(store.selectAll("SELECT * FROM work_item_status_repair_audit").length, 0);
-  });
-});
-
-test("task input rejects unknown fields and mismatched Objective or WorkItem references", async () => {
+test("task input rejects unknown fields and mismatched Objective or Task references", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
     ensureFixtureSessions(core);
     store.createObjective({ id: "objective:a", name: "A", contributorAgentIds: ["research-agent"] });
     store.createObjective({ id: "objective:b", name: "B", contributorAgentIds: ["journal-agent"] });
-    store.createWorkItem({ id: "work_item:a", objectiveId: "objective:a", title: "A", mainAgentId: "research-agent" });
+    store.createTask({ id: "task:a", objectiveId: "objective:a", title: "A", mainAgentId: "research-agent" });
     assert.throws(
       () => core.createTask({
         initiatorAgentId: "research-agent", recipientAgentId: "journal-agent",
@@ -772,22 +584,22 @@ test("task input rejects unknown fields and mismatched Objective or WorkItem ref
         initiatorAgentId: "research-agent", recipientAgentId: "journal-agent",
         initiatorSessionId: "session:research-fixture", recipientSessionId: "session:journal-fixture",
         sourceObjectiveId: "objective:research-fixture", targetObjectiveId: "objective:journal-fixture",
-        workItemId: "work_item:a", title: "Mismatch", summary: "Mismatch"
+        targetTaskId: "task:a", title: "Mismatch", summary: "Mismatch"
       }),
-      (error) => error.code === "WORK_ITEM_OBJECTIVE_MISMATCH"
+      (error) => error.code === "TASK_OBJECTIVE_MISMATCH"
     );
   });
 });
 
-test("legacy point-to-point tasks migrate to compatibility Objectives and a target WorkItem", async () => {
+test("legacy point-to-point tasks migrate to compatibility Objectives and a target Task", async () => {
   await withFixture(async ({ core, store }) => {
     seedAgentsAndService(core);
-    store.db.run("DELETE FROM data_migrations WHERE migration_id = 'collaboration-objective-work-item-v2'");
+    store.db.run("DELETE FROM data_migrations WHERE migration_id = 'collaboration-objective-task-v2'");
     store.db.run(
       "INSERT INTO collaboration_contexts (context_id, title, metadata_json, created_at, updated_at) VALUES ('legacy-context', 'Legacy', '{}', '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')"
     );
     store.db.run(
-      `INSERT INTO collaboration_tasks (
+      `INSERT INTO collaboration_requests (
          task_id, context_id, protocol_version, initiator_agent_id, recipient_agent_id,
          type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
          created_at, updated_at
@@ -808,8 +620,8 @@ test("legacy point-to-point tasks migrate to compatibility Objectives and a targ
     assert.equal(task.protocolVersion, "2.0");
     assert.match(task.sourceObjectiveId, /^objective:collaboration:/);
     assert.match(task.targetObjectiveId, /^objective:collaboration:/);
-    assert.equal(task.workItemId, "work_item:collaboration:legacy-task");
-    assert.equal(store.getWorkItem(task.workItemId).status, "todo");
+    assert.equal(task.targetTaskId, "task:collaboration:legacy-task");
+    assert.equal(store.getTask(task.targetTaskId).lifecycle_state, "todo");
     assert.equal(task.messages[0].envelope, null);
   });
 });
@@ -829,7 +641,7 @@ test("deferred collaboration migration runs after the Store becomes ready", asyn
       "INSERT INTO collaboration_contexts (context_id, title, metadata_json, created_at, updated_at) VALUES ('deferred-context', 'Deferred', '{}', '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')"
     );
     store.db.run(
-      `INSERT INTO collaboration_tasks (
+      `INSERT INTO collaboration_requests (
          task_id, context_id, protocol_version, initiator_agent_id, recipient_agent_id,
          type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
          created_at, updated_at
@@ -848,7 +660,7 @@ test("deferred collaboration migration runs after the Store becomes ready", asyn
     const result = core.initialize();
     assert.deepEqual(result, {
       status: "applied",
-      migrationId: "collaboration-objective-work-item-v2",
+      migrationId: "collaboration-objective-task-v2",
       migratedTaskCount: 1
     });
     const task = core.getTask("deferred-task");
@@ -883,7 +695,7 @@ test("legacy collaboration migration preserves platform Assistant boundaries wit
       "INSERT INTO collaboration_contexts (context_id, title, metadata_json, created_at, updated_at) VALUES ('assistant-context', 'Assistant', '{}', '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z')"
     );
     store.db.run(
-      `INSERT INTO collaboration_tasks (
+      `INSERT INTO collaboration_requests (
          task_id, context_id, protocol_version, initiator_agent_id, recipient_agent_id,
          type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
          created_at, updated_at
@@ -903,10 +715,10 @@ test("legacy collaboration migration preserves platform Assistant boundaries wit
     assert.equal(result.status, "applied");
     const task = core.getTask("assistant-task");
     const compatibilityObjective = store.getObjective(task.targetObjectiveId);
-    const workItem = store.getWorkItem(task.workItemId);
+    const productTask = store.getTask(task.targetTaskId);
     assert.equal(task.protocolVersion, "2.0");
     assert.deepEqual(compatibilityObjective.contributorAgentIds, []);
-    assert.equal(workItem.main_agent_id, null);
+    assert.equal(productTask.main_agent_id, null);
     assert.equal(task.messages[0].envelope, null);
   } finally {
     await store.close();
@@ -983,8 +795,8 @@ test("a third failed verification escalates instead of starting an unbounded fou
     }
 
     assert.equal(task.status, "escalated");
-    assert.notEqual(store.getWorkItem(task.workItemId).status, "canceled");
-    assert.equal(store.getWorkItem(task.workItemId).execution_status, "failed");
+    assert.notEqual(store.getTask(task.targetTaskId).lifecycle_state, "canceled");
+    assert.equal(store.getTask(task.targetTaskId).execution_status, "failed");
     assert.equal(task.iteration, 3);
     assert.equal(task.events.at(-1).type, "iteration_limit_reached");
     assert.throws(
@@ -1018,8 +830,8 @@ test("a question answer completes the task and initiators cannot reuse it for a 
 
     task = core.reply(task.taskId, "journal-agent", "ready", { actorSessionId: "session:journal-fixture" });
     assert.equal(task.status, "completed");
-    assert.equal(store.getWorkItem(task.workItemId).status, "todo");
-    assert.equal(store.getWorkItem(task.workItemId).execution_status, "completed");
+    assert.equal(store.getTask(task.targetTaskId).lifecycle_state, "todo");
+    assert.equal(store.getTask(task.targetTaskId).execution_status, "completed");
     assert.ok(task.completedAt);
     assert.equal(task.messages.at(-1).body, "ready");
     assert.equal(task.events.at(-1).type, "question_answered");

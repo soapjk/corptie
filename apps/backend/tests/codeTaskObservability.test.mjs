@@ -370,6 +370,7 @@ test("raw observations stay in restricted external dataRoot with quota, redactio
     assert.equal(f.service.recordObservation({ observation: item, authority: f.authority }).state, "duplicate");
     assert.throws(() => f.service.recordObservation({ observation: { ...item, producerEventId: "changed" }, authority: f.authority }),
       { code: "OBSERVATION_ID_CONFLICT" });
+    f.service.flush();
     const schemas = f.store.selectAll("SELECT sql FROM sqlite_master WHERE type='table' AND name LIKE 'observation_%'").map((row) => row.sql).join("\n");
     assert.equal(/raw_trace_json|stdout|stderr|prompt/i.test(schemas), false);
     const manifest = JSON.parse(f.store.selectOne("SELECT raw_manifest_json FROM observation_turn_executions").raw_manifest_json);
@@ -513,15 +514,15 @@ async function fixture(options = {}) {
     rawTtlDays: options.rawTtlDays, beforeLegacyCutover: options.beforeLegacyCutover });
   service.initialize();
   return { directory, dataRoot, store, service, authority: auth, identity: auth.identity, turnExecutionId,
-    close: async () => { await store.close(); await rm(directory, { recursive: true, force: true }); } };
+    close: async () => { service.flush(); await store.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 
 function authority({ turnExecutionId = "turn_execution:one", runId, source = false } = {}) {
-  const identity = { objectiveId: "objective:one", workItemId: "work_item:one", logicalSessionId: "session:one",
+  const identity = { objectiveId: "objective:one", taskId: "task:one", logicalSessionId: "session:one",
     providerBindingId: "binding:one", bindingGeneration: 2, repositoryId: "repository:one", worktreeId: "worktree:one", turnId: "turn:one" };
   const value = { identity,
     startupBindingReceipt: { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", receiptHash: "a".repeat(64),
-      objectiveId: identity.objectiveId, workItemId: identity.workItemId, logicalSessionId: identity.logicalSessionId,
+      objectiveId: identity.objectiveId, taskId: identity.taskId, logicalSessionId: identity.logicalSessionId,
       providerBindingId: identity.providerBindingId,
       bindingGeneration: identity.bindingGeneration, repositoryId: identity.repositoryId, worktreeId: identity.worktreeId,
       sourceCommitOid: "commit:one", sourceTreeOid: "tree:one" },

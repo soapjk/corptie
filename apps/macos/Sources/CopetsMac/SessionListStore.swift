@@ -4,8 +4,8 @@ import Foundation
 enum SessionListTitlePolicy {
     static let maximumVisualWidth = 32
 
-    static func displayTitle(_ title: String, isWorkItemSession: Bool) -> String {
-        guard isWorkItemSession else { return title }
+    static func displayTitle(_ title: String, isCorptieTaskSession: Bool) -> String {
+        guard isCorptieTaskSession else { return title }
         let normalized = title
             .split(whereSeparator: \Character.isWhitespace)
             .joined(separator: " ")
@@ -67,8 +67,8 @@ final class SessionRowModel: ObservableObject, Identifiable {
     private static func makeListTitle(for session: TaskSession) -> String {
         SessionListTitlePolicy.displayTitle(
             session.title,
-            isWorkItemSession: session.resolvedSessionKind == .worker
-                && session.workItemId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            isCorptieTaskSession: session.resolvedSessionKind == .worker
+                && session.taskId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         )
     }
 }

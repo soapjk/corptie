@@ -112,7 +112,7 @@ export class SessionApplicationService {
         : {}),
       sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
       objectiveId: context.objectiveId ?? null,
-      workItemId: context.workItemId ?? null
+      taskId: context.taskId ?? null
     };
     try {
       const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
@@ -158,7 +158,7 @@ export class SessionApplicationService {
       logicalSessionId: reference.logicalSessionId ?? null,
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
-      workItemId: storedSession?.workItemId ?? context.workItemId ?? null,
+      taskId: storedSession?.taskId ?? context.taskId ?? null,
       ...(reference.bindingId ?? reference.providerBindingId
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {})
@@ -192,7 +192,7 @@ export class SessionApplicationService {
       purpose: "session",
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
-      workItemId: storedSession?.workItemId ?? context.workItemId ?? null,
+      taskId: storedSession?.taskId ?? context.taskId ?? null,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId ?? null,
       ...(reference.bindingId ?? reference.providerBindingId

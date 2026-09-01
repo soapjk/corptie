@@ -64,8 +64,8 @@ import { SessionWorkspaceOperationService } from "./application/sessionWorkspace
 import {
   isConflictResolutionWorkspace
 } from "./runtime/conflictResolutionWorkspacePermissions.mjs";
-import { WorkItemExecutionOrchestrator } from "./application/workItemExecutionOrchestrator.mjs";
-import { WorkItemWorkspaceService } from "./application/workItemWorkspaceService.mjs";
+import { TaskExecutionOrchestrator } from "./application/taskExecutionOrchestrator.mjs";
+import { TaskWorkspaceService } from "./application/taskWorkspaceService.mjs";
 import { WorkSessionStartupCoordinator } from "./application/workSessionStartupCoordinator.mjs";
 import { WorktreeStartupPreparer } from "./application/worktreeStartupPreparer.mjs";
 import {
@@ -73,10 +73,10 @@ import {
   persistedProviderWorkspaceProof
 } from "./agent-provider/providerWorkspaceBindingService.mjs";
 import {
-  evaluateWorkItemSessionRepair,
+  evaluateTaskSessionRepair,
   historicalProviderSessionUnavailable
-} from "./application/workItemSessionRepairPolicy.mjs";
-import { WorkItemDeletionService } from "./application/workItemDeletionService.mjs";
+} from "./application/taskSessionRepairPolicy.mjs";
+import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
@@ -118,15 +118,15 @@ import { collaborationMessagePresentationRoute } from "./collaboration/collabora
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
 import { ObjectiveApplicationService } from "./application/objectiveApplicationService.mjs";
 import {
-  presentWorkItemAcceptance,
-  workItemExecutionPatch,
-  workItemExecutionPrompt
-} from "./application/workItemAcceptance.mjs";
+  presentTaskAcceptance,
+  taskExecutionPatch,
+  taskExecutionPrompt
+} from "./application/taskAcceptance.mjs";
 import {
-  callWorkItemAcceptanceDynamicTool,
-  workItemAcceptanceDynamicTools
-} from "./application/workItemAcceptanceDynamicTools.mjs";
-import { WorkItemCompletionService } from "./application/workItemCompletionService.mjs";
+  callTaskAcceptanceDynamicTool,
+  taskAcceptanceDynamicTools
+} from "./application/taskAcceptanceDynamicTools.mjs";
+import { TaskCompletionService } from "./application/taskCompletionService.mjs";
 import { SessionRuntimeReleaseService } from "./application/sessionRuntimeReleaseService.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
@@ -195,7 +195,7 @@ import { defaultWorkspacePath, sessionWorkspacePath } from "./utils/workspacePat
 import {
   assertSessionTitleAvailable,
   defaultSessionTitleForAgent,
-  defaultSessionTitleForWorkItem,
+  defaultSessionTitleForTask,
   defaultSessionTitleForWorkspace,
   deduplicateSessionTitles,
   normalizeSessionTitle,
@@ -318,7 +318,7 @@ let timelineChangePublisher = null;
 let mockProgressTimer = null;
 let stateSyncService = null;
 const sessionStateDiagnostics = new SessionStateDiagnostics();
-let workItemExecutionOrchestrator = null;
+let taskExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
 let projectCodeApplicationService = null;
 let projectCodeStartupReceipts = null;
@@ -331,7 +331,7 @@ const dshLiveTurns = new Map();
 const dshLiveSequenceBySession = new Map();
 const codexChoiceOptionsCache = new Map();
 const pendingCodexChoiceParses = new Set();
-const workItemMemoryExtractions = new Map();
+const taskMemoryExtractions = new Map();
 const startupMaintenanceTasks = new Set();
 const codexChoiceParseRetryAfter = new Map();
 const reconcilingWorkspacePaths = new Set();
@@ -368,15 +368,15 @@ const objectiveService = new ObjectiveApplicationService({
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
 let sessionRuntimeReleaseService = null;
-const workItemCompletionService = new WorkItemCompletionService({
+const taskCompletionService = new TaskCompletionService({
   store,
-  onCompleted: (workItem, operation) => {
-    emitEvent("WorkItemChanged", {
+  onCompleted: (task, operation) => {
+    emitEvent("TaskChanged", {
       action: "user-intent-completion",
-      entity: workItem,
+      entity: task,
       completionOperationId: operation.operationId
     });
-    sessionRuntimeReleaseService?.releaseCompletedWorkItemSessions(workItem.id);
+    sessionRuntimeReleaseService?.releaseCompletedTaskSessions(task.id);
   }
 });
 const artifactService = new ArtifactService({ store });
@@ -393,15 +393,15 @@ const objectiveChatOperationService = new ObjectiveChatOperationService({
   store,
   objectiveService,
   contextService: objectiveChatContextService,
-  startWorkItem: ({ workItem, agent, title }) => launchAndBindWorkItemSession({ workItem, agent, title })
+  startTask: ({ task, agent, title }) => launchAndBindTaskSession({ task, agent, title })
 });
 const sessionCollaborationService = new SessionCollaborationService({
   store,
   objectiveService,
   artifactService,
   collaborationCore,
-  startWorkItem: ({ workItem, agent, title, idempotencyKey, source }) => launchAndBindWorkItemSession({
-    workItem, agent, title, idempotencyKey, source
+  startTask: ({ task, agent, title, idempotencyKey, source }) => launchAndBindTaskSession({
+    task, agent, title, idempotencyKey, source
   })
 });
 const sessionChannelService = new SessionChannelService({ store, collaborationCore });
@@ -552,11 +552,11 @@ const hostToolCatalog = new HostToolCatalog([
     tools: sessionCollaborationV2Enabled
       ? collaborationDynamicTools
       : collaborationDynamicTools.filter((tool) => !tool.name.startsWith("corptie_sessions_")
-        && !tool.name.startsWith("corptie_collaboration_work_items_")
+        && !tool.name.startsWith("corptie_collaboration_tasks_")
         && tool.name !== "corptie_collaboration_capabilities"),
     authorize: ({ tool, metadata }) => {
       if (tool === "corptie_collaboration_channel_open"
-        || tool.startsWith("corptie_collaboration_work_items_")) {
+        || tool.startsWith("corptie_collaboration_tasks_")) {
         return ["objectiveChat", "worker"].includes(metadata?.sessionKind) && Boolean(metadata?.objectiveId);
       }
       if (tool === "corptie_collaboration_capabilities" || tool.startsWith("corptie_sessions_")) {
@@ -571,7 +571,7 @@ const hostToolCatalog = new HostToolCatalog([
         sessionScope: {
           sessionId: input.metadata?.sessionId,
           objectiveId: input.metadata?.objectiveId,
-          workItemId: input.metadata?.workItemId
+          taskId: input.metadata?.taskId
         }
       });
       return callCollaborationDynamicTool(client, input.tool, input.arguments);
@@ -599,11 +599,12 @@ const hostToolCatalog = new HostToolCatalog([
     }
   },
   {
-    id: "work-item-acceptance",
-    tools: workItemAcceptanceDynamicTools,
-    execute: (input) => callWorkItemAcceptanceDynamicTool({
-      reportAcceptance: reportWorkItemAcceptanceForAgent,
-      completeWorkItem: completeWorkItemForSession
+    id: "task-acceptance",
+    tools: taskAcceptanceDynamicTools,
+    execute: (input) => callTaskAcceptanceDynamicTool({
+      reportAcceptance: reportTaskAcceptanceForAgent,
+      completeTask: completeTaskForSession,
+      reviseTask: reviseTaskForSession
     }, input)
   },
   {
@@ -653,20 +654,20 @@ const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
     ?? ensureCollaborationAgentForSession(
       store.getSession(sessionId)
     ),
-  enqueueWork: (workItem) => {
-    const queued = store.enqueueAgentWorkItem(workItem);
-    registerRuntimeQueuedWork(queued.sessionId, queued.workItemId);
+  enqueueWork: (task) => {
+    const queued = store.enqueueAgentTask(task);
+    registerRuntimeQueuedWork(queued.sessionId, queued.taskId);
     return queued;
   },
   scheduleDrain: (sessionId) => scheduleAgentWorkDrain(sessionId),
   onEvent: (type, payload) => {
-    const sessionId = payload.logicalSession?.legacySessionId ?? payload.workItem?.sessionId ?? null;
+    const sessionId = payload.logicalSession?.legacySessionId ?? payload.task?.sessionId ?? null;
     emitEvent(type, payload, {
       sessionId,
       source: { type: "workspace-continuation" }
     });
     const transitionId = payload.transitionId ?? payload.transition?.transitionId ?? null;
-    if (transitionId) settleWorkItemForWorkspaceContinuation(transitionId);
+    if (transitionId) settleTaskForWorkspaceContinuation(transitionId);
   }
 });
 const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
@@ -891,7 +892,7 @@ const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
 const gitWorkspaces = new GitWorkspaceManager({
   store,
   transitions: workspaceTransitionManager,
-  workItemWorktreesRoot: ({ repositoryId }) => resolve(
+  taskWorktreesRoot: ({ repositoryId }) => resolve(
     store.layout.worktreesDirectory,
     repositoryId.split(":").at(-1)
   ),
@@ -1051,7 +1052,7 @@ async function applyOpenClackyToolPlanAtTurnBoundary(binding, plan, request) {
     sessionId: binding.sessionId,
     sessionKind: binding.sessionKind,
     objectiveId: binding.objectiveId,
-    workItemId: binding.workItemId
+    taskId: binding.taskId
   };
   const providerAttachment = openClackyToolHostAttachment({
     actorId: binding.agentId,
@@ -1125,7 +1126,7 @@ const sessionApplicationService = new SessionApplicationService({
       providerBindingId: recoveredReference.bindingId,
       sessionKind: recoveredSession?.sessionKind ?? "legacy",
       objectiveId: recoveredSession?.objectiveId ?? null,
-      workItemId: recoveredSession?.workItemId ?? null,
+      taskId: recoveredSession?.taskId ?? null,
       desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
     });
     if (recoveryKind === "message") {
@@ -1142,8 +1143,8 @@ const sessionApplicationService = new SessionApplicationService({
       baseContext = await sessionContextReferenceService.resolve(reference.sessionId);
     } else if (session?.sessionKind === "worker") {
       const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
-      const workItem = store.getWorkItem(ownership.workItemId);
-      const objective = workItem?.objective_id ? store.getObjective(workItem.objective_id) : null;
+      const task = store.getTask(ownership.taskId);
+      const objective = task?.objective_id ? store.getObjective(task.objective_id) : null;
       const startupReceiptRow = store.selectOne(
         `SELECT receipt.receipt_json FROM work_session_startup_receipts receipt
          JOIN work_session_startup_operations operation
@@ -1153,7 +1154,7 @@ const sessionApplicationService = new SessionApplicationService({
         [reference.logicalSessionId]
       );
       baseContext = buildWorkSessionContext({
-        session, workItem, objective,
+        session, task, objective,
         artifactIndex: artifactService.indexForSession(session),
         startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null
       });
@@ -1164,7 +1165,7 @@ const sessionApplicationService = new SessionApplicationService({
         sessionId: session.id,
         agentId: session.agentId,
         objectiveId: session.objectiveId ?? null,
-        workItemId: session.workItemId ?? null
+        taskId: session.taskId ?? null
       }, { deepRecall: messageContext.deepRecall === true });
       if (recall.memories.length > 0) {
         const lines = recall.memories.map((memory) => `- [${memory.kind}] ${memory.content}`);
@@ -1183,7 +1184,7 @@ const sessionApplicationService = new SessionApplicationService({
       const event = store.getSessionEvent(`user-message:${sourceMessageId}`);
       if (event?.type === "SessionUserMessageCreated" && reference.logicalSessionId) {
         directUserIntentContext = {
-          prompt: `<corptie_direct_user_message_evidence logical_session_id="${reference.logicalSessionId}" event_id="${event.eventId}" sequence="${event.sequence}" turn_id="${event.payload?.deliveryId ?? ""}">\nThis evidence identifies only this direct user turn. Use it with corptie_work_item_complete only when the user explicitly asks to complete one exact WorkItem.\n</corptie_direct_user_message_evidence>`
+          prompt: `<corptie_direct_user_message_evidence logical_session_id="${reference.logicalSessionId}" event_id="${event.eventId}" sequence="${event.sequence}" turn_id="${event.payload?.deliveryId ?? ""}">\nThis evidence identifies only this direct user turn. Use it with corptie_task_complete only when the user explicitly asks to complete one exact Task.\n</corptie_direct_user_message_evidence>`
         };
       }
     }
@@ -1202,7 +1203,7 @@ const sessionApplicationService = new SessionApplicationService({
       agentId: input.toolHost?.actorId ?? context.actorId ?? null,
       sessionKind: input.sessionKind,
       objectiveId: context.objectiveId ?? null,
-      workItemId: context.workItemId ?? null
+      taskId: context.taskId ?? null
     });
     ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
     const logical = await ensureLogicalRouteForProviderSession(session, providerId, {
@@ -1269,7 +1270,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
         objectiveId: attempt.objectiveId,
-        workItemId: attempt.workItemId,
+        taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
       const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
@@ -1336,7 +1337,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
         objectiveId: attempt.objectiveId,
-        workItemId: attempt.workItemId,
+        taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
       const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
@@ -1382,7 +1383,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
         objectiveId: attempt.objectiveId,
-        workItemId: attempt.workItemId,
+        taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       });
       let confirmed = null;
@@ -1468,7 +1469,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
         objectiveId: attempt.objectiveId,
-        workItemId: attempt.workItemId,
+        taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
       const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
@@ -1556,7 +1557,7 @@ const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
       providerBindingId: logical.activeBinding.bindingId,
       sessionKind: recoveredSession?.sessionKind ?? "legacy",
       objectiveId: recoveredSession?.objectiveId ?? null,
-      workItemId: recoveredSession?.workItemId ?? null,
+      taskId: recoveredSession?.taskId ?? null,
       desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
     });
     return attempt;
@@ -1573,17 +1574,17 @@ platformOperationService = new PlatformOperationService({
   confirmationService: platformConfirmationService,
   sessionRuntimeReleaseService,
   listSessions: (input) => listGatewaySessions(input),
-  createSession: async ({ agentId, providerId, workItemId, title, prompt }) => {
+  createSession: async ({ agentId, providerId, taskId, title, prompt }) => {
     const agent = store.getAgent(agentId);
     if (!agent) {
       const error = new Error(`Agent not found: ${agentId}`);
       error.code = "AGENT_NOT_FOUND";
       throw error;
     }
-    if (workItemId) {
-      const workItem = objectiveService.getWorkItem(workItemId);
-      return launchAndBindWorkItemSession({
-        agent, workItem, providerId, title, initialPrompt: prompt, source: "platform-operation"
+    if (taskId) {
+      const task = objectiveService.getTask(taskId);
+      return launchAndBindTaskSession({
+        agent, task, providerId, title, initialPrompt: prompt, source: "platform-operation"
       });
     }
     return launchAgentSession({ agent, providerId, title, prompt });
@@ -1707,7 +1708,7 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
       logicalSessionId: logical.logicalSessionId,
       sessionKind: session?.sessionKind ?? "legacy",
       objectiveId: session?.objectiveId ?? null,
-      workItemId: session?.workItemId ?? null,
+      taskId: session?.taskId ?? null,
       desiredToolDomains
     };
     const preparedToolHost = await toolHostService.prepareSession(providerId, toolHostContext);
@@ -1905,49 +1906,49 @@ const projectApplicationService = new ProjectApplicationService({
   performDevelopmentServiceAction: performProjectDevelopmentServiceAction,
   performWorkspaceAction: performProjectWorkspaceAction
 });
-const workItemWorkspaceService = new WorkItemWorkspaceService({
+const taskWorkspaceService = new TaskWorkspaceService({
   store,
   requireProject: (repositoryId) => projectApplicationService.requireProject(repositoryId),
   inspectProject: (mainPath, repositoryId) => gitWorkspaces.projectStatusForPath(mainPath, repositoryId),
-  ensureWorktree: (input) => gitWorkspaces.ensureWorkItemWorktreeForProject(input),
+  ensureWorktree: (input) => gitWorkspaces.ensureTaskWorktreeForProject(input),
   restoreMissingWorktree: (input) => gitWorkspaces.restoreMissingWorktree(input)
 });
-const workItemDeletionService = new WorkItemDeletionService({
+const taskDeletionService = new TaskDeletionService({
   store,
-  inspectWorktree: (workItemId) => inspectWorkItemWorktree(workItemId),
-  removeWorktree: (input) => removeWorkItemDeletionWorktree(input),
+  inspectWorktree: (taskId) => inspectTaskWorktree(taskId),
+  removeWorktree: (input) => removeTaskDeletionWorktree(input),
   deleteSession: (sessionId, context) => sessionApplicationService.deleteSession(sessionId, context),
   authorize: ({ actor }) => actor?.type === "user" && actor.id === "user:local-macos",
   onChanged: (type, payload) => emitEvent(type, payload)
 });
-workItemExecutionOrchestrator = new WorkItemExecutionOrchestrator({
-  getWorkItem: (workItemId) => store.getWorkItem(workItemId),
+taskExecutionOrchestrator = new TaskExecutionOrchestrator({
+  getTask: (taskId) => store.getTask(taskId),
   getSession: (sessionId) => store.getSession(sessionId),
   getSessionRoute: (sessionId) => store.getLogicalSessionByLegacySessionId(sessionId),
-  ensureWorkspace: ensureWorkItemWorkspace,
+  ensureWorkspace: ensureTaskWorkspace,
   switchWorkspace: (sessionId, worktreeId) => sessionWorktrees.switchWorkspace(
     sessionId,
     worktreeId,
-    "Resume the bound WorkItem in its restored Worktree."
+    "Resume the bound Task in its restored Worktree."
   ),
   restoreSessionRoute: (sessionId) => {
     const logical = store.getLogicalSessionByLegacySessionId(sessionId);
     if (!logical) {
       const error = new Error("The bound Session has no logical Workspace route.");
-      error.code = "WORK_ITEM_SESSION_ROUTE_REQUIRED";
+      error.code = "TASK_SESSION_ROUTE_REQUIRED";
       throw error;
     }
     return store.restoreLogicalSessionWorkspace(logical.logicalSessionId);
   },
   resumeSession: (sessionId) => sessionApplicationService.resumeSession(sessionId, {
-    source: "work-item-restore"
+    source: "task-restore"
   }),
-  updateWorkItem: (workItemId, patch) => store.updateWorkItem(workItemId, patch),
+  updateTask: (taskId, patch) => store.updateTask(taskId, patch),
   onChanged: (type, payload) => emitEvent(type, payload)
 });
 const startupWorktreePreparer = new WorktreeStartupPreparer({
   store,
-  ensureWorkspace: ensureWorkItemWorkspace
+  ensureWorkspace: ensureTaskWorkspace
 });
 const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
   registry: agentProviderRegistry
@@ -1955,8 +1956,8 @@ const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
 workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
   store,
   validateStart: async (operation) => {
-    const workItem = objectiveService.getWorkItem(operation.workItemId);
-    const objective = objectiveService.getObjective(workItem.objective_id);
+    const task = objectiveService.getTask(operation.taskId);
+    const objective = objectiveService.getObjective(task.objective_id);
     const agent = store.getAgent(operation.requestedAgentId);
     if (!agent) {
       const error = new Error(`Agent not found: ${operation.requestedAgentId}`);
@@ -1971,8 +1972,8 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
     }
     // currentSessionId is a recency pointer, not an exclusivity lock. Objective
     // Chat and Worker Sessions may coexist for the same reusable Agent.
-    store.assertWorkItemAssociations({
-      mainWorkspaceId: workItem.main_workspace_id,
+    store.assertTaskAssociations({
+      mainWorkspaceId: task.main_workspace_id,
       mainAgentId: agent.agentId
     }, objective);
     const providerId = resolveSessionProviderId(operation.providerId);
@@ -1990,13 +1991,13 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
       error.retryable = false;
       throw error;
     }
-    return { workItem, objective, agent, providerId };
+    return { task, objective, agent, providerId };
   },
   prepareWorktree: (input) => startupWorktreePreparer.prepare(input),
   inspectWorktree: (input) => startupWorktreePreparer.inspect(input),
-  createSession: ({ workItem, agent, providerId, title, workspace, source }) => launchWorkItemSession({
+  createSession: ({ task, agent, providerId, title, workspace, source }) => launchTaskSession({
     agent,
-    workItem,
+    task,
     providerId,
     title,
     workingDirectory: workspace.canonicalWorktreePath,
@@ -2009,22 +2010,22 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
   }),
   bindProviderWorkspace: (input) => providerWorkspaceBindingService.bindWorkspace(input),
   inspectProviderBinding: (input) => providerWorkspaceBindingService.inspectBinding(input),
-  activateSession: async ({ session, workItem, agent, initialPrompt }) => {
+  activateSession: async ({ session, task, agent, initialPrompt }) => {
     try {
       await sessionApplicationService.resumeSession(session.id, {
-        source: "work-item-start",
+        source: "task-start",
         purpose: "session-create-finalization",
         actorId: agent.agentId,
-        objectiveId: workItem.objective_id,
-        workItemId: workItem.id,
+        objectiveId: task.objective_id,
+        taskId: task.id,
         sessionKind: "worker"
       });
-      return await sendUnifiedSessionMessage(session.id, initialPrompt || workItemExecutionPrompt(workItem), {
+      return await sendUnifiedSessionMessage(session.id, initialPrompt || taskExecutionPrompt(task), {
         type: "session-initialization",
-        origin: "work-item-start"
+        origin: "task-start"
       });
     } catch (error) {
-      console.error(`[work-item-start] initial prompt enqueue failed session=${session.id}: ${error.message}`);
+      console.error(`[task-start] initial prompt enqueue failed session=${session.id}: ${error.message}`);
       throw error;
     }
   },
@@ -2085,10 +2086,10 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
       runId
     });
   },
-  createAndLaunchConflictWorkItem: async ({
+  createAndLaunchConflictTask: async ({
     objective, projectId, agent, workspace, title, description, acceptanceCriteria, prompt, integrationRunId
   }) => {
-    const workItem = objectiveService.createWorkItem({
+    const task = objectiveService.createTask({
       objectiveId: objective.id,
       title,
       description,
@@ -2099,9 +2100,9 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
     });
     let session;
     try {
-      session = await launchPreparedWorkItemSession({
+      session = await launchPreparedTaskSession({
         agent,
-        workItem,
+        task,
         providerId: agentProviderRegistry.defaultProviderId,
         title,
         initialPrompt: prompt,
@@ -2109,27 +2110,27 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
         source: "integration-conflict-resolution"
       });
     } catch (error) {
-      objectiveService.deleteWorkItem(workItem.id);
+      objectiveService.deleteTask(task.id);
       throw error;
     }
     const finalized = store.finalizeConflictResolutionLaunch({
       sessionId: session.id,
-      workItemId: workItem.id,
+      taskId: task.id,
       objectiveId: objective.id,
       agentId: agent.agentId,
       integrationRunId
     });
-    emitEvent("WorkItemChanged", {
+    emitEvent("TaskChanged", {
       action: "integration-conflict-resolution-started",
-      entity: store.getWorkItem(workItem.id)
+      entity: store.getTask(task.id)
     });
     return {
-      workItem: presentWorkItemAcceptance(finalized.workItem),
+      task: presentTaskAcceptance(finalized.task),
       session: finalized.session
     };
   },
   isSessionActive: sessionHasActiveRun,
-  presentWorkItem: presentWorkItemAcceptance,
+  presentTask: presentTaskAcceptance,
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
@@ -2174,26 +2175,26 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   launchConflictResolution: async ({ job, item, workspace, sourceHead, expectedMainHead }) => {
     const planIdentity = job.id.replace(/^worktree_integration:/, "");
     const planLabel = planIdentity.slice(0, 8);
-    const planWorkItemId = `work_item:integration_conflicts:${planIdentity}`;
+    const planTaskId = `task:integration_conflicts:${planIdentity}`;
     const existingAutomation = job.conflictAutomation ?? null;
-    const legacyPlanWorkItem = existingAutomation?.workItemId ? null : store.listWorkItems()
+    const legacyPlanTask = existingAutomation?.taskId ? null : store.listTasks()
       .filter((candidate) => String(candidate.description ?? "").includes(job.id))
       .sort((left, right) => String(left.created_at ?? "").localeCompare(String(right.created_at ?? "")))[0] ?? null;
-    const existingWorkItem = existingAutomation?.workItemId
-      ? store.getWorkItem(existingAutomation.workItemId)
-      : legacyPlanWorkItem;
-    const existingSessionId = existingAutomation?.sessionId ?? existingWorkItem?.current_session_id ?? null;
+    const existingTask = existingAutomation?.taskId
+      ? store.getTask(existingAutomation.taskId)
+      : legacyPlanTask;
+    const existingSessionId = existingAutomation?.sessionId ?? existingTask?.current_session_id ?? null;
     const existingSession = existingSessionId ? store.getSession(existingSessionId) : null;
     const existingAgent = existingAutomation?.agentId
       ? store.getAgent(existingAutomation.agentId)
-      : (existingWorkItem?.main_agent_id ? store.getAgent(existingWorkItem.main_agent_id) : null);
-    const hasRecordedPlanSession = Boolean(existingAutomation?.workItemId
-      || existingAutomation?.sessionId || legacyPlanWorkItem);
-    const hasExistingPlanSession = Boolean(existingWorkItem && existingSession
+      : (existingTask?.main_agent_id ? store.getAgent(existingTask.main_agent_id) : null);
+    const hasRecordedPlanSession = Boolean(existingAutomation?.taskId
+      || existingAutomation?.sessionId || legacyPlanTask);
+    const hasExistingPlanSession = Boolean(existingTask && existingSession
       && existingAgent?.role === "independentContributor");
     if (hasRecordedPlanSession && !hasExistingPlanSession) {
       const error = new Error(
-        "The integration plan's conflict WorkItem or Session is no longer available. Restore that plan Session or generate a fresh plan; Corptie will not create a duplicate WorkItem."
+        "The integration plan's conflict Task or Session is no longer available. Restore that plan Session or generate a fresh plan; Corptie will not create a duplicate Task."
       );
       error.code = "CONFLICT_PLAN_SESSION_UNAVAILABLE";
       throw error;
@@ -2205,14 +2206,14 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         .find(Boolean);
     if (!hasExistingPlanSession && !context) {
       const error = new Error(
-        "No Independent Contributor Agent could be recovered from any Worktree in this integration plan. Bind one Agent-backed WorkItem to the plan, then retry."
+        "No Independent Contributor Agent could be recovered from any Worktree in this integration plan. Bind one Agent-backed Task to the plan, then retry."
       );
       error.code = "CONFLICT_AGENT_UNAVAILABLE";
       throw error;
     }
-    const sourceWorkItem = existingWorkItem ?? context.sourceWorkItem;
+    const sourceTask = existingTask ?? context.sourceTask;
     const objective = hasExistingPlanSession
-      ? store.getObjective(existingWorkItem.objective_id)
+      ? store.getObjective(existingTask.objective_id)
       : context.objective;
     const agent = existingAgent ?? context.agent;
     const branchLabel = item.branchName ?? item.worktreeId;
@@ -2220,7 +2221,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     const conflictFiles = item.conflictFiles.length > 0 ? item.conflictFiles.join(", ") : "请通过 Git 状态确认";
     const description = [
       `持续处理 Worktree Integration Job ${job.id} 计划内的全部合并冲突。`,
-      `Agent 上下文来源 WorkItem：${sourceWorkItem.title}`,
+      `Agent 上下文来源 Task：${sourceTask.title}`,
       `计划级专用 Integration Worktree：${workspace.path}`
     ].join("\n");
     const acceptanceCriteria = [
@@ -2245,7 +2246,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       "4. 运行相关测试，并按 AGENTS.md 重建、启动 Development App 与后端并检查健康状态。",
       `5. 验证来源提交 ${sourceHead} 已成为当前 Integration HEAD 的祖先，并确认 Integration Worktree 干净。`,
       "6. 不得切换、提交、清理或合并 main；不得推送远端，不得删除来源分支或 Worktree。",
-      "7. 完成本轮后正常结束当前执行；Corptie 会校验结果并在同一个 WorkItem 和 Session 中投递下一个冲突，直至整个计划完成。"
+      "7. 完成本轮后正常结束当前执行；Corptie 会校验结果并在同一个 Task 和 Session 中投递下一个冲突，直至整个计划完成。"
     ].join("\n");
     if (hasExistingPlanSession) {
       const sessionCwd = existingSession.external?.cwd ?? existingSession.cwd ?? null;
@@ -2256,11 +2257,11 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         error.code = "CONFLICT_PLAN_SESSION_WORKSPACE_CHANGED";
         throw error;
       }
-      objectiveService.updateWorkItem(existingWorkItem.id, {
+      objectiveService.updateTask(existingTask.id, {
         title,
         description,
         acceptanceCriteria,
-        status: "in_progress",
+        lifecycleState: "in_progress",
         mainAgentId: agent.agentId
       });
       await sendUnifiedSessionMessage(
@@ -2270,7 +2271,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         { fromAgentWorkQueue: true }
       );
       return {
-        workItemId: existingWorkItem.id,
+        taskId: existingTask.id,
         sessionId: existingSession.id,
         sessionName: existingSession.title,
         agentId: agent.agentId,
@@ -2278,8 +2279,8 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         reused: true
       };
     }
-    const workItem = objectiveService.createWorkItem({
-      id: planWorkItemId,
+    const task = objectiveService.createTask({
+      id: planTaskId,
       objectiveId: objective.id,
       title,
       description,
@@ -2290,9 +2291,9 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     });
     let session;
     try {
-      session = await launchPreparedWorkItemSession({
+      session = await launchPreparedTaskSession({
         agent,
-        workItem,
+        task,
         providerId: agentProviderRegistry.defaultProviderId,
         title,
         initialPrompt: prompt,
@@ -2300,7 +2301,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         source: "integration-plan-resolution"
       });
     } catch (error) {
-      objectiveService.deleteWorkItem(workItem.id);
+      objectiveService.deleteTask(task.id);
       throw error;
     }
     await sendUnifiedSessionMessage(session.id, prompt, {
@@ -2308,7 +2309,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       origin: "worktree-integration"
     });
     return {
-      workItemId: workItem.id,
+      taskId: task.id,
       sessionId: session.id,
       sessionName: session.title,
       agentId: agent.agentId,
@@ -2348,7 +2349,7 @@ let claudeModelsCache = null;
 
 const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
 const drainingAgentWorkSessionIds = new Set();
-const runtimeQueuedWorkItemsBySession = new Map();
+const runtimeQueuedTasksBySession = new Map();
 const sessionBusyRetryCounts = new Map();
 const MAX_SESSION_BUSY_RETRIES = 3;
 let agentWorkQueueInterval = null;
@@ -2359,46 +2360,46 @@ function now() {
   return new Date().toISOString();
 }
 
-function registerRuntimeQueuedWork(sessionId, workItemId) {
-  if (!sessionId || !workItemId) return;
-  const queued = runtimeQueuedWorkItemsBySession.get(sessionId) ?? new Set();
-  queued.add(workItemId);
-  runtimeQueuedWorkItemsBySession.set(sessionId, queued);
+function registerRuntimeQueuedWork(sessionId, taskId) {
+  if (!sessionId || !taskId) return;
+  const queued = runtimeQueuedTasksBySession.get(sessionId) ?? new Set();
+  queued.add(taskId);
+  runtimeQueuedTasksBySession.set(sessionId, queued);
 }
 
-function forgetRuntimeQueuedWork(sessionId, workItemId) {
-  const queued = runtimeQueuedWorkItemsBySession.get(sessionId);
+function forgetRuntimeQueuedWork(sessionId, taskId) {
+  const queued = runtimeQueuedTasksBySession.get(sessionId);
   if (!queued) return;
-  queued.delete(workItemId);
-  if (queued.size === 0) runtimeQueuedWorkItemsBySession.delete(sessionId);
+  queued.delete(taskId);
+  if (queued.size === 0) runtimeQueuedTasksBySession.delete(sessionId);
 }
 
-function moveRuntimeQueuedWork(fromSessionId, toSessionId, workItemId) {
-  forgetRuntimeQueuedWork(fromSessionId, workItemId);
-  registerRuntimeQueuedWork(toSessionId, workItemId);
+function moveRuntimeQueuedWork(fromSessionId, toSessionId, taskId) {
+  forgetRuntimeQueuedWork(fromSessionId, taskId);
+  registerRuntimeQueuedWork(toSessionId, taskId);
 }
 
 function nextRuntimeQueuedWork(sessionId) {
-  const queued = runtimeQueuedWorkItemsBySession.get(sessionId);
+  const queued = runtimeQueuedTasksBySession.get(sessionId);
   if (!queued?.size) return null;
-  for (const item of store.listQueuedAgentWorkItemsForSession(sessionId, Math.max(queued.size, 1))) {
-    if (queued.has(item.workItemId)) return item;
+  for (const item of store.listQueuedAgentTasksForSession(sessionId, Math.max(queued.size, 1))) {
+    if (queued.has(item.taskId)) return item;
   }
-  for (const workItemId of [...queued]) {
-    const item = store.getAgentWorkItem(workItemId);
+  for (const taskId of [...queued]) {
+    const item = store.getAgentTask(taskId);
     if (!item || item.status !== "queued" || item.sessionId !== sessionId) {
-      forgetRuntimeQueuedWork(sessionId, workItemId);
+      forgetRuntimeQueuedWork(sessionId, taskId);
     }
   }
   return null;
 }
 
-function runtimeQueuePosition(sessionId, workItemId) {
-  const queued = runtimeQueuedWorkItemsBySession.get(sessionId);
-  if (!queued?.has(workItemId)) return 0;
-  return store.listQueuedAgentWorkItemsForSession(sessionId, Math.max(queued.size, 1))
-    .filter((item) => queued.has(item.workItemId))
-    .findIndex((item) => item.workItemId === workItemId) + 1;
+function runtimeQueuePosition(sessionId, taskId) {
+  const queued = runtimeQueuedTasksBySession.get(sessionId);
+  if (!queued?.has(taskId)) return 0;
+  return store.listQueuedAgentTasksForSession(sessionId, Math.max(queued.size, 1))
+    .filter((item) => queued.has(item.taskId))
+    .findIndex((item) => item.taskId === taskId) + 1;
 }
 
 function setProviderRuntimeReadiness(providerId, readiness) {
@@ -3186,19 +3187,19 @@ function emitEvent(type, payload, options = {}) {
   }
   if (["AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
     try {
-      scheduledSessionTaskService.handleAgentWorkEvent(type, payload?.workItem);
+      scheduledSessionTaskService.handleAgentWorkEvent(type, payload?.task);
     } catch (error) {
       console.error(`[scheduled-session] work event reconciliation failed type=${type}: ${error.message}`);
     }
   }
-  if (type === "AgentWorkCompleted" && payload?.workItem?.kind === "collaboration"
-      && payload.workItem.source?.type !== "session_channel") {
+  if (type === "AgentWorkCompleted" && payload?.task?.kind === "collaboration"
+      && payload.task.source?.type !== "session_channel") {
     try {
-      collaborationCore.reconcileCompletedAgentWork(payload.workItem);
+      collaborationCore.reconcileCompletedAgentWork(payload.task);
     } catch (error) {
       console.error(
-        `[collaboration] completed work reconciliation failed work=${payload.workItem.workItemId}`
-        + ` delivery=${payload.workItem.deliveryId ?? "unknown"} code=${error.code ?? "unknown"}`
+        `[collaboration] completed work reconciliation failed work=${payload.task.taskId}`
+        + ` delivery=${payload.task.deliveryId ?? "unknown"} code=${error.code ?? "unknown"}`
         + ` error=${error.message}`
       );
     }
@@ -3218,7 +3219,7 @@ function emitEvent(type, payload, options = {}) {
 function productTimelineItemsForEvent(type, payload, sessionEvent, sessionId) {
   const items = automationTimelineItems([sessionEvent]);
   if (["AgentWorkQueued", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
-    const item = agentWorkTimelineItem(payload?.workItem, sessionId, payload?.queuePosition);
+    const item = agentWorkTimelineItem(payload?.task, sessionId, payload?.queuePosition);
     if (item) items.push(item);
   }
   if (["CollaborationConfirmationRequested", "CollaborationConfirmationResolved"].includes(type)) {
@@ -3459,12 +3460,12 @@ function controlPlaneSnapshot() {
   if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
     const openclacky = [...sessionsById.values()].filter((s) => s.id.startsWith("openclacky:"));
     const detail = openclacky.map((s) => `${s.id.slice(10, 18)}:${s.status}`).join(",");
-    console.log(`[snapshot] sessions=${sessionsById.size} workItems=${store.listWorkItems().length} ` +
+    console.log(`[snapshot] sessions=${sessionsById.size} tasks=${store.listTasks().length} ` +
       `openclacky=[${detail}]`);
   }
   return {
     sessions: sortSessionsForList([...sessionsById.values()]),
-    workItems: store.listWorkItems().map(presentWorkItemAcceptance),
+    tasks: store.listTasks().map(presentTaskAcceptance),
     objectives: store.listObjectives(),
     agents: store.listAgents().map((agent) => ({
       ...agent,
@@ -3474,7 +3475,7 @@ function controlPlaneSnapshot() {
     repositories: store.listGitRepositories(),
     integrationRuns: store.listProjectIntegrationRuns().map((run) => (
       presentProjectIntegrationRun(run, {
-        resolveWorkItem: (workItemId) => store.getWorkItem(workItemId)
+        resolveTask: (taskId) => store.getTask(taskId)
       })
     ))
   };
@@ -3771,7 +3772,7 @@ async function collaborationAgentContextInstructions(agentId, metadata = null) {
     scope: {
       sessionId: metadata?.sessionId ?? null,
       objectiveId: metadata?.objectiveId ?? null,
-      workItemId: metadata?.workItemId ?? null
+      taskId: metadata?.taskId ?? null
     }
   });
   return context?.instructions ?? "";
@@ -3980,7 +3981,7 @@ function sessionToolMetadata(session) {
     purpose: "session",
     sessionKind: session?.sessionKind ?? "legacy",
     objectiveId: session?.objectiveId ?? null,
-    workItemId: session?.workItemId ?? null,
+    taskId: session?.taskId ?? null,
     sessionId: session?.id ?? null,
     logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
     providerBindingId: logical?.activeBinding?.bindingId ?? null
@@ -4000,7 +4001,7 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
   const active = logical?.activeBinding ?? null;
   if (!logical || !active || active.bindingId !== providerBindingId) return null;
   const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-  const workItem = session?.workItemId ? store.getWorkItem(session.workItemId) : null;
+  const task = session?.taskId ? store.getTask(session.taskId) : null;
   return {
     logicalSessionId: logical.logicalSessionId,
     providerBindingId: active.bindingId,
@@ -4013,18 +4014,18 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
     sessionId: session?.id ?? null,
     sessionKind: session?.sessionKind ?? "legacy",
     objectiveId: session?.objectiveId ?? null,
-    workItemId: session?.workItemId ?? null,
-    currentWorkItemSessionId: workItem?.current_session_id ?? null,
+    taskId: session?.taskId ?? null,
+    currentTaskSessionId: task?.current_session_id ?? null,
     agentId: session?.agentId ?? null,
     authorizationRevision: Math.max(
       Number(logical.routingVersion ?? 1),
-      Number(workItem?.resource_version ?? 1)
+      Number(task?.resource_version ?? 1)
     )
   };
 }
 
 function prospectiveToolHostBinding({ logicalSessionId, binding = {}, session = null }) {
-  const workItem = session?.workItemId ? store.getWorkItem(session.workItemId) : null;
+  const task = session?.taskId ? store.getTask(session.taskId) : null;
   const providerBindingId = binding.bindingId ?? binding.providerBindingId;
   const providerSessionId = binding.providerSessionId ?? binding.providerThreadId;
   return {
@@ -4040,15 +4041,15 @@ function prospectiveToolHostBinding({ logicalSessionId, binding = {}, session = 
     sessionId: session?.id ?? null,
     sessionKind: session?.sessionKind ?? "legacy",
     objectiveId: session?.objectiveId ?? null,
-    workItemId: session?.workItemId ?? null,
-    currentWorkItemSessionId: workItem?.current_session_id ?? null,
+    taskId: session?.taskId ?? null,
+    currentTaskSessionId: task?.current_session_id ?? null,
     agentId: session?.agentId ?? null,
     worktreeId: binding.worktreeId ?? null,
     repositoryId: binding.repositoryId ?? null,
     boundCwd: binding.boundCwd ?? null,
     authorizationRevision: Math.max(
       Number(binding.routingVersion ?? 1),
-      Number(workItem?.resource_version ?? 1)
+      Number(task?.resource_version ?? 1)
     )
   };
 }
@@ -4200,25 +4201,25 @@ async function resolveScheduledSessionRoute(logicalSessionId) {
 }
 
 function enqueueScheduledSessionWork(input) {
-  const { workItem, inserted } = store.enqueueAgentWorkItemWithResult(input);
-  const deliveryId = input.source?.deliveryId ?? input.workItemId;
+  const { task, inserted } = store.enqueueAgentTaskWithResult(input);
+  const deliveryId = input.source?.deliveryId ?? input.taskId;
   console.info(
     `[automation-delivery] result=${inserted ? "inserted" : "deduplicated"}`
     + ` taskId=${input.source?.scheduledTaskId ?? "unknown"}`
     + ` scheduledFor=${input.source?.scheduledFor ?? "unknown"}`
     + ` deliveryId=${deliveryId}`
   );
-  if (!inserted) return { workItem, inserted };
-  registerRuntimeQueuedWork(input.sessionId, workItem.workItemId);
-  const queuePosition = runtimeQueuePosition(input.sessionId, workItem.workItemId);
+  if (!inserted) return { task, inserted };
+  registerRuntimeQueuedWork(input.sessionId, task.taskId);
+  const queuePosition = runtimeQueuePosition(input.sessionId, task.taskId);
   emitEvent("AgentWorkQueued", {
     sessionId: input.sessionId,
-    workItem,
+    task,
     queuePosition,
-    source: workItem.source
-  }, { sessionId: input.sessionId, source: workItem.source });
-  scheduleAgentWorkDrain(input.sessionId, null, workItem.workItemId);
-  return { workItem, inserted };
+    source: task.source
+  }, { sessionId: input.sessionId, source: task.source });
+  scheduleAgentWorkDrain(input.sessionId, null, task.taskId);
+  return { task, inserted };
 }
 
 function scheduledSessionHttpActor(request) {
@@ -4290,7 +4291,7 @@ function collaborationRuntimeInstructions(agentId) {
     "A Channel is long-lived and bidirectional. Reuse the active Channel for later messages in either direction; never invent task state, acceptance, iteration, or completion semantics for Channel communication.",
     "After channel_open or message_send returns, end the current turn. Corptie handles pending authorization programmatically and pushes peer messages into the unified queue; do not poll or wait.",
     "When the user asks to schedule, remind, monitor, defer, repeat, pause, resume, cancel, inspect, or run an Automation, use the corptie_automations_* tools. Creation defaults to the current logical Session, so do not invent or persist a Provider thread id.",
-    "Corptie programmatically binds the WorkItem Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace."
+    "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace."
   ].join(" ");
 }
 
@@ -4462,20 +4463,20 @@ function handleCommittedProviderTerminalLifecycle({ event, projection, logicalRo
   const failed = terminalStatus === "failed";
   const cancelled = terminalStatus === "cancelled";
 
-  const completedWork = store.getAgentWorkItemForTurn(nextSession.id, event.turnId)
-    ?? store.getRunningAgentWorkItemForSession(nextSession.id);
+  const completedWork = store.getAgentTaskForTurn(nextSession.id, event.turnId)
+    ?? store.getRunningAgentTaskForSession(nextSession.id);
   if (completedWork?.status === "running") {
-    const updatedWork = store.updateAgentWorkItem(completedWork.workItemId, {
+    const updatedWork = store.updateAgentTask(completedWork.taskId, {
       status: failed ? "failed" : (cancelled ? "cancelled" : "completed"),
       lastError: projection?.terminalFailure?.message ?? event.payload?.error?.message ?? null
     });
-    emitEvent("AgentWorkCompleted", { sessionId: nextSession.id, workItem: updatedWork }, {
+    emitEvent("AgentWorkCompleted", { sessionId: nextSession.id, task: updatedWork }, {
       sessionId: nextSession.id,
       source: completedWork.source
     });
     workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
   }
-  settleEntityWorkItemFromSession(nextSession);
+  settleEntityTaskFromSession(nextSession);
   const agent = collaborationCore.getAgentForSession(nextSession.id);
   if (!failed && !cancelled) {
     refreshWorkspaceInventoryAfterTurn(logicalRoute);
@@ -4898,15 +4899,15 @@ function listGatewaySessions(options = {}) {
 }
 
 function describeGatewaySession(session) {
-  const workItem = session.workItemId
-    ? store.getWorkItem(session.workItemId)
-    : store.getWorkItemBySessionId(session.id);
-  const agentId = session.agentId ?? workItem?.main_agent_id ?? null;
+  const task = session.taskId
+    ? store.getTask(session.taskId)
+    : store.getTaskBySessionId(session.id);
+  const agentId = session.agentId ?? task?.main_agent_id ?? null;
   const agent = agentId ? store.getAgent(agentId) : null;
   return {
     agentName: agent?.name ?? agentId,
-    workItemTitle: workItem?.title ?? null,
-    workItemStatus: workItem?.status ?? null
+    taskTitle: task?.title ?? null,
+    taskStatus: task?.status ?? null
   };
 }
 
@@ -5034,9 +5035,9 @@ function resolveSessionProviderId(provider) {
 
 // Startup coordinator 专用的低层 Session 构造端口。调用方必须提供已由
 // WorktreeStartupPreparer 验证的目录；此函数不发现、创建或切换 Worktree。
-async function launchWorkItemSession({
+async function launchTaskSession({
   agent,
-  workItem,
+  task,
   providerId: requestedProviderId,
   title,
   prompt: requestedPrompt,
@@ -5070,7 +5071,7 @@ async function launchWorkItemSession({
   }
   const prompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
     ? requestedPrompt.trim()
-    : workItemExecutionPrompt(workItem);
+    : taskExecutionPrompt(task);
 
   const phaseStartedAt = performance.now();
   const session = await createSessionThroughApplication(
@@ -5078,7 +5079,7 @@ async function launchWorkItemSession({
     {
       cwd,
       title,
-      defaultTitle: defaultSessionTitleForWorkItem(workItem.title, agent.name),
+      defaultTitle: defaultSessionTitleForTask(task.title, agent.name),
       prompt: deferInitialPromptUntilBound ? "" : prompt,
       agent: agent.name,
       sessionKind: "worker",
@@ -5090,8 +5091,8 @@ async function launchWorkItemSession({
     {
       source: "entity",
       actorId: agent.agentId,
-      objectiveId: workItem.objective_id,
-      workItemId: workItem.id,
+      objectiveId: task.objective_id,
+      taskId: task.id,
       sessionKind: "worker",
       deferToolHostFinalization
     }
@@ -5173,8 +5174,8 @@ async function launchObjectiveChatSession({ agent, objective, providerId: reques
   return store.bindSessionToObjective(session.id, objective.id);
 }
 
-async function launchAndBindWorkItemSession({
-  workItem,
+async function launchAndBindTaskSession({
+  task,
   agent,
   title,
   providerId = agentProviderRegistry.defaultProviderId,
@@ -5183,39 +5184,39 @@ async function launchAndBindWorkItemSession({
   source = "application"
 }) {
   const result = await workSessionStartupCoordinator.start({
-    workItemId: workItem.id,
+    taskId: task.id,
     agentId: agent.agentId,
     providerId,
     title,
     initialPrompt,
-    idempotencyKey: idempotencyKey ?? `start:${workItem.id}`,
+    idempotencyKey: idempotencyKey ?? `start:${task.id}`,
     source,
     actorId: agent.agentId
   });
   return result.session;
 }
 
-async function launchPreparedWorkItemSession({ workItem, agent, workspace, source, ...options }) {
+async function launchPreparedTaskSession({ task, agent, workspace, source, ...options }) {
   const inventory = workspace?.worktreeId ? store.getGitWorktree(workspace.worktreeId) : null;
   const canonicalPath = resolve(workspace?.path ?? "");
-  if (!inventory || inventory.repositoryId !== workItem.main_workspace_id
+  if (!inventory || inventory.repositoryId !== task.main_workspace_id
     || inventory.isMain === true || inventory.availability !== "available"
     || resolve(inventory.canonicalPath || inventory.path) !== canonicalPath) {
-    const error = new Error("Prepared Integration Worktree does not match the WorkItem Repository inventory.");
+    const error = new Error("Prepared Integration Worktree does not match the Task Repository inventory.");
     error.code = "START_WORKTREE_INVENTORY_MISMATCH";
     error.statusCode = 409;
     throw error;
   }
-  const idempotencyKey = options.idempotencyKey ?? `start:${workItem.id}`;
+  const idempotencyKey = options.idempotencyKey ?? `start:${task.id}`;
   const startupOperationId = `startup:${createHash("sha256")
-    .update(`${workItem.id}\0${idempotencyKey}`)
+    .update(`${task.id}\0${idempotencyKey}`)
     .digest("hex")
     .slice(0, 32)}`;
   store.db.run(
     `UPDATE git_worktrees SET dedicated=1, created_by_startup_operation_id=?
      WHERE worktree_id=? AND repository_id=?
        AND (created_by_startup_operation_id IS NULL OR created_by_startup_operation_id=?)`,
-    [startupOperationId, inventory.worktreeId, workItem.main_workspace_id, startupOperationId]
+    [startupOperationId, inventory.worktreeId, task.main_workspace_id, startupOperationId]
   );
   if (store.db.getRowsModified() !== 1
     || store.getGitWorktree(inventory.worktreeId)?.createdByStartupOperationId !== startupOperationId) {
@@ -5225,69 +5226,68 @@ async function launchPreparedWorkItemSession({ workItem, agent, workspace, sourc
     throw error;
   }
   store.scheduleSave();
-  return launchAndBindWorkItemSession({
-    workItem: store.getWorkItem(workItem.id), agent, source, ...options, idempotencyKey
+  return launchAndBindTaskSession({
+    task: store.getTask(task.id), agent, source, ...options, idempotencyKey
   });
 }
 
-// Session 生命周期只投影到 WorkItem.execution_status。WorkItem.status 的 review
+// Session 生命周期只投影到 Task.execution_status。Task.lifecycle_state
 // 必须由独立验收评估产生，绝不能从一次 turn/session 落定推断。
-function settleEntityWorkItemFromSession(session) {
+function settleEntityTaskFromSession(session) {
   if (!session?.id) return null;
-  const workItem = store.getWorkItemBySessionId(session.id);
-  if (!workItem) return null;
+  const task = store.getTaskBySessionId(session.id);
+  if (!task) return null;
   // Replaced Worker Sessions remain queryable for audit, but only the current
-  // binding may project lifecycle state back onto the WorkItem.
-  if (workItem.current_session_id !== session.id) return workItem;
-  scheduleWorkItemMemoryExtraction(session, workItem);
-  const patch = workItemExecutionPatch(workItem, session.status);
-  if (!patch) return workItem;
-  const statusChanged = patch.status && patch.status !== workItem.status;
-  const executionChanged = patch.executionStatus !== (workItem.execution_status ?? "idle");
-  if (!statusChanged && !executionChanged) return workItem;
+  // binding may project lifecycle state back onto the Task.
+  if (task.current_session_id !== session.id) return task;
+  scheduleTaskMemoryExtraction(session, task);
+  const patch = taskExecutionPatch(task, session.status);
+  if (!patch) return task;
+  const executionChanged = patch.executionStatus !== (task.execution_status ?? "idle");
+  if (!executionChanged) return task;
   if (process.env.CORPTIE_DEBUG_STATE_SYNC) {
-    console.log(`[settle] workItem=${workItem.id} session=${session.id} session.status=${session.status} ` +
-      `wi.status=${workItem.status}->${patch.status ?? workItem.status} ` +
-      `wi.exec=${workItem.execution_status}->${patch.executionStatus}`);
+    console.log(`[settle] task=${task.id} session=${session.id} session.status=${session.status} ` +
+      `task.lifecycle=${task.lifecycle_state} ` +
+      `task.exec=${task.execution_status}->${patch.executionStatus}`);
   }
-  store.updateWorkItem(workItem.id, patch);
-  const updated = store.getWorkItem(workItem.id);
-  emitEvent("WorkItemChanged", { action: "execution-status-updated", entity: updated });
+  store.updateTask(task.id, patch);
+  const updated = store.getTask(task.id);
+  emitEvent("TaskChanged", { action: "execution-status-updated", entity: updated });
   return updated;
 }
 
-function scheduleWorkItemMemoryExtraction(session, workItem) {
-  const previous = workItemMemoryExtractions.get(session.id) ?? Promise.resolve();
-  const task = previous.catch(() => {}).then(() => memoryExtractor.extractFromSession(session.id)).then((memories) => {
+function scheduleTaskMemoryExtraction(session, task) {
+  const previous = taskMemoryExtractions.get(session.id) ?? Promise.resolve();
+  const operation = previous.catch(() => {}).then(() => memoryExtractor.extractFromSession(session.id)).then((memories) => {
     if (memories.length === 0) return;
-    const updated = store.updateWorkItem(workItem.id, {});
-    emitEvent("WorkItemChanged", {
+    const updated = store.updateTask(task.id, {});
+    emitEvent("TaskChanged", {
       action: "memory-updated",
       entity: updated,
       memoryIds: memories.map((memory) => memory.id)
     });
   }).catch((error) => {
-    console.error(`[work-item-memory] extraction failed for ${workItem.id}: ${error?.message ?? error}`);
+    console.error(`[task-memory] extraction failed for ${task.id}: ${error?.message ?? error}`);
   }).finally(() => {
-    if (workItemMemoryExtractions.get(session.id) === task) {
-      workItemMemoryExtractions.delete(session.id);
+    if (taskMemoryExtractions.get(session.id) === operation) {
+      taskMemoryExtractions.delete(session.id);
     }
   });
-  workItemMemoryExtractions.set(session.id, task);
+  taskMemoryExtractions.set(session.id, operation);
 }
 
-function settleWorkItemForWorkspaceContinuation(transitionId) {
+function settleTaskForWorkspaceContinuation(transitionId) {
   const transition = store.getWorkspaceTransition(transitionId);
   const logical = transition ? store.getLogicalSession(transition.logicalSessionId) : null;
   const session = logical?.legacySessionId ? store.getSession(logical.legacySessionId) : null;
   if (!session) return null;
-  return settleEntityWorkItemFromSession(sessionWithLogicalWorkspace(session, logical));
+  return settleEntityTaskFromSession(sessionWithLogicalWorkspace(session, logical));
 }
 
-function reportWorkItemAcceptanceForAgent(agentId, input = {}, metadata = {}) {
+function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
   const requestedSessionId = String(metadata.sessionId ?? "").trim();
   if (!requestedSessionId) {
-    const error = new Error("WorkItem acceptance requires the authenticated Session scope.");
+    const error = new Error("Task acceptance requires the authenticated Session scope.");
     error.code = "SESSION_SCOPE_REQUIRED";
     throw error;
   }
@@ -5301,28 +5301,60 @@ function reportWorkItemAcceptanceForAgent(agentId, input = {}, metadata = {}) {
     throw error;
   }
   const session = store.getSession(sessionId);
-  const workItemId = session?.workItemId;
-  if (!workItemId) {
-    const error = new Error("The active Agent Session is not bound to a WorkItem.");
-    error.code = "WORK_ITEM_REQUIRED";
+  const taskId = session?.taskId;
+  if (!taskId) {
+    const error = new Error("The active Agent Session is not bound to a Task.");
+    error.code = "TASK_REQUIRED";
     throw error;
   }
-  if (metadata.workItemId && metadata.workItemId !== workItemId) {
-    const error = new Error("The authenticated WorkItem scope does not match the Session binding.");
-    error.code = "WORK_ITEM_SESSION_MISMATCH";
+  if (metadata.taskId && metadata.taskId !== taskId) {
+    const error = new Error("The authenticated Task scope does not match the Session binding.");
+    error.code = "TASK_SESSION_MISMATCH";
     throw error;
   }
-  return presentWorkItemAcceptance(objectiveService.recordAcceptanceAssessment(workItemId, {
+  return presentTaskAcceptance(objectiveService.recordAcceptanceAssessment(taskId, {
     sourceSessionId: sessionId,
     results: input.results
   }));
 }
 
-function completeWorkItemForSession(agentId, input = {}, metadata = {}) {
+function reviseTaskForSession(agentId, input = {}, metadata = {}) {
+  const requestedSessionId = String(metadata.sessionId ?? "").trim();
+  if (!requestedSessionId) {
+    const error = new Error("Task revision requires the authenticated Session scope.");
+    error.code = "SESSION_SCOPE_REQUIRED";
+    throw error;
+  }
+  const logical = store.getLogicalSession(requestedSessionId)
+    ?? store.getLogicalSessionByLegacySessionId(requestedSessionId);
+  const sessionId = logical?.legacySessionId ?? requestedSessionId;
+  const session = store.getSession(sessionId);
+  const boundAgent = session ? collaborationCore.getAgentForSession(sessionId) : null;
+  if (!session || (session.agentId !== agentId && boundAgent?.agentId !== agentId)) {
+    const error = new Error("The authenticated Agent is not bound to the scoped Session.");
+    error.code = "SESSION_ACTOR_MISMATCH";
+    throw error;
+  }
+  if (!session.taskId || (metadata.taskId && metadata.taskId !== session.taskId)) {
+    const error = new Error("The authenticated Task scope does not match the Session binding.");
+    error.code = "TASK_SESSION_MISMATCH";
+    throw error;
+  }
+  const result = objectiveService.reviseTask(session.taskId, {
+    ...input,
+    createdBySessionId: session.id
+  });
+  return {
+    task: presentTaskAcceptance(result.task),
+    snapshot: result.snapshot
+  };
+}
+
+function completeTaskForSession(agentId, input = {}, metadata = {}) {
   const requestedSessionId = String(metadata.sessionId ?? "").trim();
   const logicalSessionId = String(metadata.logicalSessionId ?? "").trim();
   if (!requestedSessionId || !logicalSessionId) {
-    const error = new Error("WorkItem completion requires an authenticated logical Session scope.");
+    const error = new Error("Task completion requires an authenticated logical Session scope.");
     error.code = "SESSION_SCOPE_REQUIRED";
     throw error;
   }
@@ -5333,32 +5365,31 @@ function completeWorkItemForSession(agentId, input = {}, metadata = {}) {
     error.code = "SESSION_ACTOR_MISMATCH";
     throw error;
   }
-  const result = workItemCompletionService.completeFromSession(input, {
+  const result = taskCompletionService.completeFromSession(input, {
     ...metadata,
     sessionId: requestedSessionId,
     logicalSessionId
   });
   return {
-    workItem: presentWorkItemAcceptance(result.workItem),
+    task: presentTaskAcceptance(result.task),
     operation: result.operation,
     idempotentReplay: result.idempotentReplay
   };
 }
 
 // 启动对账：历史落定（修复上线前就已完成的会话）不会重新触发事件，
-// 此处把每个已绑定当前活跃 session 的 WorkItem 状态对齐到 session 状态。
-function reconcileEntityWorkItemsAtStartup() {
+// 此处把每个已绑定当前活跃 session 的 Task 状态对齐到 session 状态。
+function reconcileEntityTasksAtStartup() {
   let aligned = 0;
-  for (const workItem of store.listWorkItems()) {
-    if (!workItem.current_session_id) continue;
-    const session = store.getSession(workItem.current_session_id);
+  for (const task of store.listTasks()) {
+    if (!task.current_session_id) continue;
+    const session = store.getSession(task.current_session_id);
     if (!session) continue;
-    const updated = settleEntityWorkItemFromSession(session);
-    if (updated && (updated.status !== workItem.status
-      || updated.execution_status !== workItem.execution_status)) aligned += 1;
+    const updated = settleEntityTaskFromSession(session);
+    if (updated && updated.execution_status !== task.execution_status) aligned += 1;
   }
   if (aligned > 0) {
-    console.log(`[entity-work] startup reconcile aligned ${aligned} work item(s)`);
+    console.log(`[entity-task] startup reconcile aligned ${aligned} Task(s)`);
   }
 }
 
@@ -5912,35 +5943,35 @@ async function sendCodexProviderMessage(reference, value, context = {}) {
   return result;
 }
 
-function agentWorkTimelineItem(workItem, sessionId, queuePosition = null) {
-  if (!workItem?.workItemId) return null;
-  const presentation = collaborationPresentationForWorkItem(workItem, sessionId);
-  const userMessageStatus = userMessageStatusForAgentWork(workItem.status);
-  const canonicalId = workItem.kind === "user"
-    ? (workItem.source?.messageId ?? workItem.workItemId)
-    : `work:${workItem.workItemId}`;
+function agentWorkTimelineItem(task, sessionId, queuePosition = null) {
+  if (!task?.taskId) return null;
+  const presentation = collaborationPresentationForTask(task, sessionId);
+  const userMessageStatus = userMessageStatusForAgentWork(task.status);
+  const canonicalId = task.kind === "user"
+    ? (task.source?.messageId ?? task.taskId)
+    : `work:${task.taskId}`;
   return {
     id: canonicalId,
-    turnId: workItem.targetTurnId ?? `work:${workItem.workItemId}`,
+    turnId: task.targetTurnId ?? `work:${task.taskId}`,
     turnStatus: userMessageStatus,
     type: "userMessage",
     title: presentation.presentationRole === "collaboration"
       ? "Agent Collaboration"
       : presentation.presentationRole === "system_event"
         ? "System Event"
-        : (workItem.source?.type === "feishu" ? "Feishu" : "User"),
-    text: workItem.text,
-    status: workItem.status,
+        : (task.source?.type === "feishu" ? "Feishu" : "User"),
+    text: task.text,
+    status: task.status,
     userMessageStatus,
     queuePosition: Number(queuePosition) > 0 ? Number(queuePosition) : null,
-    processingError: workItem.lastError ?? null,
-    createdAt: workItem.createdAt,
-    sourceType: presentation.presentationRole === "system_event" ? "system" : workItem.kind,
-    sourceChannel: workItem.source?.type ?? null,
-    localVisibility: workItem.localVisibility,
-    feishuVisibility: workItem.source?.type === "feishu" ? "hidden" : null,
-    workItemId: workItem.workItemId,
-    collaborationTaskId: workItem.source?.taskId ?? null,
+    processingError: task.lastError ?? null,
+    createdAt: task.createdAt,
+    sourceType: presentation.presentationRole === "system_event" ? "system" : task.kind,
+    sourceChannel: task.source?.type ?? null,
+    localVisibility: task.localVisibility,
+    feishuVisibility: task.source?.type === "feishu" ? "hidden" : null,
+    taskId: task.taskId,
+    collaborationRequestId: task.source?.taskId ?? null,
     ...presentation
   };
 }
@@ -5960,7 +5991,7 @@ function collaborationConfirmationTimelineItem(confirmation, sessionId) {
     ? (store.getLogicalSession(confirmation.initiatorSessionId)
       ?? store.getLogicalSessionByLegacySessionId(confirmation.initiatorSessionId))
     : null;
-  const confirmationWorkItem = request.workItemId ? store.getWorkItem(request.workItemId) : null;
+  const confirmationTask = request.taskId ? store.getTask(request.taskId) : null;
   return {
     id: `collaboration-confirmation:${confirmation.confirmationId}`,
     turnId: confirmation.sourceTurnId ?? `collaboration-confirmation:${confirmation.confirmationId}`,
@@ -5988,16 +6019,16 @@ function collaborationConfirmationTimelineItem(confirmation, sessionId) {
     collaborationSourceObjectiveName: confirmation.sourceObjectiveName,
     collaborationTargetObjectiveId: confirmation.targetObjectiveId,
     collaborationTargetObjectiveName: confirmation.targetObjectiveName,
-    collaborationSourceWorkItemId: confirmation.initiatorWorkItemId ?? request.sourceWorkItemId ?? null,
-    collaborationTargetWorkItemId: confirmation.recipientWorkItemId ?? request.workItemId ?? null,
-    collaborationRelation: confirmationWorkItem?.collaboration_relation ?? null,
+    collaborationSourceTaskId: confirmation.initiatorTaskId ?? request.sourceTaskId ?? null,
+    collaborationTargetTaskId: confirmation.recipientTaskId ?? request.taskId ?? null,
+    collaborationRelation: confirmationTask?.collaboration_relation ?? null,
     collaborationRouteStatus: request.routeStatus ?? "pending",
     collaborationRoutingVersion: request.routingVersion ?? null,
-    collaborationTaskTitle: request.title,
+    collaborationRequestTitle: request.title,
     collaborationMessageKind: request.type,
     collaborationAcceptanceCriteria: request.acceptanceCriteria ?? [],
     collaborationConfirmationStatus: confirmation.status,
-    collaborationTaskId: confirmation.taskId,
+    collaborationRequestId: confirmation.taskId,
     productSessionId: sessionId
   };
 }
@@ -6034,8 +6065,8 @@ function sessionChannelAuthorizationTimelineItem(channelRequest, sessionId) {
     collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
     collaborationSourceObjectiveId: sourceSession?.objectiveId ?? request.sourceContext?.objectiveId ?? null,
     collaborationTargetObjectiveId: recipientSession?.objectiveId ?? request.targetObjectiveId ?? null,
-    collaborationSourceWorkItemId: sourceSession?.workItemId ?? request.sourceContext?.workItemId ?? null,
-    collaborationTargetWorkItemId: recipientSession?.workItemId ?? request.workItemId ?? null,
+    collaborationSourceTaskId: sourceSession?.taskId ?? request.sourceContext?.taskId ?? null,
+    collaborationTargetTaskId: recipientSession?.taskId ?? request.taskId ?? null,
     collaborationMessageKind: request.messageKind ?? "message",
     collaborationConfirmationStatus: status,
     collaborationChannelId: channelRequest.channelId ?? null,
@@ -6043,11 +6074,11 @@ function sessionChannelAuthorizationTimelineItem(channelRequest, sessionId) {
   };
 }
 
-function collaborationPresentationForWorkItem(workItem, sessionId = workItem.sessionId) {
-  if (workItem.kind !== "collaboration") return {};
-  if (workItem.source?.type === "session_channel") {
-    const envelope = workItem.deliveryId
-      ? sessionChannelService.getDeliveryEnvelope(workItem.deliveryId)
+function collaborationPresentationForTask(task, sessionId = task.sessionId) {
+  if (task.kind !== "collaboration") return {};
+  if (task.source?.type === "session_channel") {
+    const envelope = task.deliveryId
+      ? sessionChannelService.getDeliveryEnvelope(task.deliveryId)
       : null;
     if (!envelope) {
       return {
@@ -6077,30 +6108,30 @@ function collaborationPresentationForWorkItem(workItem, sessionId = workItem.ses
       collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
       collaborationSourceObjectiveId: resources.sender?.objectiveId ?? null,
       collaborationTargetObjectiveId: resources.recipient?.objectiveId ?? null,
-      collaborationSourceWorkItemId: resources.sender?.workItemId ?? null,
-      collaborationTargetWorkItemId: resources.recipient?.workItemId ?? null,
+      collaborationSourceTaskId: resources.sender?.taskId ?? null,
+      collaborationTargetTaskId: resources.recipient?.taskId ?? null,
       collaborationMessageKind: envelope.message.messageKind,
-      collaborationProcessingStatus: workItem.status,
+      collaborationProcessingStatus: task.status,
       collaborationChannelId: envelope.channel.channelId
     };
   }
-  const taskId = workItem.source?.taskId ?? null;
-  const task = taskId && collaborationCore.hasTask(taskId) ? { taskId } : null;
-  const envelope = workItem.deliveryId
-    ? collaborationCore.getDeliveryEnvelope(workItem.deliveryId)
+  const taskId = task.source?.taskId ?? null;
+  const collaborationTask = taskId && collaborationCore.hasTask(taskId) ? { taskId } : null;
+  const envelope = task.deliveryId
+    ? collaborationCore.getDeliveryEnvelope(task.deliveryId)
     : null;
-  const failure = collaborationEnvelopeFailure({ workItem, task, envelope });
+  const failure = collaborationEnvelopeFailure({ task, collaborationTask, envelope });
   if (failure) {
     return {
       presentationRole: "system_event",
       presentationText: "A collaboration-shaped event could not be verified and is not executable.",
       systemEventKind: "invalid_collaboration_envelope",
       systemEventReason: failure,
-      systemEventSource: workItem.source?.type ?? "unknown",
+      systemEventSource: task.source?.type ?? "unknown",
       rawEventEnvelope: JSON.stringify({
-        eventType: "AgentWorkItem",
-        timestamp: workItem.createdAt ?? null,
-        source: workItem.source ?? null,
+        eventType: "AgentTask",
+        timestamp: task.createdAt ?? null,
+        source: task.source ?? null,
         envelope: envelope ?? null
       })
     };
@@ -6110,36 +6141,36 @@ function collaborationPresentationForWorkItem(workItem, sessionId = workItem.ses
   const recipient = route.recipientAgentId ? collaborationCore.getAgent(route.recipientAgentId) : null;
   const sourceSession = collaborationSessionPresentation(route.sourceSessionId);
   const targetSession = collaborationSessionPresentation(route.targetSessionId);
-  const targetWorkItemId = envelope?.task.workItemId ?? workItem.source?.targetWorkItemId ?? null;
-  const targetWorkItem = targetWorkItemId ? store.getWorkItem(targetWorkItemId) : null;
-  const sourceObjectiveId = route.sourceObjectiveId ?? workItem.source?.sourceObjectiveId ?? null;
-  const targetObjectiveId = route.targetObjectiveId ?? workItem.source?.targetObjectiveId ?? null;
+  const targetTaskId = envelope?.task.taskId ?? task.source?.targetTaskId ?? null;
+  const targetTask = targetTaskId ? store.getTask(targetTaskId) : null;
+  const sourceObjectiveId = route.sourceObjectiveId ?? task.source?.sourceObjectiveId ?? null;
+  const targetObjectiveId = route.targetObjectiveId ?? task.source?.targetObjectiveId ?? null;
   return {
     presentationRole: "collaboration",
     presentationText: envelope.message.body,
     collaborationDirection: "inbound",
-    collaborationSenderAgentId: route.senderAgentId ?? workItem.source?.senderAgentId ?? null,
-    collaborationSenderName: sender?.name ?? envelope?.message.senderAgentName ?? workItem.source?.senderAgentName ?? route.senderAgentId,
-    collaborationRecipientAgentId: route.recipientAgentId ?? workItem.agentId,
+    collaborationSenderAgentId: route.senderAgentId ?? task.source?.senderAgentId ?? null,
+    collaborationSenderName: sender?.name ?? envelope?.message.senderAgentName ?? task.source?.senderAgentName ?? route.senderAgentId,
+    collaborationRecipientAgentId: route.recipientAgentId ?? task.agentId,
     collaborationRecipientName: recipient?.name ?? route.recipientAgentId,
-    collaborationInitiatorSessionId: route.sourceSessionId ?? workItem.source?.initiatorSessionId ?? null,
+    collaborationInitiatorSessionId: route.sourceSessionId ?? task.source?.initiatorSessionId ?? null,
     collaborationInitiatorSessionTitle: route.sourceSessionTitle ?? sourceSession?.title ?? null,
     collaborationInitiatorSessionKind: sourceSession?.sessionKind ?? null,
-    collaborationRecipientSessionId: route.targetSessionId ?? workItem.source?.recipientSessionId ?? sessionId ?? null,
+    collaborationRecipientSessionId: route.targetSessionId ?? task.source?.recipientSessionId ?? sessionId ?? null,
     collaborationRecipientSessionTitle: route.targetSessionTitle ?? targetSession?.title ?? null,
     collaborationRecipientSessionKind: targetSession?.sessionKind ?? null,
     collaborationSourceObjectiveId: sourceObjectiveId,
     collaborationSourceObjectiveName: sourceObjectiveId ? store.getObjective(sourceObjectiveId)?.name ?? null : null,
     collaborationTargetObjectiveId: targetObjectiveId,
     collaborationTargetObjectiveName: targetObjectiveId ? store.getObjective(targetObjectiveId)?.name ?? null : null,
-    collaborationTaskTitle: envelope?.task.title ?? workItem.source?.taskTitle ?? null,
-    collaborationSourceWorkItemId: envelope?.task.sourceWorkItemId ?? workItem.source?.sourceWorkItemId ?? null,
-    collaborationTargetWorkItemId: targetWorkItemId,
-    collaborationRelation: targetWorkItem?.collaboration_relation ?? workItem.source?.relationship ?? null,
-    collaborationRouteStatus: envelope?.task.routeStatus ?? workItem.source?.routeStatus ?? null,
-    collaborationRoutingVersion: envelope?.task.routingVersion ?? workItem.source?.routingVersion ?? null,
-    collaborationMessageKind: envelope?.message.messageType ?? workItem.source?.messageKind ?? "message",
-    collaborationProcessingStatus: workItem.status
+    collaborationRequestTitle: envelope?.task.title ?? task.source?.taskTitle ?? null,
+    collaborationSourceTaskId: envelope?.task.sourceTaskId ?? task.source?.sourceTaskId ?? null,
+    collaborationTargetTaskId: targetTaskId,
+    collaborationRelation: targetTask?.collaboration_relation ?? task.source?.relationship ?? null,
+    collaborationRouteStatus: envelope?.task.routeStatus ?? task.source?.routeStatus ?? null,
+    collaborationRoutingVersion: envelope?.task.routingVersion ?? task.source?.routingVersion ?? null,
+    collaborationMessageKind: envelope?.message.messageType ?? task.source?.messageKind ?? "message",
+    collaborationProcessingStatus: task.status
   };
 }
 
@@ -6193,7 +6224,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   }
   const reference = requireSessionReference(sessionId);
   assertSessionRecoveryMessageBoundary(reference);
-  if (options.agentWorkItem) assertAgentWorkSessionReference(options.agentWorkItem, reference);
+  if (options.agentTask) assertAgentWorkSessionReference(options.agentTask, reference);
   const routedSessionId = reference.sessionId;
   const publicSessionId = reference.logicalSessionId ?? routedSessionId;
   const before = reference.metadata.session;
@@ -6270,7 +6301,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     throw error;
   }
 
-  const deliveryId = source.deliveryId ?? options.agentWorkItem?.source?.deliveryId ?? null;
+  const deliveryId = source.deliveryId ?? options.agentTask?.source?.deliveryId ?? null;
   const delivery = deliveryId ? store.getMessageDelivery(deliveryId) : null;
   if (delivery) {
     store.updateMessageDelivery(deliveryId, {
@@ -6472,7 +6503,7 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null, refere
     throw error;
   }
   const activeRun = sessionHasActiveRun(session);
-  const hasRunningWorkItem = Boolean(store.getRunningAgentWorkItemForSession(session.id));
+  const hasRunningTask = Boolean(store.getRunningAgentTaskForSession(session.id));
   const logical = reference?.logicalSessionId
     ? store.getLogicalSession(reference.logicalSessionId)
     : store.getLogicalSessionByLegacySessionId(session.id);
@@ -6501,29 +6532,29 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null, refere
     source: persistedSource,
     createdAt: now()
   });
-  const workItem = created.workItem;
-  registerRuntimeQueuedWork(session.id, workItem.workItemId);
-  const queuePosition = runtimeQueuePosition(session.id, workItem.workItemId);
+  const task = created.task;
+  registerRuntimeQueuedWork(session.id, task.taskId);
+  const queuePosition = runtimeQueuePosition(session.id, task.taskId);
   const reportAsQueued = shouldReportAgentWorkQueued({
     sessionHasActiveRun: activeRun,
-    hasRunningWorkItem,
-    queuedWorkItemsAhead: Math.max(0, queuePosition - 1)
+    hasRunningTask,
+    queuedTasksAhead: Math.max(0, queuePosition - 1)
   });
   logSessionMessageLatency(latencyTrace, "task_enqueued", { queuePosition });
   if (created.outbox) publishProviderEventOutbox([created.outbox]);
-  emitEvent("AgentWorkQueued", { sessionId: session.id, workItem, queuePosition, source: persistedSource }, { sessionId: session.id, source: persistedSource });
-  scheduleAgentWorkDrain(session.id, latencyTrace, workItem.workItemId);
+  emitEvent("AgentWorkQueued", { sessionId: session.id, task, queuePosition, source: persistedSource }, { sessionId: session.id, source: persistedSource });
+  scheduleAgentWorkDrain(session.id, latencyTrace, task.taskId);
   return {
     accepted: true,
     queued: reportAsQueued,
     queuePosition: reportAsQueued ? queuePosition : 0,
     sessionId: session.id,
-    workItem
+    task
   };
 }
 
-function scheduleAgentWorkDrain(sessionId, latencyTrace = null, workItemId = null) {
-  if (workItemId) registerRuntimeQueuedWork(sessionId, workItemId);
+function scheduleAgentWorkDrain(sessionId, latencyTrace = null, taskId = null) {
+  if (taskId) registerRuntimeQueuedWork(sessionId, taskId);
   queueMicrotask(() => {
     logSessionMessageLatency(latencyTrace, "queue_drain_dispatched");
     drainAgentWork(sessionId).catch((error) => {
@@ -6555,22 +6586,22 @@ async function syncSessionChannelDeliveriesIntoAgentWorkQueue() {
       });
       continue;
     }
-    const existingWork = store.getAgentWorkItemForDelivery(delivery.deliveryId);
+    const existingWork = store.getAgentTaskForDelivery(delivery.deliveryId);
     if (existingWork) {
       if (["failed", "cancelled"].includes(existingWork.status)) {
-        store.updateAgentWorkItem(existingWork.workItemId, {
+        store.updateAgentTask(existingWork.taskId, {
           status: "queued", sessionId: route.providerSessionId, startedAt: null,
           completedAt: null, targetTurnId: null, lastError: null
         });
-        registerRuntimeQueuedWork(route.providerSessionId, existingWork.workItemId);
-        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.workItemId);
+        registerRuntimeQueuedWork(route.providerSessionId, existingWork.taskId);
+        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.taskId);
       }
       continue;
     }
     const recipientAgent = collaborationCore.getAgentForSession(route.providerSessionId);
     if (!recipientAgent) continue;
-    const workItem = store.enqueueAgentWorkItem({
-      workItemId: `delivery:${delivery.deliveryId}`,
+    const task = store.enqueueAgentTask({
+      taskId: `delivery:${delivery.deliveryId}`,
       agentId: recipientAgent.agentId,
       sessionId: route.providerSessionId,
       kind: "collaboration",
@@ -6591,14 +6622,14 @@ async function syncSessionChannelDeliveriesIntoAgentWorkQueue() {
       deliveryId: delivery.deliveryId,
       createdAt: delivery.createdAt
     });
-    registerRuntimeQueuedWork(route.providerSessionId, workItem.workItemId);
+    registerRuntimeQueuedWork(route.providerSessionId, task.taskId);
     sessionChannelService.updateDelivery(delivery.deliveryId, {
       status: "queued", nextAttemptAt: null, lastError: null
     });
     emitEvent("AgentWorkQueued", {
-      sessionId: route.providerSessionId, workItem, queuePosition: null, source: workItem.source
-    }, { sessionId: route.providerSessionId, source: workItem.source });
-    scheduleAgentWorkDrain(route.providerSessionId, null, workItem.workItemId);
+      sessionId: route.providerSessionId, task, queuePosition: null, source: task.source
+    }, { sessionId: route.providerSessionId, source: task.source });
+    scheduleAgentWorkDrain(route.providerSessionId, null, task.taskId);
   }
 }
 
@@ -6632,12 +6663,12 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       });
       continue;
     }
-    const existingWork = store.getAgentWorkItemForDelivery(delivery.deliveryId);
+    const existingWork = store.getAgentTaskForDelivery(delivery.deliveryId);
     if (existingWork) {
       if (["queued", "failed", "cancelled"].includes(existingWork.status)
           && route.providerSessionId && existingWork.sessionId !== route.providerSessionId) {
         const source = { ...existingWork.source, recipientSessionId: route.sessionId };
-        store.updateAgentWorkItem(existingWork.workItemId, {
+        store.updateAgentTask(existingWork.taskId, {
           sessionId: route.providerSessionId,
           status: "queued",
           startedAt: null,
@@ -6646,29 +6677,29 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
           lastError: null,
           source
         });
-        moveRuntimeQueuedWork(existingWork.sessionId, route.providerSessionId, existingWork.workItemId);
+        moveRuntimeQueuedWork(existingWork.sessionId, route.providerSessionId, existingWork.taskId);
         console.info(`[collaboration-routing] event=queued_work_rerouted taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} fromSessionId=${existingWork.sessionId} toSessionId=${route.providerSessionId}`);
-        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.workItemId);
+        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.taskId);
         continue;
       }
       if (["failed", "cancelled"].includes(existingWork.status)) {
-        store.updateAgentWorkItem(existingWork.workItemId, {
+        store.updateAgentTask(existingWork.taskId, {
           status: "queued",
           startedAt: null,
           completedAt: null,
           targetTurnId: null,
           lastError: null
         });
-        registerRuntimeQueuedWork(existingWork.sessionId, existingWork.workItemId);
-        scheduleAgentWorkDrain(existingWork.sessionId, null, existingWork.workItemId);
+        registerRuntimeQueuedWork(existingWork.sessionId, existingWork.taskId);
+        scheduleAgentWorkDrain(existingWork.sessionId, null, existingWork.taskId);
       }
       continue;
     }
     const agent = collaborationCore.getAgent(delivery.recipientAgentId);
     const sessionId = route.providerSessionId;
     if (!envelope || !agent || !sessionId) continue;
-    const workItem = store.enqueueAgentWorkItem({
-      workItemId: `delivery:${delivery.deliveryId}`,
+    const task = store.enqueueAgentTask({
+      taskId: `delivery:${delivery.deliveryId}`,
       agentId: agent.agentId,
       sessionId,
       kind: "collaboration",
@@ -6684,8 +6715,8 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
         recipientAgentName: agent.name,
         initiatorSessionId: envelope.task.initiatorSessionId,
         recipientSessionId: envelope.task.recipientSessionId,
-        sourceWorkItemId: envelope.task.sourceWorkItemId,
-        targetWorkItemId: envelope.task.workItemId,
+        sourceTaskId: envelope.task.sourceTaskId,
+        targetTaskId: envelope.task.taskId,
         routeStatus: envelope.task.routeStatus,
         routingVersion: envelope.task.routingVersion,
         taskTitle: envelope.task.title,
@@ -6696,14 +6727,14 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       deliveryId: delivery.deliveryId,
       createdAt: delivery.createdAt
     });
-    registerRuntimeQueuedWork(sessionId, workItem.workItemId);
+    registerRuntimeQueuedWork(sessionId, task.taskId);
     if (delivery.status !== "queued") {
       collaborationCore.updateDelivery(delivery.deliveryId, { status: "queued", nextAttemptAt: null, lastError: null });
       collaborationCore.recordDeliveryEvent(delivery.deliveryId, "delivery_queued", { sessionId, reason: "agent_work_queue" });
     }
     console.info(`[collaboration-routing] event=delivery_enqueued taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} channelId=${route.channelId ?? "none"} routeMode=${route.mode ?? "task_route"} logicalSessionId=${route.sessionId} providerSessionId=${sessionId}`);
-    emitEvent("AgentWorkQueued", { sessionId, workItem, queuePosition: null, source: workItem.source }, { sessionId, source: workItem.source });
-    scheduleAgentWorkDrain(sessionId, null, workItem.workItemId);
+    emitEvent("AgentWorkQueued", { sessionId, task, queuePosition: null, source: task.source }, { sessionId, source: task.source });
+    scheduleAgentWorkDrain(sessionId, null, task.taskId);
   }
 }
 
@@ -6723,18 +6754,18 @@ async function drainAgentWork(sessionId) {
   }
 }
 
-const workItemSessionRepairs = new Map();
+const taskSessionRepairs = new Map();
 
-function incompleteWorkItemCanSelfRepair(workItem) {
-  const status = String(workItem?.status ?? "").trim().toLowerCase();
-  return Boolean(workItem?.id)
+function incompleteTaskCanSelfRepair(task) {
+  const status = String(task?.status ?? "").trim().toLowerCase();
+  return Boolean(task?.id)
     && !["done", "complete", "completed", "canceled", "cancelled"].includes(status);
 }
 
-function workItemSessionRepairProof(sessionId, failedWork, error) {
+function taskSessionRepairProof(sessionId, failedWork, error) {
   const session = store.getSession(sessionId);
-  const workItem = session?.workItemId ? store.getWorkItem(session.workItemId) : null;
-  if (!session || !workItem) return null;
+  const task = session?.taskId ? store.getTask(session.taskId) : null;
+  if (!session || !task) return null;
   const turnCount = Number(store.selectOne(
     "SELECT COUNT(*) AS count FROM session_turns WHERE session_id=?",
     [session.id]
@@ -6745,13 +6776,13 @@ function workItemSessionRepairProof(sessionId, failedWork, error) {
     [session.id]
   );
   const repairCount = Number(store.selectOne(
-    "SELECT COUNT(*) AS count FROM work_session_startup_operations WHERE work_item_id=? AND source='self-repair'",
-    [workItem.id]
+    "SELECT COUNT(*) AS count FROM work_session_startup_operations WHERE task_id=? AND source='self-repair'",
+    [task.id]
   )?.count ?? 0);
   const logical = store.getLogicalSessionByLegacySessionId(session.id);
-  const agent = store.getAgent(workItem.main_agent_id ?? session.agentId);
-  const policy = evaluateWorkItemSessionRepair({
-    workItem,
+  const agent = store.getAgent(task.main_agent_id ?? session.agentId);
+  const policy = evaluateTaskSessionRepair({
+    task,
     session,
     failedWork,
     error,
@@ -6762,78 +6793,78 @@ function workItemSessionRepairProof(sessionId, failedWork, error) {
     agent
   });
   if (!policy.eligible) return null;
-  return { workItem, session, logical, agent, repairCount };
+  return { task, session, logical, agent, repairCount };
 }
 
-async function selfRepairWorkItemSession(sessionId, failedWork, error) {
-  const proof = workItemSessionRepairProof(sessionId, failedWork, error);
+async function selfRepairTaskSession(sessionId, failedWork, error) {
+  const proof = taskSessionRepairProof(sessionId, failedWork, error);
   if (!proof) return null;
-  const existing = workItemSessionRepairs.get(proof.workItem.id);
+  const existing = taskSessionRepairs.get(proof.task.id);
   if (existing) return existing;
   const repair = (async () => {
     const result = await workSessionStartupCoordinator.start({
-      workItemId: proof.workItem.id,
+      taskId: proof.task.id,
       requestedAgentId: proof.agent.agentId,
       providerId: proof.logical.activeBinding.providerId,
       title: proof.session.title,
-      idempotencyKey: `self-repair:${proof.workItem.id}:${proof.session.id}`,
+      idempotencyKey: `self-repair:${proof.task.id}:${proof.session.id}`,
       replacingSessionId: proof.session.id,
       source: "self-repair",
       actorId: proof.agent.agentId
     });
-    for (const queued of store.listAgentWorkItemsForSession(proof.session.id, { statuses: ["queued"] })) {
-      store.updateAgentWorkItem(queued.workItemId, {
+    for (const queued of store.listAgentTasksForSession(proof.session.id, { statuses: ["queued"] })) {
+      store.updateAgentTask(queued.taskId, {
         status: "cancelled",
         lastError: `Superseded by self-repaired Session ${result.session.id}.`
       });
     }
     const deletion = await sessionApplicationService.deleteUnusableSession(proof.session.id, {
-      source: "work-item-self-repair",
+      source: "task-self-repair",
       actorId: proof.agent.agentId,
       replacementSessionId: result.session.id
     });
     if (!deletion.providerDeleted) {
-      console.warn(`[work-item-self-repair] removed unusable local Session after Provider deletion failed previousSession=${proof.session.id} code=${deletion.providerErrorCode ?? "unknown"}`);
+      console.warn(`[task-self-repair] removed unusable local Session after Provider deletion failed previousSession=${proof.session.id} code=${deletion.providerErrorCode ?? "unknown"}`);
     }
-    emitEvent("WorkItemSessionRepaired", {
-      workItemId: proof.workItem.id,
+    emitEvent("TaskSessionRepaired", {
+      taskId: proof.task.id,
       previousSessionId: proof.session.id,
       sessionId: result.session.id,
       repairAttempt: proof.repairCount + 1,
       reason: "provider-session-unavailable"
     }, { sessionId: result.session.id, source: { type: "self-repair" } });
-    console.warn(`[work-item-self-repair] workItem=${proof.workItem.id} previousSession=${proof.session.id} session=${result.session.id} attempt=${proof.repairCount + 1}`);
+    console.warn(`[task-self-repair] task=${proof.task.id} previousSession=${proof.session.id} session=${result.session.id} attempt=${proof.repairCount + 1}`);
     return result;
-  })().finally(() => workItemSessionRepairs.delete(proof.workItem.id));
-  workItemSessionRepairs.set(proof.workItem.id, repair);
+  })().finally(() => taskSessionRepairs.delete(proof.task.id));
+  taskSessionRepairs.set(proof.task.id, repair);
   return repair;
 }
 
-async function repairBrokenWorkItemSessionsAtStartup() {
+async function repairBrokenTaskSessionsAtStartup() {
   let repaired = 0;
-  for (const workItem of store.listWorkItems()) {
-    if (!incompleteWorkItemCanSelfRepair(workItem) || !workItem.current_session_id) continue;
-    const failures = store.listAgentWorkItemsForSession(workItem.current_session_id, { statuses: ["failed"] });
+  for (const task of store.listTasks()) {
+    if (!incompleteTaskCanSelfRepair(task) || !task.current_session_id) continue;
+    const failures = store.listAgentTasksForSession(task.current_session_id, { statuses: ["failed"] });
     const failedWork = failures.find((item) => historicalProviderSessionUnavailable(item.lastError));
     if (!failedWork) continue;
     const error = Object.assign(new Error(failedWork.lastError), {
       code: "PROVIDER_SESSION_UNAVAILABLE",
       safeToRetry: true
     });
-    if (await selfRepairWorkItemSession(workItem.current_session_id, failedWork, error)) repaired += 1;
+    if (await selfRepairTaskSession(task.current_session_id, failedWork, error)) repaired += 1;
   }
   return repaired;
 }
 
-async function deleteHistoricalUnusableWorkItemSessionsAtStartup() {
+async function deleteHistoricalUnusableTaskSessionsAtStartup() {
   let deleted = 0;
-  for (const sessionId of store.listUnusableReplacedWorkItemSessionIds()) {
+  for (const sessionId of store.listUnusableReplacedTaskSessionIds()) {
     const result = await sessionApplicationService.deleteUnusableSession(sessionId, {
-      source: "work-item-self-repair-startup-cleanup"
+      source: "task-self-repair-startup-cleanup"
     });
     if (result.deleted) deleted += 1;
     if (!result.providerDeleted) {
-      console.warn(`[work-item-self-repair] startup removed unusable local Session after Provider deletion failed previousSession=${sessionId} code=${result.providerErrorCode ?? "unknown"}`);
+      console.warn(`[task-self-repair] startup removed unusable local Session after Provider deletion failed previousSession=${sessionId} code=${result.providerErrorCode ?? "unknown"}`);
     }
   }
   return deleted;
@@ -6843,26 +6874,26 @@ async function drainAgentWorkSession(sessionId) {
   const boundAgent = collaborationCore.getAgentForSession(sessionId);
   if (!boundAgent) return;
 
-  const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
+  const runningWork = store.getRunningAgentTaskForSession(sessionId);
   if (runningWork) {
     const liveState = await inspectCollaborationSession(sessionId);
     if (liveState === "running" || liveState === "missing") return;
     const patch = interruptedAgentWorkRecoveryPatch(runningWork);
-    const recoveredWork = patch ? store.updateAgentWorkItem(runningWork.workItemId, patch) : null;
+    const recoveredWork = patch ? store.updateAgentTask(runningWork.taskId, patch) : null;
     if (recoveredWork?.status === "cancelled") {
-      emitEvent("AgentWorkCompleted", { sessionId: runningWork.sessionId, workItem: recoveredWork }, {
+      emitEvent("AgentWorkCompleted", { sessionId: runningWork.sessionId, task: recoveredWork }, {
         sessionId: runningWork.sessionId,
         source: runningWork.source
       });
       workspaceContinuationCoordinator.recordWorkSettled(recoveredWork);
     } else if (recoveredWork?.status === "queued") {
-      emitEvent("AgentWorkQueued", { sessionId: runningWork.sessionId, workItem: recoveredWork, queuePosition: null, source: runningWork.source }, {
+      emitEvent("AgentWorkQueued", { sessionId: runningWork.sessionId, task: recoveredWork, queuePosition: null, source: runningWork.source }, {
         sessionId: runningWork.sessionId,
         source: runningWork.source
       });
       workspaceContinuationCoordinator.recordWorkRequeued(recoveredWork);
     }
-    console.log(`[agent-work] recovered orphaned work agent=${boundAgent.agentId} session=${sessionId} work=${runningWork.workItemId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
+    console.log(`[agent-work] recovered orphaned work agent=${boundAgent.agentId} session=${sessionId} work=${runningWork.taskId} status=${recoveredWork?.status ?? "unchanged"} liveState=${liveState}`);
     return;
   }
 
@@ -6873,52 +6904,52 @@ async function drainAgentWorkSession(sessionId) {
     if (next.source?.type === "session_channel") {
       const envelope = sessionChannelService.getDeliveryEnvelope(next.deliveryId);
       if (!envelope) {
-        const failedWork = store.updateAgentWorkItem(next.workItemId, {
+        const failedWork = store.updateAgentTask(next.taskId, {
           status: "failed", lastError: `Channel delivery ${next.deliveryId} no longer has an envelope.`
         });
-        forgetRuntimeQueuedWork(sessionId, next.workItemId);
-        emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, { sessionId, source: next.source });
+        forgetRuntimeQueuedWork(sessionId, next.taskId);
+        emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, { sessionId, source: next.source });
         return;
       }
       try {
         collaborationRoute = sessionChannelService.resolveDeliveryRoute(next.deliveryId);
         if (collaborationRoute.providerSessionId !== sessionId) {
-          store.updateAgentWorkItem(next.workItemId, {
+          store.updateAgentTask(next.taskId, {
             sessionId: collaborationRoute.providerSessionId,
             source: { ...next.source, recipientSessionId: collaborationRoute.sessionId }
           });
-          moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.workItemId);
-          scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.workItemId);
+          moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.taskId);
+          scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.taskId);
           return;
         }
       } catch (error) {
         sessionChannelService.updateDelivery(next.deliveryId, {
           status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
         });
-        const failedWork = store.updateAgentWorkItem(next.workItemId, { status: "failed", lastError: error.message });
-        forgetRuntimeQueuedWork(sessionId, next.workItemId);
-        emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, { sessionId, source: next.source });
+        const failedWork = store.updateAgentTask(next.taskId, { status: "failed", lastError: error.message });
+        forgetRuntimeQueuedWork(sessionId, next.taskId);
+        emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, { sessionId, source: next.source });
         return;
       }
     } else {
     const envelope = collaborationCore.getDeliveryEnvelope(next.deliveryId);
     if (!envelope) {
-      const failedWork = store.updateAgentWorkItem(next.workItemId, {
+      const failedWork = store.updateAgentTask(next.taskId, {
         status: "failed",
         lastError: `Collaboration delivery ${next.deliveryId} no longer has an envelope.`
       });
-      forgetRuntimeQueuedWork(sessionId, next.workItemId);
-      emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, { sessionId, source: next.source });
+      forgetRuntimeQueuedWork(sessionId, next.taskId);
+      emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, { sessionId, source: next.source });
       return;
     }
     try {
       collaborationRoute = await resolveCollaborationDeliveryRoute(envelope, "agent_work_dequeue_preflight");
       if (collaborationRoute.providerSessionId !== sessionId) {
         const source = { ...next.source, recipientSessionId: collaborationRoute.sessionId };
-        store.updateAgentWorkItem(next.workItemId, { sessionId: collaborationRoute.providerSessionId, source });
-        moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.workItemId);
+        store.updateAgentTask(next.taskId, { sessionId: collaborationRoute.providerSessionId, source });
+        moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.taskId);
         console.info(`[collaboration-routing] event=dequeue_route_changed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} fromSessionId=${sessionId} toSessionId=${collaborationRoute.providerSessionId}`);
-        scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.workItemId);
+        scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.taskId);
         return;
       }
     } catch (error) {
@@ -6927,12 +6958,12 @@ async function drainAgentWorkSession(sessionId) {
         envelope,
         eventType: "dequeue_route_failed"
       });
-      const failedWork = store.updateAgentWorkItem(next.workItemId, {
+      const failedWork = store.updateAgentTask(next.taskId, {
         status: "failed",
         lastError: delivery?.lastError ?? error.message
       });
-      forgetRuntimeQueuedWork(sessionId, next.workItemId);
-      emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, {
+      forgetRuntimeQueuedWork(sessionId, next.taskId);
+      emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, {
         sessionId,
         source: next.source
       });
@@ -6944,12 +6975,12 @@ async function drainAgentWorkSession(sessionId) {
   logSessionMessageLatency(latencyTrace, "task_dequeued");
 
   if (boundAgent.agentId !== next.agentId) {
-    const failedWork = store.updateAgentWorkItem(next.workItemId, {
+    const failedWork = store.updateAgentTask(next.taskId, {
       status: "failed",
       lastError: `Queued work target Session ${sessionId} is no longer bound to Agent ${next.agentId}.`
     });
-    forgetRuntimeQueuedWork(sessionId, next.workItemId);
-    emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, {
+    forgetRuntimeQueuedWork(sessionId, next.taskId);
+    emitEvent("AgentWorkFailed", { sessionId, task: failedWork }, {
       sessionId,
       source: next.source
     });
@@ -6968,9 +6999,9 @@ async function drainAgentWorkSession(sessionId) {
   }
   if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(sessionId))) return;
 
-  const claimed = store.claimAgentWorkItem(next.workItemId);
+  const claimed = store.claimAgentTask(next.taskId);
   if (!claimed) return;
-  forgetRuntimeQueuedWork(sessionId, next.workItemId);
+  forgetRuntimeQueuedWork(sessionId, next.taskId);
   logSessionMessageLatency(latencyTrace, "task_claimed");
   try {
     let turnId = null;
@@ -6980,12 +7011,12 @@ async function drainAgentWorkSession(sessionId) {
         : await collaborationDispatcher.dispatch(claimed.deliveryId, { resolvedRoute: collaborationRoute });
       if (delivered?.status !== "delivered") {
         const status = delivered?.status === "failed" ? "failed" : "queued";
-        store.updateAgentWorkItem(claimed.workItemId, {
+        store.updateAgentTask(claimed.taskId, {
           status,
           startedAt: null,
           lastError: delivered?.lastError ?? null
         });
-        if (status === "queued") registerRuntimeQueuedWork(claimed.sessionId, claimed.workItemId);
+        if (status === "queued") registerRuntimeQueuedWork(claimed.sessionId, claimed.taskId);
         return;
       }
       turnId = delivered.targetTurnId;
@@ -6993,44 +7024,44 @@ async function drainAgentWorkSession(sessionId) {
       workspaceContinuationCoordinator.assertWorkTarget(claimed);
       const response = await sendUnifiedSessionMessage(claimed.sessionId, claimed.text, claimed.source, {
         fromAgentWorkQueue: true,
-        agentWorkItem: claimed,
+        agentTask: claimed,
         latencyTrace
       });
       turnId = response.result?.turn?.id ?? response.result?.turnId ?? null;
     }
-    if (store.getAgentWorkItem(claimed.workItemId)?.status === "running") {
-      store.updateAgentWorkItem(claimed.workItemId, { status: "running", targetTurnId: turnId, lastError: null });
-      const startedWork = store.getAgentWorkItem(claimed.workItemId);
-      emitEvent("AgentWorkStarted", { sessionId: claimed.sessionId, workItem: startedWork }, {
+    if (store.getAgentTask(claimed.taskId)?.status === "running") {
+      store.updateAgentTask(claimed.taskId, { status: "running", targetTurnId: turnId, lastError: null });
+      const startedWork = store.getAgentTask(claimed.taskId);
+      emitEvent("AgentWorkStarted", { sessionId: claimed.sessionId, task: startedWork }, {
         sessionId: claimed.sessionId,
         source: claimed.source
       });
       workspaceContinuationCoordinator.recordWorkStarted(startedWork);
     }
-    sessionBusyRetryCounts.delete(claimed.workItemId);
+    sessionBusyRetryCounts.delete(claimed.taskId);
   } catch (error) {
     const busyRetryCount = error.code === "SESSION_BUSY"
-      ? (sessionBusyRetryCounts.get(claimed.workItemId) ?? 0) + 1
+      ? (sessionBusyRetryCounts.get(claimed.taskId) ?? 0) + 1
       : 0;
     const shouldRetryBusy = error.code === "SESSION_BUSY" && busyRetryCount <= MAX_SESSION_BUSY_RETRIES;
-    if (shouldRetryBusy) sessionBusyRetryCounts.set(claimed.workItemId, busyRetryCount);
-    const failedWork = store.updateAgentWorkItem(claimed.workItemId, {
+    if (shouldRetryBusy) sessionBusyRetryCounts.set(claimed.taskId, busyRetryCount);
+    const failedWork = store.updateAgentTask(claimed.taskId, {
       status: shouldRetryBusy ? "queued" : "failed",
       startedAt: shouldRetryBusy ? null : claimed.startedAt,
       lastError: error.message
     });
     if (shouldRetryBusy) {
-      registerRuntimeQueuedWork(claimed.sessionId, claimed.workItemId);
+      registerRuntimeQueuedWork(claimed.sessionId, claimed.taskId);
     } else {
-      sessionBusyRetryCounts.delete(claimed.workItemId);
-      emitEvent("AgentWorkFailed", { sessionId: claimed.sessionId, workItem: failedWork }, {
+      sessionBusyRetryCounts.delete(claimed.taskId);
+      emitEvent("AgentWorkFailed", { sessionId: claimed.sessionId, task: failedWork }, {
         sessionId: claimed.sessionId,
         source: claimed.source
       });
       workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     }
     if (!shouldRetryBusy) {
-      const repaired = await selfRepairWorkItemSession(claimed.sessionId, failedWork, error);
+      const repaired = await selfRepairTaskSession(claimed.sessionId, failedWork, error);
       if (!repaired) throw error;
     }
   }
@@ -7040,7 +7071,7 @@ async function tickAgentWorkQueue() {
   await syncSessionChannelDeliveriesIntoAgentWorkQueue();
   await syncCollaborationDeliveriesIntoAgentWorkQueue();
   await Promise.all(
-    [...runtimeQueuedWorkItemsBySession.keys()].map((sessionId) => drainAgentWork(sessionId))
+    [...runtimeQueuedTasksBySession.keys()].map((sessionId) => drainAgentWork(sessionId))
   );
 }
 
@@ -7607,20 +7638,20 @@ async function handleClaudeTurnSettled(event) {
   const envelope = mapClaudeTurnSettled({ event, binding: envelopeBinding, receivedAt: now() });
   const ingestion = providerEventIngestion.ingest(envelope);
   if (ingestion.status !== "applied") return;
-  const runningWork = store.getRunningAgentWorkItemForSession(sessionId);
+  const runningWork = store.getRunningAgentTaskForSession(sessionId);
   if (runningWork) {
-    const updatedWork = store.updateAgentWorkItem(runningWork.workItemId, {
+    const updatedWork = store.updateAgentTask(runningWork.taskId, {
       status: event.status === "completed" ? "completed" : (event.status === "cancelled" ? "cancelled" : "failed"),
       targetTurnId: event.turnId,
       lastError: event.error ?? null
     });
-    emitEvent("AgentWorkCompleted", { sessionId, workItem: updatedWork }, {
+    emitEvent("AgentWorkCompleted", { sessionId, task: updatedWork }, {
       sessionId,
       source: runningWork.source
     });
     workspaceContinuationCoordinator.recordWorkSettled(updatedWork);
   }
-  settleEntityWorkItemFromSession(store.getSession(sessionId));
+  settleEntityTaskFromSession(store.getSession(sessionId));
   const agent = collaborationCore.getAgentForSession(sessionId);
   if (event.status === "completed") {
     refreshWorkspaceInventoryAfterTurn(logical);
@@ -7975,40 +8006,40 @@ async function projectWorktreeStatus(sessionId) {
   return { project, ...runtime, gitHubPush };
 }
 
-function completedWorkItemStatus(status) {
+function completedTaskStatus(status) {
   return ["done", "complete", "completed"].includes(String(status ?? ""));
 }
 
-async function ensureWorkItemWorkspace({ workItem, session = null }) {
-  return workItemWorkspaceService.ensure({ workItem, session });
+async function ensureTaskWorkspace({ task, session = null }) {
+  return taskWorkspaceService.ensure({ task, session });
 }
 
-async function inspectWorkItemWorktree(workItemId) {
-  const workItem = store.getWorkItem(workItemId);
-  if (!workItem) {
-    const error = new Error(`WorkItem not found: ${workItemId}`);
-    error.code = "WORK_ITEM_NOT_FOUND";
+async function inspectTaskWorktree(taskId) {
+  const task = store.getTask(taskId);
+  if (!task) {
+    const error = new Error(`Task not found: ${taskId}`);
+    error.code = "TASK_NOT_FOUND";
     error.statusCode = 404;
     throw error;
   }
-  const sessions = store.listSessionsByWorkItem(workItemId);
-  const session = sessions.find((candidate) => candidate.id === workItem.current_session_id)
+  const sessions = store.listSessionsByTask(taskId);
+  const session = sessions.find((candidate) => candidate.id === task.current_session_id)
     ?? sessions.at(-1)
     ?? null;
   if (!session) {
-    if (!workItem.main_workspace_id) {
+    if (!task.main_workspace_id) {
       return { status: "none", sessionId: null, worktree: null, canReclaim: false, blocker: null };
     }
     try {
-      const project = await projectApplicationService.requireProject(workItem.main_workspace_id);
+      const project = await projectApplicationService.requireProject(task.main_workspace_id);
       const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
       const startup = store.selectOne(
         `SELECT worktree_id FROM work_session_startup_operations
-         WHERE work_item_id=? AND worktree_id IS NOT NULL
+         WHERE task_id=? AND worktree_id IS NOT NULL
          ORDER BY allocated_at DESC LIMIT 1`,
-        [workItem.id]
+        [task.id]
       );
-      const expectedBranch = `workitem/${String(workItem.id).includes(":") ? String(workItem.id).split(":").at(-1) : workItem.id}`;
+      const expectedBranch = `task/${String(task.id).includes(":") ? String(task.id).split(":").at(-1) : task.id}`;
       const worktree = status.worktrees.find((candidate) =>
         candidate.isMain !== true && (
           candidate.worktreeId === startup?.worktree_id || candidate.branchName === expectedBranch
@@ -8064,15 +8095,15 @@ async function inspectWorkItemWorktree(workItemId) {
     .map((binding) => binding.sessionId ? store.getSession(binding.sessionId) : null)
     .filter(Boolean);
   const hasBusySession = boundSessions.some((candidate) => sessionHasActiveRun(candidate));
-  const hasIncompleteWorkItem = boundSessions.some((candidate) => {
-    const boundWorkItem = candidate.workItemId ? store.getWorkItem(candidate.workItemId) : null;
-    return boundWorkItem && !completedWorkItemStatus(boundWorkItem.status);
+  const hasIncompleteTask = boundSessions.some((candidate) => {
+    const boundTask = candidate.taskId ? store.getTask(candidate.taskId) : null;
+    return boundTask && !completedTaskStatus(boundTask.lifecycle_state);
   });
   let blocker = null;
-  if (!completedWorkItemStatus(workItem.status)) blocker = "WORK_ITEM_NOT_COMPLETED";
+  if (!completedTaskStatus(task.lifecycle_state)) blocker = "TASK_NOT_COMPLETED";
   else if (worktree.isMain) blocker = "MAIN_WORKTREE";
   else if (hasBusySession) blocker = "SESSION_BUSY";
-  else if (hasIncompleteWorkItem) blocker = "SHARED_WITH_ACTIVE_WORK_ITEM";
+  else if (hasIncompleteTask) blocker = "SHARED_WITH_ACTIVE_TASK";
   else if (worktree.dirty) blocker = "UNCOMMITTED_CHANGES";
   else if (worktree.mergedIntoMain !== true) blocker = "NOT_MERGED_INTO_MAIN";
   else if (worktree.pendingIntegration) blocker = "INTEGRATION_PENDING";
@@ -8086,7 +8117,7 @@ async function inspectWorkItemWorktree(workItemId) {
   };
 }
 
-async function removeWorkItemDeletionWorktree({ inspection, force, confirmedBranchName }) {
+async function removeTaskDeletionWorktree({ inspection, force, confirmedBranchName }) {
   const worktree = inspection.worktree;
   const project = await projectApplicationService.requireProject(inspection.repositoryId);
   const logicalSessionIds = (worktree.sessions ?? []).map((item) => item.logicalSessionId);
@@ -8109,8 +8140,8 @@ async function removeWorkItemDeletionWorktree({ inspection, force, confirmedBran
   return cleanup;
 }
 
-async function reclaimWorkItemWorktree(workItemId) {
-  const inspection = await inspectWorkItemWorktree(workItemId);
+async function reclaimTaskWorktree(taskId) {
+  const inspection = await inspectTaskWorktree(taskId);
   if (!inspection.canReclaim || !inspection.worktree || !inspection.sessionId) {
     const error = new Error("This Worktree is not safe to reclaim yet.");
     error.code = inspection.blocker ?? "WORKTREE_NOT_RECLAIMABLE";
@@ -8128,14 +8159,14 @@ async function reclaimWorkItemWorktree(workItemId) {
   for (const logicalSessionId of logicalSessionIds) {
     store.retireLogicalSessionWorkspace(logicalSessionId, inspection.worktree.worktreeId);
   }
-  emitEvent("WorkItemWorktreeReclaimed", {
-    workItemId,
+  emitEvent("TaskWorktreeReclaimed", {
+    taskId,
     sourceWorktreeId: inspection.worktree.worktreeId,
     logicalSessionIds,
     cleanup
   });
   return {
-    ...(await inspectWorkItemWorktree(workItemId)),
+    ...(await inspectTaskWorktree(taskId)),
     cleanup
   };
 }
@@ -8470,7 +8501,7 @@ function inspectDataRootMigrationBlockers() {
   const blockers = [];
   const checks = [
     ["active_session_turns", "SELECT COUNT(*) AS count FROM session_turns WHERE execution_status IN ('running', 'blocked')"],
-    ["agent_work_queue", "SELECT COUNT(*) AS count FROM agent_work_items WHERE status IN ('queued', 'running')"],
+    ["agent_work_queue", "SELECT COUNT(*) AS count FROM agent_operations WHERE status IN ('queued', 'running')"],
     ["scheduled_tasks", "SELECT COUNT(*) AS count FROM scheduled_session_runs WHERE status IN ('claimed', 'queued', 'running', 'retry_wait')"],
     ["worktree_integrations", "SELECT COUNT(*) AS count FROM worktree_integration_jobs WHERE status IN ('queued', 'running', 'cancellation_requested', 'replanning')"],
     ["artifact_writes", "SELECT COUNT(*) AS count FROM artifact_content_operations WHERE status IN ('prepared', 'file_committed')"]
@@ -8480,12 +8511,13 @@ function inspectDataRootMigrationBlockers() {
     if (count > 0) blockers.push({ kind, count });
   }
   if (dshLiveTurns.size > 0) blockers.push({ kind: "live_provider_turns", count: dshLiveTurns.size });
-  if (workItemMemoryExtractions.size > 0) blockers.push({ kind: "background_memory_tasks", count: workItemMemoryExtractions.size });
+  if (taskMemoryExtractions.size > 0) blockers.push({ kind: "background_memory_tasks", count: taskMemoryExtractions.size });
   if (pendingCodexChoiceParses.size > 0) blockers.push({ kind: "background_choice_tasks", count: pendingCodexChoiceParses.size });
   return blockers;
 }
 
 async function quiescePersistentRuntime() {
+  turnObservability.flush();
   if (agentWorkQueueInterval) {
     clearInterval(agentWorkQueueInterval);
     agentWorkQueueInterval = null;
@@ -8740,7 +8772,7 @@ function route(request, response) {
     }),
     onSearchSkills: (agentId, intent) => skillRegistryService.searchForAgent(agentId, intent),
     onLoadSkill: (agentId, skillId) => skillRegistryService.loadForAgent(agentId, skillId),
-    onReportWorkItemAcceptance: reportWorkItemAcceptanceForAgent
+    onReportTaskAcceptance: reportTaskAcceptanceForAgent
   })) {
     return;
   }
@@ -8790,9 +8822,9 @@ function route(request, response) {
     memoryRecallService,
     memoryLifecycleService,
     assistantService,
-    startWorkItemExecution: (input) => workSessionStartupCoordinator.start(input),
-    beginWorkItemExecution: (input) => workSessionStartupCoordinator.begin(input),
-    getWorkItemStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
+    startTaskExecution: (input) => workSessionStartupCoordinator.start(input),
+    beginTaskExecution: (input) => workSessionStartupCoordinator.begin(input),
+    getTaskStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
     launchAgentSession,
     launchObjectiveChatSession,
@@ -8802,12 +8834,12 @@ function route(request, response) {
     },
     backgroundAgentService,
     skillRegistryService,
-    inspectWorkItemWorktree,
-    reclaimWorkItemWorktree,
-    inspectWorkItemDeletion: (workItemId, actor) => workItemDeletionService.inspect(workItemId, actor),
-    deleteWorkItemSafely: (workItemId, input, actor) => workItemDeletionService.delete(workItemId, input, actor),
-    restoreWorkItemExecution: (workItemId) => workItemExecutionOrchestrator.restore(workItemId),
-    workItemCompletionService,
+    inspectTaskWorktree,
+    reclaimTaskWorktree,
+    inspectTaskDeletion: (taskId, actor) => taskDeletionService.inspect(taskId, actor),
+    deleteTaskSafely: (taskId, input, actor) => taskDeletionService.delete(taskId, input, actor),
+    restoreTaskExecution: (taskId) => taskExecutionOrchestrator.restore(taskId),
+    taskCompletionService,
     resolveAgentAvailability: (agent) => {
       return { status: "available", reason: null };
     },
@@ -8817,8 +8849,8 @@ function route(request, response) {
       null,
       reservedSessionTitleKeys
     ),
-    observeWorkItemPerformance: (measurement) => {
-      console.info(`[work-item-performance] ${JSON.stringify(measurement)}`);
+    observeTaskPerformance: (measurement) => {
+      console.info(`[task-performance] ${JSON.stringify(measurement)}`);
     },
     observeFormAssistPerformance: (measurement) => {
       console.info(`[form-assist-performance] ${JSON.stringify(measurement)}`);
@@ -9546,7 +9578,7 @@ function route(request, response) {
     /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations$/
   );
   const projectObjectiveIntegrationConflictMatch = url.pathname.match(
-    /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations\/([^/]+)\/conflict-work-item$/
+    /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations\/([^/]+)\/conflict-task$/
   );
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   if (request.method === "GET" && url.pathname === "/worktree-management/repositories") {
@@ -9652,7 +9684,7 @@ function route(request, response) {
     const objectiveId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[2]);
     const runId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[3]);
     readJson(request)
-      .then((input) => projectWorktreeIntegrationService.createConflictWorkItem(
+      .then((input) => projectWorktreeIntegrationService.createConflictTask(
         projectId,
         objectiveId,
         runId,
@@ -10503,7 +10535,7 @@ async function projectToolsetRunIsolationOptions(sessionId, cwd, action) {
   if (resolve(cwd) !== resolve(startup.canonicalWorktreePath)) throw Object.assign(new Error("Toolset action Worktree differs from authoritative Startup."), { code: "RUN_UNAUTHORIZED", statusCode: 403 });
   const authority = await runIsolationAuthorityResolver.resolve({
     logicalSessionId: runtime.logicalSessionId,
-    workItemId: runtime.workItemId,
+    taskId: runtime.taskId,
     repositoryId: runtime.repositoryId,
     worktreeId: runtime.worktreeId,
     action,
@@ -10512,7 +10544,7 @@ async function projectToolsetRunIsolationOptions(sessionId, cwd, action) {
   });
   return {
     prepare: { mode: "development", sourceAware: true, toolsetRequired: true, startupBindingReceiptRef: authority.startupBindingReceiptRef, repositorySourceSnapshotReceiptRef: authority.repositorySourceSnapshotReceiptRef, toolsetValidationReceiptPointer: authority.toolsetValidationReceiptPointer, idempotencyKey: `toolset:${action}:${runtime.logicalSessionId}:${randomUUID()}` },
-    session: { logicalSessionId: runtime.logicalSessionId, workItemId: runtime.workItemId, repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId },
+    session: { logicalSessionId: runtime.logicalSessionId, taskId: runtime.taskId, repositoryId: runtime.repositoryId, worktreeId: runtime.worktreeId },
     sourceIdentity: runtimeSourceIdentity(runtime.snapshot)
   };
 }
@@ -10524,8 +10556,8 @@ function projectToolsetAuthenticatedSession(sessionId) {
     : store.getLogicalSessionByLegacySessionId(reference.sessionId);
   if (!logical?.logicalSessionId) throw Object.assign(new Error("Project Toolset requires an authenticated logical Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
   const ownership = store.assertLogicalWorkSessionBinding(logical.logicalSessionId);
-  if (!ownership?.workItemId) throw Object.assign(new Error("Project Toolset requires a WorkItem-bound Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
-  return Object.freeze({ logicalSessionId: logical.logicalSessionId, workItemId: ownership.workItemId });
+  if (!ownership?.taskId) throw Object.assign(new Error("Project Toolset requires a Task-bound Session."), { code: "TOOLSET_PERMISSION_DENIED", statusCode: 403 });
+  return Object.freeze({ logicalSessionId: logical.logicalSessionId, taskId: ownership.taskId });
 }
 
 function runtimeSourceIdentity(snapshot) {
@@ -10632,10 +10664,10 @@ const recoveredArtifactContentOperations = await artifactService.initialize();
 if (recoveredArtifactContentOperations.length > 0) {
   console.warn(`[artifact-recovery] ${JSON.stringify(recoveredArtifactContentOperations)}`);
 }
-const recoveredInterruptedWorkItemStarts = workSessionStartupCoordinator.recoverInterruptedStarts();
-if (recoveredInterruptedWorkItemStarts > 0) {
-  console.warn(`[work-item-start-recovery] ${JSON.stringify({
-    recoveredInterruptedWorkItemStarts
+const recoveredInterruptedTaskStarts = workSessionStartupCoordinator.recoverInterruptedStarts();
+if (recoveredInterruptedTaskStarts > 0) {
+  console.warn(`[task-start-recovery] ${JSON.stringify({
+    recoveredInterruptedTaskStarts
   })}`);
 }
 const recoveredProjectToolsets = await projectToolsetInitializer.recoverAll();
@@ -10719,7 +10751,7 @@ for (const storedSession of storedSessionsAtStartup) {
 // product state by reading Provider history or a Provider Session snapshot.
 publishProviderEventOutbox(store.listPendingEventOutbox(500));
 workspaceContinuationCoordinator.recover();
-reconcileEntityWorkItemsAtStartup();
+reconcileEntityTasksAtStartup();
 const knownActiveWorktrees = new Map();
 for (const storedSession of storedSessionsAtStartup) {
   const logical = store.getLogicalSessionByLegacySessionId(storedSession.id);
@@ -10879,16 +10911,16 @@ async function runProviderStartupMaintenance(knownWorktrees) {
       codexResetForecastMonitor.start();
     }),
     runContainedStartupOperation("session-recovery", resumeSessionRecoveryAttemptsAtStartup),
-    runContainedStartupOperation("work-item-session-repair", async () => {
-      const repaired = await repairBrokenWorkItemSessionsAtStartup();
+    runContainedStartupOperation("task-session-repair", async () => {
+      const repaired = await repairBrokenTaskSessionsAtStartup();
       if (repaired > 0) {
-        console.warn(`[work-item-self-repair] startup repaired ${repaired} WorkItem Session(s)`);
+        console.warn(`[task-self-repair] startup repaired ${repaired} Task Session(s)`);
       }
     }),
     runContainedStartupOperation("replaced-session-cleanup", async () => {
-      const deleted = await deleteHistoricalUnusableWorkItemSessionsAtStartup();
+      const deleted = await deleteHistoricalUnusableTaskSessionsAtStartup();
       if (deleted > 0) {
-        console.warn(`[work-item-self-repair] startup deleted ${deleted} replaced unusable Session(s)`);
+        console.warn(`[task-self-repair] startup deleted ${deleted} replaced unusable Session(s)`);
       }
     }),
     runContainedStartupOperation("workspace-transition-recovery", recoverPendingWorkspaceTransitions),
@@ -10957,6 +10989,7 @@ let shutdownPromise = null;
 function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
+    turnObservability.flush();
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
     if (mockProgressTimer) clearInterval(mockProgressTimer);
     if (stateSyncPublishTimer) clearTimeout(stateSyncPublishTimer);
@@ -10967,6 +11000,7 @@ function shutdown() {
     await feishuGateway.close();
     await codexRuntime.close();
     await runIsolationCoordinator?.close();
+    turnObservability.flush();
     await store.close({
       checkpoint: dataRootMigrationCoordinator.status()?.phase !== "restartRequired"
     });

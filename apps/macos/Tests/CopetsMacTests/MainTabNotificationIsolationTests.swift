@@ -59,15 +59,15 @@ struct MainTabNotificationIsolationTests {
         #expect(!router.sidebarState(for: .console).isSelected)
         #expect(router.sidebarState(for: .agents).isSelected)
 
-        router.selectTab(.sessions)
-        #expect(router.selectedTab == .sessions)
+        router.selectTab(.automations)
+        #expect(router.selectedTab == .automations)
         #expect(!router.sidebarState(for: .agents).isSelected)
-        #expect(router.sidebarState(for: .sessions).isSelected)
+        #expect(router.sidebarState(for: .automations).isSelected)
 
-        router.selectTab(.sessions)
-        #expect(router.selectedTab == .sessions)
-        #expect(router.sidebarState(for: .sessions).isSelected)
-        for tab in AppTab.allCases where tab != .sessions {
+        router.selectTab(.automations)
+        #expect(router.selectedTab == .automations)
+        #expect(router.sidebarState(for: .automations).isSelected)
+        for tab in AppTab.allCases where tab != .automations {
             #expect(!router.sidebarState(for: tab).isSelected)
         }
     }

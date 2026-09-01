@@ -18,17 +18,17 @@ async function fixture() {
   await store.initialize();
   const agent = store.createAgent({ id: "agent:recall", name: "Recall" });
   store.createObjective({ id: "objective:recall", name: "Recall" });
-  store.createWorkItem({ id: "work_item:recall", objectiveId: "objective:recall", title: "Recall" });
+  store.createTask({ id: "task:recall", objectiveId: "objective:recall", title: "Recall" });
   store.createSession({
     id: "session:recall", title: "Recall", provider: "codex-app-server", status: "running",
     sessionKind: "worker", agentId: agent.agentId,
-    objectiveId: "objective:recall", workItemId: "work_item:recall"
+    objectiveId: "objective:recall", taskId: "task:recall"
   });
   return {
     directory, dbPath, configPath, store,
     scope: {
       sessionId: "session:recall", agentId: agent.agentId,
-      objectiveId: "objective:recall", workItemId: "work_item:recall"
+      objectiveId: "objective:recall", taskId: "task:recall"
     }
   };
 }
@@ -43,13 +43,13 @@ function memory(store, input) {
   });
 }
 
-test("startup recall is bounded, trusted, high-confidence and respects WorkItem→Objective→Agent ties", async () => {
+test("startup recall is bounded, trusted, high-confidence and respects Task→Objective→Agent ties", async () => {
   const f = await fixture();
   try {
     memory(f.store, { ownerType: "agent", ownerId: "agent:recall", content: "same agent" });
     memory(f.store, { ownerType: "objective", ownerId: "objective:recall", content: "same objective" });
     memory(f.store, {
-      ownerType: "work_item", ownerId: "work_item:recall", workItemId: "work_item:recall",
+      ownerType: "task", ownerId: "task:recall", taskId: "task:recall",
       sourceSessionId: "session:recall", content: "same work item"
     });
     memory(f.store, { content: "untrusted", sourceType: "extracted", trustLevel: "untrusted" });
@@ -62,7 +62,7 @@ test("startup recall is bounded, trusted, high-confidence and respects WorkItem�
       clock: () => "2026-08-23T00:00:00.000Z"
     }).startup(f.scope);
     assert.equal(recall.memories.length, 8);
-    assert.deepEqual(recall.memories.slice(0, 3).map((item) => item.owner_type), ["work_item", "objective", "agent"]);
+    assert.deepEqual(recall.memories.slice(0, 3).map((item) => item.owner_type), ["task", "objective", "agent"]);
     assert.ok(recall.memories.every((item) => item.trust_level === "trusted" && item.confidence >= 0.7));
     assert.equal(recall.mode, "bounded_trusted");
   } finally {
@@ -133,7 +133,7 @@ test("pre-compaction preservation, consolidation audit/rollback, and recall audi
       sessionId: "session:recall", content: "Recover this before compaction", sourceEventSeqs: [1, 2]
     });
     const second = memory(f.store, {
-      ownerType: "work_item", ownerId: "work_item:recall", workItemId: "work_item:recall",
+      ownerType: "task", ownerId: "task:recall", taskId: "task:recall",
       sourceSessionId: "session:recall", content: "Second trusted checkpoint"
     });
     const consolidated = lifecycle.consolidate({

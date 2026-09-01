@@ -18,12 +18,12 @@ enum NewSessionKind: String, CaseIterable, Identifiable {
 
 enum SessionCreationTitlePolicy {
     static func defaultTitle(
-        workItemTitle: String?,
+        taskTitle: String?,
         suggestedAgentTitle: String?,
         agentName: String?
     ) -> String {
-        let workItemTitle = workItemTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !workItemTitle.isEmpty { return workItemTitle }
+        let taskTitle = taskTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !taskTitle.isEmpty { return taskTitle }
         let suggestedAgentTitle = suggestedAgentTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !suggestedAgentTitle.isEmpty { return suggestedAgentTitle }
         let agentName = agentName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -51,7 +51,7 @@ enum WorkerSessionBackgroundRetryDecision: Equatable {
 
 /// 统一 Session 创建入口。
 /// Assistant Chat 只绑定 Assistant；Objective Chat 绑定 Objective 与其 Contributor；
-/// Worker Session 强制同时绑定 WorkItem 与 IC Agent。
+/// Worker Session 强制同时绑定 CorptieTask 与 IC Agent。
 struct NewSessionCreationSheet: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -59,40 +59,40 @@ struct NewSessionCreationSheet: View {
 
     let fixedAgent: Agent?
     let fixedObjective: Objective?
-    let fixedWorkItem: WorkItem?
+    let fixedCorptieTask: CorptieTask?
     let submitsInBackground: Bool
     var onCreated: (TaskSession) -> Void
 
     @State private var kind: NewSessionKind
     @State private var selectedAgentId: String?
-    @State private var selectedWorkItemId: String?
+    @State private var selectedCorptieTaskId: String?
     @State private var selectedObjectiveId: String?
     @State private var sessionTitle = ""
     @State private var selectedProviderId = ""
     @State private var titleWasEdited = false
-    @State private var workItems: [WorkItem] = []
-    @State private var isLoadingWorkItems = false
+    @State private var tasks: [CorptieTask] = []
+    @State private var isLoadingCorptieTasks = false
     @State private var isCreating = false
     @State private var creationError: String?
 
     init(
         fixedAgent: Agent? = nil,
         fixedObjective: Objective? = nil,
-        fixedWorkItem: WorkItem? = nil,
+        fixedCorptieTask: CorptieTask? = nil,
         submitsInBackground: Bool = false,
         onCreated: @escaping (TaskSession) -> Void = { _ in }
     ) {
         self.fixedAgent = fixedAgent
         self.fixedObjective = fixedObjective
-        self.fixedWorkItem = fixedWorkItem
+        self.fixedCorptieTask = fixedCorptieTask
         self.submitsInBackground = submitsInBackground
         self.onCreated = onCreated
-        _kind = State(initialValue: fixedWorkItem != nil ? .worker : (fixedObjective != nil ? .objectiveChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat)))
+        _kind = State(initialValue: fixedCorptieTask != nil ? .worker : (fixedObjective != nil ? .objectiveChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat)))
         _selectedAgentId = State(initialValue: fixedAgent?.agentId)
         _selectedObjectiveId = State(initialValue: fixedObjective?.id)
-        _selectedWorkItemId = State(initialValue: fixedWorkItem?.id)
+        _selectedCorptieTaskId = State(initialValue: fixedCorptieTask?.id)
         _sessionTitle = State(initialValue: SessionCreationTitlePolicy.defaultTitle(
-            workItemTitle: fixedWorkItem?.title,
+            taskTitle: fixedCorptieTask?.title,
             suggestedAgentTitle: fixedAgent?.suggestedSessionTitle,
             agentName: fixedAgent?.name
         ))
@@ -169,8 +169,8 @@ struct NewSessionCreationSheet: View {
         .task(id: kind) {
             creationError = nil
             normalizeAgentSelection()
-            if kind == .worker, fixedWorkItem == nil, workItems.isEmpty {
-                await loadWorkItems()
+            if kind == .worker, fixedCorptieTask == nil, tasks.isEmpty {
+                await loadCorptieTasks()
             }
             if kind == .objectiveChat, client.objectives.isEmpty {
                 await client.refreshObjectives()
@@ -178,7 +178,7 @@ struct NewSessionCreationSheet: View {
             }
         }
         .onChange(of: selectedAgentId) { _, _ in applySuggestedTitle() }
-        .onChange(of: selectedWorkItemId) { _, _ in applySuggestedTitle() }
+        .onChange(of: selectedCorptieTaskId) { _, _ in applySuggestedTitle() }
         .onChange(of: selectedObjectiveId) { _, _ in
             if kind == .objectiveChat { normalizeAgentSelection() }
         }
@@ -228,7 +228,7 @@ struct NewSessionCreationSheet: View {
                 agentChoiceRow(agent)
             }
         } else {
-            Text(L10n("Assistant Chat Session 不绑定 WorkItem。"))
+            Text(L10n("Assistant Chat Session 不绑定 CorptieTask。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -248,45 +248,45 @@ struct NewSessionCreationSheet: View {
         }
 
         VStack(alignment: .leading, spacing: 8) {
-            Text(L10n("选择 WorkItem"))
+            Text(L10n("选择 CorptieTask"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
 
-            if let fixedWorkItem {
+            if let fixedCorptieTask {
                 selectedRow(
-                    title: fixedWorkItem.title,
-                    subtitle: fixedWorkItem.description,
+                    title: fixedCorptieTask.title,
+                    subtitle: fixedCorptieTask.description,
                     systemImage: "checklist"
                 )
-            } else if isLoadingWorkItems {
+            } else if isLoadingCorptieTasks {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 100)
-            } else if let error = client.workItemsLoadError {
+            } else if let error = client.tasksLoadError {
                 ContentUnavailableView {
-                    Label(L10n("WorkItem 加载失败"), systemImage: "exclamationmark.triangle")
+                    Label(L10n("CorptieTask 加载失败"), systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(error)
                 } actions: {
                     Button(L10n("重试")) {
-                        Task { await loadWorkItems() }
+                        Task { await loadCorptieTasks() }
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 120)
-            } else if workItems.isEmpty {
+            } else if tasks.isEmpty {
                 ContentUnavailableView(
-                    L10n("暂无 WorkItem"),
+                    L10n("暂无 CorptieTask"),
                     systemImage: "checklist",
-                    description: Text(L10n("Worker Session 必须绑定一个 WorkItem。"))
+                    description: Text(L10n("Worker Session 必须绑定一个 CorptieTask。"))
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
-                List(workItems, selection: $selectedWorkItemId) { workItem in
+                List(tasks, selection: $selectedCorptieTaskId) { task in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(workItem.title)
+                        Text(task.title)
                             .font(.body.weight(.medium))
                         HStack(spacing: 6) {
-                            Text(workItem.status)
-                            if workItem.mainWorkspaceId == nil {
+                            Text(task.lifecycleState)
+                            if task.mainWorkspaceId == nil {
                                 Text(L10n("未绑定 Workspace"))
                                     .foregroundStyle(.orange)
                             }
@@ -294,7 +294,7 @@ struct NewSessionCreationSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     }
-                    .tag(workItem.id)
+                    .tag(task.id)
                 }
                 .listStyle(.inset)
                 .frame(minHeight: 150)
@@ -302,13 +302,13 @@ struct NewSessionCreationSheet: View {
         }
     }
 
-    private func loadWorkItems() async {
-        isLoadingWorkItems = true
-        defer { isLoadingWorkItems = false }
-        guard let loaded = await client.allWorkItems() else { return }
-        workItems = loaded
-        if selectedWorkItemId == nil {
-            selectedWorkItemId = loaded.first?.id
+    private func loadCorptieTasks() async {
+        isLoadingCorptieTasks = true
+        defer { isLoadingCorptieTasks = false }
+        guard let loaded = await client.allCorptieTasks() else { return }
+        tasks = loaded
+        if selectedCorptieTaskId == nil {
+            selectedCorptieTaskId = loaded.first?.id
         }
     }
 
@@ -370,7 +370,7 @@ struct NewSessionCreationSheet: View {
         switch kind {
         case .assistantChat: return true
         case .objectiveChat: return selectedObjectiveId != nil
-        case .worker: return selectedWorkItemId != nil
+        case .worker: return selectedCorptieTaskId != nil
         }
     }
 
@@ -473,7 +473,7 @@ struct NewSessionCreationSheet: View {
     private func applySuggestedTitle() {
         guard !titleWasEdited, let agent = selectedAgent else { return }
         sessionTitle = SessionCreationTitlePolicy.defaultTitle(
-            workItemTitle: selectedWorkItem?.title,
+            taskTitle: selectedCorptieTask?.title,
             suggestedAgentTitle: agent.suggestedSessionTitle,
             agentName: agent.name
         )
@@ -484,22 +484,22 @@ struct NewSessionCreationSheet: View {
         return client.agents.first(where: { $0.agentId == selectedAgentId })
     }
 
-    private var selectedWorkItem: WorkItem? {
-        let id = fixedWorkItem?.id ?? selectedWorkItemId
+    private var selectedCorptieTask: CorptieTask? {
+        let id = fixedCorptieTask?.id ?? selectedCorptieTaskId
         return id.flatMap { selectedID in
-            client.workItems.first(where: { $0.id == selectedID })
+            client.tasks.first(where: { $0.id == selectedID })
         }
-            ?? fixedWorkItem
-            ?? workItems.first(where: { $0.id == selectedWorkItemId })
+            ?? fixedCorptieTask
+            ?? tasks.first(where: { $0.id == selectedCorptieTaskId })
     }
 
     private func createSession() {
         guard let agentId = selectedAgentId, !isCreating else { return }
         let trimmedTitle = sessionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedTitle = titleWasEdited && !trimmedTitle.isEmpty ? trimmedTitle : nil
-        if submitsInBackground, kind == .worker, let workItem = selectedWorkItem {
+        if submitsInBackground, kind == .worker, let task = selectedCorptieTask {
             enqueueWorkerSession(
-                workItem: workItem,
+                task: task,
                 agentId: agentId,
                 providerId: selectedProviderId,
                 title: requestedTitle
@@ -529,12 +529,12 @@ struct NewSessionCreationSheet: View {
                     title: requestedTitle
                 )
             case .worker:
-                guard let workItemId = selectedWorkItemId else {
+                guard let taskId = selectedCorptieTaskId else {
                     isCreating = false
                     return
                 }
                 result = await client.createSession(
-                    workItemId: workItemId,
+                    taskId: taskId,
                     agentId: agentId,
                     providerId: selectedProviderId,
                     title: requestedTitle
@@ -552,41 +552,41 @@ struct NewSessionCreationSheet: View {
     }
 
     private func enqueueWorkerSession(
-        workItem: WorkItem,
+        task: CorptieTask,
         agentId: String,
         providerId: String,
         title: String?
     ) {
-        let baselineSessionId = workItem.currentSessionId
-        let taskId = "work-item-session:\(workItem.id):\(baselineSessionId ?? "none")"
+        let baselineSessionId = task.currentSessionId
+        let taskId = "task-session:\(task.id):\(baselineSessionId ?? "none")"
         let started = BackgroundTaskCenter.shared.start(
             id: taskId,
-            title: L10nFormat("启动 WorkItem：%@", workItem.title)
+            title: L10nFormat("启动 CorptieTask：%@", task.title)
         ) {
-            if let latest = await client.workItem(id: workItem.id),
+            if let latest = await client.task(id: task.id),
                WorkerSessionBackgroundRetryDecision.resolve(
                    baselineSessionId: baselineSessionId,
                    currentSessionId: latest.currentSessionId
                ) == .alreadyCreated {
                 await AppStateSyncController.shared.refreshSnapshot()
-                return .success(L10nFormat("WorkItem“%@”已开始执行。", workItem.title))
+                return .success(L10nFormat("CorptieTask“%@”已开始执行。", task.title))
             }
 
             let result = await client.createSession(
-                workItemId: workItem.id,
+                taskId: task.id,
                 agentId: agentId,
                 providerId: providerId,
                 title: title
             )
             guard let session = result.session else {
                 return .failure(L10nFormat(
-                    "WorkItem 会话启动失败：%@",
+                    "CorptieTask 会话启动失败：%@",
                     result.error?.message ?? L10n("未知错误")
                 ))
             }
             backendClient.acceptCreatedSession(session, selectImmediately: false)
             onCreated(session)
-            return .success(L10nFormat("WorkItem“%@”已开始执行。", workItem.title))
+            return .success(L10nFormat("CorptieTask“%@”已开始执行。", task.title))
         }
         if started || BackgroundTaskCenter.shared.records.contains(where: { $0.id == taskId }) {
             dismiss()

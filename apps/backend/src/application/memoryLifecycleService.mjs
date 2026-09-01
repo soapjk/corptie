@@ -9,8 +9,8 @@ export class MemoryLifecycleService {
   preserveBeforeCompaction({ sessionId, content, kind = "episodic", sourceEventSeqs = [] } = {}) {
     const session = this.store.getSession(sessionId);
     if (!session) throw lifecycleError("SESSION_NOT_FOUND", `Session not found: ${sessionId}`);
-    const owner = session.workItemId
-      ? { ownerType: "work_item", ownerId: session.workItemId, workItemId: session.workItemId }
+    const owner = session.taskId
+      ? { ownerType: "task", ownerId: session.taskId, taskId: session.taskId }
       : session.objectiveId
         ? { ownerType: "objective", ownerId: session.objectiveId }
         : { ownerType: "agent", ownerId: session.agentId };
@@ -49,7 +49,7 @@ export class MemoryLifecycleService {
     const consolidated = this.store.createMemory({
       ownerType: first.owner_type,
       ownerId: first.owner_id,
-      workItemId: first.owner_type === "work_item" ? first.owner_id : null,
+      taskId: first.owner_type === "task" ? first.owner_id : null,
       kind: first.kind,
       content: requiredText(content, "content"),
       sourceType: "consolidated",

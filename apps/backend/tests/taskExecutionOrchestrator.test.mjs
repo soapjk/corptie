@@ -1,29 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  WorkItemExecutionOrchestrator,
-  WorkItemExecutionOrchestratorError
-} from "../src/application/workItemExecutionOrchestrator.mjs";
+  TaskExecutionOrchestrator,
+  TaskExecutionOrchestratorError
+} from "../src/application/taskExecutionOrchestrator.mjs";
 
 function fixture(overrides = {}) {
   const calls = [];
-  const workItem = {
-    id: "work_item:one",
-    status: "done",
+  const task = {
+    id: "task:one",
+    lifecycle_state: "done",
     current_session_id: "session:one",
     acceptance_assessment: { status: "passed" }
   };
   const route = {
     activeWorkspaceId: "worktree:one",
-    activeBinding: { boundCwd: "/repo-workitem-one" }
+    activeBinding: { boundCwd: "/repo-task-one" }
   };
-  const orchestrator = new WorkItemExecutionOrchestrator({
-    getWorkItem: () => workItem,
+  const orchestrator = new TaskExecutionOrchestrator({
+    getTask: () => task,
     getSession: () => ({ id: "session:one", status: "complete" }),
     getSessionRoute: () => route,
     ensureWorkspace: async () => ({
       worktreeId: "worktree:one",
-      path: "/repo-workitem-one",
+      path: "/repo-task-one",
       reused: true,
       requiresSessionTransition: false
     }),
@@ -36,33 +36,33 @@ function fixture(overrides = {}) {
       calls.push(["resume", sessionId]);
       return { id: sessionId, status: "complete" };
     },
-    updateWorkItem: (workItemId, patch) => {
-      calls.push(["update", workItemId, patch]);
-      return { ...workItem, ...patch };
+    updateTask: (taskId, patch) => {
+      calls.push(["update", taskId, patch]);
+      return { ...task, ...patch };
     },
     onChanged: (type, payload) => calls.push(["event", type, payload.action]),
     ...overrides
   });
-  return { orchestrator, calls, workItem, route };
+  return { orchestrator, calls, task, route };
 }
 
-test("restoring a completed WorkItem reuses its available Worktree and restores state after the Session", async () => {
+test("restoring a completed Task reuses its available Worktree and restores state after the Session", async () => {
   const { orchestrator, calls } = fixture();
-  const result = await orchestrator.restore("work_item:one");
+  const result = await orchestrator.restore("task:one");
 
-  assert.equal(result.workItem.status, "in_progress");
-  assert.equal(result.workItem.executionStatus, "idle");
-  assert.equal(result.workItem.acceptanceAssessment, null);
+  assert.equal(result.task.lifecycleState, "in_progress");
+  assert.equal(result.task.executionStatus, "idle");
+  assert.equal(result.task.acceptanceAssessment, null);
   assert.equal(result.transition, null);
   assert.deepEqual(calls, [
     ["unarchive", "session:one"],
     ["resume", "session:one"],
-    ["update", "work_item:one", {
-      status: "in_progress",
+    ["update", "task:one", {
+      lifecycleState: "in_progress",
       executionStatus: "idle",
       acceptanceAssessment: null
     }],
-    ["event", "WorkItemChanged", "execution-restored"]
+    ["event", "TaskChanged", "execution-restored"]
   ]);
 });
 
@@ -70,14 +70,14 @@ test("restoring recreates a missing Worktree and switches the Session before res
   const { orchestrator, calls, route } = fixture({
     ensureWorkspace: async () => ({
       worktreeId: "worktree:replacement",
-      path: "/repo-workitem-one",
+      path: "/repo-task-one",
       reused: false,
       requiresSessionTransition: true
     }),
     switchWorkspace: async (sessionId, worktreeId) => {
       calls.push(["switch", sessionId, worktreeId]);
       route.activeWorkspaceId = worktreeId;
-      route.activeBinding.boundCwd = "/repo-workitem-one";
+      route.activeBinding.boundCwd = "/repo-task-one";
       return { status: "committed" };
     },
     restoreSessionRoute: async (sessionId) => {
@@ -90,7 +90,7 @@ test("restoring recreates a missing Worktree and switches the Session before res
       return { id: sessionId, status: "complete" };
     }
   });
-  const result = await orchestrator.restore("work_item:one");
+  const result = await orchestrator.restore("task:one");
 
   assert.equal(result.workspace.reused, false);
   assert.equal(result.transition.status, "committed");
@@ -110,13 +110,13 @@ test("a clear Worktree rebuild error prevents Session resume and in-progress pub
       error.statusCode = 409;
       throw error;
     },
-    updateWorkItem: () => {
+    updateTask: () => {
       updated = true;
     }
   });
 
   await assert.rejects(
-    () => orchestrator.restore("work_item:one"),
+    () => orchestrator.restore("task:one"),
     (error) => error.code === "WORKTREE_REBUILD_FAILED" && /磁盘已卸载/.test(error.message)
   );
   assert.equal(updated, false);
@@ -128,26 +128,26 @@ test("a failed Workspace recovery never writes a false in-progress state", async
   const { orchestrator } = fixture({
     ensureWorkspace: async () => ({
       worktreeId: "worktree:replacement",
-      path: "/repo-workitem-one",
+      path: "/repo-task-one",
       requiresSessionTransition: true
     }),
     switchWorkspace: async () => {
       throw new Error("transition failed");
     },
-    updateWorkItem: () => {
+    updateTask: () => {
       updated = true;
     }
   });
 
-  await assert.rejects(() => orchestrator.restore("work_item:one"), /transition failed/);
+  await assert.rejects(() => orchestrator.restore("task:one"), /transition failed/);
   assert.equal(updated, false);
 });
 
-test("a completed WorkItem without a bound Session reports a stable recovery error", async () => {
+test("a completed Task without a bound Session reports a stable recovery error", async () => {
   const { orchestrator } = fixture({ getSession: () => null });
   await assert.rejects(
-    () => orchestrator.restore("work_item:one"),
-    (error) => error instanceof WorkItemExecutionOrchestratorError
-      && error.code === "WORK_ITEM_SESSION_REQUIRED"
+    () => orchestrator.restore("task:one"),
+    (error) => error instanceof TaskExecutionOrchestratorError
+      && error.code === "TASK_SESSION_REQUIRED"
   );
 });

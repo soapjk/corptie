@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 const MEMORY_KINDS = new Set([
   "skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"
 ]);
-const SCOPES = new Set(["agent", "objective", "work_item"]);
+const SCOPES = new Set(["agent", "objective", "task"]);
 
 export class MemoryOperationService {
   constructor(options = {}) {
@@ -143,7 +143,7 @@ export class MemoryOperationService {
           memoryId: id,
           ownerType: owner.ownerType,
           ownerId: owner.ownerId,
-          workItemId: owner.ownerType === "work_item" ? owner.ownerId : null,
+          taskId: owner.ownerType === "task" ? owner.ownerId : null,
           kind
         });
         const created = this.store.createMemory({
@@ -284,25 +284,25 @@ export class MemoryOperationService {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The requested Session is not bound to the authenticated Agent.");
     }
     const claimedObjectiveId = optionalText(metadata?.objectiveId);
-    const claimedWorkItemId = optionalText(metadata?.workItemId);
+    const claimedTaskId = optionalText(metadata?.taskId);
     if (claimedObjectiveId && claimedObjectiveId !== session.objectiveId) {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "Objective scope does not match the current Session binding.");
     }
-    if (claimedWorkItemId && claimedWorkItemId !== session.workItemId) {
-      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "WorkItem scope does not match the current Session binding.");
+    if (claimedTaskId && claimedTaskId !== session.taskId) {
+      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "Task scope does not match the current Session binding.");
     }
     const objective = session.objectiveId ? this.store.getObjective(session.objectiveId) : null;
     if (session.objectiveId && !objective) {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references a missing Objective.");
     }
-    const workItem = session.workItemId ? this.store.getWorkItem(session.workItemId) : null;
-    if (session.workItemId && (!workItem || workItem.objective_id !== session.objectiveId
-      || workItem.current_session_id !== session.id)) {
-      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references an invalid WorkItem binding.");
+    const task = session.taskId ? this.store.getTask(session.taskId) : null;
+    if (session.taskId && (!task || task.objective_id !== session.objectiveId
+      || task.current_session_id !== session.id)) {
+      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references an invalid Task binding.");
     }
     const owners = new Map([["agent", { ownerType: "agent", ownerId: actorId }]]);
     if (session.objectiveId) owners.set("objective", { ownerType: "objective", ownerId: session.objectiveId });
-    if (session.workItemId) owners.set("work_item", { ownerType: "work_item", ownerId: session.workItemId });
+    if (session.taskId) owners.set("task", { ownerType: "task", ownerId: session.taskId });
     return {
       actorId,
       agent,
@@ -312,7 +312,7 @@ export class MemoryOperationService {
         sessionId: session.id,
         agentId: actorId,
         objectiveId: session.objectiveId ?? null,
-        workItemId: session.workItemId ?? null
+        taskId: session.taskId ?? null
       }
     };
   }
@@ -358,7 +358,7 @@ export class MemoryOperationService {
 }
 
 function mostSpecificScope(context) {
-  if (context.owners.has("work_item")) return "work_item";
+  if (context.owners.has("task")) return "task";
   if (context.owners.has("objective")) return "objective";
   return "agent";
 }
@@ -368,7 +368,7 @@ export function presentMemory(memory) {
     id: memory.id,
     ownerType: memory.owner_type,
     ownerId: memory.owner_id,
-    workItemId: memory.work_item_id ?? null,
+    taskId: memory.task_id ?? null,
     kind: memory.kind,
     content: memory.content,
     structured: safeJson(memory.structured_json, {}),

@@ -35,8 +35,8 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
     const core = new CollaborationCore(store);
     core.registerAgent({ agentId: "agent:e2e", name: "E2E Agent" });
     core.bindSession({ agentId: "agent:e2e", sessionId: "session:e2e" });
-    store.enqueueAgentWorkItem({
-      workItemId: "work:original-turn",
+    store.enqueueAgentTask({
+      taskId: "work:original-turn",
       agentId: "agent:e2e",
       sessionId: "session:e2e",
       kind: "user",
@@ -45,20 +45,20 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
       source: { type: "test" },
       createdAt: new Date().toISOString()
     });
-    store.claimAgentWorkItem("work:original-turn");
-    store.updateAgentWorkItem("work:original-turn", { targetTurnId: "turn:original" });
+    store.claimAgentTask("work:original-turn");
+    store.updateAgentTask("work:original-turn", { targetTurnId: "turn:original" });
 
     let resolveCompleted;
     const completed = new Promise((resolve) => { resolveCompleted = resolve; });
     const drain = () => {
-      if (store.getRunningAgentWorkItemForSession("session:e2e")) return;
-      const next = store.listQueuedAgentWorkItemsForSession("session:e2e", 1)[0];
+      if (store.getRunningAgentTaskForSession("session:e2e")) return;
+      const next = store.listQueuedAgentTasksForSession("session:e2e", 1)[0];
       if (!next) return;
-      const claimed = store.claimAgentWorkItem(next.workItemId);
+      const claimed = store.claimAgentTask(next.taskId);
       if (!claimed) return;
-      const started = store.updateAgentWorkItem(claimed.workItemId, { targetTurnId: "turn:scheduled-wakeup" });
+      const started = store.updateAgentTask(claimed.taskId, { targetTurnId: "turn:scheduled-wakeup" });
       service.handleAgentWorkEvent("AgentWorkStarted", started);
-      const finished = store.updateAgentWorkItem(claimed.workItemId, { status: "completed" });
+      const finished = store.updateAgentTask(claimed.taskId, { status: "completed" });
       service.handleAgentWorkEvent("AgentWorkCompleted", finished);
       resolveCompleted(finished);
     };
@@ -81,7 +81,7 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
         };
       },
       enqueue: (work) => {
-        const queued = store.enqueueAgentWorkItem(work);
+        const queued = store.enqueueAgentTask(work);
         setImmediate(drain);
         return queued;
       }
@@ -120,10 +120,10 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
     // Under a loaded test runner the due tick may already have happened. In
     // either timing, the durable queue must leave the original Turn running
     // and keep the wakeup queued instead of interrupting it.
-    assert.equal(store.getRunningAgentWorkItemForSession("session:e2e").workItemId, "work:original-turn");
-    assert.equal(store.listQueuedAgentWorkItemsForSession("session:e2e")
+    assert.equal(store.getRunningAgentTaskForSession("session:e2e").taskId, "work:original-turn");
+    assert.equal(store.listQueuedAgentTasksForSession("session:e2e")
       .every((item) => item.source.type === "scheduled_session_task"), true);
-    store.updateAgentWorkItem("work:original-turn", { status: "completed" });
+    store.updateAgentTask("work:original-turn", { status: "completed" });
     drain();
 
     const finished = await Promise.race([
@@ -134,7 +134,7 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
     assert.equal(finished.targetTurnId, "turn:scheduled-wakeup");
     assert.equal(finished.source.scheduledTaskId, task.taskId);
     assert.equal(finished.source.payload.check, "status");
-    const run = store.listScheduledSessionRuns(task.taskId).find((candidate) => candidate.agentWorkItemId === finished.workItemId);
+    const run = store.listScheduledSessionRuns(task.taskId).find((candidate) => candidate.agentTaskId === finished.taskId);
     assert.equal(run.status, "completed");
     assert.equal(run.targetTurnId, "turn:scheduled-wakeup");
     assert.equal(store.getScheduledSessionTask(task.taskId).lastRunStatus, "completed");

@@ -10,7 +10,7 @@ export class WorktreeIntegrationJobError extends Error {
 }
 
 // Repository-wide Git integration is a project capability. It deliberately has
-// no Agent Provider dependency: Sessions and WorkItems are presentation links.
+// no Agent Provider dependency: Sessions and Tasks are presentation links.
 export class WorktreeIntegrationJobService {
   constructor(options = {}) {
     this.store = options.store;
@@ -685,7 +685,7 @@ export class WorktreeIntegrationJobService {
           ...job.details,
           conflictAutomation: {
             ...job.details.conflictAutomation,
-            workItemId: created.workItemId,
+            taskId: created.taskId,
             sessionId: created.sessionId,
             sessionName: created.sessionName ?? null,
             agentId: created.agentId,
@@ -698,7 +698,7 @@ export class WorktreeIntegrationJobService {
             worktreeId: item.worktreeId,
             conflictKey,
             workspace,
-            workItemId: created.workItemId,
+            taskId: created.taskId,
             sessionId: created.sessionId,
             sessionName: created.sessionName ?? null,
             agentId: created.agentId,
@@ -1224,12 +1224,12 @@ export class WorktreeIntegrationJobService {
       const logical = association.logicalSessionId && this.store.getLogicalSession
         ? this.store.getLogicalSession(association.logicalSessionId)
         : null;
-      const workItemId = association.workItemId ?? session?.workItemId ?? logical?.workItemId ?? null;
-      const workItem = workItemId ? this.store.getWorkItem(workItemId) : null;
+      const taskId = association.taskId ?? session?.taskId ?? logical?.taskId ?? null;
+      const task = taskId ? this.store.getTask(taskId) : null;
       const active = session ? this.isSessionActive(session) : association.active === true;
-      if (isCompletedWorkItem(workItem)) {
+      if (isCompletedTask(task)) {
         // One resolution path drives both detail presentation and deletion. A
-        // completed WorkItem releases only a settled, identifiable Session route.
+        // completed Task releases only a settled, identifiable Session route.
         if (!active && association.logicalSessionId) {
           releasableLogicalSessionIds.push(association.logicalSessionId);
           return null;
@@ -1237,15 +1237,15 @@ export class WorktreeIntegrationJobService {
         return {
           ...association,
           active,
-          workItemId: null,
-          workItemTitle: null
+          taskId: null,
+          taskTitle: null
         };
       }
       return {
         ...association,
         active,
-        workItemId: workItem?.id ?? workItemId,
-        workItemTitle: workItem?.title ?? null
+        taskId: task?.id ?? taskId,
+        taskTitle: task?.title ?? null
       };
     }).filter(Boolean);
     return { associations, releasableLogicalSessionIds };
@@ -1273,8 +1273,8 @@ export class WorktreeIntegrationJobService {
   }
 }
 
-function isCompletedWorkItem(workItem) {
-  const status = String(workItem?.status ?? "").trim().toLowerCase();
+function isCompletedTask(task) {
+  const status = String(task?.status ?? "").trim().toLowerCase();
   return new Set(["done", "complete", "completed"]).has(status);
 }
 
@@ -1291,12 +1291,12 @@ export function worktreeDeletionBlocker(worktree) {
   if (worktree.mergedIntoMain !== true) return blocker("NOT_MERGED_INTO_MAIN", "This Worktree has commits that are not merged into main.");
   if (worktree.isDetached || !worktree.branchName) return blocker("WORKTREE_BRANCH_AMBIGUOUS", "The branch for this Worktree cannot be determined safely.");
   const associations = worktree.associations ?? [];
-  const workItemAssociations = associations.filter((association) => association.workItemId);
-  if (workItemAssociations.length > 0) {
-    const labels = associationLabels(workItemAssociations, "workItemTitle", "workItemId");
+  const taskAssociations = associations.filter((association) => association.taskId);
+  if (taskAssociations.length > 0) {
+    const labels = associationLabels(taskAssociations, "taskTitle", "taskId");
     return blocker(
-      "WORK_ITEM_ASSOCIATED",
-      `This Worktree is still associated with ${pluralizedAssociation("WorkItem", labels)}. Complete or move ${labels.length === 1 ? "it" : "them"} before deleting the Worktree.`
+      "TASK_ASSOCIATED",
+      `This Worktree is still associated with ${pluralizedAssociation("Task", labels)}. Complete or move ${labels.length === 1 ? "it" : "them"} before deleting the Worktree.`
     );
   }
   if (associations.length > 0) {
@@ -1341,7 +1341,7 @@ function isDeletionBlockerCode(code) {
   return new Set([
     "MAIN_WORKTREE", "WORKTREE_UNAVAILABLE", "WORKTREE_LOCKED", "WORKTREE_PRUNABLE",
     "GIT_OPERATION_IN_PROGRESS", "UNRESOLVED_CONFLICTS", "UNCOMMITTED_CHANGES",
-    "NOT_MERGED_INTO_MAIN", "WORKTREE_BRANCH_AMBIGUOUS", "WORK_ITEM_ASSOCIATED",
+    "NOT_MERGED_INTO_MAIN", "WORKTREE_BRANCH_AMBIGUOUS", "TASK_ASSOCIATED",
     "WORKTREE_IN_USE"
   ]).has(code);
 }

@@ -155,18 +155,18 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func processorPreservesWorkItemBindingMetadata() async throws {
+    func processorPreservesCorptieTaskBindingMetadata() async throws {
         let current = makeSession(id: "one")
         let data = Data(
             """
-            {"sessions":[{"id":"one","title":"one","agent":"Codex","objectiveId":"objective:1","workItemId":"work_item:1","status":"complete","progress":1,"summary":"Summary","updatedAt":"2026-08-12T00:00:00Z","accent":"cyan"}]}
+            {"sessions":[{"id":"one","title":"one","agent":"Codex","objectiveId":"objective:1","taskId":"task:1","status":"complete","progress":1,"summary":"Summary","updatedAt":"2026-08-12T00:00:00Z","accent":"cyan"}]}
             """.utf8
         )
 
         let result = try await SessionPayloadProcessor().processSnapshot(data: data, current: [current])
 
         #expect(result.sessions.first?.objectiveId == "objective:1")
-        #expect(result.sessions.first?.workItemId == "work_item:1")
+        #expect(result.sessions.first?.taskId == "task:1")
         #expect(result.patch.updated.first?.changedFields.contains(.metadata) == true)
     }
 
@@ -180,7 +180,7 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func workItemNavigationResolvesEveryDeclaredSessionRouteIdentifier() {
+    func taskNavigationResolvesEveryDeclaredSessionRouteIdentifier() {
         let routed = makeSession(
             id: "openclacky:legacy-session",
             external: ExternalSession(
@@ -272,14 +272,14 @@ struct SessionCollectionPatchTests {
             id: "worker",
             agentId: "contributor",
             sessionKind: .worker,
-            workItemId: "work-item:1"
+            taskId: "task:1"
         ))
         let legacy = SessionRowModel(session: makeSession(id: "legacy", agentId: "unknown"))
 
         let groups = makeSessionGroups(
             rows: [worker, legacy, assistant],
             agents: [],
-            workItems: [],
+            tasks: [],
             objectives: [],
             category: .assistant
         )
@@ -306,7 +306,7 @@ struct SessionCollectionPatchTests {
         let groups = makeSessionGroups(
             rows: [objective, assistant],
             agents: [],
-            workItems: [],
+            tasks: [],
             objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
             category: .objective
         )
@@ -317,30 +317,30 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func activeWorkerSessionsExcludeBackendResolvedCompletedWorkItemsAndGroupByObjective() {
+    func activeWorkerSessionsExcludeBackendResolvedCompletedCorptieTasksAndGroupByObjective() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
-            workItemId: "work-item:active"
+            taskId: "task:active"
         ))
         let completed = SessionRowModel(session: makeSession(
             id: "completed-worker",
             sessionKind: .worker,
-            workItemId: "work-item:completed",
+            taskId: "task:completed",
             archived: true
         ))
         let orphaned = SessionRowModel(session: makeSession(
             id: "orphaned-worker",
             sessionKind: .worker,
-            workItemId: "work-item:missing"
+            taskId: "task:missing"
         ))
 
         let groups = makeSessionGroups(
             rows: [active, completed, orphaned],
             agents: [],
-            workItems: [
-                makeWorkItem(id: "work-item:active", status: "in_progress"),
-                makeWorkItem(id: "work-item:completed", status: "done")
+            tasks: [
+                makeCorptieTask(id: "task:active", lifecycleState: "in_progress"),
+                makeCorptieTask(id: "task:completed", lifecycleState: "done")
             ],
             objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
             category: .worker
@@ -357,20 +357,20 @@ struct SessionCollectionPatchTests {
         let first = SessionRowModel(session: makeSession(
             id: "first-worker",
             sessionKind: .worker,
-            workItemId: "work-item:first"
+            taskId: "task:first"
         ))
         let second = SessionRowModel(session: makeSession(
             id: "second-worker",
             sessionKind: .worker,
-            workItemId: "work-item:second"
+            taskId: "task:second"
         ))
 
         let groups = makeSessionGroups(
             rows: [first, second],
             agents: [],
-            workItems: [
-                makeWorkItem(id: "work-item:first", status: "in_progress"),
-                makeWorkItem(id: "work-item:second", status: "ready")
+            tasks: [
+                makeCorptieTask(id: "task:first", lifecycleState: "in_progress"),
+                makeCorptieTask(id: "task:second", lifecycleState: "todo")
             ],
             objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
             category: .worker,
@@ -392,14 +392,14 @@ struct SessionCollectionPatchTests {
         let newestMessage = SessionRowModel(session: makeSession(
             id: "newest-message",
             sessionKind: .worker,
-            workItemId: "work-item:newest",
+            taskId: "task:newest",
             updatedAt: "2026-08-20T01:00:00Z",
             lastMessageAt: "2026-08-20T03:00:00Z"
         ))
         let newestMetadata = SessionRowModel(session: makeSession(
             id: "newest-metadata",
             sessionKind: .worker,
-            workItemId: "work-item:metadata",
+            taskId: "task:metadata",
             updatedAt: "2026-08-20T04:00:00Z",
             lastMessageAt: "2026-08-20T02:00:00Z"
         ))
@@ -407,9 +407,9 @@ struct SessionCollectionPatchTests {
         let groups = makeSessionGroups(
             rows: [newestMetadata, newestMessage],
             agents: [],
-            workItems: [
-                makeWorkItem(id: "work-item:newest", status: "in_progress"),
-                makeWorkItem(id: "work-item:metadata", status: "in_progress")
+            tasks: [
+                makeCorptieTask(id: "task:newest", lifecycleState: "in_progress"),
+                makeCorptieTask(id: "task:metadata", lifecycleState: "in_progress")
             ],
             objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
             category: .worker,
@@ -420,25 +420,25 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func archivedWorkerSessionsUseTheSessionArchiveFlagRatherThanWorkItemStatus() {
+    func archivedWorkerSessionsUseTheSessionArchiveFlagRatherThanCorptieTaskStatus() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
-            workItemId: "work-item:active"
+            taskId: "task:active"
         ))
         let completed = SessionRowModel(session: makeSession(
             id: "completed-worker",
             sessionKind: .worker,
-            workItemId: "work-item:completed",
+            taskId: "task:completed",
             archived: true
         ))
 
         let groups = makeSessionGroups(
             rows: [active, completed],
             agents: [],
-            workItems: [
-                makeWorkItem(id: "work-item:active", status: "in_progress"),
-                makeWorkItem(id: "work-item:completed", status: "completed")
+            tasks: [
+                makeCorptieTask(id: "task:active", lifecycleState: "in_progress"),
+                makeCorptieTask(id: "task:completed", lifecycleState: "done")
             ],
             objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
             category: .worker,
@@ -461,7 +461,7 @@ struct SessionCollectionPatchTests {
         let worker = makeSession(
             id: "worker",
             sessionKind: .worker,
-            workItemId: "work-item:1"
+            taskId: "task:1"
         )
 
         #expect(assistant.allowsManualArchive)
@@ -474,12 +474,12 @@ struct SessionCollectionPatchTests {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
-            workItemId: "work-item:active"
+            taskId: "task:active"
         ))
         let completed = SessionRowModel(session: makeSession(
             id: "completed-worker",
             sessionKind: .worker,
-            workItemId: "work-item:completed",
+            taskId: "task:completed",
             archived: true
         ))
         #expect(resolvedSessionSelection(
@@ -629,14 +629,14 @@ struct SessionCollectionPatchTests {
             makeSession(id: "active", lastAgentMessageSequence: 2),
             makeSession(id: "archived", lastAgentMessageSequence: 3, archived: true),
             makeSession(
-                id: "completed-work-item",
+                id: "completed-task",
                 sessionKind: .worker,
-                workItemId: "work-item:done",
+                taskId: "task:done",
                 lastAgentMessageSequence: 4
             )
         ])
 
-        #expect(snapshots.map(\.id) == ["active", "completed-work-item"])
+        #expect(snapshots.map(\.id) == ["active", "completed-task"])
         #expect(snapshots.first?.needsUserAttention == true)
     }
 
@@ -645,13 +645,13 @@ struct SessionCollectionPatchTests {
         let activeWorker = makeSession(
             id: "active-worker",
             sessionKind: .worker,
-            workItemId: "work-item:active",
+            taskId: "task:active",
             lastAgentMessageSequence: 1
         )
         let archivedWorker = makeSession(
             id: "archived-worker",
             sessionKind: .worker,
-            workItemId: "work-item:done",
+            taskId: "task:done",
             lastAgentMessageSequence: 1,
             archived: true
         )
@@ -697,7 +697,7 @@ struct SessionCollectionPatchTests {
         let groups = makeSessionGroups(
             rows: rows,
             agents: [],
-            workItems: [],
+            tasks: [],
             objectives: [],
             category: .assistant
         )
@@ -788,7 +788,7 @@ private func makeSession(
     summary: String = "Summary",
     agentId: String? = nil,
     sessionKind: SessionKind? = nil,
-    workItemId: String? = nil,
+    taskId: String? = nil,
     objectiveId: String? = nil,
     status: TaskStatus = .complete,
     updatedAt: String = "2026-08-12T00:00:00Z",
@@ -807,7 +807,7 @@ private func makeSession(
         agentId: agentId,
         sessionKind: sessionKind,
         objectiveId: objectiveId,
-        workItemId: workItemId,
+        taskId: taskId,
         status: status,
         progress: 1,
         summary: summary,
@@ -832,7 +832,7 @@ private func makeSession(
 private func emptyControlPlaneState(sessions: [TaskSession]) -> ControlPlaneStatePayload {
     .init(
         sessions: sessions,
-        workItems: [],
+        tasks: [],
         objectives: [],
         agents: [],
         skills: [],
@@ -859,15 +859,15 @@ private func makeObjective(id: String, name: String) -> Objective {
     )
 }
 
-private func makeWorkItem(id: String, status: String) -> WorkItem {
-    WorkItem(
+private func makeCorptieTask(id: String, lifecycleState: String) -> CorptieTask {
+    CorptieTask(
         id: id,
         objectiveId: "objective:1",
         title: id,
         description: "",
         acceptanceCriteria: "",
         priority: "medium",
-        status: status,
+        lifecycleState: lifecycleState,
         mainWorkspaceId: nil,
         mainAgentId: nil,
         currentSessionId: nil,

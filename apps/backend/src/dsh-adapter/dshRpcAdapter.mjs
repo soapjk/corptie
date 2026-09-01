@@ -647,13 +647,13 @@ function unsetPath(target, path) {
  *   workspaceId  ← objective.id
  *   title        ← objective.name
  *   sessionIds   ← 该 objective 下所有未归档 session 的 id
- *   path         ← 活跃 work_item 的 main_workspace_id 解析出的真实目录路径（仅用于 hover 展示 + 复制，零副作用）
+ *   path         ← 活跃 task 的 main_workspace_id 解析出的真实目录路径（仅用于 hover 展示 + 复制，零副作用）
  *   createdAt    ← objective.createdAt
  *   updatedAt    ← objective.updatedAt
  *
  * 「按 Assistant 分类会话」的第二组织方式暂不实现：assistant role 当前只在
  * 协作目录（collaborator_registry）里有「不可路由」语义，agents 表无 role 写入路径，
- * 会话归属的权威来源仍是 objective/work_item。待 assistant role 真正落地到
+ * 会话归属的权威来源仍是 objective/task。待 assistant role 真正落地到
  * agents 表后再扩展。
  */
 async function workspaceList(_payload, { store }) {
@@ -663,12 +663,12 @@ async function workspaceList(_payload, { store }) {
     const objectives = store.listObjectives() ?? [];
     const sessions = store.listSessions({ archived: false }) ?? [];
 
-    // 活跃 work_item 的 main_workspace_id（repository id）解析为真实目录路径，
+    // 活跃 task 的 main_workspace_id（repository id）解析为真实目录路径，
     // 用于 workspace.path 展示（DSH path 只用于 hover 卡片 + 复制，零副作用）。
     const activePathByObjective = new Map();
     for (const obj of objectives) {
-      const workItems = store.listWorkItemsByObjective(obj.id) ?? [];
-      const active = workItems.find((w) => w?.main_workspace_id);
+      const tasks = store.listTasksByObjective(obj.id) ?? [];
+      const active = tasks.find((w) => w?.main_workspace_id);
       if (active?.main_workspace_id) {
         const resolved = typeof store.resolveWorkspacePath === "function"
           ? store.resolveWorkspacePath(active.main_workspace_id)

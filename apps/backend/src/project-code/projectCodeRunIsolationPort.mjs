@@ -14,7 +14,7 @@ import {
 } from "./projectCodeContracts.mjs";
 
 const runFields = new Set([
-  "schemaVersion", "receiptId", "receiptHash", "runId", "mode", "logicalSessionId", "workItemId",
+  "schemaVersion", "receiptId", "receiptHash", "runId", "mode", "logicalSessionId", "taskId",
   "repositoryId", "worktreeId", "sourceFingerprint", "startupBindingReceiptRef",
   "repositorySourceSnapshotReceiptRef", "toolsetValidationReceiptPointer", "state", "outcome", "runContextHash",
   "dataRootBindingId", "processLeaseRefs", "portLeaseRefs", "dataLeaseRef", "credentialLeaseRefs",
@@ -23,7 +23,7 @@ const runFields = new Set([
 ]);
 const cleanupFields = new Set([
   "schemaVersion", "receiptId", "receiptHash", "cleanupOperationId", "runId", "runReceiptRef",
-  "logicalSessionId", "workItemId", "repositoryId", "worktreeId", "sourceFingerprint", "outcome", "policy",
+  "logicalSessionId", "taskId", "repositoryId", "worktreeId", "sourceFingerprint", "outcome", "policy",
   "ownerSessionId", "retentionReason", "retentionPolicyVersion", "retainUntil", "quotaBytes", "observedBytes",
   "fencingToken", "resourceVersion", "dataRootBindingId", "sourceIdentityHash", "trashIdentityHash", "safetyChecks",
   "processReconciliation", "bytesReclaimed", "filesRemoved", "eventRefs", "startedAt", "finishedAt", "error"
@@ -54,7 +54,7 @@ export class ProjectCodeRunIsolationPort {
     const authorityResolver = new RunIsolationAuthorityResolver({
       resolveAuthority: async () => Object.freeze({
         logicalSessionId: session.logicalSessionId,
-        workItemId: session.workItemId,
+        taskId: session.taskId,
         repositoryId: session.repositoryId,
         worktreeId: session.worktreeId,
         bindingId: snapshot.startupReceipt.providerBindingId,
@@ -66,7 +66,7 @@ export class ProjectCodeRunIsolationPort {
     });
     const authority = await authorityResolver.resolve(Object.freeze({
       logicalSessionId: session.logicalSessionId,
-      workItemId: session.workItemId,
+      taskId: session.taskId,
       repositoryId: session.repositoryId,
       worktreeId: session.worktreeId,
       action: "verify",
@@ -94,7 +94,7 @@ export class ProjectCodeRunIsolationPort {
       throw contractError("RUN_CONTEXT_SCHEMA_UNSUPPORTED", "RunIsolation prepareRun returned no valid RunContext.");
     }
     if (context.logicalSessionId !== input.sessionContext.logicalSessionId
-      || context.workItemId !== input.sessionContext.workItemId
+      || context.taskId !== input.sessionContext.taskId
       || context.repositoryId !== snapshot.receipt.repositoryId
       || context.worktreeId !== snapshot.receipt.worktreeId
       || context.sourceFingerprint !== snapshot.receipt.sourceFingerprint) {
@@ -254,7 +254,7 @@ function receiptRef(receipt, artifact, receiptType) {
 
 function assertSourceIdentity(receipt, snapshot, sessionContext) {
   if (receipt.logicalSessionId !== sessionContext.logicalSessionId
-    || receipt.workItemId !== sessionContext.workItemId
+    || receipt.taskId !== sessionContext.taskId
     || receipt.repositoryId !== snapshot.receipt.repositoryId
     || receipt.worktreeId !== snapshot.receipt.worktreeId
     || receipt.sourceFingerprint !== snapshot.receipt.sourceFingerprint) {
@@ -306,7 +306,7 @@ function assertTimeOrder(values) {
 function authenticatedSession(input, snapshot = input.snapshot) {
   return Object.freeze({
     logicalSessionId: input.sessionContext.logicalSessionId,
-    workItemId: input.sessionContext.workItemId,
+    taskId: input.sessionContext.taskId,
     objectiveId: input.sessionContext.objectiveId,
     repositoryId: snapshot.receipt.repositoryId,
     worktreeId: snapshot.receipt.worktreeId

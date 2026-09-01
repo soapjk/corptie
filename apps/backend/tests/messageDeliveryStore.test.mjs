@@ -49,8 +49,8 @@ test("user message, Delivery, queue work, domain event, and Outbox commit togeth
     assert.equal(created.message.text, "run once");
     assert.equal(created.message.status, "queued");
     assert.equal(created.message.bindingId, binding.bindingId);
-    assert.equal(created.workItem.status, "queued");
-    assert.equal(created.workItem.source.deliveryId, "delivery:one");
+    assert.equal(created.task.status, "queued");
+    assert.equal(created.task.source.deliveryId, "delivery:one");
     assert.equal(store.listSessionEvents("session:one")[0].type, "SessionUserMessageCreated");
     assert.equal(store.listPendingEventOutbox()[0].event_type, "MessageDeliveryQueued");
     assert.equal(store.getSession("session:one").deliveryStatus, "queued");

@@ -10,7 +10,7 @@ function tool(name, description, properties = {}, required = []) {
 
 const id = (description) => ({ type: "string", minLength: 1, description });
 export const objectiveChatDynamicTools = Object.freeze([
-  tool("corptie_objective_context", "Read the current Objective Chat scope. Mutating WorkItem operations use the strict corptie_collaboration_work_items_* Session-scoped tools."),
+  tool("corptie_objective_context", "Read the current Objective Chat scope. Mutating Task operations use the strict corptie_collaboration_tasks_* Session-scoped tools."),
   tool("corptie_objective_agents_list", "List contributor Agents in this Objective. Discover their actual receiving Sessions before routing collaboration.")
 ]);
 
@@ -24,9 +24,9 @@ export class ObjectiveChatOperationService {
     this.store = options.store;
     this.objectiveService = options.objectiveService;
     this.contextService = options.contextService;
-    this.startWorkItem = options.startWorkItem;
-    if (!this.store || !this.objectiveService || !this.contextService || typeof this.startWorkItem !== "function") {
-      throw new TypeError("ObjectiveChatOperationService requires store, objectiveService, contextService, and startWorkItem().");
+    this.startTask = options.startTask;
+    if (!this.store || !this.objectiveService || !this.contextService || typeof this.startTask !== "function") {
+      throw new TypeError("ObjectiveChatOperationService requires store, objectiveService, contextService, and startTask().");
     }
   }
 
@@ -40,9 +40,9 @@ export class ObjectiveChatOperationService {
         this.#objectivePatch(objectiveId, object(args.patch, "patch"))
       );
       case "corptie_objective_agents_list": return this.#agents(objectiveId);
-      case "corptie_objective_work_items_manage": return this.#workItems(objectiveId, args);
-      case "corptie_objective_work_item_start": {
-        const workItem = this.#workItem(objectiveId, text(args.work_item_id, "work_item_id"));
+      case "corptie_objective_tasks_manage": return this.#tasks(objectiveId, args);
+      case "corptie_objective_task_start": {
+        const task = this.#task(objectiveId, text(args.task_id, "task_id"));
         const agent = this.store.getAgent(text(args.agent_id, "agent_id"));
         if (!agent) throw coded("AGENT_NOT_FOUND", "Agent not found.");
         if (agent.role !== "independentContributor") throw coded("AGENT_NOT_INDEPENDENT_CONTRIBUTOR", "A Worker Session requires an Independent Contributor.");
@@ -50,7 +50,7 @@ export class ObjectiveChatOperationService {
         if (!objective.contributorAgentIds.includes(agent.agentId)) {
           throw coded("AGENT_OUTSIDE_OBJECTIVE", "Agent is not a contributor to this Objective.");
         }
-        return this.startWorkItem({ workItem, agent, title: optionalText(args.title) });
+        return this.startTask({ task, agent, title: optionalText(args.title) });
       }
       default: throw coded("HOST_TOOL_UNSUPPORTED", `Unsupported Objective Chat tool: ${input.tool}`);
     }
@@ -63,33 +63,33 @@ export class ObjectiveChatOperationService {
       agentId: agent.agentId, name: agent.name, role: agent.role,
       description: agent.description, status: agent.status,
       isContributor: true,
-      canStartWorkItem: agent.role === "independentContributor"
+      canStartTask: agent.role === "independentContributor"
     }));
   }
 
-  #workItems(objectiveId, args) {
+  #tasks(objectiveId, args) {
     switch (text(args.action, "action")) {
-      case "list": return this.objectiveService.listWorkItemsByObjective(objectiveId);
-      case "get": return this.#workItem(objectiveId, text(args.work_item_id, "work_item_id"));
-      case "create": return this.objectiveService.createWorkItem({
-        ...this.#workItemPatch(objectiveId, object(args.patch ?? {}, "patch")), objectiveId, title: text(args.title, "title")
+      case "list": return this.objectiveService.listTasksByObjective(objectiveId);
+      case "get": return this.#task(objectiveId, text(args.task_id, "task_id"));
+      case "create": return this.objectiveService.createTask({
+        ...this.#taskPatch(objectiveId, object(args.patch ?? {}, "patch")), objectiveId, title: text(args.title, "title")
       });
       case "update": {
-        const item = this.#workItem(objectiveId, text(args.work_item_id, "work_item_id"));
-        return this.objectiveService.updateWorkItem(item.id, this.#workItemPatch(objectiveId, object(args.patch, "patch")));
+        const item = this.#task(objectiveId, text(args.task_id, "task_id"));
+        return this.objectiveService.updateTask(item.id, this.#taskPatch(objectiveId, object(args.patch, "patch")));
       }
       case "delete": {
-        const item = this.#workItem(objectiveId, text(args.work_item_id, "work_item_id"));
-        this.objectiveService.deleteWorkItem(item.id);
+        const item = this.#task(objectiveId, text(args.task_id, "task_id"));
+        this.objectiveService.deleteTask(item.id);
         return { deleted: true };
       }
-      default: throw coded("INVALID_ACTION", `Unsupported WorkItem action: ${args.action}`);
+      default: throw coded("INVALID_ACTION", `Unsupported Task action: ${args.action}`);
     }
   }
 
-  #workItem(objectiveId, workItemId) {
-    const item = this.objectiveService.getWorkItem(workItemId);
-    if (item.objective_id !== objectiveId) throw coded("WORK_ITEM_OUTSIDE_OBJECTIVE", "WorkItem is outside this Objective Chat scope.");
+  #task(objectiveId, taskId) {
+    const item = this.objectiveService.getTask(taskId);
+    if (item.objective_id !== objectiveId) throw coded("TASK_OUTSIDE_OBJECTIVE", "Task is outside this Objective Chat scope.");
     return item;
   }
 
@@ -118,20 +118,20 @@ export class ObjectiveChatOperationService {
     return patch;
   }
 
-  #workItemPatch(objectiveId, patch) {
+  #taskPatch(objectiveId, patch) {
     const objective = this.objectiveService.getObjective(objectiveId);
     if (patch.mainAgentId != null) {
       const agentId = text(patch.mainAgentId, "mainAgentId");
       const agent = this.store.getAgent(agentId);
       if (!agent) throw coded("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
       if (agent.role !== "independentContributor" || !objective.contributorAgentIds.includes(agentId)) {
-        throw coded("AGENT_OUTSIDE_OBJECTIVE", "WorkItem Agent must be an Independent Contributor attached to this Objective.");
+        throw coded("AGENT_OUTSIDE_OBJECTIVE", "Task Agent must be an Independent Contributor attached to this Objective.");
       }
     }
     if (patch.mainWorkspaceId != null) {
       const workspaceId = text(patch.mainWorkspaceId, "mainWorkspaceId");
       if (!objective.workspaceIds.includes(workspaceId) || !this.store.getGitRepository(workspaceId)) {
-        throw coded("WORKSPACE_OUTSIDE_OBJECTIVE", "WorkItem Workspace must be attached to this Objective.");
+        throw coded("WORKSPACE_OUTSIDE_OBJECTIVE", "Task Workspace must be attached to this Objective.");
       }
     }
     return patch;

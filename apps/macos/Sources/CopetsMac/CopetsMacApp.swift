@@ -664,14 +664,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 let isVisibleInPanel = self.panelController?.isVisible == true && isSelected
                 let isVisibleInSessionOverview = NSApp.isActive
                     && self.warRoomWindow?.isVisible == true
-                    && AppTabRouter.shared.selectedTab == .sessions
+                    && AppTabRouter.shared.selectedTab == .console
                     && isSelected
                 return isVisibleInPanel || isVisibleInSessionOverview
             },
             isOverviewVisible: { [weak self] in
                 NSApp.isActive
                     && self?.warRoomWindow?.isVisible == true
-                    && AppTabRouter.shared.selectedTab == .sessions
+                    && AppTabRouter.shared.selectedTab == .console
             }
         )
         completionSoundManager = soundManager
@@ -684,7 +684,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         resetNotificationManager.start()
         installStatusItem()
 
-        // 控制台 WorkItem 详情「打开对话」→ 在主悬浮窗打开该 session 对话
+        // 控制台 CorptieTask 详情「打开对话」→ 在主悬浮窗打开该 session 对话
         NotificationCenter.default.publisher(for: .openSessionConversation)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] notification in
@@ -1013,7 +1013,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func openSessionOverview() {
         openWarRoom()
-        AppTabRouter.shared.selectTab(.sessions)
+        AppTabRouter.shared.selectTab(.console)
     }
 
     func openWorktreeManagement(repositoryId: String?, worktreeId: String?, worktreePath: String?) {

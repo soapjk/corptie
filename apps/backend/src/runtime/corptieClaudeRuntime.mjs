@@ -16,7 +16,11 @@ const PLUGIN_MANIFEST = Object.freeze({
 
 export function resolveCorptieClaudeRuntimePaths(options = {}) {
   const home = resolve(options.homeDir ?? os.homedir());
-  const corptieHome = resolve(options.corptieHome ?? process.env.CORPTIE_HOME ?? join(home, ".corptie"));
+  const corptieHome = resolve(
+    options.corptieHome
+      ?? (options.homeDir != null ? join(home, ".corptie") : process.env.CORPTIE_HOME)
+      ?? join(home, ".corptie")
+  );
   const environmentName = options.environmentName === "development" ? "development" : "production";
   const runtimeRoot = environmentName === "development"
     ? join(corptieHome, "development", "runtimes", "claude")

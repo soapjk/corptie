@@ -11,7 +11,7 @@ import { join, resolve } from "node:path";
 //   - Assistant：runtimes/assistants/<agentId>/workspace —— 同一助手下的会话共享，
 //     不同 Assistant 之间按 agentId 隔离。
 //   - 独立贡献者：runtimes/contributors/<agentId> —— 存放该 Agent 的记忆 / Skill 等持久化文件，
-//     但不作为会话的直接工作目录（会话绑定 WorkItem，用 WorkItem 的 workspace 目录）。
+//     但不作为会话的直接工作目录（会话绑定 Task，用 Task 的 workspace 目录）。
 //
 // production 下 runtimes 根无 "development/" 前缀，与 corptieCodexRuntime 的布局保持一致。
 

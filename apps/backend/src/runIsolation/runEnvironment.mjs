@@ -11,7 +11,7 @@ export function buildRunEnvironment(context, inherited = process.env) {
   }
   const values = {
     CORPTIE_RUN_MODE: context.mode, CORPTIE_RUN_ID: context.runId, CORPTIE_LOGICAL_SESSION_ID: context.logicalSessionId,
-    CORPTIE_WORK_ITEM_ID: context.workItemId, CORPTIE_REPOSITORY_ID: context.repositoryId,
+    CORPTIE_TASK_ID: context.taskId, CORPTIE_REPOSITORY_ID: context.repositoryId,
     CORPTIE_WORKTREE_ID: context.worktreeId, CORPTIE_SOURCE_FINGERPRINT: context.sourceFingerprint,
     CORPTIE_DATA_DIR: context.dataDir, CORPTIE_DATABASE_PATH: context.databasePath, CORPTIE_CACHE_DIR: context.cacheDir,
     CORPTIE_INDEX_DIR: context.indexDir, CORPTIE_TMP_DIR: context.tmpDir, CORPTIE_LOG_DIR: context.logDir,

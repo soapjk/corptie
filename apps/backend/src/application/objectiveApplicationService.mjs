@@ -1,18 +1,18 @@
-// 实体层应用服务：Objective / WorkItem / 依赖 DAG（15 Phase 1，净新增）
+// 实体层应用服务：Objective / Task / 依赖 DAG（15 Phase 1，净新增）
 //
 // 职责：封装业务规则（字段校验、Objective 存在性、依赖环检测），
 // 数据访问全部委托给 store（corptieStore.mjs 的 CRUD 方法）。
 
 import {
   validateObjectiveInput,
-  validateWorkItemInput
-} from "../domain/objectiveWorkItemValidation.mjs";
+  validateTaskInput
+} from "../domain/objectiveTaskValidation.mjs";
 import {
   buildAcceptanceAssessment,
-  completionSuggestionForWorkItem,
+  completionSuggestionForTask,
   parseAcceptanceAssessment,
-  WorkItemAcceptanceError
-} from "./workItemAcceptance.mjs";
+  TaskAcceptanceError
+} from "./taskAcceptance.mjs";
 
 export class ObjectiveNotFoundError extends Error {
   constructor(objectiveId) {
@@ -22,11 +22,11 @@ export class ObjectiveNotFoundError extends Error {
   }
 }
 
-export class WorkItemNotFoundError extends Error {
-  constructor(workItemId) {
-    super(`WorkItem not found: ${workItemId}`);
-    this.name = "WorkItemNotFoundError";
-    this.code = "WORK_ITEM_NOT_FOUND";
+export class TaskNotFoundError extends Error {
+  constructor(taskId) {
+    super(`Task not found: ${taskId}`);
+    this.name = "TaskNotFoundError";
+    this.code = "TASK_NOT_FOUND";
   }
 }
 
@@ -48,9 +48,9 @@ export class EntityCreationConflictError extends Error {
 }
 
 export class DependencyCycleError extends Error {
-  constructor(workItemId, targetWorkItemId) {
+  constructor(taskId, targetTaskId) {
     super(
-      `Dependency would create a cycle: ${workItemId} -> ${targetWorkItemId}`
+      `Dependency would create a cycle: ${taskId} -> ${targetTaskId}`
     );
     this.name = "DependencyCycleError";
     this.code = "CYCLE_DETECTED";
@@ -146,71 +146,74 @@ export class ObjectiveApplicationService {
     return deleted;
   }
 
-  // ---- WorkItem ----
+  // ---- Task ----
 
-  createWorkItem(input = {}, options = {}) {
-    const normalized = validateWorkItemInput(input, "create");
+  createTask(input = {}, options = {}) {
+    const normalized = validateTaskInput(input, "create");
     if (normalized.id) {
-      const existing = this.store.getWorkItem(normalized.id);
+      const existing = this.store.getTask(normalized.id);
       if (existing) {
-        if (!workItemCreationMatches(existing, normalized)) {
-          throw new EntityCreationConflictError("WorkItem", normalized.id);
+        if (!taskCreationMatches(existing, normalized)) {
+          throw new EntityCreationConflictError("Task", normalized.id);
         }
         return existing;
       }
     }
     return this.emit(
-      "WorkItemChanged",
-      this.store.createWorkItem(normalized, options.creationOrigin ?? {}),
+      "TaskChanged",
+      this.store.createTask(normalized, options.creationOrigin ?? {}),
       "created"
     );
   }
 
-  listWorkItems() {
-    return this.store.listWorkItems();
+  listTasks() {
+    return this.store.listTasks();
   }
 
-  listWorkItemsByObjective(objectiveId) {
-    return this.store.listWorkItemsByObjective(objectiveId);
+  listTasksByObjective(objectiveId) {
+    return this.store.listTasksByObjective(objectiveId);
   }
 
-  getWorkItem(id) {
-    const workItem = this.store.getWorkItem(id);
-    if (!workItem) throw new WorkItemNotFoundError(id);
-    return workItem;
+  getTask(id) {
+    const task = this.store.getTask(id);
+    if (!task) throw new TaskNotFoundError(id);
+    return task;
   }
 
-  updateWorkItem(id, patch = {}) {
-    const current = this.getWorkItem(id);
+  updateTask(id, patch = {}) {
+    const current = this.getTask(id);
     if (Object.prototype.hasOwnProperty.call(patch, "acceptanceAssessment")
       || Object.prototype.hasOwnProperty.call(patch, "executionStatus")) {
-      throw new WorkItemAcceptanceError(
-        "WORK_ITEM_STATE_READ_ONLY",
+      throw new TaskAcceptanceError(
+        "TASK_STATE_READ_ONLY",
         "acceptanceAssessment and executionStatus are managed by their dedicated workflows."
       );
     }
-    const normalized = validateWorkItemInput(patch, "update");
+    const normalized = validateTaskInput(patch, "update");
     const nextPatch = { ...normalized };
     if (Object.prototype.hasOwnProperty.call(normalized, "acceptanceCriteria")
       && String(normalized.acceptanceCriteria ?? "").trim() !== String(current.acceptance_criteria ?? "").trim()) {
       nextPatch.acceptanceAssessment = null;
     }
-    return this.emit("WorkItemChanged", this.store.updateWorkItem(id, nextPatch), "updated");
+    return this.emit("TaskChanged", this.store.updateTask(id, nextPatch), "updated");
   }
 
-  confirmWorkItemCompletion(id, input = {}) {
-    const workItem = this.getWorkItem(id);
-    this.store.recordRejectedWorkItemCompletionBypass(workItem, "legacy_confirm_completion");
-    throw new WorkItemAcceptanceError(
-      "WORK_ITEM_COMPLETION_INTENT_REQUIRED",
-      "confirmed=true is not completion authorization. Use the direct-user-intent completion workflow."
-    );
+  reviseTask(id, input = {}) {
+    this.getTask(id);
+    const result = this.store.reviseTask(id, input);
+    this.emit("TaskChanged", result.task, "revised");
+    return result;
   }
 
-  rejectWorkItemAcceptance(id, input = {}) {
-    const current = this.getWorkItem(id);
+  listTaskSnapshots(id) {
+    this.getTask(id);
+    return this.store.listTaskSnapshots(id);
+  }
+
+  rejectTaskAcceptance(id, input = {}) {
+    const current = this.getTask(id);
     if (input.rejected !== true) {
-      throw new WorkItemAcceptanceError(
+      throw new TaskAcceptanceError(
         "USER_REJECTION_REQUIRED",
         "Rejecting an automated acceptance result requires explicit user confirmation."
       );
@@ -219,11 +222,11 @@ export class ObjectiveApplicationService {
     // A retry after the first rejection committed is the same successful
     // command. Keep its original audit timestamp and authoritative state.
     if (currentAssessment?.status === "rejected") return current;
-    const suggestion = completionSuggestionForWorkItem(current);
+    const suggestion = completionSuggestionForTask(current);
     if (!suggestion) {
-      throw new WorkItemAcceptanceError(
+      throw new TaskAcceptanceError(
         "ACCEPTANCE_NOT_PASSED",
-        "This WorkItem does not have a current passing automated acceptance result."
+        "This Task does not have a current passing automated acceptance result."
       );
     }
     const assessment = {
@@ -233,94 +236,94 @@ export class ObjectiveApplicationService {
     };
     delete assessment.recommended;
     return this.emit(
-      "WorkItemChanged",
-      this.store.updateWorkItem(id, {
+      "TaskChanged",
+      this.store.updateTask(id, {
         acceptanceAssessment: assessment,
-        status: current.status
+        lifecycleState: current.lifecycle_state
       }),
       "acceptance-rejected-by-user"
     );
   }
 
   recordAcceptanceAssessment(id, input = {}) {
-    const workItem = this.getWorkItem(id);
+    const task = this.getTask(id);
     const sourceSessionId = String(input.sourceSessionId ?? "").trim();
     const session = sourceSessionId ? this.store.getSession(sourceSessionId) : null;
     if (!session) throw new SessionNotFoundError(sourceSessionId);
-    if (session.workItemId !== id) {
-      throw new WorkItemAcceptanceError(
+    if (session.taskId !== id) {
+      throw new TaskAcceptanceError(
         "ACCEPTANCE_SOURCE_MISMATCH",
-        "The acceptance source Session is not bound to this WorkItem."
+        "The acceptance source Session is not bound to this Task."
       );
     }
 
-    const assessment = buildAcceptanceAssessment(workItem, input);
+    const assessment = buildAcceptanceAssessment(task, input);
     const patch = {
       acceptanceAssessment: assessment,
-      status: workItem.status
+      lifecycleState: task.lifecycle_state
     };
     return this.emit(
-      "WorkItemChanged",
-      this.store.updateWorkItem(id, patch),
+      "TaskChanged",
+      this.store.updateTask(id, patch),
       assessment.status === "passed" ? "acceptance-passed" : "acceptance-not-proven"
     );
   }
 
-  deleteWorkItem(id) {
-    this.getWorkItem(id);
-    const deleted = this.store.deleteWorkItem(id);
-    this.emit("WorkItemChanged", { id }, "deleted");
+  deleteTask(id) {
+    this.getTask(id);
+    const deleted = this.store.deleteTask(id);
+    this.emit("TaskChanged", { id }, "deleted");
     return deleted;
   }
 
-  // ---- Session 归属（打通 Objective → WorkItem → Session 最后一环）----
+  // ---- Session 归属（打通 Objective → Task → Session 最后一环）----
 
-  // 把一个已存在的 Session 归属到某个 WorkItem，自动带上其 Objective。
-  // 返回更新后的 Session（含 objectiveId / workItemId）。
-  bindSession(sessionId, workItemId) {
-    const workItem = this.getWorkItem(workItemId);
+  // 把一个已存在的 Session 归属到某个 Task，自动带上其 Objective。
+  // 返回更新后的 Session（含 objectiveId / taskId）。
+  bindSession(sessionId, taskId) {
+    const task = this.getTask(taskId);
     const existingSession = this.store.getSession(sessionId);
     if (!existingSession) throw new SessionNotFoundError(sessionId);
-    const session = this.store.bindSessionToWorkItem(sessionId, workItemId, workItem.objective_id);
-    this.emit("WorkItemChanged", this.store.getWorkItem(workItemId), "session-bound");
+    const session = this.store.bindSessionToTask(sessionId, taskId, task.objective_id);
+    this.emit("TaskChanged", this.store.getTask(taskId), "session-bound");
     return session;
   }
 
-  // 列出某 WorkItem 名下所有 Session（按创建时间升序）。
-  listSessionsByWorkItem(workItemId) {
-    return this.store.listSessionsByWorkItem(workItemId);
+  // 列出某 Task 名下所有 Session（按创建时间升序）。
+  listSessionsByTask(taskId) {
+    return this.store.listSessionsByTask(taskId);
   }
 
   // ---- 依赖编排 + 环检测 ----
 
-  addDependency(workItemId, targetWorkItemId, type = "depends_on") {
-    this.getWorkItem(workItemId);
-    this.getWorkItem(targetWorkItemId);
-    if (workItemId === targetWorkItemId) {
-      throw new DependencyCycleError(workItemId, targetWorkItemId);
+  addDependency(taskId, targetTaskId, type = "depends_on") {
+    this.getTask(taskId);
+    this.getTask(targetTaskId);
+    if (taskId === targetTaskId) {
+      throw new DependencyCycleError(taskId, targetTaskId);
     }
-    if (this.wouldCreateCycle(workItemId, targetWorkItemId)) {
-      throw new DependencyCycleError(workItemId, targetWorkItemId);
+    if (this.wouldCreateCycle(taskId, targetTaskId)) {
+      throw new DependencyCycleError(taskId, targetTaskId);
     }
     return this.emit(
-      "WorkItemChanged",
-      this.store.addWorkItemDependency(workItemId, targetWorkItemId, type),
+      "TaskChanged",
+      this.store.addTaskDependency(taskId, targetTaskId, type),
       "dependency-added"
     );
   }
 
-  removeDependency(workItemId, targetWorkItemId) {
-    const removed = this.store.removeWorkItemDependency(workItemId, targetWorkItemId);
-    this.emit("WorkItemChanged", { id: workItemId, targetWorkItemId }, "dependency-removed");
+  removeDependency(taskId, targetTaskId) {
+    const removed = this.store.removeTaskDependency(taskId, targetTaskId);
+    this.emit("TaskChanged", { id: taskId, targetTaskId }, "dependency-removed");
     return removed;
   }
 
-  listDependencies(workItemId) {
-    return this.store.listWorkItemDependencies(workItemId);
+  listDependencies(taskId) {
+    return this.store.listTaskDependencies(taskId);
   }
 
-  listDependents(targetWorkItemId) {
-    return this.store.listWorkItemDependents(targetWorkItemId);
+  listDependents(targetTaskId) {
+    return this.store.listTaskDependents(targetTaskId);
   }
 
   // 从 target 出发，沿「依赖」边 DFS，看能否到达 from；能则加 from→target 会成环。
@@ -332,8 +335,8 @@ export class ObjectiveApplicationService {
       if (current === fromId) return true;
       if (visited.has(current)) continue;
       visited.add(current);
-      for (const dep of this.store.listWorkItemDependencies(current)) {
-        stack.push(dep.target_work_item_id);
+      for (const dep of this.store.listTaskDependencies(current)) {
+        stack.push(dep.target_task_id);
       }
     }
     return false;
@@ -370,14 +373,16 @@ function objectiveCreationMatches(existing, input) {
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
-function workItemCreationMatches(existing, input) {
+function taskCreationMatches(existing, input) {
   const expected = {
     objectiveId: input.objectiveId,
     title: input.title,
     description: input.description ?? "",
     acceptanceCriteria: input.acceptanceCriteria ?? "",
     priority: input.priority ?? "medium",
-    status: input.status ?? "todo",
+    goal: input.goal ?? "",
+    verificationCriteria: input.verificationCriteria ?? "",
+    lifecycleState: input.lifecycleState ?? "todo",
     mainWorkspaceId: input.mainWorkspaceId ?? null,
     mainAgentId: input.mainAgentId ?? null
   };
@@ -387,7 +392,9 @@ function workItemCreationMatches(existing, input) {
     description: existing.description ?? "",
     acceptanceCriteria: existing.acceptance_criteria ?? "",
     priority: existing.priority ?? "medium",
-    status: existing.status ?? "todo",
+    goal: existing.goal ?? "",
+    verificationCriteria: existing.verification_criteria ?? "",
+    lifecycleState: existing.lifecycle_state ?? "todo",
     mainWorkspaceId: existing.main_workspace_id ?? null,
     mainAgentId: existing.main_agent_id ?? null
   };

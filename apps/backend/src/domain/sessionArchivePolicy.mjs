@@ -1,15 +1,15 @@
 import { SESSION_KIND } from "../utils/sessionKinds.mjs";
 
-const completedWorkItemStatuses = new Set(["done", "complete", "completed"]);
+const completedTaskStatuses = new Set(["done", "complete", "completed"]);
 
-export function isCompletedWorkItemStatus(status) {
-  return completedWorkItemStatuses.has(String(status ?? "").trim().toLowerCase());
+export function isCompletedTaskStatus(status) {
+  return completedTaskStatuses.has(String(status ?? "").trim().toLowerCase());
 }
 
-export function resolveSessionArchiveState(session, { workItemStatus = null } = {}) {
+export function resolveSessionArchiveState(session, { taskStatus = null } = {}) {
   const sessionKind = session?.sessionKind ?? session?.session_kind ?? SESSION_KIND.legacy;
-  if (sessionKind === SESSION_KIND.worker && isCompletedWorkItemStatus(workItemStatus)) {
-    return { archived: true, reason: "workItemCompleted" };
+  if (sessionKind === SESSION_KIND.worker && isCompletedTaskStatus(taskStatus)) {
+    return { archived: true, reason: "taskCompleted" };
   }
   if (session?.archived === true || Number(session?.archived) === 1) {
     return {

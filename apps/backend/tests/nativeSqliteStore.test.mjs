@@ -790,7 +790,7 @@ test("startup reconciliation fails orphaned messages and cancels interrupted Tur
       agentId: "agent:restart",
       text: "running"
     });
-    store.updateAgentWorkItem(first.workItem.workItemId, {
+    store.updateAgentTask(first.task.taskId, {
       status: "running",
       startedAt: "2026-08-31T00:00:00.000Z",
       targetTurnId: "turn:restart"
@@ -820,21 +820,21 @@ test("startup reconciliation fails orphaned messages and cancels interrupted Tur
 
     const result = store.reconcileInterruptedSessionExecutionAtStartup("2026-08-31T01:00:00.000Z");
     assert.deepEqual(result, {
-      workItems: 2,
+      tasks: 2,
       deliveries: 2,
       collaborationDeliveries: 0,
       sessionCollaborationDeliveries: 0,
       turns: 1
     });
-    assert.equal(store.getAgentWorkItem(first.workItem.workItemId).status, "failed");
-    assert.equal(store.getAgentWorkItem(second.workItem.workItemId).status, "failed");
+    assert.equal(store.getAgentTask(first.task.taskId).status, "failed");
+    assert.equal(store.getAgentTask(second.task.taskId).status, "failed");
     assert.equal(store.getMessageDelivery(first.delivery.deliveryId).status, "failed");
     assert.equal(store.getMessageDelivery(second.delivery.deliveryId).status, "failed");
     assert.equal(
       store.getSessionTurn("provider-session:restart", logical.activeBinding.bindingId, "turn:restart").execution_status,
       "cancelled"
     );
-    assert.equal(store.listQueuedAgentWorkItemsForSession("provider-session:restart").length, 0);
+    assert.equal(store.listQueuedAgentTasksForSession("provider-session:restart").length, 0);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -1142,8 +1142,8 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
     await store.initialize();
     store.createObjective({ id: "objective:conflict", name: "Resolve conflict" });
     store.createAgent({ id: "agent:conflict", name: "Conflict Agent", role: "independentContributor" });
-    store.createWorkItem({
-      id: "work-item:conflict",
+    store.createTask({
+      id: "task:conflict",
       objectiveId: "objective:conflict",
       title: "Resolve merge conflict"
     });
@@ -1165,19 +1165,19 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
     const before = store.stateRevision();
     const finalized = store.finalizeConflictResolutionLaunch({
       sessionId: "session:conflict",
-      workItemId: "work-item:conflict",
+      taskId: "task:conflict",
       objectiveId: "objective:conflict",
       agentId: "agent:conflict",
       integrationRunId: "integration:conflict"
     });
-    assert.equal(finalized.session.workItemId, "work-item:conflict");
+    assert.equal(finalized.session.taskId, "task:conflict");
     assert.equal(finalized.session.objectiveId, "objective:conflict");
-    assert.equal(finalized.workItem.current_session_id, "session:conflict");
+    assert.equal(finalized.task.current_session_id, "session:conflict");
     assert.equal(finalized.integrationRun.conflictSessionId, "session:conflict");
     assert.deepEqual(store.stateConsistencyIssues(), []);
     assert.deepEqual(
       new Set(store.stateChangesAfter(before).map((change) => change.entityType)),
-      new Set(["session", "workItem", "integrationRun"])
+      new Set(["session", "task", "integrationRun"])
     );
   } finally {
     await store.close();
@@ -1185,7 +1185,7 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
   }
 });
 
-test("Session kind persists explicitly and WorkItem binding classifies worker sessions", async () => {
+test("Session kind persists explicitly and Task binding classifies worker sessions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-kind-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -1213,25 +1213,25 @@ test("Session kind persists explicitly and WorkItem binding classifies worker se
       status: "complete"
     });
     store.createObjective({ id: "objective:1", name: "Objective" });
-    store.createWorkItem({ id: "work-item:1", objectiveId: "objective:1", title: "Work item" });
-    store.bindSessionToWorkItem("worker-session", "work-item:1", "objective:1");
+    store.createTask({ id: "task:1", objectiveId: "objective:1", title: "Work item" });
+    store.bindSessionToTask("worker-session", "task:1", "objective:1");
     const worker = store.getSession("worker-session");
     assert.equal(worker.sessionKind, "worker");
-    assert.equal(worker.workItemId, "work-item:1");
-    assert.equal(store.getWorkItem("work-item:1").current_session_id, "worker-session");
+    assert.equal(worker.taskId, "task:1");
+    assert.equal(store.getTask("task:1").current_session_id, "worker-session");
 
     assert.throws(
-      () => store.bindSessionToWorkItem("missing-session", "work-item:1", "objective:1"),
+      () => store.bindSessionToTask("missing-session", "task:1", "objective:1"),
       (error) => error?.code === "SESSION_NOT_FOUND"
     );
-    assert.equal(store.getWorkItem("work-item:1").current_session_id, "worker-session");
+    assert.equal(store.getTask("task:1").current_session_id, "worker-session");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("workspace route replacement preserves the stable Work Session and WorkItem ownership", async () => {
+test("workspace route replacement preserves the stable Work Session and Task ownership", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-work-session-transition-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -1247,8 +1247,8 @@ test("workspace route replacement preserves the stable Work Session and WorkItem
       status: "complete"
     });
     store.createObjective({ id: "objective:one", name: "Objective" });
-    store.createWorkItem({ id: "work-item:one", objectiveId: "objective:one", title: "Work item" });
-    store.bindSessionToWorkItem("worker-session", "work-item:one", "objective:one");
+    store.createTask({ id: "task:one", objectiveId: "objective:one", title: "Work item" });
+    store.bindSessionToTask("worker-session", "task:one", "objective:one");
     store.createLogicalSessionRoute({
       logicalSessionId: "logical:worker",
       legacySessionId: "worker-session",
@@ -1259,7 +1259,7 @@ test("workspace route replacement preserves the stable Work Session and WorkItem
       title: "Worker"
     });
 
-    assert.equal(store.assertLogicalWorkSessionBinding("logical:worker").workItemId, "work-item:one");
+    assert.equal(store.assertLogicalWorkSessionBinding("logical:worker").taskId, "task:one");
     store.beginWorkspaceTransition({
       transitionId: "transition:worker",
       logicalSessionId: "logical:worker",
@@ -1286,10 +1286,10 @@ test("workspace route replacement preserves the stable Work Session and WorkItem
     });
 
     assert.equal(store.getLogicalSession("logical:worker").legacySessionId, "worker-session");
-    assert.equal(store.getWorkItem("work-item:one").current_session_id, "worker-session");
-    assert.equal(store.getSession("worker-session").workItemId, "work-item:one");
+    assert.equal(store.getTask("task:one").current_session_id, "worker-session");
+    assert.equal(store.getSession("worker-session").taskId, "task:one");
 
-    store.db.run("UPDATE work_items SET current_session_id = 'worker-session:replacement' WHERE id = 'work-item:one'");
+    store.db.run("UPDATE tasks SET current_session_id = 'worker-session:replacement' WHERE id = 'task:one'");
     assert.throws(
       () => store.beginWorkspaceTransition({
         transitionId: "transition:stale-worker",
@@ -1324,12 +1324,12 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
       rawStatus: { capabilities: { canSend: true, canInterrupt: true } }
     });
     store.createObjective({ id: "objective:retired", name: "Objective" });
-    store.createWorkItem({
-      id: "work-item:retired",
+    store.createTask({
+      id: "task:retired",
       objectiveId: "objective:retired",
       title: "Completed item"
     });
-    store.bindSessionToWorkItem("worker-session:retired", "work-item:retired", "objective:retired");
+    store.bindSessionToTask("worker-session:retired", "task:retired", "objective:retired");
     store.createLogicalSessionRoute({
       logicalSessionId: "logical:retired",
       legacySessionId: "worker-session:retired",
@@ -1346,14 +1346,14 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
     assert.equal(retired.archived, true);
 
     const session = store.getSession("worker-session:retired");
-    assert.equal(session.workItemId, "work-item:retired");
+    assert.equal(session.taskId, "task:retired");
     assert.equal(session.archived, true);
     assert.equal(session.status, "complete");
     assert.equal(session.rawStatus.capabilities.canSend, false);
     assert.equal(session.rawStatus.capabilities.canInterrupt, false);
     assert.equal(session.rawStatus.capabilities.canReconnect, false);
     assert.equal(session.rawStatus.workspaceRetired.worktreeId, "worktree:feature");
-    assert.equal(store.getWorkItem("work-item:retired").current_session_id, "worker-session:retired");
+    assert.equal(store.getTask("task:retired").current_session_id, "worker-session:retired");
     assert.equal(store.assertLogicalSessionRoute("logical:retired"), true);
 
     store.beginWorkspaceTransition({
@@ -1731,7 +1731,7 @@ test("a recreated Worktree releases ownership held by a terminal startup operati
     ...main,
     worktreeId: "worktree:worker", path: "/repo-worker", canonicalPath: "/repo-worker",
     gitDirCanonicalPath: "/repo/.git/worktrees/worker", isMain: false,
-    branchRef: "refs/heads/workitem/one", branchName: "workitem/one"
+    branchRef: "refs/heads/task/one", branchName: "task/one"
   };
   const snapshot = (inventoryVersion, worktrees) => ({
     repository: { ...repository, lastValidatedAt: `2026-08-30T00:0${inventoryVersion.slice(-1)}:00.000Z` },
@@ -1748,8 +1748,8 @@ test("a recreated Worktree releases ownership held by a terminal startup operati
       id: "objective:one", name: "One",
       workspaceIds: [repository.id], contributorAgentIds: [agent.agentId]
     });
-    store.createWorkItem({
-      id: "work_item:one", objectiveId: "objective:one", title: "One",
+    store.createTask({
+      id: "task:one", objectiveId: "objective:one", title: "One",
       mainWorkspaceId: repository.id, mainAgentId: agent.agentId
     });
     store.db.run(
@@ -1757,10 +1757,10 @@ test("a recreated Worktree releases ownership held by a terminal startup operati
     );
     store.db.run(
       `INSERT INTO work_session_startup_operations (
-        startup_operation_id, objective_id, work_item_id, requested_agent_id, provider_id,
+        startup_operation_id, objective_id, task_id, requested_agent_id, provider_id,
         repository_id, idempotency_key, request_fingerprint, state, worktree_id,
         correlation_id, allocated_at, failed_at, updated_at
-      ) VALUES ('startup:failed','objective:one','work_item:one','agent:worker','test-provider',
+      ) VALUES ('startup:failed','objective:one','task:one','agent:worker','test-provider',
         'repository:recreated','start:failed','fingerprint','failed_compensated','worktree:worker',
         'correlation:failed','2026-08-30T00:00:00.000Z','2026-08-30T00:00:01.000Z','2026-08-30T00:00:01.000Z')`
     );
@@ -1793,7 +1793,7 @@ test("unchanged Git workspace snapshots skip SQLite writes, audit, and dirty not
     let dirtyCount = 0;
     let auditCount = 0;
     store.setStateDirtyListener(() => { dirtyCount += 1; });
-    store.auditObjectiveWorkItemAssociations = () => { auditCount += 1; };
+    store.auditObjectiveTaskAssociations = () => { auditCount += 1; };
     const repeated = {
       ...snapshot,
       observedAt: "2099-01-01T00:00:00.000Z",

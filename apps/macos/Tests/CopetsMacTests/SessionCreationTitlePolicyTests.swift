@@ -2,10 +2,10 @@ import XCTest
 @testable import CorptieMac
 
 final class SessionCreationTitlePolicyTests: XCTestCase {
-    func testWorkItemTitleWinsForWorkerSessionCreation() {
+    func testCorptieTaskTitleWinsForWorkerSessionCreation() {
         XCTAssertEqual(
             SessionCreationTitlePolicy.defaultTitle(
-                workItemTitle: "  修复会话命名  ",
+                taskTitle: "  修复会话命名  ",
                 suggestedAgentTitle: "Builder_Session_2",
                 agentName: "Builder"
             ),
@@ -16,7 +16,7 @@ final class SessionCreationTitlePolicyTests: XCTestCase {
     func testOrdinaryAgentSessionKeepsExistingSuggestedTitlePolicy() {
         XCTAssertEqual(
             SessionCreationTitlePolicy.defaultTitle(
-                workItemTitle: nil,
+                taskTitle: nil,
                 suggestedAgentTitle: "Builder_Session_2",
                 agentName: "Builder"
             ),
@@ -24,7 +24,7 @@ final class SessionCreationTitlePolicyTests: XCTestCase {
         )
         XCTAssertEqual(
             SessionCreationTitlePolicy.defaultTitle(
-                workItemTitle: nil,
+                taskTitle: nil,
                 suggestedAgentTitle: nil,
                 agentName: "Builder"
             ),

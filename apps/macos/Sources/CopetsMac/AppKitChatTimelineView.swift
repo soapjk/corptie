@@ -680,7 +680,7 @@ enum ChatBubbleWidthPolicy {
 struct NativeCollaborationRoutePresentation: Hashable {
     enum DestinationKind: Hashable {
         case existingSession
-        case newWorkItem
+        case newCorptieTask
     }
 
     let destinationKind: DestinationKind
@@ -894,7 +894,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var underfilledHistoryRequestCount = 0
         private var lastUnderfilledHistoryRequestSignature: String?
         private var underfilledHistoryEvaluationGeneration = 0
-        private var positionPublishWorkItem: DispatchWorkItem?
+        private var positionPublishCorptieTask: DispatchWorkItem?
         private var lastPublishedPosition: AppKitChatTimelinePosition?
         private var pendingRestorePosition: AppKitChatTimelinePosition?
         private var lastRequestedRestorePosition: AppKitChatTimelinePosition?
@@ -973,8 +973,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         ) {
             guard representedSessionID != sessionID else { return }
             publishPositionImmediately()
-            positionPublishWorkItem?.cancel()
-            positionPublishWorkItem = nil
+            positionPublishCorptieTask?.cancel()
+            positionPublishCorptieTask = nil
             scrollCommandGeneration &+= 1
             nearTopSuppressionGeneration &+= 1
             representedSessionID = sessionID
@@ -1782,8 +1782,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         private func schedulePositionPublish() {
-            positionPublishWorkItem?.cancel()
-            let workItem = DispatchWorkItem { [weak self] in
+            positionPublishCorptieTask?.cancel()
+            let task = DispatchWorkItem { [weak self] in
                 guard let self, let tableView = self.tableView,
                       let anchor = self.visibleAnchor(in: tableView) else { return }
                 let position = AppKitChatTimelinePosition(
@@ -1796,13 +1796,13 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 self.lastPublishedPosition = position
                 self.onPositionChange(position)
             }
-            positionPublishWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: workItem)
+            positionPublishCorptieTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: task)
         }
 
         func publishPositionImmediately() {
-            positionPublishWorkItem?.cancel()
-            positionPublishWorkItem = nil
+            positionPublishCorptieTask?.cancel()
+            positionPublishCorptieTask = nil
             guard let tableView, let anchor = visibleAnchor(in: tableView) else { return }
             let position = AppKitChatTimelinePosition(
                 rowID: anchor.id,

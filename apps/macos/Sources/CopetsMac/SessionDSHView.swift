@@ -3,7 +3,7 @@ import WebKit
 
 // Session DSH 适配探针（P0）：内嵌一个 WKWebView，加载 DSH 的 web 宿主前端，
 // 用于验证 DSH 的 React + Cordis 插件化 UI 能否脱离其 agent 后端、在 Corptie 中渲染。
-// 这是独立于现有 Session Tab 的隔离实验页，不改动任何现有会话 UI。
+// DSH 协议的隔离实验页，不参与统一控制台导航。
 
 struct SessionDSHView: View {
     @EnvironmentObject private var sidebarState: TabSidebarState
@@ -25,8 +25,8 @@ final class SessionDSHWebViewStore {
     let webView: WKWebView
     private let coordinator: DSHWebView.Coordinator
     private let url = CorptieAppEnvironment.backendBaseURL
-    private var retryWorkItem: DispatchWorkItem?
-    private var presentationWorkItem: DispatchWorkItem?
+    private var retryCorptieTask: DispatchWorkItem?
+    private var presentationCorptieTask: DispatchWorkItem?
     private var retryAttempt = 0
     private var requestedSidebarVisibility = true
 
@@ -45,8 +45,8 @@ final class SessionDSHWebViewStore {
         }
         coordinator.onNavigationFinish = { [weak self] in
             self?.retryAttempt = 0
-            self?.retryWorkItem?.cancel()
-            self?.retryWorkItem = nil
+            self?.retryCorptieTask?.cancel()
+            self?.retryCorptieTask = nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 self?.applyRequestedSidebarVisibility()
             }
@@ -68,15 +68,15 @@ final class SessionDSHWebViewStore {
     // representable lifecycle callback can recursively enter AppKit's display
     // cycle while NSHostingView is updating safe-area constraints.
     func didBecomeVisible() {
-        presentationWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
+        presentationCorptieTask?.cancel()
+        let task = DispatchWorkItem { [weak self] in
             guard let self, self.webView.window != nil else { return }
             self.webView.needsDisplay = true
             self.webView.evaluateJavaScript("window.dispatchEvent(new Event('resize'))") { _, _ in }
             self.applyRequestedSidebarVisibility()
         }
-        presentationWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
+        presentationCorptieTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: task)
     }
 
     func setSidebarVisible(_ isVisible: Bool) {
@@ -122,15 +122,15 @@ final class SessionDSHWebViewStore {
     }
 
     private func scheduleRetry() {
-        retryWorkItem?.cancel()
+        retryCorptieTask?.cancel()
         retryAttempt += 1
         let delay = min(pow(2.0, Double(retryAttempt - 1)) * 0.5, 5.0)
-        let workItem = DispatchWorkItem { [weak self] in
+        let task = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.webView.load(URLRequest(url: self.url))
         }
-        retryWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+        retryCorptieTask = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: task)
     }
 }
 

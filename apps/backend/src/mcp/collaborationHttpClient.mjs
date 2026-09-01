@@ -42,7 +42,7 @@ export class CollaborationHttpClient {
           ...(this.sessionScope.sessionId ? { "x-corptie-session-id": this.sessionScope.sessionId } : {}),
           ...(this.sessionScope.providerBindingId ? { "x-corptie-provider-binding-id": this.sessionScope.providerBindingId } : {}),
           ...(this.sessionScope.objectiveId ? { "x-corptie-objective-id": this.sessionScope.objectiveId } : {}),
-          ...(this.sessionScope.workItemId ? { "x-corptie-work-item-id": this.sessionScope.workItemId } : {})
+          ...(this.sessionScope.taskId ? { "x-corptie-task-id": this.sessionScope.taskId } : {})
         }
       });
     } catch (error) {

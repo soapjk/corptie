@@ -79,22 +79,5 @@ development-docs/
 **/.github/copilot-instructions.md
 **/.github/instructions/
 docs/
-!docs/
-docs/**
-!docs/openclacky-provider-parity-audit-and-remediation.md
-!docs/skill-management-page-proposal.md
-!docs/detached-orb-and-task-notifications.md
-!docs/agent-collaboration.md
-!docs/domain-model-and-capability-boundaries.md
-!docs/automation-scheduler.md
-!docs/popup-background-execution-audit.md
-!docs/copilot-assistant-mcp-skill-coverage.md
-!docs/session-background-sync-architecture.md
-!docs/ipad-client-overall-design.md
-!docs/ipad-client-architecture.md
-!docs/ipad-lan-remote-access-security.md
-!docs/ipad-client-rollout-test-rollback.md
-!docs/private-artifacts.md
-!docs/product-showcase.md
 # Corptie local Agent configuration
 /.corptie/

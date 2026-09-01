@@ -29,13 +29,13 @@ async function fixture() {
 }
 
 function enqueue(store, overrides) {
-  return store.enqueueAgentWorkItem({
-    workItemId: overrides.workItemId,
+  return store.enqueueAgentTask({
+    taskId: overrides.taskId,
     agentId: "agent-b",
     sessionId: overrides.sessionId ?? "codex:thread-b",
     kind: overrides.kind,
     priority: overrides.priority,
-    text: overrides.text ?? overrides.workItemId,
+    text: overrides.text ?? overrides.taskId,
     source: { type: overrides.kind },
     localVisibility: overrides.kind === "collaboration" ? "status_only" : "normal",
     createdAt: overrides.createdAt
@@ -48,8 +48,8 @@ test("an idle Agent's first message starts without a queue notice", () => {
 
 test("a message reports queued when an Agent is busy or work is ahead", () => {
   assert.equal(shouldReportAgentWorkQueued({ sessionHasActiveRun: true }), true);
-  assert.equal(shouldReportAgentWorkQueued({ hasRunningWorkItem: true }), true);
-  assert.equal(shouldReportAgentWorkQueued({ queuedWorkItemsAhead: 1 }), true);
+  assert.equal(shouldReportAgentWorkQueued({ hasRunningTask: true }), true);
+  assert.equal(shouldReportAgentWorkQueued({ queuedTasksAhead: 1 }), true);
 });
 
 test("orphaned dispatched work is cancelled while pre-dispatch work is requeued", () => {
@@ -82,18 +82,18 @@ test("orphaned dispatched work is cancelled while pre-dispatch work is requeued"
 });
 
 test("queued work remains routed to its own Session when the Agent current Session changes", () => {
-  const workItem = {
-    sessionId: "codex:work-item-session",
+  const task = {
+    sessionId: "codex:task-session",
     source: { type: "desktop" }
   };
   const reference = {
-    sessionId: "codex:work-item-session",
-    providerSessionId: "provider:work-item"
+    sessionId: "codex:task-session",
+    providerSessionId: "provider:task"
   };
 
-  assert.equal(assertAgentWorkSessionReference(workItem, reference), reference);
+  assert.equal(assertAgentWorkSessionReference(task, reference), reference);
   assert.throws(
-    () => assertAgentWorkSessionReference(workItem, {
+    () => assertAgentWorkSessionReference(task, {
       sessionId: "codex:agent-current-session",
       providerSessionId: "provider:other"
     }),
@@ -102,7 +102,7 @@ test("queued work remains routed to its own Session when the Agent current Sessi
 });
 
 test("workspace continuation is locked to the committed Provider binding and routing version", () => {
-  const workItem = {
+  const task = {
     sessionId: "codex:stable-work-session",
     source: {
       type: "workspace-continuation",
@@ -121,9 +121,9 @@ test("workspace continuation is locked to the committed Provider binding and rou
     routingVersion: 2
   };
 
-  assert.equal(assertAgentWorkSessionReference(workItem, reference), reference);
+  assert.equal(assertAgentWorkSessionReference(task, reference), reference);
   assert.throws(
-    () => assertAgentWorkSessionReference(workItem, { ...reference, routingVersion: 3 }),
+    () => assertAgentWorkSessionReference(task, { ...reference, routingVersion: 3 }),
     (error) => error.code === "STALE_WORKSPACE_CONTINUATION"
   );
 });
@@ -142,20 +142,20 @@ test("user instructions are selected before older collaboration work", async () 
   const { directory, store } = await fixture();
   try {
     enqueue(store, {
-      workItemId: "collaboration-1",
+      taskId: "collaboration-1",
       kind: "collaboration",
       priority: 50,
       createdAt: "2026-07-17T00:00:00.000Z"
     });
     enqueue(store, {
-      workItemId: "user-1",
+      taskId: "user-1",
       kind: "user",
       priority: 100,
       createdAt: "2026-07-17T00:00:01.000Z"
     });
 
     assert.deepEqual(
-      store.listQueuedAgentWorkItems("agent-b").map((item) => item.workItemId),
+      store.listQueuedAgentTasks("agent-b").map((item) => item.taskId),
       ["user-1", "collaboration-1"]
     );
   } finally {
@@ -167,27 +167,27 @@ test("user instructions are selected before older collaboration work", async () 
 test("one Session stays serial while two Sessions sharing an Agent run concurrently", async () => {
   const { directory, store } = await fixture();
   try {
-    enqueue(store, { workItemId: "user-1", kind: "user", priority: 100 });
-    enqueue(store, { workItemId: "user-2", kind: "user", priority: 100 });
+    enqueue(store, { taskId: "user-1", kind: "user", priority: 100 });
+    enqueue(store, { taskId: "user-2", kind: "user", priority: 100 });
     enqueue(store, {
-      workItemId: "user-3",
+      taskId: "user-3",
       kind: "user",
       priority: 100,
       sessionId: "codex:thread-c"
     });
 
-    assert.equal(store.claimAgentWorkItem("user-1")?.status, "running");
-    assert.equal(store.claimAgentWorkItem("user-2"), null);
-    store.db.run(`CREATE UNIQUE INDEX idx_agent_work_items_one_running
-      ON agent_work_items(agent_id) WHERE status = 'running'`);
-    assert.equal(store.claimAgentWorkItem("user-3")?.status, "running");
+    assert.equal(store.claimAgentTask("user-1")?.status, "running");
+    assert.equal(store.claimAgentTask("user-2"), null);
+    store.db.run(`CREATE UNIQUE INDEX idx_agent_operations_one_running
+      ON agent_operations(agent_id) WHERE status = 'running'`);
+    assert.equal(store.claimAgentTask("user-3")?.status, "running");
     assert.equal(store.selectOne(
-      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_work_items_one_running'"
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_operations_one_running'"
     ), null);
-    assert.equal(store.getRunningAgentWorkItemForSession("codex:thread-b")?.workItemId, "user-1");
-    assert.equal(store.getRunningAgentWorkItemForSession("codex:thread-c")?.workItemId, "user-3");
-    store.updateAgentWorkItem("user-1", { status: "completed" });
-    assert.equal(store.claimAgentWorkItem("user-2")?.status, "running");
+    assert.equal(store.getRunningAgentTaskForSession("codex:thread-b")?.taskId, "user-1");
+    assert.equal(store.getRunningAgentTaskForSession("codex:thread-c")?.taskId, "user-3");
+    store.updateAgentTask("user-1", { status: "completed" });
+    assert.equal(store.claimAgentTask("user-2")?.status, "running");
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
     await rm(directory, { recursive: true, force: true });
@@ -198,12 +198,12 @@ test("a lone running work item remains discoverable for restart recovery", async
   const { directory, store } = await fixture();
   try {
     enqueue(store, {
-      workItemId: "only-running",
+      taskId: "only-running",
       kind: "user",
       priority: 100,
       createdAt: "2026-07-17T00:00:00.000Z"
     });
-    store.claimAgentWorkItem("only-running");
+    store.claimAgentTask("only-running");
 
     assert.deepEqual(store.listAgentIdsWithQueuedWork(), []);
     assert.deepEqual(store.listAgentIdsWithUnsettledWork(), ["agent-b"]);
@@ -218,20 +218,20 @@ test("startup migrates the legacy Agent-wide running index to a Session-wide ind
   const { directory, dbPath, store } = await fixture();
   let reopened = null;
   try {
-    store.db.run("DROP INDEX IF EXISTS idx_agent_work_items_one_running_per_session");
-    store.db.run(`CREATE UNIQUE INDEX idx_agent_work_items_one_running
-      ON agent_work_items(agent_id) WHERE status = 'running'`);
+    store.db.run("DROP INDEX IF EXISTS idx_agent_operations_one_running_per_session");
+    store.db.run(`CREATE UNIQUE INDEX idx_agent_operations_one_running
+      ON agent_operations(agent_id) WHERE status = 'running'`);
     await store.close();
 
     reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
     await reopened.initialize();
 
     assert.equal(reopened.selectOne(
-      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_work_items_one_running'"
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_operations_one_running'"
     ), null);
     assert.equal(reopened.selectOne(
-      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_work_items_one_running_per_session'"
-    )?.name, "idx_agent_work_items_one_running_per_session");
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_operations_one_running_per_session'"
+    )?.name, "idx_agent_operations_one_running_per_session");
   } finally {
     if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
     await rm(directory, { recursive: true, force: true });
@@ -250,11 +250,11 @@ test("clearing or deleting a Session cancels every unsettled queued message", as
       updatedAt: "2026-07-17T00:00:00.000Z",
       accent: "cyan"
     });
-    enqueue(store, { workItemId: "queued-before-clear", kind: "user", priority: 100 });
+    enqueue(store, { taskId: "queued-before-clear", kind: "user", priority: 100 });
 
     store.deleteSession("codex:thread-b");
 
-    const cancelled = store.getAgentWorkItem("queued-before-clear");
+    const cancelled = store.getAgentTask("queued-before-clear");
     assert.equal(cancelled.status, "cancelled");
     assert.match(cancelled.lastError, /cleared or deleted/);
     assert.equal(store.getSession("codex:thread-b"), null);
@@ -277,8 +277,8 @@ test("a running work item is failed by post-listen restart reconciliation", asyn
   const { directory, dbPath, store } = await fixture();
   let reopened = null;
   try {
-    enqueue(store, { workItemId: "user-1", kind: "user", priority: 100 });
-    store.claimAgentWorkItem("user-1");
+    enqueue(store, { taskId: "user-1", kind: "user", priority: 100 });
+    store.claimAgentTask("user-1");
     if (store.saveTimer) {
       clearTimeout(store.saveTimer);
       store.saveTimer = null;
@@ -287,9 +287,9 @@ test("a running work item is failed by post-listen restart reconciliation", asyn
 
     reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
     await reopened.initialize();
-    assert.equal(reopened.getAgentWorkItem("user-1").status, "running");
+    assert.equal(reopened.getAgentTask("user-1").status, "running");
     reopened.reconcileInterruptedSessionExecutionAtStartup("2026-07-18T06:00:00.000Z");
-    const recovered = reopened.getAgentWorkItem("user-1");
+    const recovered = reopened.getAgentTask("user-1");
     assert.equal(recovered.status, "failed");
     assert.match(recovered.lastError, /restart.*not resent/i);
   } finally {
@@ -304,12 +304,12 @@ test("restart reconciliation fails dispatched collaboration work without requeue
   let reopened = null;
   try {
     enqueue(store, {
-      workItemId: "collaboration-dispatched",
+      taskId: "collaboration-dispatched",
       kind: "collaboration",
       priority: 50
     });
-    store.claimAgentWorkItem("collaboration-dispatched");
-    store.updateAgentWorkItem("collaboration-dispatched", { targetTurnId: "turn-interrupted" });
+    store.claimAgentTask("collaboration-dispatched");
+    store.updateAgentTask("collaboration-dispatched", { targetTurnId: "turn-interrupted" });
     if (store.saveTimer) {
       clearTimeout(store.saveTimer);
       store.saveTimer = null;
@@ -320,7 +320,7 @@ test("restart reconciliation fails dispatched collaboration work without requeue
     await reopened.initialize();
     reopened.reconcileInterruptedSessionExecutionAtStartup("2026-07-18T06:00:00.000Z");
 
-    const recovered = reopened.getAgentWorkItem("collaboration-dispatched");
+    const recovered = reopened.getAgentTask("collaboration-dispatched");
     assert.equal(recovered.status, "failed");
     assert.match(recovered.lastError, /not resent/);
   } finally {
@@ -349,9 +349,9 @@ test("restart reconciliation does not resend user work that reached a Provider t
         activeTurnId: "interrupted-turn"
       }
     });
-    enqueue(store, { workItemId: "install-browser", kind: "user", priority: 100 });
-    store.claimAgentWorkItem("install-browser");
-    store.updateAgentWorkItem("install-browser", { targetTurnId: "interrupted-turn" });
+    enqueue(store, { taskId: "install-browser", kind: "user", priority: 100 });
+    store.claimAgentTask("install-browser");
+    store.updateAgentTask("install-browser", { targetTurnId: "interrupted-turn" });
     if (store.saveTimer) {
       clearTimeout(store.saveTimer);
       store.saveTimer = null;
@@ -362,7 +362,7 @@ test("restart reconciliation does not resend user work that reached a Provider t
     await reopened.initialize();
     reopened.reconcileInterruptedSessionExecutionAtStartup("2026-07-18T06:00:00.000Z");
 
-    const recoveredWork = reopened.getAgentWorkItem("install-browser");
+    const recoveredWork = reopened.getAgentTask("install-browser");
     const staleSession = reopened.getSession("codex:thread-b");
     assert.equal(recoveredWork.status, "failed");
     assert.match(recoveredWork.lastError, /not resent/);
@@ -374,7 +374,7 @@ test("restart reconciliation does not resend user work that reached a Provider t
       "complete"
     );
     assert.equal(sessionHasActiveRun(reconciledSession), false);
-    assert.equal(reopened.claimAgentWorkItem(recoveredWork.workItemId), null);
+    assert.equal(reopened.claimAgentTask(recoveredWork.taskId), null);
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
     if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);

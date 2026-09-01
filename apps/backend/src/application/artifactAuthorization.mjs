@@ -27,13 +27,13 @@ export class SessionAuthorizationResolver {
     if (input.expectedSessionKind && input.expectedSessionKind !== sessionKind) throw bindingError("Session kind changed.");
     const objective = session.objectiveId ? this.store.getObjective(session.objectiveId) : null;
     if (!objective) throw bindingError("Session Objective binding is invalid.");
-    let workItem = null;
+    let task = null;
     if (sessionKind === "worker") {
-      workItem = session.workItemId ? this.store.getWorkItem(session.workItemId) : null;
-      if (!workItem || workItem.objective_id !== objective.id
-        || workItem.current_session_id !== session.id
-        || workItem.deletion_status === "deleting") {
-        throw bindingError("Worker Session no longer owns its exact WorkItem binding.");
+      task = session.taskId ? this.store.getTask(session.taskId) : null;
+      if (!task || task.objective_id !== objective.id
+        || task.current_session_id !== session.id
+        || task.deletion_status === "deleting") {
+        throw bindingError("Worker Session no longer owns its exact Task binding.");
       }
     }
     const logicalSessionId = logical?.logicalSessionId ?? session.external?.logicalSessionId ?? session.id;
@@ -49,8 +49,8 @@ export class SessionAuthorizationResolver {
     const authorizationRevision = revision([
       logicalSessionId, logical?.routingVersion ?? 0, providerBindingId,
       session.id, session.updatedAt ?? "", sessionKind, session.agentId,
-      objective.id, workItem?.id ?? "", workItem?.resource_version ?? 0,
-      workItem?.updated_at ?? ""
+      objective.id, task?.id ?? "", task?.resource_version ?? 0,
+      task?.updated_at ?? ""
     ]);
     return Object.freeze({
       logicalSessionId,
@@ -58,11 +58,11 @@ export class SessionAuthorizationResolver {
       sessionKind,
       agentId: session.agentId,
       objectiveId: objective.id,
-      workItemId: workItem?.id ?? null,
+      taskId: task?.id ?? null,
       providerBindingId,
       authorizationRevision,
       session,
-      workItem
+      task
     });
   }
 }
@@ -90,7 +90,7 @@ export class ArtifactReferenceAuthorizer {
       && (isManager
         || reference.authorizedByActorId === "system:objective-scope-read"
         || (reference.sessionId && reference.sessionId === context.productSessionId)
-        || (context.workItemId && reference.workItemId === context.workItemId))
+        || (context.taskId && reference.taskId === context.taskId))
       && reference.referenceId === explicitReferenceId
     );
     if (references.length === 0) throw hiddenArtifactError();

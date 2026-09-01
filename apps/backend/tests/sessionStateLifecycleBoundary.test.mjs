@@ -71,7 +71,7 @@ test("Worker initial prompts drain only after the authoritative ready receipt co
   const activateIndex = serviceBody.indexOf("activateSession:");
   assert.ok(finalizeIndex >= 0 && activateIndex > finalizeIndex);
   assert.match(serviceBody.slice(activateIndex), /sessionApplicationService\.resumeSession\(session\.id,[\s\S]*purpose:\s*"session-create-finalization"/);
-  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, initialPrompt \|\| workItemExecutionPrompt\(workItem\)/);
+  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, initialPrompt \|\| taskExecutionPrompt\(task\)/);
 });
 
 test("Worker startup composition consumes the coordinator's requested Agent identity", async () => {
@@ -86,21 +86,21 @@ test("Worker startup composition consumes the coordinator's requested Agent iden
 
 test("every Worker Session production entry routes through the authoritative startup coordinator", async () => {
   const source = await readFile(sourceURL, "utf8");
-  assert.equal(source.match(/launchWorkItemSession\(/g)?.length, 2, "only the coordinator adapter and function definition may reference the low-level launcher");
+  assert.equal(source.match(/launchTaskSession\(/g)?.length, 2, "only the coordinator adapter and function definition may reference the low-level launcher");
   assert.match(source, /platform-operation/);
   assert.match(source, /integration-conflict-resolution/);
   assert.match(source, /integration-plan-resolution/);
-  assert.match(source, /async function launchPreparedWorkItemSession[\s\S]*launchAndBindWorkItemSession/);
-  assert.match(source, /async function launchAndBindWorkItemSession[\s\S]*workSessionStartupCoordinator\.start/);
+  assert.match(source, /async function launchPreparedTaskSession[\s\S]*launchAndBindTaskSession/);
+  assert.match(source, /async function launchAndBindTaskSession[\s\S]*workSessionStartupCoordinator\.start/);
 });
 
-test("a replaced Worker Session cannot overwrite its WorkItem lifecycle", async () => {
+test("a replaced Worker Session cannot overwrite its Task lifecycle", async () => {
   const source = await readFile(sourceURL, "utf8");
-  const settleBegin = source.indexOf("function settleEntityWorkItemFromSession");
-  const settleEnd = source.indexOf("function scheduleWorkItemMemoryExtraction", settleBegin);
+  const settleBegin = source.indexOf("function settleEntityTaskFromSession");
+  const settleEnd = source.indexOf("function scheduleTaskMemoryExtraction", settleBegin);
   const settleBody = source.slice(settleBegin, settleEnd);
-  assert.match(settleBody, /workItem\.current_session_id !== session\.id/);
-  assert.ok(settleBody.indexOf("current_session_id") < settleBody.indexOf("workItemExecutionPatch"));
+  assert.match(settleBody, /task\.current_session_id !== session\.id/);
+  assert.ok(settleBody.indexOf("current_session_id") < settleBody.indexOf("taskExecutionPatch"));
 });
 
 test("every supported streaming Provider isolates lifecycle callback failures", async () => {
