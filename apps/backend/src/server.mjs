@@ -72,10 +72,6 @@ import {
   ProviderWorkspaceBindingService,
   persistedProviderWorkspaceProof
 } from "./agent-provider/providerWorkspaceBindingService.mjs";
-import {
-  evaluateTaskSessionRepair,
-  historicalProviderSessionUnavailable
-} from "./application/taskSessionRepairPolicy.mjs";
 import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
@@ -924,6 +920,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     createSession: createCodexProviderSession,
     resumeSession: resumeCodexProviderSession,
     prepareExecution: prepareCodexProviderExecution,
+    stabilizeRecoverySession: stabilizeCodexRecoverySession,
     deleteSession: deleteCodexProviderSession,
     disconnectSession: (reference) => codexRuntime.archiveThread(reference.providerSessionId),
     restartSession: restartCodexProviderSession,
@@ -1467,6 +1464,57 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
       sideEffectsObserved: false,
       mode: "trusted_system_context_injection"
     }),
+    stabilizeReplacement: async ({ attempt, replacement }) => {
+      const descriptor = agentProviderRegistry.get(attempt.providerId).descriptor;
+      if (!descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.SESSION_RECOVERY_STABILIZE)) {
+        const error = new Error(`Agent Provider ${attempt.providerId} cannot prove that a recovery Session is durable.`);
+        error.code = "CAPABILITY_UNSUPPORTED";
+        throw error;
+      }
+      const storedSession = store.getSession(attempt.sessionId);
+      const recoveryToolContext = {
+        purpose: "session-recovery-stabilization",
+        actorId: storedSession?.agentId ?? null,
+        sessionId: attempt.sessionId,
+        logicalSessionId: attempt.logicalSessionId,
+        sessionKind: storedSession?.sessionKind ?? "legacy",
+        objectiveId: attempt.objectiveId,
+        taskId: attempt.taskId,
+        desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
+      };
+      const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
+      const providerAttachment = replacement.toolConfirmation
+        ? {
+            ...(preparedToolHost?.providerAttachment ?? {}),
+            dynamicToolConfirmation: {
+              providerRevision: replacement.toolConfirmation.providerRevision,
+              providerDefinitionsHash: replacement.toolConfirmation.providerDefinitionsHash,
+              providerDefinitionsCount: replacement.toolConfirmation.providerDefinitionsCount,
+              providerObservationKind: replacement.toolConfirmation.providerObservationKind
+            }
+          }
+        : preparedToolHost?.providerAttachment;
+      return agentProviderRegistry.invoke(
+        attempt.providerId,
+        AGENT_PROVIDER_CAPABILITIES.SESSION_RECOVERY_STABILIZE,
+        {
+          sessionId: attempt.sessionId,
+          logicalSessionId: attempt.logicalSessionId,
+          bindingId: replacement.bindingId,
+          providerId: attempt.providerId,
+          providerSessionId: replacement.providerSessionId,
+          routingVersion: attempt.sourceRoutingVersion + 1,
+          metadata: { session: replacement.sessionProjection }
+        },
+        {
+          ...recoveryToolContext,
+          boundCwd: attempt.boundCwd,
+          toolHost: preparedToolHost
+            ? { ...preparedToolHost, providerAttachment }
+            : null
+        }
+      );
+    },
     validateReplacement: async ({ attempt, replacement }) => {
       const storedSession = store.getSession(attempt.sessionId);
       const recoveryToolContext = {
@@ -5595,6 +5643,20 @@ async function resumeCodexProviderSession(reference, context = {}) {
   return previous;
 }
 
+async function stabilizeCodexRecoverySession(reference, context = {}) {
+  const providerAttachment = context.toolHost?.providerAttachment;
+  if (!providerAttachment?.dynamicToolConfirmation) {
+    const error = new Error("Codex recovery stabilization requires the exact prospective Tool schema proof.");
+    error.code = "RECOVERY_TOOL_CONFIRMATION_MISSING";
+    throw error;
+  }
+  return codexRuntime.stabilizeRecoveryThread(reference.providerSessionId, {
+    cwd: context.boundCwd ?? reference.metadata?.session?.external?.cwd,
+    ...providerAttachment,
+    timeoutMs: context.timeoutMs ?? 90_000
+  });
+}
+
 async function prepareCodexProviderExecution(reference, context = {}) {
   const startedAt = Date.now();
   const sessionId = reference.sessionId;
@@ -6857,108 +6919,6 @@ async function drainAgentWork(sessionId) {
   }
 }
 
-const taskSessionRepairs = new Map();
-
-function incompleteTaskCanSelfRepair(task) {
-  const status = String(task?.status ?? "").trim().toLowerCase();
-  return Boolean(task?.id)
-    && !["done", "complete", "completed", "canceled", "cancelled"].includes(status);
-}
-
-function taskSessionRepairProof(sessionId, failedWork, error) {
-  const session = store.getSession(sessionId);
-  const task = session?.taskId ? store.getTask(session.taskId) : null;
-  if (!session || !task) return null;
-  const turnCount = Number(store.selectOne(
-    "SELECT COUNT(*) AS count FROM session_turns WHERE session_id=?",
-    [session.id]
-  )?.count ?? 0);
-  const uncertainDeliveries = store.selectAll(
-    `SELECT status, last_error FROM message_deliveries
-     WHERE session_id=? AND status IN ('dispatching', 'processing', 'accepted', 'completed', 'delivery_unknown')`,
-    [session.id]
-  );
-  const repairCount = Number(store.selectOne(
-    "SELECT COUNT(*) AS count FROM work_session_startup_operations WHERE task_id=? AND source='self-repair'",
-    [task.id]
-  )?.count ?? 0);
-  const logical = store.getLogicalSessionByLegacySessionId(session.id);
-  const agent = store.getAgent(task.main_agent_id ?? session.agentId);
-  const policy = evaluateTaskSessionRepair({
-    task,
-    session,
-    failedWork,
-    error,
-    turnCount,
-    uncertainDeliveries,
-    repairCount,
-    providerId: logical?.activeBinding?.providerId ?? null,
-    agent
-  });
-  if (!policy.eligible) return null;
-  return { task, session, logical, agent, repairCount };
-}
-
-async function selfRepairTaskSession(sessionId, failedWork, error) {
-  const proof = taskSessionRepairProof(sessionId, failedWork, error);
-  if (!proof) return null;
-  const existing = taskSessionRepairs.get(proof.task.id);
-  if (existing) return existing;
-  const repair = (async () => {
-    const result = await workSessionStartupCoordinator.start({
-      taskId: proof.task.id,
-      requestedAgentId: proof.agent.agentId,
-      providerId: proof.logical.activeBinding.providerId,
-      title: proof.session.title,
-      idempotencyKey: `self-repair:${proof.task.id}:${proof.session.id}`,
-      replacingSessionId: proof.session.id,
-      source: "self-repair",
-      actorId: proof.agent.agentId
-    });
-    for (const queued of store.listAgentTasksForSession(proof.session.id, { statuses: ["queued"] })) {
-      store.updateAgentTask(queued.taskId, {
-        status: "cancelled",
-        lastError: `Superseded by self-repaired Session ${result.session.id}.`
-      });
-    }
-    const deletion = await sessionApplicationService.deleteUnusableSession(proof.session.id, {
-      source: "task-self-repair",
-      actorId: proof.agent.agentId,
-      replacementSessionId: result.session.id
-    });
-    if (!deletion.providerDeleted) {
-      console.warn(`[task-self-repair] removed unusable local Session after Provider deletion failed previousSession=${proof.session.id} code=${deletion.providerErrorCode ?? "unknown"}`);
-    }
-    emitEvent("TaskSessionRepaired", {
-      taskId: proof.task.id,
-      previousSessionId: proof.session.id,
-      sessionId: result.session.id,
-      repairAttempt: proof.repairCount + 1,
-      reason: "provider-session-unavailable"
-    }, { sessionId: result.session.id, source: { type: "self-repair" } });
-    console.warn(`[task-self-repair] task=${proof.task.id} previousSession=${proof.session.id} session=${result.session.id} attempt=${proof.repairCount + 1}`);
-    return result;
-  })().finally(() => taskSessionRepairs.delete(proof.task.id));
-  taskSessionRepairs.set(proof.task.id, repair);
-  return repair;
-}
-
-async function repairBrokenTaskSessionsAtStartup() {
-  let repaired = 0;
-  for (const task of store.listTasks({ includeCompleted: false })) {
-    if (!incompleteTaskCanSelfRepair(task) || !task.current_session_id) continue;
-    const failures = store.listAgentTasksForSession(task.current_session_id, { statuses: ["failed"] });
-    const failedWork = failures.find((item) => historicalProviderSessionUnavailable(item.lastError));
-    if (!failedWork) continue;
-    const error = Object.assign(new Error(failedWork.lastError), {
-      code: "PROVIDER_SESSION_UNAVAILABLE",
-      safeToRetry: true
-    });
-    if (await selfRepairTaskSession(task.current_session_id, failedWork, error)) repaired += 1;
-  }
-  return repaired;
-}
-
 async function deleteHistoricalUnusableTaskSessionsAtStartup() {
   let deleted = 0;
   for (const sessionId of store.listUnusableReplacedTaskSessionIds()) {
@@ -7163,10 +7123,7 @@ async function drainAgentWorkSession(sessionId) {
       });
       workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     }
-    if (!shouldRetryBusy) {
-      const repaired = await selfRepairTaskSession(claimed.sessionId, failedWork, error);
-      if (!repaired) throw error;
-    }
+    if (!shouldRetryBusy) throw error;
   }
 }
 
@@ -10807,7 +10764,20 @@ await new Promise((resolve, reject) => {
 console.log(`Corptie backend (${environmentName}) transport listening on http://127.0.0.1:${port}`);
 
 async function resumeSessionRecoveryAttemptsAtStartup() {
-  const attempts = store.listResumableSessionRecoveryAttempts();
+  const resumable = store.listResumableSessionRecoveryAttempts();
+  const legacyAutomatic = resumable.filter((attempt) =>
+    attempt.idempotencyKey.startsWith("startup-empty-binding-recovery:")
+  );
+  for (const attempt of legacyAutomatic) {
+    store.failSessionRecoveryAttempt(
+      attempt.attemptId,
+      "LEGACY_AUTOMATIC_RECOVERY_DISABLED",
+      "Legacy automatic empty-binding Recovery was disabled; explicit user Recovery is required."
+    );
+  }
+  const attempts = resumable.filter((attempt) =>
+    !attempt.idempotencyKey.startsWith("startup-empty-binding-recovery:")
+  );
   let cursor = 0;
   const worker = async () => {
     while (cursor < attempts.length) {
@@ -10819,7 +10789,7 @@ async function resumeSessionRecoveryAttemptsAtStartup() {
           providerId: attempt.providerId,
           idempotencyKey: attempt.idempotencyKey,
           attemptId: attempt.attemptId,
-          compressHandoff: !attempt.idempotencyKey.startsWith("startup-empty-binding-recovery:")
+          compressHandoff: true
         });
       } catch (error) {
         console.warn(`[session-recovery] startup resume failed attempt=${attempt.attemptId} code=${error.code ?? "SESSION_RECOVERY_FAILED"}`);
@@ -11137,12 +11107,6 @@ async function runProviderStartupMaintenance(knownWorktrees) {
       codexResetForecastMonitor.start();
     }),
     runContainedStartupOperation("session-recovery", resumeSessionRecoveryAttemptsAtStartup),
-    runContainedStartupOperation("task-session-repair", async () => {
-      const repaired = await repairBrokenTaskSessionsAtStartup();
-      if (repaired > 0) {
-        console.warn(`[task-self-repair] startup repaired ${repaired} Task Session(s)`);
-      }
-    }),
     runContainedStartupOperation("replaced-session-cleanup", async () => {
       const deleted = await deleteHistoricalUnusableTaskSessionsAtStartup();
       if (deleted > 0) {

@@ -27,6 +27,7 @@ export class CodexProviderRuntime {
   runEphemeralPrompt(...args) { return this.client.runEphemeralPrompt(...args); }
   setThreadName(...args) { return this.client.setThreadName(...args); }
   startThread(...args) { return this.client.startThread(...args); }
+  stabilizeRecoveryThread(...args) { return this.client.stabilizeRecoveryThread(...args); }
   startTurn(...args) { return this.client.startTurn(...args); }
   tokenUsageForThread(...args) { return this.client.tokenUsageForThread(...args); }
   updateThreadSettings(...args) { return this.client.updateThreadSettings(...args); }
