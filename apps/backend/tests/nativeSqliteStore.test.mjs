@@ -758,6 +758,89 @@ test("Session execution projection is derived from durable Turns instead of a st
   }
 });
 
+test("startup reconciliation fails orphaned messages and cancels interrupted Turns without rebuilding a queue", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-startup-interruption-"));
+  const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
+  await store.initialize();
+  try {
+    store.createAgent({ id: "agent:restart", name: "Restart Agent", role: "independentContributor" });
+    store.upsertSession({
+      id: "provider-session:restart",
+      title: "Restart",
+      agent: "Restart Agent",
+      agentId: "agent:restart",
+      provider: "provider:test",
+      status: "running",
+      external: { activeTurnId: "turn:restart" }
+    });
+    const logical = store.createLogicalSessionRoute({
+      logicalSessionId: "logical:restart",
+      legacySessionId: "provider-session:restart",
+      providerThreadId: "thread:restart",
+      providerSessionId: "thread:restart",
+      providerId: "provider:test",
+      boundCwd: directory,
+      sessionName: "Restart"
+    });
+    const first = store.createUserMessageDelivery({
+      deliveryId: "delivery:restart-running",
+      messageId: "message:restart-running",
+      sessionId: "provider-session:restart",
+      binding: logical.activeBinding,
+      agentId: "agent:restart",
+      text: "running"
+    });
+    store.updateAgentWorkItem(first.workItem.workItemId, {
+      status: "running",
+      startedAt: "2026-08-31T00:00:00.000Z",
+      targetTurnId: "turn:restart"
+    });
+    store.updateMessageDelivery(first.delivery.deliveryId, {
+      status: "processing",
+      providerTurnId: "turn:restart",
+      providerAcknowledgedAt: "2026-08-31T00:00:00.000Z"
+    });
+    store.upsertSessionTurn({
+      sessionId: "provider-session:restart",
+      bindingId: logical.activeBinding.bindingId,
+      routingVersion: logical.routingVersion,
+      turnId: "turn:restart",
+      executionStatus: "running",
+      startedAt: "2026-08-31T00:00:00.000Z",
+      updatedAt: "2026-08-31T00:00:00.000Z"
+    });
+    const second = store.createUserMessageDelivery({
+      deliveryId: "delivery:restart-queued",
+      messageId: "message:restart-queued",
+      sessionId: "provider-session:restart",
+      binding: logical.activeBinding,
+      agentId: "agent:restart",
+      text: "queued"
+    });
+
+    const result = store.reconcileInterruptedSessionExecutionAtStartup("2026-08-31T01:00:00.000Z");
+    assert.deepEqual(result, {
+      workItems: 2,
+      deliveries: 2,
+      collaborationDeliveries: 0,
+      sessionCollaborationDeliveries: 0,
+      turns: 1
+    });
+    assert.equal(store.getAgentWorkItem(first.workItem.workItemId).status, "failed");
+    assert.equal(store.getAgentWorkItem(second.workItem.workItemId).status, "failed");
+    assert.equal(store.getMessageDelivery(first.delivery.deliveryId).status, "failed");
+    assert.equal(store.getMessageDelivery(second.delivery.deliveryId).status, "failed");
+    assert.equal(
+      store.getSessionTurn("provider-session:restart", logical.activeBinding.bindingId, "turn:restart").execution_status,
+      "cancelled"
+    );
+    assert.equal(store.listQueuedAgentWorkItemsForSession("provider-session:restart").length, 0);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("restart repairs a terminal Provider turn regressed by a late item event", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-terminal-turn-repair-"));
   const dbPath = join(directory, "corptie.sqlite");
@@ -1483,6 +1566,25 @@ test("active Provider Session ids are scoped by Provider and survive store resta
       providerSessionId: "foreign-native",
       boundCwd: directory,
       title: "Other Provider Session"
+    });
+    first.createLogicalSessionRoute({
+      logicalSessionId: "logical:openclacky-archived",
+      legacySessionId: "openclacky:archived-native",
+      providerThreadId: "archived-native",
+      providerId: "openclacky",
+      providerSessionId: "archived-native",
+      boundCwd: directory,
+      title: "Archived OpenClacky Session",
+      archived: true
+    });
+    first.upsertSession({
+      id: "openclacky:archived-native",
+      title: "Archived OpenClacky Session",
+      agent: "OpenClacky",
+      provider: "openclacky",
+      status: "complete",
+      sessionKind: "assistantChat",
+      archived: true
     });
     await first.close();
 

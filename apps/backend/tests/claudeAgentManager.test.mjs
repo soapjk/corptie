@@ -2,6 +2,32 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ClaudeAgentManager } from "../src/adapters/claudeAgentManager.mjs";
 
+test("Claude preserves a recovery handoff alongside ordinary system instructions", () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({
+    id: "claude-recovery-context",
+    runtimeOptions: {
+      systemPrompt: { type: "preset", preset: "claude_code", append: "Agent instructions" }
+    },
+    recoveryContext: "STRUCTURED_RECOVERY_HANDOFF"
+  });
+  assert.equal(
+    manager.get("claude-recovery-context").runtimeOptions.systemPrompt.append,
+    "Agent instructions\n\nSTRUCTURED_RECOVERY_HANDOFF"
+  );
+});
+
+test("Claude disconnect releases the live Query but keeps the persisted Session resumable", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-archived" });
+  let closed = false;
+  manager.get("claude-archived").query = { close: async () => { closed = true; } };
+
+  assert.deepEqual(await manager.disconnect("claude-archived"), { status: "disconnected" });
+  assert.equal(closed, true);
+  assert.equal(manager.get("claude-archived"), null);
+});
+
 test("Claude exposes context use and subscription rate-limit windows through its live SDK query", async () => {
   const manager = new ClaudeAgentManager();
   manager.start({ id: "claude-usage", model: "claude-opus" });

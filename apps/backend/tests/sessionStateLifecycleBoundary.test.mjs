@@ -12,8 +12,8 @@ test("authoritative Session projection is callback-owned and never snapshot-read
   assert.match(source, /function controlPlaneSnapshot\(\)[\s\S]*visibleStoredSessionProjections/);
   assert.match(
     source,
-    /function controlPlaneSnapshot\(\)[\s\S]*withResolvedSessionActions\(session, agentProviderRegistry\)/,
-    "State Sync must publish the same Provider-backed Session action availability as GET /sessions"
+    /function controlPlaneSnapshot\(\)[\s\S]*decorateSessionForClient\(session\)/,
+    "State Sync must publish the same Provider-backed Session readiness as GET /sessions"
   );
   const snapshotBegin = source.indexOf("async function getUnifiedSessionSnapshot");
   const snapshotEnd = source.indexOf("async function getStoredSessionSnapshot", snapshotBegin);
@@ -161,26 +161,41 @@ test("startup recovery validates or safely recreates only an empty journaled Cod
   assert.match(recoveryBody, /sessionRecoveryCoordinator\.providerPort\.createReplacement/);
 });
 
-test("startup recovery waits for every isolated Provider runtime before reconnecting replacements", async () => {
+test("startup recovery runs after readiness and waits for isolated Provider runtime preparation", async () => {
   const source = await readFile(sourceURL, "utf8");
-  const recoveryCall = source.indexOf("await resumeSessionRecoveryAttemptsAtStartup()");
+  const listenIndex = source.indexOf('server.listen(port, "127.0.0.1"');
+  const maintenanceIndex = source.indexOf("async function runProviderStartupMaintenance", listenIndex);
+  const recoveryCall = source.indexOf(
+    'runContainedStartupOperation("session-recovery", resumeSessionRecoveryAttemptsAtStartup)',
+    maintenanceIndex
+  );
+  const toolPreflightCall = source.indexOf("toolBootstrapBindingPreflight.run()", maintenanceIndex);
 
+  assert.notEqual(listenIndex, -1);
+  assert.ok(maintenanceIndex > listenIndex, "Provider maintenance must not block the listener");
   assert.notEqual(recoveryCall, -1);
+  assert.notEqual(toolPreflightCall, -1);
   for (const prerequisite of [
     "await ensureCorptieOpenClackyRuntime",
     "openClackyManager.start()",
     "await ensureCorptieCodexRuntime",
-    "await ensureCorptieClaudeRuntime",
-    "process.env.CODEX_HOME = corptieCodexRuntime.codexHome",
-    "process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir"
+    "await ensureCorptieClaudeRuntime"
   ]) {
-    const prerequisiteIndex = source.indexOf(prerequisite);
+    const prerequisiteIndex = source.indexOf(prerequisite, maintenanceIndex);
     assert.notEqual(prerequisiteIndex, -1, `missing startup prerequisite: ${prerequisite}`);
     assert.ok(
       prerequisiteIndex < recoveryCall,
       `${prerequisite} must complete before persisted Session recovery resumes`
     );
+    assert.ok(
+      prerequisiteIndex < toolPreflightCall,
+      `${prerequisite} must complete before Tool bootstrap preflight recovery starts`
+    );
   }
+  assert.match(
+    source.slice(maintenanceIndex, recoveryCall),
+    /const \[corptieCodexRuntime\] = await Promise\.all\([\s\S]*?\);[\s\S]*?const operations = \[/
+  );
 
   const helperBegin = source.indexOf("async function resumeSessionRecoveryAttemptsAtStartup");
   const helperEnd = source.indexOf("\nawait store.initialize()", helperBegin);

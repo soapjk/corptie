@@ -57,6 +57,12 @@ export function sessionActionAvailability(action, session, providerOrDescriptor,
       : available();
   }
   if (action === "send") {
+    // Provider-native canSend commonly means "dispatch another Provider Turn
+    // right now". Corptie's send action means "accept an application message",
+    // which remains available while the current Turn is running/blocked because
+    // the backend owns a serial in-memory queue. Separate readiness boundaries
+    // (recovery, archive, workspace transition, Provider preparation) close it.
+    if (["running", "blocked", "cancelled"].includes(session.status)) return available();
     if (session.canSend === false || legacy.canSend === false) {
       if (session.status === "failed" && providerSupports(
         providerOrDescriptor,

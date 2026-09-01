@@ -37,8 +37,9 @@ export function buildWorkSessionContext({ session, workItem, objective, artifact
     startupReceipt
       ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} generation=${startupReceipt.bindingGeneration} repository=${text(startupReceipt.repositoryId)} worktree=${text(startupReceipt.worktreeId)} receiptHash=${text(startupReceipt.receiptHash)}`
       : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",
-    "You may create an Artifact only through corptie_artifact_create. Corptie derives its Objective and WorkItem from this binding, forces work_item_private visibility, and atomically creates the current WorkItem Reference.",
-    "For Worker Artifact creation, supply a stable idempotency_key. Reference defaults are relation=acceptance_evidence, required=false, version_policy=fixed; the initial pin is version 1 and its immutable content hash.",
+    "Use corptie_artifact_create for durable documents. Choose scope=objective for shared Objective resources or scope=work_item for this WorkItem's private resources; always supply a stable idempotency_key.",
+    "Every Work Session in this Objective may read and manage Objective-scoped Artifacts. Artifacts owned by another WorkItem are readable but immutable here; this WorkItem's Artifacts remain manageable.",
+    "Use kind, category_path, tags, aliases, and keywords so later Sessions can locate the document through the Objective Artifact index and full-text search.",
     "",
     `WorkItem title: ${text(workItem.title)}`,
     workItem.description ? `WorkItem description:\n${text(workItem.description)}` : "",

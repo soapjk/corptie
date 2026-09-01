@@ -26,6 +26,9 @@ export class CodexAppServerClient {
     this.env = options.env ?? process.env;
     this.spawnProcess = options.spawnProcess ?? spawn;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 8000;
+    // Process bootstrap can be materially slower than an ordinary RPC while
+    // macOS is launching the App and opening the production data root.
+    this.initializationTimeoutMs = options.initializationTimeoutMs ?? 30000;
     this.onNotification = typeof options.onNotification === "function" ? options.onNotification : null;
     this.onDynamicToolCall = typeof options.onDynamicToolCall === "function" ? options.onDynamicToolCall : null;
     this.process = null;
@@ -123,7 +126,7 @@ export class CodexAppServerClient {
           requestAttestation: false,
           optOutNotificationMethods: []
         }
-      });
+      }, this.initializationTimeoutMs);
       if (this.activeProcessGeneration !== generation || this.process !== child) {
         throw new Error("Codex app-server initialization was superseded by a newer process generation.");
       }
@@ -183,17 +186,61 @@ export class CodexAppServerClient {
     try {
       return await this.request("thread/delete", { threadId });
     } finally {
-      this.liveItemsByThread.delete(threadId);
-      this.turnDiffsByThread.delete(threadId);
-      this.tokenUsageByThread.delete(threadId);
-      this.serverRequestsByThread.delete(threadId);
-      this.dynamicToolAgentsByThread.delete(threadId);
-      this.dynamicToolMetadataByThread.delete(threadId);
-      this.threadResumeFingerprints.delete(threadId);
-      this.threadResumePromises.delete(threadId);
-      this.freshThreadIds.delete(threadId);
-      this.confirmedToolSchemasByThread.delete(threadId);
+      this.releaseThreadRuntimeState(threadId);
     }
+  }
+
+  // Stop this app-server connection from retaining the Thread while preserving
+  // its rollout on disk. A later thread/resume restores the same Provider
+  // Thread and conversation history.
+  async unsubscribeThread(threadId) {
+    await this.initialize();
+    try {
+      return await this.request("thread/unsubscribe", { threadId });
+    } finally {
+      this.releaseThreadRuntimeState(threadId);
+    }
+  }
+
+  // Provider archival is Codex's immediate unload primitive: it shuts down the
+  // loaded Thread and moves (rather than deletes) its rollout. Missing active
+  // rollout means the Thread is already archived or otherwise not resident,
+  // which is already a successful runtime-release outcome.
+  async archiveThread(threadId) {
+    await this.initialize();
+    try {
+      return await this.request("thread/archive", { threadId });
+    } catch (error) {
+      if (!/thread not found|no rollout found/i.test(String(error?.message ?? ""))) throw error;
+      return { status: "already-released" };
+    } finally {
+      this.releaseThreadRuntimeState(threadId);
+    }
+  }
+
+  async unarchiveThread(threadId) {
+    await this.initialize();
+    try {
+      return await this.request("thread/unarchive", { threadId });
+    } catch (error) {
+      // Active pre-cutover Threads were never Provider-archived. In that case
+      // there is nothing to restore and the ordinary resume path remains valid.
+      if (!/thread not found|archived.*not found|no archived/i.test(String(error?.message ?? ""))) throw error;
+      return { status: "already-active" };
+    }
+  }
+
+  releaseThreadRuntimeState(threadId) {
+    this.liveItemsByThread.delete(threadId);
+    this.turnDiffsByThread.delete(threadId);
+    this.tokenUsageByThread.delete(threadId);
+    this.serverRequestsByThread.delete(threadId);
+    this.dynamicToolAgentsByThread.delete(threadId);
+    this.dynamicToolMetadataByThread.delete(threadId);
+    this.threadResumeFingerprints.delete(threadId);
+    this.threadResumePromises.delete(threadId);
+    this.freshThreadIds.delete(threadId);
+    this.confirmedToolSchemasByThread.delete(threadId);
   }
 
   async startThread(options = {}) {

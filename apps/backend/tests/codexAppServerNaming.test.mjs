@@ -67,6 +67,7 @@ test("concurrent Codex initialization shares one app-server process generation",
   assert.equal(children[0].requests.filter((request) => request.method === "initialize").length, 1);
   assert.equal(client.process, children[0]);
   assert.equal(client.initialized, true);
+  assert.equal(client.initializationTimeoutMs, 30000);
   await client.close();
 });
 
@@ -198,6 +199,38 @@ test("deleteThread permanently removes the Codex thread and clears local runtime
   assert.equal(client.tokenUsageByThread.has("thread-a"), false);
   assert.equal(client.serverRequestsByThread.has("thread-a"), false);
   assert.equal(client.dynamicToolAgentsByThread.has("thread-a"), false);
+});
+
+test("unsubscribeThread releases Codex runtime state without deleting persisted history", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => { calls.push({ method, params }); return {}; };
+  client.liveItemsByThread.set("thread-a", new Map());
+  client.confirmedToolSchemasByThread.set("thread-a", { hash: "schema" });
+
+  await client.unsubscribeThread("thread-a");
+
+  assert.deepEqual(calls, [{ method: "thread/unsubscribe", params: { threadId: "thread-a" } }]);
+  assert.equal(client.liveItemsByThread.has("thread-a"), false);
+  assert.equal(client.confirmedToolSchemasByThread.has("thread-a"), false);
+});
+
+test("archiveThread immediately unloads Codex while retaining a restorable rollout", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.request = async (method, params) => { calls.push({ method, params }); return {}; };
+  client.liveItemsByThread.set("thread-a", new Map());
+
+  await client.archiveThread("thread-a");
+  await client.unarchiveThread("thread-a");
+
+  assert.deepEqual(calls, [
+    { method: "thread/archive", params: { threadId: "thread-a" } },
+    { method: "thread/unarchive", params: { threadId: "thread-a" } }
+  ]);
+  assert.equal(client.liveItemsByThread.has("thread-a"), false);
 });
 
 test("runEphemeralPrompt isolates background generation and deletes its temporary thread", async () => {

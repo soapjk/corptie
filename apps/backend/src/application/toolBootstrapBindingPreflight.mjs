@@ -122,8 +122,10 @@ export class ToolBootstrapBindingPreflight {
         providerId: candidate.binding.providerId,
         idempotencyKey: [
           "tool-bootstrap-upgrade",
+          "v2",
           this.bootstrapSchemaHash,
-          input.providerBindingId
+          input.providerBindingId,
+          `materialization:${candidate.record?.resourceVersion ?? "missing"}`
         ].join(":"),
         sourceBindingId: input.providerBindingId,
         reason: REPLACEMENT_ERROR

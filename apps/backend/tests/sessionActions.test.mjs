@@ -25,9 +25,9 @@ test("dynamic Session actions separate Provider support from current availabilit
   }, descriptor);
 
   assert.deepEqual(session.actions.send, {
-    available: false,
-    reason: "PROVIDER_UNAVAILABLE",
-    retryable: true
+    available: true,
+    reason: null,
+    retryable: false
   });
   assert.deepEqual(session.actions.interrupt, {
     available: false,

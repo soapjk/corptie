@@ -39,6 +39,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
@@ -71,6 +72,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       runtimeOptions: context.toolHost?.providerAttachment
     }),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
+    disconnectSession: (reference) => manager.disconnect(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
     send: (reference, message, context = {}) => manager.send(reference.providerSessionId, message, {
       ...(context.source && typeof context.source === "object" ? context.source : {}),

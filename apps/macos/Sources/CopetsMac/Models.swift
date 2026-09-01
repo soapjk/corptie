@@ -73,6 +73,8 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var providerConnectionStatus: String? = nil
     var syncHealth: String? = nil
     var transitionState: String? = nil
+    var readiness: SessionReadiness? = nil
+    var notReadyReason: SessionNotReadyReason? = nil
     let progress: Double
     let summary: String
     let suggestedOptions: [CodexApprovalOption]?
@@ -129,7 +131,14 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     }
 
     var canSendNow: Bool {
-        actions?.send.available ?? capabilities?.canSend ?? false
+        isReady
+    }
+
+    var isReady: Bool {
+        readiness.map { $0 == .ready }
+            ?? actions?.send.available
+            ?? capabilities?.canSend
+            ?? false
     }
 
     var canInterruptNow: Bool {
@@ -577,6 +586,17 @@ struct SessionCapabilities: Codable, Equatable, Sendable {
 struct SessionActionAvailability: Codable, Equatable, Sendable {
     let available: Bool
     let reason: String?
+    let retryable: Bool?
+}
+
+enum SessionReadiness: String, Codable, Equatable, Sendable {
+    case ready
+    case notReady = "not_ready"
+}
+
+struct SessionNotReadyReason: Codable, Equatable, Sendable {
+    let code: String
+    let message: String
     let retryable: Bool?
 }
 
@@ -1158,6 +1178,8 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
     let canSend: Bool?
     let sendUnavailableReason: String?
     var transitionState: String? = nil
+    var readiness: SessionReadiness? = nil
+    var notReadyReason: SessionNotReadyReason? = nil
     let capabilities: SessionCapabilities?
     let turnCount: Int
     let items: [CodexThreadItem]
@@ -1188,6 +1210,14 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
         actions?.interrupt.available ?? capabilities?.canInterrupt ?? false
     }
 
+    var isReady: Bool {
+        readiness.map { $0 == .ready }
+            ?? actions?.send.available
+            ?? canSend
+            ?? capabilities?.canSend
+            ?? false
+    }
+
     var canSwitchModelNow: Bool {
         actions?.switchModel.available ?? capabilities?.canSwitchModel ?? false
     }
@@ -1212,6 +1242,8 @@ struct CodexThreadDetail: Decodable, Equatable, Sendable {
               lhs.currentModel == rhs.currentModel,
               lhs.currentReasoningLevel == rhs.currentReasoningLevel,
               lhs.activityStatus == rhs.activityStatus,
+              lhs.readiness == rhs.readiness,
+              lhs.notReadyReason == rhs.notReadyReason,
               lhs.cwd == rhs.cwd,
               lhs.createdAt == rhs.createdAt,
               lhs.updatedAt == rhs.updatedAt,

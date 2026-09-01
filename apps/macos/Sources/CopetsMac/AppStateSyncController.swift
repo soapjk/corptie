@@ -84,6 +84,7 @@ final class AppStateSyncController {
             let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: data)
             guard requestGeneration == snapshotRequestGeneration else { return }
             store.apply(snapshot: snapshot)
+            ArtifactAPIClient.shared.refreshLoadedCollectionsAfterExternalChange()
         } catch {
             guard requestGeneration == snapshotRequestGeneration else { return }
             store.reportSyncError(Self.syncErrorMessage(error))
@@ -167,9 +168,14 @@ final class AppStateSyncController {
             switch eventName {
             case "state-snapshot":
                 store.apply(snapshot: try decoder.decode(StateSnapshotEnvelope.self, from: payload))
+                ArtifactAPIClient.shared.refreshLoadedCollectionsAfterExternalChange()
             case "state-change-set":
                 let changes = try decoder.decode(StateChangeSetEnvelope.self, from: payload)
-                if case .revisionGap = store.apply(changeSet: changes) {
+                let result = store.apply(changeSet: changes)
+                if !changes.artifactInvalidations.orEmpty.isEmpty, result == .applied {
+                    ArtifactAPIClient.shared.refreshLoadedCollectionsAfterExternalChange()
+                }
+                if case .revisionGap = result {
                     await refreshSnapshot()
                 }
             default:
@@ -208,4 +214,8 @@ final class AppStateSyncController {
             throw URLError(.badServerResponse)
         }
     }
+}
+
+private extension Optional where Wrapped == [String] {
+    var orEmpty: [String] { self ?? [] }
 }

@@ -30,28 +30,43 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
     byArtifact.set(reference.artifactId, group);
   }
   const candidates = [];
-  for (const [artifactId, activeReferences] of byArtifact) {
-    const artifact = store.getArtifact(artifactId);
+  for (const artifact of store.listArtifactsByObjective(objectiveId)) {
+    const artifactId = artifact.artifactId;
+    if (artifact.scope === "session" && artifact.boundSessionId !== sessionId) continue;
+    const activeReferences = byArtifact.get(artifactId) ?? [];
     if (!artifact || artifact.objectiveId !== objectiveId || artifact.status === "revoked") continue;
-    const pin = canonicalPin(activeReferences);
-    if (!pin) continue;
+    const pin = activeReferences.length > 0
+      ? canonicalPin(activeReferences)
+      : { pinnedVersion: artifact.approvedVersion ?? artifact.currentVersion, pinnedHash: null };
+    if (!pin?.pinnedVersion) continue;
     const version = store.getArtifactVersion(artifactId, pin.pinnedVersion);
-    if (!version || version.contentHash !== pin.pinnedHash) continue;
+    if (!version || (pin.pinnedHash && version.contentHash !== pin.pinnedHash)) continue;
     const summary = boundArtifactSummary(artifact.summary);
     const pending = canonicalPending(activeReferences);
     candidates.push({
       artifactId,
       title: artifact.title,
       ...summary,
+      scope: artifact.scope,
+      kind: artifact.kind,
+      categoryPath: artifact.categoryPath,
+      tags: artifact.tags,
       visibility: artifact.visibility,
       pinnedVersion: pin.pinnedVersion,
-      contentHash: pin.pinnedHash,
+      contentHash: version.contentHash,
       byteLength: version.byteLength,
       mimeType: version.mimeType,
       required: activeReferences.some((reference) => reference.required),
       relations: [...new Set(activeReferences.map((reference) => reference.relation))]
         .sort((left, right) => relationRank(left) - relationRank(right) || left.localeCompare(right)),
       referenceIds: activeReferences.map((reference) => reference.referenceId).sort(),
+      access: {
+        read: true,
+        write: sessionKind === "objectiveChat" || artifact.scope === "objective"
+          || (artifact.scope === "work_item" && artifact.boundWorkItemId === workItemId),
+        delete: sessionKind === "objectiveChat" || artifact.scope === "objective"
+          || (artifact.scope === "work_item" && artifact.boundWorkItemId === workItemId)
+      },
       pendingUpdate: pending,
       authorizedAt: activeReferences.reduce((latest, reference) =>
         reference.authorizedAt > latest ? reference.authorizedAt : latest, "")

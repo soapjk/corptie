@@ -269,6 +269,24 @@ export class OpenClackyManager {
     return true;
   }
 
+  disconnect(sessionId) {
+    if (this.activeTurns.has(sessionId)) {
+      const error = new Error("OpenClacky Session still has an active Turn.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+    // Release only Corptie's live socket/subscription ownership. The remote
+    // Session remains persisted and can be resumed later.
+    this.ownedSessionIds.delete(sessionId);
+    this.sockets.get(sessionId)?.close?.();
+    this.sockets.delete(sessionId);
+    this.sessions.delete(sessionId);
+    this.deliveryAcks.delete(sessionId);
+    this.pendingRecoveryContexts.delete(sessionId);
+    this.toolHosts.delete(sessionId);
+    return { status: "disconnected" };
+  }
+
   async rename(sessionId, title) {
     await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
       method: "PATCH",

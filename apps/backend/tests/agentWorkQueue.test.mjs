@@ -273,7 +273,7 @@ test("clearing or deleting a Session cancels every unsettled queued message", as
   }
 });
 
-test("a running work item is recovered to queued after restart", async () => {
+test("a running work item is failed by post-listen restart reconciliation", async () => {
   const { directory, dbPath, store } = await fixture();
   let reopened = null;
   try {
@@ -287,9 +287,11 @@ test("a running work item is recovered to queued after restart", async () => {
 
     reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
     await reopened.initialize();
+    assert.equal(reopened.getAgentWorkItem("user-1").status, "running");
+    reopened.reconcileInterruptedSessionExecutionAtStartup("2026-07-18T06:00:00.000Z");
     const recovered = reopened.getAgentWorkItem("user-1");
-    assert.equal(recovered.status, "queued");
-    assert.match(recovered.lastError, /restart/);
+    assert.equal(recovered.status, "failed");
+    assert.match(recovered.lastError, /restart.*not resent/i);
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
     if (reopened?.saveTimer) clearTimeout(reopened.saveTimer);
@@ -297,7 +299,7 @@ test("a running work item is recovered to queued after restart", async () => {
   }
 });
 
-test("restart recovery does not requeue dispatched collaboration work", async () => {
+test("restart reconciliation fails dispatched collaboration work without requeueing it", async () => {
   const { directory, dbPath, store } = await fixture();
   let reopened = null;
   try {
@@ -316,9 +318,10 @@ test("restart recovery does not requeue dispatched collaboration work", async ()
 
     reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
     await reopened.initialize();
+    reopened.reconcileInterruptedSessionExecutionAtStartup("2026-07-18T06:00:00.000Z");
 
     const recovered = reopened.getAgentWorkItem("collaboration-dispatched");
-    assert.equal(recovered.status, "cancelled");
+    assert.equal(recovered.status, "failed");
     assert.match(recovered.lastError, /not resent/);
   } finally {
     if (store.saveTimer) clearTimeout(store.saveTimer);
@@ -327,7 +330,7 @@ test("restart recovery does not requeue dispatched collaboration work", async ()
   }
 });
 
-test("restart recovery does not resend user work that reached a Codex turn", async () => {
+test("restart reconciliation does not resend user work that reached a Provider turn", async () => {
   const { directory, dbPath, store } = await fixture();
   let reopened = null;
   try {
@@ -357,12 +360,14 @@ test("restart recovery does not resend user work that reached a Codex turn", asy
 
     reopened = new CorptieStore({ dbPath, configPath: join(directory, "config.json") });
     await reopened.initialize();
+    reopened.reconcileInterruptedSessionExecutionAtStartup("2026-07-18T06:00:00.000Z");
 
     const recoveredWork = reopened.getAgentWorkItem("install-browser");
     const staleSession = reopened.getSession("codex:thread-b");
-    assert.equal(recoveredWork.status, "cancelled");
+    assert.equal(recoveredWork.status, "failed");
     assert.match(recoveredWork.lastError, /not resent/);
-    assert.equal(sessionHasActiveRun(staleSession), true);
+    assert.equal(sessionHasActiveRun(staleSession), false);
+    assert.equal(staleSession.status, "cancelled");
 
     const reconciledSession = reconcileAuthoritativeRunState(
       { ...staleSession, status: "complete" },

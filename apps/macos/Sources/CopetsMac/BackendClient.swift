@@ -164,9 +164,17 @@ final class BackendClient: ObservableObject {
     }
     var selectedCanSendNow: Bool {
         if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.canSend ?? false }
-        return selectedSession?.actions?.send.available
-            ?? selectedSession?.capabilities?.canSend
-            ?? false
+        return selectedSession?.isReady ?? false
+    }
+
+    var selectedIsReady: Bool {
+        if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.isReady ?? false }
+        return selectedSession?.isReady ?? false
+    }
+
+    var selectedNotReadyReason: SessionNotReadyReason? {
+        if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.notReadyReason }
+        return selectedSession?.notReadyReason ?? selectedDetail?.notReadyReason
     }
     var selectedCanInterruptNow: Bool {
         if viewingHistoricalThreadId != nil { return false }
@@ -3149,7 +3157,9 @@ final class BackendClient: ObservableObject {
         onFailure: @escaping () -> Void = {}
     ) -> Bool {
         if !selectedCanSendNow {
-            sendStatusMessage = selectedDetail?.sendUnavailableReason ?? "This thread is read-only in Corptie."
+            sendStatusMessage = selectedNotReadyReason?.message
+                ?? selectedDetail?.sendUnavailableReason
+                ?? "This Session is not ready to accept messages."
             return false
         }
 

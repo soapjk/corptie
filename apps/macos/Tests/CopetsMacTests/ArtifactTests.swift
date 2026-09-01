@@ -3,6 +3,17 @@ import XCTest
 @testable import CorptieMac
 
 final class ArtifactTests: XCTestCase {
+    func testArtifactCollectionLoadStateDistinguishesIdleLoadingEmptyAndFailure() {
+        XCTAssertNil(ArtifactCollectionLoadState.idle.value)
+        XCTAssertNil(ArtifactCollectionLoadState.loading(previousValue: nil).value)
+        XCTAssertEqual(ArtifactCollectionLoadState.loaded([]).value, [])
+        XCTAssertNil(ArtifactCollectionLoadState.failed(message: "timeout", previousValue: nil).value)
+        XCTAssertNotEqual(
+            ArtifactCollectionLoadState.loaded([]),
+            ArtifactCollectionLoadState.failed(message: "timeout", previousValue: nil)
+        )
+    }
+
     func testArtifactEndpointEncodesCanonicalIdentifiersExactlyOnce() {
         let url = ArtifactAPIClient.endpointURL(
             baseURL: URL(string: "http://127.0.0.1:47321/")!,
@@ -41,6 +52,22 @@ final class ArtifactTests: XCTestCase {
         XCTAssertFalse(detail.complete)
         XCTAssertEqual(detail.pendingUpdate?.version, 3)
         XCTAssertEqual(detail.turnBudget.uniqueBytesLimit, 131_072)
+    }
+
+    func testWorkItemPinnedVersionWinsOverStaleApprovedVersion() throws {
+        let json = #"{"artifactId":"artifact:1","objectiveId":"objective:1","title":"Spec","summary":"","visibility":"work_item_private","boundWorkItemId":"work-item:1","boundSessionId":null,"repositoryLocator":null,"currentVersion":2,"approvedVersion":1,"status":"active","sourceSessionId":null,"sourceEventId":null,"createdByActorId":"session:1","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-01T00:01:00Z","resourceVersion":2,"versions":[],"references":[{"referenceId":"reference:1","artifactId":"artifact:1","objectiveId":"objective:1","workItemId":"work-item:1","sessionId":null,"relation":"implementation_spec","required":true,"versionPolicy":"fixed","pinnedVersion":2,"pinnedHash":"hash-v2","pendingVersion":null,"pendingHash":null,"authorizedByActorId":"session:1","authorizedAt":"2026-09-01T00:00:00Z","revokedAt":null,"revokedByActorId":null,"revocationReason":null,"resourceVersion":2}],"audit":[],"availableActions":[]}"#.data(using: .utf8)!
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let artifact = try decoder.decode(ObjectiveArtifact.self, from: json)
+
+        XCTAssertEqual(
+            ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, workItemId: "work-item:1"),
+            2
+        )
+        XCTAssertEqual(
+            ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, workItemId: nil),
+            1
+        )
     }
 
     func testLocalFileReceiptUsesSuggestedMarkdownNameOnlyForDefaultApplicationLookup() throws {

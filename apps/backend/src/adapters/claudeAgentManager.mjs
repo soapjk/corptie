@@ -463,6 +463,20 @@ export class ClaudeAgentManager {
     }
   }
 
+  async disconnect(id) {
+    const session = this.get(id);
+    if (!session) return { status: "disconnected" };
+    if (session.turnState !== "idle" || session.currentTurnId) {
+      const error = new Error("Claude Session still has an active Turn.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+    this.resolveAllPendingChoices(session, "Session runtime released after archival.");
+    await this.closeIdleQuery(session);
+    this.sessions.delete(id);
+    return { status: "disconnected" };
+  }
+
   async reconnect(id, options = {}) {
     if (this.get(id)) {
       const session = this.get(id);

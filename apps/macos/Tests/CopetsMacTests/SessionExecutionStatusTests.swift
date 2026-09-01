@@ -35,4 +35,24 @@ struct SessionExecutionStatusTests {
         let session = try JSONDecoder().decode(TaskSession.self, from: data)
         #expect(session.executionTaskStatus == .failed)
     }
+
+    @Test func readinessIsIndependentFromExecutionAndCarriesTheDisableReason() throws {
+        let data = try #require("""
+        {
+          "id":"session:not-ready","title":"Not Ready","agent":"Agent","status":"complete",
+          "readiness":"not_ready",
+          "notReadyReason":{"code":"PROVIDER_INITIALIZING","message":"Provider is preparing.","retryable":true},
+          "progress":1,"summary":"Waiting","updatedAt":"2026-08-31T10:00:00Z",
+          "accent":"cyan",
+          "capabilities":{"canSend":true},
+          "actions":{"send":{"available":true},"interrupt":{"available":false},"approve":{"available":false},"switchModel":{"available":true},"switchReasoning":{"available":true},"switchWorkspace":{"available":true},"switchProvider":{"available":true}}
+        }
+        """.data(using: .utf8))
+
+        let session = try JSONDecoder().decode(TaskSession.self, from: data)
+        #expect(session.executionTaskStatus == .complete)
+        #expect(session.readiness == .notReady)
+        #expect(session.isReady == false)
+        #expect(session.notReadyReason?.code == "PROVIDER_INITIALIZING")
+    }
 }

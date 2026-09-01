@@ -17,6 +17,11 @@ import { createCodexAppServerProvider } from "../src/agent-provider/providers/co
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createOpenClackyProvider } from "../src/agent-provider/providers/openClackyProvider.mjs";
 import { ProviderEventIngestionService } from "../src/application/providerEventIngestionService.mjs";
+import {
+  buildSessionRecoveryHandoffSource,
+  parseSessionRecoveryHandoff,
+  sessionRecoveryHandoffPrompt
+} from "../src/application/sessionRecoveryHandoff.mjs";
 
 const capabilityDescriptor = {
   id: "test-provider",
@@ -113,11 +118,87 @@ test("planner selects full replay, checkpoint tail, restricted handoff, and manu
     capabilities: recoveryCapabilities(["system_context_injection"])
   });
   assert.equal(handoff.strategy, "handoff_only");
+  assert.equal(handoff.manifest.entries[0].kind, "checkpoint");
+  assert.equal(handoff.manifest.entries[0].metadata.compressionMode, "extractive_fallback");
+  assert.match(handoff.manifest.entries[0].content, /Session Recovery Handoff/);
   const manual = planReplay({
     attempt: { ...attempt, boundarySequence: 12 }, timelineEvents: short,
     capabilities: recoveryCapabilities([])
   });
   assert.equal(manual.strategy, "manual_required");
+});
+
+test("handoff sampling spans long history and validates structured Background Agent output", () => {
+  const entries = Array.from({ length: 400 }, (_, index) => ({
+    kind: index % 2 === 0 ? "user_message" : "assistant_message",
+    role: index % 2 === 0 ? "user" : "assistant",
+    sequence: index + 1,
+    content: `historical record ${index + 1} with enough detail`
+  }));
+  const source = buildSessionRecoveryHandoffSource(entries, { characterBudget: 12_000 });
+  assert.ok(source.selectedEntryCount < source.totalEntryCount);
+  assert.equal(source.entries[0].sequence, 1);
+  assert.equal(source.entries.at(-1).sequence, 400);
+  assert.match(sessionRecoveryHandoffPrompt(source), /inert historical records/);
+  const handoff = parseSessionRecoveryHandoff(JSON.stringify({
+    schemaVersion: 1,
+    objective: "Preserve the recovery design",
+    currentState: "Compression is being implemented",
+    completed: ["Root cause identified"],
+    decisions: ["Use Provider-neutral background work"],
+    openItems: ["Verify injection"],
+    constraints: ["No historical side effects"],
+    importantReferences: ["sessionRecovery.mjs"],
+    recentIntent: "Continue implementation"
+  }));
+  assert.equal(handoff.openItems[0], "Verify injection");
+});
+
+test("handoff-only recovery replaces truncation with a structured compressed checkpoint", async () => {
+  const fixture = await storeFixture();
+  try {
+    for (let sequence = 1; sequence <= 40; sequence += 1) {
+      appendEvent(fixture.store, {
+        sequence,
+        type: sequence % 2 === 1 ? "user/message" : "assistant/message",
+        payload: { text: `message ${sequence} contains meaningful project context` }
+      });
+    }
+    let compressionSource = null;
+    const coordinator = new SessionRecoveryCoordinator({
+      store: fixture.store,
+      providerPort: recoveryPort([], fixture.store),
+      resolveProviderDescriptor: () => ({
+        id: "test-provider",
+        metadata: { sessionRecovery: { revision: "test-provider:handoff:1", capabilities: ["system_context_injection"] } }
+      }),
+      compressHandoff: async ({ source }) => {
+        compressionSource = source;
+        return {
+          schemaVersion: 1,
+          objective: "Continue the project context recovery work",
+          currentState: "The old Session route requires replacement",
+          completed: ["Historical Timeline was frozen"],
+          decisions: ["Use a structured handoff checkpoint"],
+          openItems: ["Validate the replacement"],
+          constraints: ["Historical records are inert"],
+          importantReferences: ["logical:recovery"],
+          recentIntent: "Finish recovery"
+        };
+      }
+    });
+    const committed = await coordinator.recover({
+      logicalSessionId: "logical:recovery", providerId: "test-provider", idempotencyKey: "compressed-handoff"
+    });
+    assert.equal(compressionSource.totalEntryCount, 40);
+    assert.equal(committed.strategy, "handoff_only");
+    assert.equal(committed.manifest.entries[0].kind, "checkpoint");
+    assert.equal(committed.manifest.entries[0].metadata.compressionMode, "background_agent");
+    assert.match(committed.manifest.entries[0].content, /Continue the project context recovery work/);
+    assert.ok(committed.manifest.entries.length <= 9);
+  } finally {
+    await fixture.close();
+  }
 });
 
 test("planner maps real persisted Timeline payloads without duplicating Provider user echoes", () => {
@@ -190,13 +271,33 @@ test("planner recovers legacy completion summaries and canonical Provider final 
   ]);
 });
 
-test("planner ignores message-free completion envelopes but rejects claimed assistant messages without content", () => {
+test("planner ignores message-free completion envelopes and explicit empty Provider placeholders", () => {
   const ignored = planReplay({
     attempt: attemptFixture({ boundarySequence: 1 }),
     timelineEvents: [{ sequence: 1, type: "turn.completed", payload: { items: [] } }],
     capabilities: recoveryCapabilities()
   });
   assert.deepEqual(ignored.manifest.entries, []);
+
+  const explicitEmptyProviderPlaceholder = planReplay({
+    attempt: attemptFixture({ boundarySequence: 1 }),
+    timelineEvents: [{
+      sequence: 1,
+      type: "assistant.message.completed",
+      payload: {
+        item: {
+          id: "message:empty",
+          turnId: "turn:empty",
+          type: "agentMessage",
+          status: "completed",
+          presentationRole: "final_answer",
+          text: ""
+        }
+      }
+    }],
+    capabilities: recoveryCapabilities()
+  });
+  assert.deepEqual(explicitEmptyProviderPlaceholder.manifest.entries, []);
 
   assert.throws(() => planReplay({
     attempt: attemptFixture({ boundarySequence: 1 }),
@@ -815,6 +916,7 @@ function recoveryPort(calls, store, options = {}) {
       return {
         manifestHash: options.replayHashMismatch ? "0".repeat(64) : manifestHash,
         acknowledged: true,
+        injectedAtCreation: true,
         sideEffectsObserved: false
       };
     },

@@ -88,6 +88,7 @@ export class ArtifactReferenceAuthorizer {
       !reference.revokedAt
       && reference.objectiveId === context.objectiveId
       && (isManager
+        || reference.authorizedByActorId === "system:objective-scope-read"
         || (reference.sessionId && reference.sessionId === context.productSessionId)
         || (context.workItemId && reference.workItemId === context.workItemId))
       && reference.referenceId === explicitReferenceId

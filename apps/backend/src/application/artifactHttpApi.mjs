@@ -1,10 +1,16 @@
-export function handleArtifactHttpRequest({ request, response, url, service }) {
+export function handleArtifactHttpRequest({ request, response, url, service, requestTimeoutMs = 5_000 }) {
   const path = url.pathname;
   const isArtifactApi = path === "/artifacts" || path.startsWith("/artifacts/")
     || /^\/objectives\/[^/]+\/artifacts(?:\/(?:backup|restore))?$/.test(path)
-    || /^\/work-items\/[^/]+\/artifacts$/.test(path);
+    || /^\/work-items\/[^/]+\/artifacts(?:\/[^/]+\/publish)?$/.test(path);
   if (!isArtifactApi) return false;
 
+  const timeout = setTimeout(() => {
+    sendJson(response, 503, {
+      code: "ARTIFACT_REQUEST_TIMEOUT",
+      error: "Artifact request did not complete within the server deadline."
+    });
+  }, requestTimeoutMs);
   Promise.resolve().then(async () => {
     const objectiveBackup = path.match(/^\/objectives\/([^/]+)\/artifacts\/backup$/);
     if (request.method === "POST" && objectiveBackup) {
@@ -42,10 +48,29 @@ export function handleArtifactHttpRequest({ request, response, url, service }) {
       const workItem = service.store.getWorkItem(workItemId);
       if (!workItem) throw httpError("ARTIFACT_WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
       const context = localContext(workItem.objective_id);
-      const artifacts = service.list(context).filter((artifact) =>
-        artifact.references.some((reference) => reference.workItemId === workItemId && !reference.revokedAt)
-      );
-      return sendJson(response, 200, { artifacts });
+      const limit = boundedQueryInteger(url, "limit", 1, 200, 100);
+      const offset = boundedQueryInteger(url, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
+      const artifacts = service.listForWorkItem(context, workItemId, { limit, offset });
+      const totalCount = service.store.countArtifactsReferencedByWorkItem(workItemId);
+      const nextOffset = offset + artifacts.length < totalCount ? offset + artifacts.length : null;
+      return sendJson(response, 200, { artifacts, totalCount, nextOffset });
+    }
+
+    const workItemPublish = path.match(/^\/work-items\/([^/]+)\/artifacts\/([^/]+)\/publish$/);
+    if (request.method === "POST" && workItemPublish) {
+      const workItemId = decodeURIComponent(workItemPublish[1]);
+      const artifactId = decodeURIComponent(workItemPublish[2]);
+      const workItem = service.store.getWorkItem(workItemId);
+      if (!workItem) throw httpError("ARTIFACT_WORK_ITEM_NOT_FOUND", "WorkItem not found.", 404);
+      const input = await readJson(request);
+      return sendJson(response, 201, await service.publishAndRepin(
+        localContext(workItem.objective_id), artifactId,
+        { ...mapInput(input), workItemId, referenceId: input.referenceId,
+          expectedResourceVersion: input.expectedResourceVersion,
+          expectedPinnedVersion: input.expectedPinnedVersion,
+          expectedPinnedHash: input.expectedPinnedHash,
+          idempotencyKey: input.idempotencyKey }
+      ));
     }
 
     const artifactMatch = path.match(/^\/artifacts\/([^/]+)$/);
@@ -142,7 +167,8 @@ export function handleArtifactHttpRequest({ request, response, url, service }) {
     }
 
     throw httpError("ARTIFACT_ROUTE_NOT_FOUND", "Artifact route not found.", 404);
-  }).catch((error) => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "INTERNAL", error: error.message }));
+  }).catch((error) => sendJson(response, error.statusCode ?? 500, { code: error.code ?? "INTERNAL", error: error.message }))
+    .finally(() => clearTimeout(timeout));
   return true;
 }
 
@@ -153,10 +179,23 @@ function mapInput(input) {
     artifactId: input.artifactId, title: input.title, summary: input.summary, content: input.content,
     visibility: input.visibility, boundWorkItemId: input.boundWorkItemId, boundSessionId: input.boundSessionId,
     repositoryLocator: input.repositoryLocator, confirmedRepositoryTracked: input.confirmedRepositoryTracked,
-    mimeType: input.mimeType, approvalStatus: input.approvalStatus, sourceEventId: input.sourceEventId
+    mimeType: input.mimeType, approvalStatus: input.approvalStatus, sourceEventId: input.sourceEventId,
+    expectedResourceVersion: input.expectedResourceVersion,
+    expectedPinnedVersion: input.expectedPinnedVersion,
+    expectedPinnedHash: input.expectedPinnedHash, idempotencyKey: input.idempotencyKey,
+    referenceId: input.referenceId
   };
 }
 function numberParam(url, name) { const value = url.searchParams.get(name); return value == null ? undefined : Number(value); }
+function boundedQueryInteger(url, name, min, max, fallback) {
+  const value = url.searchParams.get(name);
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw httpError("ARTIFACT_INVALID_QUERY", `${name} must be an integer from ${min} to ${max}.`, 400);
+  }
+  return number;
+}
 function httpError(code, message, statusCode) { const error = new Error(message); error.code = code; error.statusCode = statusCode; return error; }
 function sendJson(response, statusCode, value) { if (response.writableEnded) return; response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" }); response.end(JSON.stringify(value)); }
 function readJson(request) { return new Promise((resolve, reject) => { const chunks = []; let length = 0; request.on("data", (chunk) => { length += chunk.length; if (length > 16 * 1024 * 1024) { reject(httpError("ARTIFACT_REQUEST_TOO_LARGE", "Artifact request exceeds 16 MiB.", 413)); request.destroy(); return; } chunks.push(chunk); }); request.on("end", () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : {}); } catch { reject(httpError("ARTIFACT_INVALID_JSON", "Invalid JSON body.", 400)); } }); request.on("error", reject); }); }
