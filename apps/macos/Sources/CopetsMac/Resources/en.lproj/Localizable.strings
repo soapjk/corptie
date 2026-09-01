@@ -174,6 +174,7 @@
 "%d worktrees are not merged into main" = "%d worktrees are not merged into main";
 "Loading project worktrees" = "Loading project worktrees";
 "Loading earlier messages…" = "Loading earlier messages…";
+"Load earlier messages" = "Load earlier messages";
 "Earlier messages could not be loaded" = "Earlier messages could not be loaded";
 "The earliest message is displayed" = "The earliest message is displayed";
 "Could not load earlier messages." = "Could not load earlier messages.";

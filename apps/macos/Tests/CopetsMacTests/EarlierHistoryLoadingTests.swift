@@ -81,6 +81,7 @@ struct EarlierHistoryLoadingTests {
         )
 
         #expect(view.contains(".overlay(alignment: .top)"))
+        #expect(view.contains("canLoadEarlier: canLoadEarlierMessages"))
         #expect(view.contains("let previousVisibleMessageLimit = visibleMessageLimit"))
         #expect(view.contains("visibleMessageLimit += 100"))
         #expect(view.contains("visibleMessageLimit = previousVisibleMessageLimit"))
@@ -89,6 +90,7 @@ struct EarlierHistoryLoadingTests {
         #expect(view.contains("Loading earlier messages…"))
         #expect(view.contains("Earlier messages could not be loaded"))
         #expect(view.contains("The earliest message is displayed"))
+        #expect(view.contains("Load earlier messages"))
         #expect(view.contains("Button(action: retry)"))
         #expect(backend.contains("earlierHistoryLoadSessionIDs.insert(session.id).inserted"))
         #expect(backend.contains("setEarlierHistoryLoadState(.loading"))
