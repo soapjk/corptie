@@ -1110,3 +1110,42 @@ test("concurrency, backpressure, deadlines, and retry state remain explicit", as
     await cleanup(f);
   }
 });
+
+test("background scheduler retries a transient Store lock without an unhandled rejection", async () => {
+  let claims = 0;
+  const warnings = [];
+  const service = new ScheduledSessionTaskService({
+    store: {
+      listExpiredActiveScheduledSessionTasks: () => [],
+      listExpiredScheduledSessionRuns: () => [],
+      claimDueScheduledSessionTasks: () => {
+        claims += 1;
+        if (claims === 1) {
+          const error = new Error("database is locked");
+          error.code = "ERR_SQLITE_ERROR";
+          throw error;
+        }
+        return [];
+      }
+    },
+    environment: "production",
+    resolveRoute: async () => ({}),
+    authorize: () => ({}),
+    enqueue: () => ({}),
+    tickMs: 5,
+    logger: { warn: (message) => warnings.push(message) }
+  });
+
+  service.start();
+  try {
+    const deadline = Date.now() + 500;
+    while (claims < 2 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(claims >= 2, "the interval should retry after the failed startup poll");
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /source=startup.*database is locked/);
+  } finally {
+    service.stop();
+  }
+});

@@ -80,7 +80,7 @@ import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
-import { migrateStoreOffMainThread, optimizeStoreOffMainThread } from "./store/storeMigrationRunner.mjs";
+import { migrateStoreOffMainThread } from "./store/storeMigrationRunner.mjs";
 import { BenchmarkControlPlane } from "./benchmark/controlPlane.mjs";
 import { handleBenchmarkHttpRequest } from "./benchmark/httpApi.mjs";
 import { createArtifactEvidencePort } from "./benchmark/ports.mjs";
@@ -10972,17 +10972,6 @@ function startBackendRuntime() {
   // Provider runtimes, recovery, and route verification are optional
   // capabilities: start them only after the frontend can connect, and contain
   // every failure inside the affected background capability.
-  setImmediate(() => {
-    trackStartupMaintenance(optimizeStoreOffMainThread({
-      dbPath: store.dbPath,
-      configPath: store.configPath,
-      dataRoot: store.dataRoot
-    }).then(() => {
-      console.log("[sqlite] background query planner optimization completed");
-    }).catch((error) => {
-      console.warn(`[sqlite] background query planner optimization failed error=${error?.message ?? error}`);
-    }));
-  });
   setImmediate(() => {
     const reconciled = store.reconcileInterruptedSessionExecutionAtStartup();
     if (Object.values(reconciled).some((count) => count > 0)) {
