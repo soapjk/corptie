@@ -59,18 +59,38 @@ export class WorktreeIntegrationJobService {
     });
   }
 
-  async repository(repositoryId) {
+  async repository(repositoryId, options = {}) {
     const repository = this.#requireRepository(repositoryId);
-    const inspection = await this.inspectRepositorySummary(repository.id);
+    const inspection = await this.inspectRepositorySummary(repository.id, options);
     const project = this.#associate(inspection);
-    const worktrees = await Promise.all(project.worktrees.map(async (worktree) => ({
-      ...worktree,
-      gitHubPush: await this.#gitHubPushStatus(worktree)
-    })));
     return {
       repository: this.repositories().find((entry) => entry.id === repository.id),
-      project: { ...project, worktrees },
+      // GitHub inspection executes many Git commands per Worktree. Keep the
+      // management inventory fast and load push state only for the Worktree
+      // the user actually selects.
+      project: {
+        ...project,
+        worktrees: project.worktrees.map((worktree) => ({ ...worktree, gitHubPush: null }))
+      },
       latestJob: presentJob(this.store.getLatestWorktreeIntegrationJob(repository.id))
+    };
+  }
+
+  async worktreeGitHubPushStatus(repositoryId, worktreeId) {
+    const repository = this.#requireRepository(repositoryId);
+    const worktree = this.store.listGitWorktrees(repository.id)
+      .find((entry) => entry.worktreeId === worktreeId);
+    if (!worktree) {
+      throw new WorktreeIntegrationJobError(
+        "WORKTREE_NOT_FOUND",
+        "The selected Worktree no longer exists.",
+        404
+      );
+    }
+    return {
+      repositoryId: repository.id,
+      worktreeId: worktree.worktreeId,
+      gitHubPush: await this.#gitHubPushStatus(worktree)
     };
   }
 

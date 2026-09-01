@@ -19,15 +19,19 @@ final class WorktreeManagementClient: ObservableObject {
     @Published private(set) var operationNotice: String?
     @Published private(set) var operationNoticeTitle = "Worktree operation completed"
     @Published private(set) var pushingWorktreeIds: Set<String> = []
+    @Published private(set) var inspectingGitHubPushWorktreeIds: Set<String> = []
 
     private let baseURL: URL
     private let session: URLSession
     private let cacheLifetime: TimeInterval
+    private let automaticRefreshInterval: TimeInterval
     private let now: () -> Date
     private var detailGeneration = 0
     private var planPreparationId: UUID?
     private var detailCache: [String: CachedRepositoryDetail] = [:]
     private var repositoryListMilliseconds = 0
+    private var lastAutomaticRefreshAt: Date?
+    private var gitHubPushInspectionTask: Task<Void, Never>?
     private let logger = Logger(subsystem: "com.corptie.mac", category: "WorktreeLoad")
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -39,11 +43,13 @@ final class WorktreeManagementClient: ObservableObject {
         baseURL: URL = CorptieAppEnvironment.backendBaseURL,
         session: URLSession = .shared,
         cacheLifetime: TimeInterval = 15,
+        automaticRefreshInterval: TimeInterval = 60,
         now: @escaping () -> Date = Date.init
     ) {
         self.baseURL = baseURL
         self.session = session
         self.cacheLifetime = cacheLifetime
+        self.automaticRefreshInterval = automaticRefreshInterval
         self.now = now
     }
 
@@ -51,10 +57,23 @@ final class WorktreeManagementClient: ObservableObject {
         detail?.project.worktrees.first { $0.worktreeId == selection.worktreeId }
     }
 
-    func loadRepositories(forceSelectedReload: Bool = false) async {
+    func activate() async {
+        let hasVisibleContent = !repositories.isEmpty
+        if hasVisibleContent,
+           let lastAutomaticRefreshAt,
+           now().timeIntervalSince(lastAutomaticRefreshAt) < automaticRefreshInterval {
+            return
+        }
+        await loadRepositories(presentsLoadingState: !hasVisibleContent)
+    }
+
+    func loadRepositories(
+        forceSelectedReload: Bool = false,
+        presentsLoadingState: Bool = true
+    ) async {
         let startedAt = now()
-        isLoading = true
-        defer { isLoading = false }
+        if presentsLoadingState { isLoading = true }
+        defer { if presentsLoadingState { isLoading = false } }
         do {
             let envelope: ManagedRepositoryListEnvelope = try await get("worktree-management/repositories")
             repositoryListMilliseconds = milliseconds(since: startedAt)
@@ -62,13 +81,18 @@ final class WorktreeManagementClient: ObservableObject {
             selection.reconcile(repositories: repositories)
             errorMessage = nil
             if let repositoryId = selection.repositoryId {
-                await loadRepository(repositoryId, force: forceSelectedReload)
+                await loadRepository(
+                    repositoryId,
+                    force: forceSelectedReload,
+                    presentsLoadingState: presentsLoadingState
+                )
             } else {
                 detail = nil
                 projectStatus = nil
                 job = nil
                 listLoadState = .idle
             }
+            lastAutomaticRefreshAt = now()
         } catch {
             guard !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
@@ -78,6 +102,7 @@ final class WorktreeManagementClient: ObservableObject {
 
     func selectRepository(_ id: String?) async {
         guard selection.repositoryId != id else { return }
+        gitHubPushInspectionTask?.cancel()
         selection.repositoryId = id
         selection.worktreeId = nil
         detail = nil
@@ -86,6 +111,12 @@ final class WorktreeManagementClient: ObservableObject {
         listLoadState = id == nil ? .idle : .loading
         guard let id else { return }
         await loadRepository(id)
+    }
+
+    func selectWorktree(_ id: String?) {
+        guard selection.worktreeId != id else { return }
+        selection.worktreeId = id
+        scheduleGitHubPushInspection()
     }
 
     func refreshSelected() async {
@@ -499,7 +530,11 @@ final class WorktreeManagementClient: ObservableObject {
     func dismissError() { errorMessage = nil }
     func dismissOperationNotice() { operationNotice = nil }
 
-    private func loadRepository(_ id: String, force: Bool = false) async {
+    private func loadRepository(
+        _ id: String,
+        force: Bool = false,
+        presentsLoadingState: Bool = true
+    ) async {
         if !force, let cached = detailCache[id], now().timeIntervalSince(cached.loadedAt) < cacheLifetime {
             apply(cached, repositoryId: id)
             let metrics = WorktreeLoadMetrics(
@@ -518,10 +553,15 @@ final class WorktreeManagementClient: ObservableObject {
         let generation = detailGeneration
         let startedAt = now()
         listLoadState = .loading
-        isLoading = true
-        defer { if generation == detailGeneration { isLoading = false } }
+        if presentsLoadingState { isLoading = true }
+        defer {
+            if presentsLoadingState, generation == detailGeneration { isLoading = false }
+        }
         do {
-            async let detailRequest: ManagedRepositoryDetail = get("worktree-management/repositories/\(id)")
+            async let detailRequest: ManagedRepositoryDetail = get(
+                "worktree-management/repositories/\(id)",
+                queryItems: force ? [URLQueryItem(name: "forceFresh", value: "true")] : []
+            )
             async let serviceRequest: ProjectDevelopmentServiceStatus? = try? get("projects/\(id)/development-service")
             let response = try await detailRequest
             let detailMilliseconds = milliseconds(since: startedAt)
@@ -536,12 +576,16 @@ final class WorktreeManagementClient: ObservableObject {
                 projectStatus: projectStatus,
                 loadedAt: now()
             )
+            scheduleGitHubPushInspection()
             let refreshedProjectStatus = await serviceRequest
             let serviceMilliseconds = milliseconds(since: startedAt)
             guard generation == detailGeneration, selection.repositoryId == id else { return }
             projectStatus = refreshedProjectStatus
+            let refreshedDetail = detail.flatMap { current in
+                current.repository.id == id ? current : nil
+            } ?? response
             let cached = CachedRepositoryDetail(
-                detail: response,
+                detail: refreshedDetail,
                 projectStatus: refreshedProjectStatus,
                 loadedAt: now()
             )
@@ -578,6 +622,49 @@ final class WorktreeManagementClient: ObservableObject {
         selection.reconcile(repositories: repositories, worktrees: cached.detail.project.worktrees)
         listLoadState = .loaded
         errorMessage = nil
+        scheduleGitHubPushInspection()
+    }
+
+    private func scheduleGitHubPushInspection() {
+        gitHubPushInspectionTask?.cancel()
+        guard let repositoryId = selection.repositoryId,
+              let worktreeId = selection.worktreeId,
+              detail?.project.worktrees.first(where: { $0.worktreeId == worktreeId })?.gitHubPush == nil else {
+            return
+        }
+        gitHubPushInspectionTask = Task { [weak self] in
+            await self?.loadGitHubPushStatus(repositoryId: repositoryId, worktreeId: worktreeId)
+        }
+    }
+
+    private func loadGitHubPushStatus(repositoryId: String, worktreeId: String) async {
+        inspectingGitHubPushWorktreeIds.insert(worktreeId)
+        defer { inspectingGitHubPushWorktreeIds.remove(worktreeId) }
+        do {
+            let envelope: ManagedWorktreeGitHubPushEnvelope = try await get(
+                "worktree-management/repositories/\(repositoryId)/worktrees/\(worktreeId)/github-push-status"
+            )
+            guard !Task.isCancelled,
+                  envelope.repositoryId == repositoryId,
+                  envelope.worktreeId == worktreeId,
+                  detail?.repository.id == repositoryId,
+                  let index = detail?.project.worktrees.firstIndex(where: {
+                      $0.worktreeId == worktreeId
+                  }) else { return }
+            detail?.project.worktrees[index].gitHubPush = envelope.gitHubPush
+            if let detail, let cached = detailCache[repositoryId] {
+                detailCache[repositoryId] = CachedRepositoryDetail(
+                    detail: detail,
+                    projectStatus: cached.projectStatus,
+                    loadedAt: cached.loadedAt
+                )
+            }
+        } catch {
+            guard !Self.isCancellation(error) else { return }
+            logger.error(
+                "GitHub push inspection failed repository=\(repositoryId, privacy: .public) worktree=\(worktreeId, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
     }
 
     private func milliseconds(since start: Date) -> Int {
@@ -601,8 +688,11 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
-    private func get<Response: Decodable>(_ path: String) async throws -> Response {
-        try await request(path, method: "GET", body: nil)
+    private func get<Response: Decodable>(
+        _ path: String,
+        queryItems: [URLQueryItem] = []
+    ) async throws -> Response {
+        try await request(path, method: "GET", body: nil, queryItems: queryItems)
     }
 
     private func post<Response: Decodable>(_ path: String, body: [String: Any]) async throws -> Response {
@@ -612,9 +702,14 @@ final class WorktreeManagementClient: ObservableObject {
     private func request<Response: Decodable>(
         _ path: String,
         method: String,
-        body: [String: Any]?
+        body: [String: Any]?,
+        queryItems: [URLQueryItem] = []
     ) async throws -> Response {
-        var request = URLRequest(url: baseURL.appending(path: path))
+        let pathURL = baseURL.appending(path: path)
+        var components = URLComponents(url: pathURL, resolvingAgainstBaseURL: false)
+        if !queryItems.isEmpty { components?.queryItems = queryItems }
+        guard let url = components?.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }

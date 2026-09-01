@@ -371,6 +371,34 @@ test("inspection TTL expiry and precise Git-write invalidation force a new scan"
   }
 });
 
+test("management inspection keeps a longer snapshot cache and supports an explicit fresh scan", async () => {
+  const fixture = await createFixture("management-cache-policy", { activeFeatureWorktree: true });
+  let now = 1_000;
+  let snapshotCount = 0;
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    inspectionCacheTtlMs: 5,
+    now: () => now,
+    createSnapshot: async (...args) => {
+      snapshotCount += 1;
+      return createGitWorkspaceSnapshot(...args);
+    }
+  });
+  try {
+    await manager.managementInspectionForProject(fixture.repository, fixture.repositoryId);
+    now += 10;
+    await manager.managementInspectionForProject(fixture.repository, fixture.repositoryId);
+    assert.equal(snapshotCount, 1);
+    await manager.managementInspectionForProject(fixture.repository, fixture.repositoryId, {
+      forceFresh: true
+    });
+    assert.equal(snapshotCount, 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("commit and workspace switch invalidate only the affected repository inspection cache", async () => {
   const fixture = await createFixture("operation-invalidation", { activeFeatureWorktree: true });
   let snapshotCount = 0;

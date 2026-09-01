@@ -40,6 +40,50 @@ struct WorktreeManagementLoadingTests {
     }
 
     @MainActor
+    @Test func tabActivationKeepsVisibleDataAndSkipsRepeatedAutomaticReloads() async {
+        var currentTime = Date(timeIntervalSince1970: 1_776_297_600)
+        let recorder = RequestRecorder(details: ["repository:one": Self.detail(
+            repositoryId: "repository:one",
+            worktrees: [Self.worktree("wt:main", branch: "main", isMain: true)]
+        )])
+        let client = makeClient(
+            recorder: recorder,
+            automaticRefreshInterval: 60,
+            now: { currentTime }
+        )
+
+        await client.activate()
+        currentTime.addTimeInterval(10)
+        await client.activate()
+
+        #expect(recorder.count(path: "/worktree-management/repositories") == 1)
+        #expect(client.detail?.project.worktrees.map(\.worktreeId) == ["wt:main"])
+        #expect(client.isLoading == false)
+    }
+
+    @MainActor
+    @Test func githubPushStatusLoadsOnlyForTheSelectedWorktree() async {
+        let recorder = RequestRecorder(details: ["repository:one": Self.detail(
+            repositoryId: "repository:one",
+            worktrees: [
+                Self.worktree("wt:main", branch: "main", isMain: true),
+                Self.worktree("wt:feature", branch: "feature/one")
+            ]
+        )])
+        let client = makeClient(recorder: recorder)
+
+        await client.loadRepositories()
+        await waitForPushInspection(client, worktreeId: "wt:main")
+        #expect(recorder.count(path: RequestRecorder.pushPath("wt:main")) == 1)
+        #expect(recorder.count(path: RequestRecorder.pushPath("wt:feature")) == 0)
+
+        client.selectWorktree("wt:feature")
+        await waitForPushInspection(client, worktreeId: "wt:feature")
+        #expect(recorder.count(path: RequestRecorder.pushPath("wt:feature")) == 1)
+        #expect(client.selectedWorktree?.gitHubPush?.available == true)
+    }
+
+    @MainActor
     @Test func switchingRepositoriesLoadsEachOnceAndPreservesEachSelection() async {
         let recorder = RequestRecorder(
             repositoryIds: ["repository:one", "repository:two"],
@@ -154,6 +198,7 @@ struct WorktreeManagementLoadingTests {
     private func makeClient(
         recorder: RequestRecorder,
         cacheLifetime: TimeInterval = 60,
+        automaticRefreshInterval: TimeInterval = 60,
         now: @escaping () -> Date = Date.init
     ) -> WorktreeManagementClient {
         WorktreeLoadingURLProtocol.recorder = recorder
@@ -163,8 +208,23 @@ struct WorktreeManagementLoadingTests {
             baseURL: URL(string: "http://127.0.0.1:9999")!,
             session: URLSession(configuration: configuration),
             cacheLifetime: cacheLifetime,
+            automaticRefreshInterval: automaticRefreshInterval,
             now: now
         )
+    }
+
+    @MainActor
+    private func waitForPushInspection(
+        _ client: WorktreeManagementClient,
+        worktreeId: String
+    ) async {
+        for _ in 0..<100 {
+            if client.detail?.project.worktrees.first(where: {
+                $0.worktreeId == worktreeId
+            })?.gitHubPush != nil { return }
+            await Task.yield()
+        }
+        Issue.record("GitHub push inspection did not finish for \(worktreeId)")
     }
 
     private static func detail(repositoryId: String, worktrees: [String]) -> String {
@@ -218,6 +278,14 @@ private final class RequestRecorder: @unchecked Sendable {
             if path.hasSuffix("/development-service") {
                 return (500, "{\"error\":\"service status unavailable\"}")
             }
+            if path.hasSuffix("/github-push-status") {
+                let components = path.split(separator: "/").map(String.init)
+                let repositoryId = components.count >= 6 ? components[2] : "repository:one"
+                let worktreeId = components.count >= 6 ? components[4] : "missing"
+                return (200, """
+                {"repositoryId":"\(repositoryId)","worktreeId":"\(worktreeId)","gitHubPush":{"available":true,"pending":true,"dirty":false,"unpushedCommitCount":1,"branch":"feature","destinationUrl":"https://github.com/example/repository","error":null}}
+                """)
+            }
             let id = String(path.split(separator: "/").last ?? "")
             guard let detail = details[id] else {
                 return (500, "{\"error\":\"simulated detail failure\"}")
@@ -228,6 +296,10 @@ private final class RequestRecorder: @unchecked Sendable {
 
     func count(path: String) -> Int { lock.withLock { counts[path, default: 0] } }
     func setDetail(_ detail: String, for id: String) { lock.withLock { details[id] = detail } }
+
+    static func pushPath(_ worktreeId: String) -> String {
+        "/worktree-management/repositories/repository:one/worktrees/\(worktreeId)/github-push-status"
+    }
 }
 
 private final class WorktreeLoadingURLProtocol: URLProtocol, @unchecked Sendable {

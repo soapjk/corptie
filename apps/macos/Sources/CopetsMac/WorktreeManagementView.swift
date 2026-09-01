@@ -44,7 +44,7 @@ struct WorktreeManagementView: View {
                 isBackendOnline: backendClient.isOnline,
                 isTabSelected: sidebarState.isSelected
             ) else { return }
-            await client.loadRepositories()
+            await client.activate()
         }
         .task(id: router.pendingWorktreeTarget) {
             guard backendClient.isOnline, sidebarState.isSelected else { return }
@@ -198,7 +198,7 @@ struct WorktreeManagementView: View {
                     ScrollViewReader { proxy in
                         List(selection: Binding(
                             get: { client.selection.worktreeId },
-                            set: { client.selection.worktreeId = $0 }
+                            set: { client.selectWorktree($0) }
                         )) {
                             ForEach(project.worktrees) { worktree in
                                 worktreeRow(worktree)
@@ -281,7 +281,10 @@ struct WorktreeManagementView: View {
                             Button {
                                 Task { await client.pushWorktreeToGitHub(worktree) }
                             } label: {
-                                if client.pushingWorktreeIds.contains(worktree.worktreeId) {
+                                if client.inspectingGitHubPushWorktreeIds.contains(worktree.worktreeId) {
+                                    ProgressView().controlSize(.small)
+                                    Text(L10n("Checking GitHub…"))
+                                } else if client.pushingWorktreeIds.contains(worktree.worktreeId) {
                                     ProgressView().controlSize(.small)
                                     Text(L10n("Pushing to GitHub…"))
                                 } else {
@@ -290,6 +293,7 @@ struct WorktreeManagementView: View {
                             }
                             .disabled(
                                 client.isMutating
+                                    || client.inspectingGitHubPushWorktreeIds.contains(worktree.worktreeId)
                                     || client.pushingWorktreeIds.contains(worktree.worktreeId)
                                     || !ManagedWorktreeGitHubPushPolicy.canPush(worktree)
                             )
@@ -463,7 +467,10 @@ struct WorktreeManagementView: View {
     }
 
     private func worktreePushExplanation(_ worktree: ManagedWorktree) -> String {
-        ManagedWorktreeGitHubPushPolicy.explanation(for: worktree)
+        if client.inspectingGitHubPushWorktreeIds.contains(worktree.worktreeId) {
+            return L10n("Checking this Worktree's GitHub push status.")
+        }
+        return ManagedWorktreeGitHubPushPolicy.explanation(for: worktree)
     }
 
     private func jobProgress(_ job: WorktreeIntegrationJob) -> some View {

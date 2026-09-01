@@ -128,6 +128,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("ScrollViewReader { proxy in"))
         XCTAssertTrue(contents.contains(".task(id: worktreeScrollRequest)"))
         XCTAssertTrue(contents.contains("proxy.scrollTo(request.worktreeId, anchor: .center)"))
+        XCTAssertTrue(contents.contains("await client.activate()"))
         XCTAssertFalse(contents.contains(".task { await client.loadRepositories() }"))
     }
 
@@ -151,10 +152,16 @@ final class WorktreeManagementNavigationTests: XCTestCase {
 
         XCTAssertTrue(view.contains("L10n(\"Push to GitHub\")"))
         XCTAssertTrue(view.contains("L10n(\"Pushing to GitHub…\")"))
+        XCTAssertTrue(view.contains("L10n(\"Checking GitHub…\")"))
         XCTAssertTrue(view.contains("worktree.push-github.\\(worktree.worktreeId)"))
         XCTAssertTrue(view.contains("ManagedWorktreeGitHubPushPolicy.canPush(worktree)"))
         XCTAssertTrue(view.contains("client.pushingWorktreeIds.contains(worktree.worktreeId)"))
         XCTAssertTrue(client.contains("!pushingWorktreeIds.contains(worktree.worktreeId)"))
+        XCTAssertTrue(client.contains("func activate() async"))
+        XCTAssertTrue(client.contains("automaticRefreshInterval"))
+        XCTAssertTrue(client.contains("scheduleGitHubPushInspection()"))
+        XCTAssertTrue(client.contains("github-push-status"))
+        XCTAssertTrue(client.contains("presentsLoadingState: !hasVisibleContent"))
         XCTAssertTrue(client.contains("actions/push"))
         XCTAssertTrue(client.contains("guard envelope.result.pushed else"))
         XCTAssertTrue(client.contains("operationNoticeTitle = \"Pushed to GitHub\""))

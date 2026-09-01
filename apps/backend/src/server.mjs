@@ -2205,14 +2205,14 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
 const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   store,
   inspectGitHubPushStatus: (input) => gitHubPushes.branchStatus(input),
-  inspectRepositorySummary: async (repositoryId) => {
+  inspectRepositorySummary: async (repositoryId, options = {}) => {
     const path = store.resolveWorkspacePath(repositoryId);
     if (!path) {
       const error = new Error("The repository main checkout is unavailable.");
       error.code = "REPOSITORY_MAIN_UNAVAILABLE";
       throw error;
     }
-    return gitWorkspaces.managementInspectionForProject(path, repositoryId);
+    return gitWorkspaces.managementInspectionForProject(path, repositoryId, options);
   },
   inspectRepository: async (repositoryId) => {
     const path = store.resolveWorkspacePath(repositoryId);
@@ -9709,6 +9709,9 @@ function route(request, response) {
   const worktreeManagementRepositoryMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)$/
   );
+  const worktreeManagementGitHubPushStatusMatch = url.pathname.match(
+    /^\/worktree-management\/repositories\/([^/]+)\/worktrees\/([^/]+)\/github-push-status$/
+  );
   const worktreeManagementPreflightMatch = url.pathname.match(
     /^\/worktree-management\/repositories\/([^/]+)\/integration-plans$/
   );
@@ -9744,7 +9747,19 @@ function route(request, response) {
   }
   if (request.method === "GET" && worktreeManagementRepositoryMatch) {
     const repositoryId = decodeURIComponent(worktreeManagementRepositoryMatch[1]);
-    worktreeIntegrationJobService.repository(repositoryId)
+    worktreeIntegrationJobService.repository(repositoryId, {
+      forceFresh: url.searchParams.get("forceFresh") === "true"
+    })
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
+        error: error.message, code: error.code
+      }));
+    return;
+  }
+  if (request.method === "GET" && worktreeManagementGitHubPushStatusMatch) {
+    const repositoryId = decodeURIComponent(worktreeManagementGitHubPushStatusMatch[1]);
+    const worktreeId = decodeURIComponent(worktreeManagementGitHubPushStatusMatch[2]);
+    worktreeIntegrationJobService.worktreeGitHubPushStatus(repositoryId, worktreeId)
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message, code: error.code

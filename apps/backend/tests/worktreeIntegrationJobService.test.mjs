@@ -17,6 +17,7 @@ function memoryFixture({
   commitGate = null,
   conflictAttempts = null,
   inspectRepositorySummary = null,
+  inspectGitHubPushStatus = null,
   resolutionInspectionError = null,
   abortMergeError = null,
   conflictSessionStatus = "complete",
@@ -101,7 +102,7 @@ function memoryFixture({
   const service = new WorktreeIntegrationJobService({
     store,
     inspectRepositorySummary,
-    inspectGitHubPushStatus: async ({ workingDirectory }) => ({
+    inspectGitHubPushStatus: inspectGitHubPushStatus ?? (async ({ workingDirectory }) => ({
       available: true,
       pending: workingDirectory !== "/repo",
       dirty: false,
@@ -109,7 +110,7 @@ function memoryFixture({
       branch: workingDirectory === "/repo" ? "main" : "feature/one",
       destinationUrl: "https://github.com/example/repository",
       error: null
-    }),
+    })),
     inspectRepository: async () => ({
       repositoryId: repository.id, inventoryVersion: "inventory:1", mainWorktreeId: "wt:main",
       mainPath: "/repo", mainHeadOid: worktrees[0].headOid, worktrees: structuredClone(worktrees)
@@ -226,6 +227,7 @@ function memoryFixture({
 
 test("repository listing uses the lightweight summary while preflight keeps the deep inspection", async () => {
   let summaryCalls = 0;
+  const pushStatusPaths = [];
   const summaryWorktrees = [{
     worktreeId: "wt:summary", path: "/repo-summary", isMain: true,
     availability: "available", headOid: "summary:1", branchName: "main",
@@ -242,14 +244,26 @@ test("repository listing uses the lightweight summary while preflight keeps the 
         mainWorktreeId: "wt:summary", mainPath: "/repo-summary",
         mainHeadOid: "summary:1", worktrees: structuredClone(summaryWorktrees)
       };
+    },
+    inspectGitHubPushStatus: async ({ workingDirectory }) => {
+      pushStatusPaths.push(workingDirectory);
+      return {
+        available: true, pending: true, dirty: false, unpushedCommitCount: 1,
+        branch: "feature/one", destinationUrl: "https://github.com/example/repository", error: null
+      };
     }
   });
 
   const listed = await service.repository("repository:1");
   assert.equal(summaryCalls, 1);
   assert.deepEqual(listed.project.worktrees.map((worktree) => worktree.worktreeId), ["wt:summary"]);
-  assert.equal(listed.project.worktrees[0].gitHubPush.available, true);
-  assert.equal(listed.project.worktrees[0].gitHubPush.pending, true);
+  assert.equal(listed.project.worktrees[0].gitHubPush, null);
+  assert.deepEqual(pushStatusPaths, []);
+
+  const selectedPush = await service.worktreeGitHubPushStatus("repository:1", "wt:feature");
+  assert.equal(selectedPush.worktreeId, "wt:feature");
+  assert.equal(selectedPush.gitHubPush.pending, true);
+  assert.deepEqual(pushStatusPaths, ["/repo-feature"]);
 
   const plan = await service.preflight("repository:1");
   assert.equal(summaryCalls, 1);
