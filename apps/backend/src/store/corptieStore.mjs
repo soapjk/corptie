@@ -5464,6 +5464,24 @@ export class CorptieStore {
     return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
   }
 
+  invalidateSessionToolCatalogAppliedProof(input, expectedResourceVersion) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         status = 'error', last_error_code = ?, last_error_summary = ?,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status = 'applied'`,
+      [
+        input.errorCode, String(input.errorSummary ?? "").slice(0, 500), now,
+        input.logicalSessionId, input.providerBindingId, expectedResourceVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
   #insertAppliedSessionToolCatalogMaterialization(input, expected = {}) {
     if (input == null) {
       if (expected.required) {

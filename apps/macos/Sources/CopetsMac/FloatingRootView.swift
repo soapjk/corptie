@@ -8363,9 +8363,9 @@ struct ThreadMetaView: View {
                 .accessibilityLabel(isReady ? L10n("Session Ready") : L10n("Session Not Ready"))
                 .popover(isPresented: $isShowingNotReadyReason, arrowEdge: .top) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(L10n("Session Not Ready"))
+                        Text(notReadyReason?.presentationTitle ?? L10n("Session Not Ready"))
                             .font(.system(size: 12, weight: .bold))
-                        Text(notReadyReason?.message ?? L10n("This Session cannot accept messages right now."))
+                        Text(notReadyReason?.presentationMessage ?? L10n("This Session cannot accept messages right now."))
                             .font(.system(size: 11, weight: .medium))
                             .fixedSize(horizontal: false, vertical: true)
                         if let code = notReadyReason?.code, !code.isEmpty {

@@ -1097,6 +1097,10 @@ const legacySessionHistoryRepairService = new LegacySessionHistoryRepairService(
 });
 const sessionApplicationService = new SessionApplicationService({
   registry: agentProviderRegistry,
+  observeLifecycle: ({ type, sessionId, ...payload }) => {
+    console.info(`[session-lifecycle] ${JSON.stringify({ type, sessionId, ...payload })}`);
+    emitEvent(type, payload, { sessionId });
+  },
   toolHostService,
   toolMaterializationPort,
   resolveRequiredToolDomains: (context) => ArtifactDomainRequirements
@@ -1542,29 +1546,6 @@ const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
   coordinator: toolHostMaterializationCoordinator,
   isSessionBusy: (session) => sessionHasActiveRun(session),
   isAppliedProofCurrent: ({ binding, record }) => codexAppliedToolProofIsCurrent(binding, record),
-  recoverBinding: async (input) => {
-    const attempt = await sessionRecoveryCoordinator.recover(input);
-    const logical = store.getLogicalSession(input.logicalSessionId);
-    const sessionId = logical?.legacySessionId ?? null;
-    const recoveredSession = sessionId ? store.getSession(sessionId) : null;
-    if (!sessionId || !logical?.activeBinding) {
-      const error = new Error("Recovered Session route is incomplete during Tool bootstrap preflight.");
-      error.code = "RECOVERY_BINDING_MISSING";
-      throw error;
-    }
-    await sessionApplicationService.resumeSession(sessionId, {
-      purpose: "session-create-finalization",
-      actorId: recoveredSession?.agentId ?? null,
-      sessionId,
-      logicalSessionId: logical.logicalSessionId,
-      providerBindingId: logical.activeBinding.bindingId,
-      sessionKind: recoveredSession?.sessionKind ?? "legacy",
-      objectiveId: recoveredSession?.objectiveId ?? null,
-      taskId: recoveredSession?.taskId ?? null,
-      desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-    });
-    return attempt;
-  },
   maxCandidates: 32,
   concurrency: 4
 });
@@ -1596,41 +1577,20 @@ const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
     };
     try {
       await sessionApplicationService.resumeSession(candidate.sessionId, resumeContext);
-      return { recovered: false, bindingId: binding.bindingId };
     } catch (error) {
-      if (!isSafelyRecoverableEmptyBindingError(error)) throw error;
+      if (!isUnavailableEmptyBinding(error)) throw error;
+      const unavailable = new Error(
+        "The existing Provider Thread could not be reconnected and was preserved. Explicit Session Recovery is required."
+      );
+      unavailable.code = "PROVIDER_BINDING_RECOVERY_REQUIRED";
+      unavailable.cause = error;
+      throw unavailable;
     }
-    const attempt = await sessionRecoveryCoordinator.recover({
-      logicalSessionId: logical.logicalSessionId,
-      providerId: binding.providerId,
-      sourceBindingId: binding.bindingId,
-      idempotencyKey: `startup-empty-binding-recovery:v1:${binding.bindingId}`,
-      reason: "PROVIDER_EMPTY_BINDING_UNAVAILABLE",
-      // A prewarmed thread/start has no durable rollout until its first Turn,
-      // so the next Provider process may need to replace it again. Startup
-      // prewarming must use the Recovery planner's bounded deterministic
-      // handoff instead of paying for a 30–45 second model compression on
-      // every launch. Explicit user-triggered Recovery keeps compression.
-      compressHandoff: false
-    });
-    logical = store.getLogicalSession(candidate.logicalSessionId);
-    binding = logical?.activeBinding ?? null;
-    if (!binding) {
-      const error = new Error("Recovered Session route has no active Provider binding.");
-      error.code = "RECOVERY_BINDING_MISSING";
-      throw error;
-    }
-    await sessionApplicationService.resumeSession(candidate.sessionId, {
-      ...resumeContext,
-      purpose: "session-create-finalization",
-      providerBindingId: binding.bindingId,
-      desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
-    });
-    return { recovered: true, bindingId: binding.bindingId };
+    return { recovered: false, bindingId: binding.bindingId };
   }
 });
 
-function isSafelyRecoverableEmptyBindingError(error) {
+function isUnavailableEmptyBinding(error) {
   return error?.code === "PROVIDER_SESSION_UNAVAILABLE"
     || error?.code === "PROVIDER_EMPTY_THREAD_UNRECOVERABLE";
 }
@@ -11158,7 +11118,8 @@ async function runProviderStartupMaintenance(knownWorktrees) {
     runContainedStartupOperation("active-session-binding-preflight", async () => {
       // Active empty bindings are proactively warmed after Backend readiness.
       // Complete this pass before the broader Tool bootstrap scan so both
-      // recovery paths never race the same Provider binding.
+      // verification passes never race the same Provider binding. Neither
+      // pass may replace a route; replacement requires explicit Recovery.
       const emptyBindingSummary = await emptyCodexBindingPreflight.run();
       if (emptyBindingSummary?.scanned > 0) {
         console.info(`[empty-binding-preflight] ${JSON.stringify({

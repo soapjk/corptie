@@ -36,7 +36,7 @@ struct SessionExecutionStatusTests {
         #expect(session.executionTaskStatus == .failed)
     }
 
-    @Test func readinessIsIndependentFromExecutionAndCarriesTheDisableReason() throws {
+    @MainActor @Test func readinessIsIndependentFromExecutionAndCarriesTheDisableReason() throws {
         let data = try #require("""
         {
           "id":"session:not-ready","title":"Not Ready","agent":"Agent","status":"complete",
@@ -54,5 +54,17 @@ struct SessionExecutionStatusTests {
         #expect(session.readiness == .notReady)
         #expect(session.isReady == false)
         #expect(session.notReadyReason?.code == "PROVIDER_INITIALIZING")
+        #expect(session.notReadyReason?.presentationTitle == L10n("Starting Provider Runtime"))
+        #expect(session.notReadyReason?.presentationMessage == L10n("The Provider process is starting. This does not rebuild this Session or replace its Provider Thread."))
+    }
+
+    @MainActor @Test func bindingVerificationExplicitlySaysTheExistingThreadIsPreserved() {
+        let reason = SessionNotReadyReason(
+            code: "BINDING_RUNTIME_VERIFYING",
+            message: "Verifying.",
+            retryable: true
+        )
+        #expect(reason.presentationTitle == L10n("Reconnecting Existing Session"))
+        #expect(reason.presentationMessage == L10n("Corptie is reconnecting the existing Provider Thread. No new Thread or context rebuild is being created."))
     }
 }

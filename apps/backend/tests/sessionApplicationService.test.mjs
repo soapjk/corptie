@@ -244,6 +244,30 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   ]);
 });
 
+test("Session restart audit records the provider-neutral caller source and stable route", async () => {
+  const { service } = fixture();
+  const events = [];
+  service.observeLifecycle = (event) => events.push(event);
+
+  await service.restartSession("logical-a", {
+    source: "compatibility-route",
+    actorId: "actor:desktop",
+    idempotencyKey: "session-restart:request-one"
+  });
+
+  assert.deepEqual(events.map((event) => event.type), [
+    "SessionRestartRequested",
+    "SessionRestartInvocationCompleted"
+  ]);
+  assert.equal(events[0].source, "compatibility-route");
+  assert.equal(events[0].actorId, "actor:desktop");
+  assert.equal(events[0].logicalSessionId, "logical-a");
+  assert.equal(events[0].providerBindingId, "binding-a");
+  assert.equal(events[0].providerSessionId, "native-a");
+  assert.equal(events[0].routingVersion, 3);
+  assert.equal(events[1].resultStatus, "completed");
+});
+
 test("new Session finalizes Tool Host with the authoritative binding before returning", async () => {
   const calls = [];
   const toolHostContexts = [];
