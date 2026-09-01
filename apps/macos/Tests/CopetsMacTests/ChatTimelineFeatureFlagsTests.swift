@@ -8,7 +8,7 @@ struct ChatTimelineFeatureFlagsTests {
         let flags = ChatTimelineFeatureFlags.resolve(environment: [:])
 
         #expect(flags.fixtureMode == .disabled)
-        #expect(flags.initialDisplayWeight == 7)
+        #expect(flags.initialDisplayWeight == 20)
         #expect(flags.uiBatchIntervalMilliseconds == 100)
     }
 
