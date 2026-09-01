@@ -21,7 +21,7 @@ function persistedToolProof(threadId, definitions, kind = "thread_start_accepted
   };
 }
 
-function fakeCodexProcess() {
+function fakeCodexProcess({ respond = true } = {}) {
   const child = new EventEmitter();
   child.stdin = new PassThrough();
   child.stdout = new PassThrough();
@@ -43,7 +43,9 @@ function fakeCodexProcess() {
       if (line) {
         const request = JSON.parse(line);
         child.requests.push(request);
-        queueMicrotask(() => child.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`));
+        if (respond) {
+          queueMicrotask(() => child.stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`));
+        }
       }
       newline = buffer.indexOf("\n");
     }
@@ -69,6 +71,28 @@ test("concurrent Codex initialization shares one app-server process generation",
   assert.equal(client.initialized, true);
   assert.equal(client.initializationTimeoutMs, 30000);
   await client.close();
+});
+
+test("a detached Codex initialization timeout cannot become an unhandled rejection", async () => {
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on("unhandledRejection", onUnhandled);
+  const client = new CodexAppServerClient({
+    initializationTimeoutMs: 10,
+    spawnProcess: () => fakeCodexProcess({ respond: false })
+  });
+
+  try {
+    client.initialize();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.deepEqual(unhandled, []);
+    assert.equal(client.initialized, false);
+    assert.equal(client.process, null);
+    assert.equal(client.initializePromise, null);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await client.close();
+  }
 });
 
 test("a stale Codex process exit cannot tear down a newer initialized generation", async () => {

@@ -56,18 +56,22 @@ export class CodexAppServerClient {
     this.activeProcessGeneration = 0;
   }
 
-  async initialize() {
-    if (this.initialized && this.process) return;
+  initialize() {
+    if (this.initialized && this.process) return Promise.resolve();
     if (this.initializePromise) return this.initializePromise;
 
     const generation = ++this.processGeneration;
     const initializing = this.#initializeProcess(generation);
-    this.initializePromise = initializing;
-    try {
-      await initializing;
-    } finally {
-      if (this.initializePromise === initializing) this.initializePromise = null;
-    }
+    const trackedInitialization = initializing.finally(() => {
+      if (this.initializePromise === trackedInitialization) this.initializePromise = null;
+    });
+    this.initializePromise = trackedInitialization;
+    // Provider initialization is also started by background readiness work.
+    // Keep the shared promise observably rejected for callers, while attaching
+    // an internal rejection observer so a detached consumer can never turn a
+    // Provider timeout into an unhandled rejection that terminates Backend.
+    trackedInitialization.catch(() => {});
+    return trackedInitialization;
   }
 
   async #initializeProcess(generation) {
