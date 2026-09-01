@@ -7,6 +7,7 @@ export class CodexProviderRuntime {
 
   get notifications() { return this.client.notifications; }
 
+  initialize(...args) { return this.client.initialize(...args); }
   bindThreadToolContext(...args) { return this.client.bindThreadToolContext(...args); }
   confirmThreadToolPlan(...args) { return this.client.confirmThreadToolPlan(...args); }
   restoreThreadToolPlanConfirmation(...args) { return this.client.restoreThreadToolPlanConfirmation(...args); }

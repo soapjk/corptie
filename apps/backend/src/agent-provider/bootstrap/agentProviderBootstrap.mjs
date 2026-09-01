@@ -33,10 +33,16 @@ const CODEX_APP_SERVER_CAPABILITIES = Object.freeze([
 ]);
 
 export function createAgentProviderRuntimeRegistry(options = {}) {
-  const codexCapabilities = typeof options.codexOperations?.bindWorkspace === "function"
+  const codexCapabilities = [
+    ...CODEX_APP_SERVER_CAPABILITIES,
+    ...(typeof options.codexOperations?.disconnectSession === "function"
+      ? [AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT]
+      : []),
+    ...(typeof options.codexOperations?.bindWorkspace === "function"
     && typeof options.codexOperations?.inspectWorkspaceBinding === "function"
-    ? [...CODEX_APP_SERVER_CAPABILITIES, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND]
-    : CODEX_APP_SERVER_CAPABILITIES;
+      ? [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND]
+      : [])
+  ];
   const providers = [
     requiredProvider(options.claudeProvider, "claudeProvider"),
     createCodexAppServerProvider(options.codexOperations ?? {}, {

@@ -110,6 +110,88 @@ export class CorptieStore {
     }
   }
 
+  reconcileInterruptedSessionExecutionAtStartup(timestamp = new Date().toISOString()) {
+    const counts = {
+      workItems: Number(this.selectOne(
+        "SELECT COUNT(*) AS count FROM agent_work_items WHERE status IN ('queued','running')"
+      )?.count ?? 0),
+      deliveries: Number(this.selectOne(
+        `SELECT COUNT(*) AS count FROM message_deliveries
+         WHERE status IN ('queued','dispatching','accepted','processing','delivery_unknown')`
+      )?.count ?? 0),
+      collaborationDeliveries: Number(this.selectOne(
+        `SELECT COUNT(*) AS count FROM collaboration_deliveries
+         WHERE status IN ('pending','queued','delivering')`
+      )?.count ?? 0),
+      sessionCollaborationDeliveries: Number(this.selectOne(
+        `SELECT COUNT(*) AS count FROM session_collaboration_deliveries
+         WHERE status IN ('pending','queued','delivering')`
+      )?.count ?? 0),
+      turns: Number(this.selectOne(
+        "SELECT COUNT(*) AS count FROM session_turns WHERE execution_status IN ('idle','running','blocked')"
+      )?.count ?? 0)
+    };
+    if (Object.values(counts).every((count) => count === 0)) return counts;
+    const interruption = "Execution interrupted by application restart; the message was not resent.";
+    this.runInTransaction(() => {
+      this.db.run(
+        `UPDATE agent_work_items
+         SET status='failed', completed_at=COALESCE(completed_at, ?),
+             last_error=COALESCE(last_error, ?), updated_at=?
+         WHERE status IN ('queued','running')`,
+        [timestamp, interruption, timestamp]
+      );
+      this.db.run(
+        `UPDATE message_deliveries
+         SET status='failed', last_error=COALESCE(last_error, ?), updated_at=?
+         WHERE status IN ('queued','dispatching','accepted','processing','delivery_unknown')`,
+        [interruption, timestamp]
+      );
+      // Collaboration delivery scanners deliberately retry ordinary failures.
+      // A process-restart interruption is terminal, so exhaust its retry budget
+      // while retaining the durable delivery record for history and diagnosis.
+      this.db.run(
+        `UPDATE collaboration_deliveries
+         SET status='failed', attempt_count=2147483647, next_attempt_at=NULL,
+             last_error=?, updated_at=?
+         WHERE status IN ('pending','queued','delivering')`,
+        [interruption, timestamp]
+      );
+      this.db.run(
+        `UPDATE session_collaboration_deliveries
+         SET status='failed', attempt_count=2147483647, next_attempt_at=NULL,
+             last_error=?, updated_at=?
+         WHERE status IN ('pending','queued','delivering')`,
+        [interruption, timestamp]
+      );
+      this.db.run(
+        `UPDATE session_items SET status='failed'
+         WHERE id IN (
+           SELECT message_id FROM message_deliveries
+           WHERE status='failed' AND updated_at=?
+         )`,
+        [timestamp]
+      );
+      this.db.run(
+        `UPDATE session_turns
+         SET execution_status='cancelled', ended_at=COALESCE(ended_at, ?),
+             failure_json=COALESCE(failure_json, ?), updated_at=?
+         WHERE execution_status IN ('idle','running','blocked')`,
+        [timestamp, JSON.stringify({ code: "PROCESS_RESTART_INTERRUPTED", message: interruption }), timestamp]
+      );
+      this.db.run(
+        `UPDATE sessions
+         SET status='cancelled', progress=1, active_choice_json=NULL,
+             raw_json=json_set(raw_json, '$.activeTurnId', NULL, '$.activityStatus', NULL),
+             updated_at=?
+         WHERE status IN ('running','blocked')`,
+        [timestamp]
+      );
+    });
+    this.scheduleSave();
+    return counts;
+  }
+
   async resolveDataPath() {
     if (this.explicitPaths && this.dbPath) {
       this.dataDir = dirname(this.dbPath);
@@ -2295,6 +2377,12 @@ export class CorptieStore {
         visibility TEXT NOT NULL CHECK (visibility IN (
           'objective_private', 'work_item_private', 'session_private', 'repository_tracked'
         )),
+        scope TEXT NOT NULL DEFAULT 'objective',
+        kind TEXT NOT NULL DEFAULT 'other',
+        category_path TEXT NOT NULL DEFAULT '',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        aliases_json TEXT NOT NULL DEFAULT '[]',
+        keywords_json TEXT NOT NULL DEFAULT '[]',
         bound_work_item_id TEXT,
         bound_session_id TEXT,
         repository_locator TEXT,
@@ -2424,6 +2512,29 @@ export class CorptieStore {
 
       CREATE INDEX IF NOT EXISTS idx_artifact_worker_create_scope
       ON artifact_worker_create_operations(objective_id, work_item_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS artifact_worker_publish_operations (
+        actor_scope_id TEXT NOT NULL,
+        objective_id TEXT NOT NULL,
+        work_item_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        reference_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        operation_status TEXT NOT NULL DEFAULT 'completed',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (actor_scope_id, idempotency_key),
+        UNIQUE (artifact_id, version),
+        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_item_id) REFERENCES work_items(id) ON DELETE CASCADE,
+        FOREIGN KEY (artifact_id, version) REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT,
+        FOREIGN KEY (reference_id) REFERENCES artifact_references(reference_id) ON DELETE RESTRICT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_artifact_worker_publish_scope
+      ON artifact_worker_publish_operations(objective_id, work_item_id, artifact_id, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS artifact_audit_events (
         audit_id TEXT PRIMARY KEY,
@@ -2872,6 +2983,33 @@ export class CorptieStore {
     this.ensureColumn("work_items", "completion_operation_id", "TEXT");
     this.ensureColumn("work_items", "completion_source_type", "TEXT");
     this.ensureColumn("work_items", "cancellation_operation_id", "TEXT");
+    this.ensureColumn("artifacts", "scope", "TEXT NOT NULL DEFAULT 'objective'");
+    this.ensureColumn("artifacts", "kind", "TEXT NOT NULL DEFAULT 'other'");
+    this.ensureColumn("artifacts", "category_path", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("artifacts", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("artifacts", "aliases_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn("artifacts", "keywords_json", "TEXT NOT NULL DEFAULT '[]'");
+    this.runDataMigrationOnce("artifact-scope-taxonomy-v1", () => {
+      this.db.run(`UPDATE artifacts SET scope=CASE
+        WHEN visibility='work_item_private' THEN 'work_item'
+        WHEN visibility='session_private' THEN 'session'
+        ELSE 'objective' END`);
+    });
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_artifacts_objective_taxonomy
+      ON artifacts(objective_id, scope, kind, category_path, status, updated_at DESC)`);
+    this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS artifact_search_fts USING fts5(
+      artifact_id UNINDEXED,
+      objective_id UNINDEXED,
+      title,
+      summary,
+      kind,
+      category_path,
+      tags,
+      aliases,
+      keywords,
+      body,
+      tokenize='unicode61 remove_diacritics 2'
+    )`);
     this.runDataMigrationOnce("work-item-three-state-model-v1", () => {
       // A previous model exposed canceled/blocked as WorkItem lifecycle
       // states. Deletion attempts are retired; other legacy rows return to
@@ -3299,28 +3437,6 @@ export class CorptieStore {
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_agent_work_items_session_next
       ON agent_work_items(session_id, status, priority DESC, created_at ASC)`);
 
-    // Session execution state is a durable Corptie projection. A backend
-    // restart is a transport interruption, not a terminal turn event; retain
-    // running state until the resumed Provider stream commits an authoritative
-    // completion/failure/cancellation event.
-    const restartTimestamp = new Date().toISOString();
-    this.db.run(
-      `UPDATE agent_work_items
-       SET status = 'cancelled', completed_at = ?,
-           last_error = COALESCE(last_error, 'Execution interrupted by process restart after dispatch; message was not resent.'),
-           updated_at = ?
-       WHERE status = 'running'
-         AND target_turn_id IS NOT NULL`,
-      [restartTimestamp, restartTimestamp]
-    );
-    this.db.run(
-      `UPDATE agent_work_items
-       SET status = 'queued', started_at = NULL, target_turn_id = NULL,
-           last_error = COALESCE(last_error, 'Execution interrupted by process restart before dispatch.'),
-           updated_at = ?
-       WHERE status = 'running'`,
-      [restartTimestamp]
-    );
     this.db.run(
       `UPDATE collaboration_tasks
        SET status = 'completed',
@@ -3488,7 +3604,15 @@ export class CorptieStore {
       ["agents", "agent", "agent_id"],
       ["skill_registry", "skill", "skill_id"],
       ["git_repositories", "repository", "repository_id"],
-      ["project_integration_runs", "integrationRun", "id"]
+      ["project_integration_runs", "integrationRun", "id"],
+      // Artifact collections are fetched through their dedicated paginated
+      // endpoints, so the State stream carries invalidations instead of the
+      // potentially large content projection. All three authoritative tables
+      // use artifact_id to collapse one publish/repin transaction into one
+      // client refresh signal.
+      ["artifacts", "artifact", "artifact_id"],
+      ["artifact_versions", "artifact", "artifact_id"],
+      ["artifact_references", "artifact", "artifact_id"]
     ];
     const noOpUpdateGuards = {
       sessions: [
@@ -5588,11 +5712,46 @@ export class CorptieStore {
   listActiveProviderSessionIds(providerId) {
     const normalizedProviderId = requiredText(providerId, "providerId");
     return this.selectAll(
-      `SELECT DISTINCT provider_session_id FROM provider_thread_bindings
-       WHERE provider_id = ? AND state = 'active' AND provider_session_id IS NOT NULL
+      `SELECT DISTINCT bindings.provider_session_id
+       FROM provider_thread_bindings bindings
+       LEFT JOIN logical_sessions logical
+         ON logical.logical_session_id = bindings.logical_session_id
+       LEFT JOIN sessions
+         ON sessions.id = logical.legacy_session_id
+       WHERE bindings.provider_id = ?
+         AND bindings.state = 'active'
+         AND bindings.provider_session_id IS NOT NULL
+         AND COALESCE((
+           sessions.archived = 1
+           OR (sessions.session_kind = 'worker' AND EXISTS (
+             SELECT 1 FROM work_items archived_work_item
+             WHERE archived_work_item.id = sessions.work_item_id
+               AND LOWER(TRIM(archived_work_item.status)) IN ('done','complete','completed')
+           ))
+         ), 0) = 0
        ORDER BY provider_session_id ASC`,
       [normalizedProviderId]
     ).map((row) => row.provider_session_id);
+  }
+
+  hasUnsettledSessionRuntimeWork(sessionId) {
+    const id = requiredText(sessionId, "sessionId");
+    const activeTurn = this.selectOne(
+      `SELECT 1 AS active FROM session_turns
+       WHERE session_id=? AND execution_status IN ('running','blocked') LIMIT 1`,
+      [id]
+    );
+    const activeDelivery = this.selectOne(
+      `SELECT 1 AS active FROM message_deliveries
+       WHERE session_id=? AND status IN ('queued','dispatching','accepted','processing','delivery_unknown') LIMIT 1`,
+      [id]
+    );
+    const activeWork = this.selectOne(
+      `SELECT 1 AS active FROM agent_work_items
+       WHERE session_id=? AND status IN ('queued','running') LIMIT 1`,
+      [id]
+    );
+    return Boolean(activeTurn || activeDelivery || activeWork);
   }
 
   getSessionRecoveryAttempt(attemptId) {
@@ -5838,7 +5997,7 @@ export class CorptieStore {
     const activeDelivery = this.selectOne(
       `SELECT delivery_id FROM message_deliveries
        WHERE session_id=?
-         AND status IN ('dispatching','accepted','processing','delivery_unknown')
+         AND status IN ('dispatching','accepted','processing')
          AND NOT (
            delivery_id=? AND status='dispatching'
            AND provider_turn_id IS NULL AND provider_acknowledged_at IS NULL
@@ -10452,17 +10611,22 @@ export class CorptieStore {
   createArtifactMetadata(input) {
     this.db.run(
       `INSERT INTO artifacts (
-         artifact_id, objective_id, title, summary, visibility, bound_work_item_id,
+         artifact_id, objective_id, title, summary, visibility, scope, kind,
+         category_path, tags_json, aliases_json, keywords_json, bound_work_item_id,
          bound_session_id, repository_locator, source_session_id, source_event_id,
          created_by_actor_id, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.artifactId, input.objectiveId, input.title, input.summary ?? "", input.visibility,
+        input.scope ?? artifactScopeForVisibility(input.visibility), input.kind ?? "other",
+        input.categoryPath ?? "", JSON.stringify(input.tags ?? []),
+        JSON.stringify(input.aliases ?? []), JSON.stringify(input.keywords ?? []),
         input.boundWorkItemId ?? null, input.boundSessionId ?? null, input.repositoryLocator ?? null,
         input.sourceSessionId ?? null, input.sourceEventId ?? null, input.actorId,
         input.createdAt, input.createdAt
       ]
     );
+    this.scheduleSave();
     return this.getArtifact(input.artifactId);
   }
 
@@ -10486,18 +10650,86 @@ export class CorptieStore {
     ).map(artifactFromRow);
   }
 
+  listArtifactsReferencedByWorkItem(workItemId, { includeRevokedReferences = false, limit = null, offset = 0 } = {}) {
+    const pagination = limit == null ? "" : "LIMIT ? OFFSET ?";
+    const params = [workItemId];
+    if (limit != null) params.push(limit, offset);
+    return this.selectAll(
+      `SELECT DISTINCT artifact.* FROM artifacts artifact
+       JOIN artifact_references reference ON reference.artifact_id = artifact.artifact_id
+       WHERE reference.work_item_id = ?
+         ${includeRevokedReferences ? "" : "AND reference.revoked_at IS NULL"}
+         AND artifact.status <> 'revoked'
+       ORDER BY artifact.updated_at DESC, artifact.artifact_id ${pagination}`,
+      params
+    ).map(artifactFromRow);
+  }
+
+  countArtifactsReferencedByWorkItem(workItemId, { includeRevokedReferences = false } = {}) {
+    return Number(this.selectOne(
+      `SELECT COUNT(DISTINCT artifact.artifact_id) AS count FROM artifacts artifact
+       JOIN artifact_references reference ON reference.artifact_id = artifact.artifact_id
+       WHERE reference.work_item_id = ?
+         ${includeRevokedReferences ? "" : "AND reference.revoked_at IS NULL"}
+         AND artifact.status <> 'revoked'`, [workItemId]
+    )?.count ?? 0);
+  }
+
+  listArtifactVersionsByArtifactIds(artifactIds) {
+    if (!Array.isArray(artifactIds) || artifactIds.length === 0) return [];
+    return this.selectAll(
+      `SELECT * FROM artifact_versions WHERE artifact_id IN (${artifactIds.map(() => "?").join(",")})
+       ORDER BY artifact_id, version DESC`, artifactIds
+    ).map(artifactVersionFromRow);
+  }
+
+  listArtifactReferencesByArtifactIds(artifactIds, { workItemId = null, includeRevoked = false } = {}) {
+    if (!Array.isArray(artifactIds) || artifactIds.length === 0) return [];
+    const params = [...artifactIds];
+    const workItemClause = workItemId ? "AND work_item_id = ?" : "";
+    if (workItemId) params.push(workItemId);
+    return this.selectAll(
+      `SELECT * FROM artifact_references
+       WHERE artifact_id IN (${artifactIds.map(() => "?").join(",")})
+         ${workItemClause} ${includeRevoked ? "" : "AND revoked_at IS NULL"}
+       ORDER BY artifact_id, required DESC, authorized_at DESC`, params
+    ).map(artifactReferenceFromRow);
+  }
+
+  listArtifactAuditByArtifactIds(artifactIds, perArtifactLimit = 100) {
+    if (!Array.isArray(artifactIds) || artifactIds.length === 0) return [];
+    return this.selectAll(
+      `SELECT * FROM (
+         SELECT event.*, ROW_NUMBER() OVER (
+           PARTITION BY artifact_id ORDER BY created_at DESC, audit_id DESC
+         ) AS artifact_row_number
+         FROM artifact_audit_events event
+         WHERE artifact_id IN (${artifactIds.map(() => "?").join(",")})
+       ) WHERE artifact_row_number <= ?
+       ORDER BY artifact_id, created_at DESC, audit_id DESC`,
+      [...artifactIds, Math.max(1, Math.min(500, Number(perArtifactLimit) || 100))]
+    ).map(artifactAuditFromRow);
+  }
+
   updateArtifact(artifactId, patch = {}) {
     const current = this.getArtifact(artifactId);
     if (!current) return null;
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
     this.db.run(
-      `UPDATE artifacts SET title=?, summary=?, visibility=?, bound_work_item_id=?, bound_session_id=?,
+      `UPDATE artifacts SET title=?, summary=?, visibility=?, scope=?, kind=?, category_path=?,
+       tags_json=?, aliases_json=?, keywords_json=?, bound_work_item_id=?, bound_session_id=?,
        repository_locator=?, current_version=?, approved_version=?, status=?, updated_at=?,
        resource_version=resource_version+1 WHERE artifact_id=?`,
       [
         has("title") ? patch.title : current.title,
         has("summary") ? patch.summary : current.summary,
         has("visibility") ? patch.visibility : current.visibility,
+        has("scope") ? patch.scope : current.scope,
+        has("kind") ? patch.kind : current.kind,
+        has("categoryPath") ? patch.categoryPath : current.categoryPath,
+        JSON.stringify(has("tags") ? patch.tags : current.tags),
+        JSON.stringify(has("aliases") ? patch.aliases : current.aliases),
+        JSON.stringify(has("keywords") ? patch.keywords : current.keywords),
         has("boundWorkItemId") ? patch.boundWorkItemId : current.boundWorkItemId,
         has("boundSessionId") ? patch.boundSessionId : current.boundSessionId,
         has("repositoryLocator") ? patch.repositoryLocator : current.repositoryLocator,
@@ -10507,7 +10739,63 @@ export class CorptieStore {
         patch.updatedAt ?? createdAtFromOrNow(), artifactId
       ]
     );
+    this.scheduleSave();
     return this.getArtifact(artifactId);
+  }
+
+  upsertArtifactSearchDocument(input) {
+    const existing = this.selectOne(
+      "SELECT body FROM artifact_search_fts WHERE artifact_id = ? LIMIT 1",
+      [input.artifactId]
+    );
+    this.db.run("DELETE FROM artifact_search_fts WHERE artifact_id = ?", [input.artifactId]);
+    this.db.run(
+      `INSERT INTO artifact_search_fts (
+        artifact_id, objective_id, title, summary, kind, category_path,
+        tags, aliases, keywords, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.artifactId, input.objectiveId, input.title ?? "", input.summary ?? "",
+        input.kind ?? "other", input.categoryPath ?? "",
+        (input.tags ?? []).join(" "), (input.aliases ?? []).join(" "),
+        (input.keywords ?? []).join(" "), input.body == null ? (existing?.body ?? "") : input.body
+      ]
+    );
+  }
+
+  searchArtifactDocuments(objectiveId, query, limit = 50) {
+    const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+    const normalized = String(query ?? "").trim();
+    if (!normalized) return [];
+    const terms = normalized.split(/\s+/u).filter(Boolean)
+      .map((term) => `"${term.replaceAll('"', '""')}"`);
+    let ranked = [];
+    if (terms.length > 0) {
+      try {
+        ranked = this.selectAll(
+          `SELECT artifact_id, bm25(artifact_search_fts, 0, 0, 10, 6, 4, 4, 5, 7, 5, 1) AS score
+           FROM artifact_search_fts
+           WHERE objective_id = ? AND artifact_search_fts MATCH ?
+           ORDER BY score ASC LIMIT ?`,
+          [objectiveId, terms.join(" OR "), boundedLimit]
+        );
+      } catch {
+        ranked = [];
+      }
+    }
+    const seen = new Set(ranked.map((row) => row.artifact_id));
+    const fallback = this.selectAll(
+      `SELECT artifact_id, 1000 AS score FROM artifact_search_fts
+       WHERE objective_id = ? AND LOWER(
+         title || ' ' || summary || ' ' || kind || ' ' || category_path || ' '
+         || tags || ' ' || aliases || ' ' || keywords || ' ' || body
+       ) LIKE LOWER(?) LIMIT ?`,
+      [objectiveId, `%${normalized}%`, boundedLimit]
+    ).filter((row) => !seen.has(row.artifact_id));
+    return [...ranked, ...fallback].slice(0, boundedLimit).map((row) => ({
+      artifactId: row.artifact_id,
+      score: Number(row.score)
+    }));
   }
 
   createArtifactVersion(input) {
@@ -10523,6 +10811,7 @@ export class CorptieStore {
         input.supersedesVersion ?? null, input.approvalStatus, input.actorId, input.createdAt
       ]
     );
+    this.scheduleSave();
     return this.getArtifactVersion(input.artifactId, input.version);
   }
 
@@ -10553,6 +10842,7 @@ export class CorptieStore {
         input.pinnedVersion, input.pinnedHash, input.actorId, input.authorizedAt
       ]
     );
+    this.scheduleSave();
     return this.getArtifactReference(input.referenceId);
   }
 
@@ -10575,6 +10865,29 @@ export class CorptieStore {
       ]
     );
     return this.getArtifactWorkerCreateOperation(input.sessionId, input.idempotencyKey);
+  }
+
+  getArtifactWorkerPublishOperation(actorScopeId, idempotencyKey) {
+    return this.selectOne(
+      `SELECT * FROM artifact_worker_publish_operations
+       WHERE actor_scope_id = ? AND idempotency_key = ?`,
+      [actorScopeId, idempotencyKey]
+    );
+  }
+
+  createArtifactWorkerPublishOperation(input) {
+    this.db.run(
+      `INSERT INTO artifact_worker_publish_operations (
+         actor_scope_id, objective_id, work_item_id, idempotency_key, request_fingerprint,
+         artifact_id, reference_id, version, content_hash, operation_status, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.actorScopeId, input.objectiveId, input.workItemId, input.idempotencyKey,
+        input.requestFingerprint, input.artifactId, input.referenceId, input.version,
+        input.contentHash, input.operationStatus ?? "completed", input.createdAt
+      ]
+    );
+    return this.getArtifactWorkerPublishOperation(input.actorScopeId, input.idempotencyKey);
   }
 
   getArtifactReference(referenceId) {
@@ -10647,6 +10960,7 @@ export class CorptieStore {
         referenceId
       ]
     );
+    this.scheduleSave();
     return this.getArtifactReference(referenceId);
   }
 
@@ -13281,6 +13595,12 @@ function artifactFromRow(row) {
     title: row.title,
     summary: row.summary ?? "",
     visibility: row.visibility,
+    scope: row.scope ?? artifactScopeForVisibility(row.visibility),
+    kind: row.kind ?? "other",
+    categoryPath: row.category_path ?? "",
+    tags: parseJson(row.tags_json, []),
+    aliases: parseJson(row.aliases_json, []),
+    keywords: parseJson(row.keywords_json, []),
     boundWorkItemId: row.bound_work_item_id ?? null,
     boundSessionId: row.bound_session_id ?? null,
     repositoryLocator: row.repository_locator ?? null,
@@ -13294,6 +13614,12 @@ function artifactFromRow(row) {
     updatedAt: row.updated_at,
     resourceVersion: Number(row.resource_version ?? 1)
   };
+}
+
+function artifactScopeForVisibility(visibility) {
+  if (visibility === "work_item_private") return "work_item";
+  if (visibility === "session_private") return "session";
+  return "objective";
 }
 
 function artifactVersionFromRow(row) {
@@ -13712,7 +14038,7 @@ function toRawStatus(session) {
 function capabilitiesForStoredProvider(provider = "", status = "") {
   if (provider === "codex-app-server") {
     return {
-      canSend: status !== "failed" && status !== "cancelled",
+      canSend: status !== "failed",
       canSwitchModel: true,
       canSwitchReasoning: true,
       canInterrupt: status === "running",
@@ -13721,7 +14047,7 @@ function capabilitiesForStoredProvider(provider = "", status = "") {
   }
   if (provider === "claude-sdk") {
     return {
-      canSend: status !== "failed" && status !== "cancelled",
+      canSend: status !== "failed",
       canSwitchModel: true,
       canSwitchReasoning: false,
       canInterrupt: false,

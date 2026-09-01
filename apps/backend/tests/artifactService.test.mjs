@@ -18,28 +18,34 @@ async function fixture() {
   const core = new CollaborationCore(store);
   const manager = store.createAgent({ name: "Manager", provider: "codex-app-server" });
   const worker = store.createAgent({ name: "Worker", provider: "claude-sdk" });
+  const peer = store.createAgent({ name: "Peer Worker", provider: "codex-app-server" });
   const outsider = store.createAgent({ name: "Outsider", provider: "openclacky" });
-  store.createObjective({ id: "objective:one", name: "One", contributorAgentIds: [manager.agentId, worker.agentId] });
+  store.createObjective({ id: "objective:one", name: "One", contributorAgentIds: [manager.agentId, worker.agentId, peer.agentId] });
   store.createObjective({ id: "objective:two", name: "Two", contributorAgentIds: [outsider.agentId] });
   store.createWorkItem({ id: "work_item:one", objectiveId: "objective:one", title: "One", mainAgentId: worker.agentId });
+  store.createWorkItem({ id: "work_item:peer", objectiveId: "objective:one", title: "Peer", mainAgentId: peer.agentId });
   store.createWorkItem({ id: "work_item:two", objectiveId: "objective:two", title: "Two", mainAgentId: outsider.agentId });
   store.upsertSession({ id: "session:manager", title: "Manager", provider: "codex-app-server", status: "running", sessionKind: "objectiveChat", agentId: manager.agentId, objectiveId: "objective:one" });
   store.upsertSession({ id: "session:worker", title: "Worker", provider: "claude-sdk", status: "running", sessionKind: "worker", agentId: worker.agentId, objectiveId: "objective:one", workItemId: "work_item:one" });
+  store.upsertSession({ id: "session:peer", title: "Peer", provider: "codex-app-server", status: "running", sessionKind: "worker", agentId: peer.agentId, objectiveId: "objective:one", workItemId: "work_item:peer" });
   store.upsertSession({ id: "session:outsider", title: "Outsider", provider: "openclacky", status: "running", sessionKind: "worker", agentId: outsider.agentId, objectiveId: "objective:two", workItemId: "work_item:two" });
   store.bindSessionToObjective("session:manager", "objective:one");
   store.bindSessionToWorkItem("session:worker", "work_item:one", "objective:one");
+  store.bindSessionToWorkItem("session:peer", "work_item:peer", "objective:one");
   store.bindSessionToWorkItem("session:outsider", "work_item:two", "objective:two");
   core.bindSession({ agentId: manager.agentId, sessionId: "session:manager" });
   core.bindSession({ agentId: worker.agentId, sessionId: "session:worker" });
+  core.bindSession({ agentId: peer.agentId, sessionId: "session:peer" });
   core.bindSession({ agentId: outsider.agentId, sessionId: "session:outsider" });
   let id = 0;
   const service = new ArtifactService({ store, contentRoot: join(directory, "data", "artifacts"), idFactory: () => `id-${++id}`, clock: () => "2026-08-23T12:00:00.000Z" });
   await service.initialize();
-  return { directory, store, service, core, manager, worker, outsider };
+  return { directory, store, service, core, manager, worker, peer, outsider };
 }
 
 const managerContext = (f) => ({ actorId: f.manager.agentId, sessionId: "session:manager", objectiveId: "objective:one" });
 const workerContext = (f) => ({ actorId: f.worker.agentId, sessionId: "session:worker", objectiveId: "objective:one", workItemId: "work_item:one" });
+const peerContext = (f) => ({ actorId: f.peer.agentId, sessionId: "session:peer", objectiveId: "objective:one", workItemId: "work_item:peer" });
 const outsiderContext = (f) => ({ actorId: f.outsider.agentId, sessionId: "session:outsider", objectiveId: "objective:two", workItemId: "work_item:two" });
 let artifactReadTurn = 0;
 function pinnedReadOptions(artifact, reference = null, options = {}) {
@@ -72,6 +78,28 @@ test("Objective private content is hashed, atomically stored outside repositorie
     assert.equal(page.content, "secret");
     assert.equal(page.range.nextOffset, 6);
     assert.equal(f.store.selectOne("SELECT operation, content_hash FROM artifact_usage_events").content_hash, artifact.versions[0].contentHash);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Artifact and Reference writes participate in the durable State invalidation stream", async () => {
+  const f = await fixture();
+  try {
+    let dirtyNotifications = 0;
+    f.store.setStateDirtyListener(() => { dirtyNotifications += 1; });
+    const before = f.store.stateRevision();
+    const artifact = await f.service.create(managerContext(f), {
+      title: "Live cache spec", visibility: "objective_private", content: "v1"
+    });
+    f.service.createReference(managerContext(f), artifact.artifactId, {
+      workItemId: "work_item:one", relation: "implementation_spec", versionPolicy: "fixed"
+    });
+
+    const invalidations = f.store.stateChangesAfter(before).filter((change) => (
+      change.entityType === "artifact" && change.entityId === artifact.artifactId
+    ));
+    assert.ok(invalidations.length >= 3, "Artifact row, version, and Reference must all invalidate clients");
+    assert.ok(invalidations.every((change) => change.operation === "upsert"));
+    assert.equal(dirtyNotifications, 2, "create and Reference commits must each wake State SSE delivery");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
@@ -157,11 +185,11 @@ test("local file lookup reuses the stored Artifact object without reading or mat
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Work Sessions read unreferenced Artifacts across Sessions and Objectives while mutation authority stays scoped", async () => {
+test("Work Sessions read same-Objective Artifacts without References while cross-Objective access remains forbidden", async () => {
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), { title: "Security", visibility: "objective_private", content: "security requirement" });
-    await assert.rejects(() => f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
+    assert.equal((await f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact))).content, "security requirement");
     assert.throws(() => f.service.createReference(managerContext(f), artifact.artifactId, { workItemId: "work_item:two", relation: "security_requirement" }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
     const securityReference = f.service.createReference(managerContext(f), artifact.artifactId, { workItemId: "work_item:one", relation: "security_requirement", required: true, versionPolicy: "fixed" });
     assert.equal((await f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact, securityReference))).content, "security requirement");
@@ -174,7 +202,7 @@ test("Work Sessions read unreferenced Artifacts across Sessions and Objectives w
     const workItemPrivate = await f.service.create(managerContext(f), {
       title: "WorkItem private", visibility: "work_item_private", boundWorkItemId: "work_item:one", content: "work item only"
     });
-    await assert.rejects(() => f.service.get(workerContext(f), workItemPrivate.artifactId, pinnedReadOptions(workItemPrivate)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
+    assert.equal((await f.service.get(peerContext(f), workItemPrivate.artifactId, pinnedReadOptions(workItemPrivate))).content, "work item only");
     const workItemReference = f.service.createReference(managerContext(f), workItemPrivate.artifactId, { workItemId: "work_item:one", relation: "implementation_spec" });
     assert.equal((await f.service.get(workerContext(f), workItemPrivate.artifactId, pinnedReadOptions(workItemPrivate, workItemReference))).content, "work item only");
 
@@ -194,9 +222,231 @@ test("Work Sessions read unreferenced Artifacts across Sessions and Objectives w
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "work_item_private", { confirmed: true }), { code: "ARTIFACT_WORK_ITEM_REQUIRED" });
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "repository_tracked", { confirmed: true }), { code: "ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN" });
     await assert.rejects(() => f.service.get(outsiderContext(f), artifact.artifactId, pinnedReadOptions(artifact)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
-    await assert.rejects(() => f.service.create(workerContext(f), {
-      title: "escape", visibility: "objective_private", content: "no", idempotencyKey: "escape"
-    }), { code: "ARTIFACT_WORKER_SCOPE_FORBIDDEN" });
+    const sharedByWorker = await f.service.create(workerContext(f), {
+      title: "Shared by Worker", visibility: "objective_private", scope: "objective",
+      content: "shared", idempotencyKey: "shared-by-worker"
+    });
+    assert.equal(sharedByWorker.scope, "objective");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Objective Artifacts are collaboratively writable while another WorkItem's Artifact stays read-only", async () => {
+  const f = await fixture();
+  try {
+    const shared = await f.service.create(workerContext(f), {
+      title: "Provider startup design",
+      summary: "Shared readiness contract",
+      content: "Provider initialization must not block the frontend.",
+      scope: "objective",
+      kind: "architecture",
+      categoryPath: "architecture/provider/startup",
+      tags: ["provider", "readiness"],
+      aliases: ["Provider启动方案"],
+      keywords: ["not ready", "bootstrap"],
+      idempotencyKey: "shared-provider-startup"
+    });
+    assert.equal(shared.scope, "objective");
+    assert.equal(shared.createdByActorId, "session:worker");
+    const edited = f.service.updateMetadata(peerContext(f), shared.artifactId, {
+      summary: "Shared Provider readiness and startup contract",
+      tags: ["provider", "readiness", "frontend"]
+    });
+    assert.equal(edited.access.write, true);
+    const published = await f.service.publishVersion(peerContext(f), shared.artifactId, {
+      content: "Provider initializes in the background after the frontend connects."
+    });
+    assert.equal(published.version.version, 2);
+    f.service.revokeArtifact(workerContext(f), shared.artifactId, "replace shared draft");
+    const deleted = f.service.list(peerContext(f), { includeRevoked: true })
+      .find((candidate) => candidate.artifactId === shared.artifactId);
+    assert.equal(deleted.status, "revoked");
+    assert.equal(deleted.access.write, true);
+    assert.equal(f.service.restoreArtifact(peerContext(f), shared.artifactId).status, "active");
+
+    const privateArtifact = await f.service.create(workerContext(f), {
+      title: "Private implementation notes",
+      content: "Owned by work item one",
+      scope: "work_item",
+      idempotencyKey: "private-implementation-notes"
+    });
+    const privateVersion = privateArtifact.versions[0];
+    assert.equal((await f.service.get(peerContext(f), privateArtifact.artifactId, {
+      version: privateVersion.version,
+      contentHash: privateVersion.contentHash,
+      turnExecutionId: `test-turn:${++artifactReadTurn}`
+    })).content, "Owned by work item one");
+    assert.throws(
+      () => f.service.updateMetadata(peerContext(f), privateArtifact.artifactId, { summary: "unauthorized" }),
+      { code: "ARTIFACT_READ_ONLY" }
+    );
+    await assert.rejects(
+      () => f.service.publishVersion(peerContext(f), privateArtifact.artifactId, { content: "unauthorized" }),
+      { code: "ARTIFACT_PRIVATE_PUBLISH_FORBIDDEN" }
+    );
+    assert.throws(
+      () => f.service.revokeArtifact(peerContext(f), privateArtifact.artifactId, "unauthorized"),
+      { code: "ARTIFACT_READ_ONLY" }
+    );
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Worker private publish appends an immutable version and atomically repins its fixed WorkItem Reference", async () => {
+  const f = await fixture();
+  try {
+    const created = await f.service.create(workerContext(f), {
+      title: "Private evolving design", content: "version one",
+      idempotencyKey: "private-evolving-design", versionPolicy: "fixed",
+      approvalStatus: "draft", relation: "implementation_spec", required: false
+    });
+    const originalVersion = created.versions[0];
+    const originalReference = created.references[0];
+    const listedDraft = f.service.listForWorkItem(workerContext(f), "work_item:one")
+      .find((artifact) => artifact.artifactId === created.artifactId);
+    assert.equal(listedDraft.versions[0].approvalStatus, "draft");
+    assert.equal(listedDraft.references[0].required, false);
+    assert.equal(listedDraft.references[0].relation, "implementation_spec");
+    const input = {
+      content: "version two", summary: "Updated design", mimeType: "text/markdown",
+      expectedResourceVersion: created.resourceVersion,
+      expectedPinnedVersion: originalReference.pinnedVersion,
+      expectedPinnedHash: originalReference.pinnedHash,
+      referenceId: originalReference.referenceId,
+      idempotencyKey: "publish-private-v2"
+    };
+    const published = await f.service.publishVersion(workerContext(f), created.artifactId, input);
+    assert.equal(published.version.version, 2);
+    assert.equal(published.reference.pinnedVersion, 2);
+    assert.equal(published.reference.pinnedHash, published.version.contentHash);
+    assert.equal(published.operationStatus, "completed");
+    assert.equal(published.idempotentReplay, false);
+    assert.equal(published.version.createdByActorId, "session:worker");
+    assert.equal(f.store.getArtifactVersion(created.artifactId, 1).contentHash, originalVersion.contentHash);
+    assert.equal((await f.service.get(workerContext(f), created.artifactId, {
+      version: 1, contentHash: originalVersion.contentHash,
+      turnExecutionId: `test-turn:${++artifactReadTurn}`
+    })).content, "version one");
+
+    const replay = await f.service.publishVersion(workerContext(f), created.artifactId, input);
+    assert.equal(replay.version.version, 2);
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(f.store.listArtifactVersions(created.artifactId).length, 2);
+    await assert.rejects(() => f.service.publishVersion(workerContext(f), created.artifactId, {
+      ...input, content: "conflicting retry"
+    }), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
+    await assert.rejects(() => f.service.publishVersion(workerContext(f), created.artifactId, {
+      ...input, idempotencyKey: "stale-publish"
+    }), { code: "ARTIFACT_RESOURCE_VERSION_CONFLICT" });
+    assert.equal(f.store.listArtifactVersions(created.artifactId).length, 2);
+    await assert.rejects(() => f.service.publishVersion(peerContext(f), created.artifactId, {
+      ...input, idempotencyKey: "peer-publish"
+    }), { code: "ARTIFACT_PRIVATE_PUBLISH_FORBIDDEN" });
+    const actions = f.service.listForWorkItem(workerContext(f), "work_item:one")[0].availableActions;
+    assert.ok(actions.includes("publish_and_repin"));
+    assert.equal(f.store.listArtifactAudit("objective:one", created.artifactId)
+      .some((event) => event.action === "artifact.reference_repinned"
+        && event.actorId === "session:worker"), true);
+    f.service.revokeReference(workerContext(f), published.reference.referenceId, "test revoked pin");
+    await assert.rejects(() => f.service.publishVersion(workerContext(f), created.artifactId, {
+      content: "version three", expectedResourceVersion: published.artifact.resourceVersion,
+      expectedPinnedVersion: 2, expectedPinnedHash: published.version.contentHash,
+      idempotencyKey: "publish-without-active-reference"
+    }), { code: "ARTIFACT_REFERENCE_PIN_CONFLICT" });
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Worker private publish rolls back version and repin together when the Reference update fails", async () => {
+  const f = await fixture();
+  try {
+    const created = await f.service.create(workerContext(f), {
+      title: "Atomic private design", content: "v1", idempotencyKey: "atomic-private-design"
+    });
+    const reference = created.references[0];
+    const originalUpdate = f.store.updateArtifactReference.bind(f.store);
+    f.store.updateArtifactReference = () => {
+      const error = new Error("injected reference failure");
+      error.code = "INJECTED_REFERENCE_FAILURE";
+      throw error;
+    };
+    await assert.rejects(() => f.service.publishVersion(workerContext(f), created.artifactId, {
+      content: "v2", expectedResourceVersion: created.resourceVersion,
+      expectedPinnedVersion: reference.pinnedVersion, expectedPinnedHash: reference.pinnedHash,
+      idempotencyKey: "atomic-private-v2"
+    }), { code: "INJECTED_REFERENCE_FAILURE" });
+    f.store.updateArtifactReference = originalUpdate;
+    assert.equal(f.store.listArtifactVersions(created.artifactId).length, 1);
+    assert.equal(f.store.getArtifact(created.artifactId).currentVersion, 1);
+    assert.equal(f.store.getArtifactReference(reference.referenceId).pinnedVersion, 1);
+    assert.equal(f.store.getArtifactWorkerPublishOperation("session:worker", "atomic-private-v2"), null);
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Artifact full-text and taxonomy search finds Objective documents by body, aliases, categories, and tags", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(managerContext(f), {
+      title: "Runtime readiness architecture",
+      summary: "Frontend connection boundary",
+      content: "The Python Provider bootstrap continues after the application becomes usable.",
+      scope: "objective",
+      kind: "architecture",
+      categoryPath: "architecture/provider/startup",
+      tags: ["provider", "readiness"],
+      aliases: ["启动解耦文档"],
+      keywords: ["not ready", "background initialization"]
+    });
+
+    for (const query of ["Python Provider bootstrap", "启动解耦文档", "background initialization"]) {
+      const result = await f.service.search(peerContext(f), query);
+      assert.equal(result.results[0].artifact.artifactId, artifact.artifactId);
+      assert.equal(result.results[0].artifact.access.write, true);
+    }
+    const filtered = await f.service.search(peerContext(f), "Provider", {
+      kinds: ["architecture"], categoryPrefix: "architecture/provider", tags: ["readiness"]
+    });
+    assert.equal(filtered.count, 1);
+    assert.equal(filtered.results[0].artifact.categoryPath, "architecture/provider/startup");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("WorkItem Artifact summary loading batches 1,000 referenced Artifacts without N+1 queries", async () => {
+  const f = await fixture();
+  try {
+    f.store.runInTransaction(() => {
+      for (let index = 0; index < 1_000; index += 1) {
+        const artifactId = `artifact:bulk-${index}`;
+        const hash = index.toString(16).padStart(64, "0");
+        f.store.createArtifactMetadata({
+          artifactId, objectiveId: "objective:one", title: `Bulk ${index}`, summary: "draft",
+          visibility: "work_item_private", scope: "work_item", kind: "other", categoryPath: "",
+          tags: [], aliases: [], keywords: [], boundWorkItemId: "work_item:one", boundSessionId: null,
+          actorId: "session:worker", createdAt: "2026-09-01T00:00:00.000Z"
+        });
+        f.store.createArtifactVersion({
+          artifactId, version: 1, contentHash: hash, byteLength: 0, mimeType: "text/markdown",
+          storageKey: null, sourceSessionId: "session:worker", supersedesVersion: null,
+          approvalStatus: "draft", actorId: "session:worker", createdAt: "2026-09-01T00:00:00.000Z"
+        });
+        f.store.updateArtifact(artifactId, { currentVersion: 1, approvedVersion: null });
+        f.store.createArtifactReference({
+          referenceId: `artifact_reference:bulk-${index}`, artifactId, objectiveId: "objective:one",
+          workItemId: "work_item:one", relation: "implementation_spec", required: false,
+          versionPolicy: "fixed", pinnedVersion: 1, pinnedHash: hash,
+          actorId: "session:worker", authorizedAt: "2026-09-01T00:00:00.000Z"
+        });
+      }
+    });
+    const pageStarted = performance.now();
+    const page = f.service.listForWorkItem(managerContext(f), "work_item:one", { limit: 100, offset: 0 });
+    const pageElapsed = performance.now() - pageStarted;
+    assert.equal(page.length, 100);
+    assert.ok(pageElapsed < 250, `paged WorkItem Artifact list took ${pageElapsed.toFixed(2)}ms`);
+    const started = performance.now();
+    const artifacts = f.service.listForWorkItem(managerContext(f), "work_item:one");
+    const elapsed = performance.now() - started;
+    assert.equal(artifacts.length, 1_000);
+    assert.equal(artifacts.every((artifact) => artifact.references[0].required === false
+      && artifact.versions[0].approvalStatus === "draft"), true);
+    assert.ok(elapsed < 1_000, `batched WorkItem Artifact list took ${elapsed.toFixed(2)}ms`);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
@@ -673,7 +923,7 @@ test("Session context is metadata-only and provider-neutral tools expose identic
     assert.deepEqual(artifactDynamicTools.slice(0, 3).map((tool) => tool.name), ["corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search"]);
     for (const tool of artifactDynamicTools) assert.equal(tool.inputSchema.additionalProperties, false);
     const getSchema = artifactDynamicTools.find((tool) => tool.name === "corptie_artifact_get").inputSchema;
-    assert.deepEqual(getSchema.required, ["artifact_id", "version", "content_hash", "reference_id"]);
+    assert.deepEqual(getSchema.required, ["artifact_id", "version", "content_hash"]);
     assert.equal(getSchema.properties.limit.maximum, 65_536);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });

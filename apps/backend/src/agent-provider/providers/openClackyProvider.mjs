@@ -23,6 +23,7 @@ const OPENCLACKY_BASE_CAPABILITIES = Object.freeze([
   AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
   AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
   AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
@@ -73,6 +74,7 @@ export function createOpenClackyProvider(manager, options = {}) {
       toolHost: context.toolHost ?? null
     }),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
+    disconnectSession: (reference) => manager.disconnect(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),
     send: (reference, message, context = {}) => manager.send(reference.providerSessionId, message, {
       ...context,

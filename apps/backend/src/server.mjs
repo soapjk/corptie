@@ -19,6 +19,7 @@ import { choiceParserShouldUseModel, configureChoiceParserRuntime, parseChoiceSt
 import { SessionApplicationService } from "./agent-provider/sessionApplicationService.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { withResolvedSessionActions } from "./agent-provider/sessionActions.mjs";
+import { withSessionReadiness } from "./application/sessionReadiness.mjs";
 import { providerDeliveryFailureStatus } from "./application/providerDeliveryStatus.mjs";
 import { SessionStateDiagnostics } from "./application/sessionStateDiagnostics.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
@@ -126,6 +127,7 @@ import {
   workItemAcceptanceDynamicTools
 } from "./application/workItemAcceptanceDynamicTools.mjs";
 import { WorkItemCompletionService } from "./application/workItemCompletionService.mjs";
+import { SessionRuntimeReleaseService } from "./application/sessionRuntimeReleaseService.mjs";
 import { HubService, createOpenAiEmbedder } from "./application/hubService.mjs";
 import { AgentContextService } from "./application/agentContextService.mjs";
 import { MemoryOperationService } from "./application/memoryOperationService.mjs";
@@ -166,6 +168,10 @@ import {
   renderReplayManifestForProvider,
   stableRecoveryHash
 } from "./application/sessionRecovery.mjs";
+import {
+  parseSessionRecoveryHandoff,
+  sessionRecoveryHandoffPrompt
+} from "./application/sessionRecoveryHandoff.mjs";
 import {
   mapClaudeProviderEvent,
   mapClaudeTurnSettled,
@@ -361,13 +367,17 @@ const objectiveService = new ObjectiveApplicationService({
   store,
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
+let sessionRuntimeReleaseService = null;
 const workItemCompletionService = new WorkItemCompletionService({
   store,
-  onCompleted: (workItem, operation) => emitEvent("WorkItemChanged", {
-    action: "user-intent-completion",
-    entity: workItem,
-    completionOperationId: operation.operationId
-  })
+  onCompleted: (workItem, operation) => {
+    emitEvent("WorkItemChanged", {
+      action: "user-intent-completion",
+      entity: workItem,
+      completionOperationId: operation.operationId
+    });
+    sessionRuntimeReleaseService?.releaseCompletedWorkItemSessions(workItem.id);
+  }
 });
 const artifactService = new ArtifactService({ store });
 let benchmarkControlPlane = null;
@@ -643,7 +653,11 @@ const workspaceContinuationCoordinator = new WorkspaceContinuationCoordinator({
     ?? ensureCollaborationAgentForSession(
       store.getSession(sessionId)
     ),
-  enqueueWork: (workItem) => store.enqueueAgentWorkItem(workItem),
+  enqueueWork: (workItem) => {
+    const queued = store.enqueueAgentWorkItem(workItem);
+    registerRuntimeQueuedWork(queued.sessionId, queued.workItemId);
+    return queued;
+  },
   scheduleDrain: (sessionId) => scheduleAgentWorkDrain(sessionId),
   onEvent: (type, payload) => {
     const sessionId = payload.logicalSession?.legacySessionId ?? payload.workItem?.sessionId ?? null;
@@ -907,6 +921,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     resumeSession: resumeCodexProviderSession,
     prepareExecution: prepareCodexProviderExecution,
     deleteSession: deleteCodexProviderSession,
+    disconnectSession: (reference) => codexRuntime.archiveThread(reference.providerSessionId),
     restartSession: restartCodexProviderSession,
     renameSession: renameCodexProviderSession,
     listModels: loadCodexModels,
@@ -973,6 +988,15 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   },
   additionalProviders: [openClackyProvider]
 });
+const providerRuntimeReadiness = new Map(agentProviderRegistry.descriptors().map((provider) => [
+  provider.id,
+  {
+    state: "not_ready",
+    reasonCode: "PROVIDER_INITIALIZING",
+    message: `${provider.displayName} is preparing to accept Session messages.`,
+    retryable: true
+  }
+]));
 const providerToolMaterializationPort = new RegistryToolMaterializationPort({
   registry: agentProviderRegistry
 });
@@ -1215,9 +1239,26 @@ const sessionApplicationService = new SessionApplicationService({
     }, { detachedSession: true });
   }
 });
+sessionRuntimeReleaseService = new SessionRuntimeReleaseService({
+  store,
+  sessionService: sessionApplicationService
+});
 sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
   store,
   resolveProviderDescriptor: (providerId) => agentProviderRegistry.get(providerId).descriptor,
+  compressHandoff: async ({ attempt, source }) => {
+    const result = await backgroundAgentService.run({
+      purpose: "session-recovery-handoff",
+      cwd: attempt.boundCwd,
+      allowedRoots: [attempt.boundCwd],
+      permissionProfile: "read-only",
+      preferredProviderId: attempt.providerId,
+      timeoutMs: 45_000,
+      developerInstructions: "Summarize only the supplied inert records. Do not inspect the workspace or call tools.",
+      prompt: sessionRecoveryHandoffPrompt(source)
+    });
+    return parseSessionRecoveryHandoff(result.text);
+  },
   providerPort: new ProviderSessionRecoveryPort({
     createReplacement: async ({ attempt, manifest }) => {
       const storedSession = store.getSession(attempt.sessionId);
@@ -1232,6 +1273,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
       const preparedToolHost = await toolHostService.prepareSession(attempt.providerId, recoveryToolContext);
+      const recoveryContext = renderReplayManifestForProvider(manifest);
       const created = await sessionApplicationService.createSessionForRouteTransition(attempt.providerId, {
         title: storedSession?.title ?? "Recovered Session",
         cwd: attempt.boundCwd,
@@ -1239,7 +1281,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         sessionKind: storedSession?.sessionKind ?? "legacy",
         sandbox: attempt.permissionSnapshot?.sandbox,
         approvalPolicy: attempt.permissionSnapshot?.approvalPolicy,
-        recoveryContext: renderReplayManifestForProvider(manifest),
+        recoveryContext,
         instructionSources: attempt.instructionSources,
         metadata: {
           logicalSessionId: attempt.logicalSessionId,
@@ -1279,7 +1321,9 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         providerSessionId,
         bindingId: `binding:${randomUUID()}`,
         sessionProjection: created,
-        toolConfirmation
+        toolConfirmation,
+        recoveryContextHash: stableRecoveryHash(recoveryContext),
+        replayManifestHash: stableRecoveryHash(manifest)
       };
     },
     resumeReplacement: async ({ attempt, replacement, manifest, manifestHash }) => {
@@ -1406,9 +1450,12 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
     applyInstructions: async ({ attempt }) => ({
       sourcesHash: stableRecoveryHash(attempt.instructionSources)
     }),
-    replayContext: async ({ manifestHash }) => ({
+    replayContext: async ({ replacement, manifest, manifestHash }) => ({
       manifestHash,
-      acknowledged: false,
+      acknowledged: replacement.replayManifestHash === manifestHash
+        && replacement.recoveryContextHash === stableRecoveryHash(renderReplayManifestForProvider(manifest)),
+      injectedAtCreation: replacement.replayManifestHash === manifestHash
+        && replacement.recoveryContextHash === stableRecoveryHash(renderReplayManifestForProvider(manifest)),
       sideEffectsObserved: false,
       mode: "trusted_system_context_injection"
     }),
@@ -1524,6 +1571,7 @@ platformOperationService = new PlatformOperationService({
   artifactService,
   collaborationCore,
   confirmationService: platformConfirmationService,
+  sessionRuntimeReleaseService,
   listSessions: (input) => listGatewaySessions(input),
   createSession: async ({ agentId, providerId, workItemId, title, prompt }) => {
     const agent = store.getAgent(agentId);
@@ -2300,12 +2348,84 @@ let claudeModelsCache = null;
 
 const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
 const drainingAgentWorkSessionIds = new Set();
+const runtimeQueuedWorkItemsBySession = new Map();
+const sessionBusyRetryCounts = new Map();
+const MAX_SESSION_BUSY_RETRIES = 3;
 let agentWorkQueueInterval = null;
 let activeCodexThreadCreation = null;
 const codexThreadCreationQueue = new SerializedOperationQueue();
 
 function now() {
   return new Date().toISOString();
+}
+
+function registerRuntimeQueuedWork(sessionId, workItemId) {
+  if (!sessionId || !workItemId) return;
+  const queued = runtimeQueuedWorkItemsBySession.get(sessionId) ?? new Set();
+  queued.add(workItemId);
+  runtimeQueuedWorkItemsBySession.set(sessionId, queued);
+}
+
+function forgetRuntimeQueuedWork(sessionId, workItemId) {
+  const queued = runtimeQueuedWorkItemsBySession.get(sessionId);
+  if (!queued) return;
+  queued.delete(workItemId);
+  if (queued.size === 0) runtimeQueuedWorkItemsBySession.delete(sessionId);
+}
+
+function moveRuntimeQueuedWork(fromSessionId, toSessionId, workItemId) {
+  forgetRuntimeQueuedWork(fromSessionId, workItemId);
+  registerRuntimeQueuedWork(toSessionId, workItemId);
+}
+
+function nextRuntimeQueuedWork(sessionId) {
+  const queued = runtimeQueuedWorkItemsBySession.get(sessionId);
+  if (!queued?.size) return null;
+  for (const item of store.listQueuedAgentWorkItemsForSession(sessionId, Math.max(queued.size, 1))) {
+    if (queued.has(item.workItemId)) return item;
+  }
+  for (const workItemId of [...queued]) {
+    const item = store.getAgentWorkItem(workItemId);
+    if (!item || item.status !== "queued" || item.sessionId !== sessionId) {
+      forgetRuntimeQueuedWork(sessionId, workItemId);
+    }
+  }
+  return null;
+}
+
+function runtimeQueuePosition(sessionId, workItemId) {
+  const queued = runtimeQueuedWorkItemsBySession.get(sessionId);
+  if (!queued?.has(workItemId)) return 0;
+  return store.listQueuedAgentWorkItemsForSession(sessionId, Math.max(queued.size, 1))
+    .filter((item) => queued.has(item.workItemId))
+    .findIndex((item) => item.workItemId === workItemId) + 1;
+}
+
+function setProviderRuntimeReadiness(providerId, readiness) {
+  const resolved = agentProviderRegistry.resolveId(providerId) ?? providerId;
+  providerRuntimeReadiness.set(resolved, readiness);
+  scheduleStateSyncPublish();
+}
+
+function decorateSessionForClient(session, options = {}) {
+  if (!session) return session;
+  const decorated = withResolvedSessionActions(session, agentProviderRegistry);
+  const providerIdentity = decorated.external?.provider ?? decorated.provider ?? null;
+  const providerId = providerIdentity ? agentProviderRegistry.resolveId(providerIdentity) : null;
+  const logical = decorated.logicalSessionId
+    ? store.getLogicalSession(decorated.logicalSessionId)
+    : store.getLogicalSessionByLegacySessionId(decorated.id);
+  const binding = logical?.activeBinding ?? null;
+  const toolMaterialization = logical?.logicalSessionId && binding?.bindingId
+    ? store.getSessionToolCatalogMaterialization(logical.logicalSessionId, binding.bindingId)
+    : null;
+  return withSessionReadiness(decorated, {
+    logicalSession: logical,
+    requireActiveBinding: options.requireActiveBinding !== false,
+    providerRuntime: providerId ? providerRuntimeReadiness.get(providerId) : null,
+    toolMaterialization,
+    readOnly: options.readOnly === true
+  });
 }
 
 function currentChoiceGeneration(sessionId) {
@@ -2474,11 +2594,18 @@ function sessionWithLogicalWorkspace(session, logical) {
 
 function historicalDetailProjection(binding, detail) {
   if (!binding || binding.state === "active") return detail;
+  const reason = "This is a read-only historical workspace thread.";
   return {
     ...detail,
     cwd: binding.boundCwd || detail.cwd,
     canSend: false,
-    sendUnavailableReason: "This is a read-only historical workspace thread.",
+    sendUnavailableReason: reason,
+    readiness: "not_ready",
+    notReadyReason: {
+      code: "HISTORICAL_READ_ONLY",
+      message: reason,
+      retryable: false
+    },
     capabilities: {
       ...(detail.capabilities ?? {}),
       canSend: false,
@@ -3322,7 +3449,7 @@ function controlPlaneSnapshot() {
     session.id,
     withSessionMessageCursors(
       withLastMessageTimestamp(
-        withResolvedSessionActions(session, agentProviderRegistry),
+    decorateSessionForClient(session),
         latestMessageTimes.get(session.id)
       ),
       messageCursors.get(session.id),
@@ -4082,15 +4209,15 @@ function enqueueScheduledSessionWork(input) {
     + ` deliveryId=${deliveryId}`
   );
   if (!inserted) return { workItem, inserted };
-  const queuePosition = store.listQueuedAgentWorkItemsForSession(input.sessionId)
-    .findIndex((item) => item.workItemId === workItem.workItemId) + 1;
+  registerRuntimeQueuedWork(input.sessionId, workItem.workItemId);
+  const queuePosition = runtimeQueuePosition(input.sessionId, workItem.workItemId);
   emitEvent("AgentWorkQueued", {
     sessionId: input.sessionId,
     workItem,
     queuePosition,
     source: workItem.source
   }, { sessionId: input.sessionId, source: workItem.source });
-  scheduleAgentWorkDrain(input.sessionId);
+  scheduleAgentWorkDrain(input.sessionId, null, workItem.workItemId);
   return { workItem, inserted };
 }
 
@@ -4764,10 +4891,10 @@ function listGatewaySessions(options = {}) {
   return visibleStoredSessionProjections(
     store,
     store.listSessions({ archived: options.archived === true })
-  ).map((session) => withResolvedSessionActions({
+  ).map((session) => decorateSessionForClient({
     ...session,
     sessionKind: session.sessionKind ?? "legacy"
-  }, agentProviderRegistry));
+  }));
 }
 
 function describeGatewaySession(session) {
@@ -5312,6 +5439,9 @@ async function resumeCodexProviderSession(reference, context = {}) {
     context.toolHost?.providerAttachment
       ?? await collaborationThreadOptionsForSession(reference.sessionId)
   );
+  if (context.purpose === "session-unarchive") {
+    await codexRuntime.unarchiveThread(reference.providerSessionId);
+  }
   if (context.purpose === "session-create-finalization") {
     // A newly started empty Codex thread has no rollout and cannot be resumed.
     // Its dynamic contracts were installed during thread/start; only their
@@ -5433,7 +5563,7 @@ async function getStoredSessionSnapshot(sessionId) {
     limit: DEFAULT_SESSION_HISTORY_WINDOW,
     provider
   });
-  const detail = {
+  const detail = decorateSessionForClient({
     ...stored,
     ...summary,
     id: reference.sessionId,
@@ -5446,7 +5576,7 @@ async function getStoredSessionSnapshot(sessionId) {
     canSend: summary.capabilities?.canSend ?? stored.canSend ?? false,
     capabilities: summary.capabilities ?? stored.capabilities,
     items: timelineWindow.items
-  };
+  });
   // session_items is the materialized product Timeline. Snapshot reads never
   // scan queues, collaboration state, automation events, or Provider state to
   // repair it. Those domains project into session_items when they mutate.
@@ -6096,6 +6226,18 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
   }
 
+  if (options.fromAgentWorkQueue !== true) {
+    const presented = decorateSessionForClient(before);
+    if (presented.readiness !== "ready") {
+      const error = new Error(
+        presented.notReadyReason?.message ?? "This Session is not ready to accept messages."
+      );
+      error.code = "SESSION_NOT_READY";
+      error.reason = presented.notReadyReason?.code ?? "SESSION_NOT_READY";
+      throw error;
+    }
+  }
+
   if (isClearCommand(value)) {
     const result = await sessionApplicationService.clearConversation(sessionId, { before, source });
     if (result?.cleared === true) return result;
@@ -6360,8 +6502,8 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null, refere
     createdAt: now()
   });
   const workItem = created.workItem;
-  const queuePosition = store.listQueuedAgentWorkItemsForSession(session.id)
-    .findIndex((item) => item.workItemId === workItem.workItemId) + 1;
+  registerRuntimeQueuedWork(session.id, workItem.workItemId);
+  const queuePosition = runtimeQueuePosition(session.id, workItem.workItemId);
   const reportAsQueued = shouldReportAgentWorkQueued({
     sessionHasActiveRun: activeRun,
     hasRunningWorkItem,
@@ -6370,7 +6512,7 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null, refere
   logSessionMessageLatency(latencyTrace, "task_enqueued", { queuePosition });
   if (created.outbox) publishProviderEventOutbox([created.outbox]);
   emitEvent("AgentWorkQueued", { sessionId: session.id, workItem, queuePosition, source: persistedSource }, { sessionId: session.id, source: persistedSource });
-  if (!created.outbox) scheduleAgentWorkDrain(session.id, latencyTrace);
+  scheduleAgentWorkDrain(session.id, latencyTrace, workItem.workItemId);
   return {
     accepted: true,
     queued: reportAsQueued,
@@ -6380,7 +6522,8 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null, refere
   };
 }
 
-function scheduleAgentWorkDrain(sessionId, latencyTrace = null) {
+function scheduleAgentWorkDrain(sessionId, latencyTrace = null, workItemId = null) {
+  if (workItemId) registerRuntimeQueuedWork(sessionId, workItemId);
   queueMicrotask(() => {
     logSessionMessageLatency(latencyTrace, "queue_drain_dispatched");
     drainAgentWork(sessionId).catch((error) => {
@@ -6419,7 +6562,8 @@ async function syncSessionChannelDeliveriesIntoAgentWorkQueue() {
           status: "queued", sessionId: route.providerSessionId, startedAt: null,
           completedAt: null, targetTurnId: null, lastError: null
         });
-        scheduleAgentWorkDrain(route.providerSessionId);
+        registerRuntimeQueuedWork(route.providerSessionId, existingWork.workItemId);
+        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.workItemId);
       }
       continue;
     }
@@ -6447,13 +6591,14 @@ async function syncSessionChannelDeliveriesIntoAgentWorkQueue() {
       deliveryId: delivery.deliveryId,
       createdAt: delivery.createdAt
     });
+    registerRuntimeQueuedWork(route.providerSessionId, workItem.workItemId);
     sessionChannelService.updateDelivery(delivery.deliveryId, {
       status: "queued", nextAttemptAt: null, lastError: null
     });
     emitEvent("AgentWorkQueued", {
       sessionId: route.providerSessionId, workItem, queuePosition: null, source: workItem.source
     }, { sessionId: route.providerSessionId, source: workItem.source });
-    scheduleAgentWorkDrain(route.providerSessionId);
+    scheduleAgentWorkDrain(route.providerSessionId, null, workItem.workItemId);
   }
 }
 
@@ -6501,8 +6646,9 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
           lastError: null,
           source
         });
+        moveRuntimeQueuedWork(existingWork.sessionId, route.providerSessionId, existingWork.workItemId);
         console.info(`[collaboration-routing] event=queued_work_rerouted taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} fromSessionId=${existingWork.sessionId} toSessionId=${route.providerSessionId}`);
-        scheduleAgentWorkDrain(route.providerSessionId);
+        scheduleAgentWorkDrain(route.providerSessionId, null, existingWork.workItemId);
         continue;
       }
       if (["failed", "cancelled"].includes(existingWork.status)) {
@@ -6513,7 +6659,8 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
           targetTurnId: null,
           lastError: null
         });
-        scheduleAgentWorkDrain(existingWork.sessionId);
+        registerRuntimeQueuedWork(existingWork.sessionId, existingWork.workItemId);
+        scheduleAgentWorkDrain(existingWork.sessionId, null, existingWork.workItemId);
       }
       continue;
     }
@@ -6549,13 +6696,14 @@ async function syncCollaborationDeliveriesIntoAgentWorkQueue() {
       deliveryId: delivery.deliveryId,
       createdAt: delivery.createdAt
     });
+    registerRuntimeQueuedWork(sessionId, workItem.workItemId);
     if (delivery.status !== "queued") {
       collaborationCore.updateDelivery(delivery.deliveryId, { status: "queued", nextAttemptAt: null, lastError: null });
       collaborationCore.recordDeliveryEvent(delivery.deliveryId, "delivery_queued", { sessionId, reason: "agent_work_queue" });
     }
     console.info(`[collaboration-routing] event=delivery_enqueued taskId=${envelope.task.taskId} deliveryId=${delivery.deliveryId} channelId=${route.channelId ?? "none"} routeMode=${route.mode ?? "task_route"} logicalSessionId=${route.sessionId} providerSessionId=${sessionId}`);
     emitEvent("AgentWorkQueued", { sessionId, workItem, queuePosition: null, source: workItem.source }, { sessionId, source: workItem.source });
-    scheduleAgentWorkDrain(sessionId);
+    scheduleAgentWorkDrain(sessionId, null, workItem.workItemId);
   }
 }
 
@@ -6718,7 +6866,7 @@ async function drainAgentWorkSession(sessionId) {
     return;
   }
 
-  const next = store.listQueuedAgentWorkItemsForSession(sessionId, 1)[0];
+  const next = nextRuntimeQueuedWork(sessionId);
   if (!next) return;
   let collaborationRoute = null;
   if (next.kind === "collaboration") {
@@ -6728,6 +6876,7 @@ async function drainAgentWorkSession(sessionId) {
         const failedWork = store.updateAgentWorkItem(next.workItemId, {
           status: "failed", lastError: `Channel delivery ${next.deliveryId} no longer has an envelope.`
         });
+        forgetRuntimeQueuedWork(sessionId, next.workItemId);
         emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, { sessionId, source: next.source });
         return;
       }
@@ -6738,7 +6887,8 @@ async function drainAgentWorkSession(sessionId) {
             sessionId: collaborationRoute.providerSessionId,
             source: { ...next.source, recipientSessionId: collaborationRoute.sessionId }
           });
-          scheduleAgentWorkDrain(collaborationRoute.providerSessionId);
+          moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.workItemId);
+          scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.workItemId);
           return;
         }
       } catch (error) {
@@ -6746,6 +6896,7 @@ async function drainAgentWorkSession(sessionId) {
           status: "failed", incrementAttempt: true, nextAttemptAt: null, lastError: error.message
         });
         const failedWork = store.updateAgentWorkItem(next.workItemId, { status: "failed", lastError: error.message });
+        forgetRuntimeQueuedWork(sessionId, next.workItemId);
         emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, { sessionId, source: next.source });
         return;
       }
@@ -6756,6 +6907,7 @@ async function drainAgentWorkSession(sessionId) {
         status: "failed",
         lastError: `Collaboration delivery ${next.deliveryId} no longer has an envelope.`
       });
+      forgetRuntimeQueuedWork(sessionId, next.workItemId);
       emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, { sessionId, source: next.source });
       return;
     }
@@ -6764,8 +6916,9 @@ async function drainAgentWorkSession(sessionId) {
       if (collaborationRoute.providerSessionId !== sessionId) {
         const source = { ...next.source, recipientSessionId: collaborationRoute.sessionId };
         store.updateAgentWorkItem(next.workItemId, { sessionId: collaborationRoute.providerSessionId, source });
+        moveRuntimeQueuedWork(sessionId, collaborationRoute.providerSessionId, next.workItemId);
         console.info(`[collaboration-routing] event=dequeue_route_changed taskId=${envelope.task.taskId} deliveryId=${next.deliveryId} fromSessionId=${sessionId} toSessionId=${collaborationRoute.providerSessionId}`);
-        scheduleAgentWorkDrain(collaborationRoute.providerSessionId);
+        scheduleAgentWorkDrain(collaborationRoute.providerSessionId, null, next.workItemId);
         return;
       }
     } catch (error) {
@@ -6778,6 +6931,7 @@ async function drainAgentWorkSession(sessionId) {
         status: "failed",
         lastError: delivery?.lastError ?? error.message
       });
+      forgetRuntimeQueuedWork(sessionId, next.workItemId);
       emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, {
         sessionId,
         source: next.source
@@ -6794,6 +6948,7 @@ async function drainAgentWorkSession(sessionId) {
       status: "failed",
       lastError: `Queued work target Session ${sessionId} is no longer bound to Agent ${next.agentId}.`
     });
+    forgetRuntimeQueuedWork(sessionId, next.workItemId);
     emitEvent("AgentWorkFailed", { sessionId, workItem: failedWork }, {
       sessionId,
       source: next.source
@@ -6815,6 +6970,7 @@ async function drainAgentWorkSession(sessionId) {
 
   const claimed = store.claimAgentWorkItem(next.workItemId);
   if (!claimed) return;
+  forgetRuntimeQueuedWork(sessionId, next.workItemId);
   logSessionMessageLatency(latencyTrace, "task_claimed");
   try {
     let turnId = null;
@@ -6823,11 +6979,13 @@ async function drainAgentWorkSession(sessionId) {
         ? await dispatchSessionChannelDelivery(claimed.deliveryId, collaborationRoute)
         : await collaborationDispatcher.dispatch(claimed.deliveryId, { resolvedRoute: collaborationRoute });
       if (delivered?.status !== "delivered") {
+        const status = delivered?.status === "failed" ? "failed" : "queued";
         store.updateAgentWorkItem(claimed.workItemId, {
-          status: delivered?.status === "failed" ? "failed" : "queued",
+          status,
           startedAt: null,
           lastError: delivered?.lastError ?? null
         });
+        if (status === "queued") registerRuntimeQueuedWork(claimed.sessionId, claimed.workItemId);
         return;
       }
       turnId = delivered.targetTurnId;
@@ -6849,20 +7007,29 @@ async function drainAgentWorkSession(sessionId) {
       });
       workspaceContinuationCoordinator.recordWorkStarted(startedWork);
     }
+    sessionBusyRetryCounts.delete(claimed.workItemId);
   } catch (error) {
+    const busyRetryCount = error.code === "SESSION_BUSY"
+      ? (sessionBusyRetryCounts.get(claimed.workItemId) ?? 0) + 1
+      : 0;
+    const shouldRetryBusy = error.code === "SESSION_BUSY" && busyRetryCount <= MAX_SESSION_BUSY_RETRIES;
+    if (shouldRetryBusy) sessionBusyRetryCounts.set(claimed.workItemId, busyRetryCount);
     const failedWork = store.updateAgentWorkItem(claimed.workItemId, {
-      status: error.code === "SESSION_BUSY" ? "queued" : "failed",
-      startedAt: error.code === "SESSION_BUSY" ? null : claimed.startedAt,
+      status: shouldRetryBusy ? "queued" : "failed",
+      startedAt: shouldRetryBusy ? null : claimed.startedAt,
       lastError: error.message
     });
-    if (error.code !== "SESSION_BUSY") {
+    if (shouldRetryBusy) {
+      registerRuntimeQueuedWork(claimed.sessionId, claimed.workItemId);
+    } else {
+      sessionBusyRetryCounts.delete(claimed.workItemId);
       emitEvent("AgentWorkFailed", { sessionId: claimed.sessionId, workItem: failedWork }, {
         sessionId: claimed.sessionId,
         source: claimed.source
       });
       workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     }
-    if (error.code !== "SESSION_BUSY") {
+    if (!shouldRetryBusy) {
       const repaired = await selfRepairWorkItemSession(claimed.sessionId, failedWork, error);
       if (!repaired) throw error;
     }
@@ -6872,11 +7039,8 @@ async function drainAgentWorkSession(sessionId) {
 async function tickAgentWorkQueue() {
   await syncSessionChannelDeliveriesIntoAgentWorkQueue();
   await syncCollaborationDeliveriesIntoAgentWorkQueue();
-  // A process can die after claiming the final item, leaving no queued row to
-  // wake recovery. Poll both queued and running durable work so that a lone
-  // orphaned run is reconciled after restart as well.
   await Promise.all(
-    store.listSessionIdsWithUnsettledAgentWork().map((sessionId) => drainAgentWork(sessionId))
+    [...runtimeQueuedWorkItemsBySession.keys()].map((sessionId) => drainAgentWork(sessionId))
   );
 }
 
@@ -7081,7 +7245,7 @@ async function resolveSessionChannelRequest(requestId, approved, source = { type
 function unifiedErrorStatus(error) {
   if (["SESSION_NOT_FOUND", "PROJECT_NOT_FOUND", "WORKSPACE_NOT_FOUND", "AGENT_PROVIDER_NOT_FOUND"].includes(error.code)) return 404;
   if (["INVALID_PROJECT_ACTION", "INVALID_READ_SEQUENCE", "UNSUPPORTED_REASONING_LEVEL"].includes(error.code)) return 400;
-  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
+  if (["INVALID_MESSAGE", "NO_ACTIVE_RUN", "SESSION_BUSY", "SESSION_NOT_READY", "UNSUPPORTED_COMMAND", "CAPABILITY_UNSUPPORTED"].includes(error.code)) return 409;
   if (error.code === "FEISHU_SESSION_OCCUPIED") return 409;
   return 502;
 }
@@ -8371,7 +8535,12 @@ async function resumePersistentRuntime() {
 
 function trackStartupMaintenance(promise) {
   startupMaintenanceTasks.add(promise);
-  promise.finally(() => startupMaintenanceTasks.delete(promise));
+  // An ignored finally() would mirror a rejection into a second, unhandled
+  // Promise even when the tracked operation has its own containment boundary.
+  promise.then(
+    () => startupMaintenanceTasks.delete(promise),
+    () => startupMaintenanceTasks.delete(promise)
+  );
   return promise;
 }
 
@@ -9607,7 +9776,7 @@ function route(request, response) {
   if (request.method === "POST" && sessionArchiveMatch) {
     readJson(request)
       .catch(() => ({}))
-      .then((input) => {
+      .then(async (input) => {
         const rawId = decodeURIComponent(sessionArchiveMatch[1]);
         const archived = input.archived !== false;
         const storedSession = store.getSession(rawId);
@@ -9625,8 +9794,11 @@ function route(request, response) {
           };
           if (archived) {
             store.archiveSession(rawId, true);
+            void sessionRuntimeReleaseService.request(rawId, "manual-archive");
           } else {
+            sessionRuntimeReleaseService.cancelPending(rawId);
             upsertManagedCodexSession(nextSession);
+            await sessionRuntimeReleaseService.restore(rawId);
           }
           emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session: nextSession });
           sendJson(response, 200, { session: nextSession });
@@ -9639,6 +9811,8 @@ function route(request, response) {
           sendJson(response, 404, { error: "Session not found" });
           return;
         }
+        if (archived) void sessionRuntimeReleaseService.request(session.id, "manual-archive");
+        else await sessionRuntimeReleaseService.restore(session.id);
         emitEvent(archived ? "SessionArchived" : "SessionUnarchived", { session });
         sendJson(response, 200, { session });
       })
@@ -10488,8 +10662,6 @@ timelineChangePublisher = new SessionTimelineChangePublisher({
 });
 store.setStateDirtyListener(scheduleStateSyncPublish);
 store.setTimelineDirtyListener(scheduleTimelineChangePublish);
-await ensureCorptieOpenClackyRuntime({ environmentName });
-openClackyManager.start();
 const codexResetProxy = store.settings().agentProxy?.codex;
 codexResetForecastMonitor = new CodexResetForecastMonitor({
   store,
@@ -10497,7 +10669,6 @@ codexResetForecastMonitor = new CodexResetForecastMonitor({
     ? codexResetProxy.httpsProxy || codexResetProxy.httpProxy || codexResetProxy.allProxy
     : null
 });
-codexResetForecastMonitor.start();
 const detachedOrphanedAgents = collaborationCore.detachMissingSessionBindings();
 if (detachedOrphanedAgents.length > 0) {
   console.log(`[collaboration] detached deleted Session bindings from ${detachedOrphanedAgents.length} Agent(s)`);
@@ -10525,32 +10696,13 @@ for (let index = 0; index < storedSessionsAtStartup.length; index += 1) {
   console.log(`[session-title] renamed historical duplicate session=${previous.id} from=${JSON.stringify(previous.title)} to=${JSON.stringify(unique.title)}`);
 }
 storedSessionsAtStartup = uniqueStoredSessionsAtStartup;
-const corptieCodexRuntime = await ensureCorptieCodexRuntime({
-  environmentName,
-  bundledMemoryPath: bundledAgentMemoryPath,
-  bundledSkillPath: bundledCollaborationSkillPath,
-  bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
-  collaborationMcpServerPath
-});
-const corptieClaudeRuntime = await ensureCorptieClaudeRuntime({
-  environmentName,
-  bundledMemoryPath: bundledAgentMemoryPath,
-  bundledSkillPath: bundledCollaborationSkillPath,
-  bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath
-});
 // Scope the dedicated Codex home to Corptie's process tree. A Codex process
 // launched independently from Terminal continues to use the user's native
 // ~/.codex home.
-process.env.CODEX_HOME = corptieCodexRuntime.codexHome;
+process.env.CODEX_HOME = corptieCodexRuntimePaths.codexHome;
 // Claude's SDK helpers and subprocesses use this directory for native
 // CLAUDE.md discovery and credentials. Product history remains in Corptie.
-process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntime.configDir;
-console.log(`[agent-memory] ready shared=${corptieCodexRuntime.sharedMemoryPath}`);
-if (corptieCodexRuntime.rolloutPathRepair.repairedCount > 0) {
-  console.warn(`[codex-runtime] repaired migrated rollout paths count=${corptieCodexRuntime.rolloutPathRepair.repairedCount} backups=${corptieCodexRuntime.rolloutPathRepair.backups.length}`);
-}
-console.log(`[codex-runtime] ready home=${corptieCodexRuntime.codexHome} auth=${corptieCodexRuntime.authAvailable ? "available" : "missing"} agents=${corptieCodexRuntime.agentsAvailable ? "ready" : "missing"} skill=${corptieCodexRuntime.skillAvailable ? "ready" : "missing"} mcp=${corptieCodexRuntime.mcpAvailable ? "ready" : "missing"}`);
-console.log(`[claude-runtime] ready home=${corptieClaudeRuntime.configDir} auth=${corptieClaudeRuntime.credentialsAvailable ? "available" : "missing"} memory=${corptieClaudeRuntime.memoryAvailable ? "ready" : "missing"} plugin=${corptieClaudeRuntime.pluginPath} skill=${corptieClaudeRuntime.skillAvailable ? "ready" : "missing"} mcp=ready`);
+process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntimePaths.configDir;
 // 确保每个 Agent 的工作目录（assistant workspace / contributor 持久化目录）物理存在。
 // 路径元数据已在 store 迁移期写入 agents.work_dir，这里只做幂等的 mkdir 兜底。
 for (const agent of store.listAgents()) {
@@ -10563,58 +10715,9 @@ for (const agent of store.listAgents()) {
 for (const storedSession of storedSessionsAtStartup) {
   ensureCollaborationAgentForSession(storedSession);
 }
-await resumeSessionRecoveryAttemptsAtStartup();
-const rolloutRecoveredDeliveries = recoverCollaborationDeliveriesAfterCodexRolloutRepair({
-  core: collaborationCore,
-  store,
-  rolloutPathRepair: corptieCodexRuntime.rolloutPathRepair
-});
-if (rolloutRecoveredDeliveries.length > 0) {
-  console.warn(`[collaboration-recovery] requeued ${rolloutRecoveredDeliveries.length} exhausted Delivery item(s) after Codex rollout relocation repair`);
-}
-const selfRepairedWorkItemSessions = await repairBrokenWorkItemSessionsAtStartup();
-if (selfRepairedWorkItemSessions > 0) {
-  console.warn(`[work-item-self-repair] startup repaired ${selfRepairedWorkItemSessions} WorkItem Session(s)`);
-}
-const deletedReplacedWorkItemSessions = await deleteHistoricalUnusableWorkItemSessionsAtStartup();
-if (deletedReplacedWorkItemSessions > 0) {
-  console.warn(`[work-item-self-repair] startup deleted ${deletedReplacedWorkItemSessions} replaced unusable Session(s)`);
-}
 // Re-delivery consumes only Corptie's committed Outbox. Startup never repairs
 // product state by reading Provider history or a Provider Session snapshot.
 publishProviderEventOutbox(store.listPendingEventOutbox(500));
-for (const transition of store.listPendingWorkspaceTransitions()) {
-  const logical = store.getLogicalSession(transition.logicalSessionId);
-  try {
-    if (transition.transitionKind === "provider") {
-      const sessionId = logical?.legacySessionId;
-      const unsettled = sessionId ? store.listUnsettledSessionTurns(sessionId) : [];
-      if (unsettled.length > 0) {
-        console.log(`[provider-switch] recovery waiting transition=${transition.transitionId} unsettled=${unsettled.length}`);
-        continue;
-      }
-      const reference = sessionBindingRepository.resolve(
-        logical?.legacySessionId ?? logical?.logicalSessionId
-      );
-      const recovered = await sessionProviderSwitchCoordinator.completeProviderSwitch(
-        transition.transitionId,
-        undefined,
-        reference,
-        logical
-      );
-      console.log(`[provider-switch] recovered transition=${transition.transitionId} status=${recovered.status}`);
-      continue;
-    }
-    const runtime = await workspaceTransitionRuntimeForLogicalSession(logical);
-    const recovered = await runtime.manager.recoverWorkspaceTransition(
-      transition.transitionId,
-      runtime.options
-    );
-    console.log(`[workspace-transition] recovered transition=${transition.transitionId} status=${recovered.status}`);
-  } catch (error) {
-    console.warn(`[workspace-transition] recovery failed transition=${transition.transitionId} error=${error.message}`);
-  }
-}
 workspaceContinuationCoordinator.recover();
 reconcileEntityWorkItemsAtStartup();
 const knownActiveWorktrees = new Map();
@@ -10625,23 +10728,11 @@ for (const storedSession of storedSessionsAtStartup) {
     : null;
   if (worktree) knownActiveWorktrees.set(worktree.worktreeId, worktree);
 }
-await reconcileMovedWorkspaceRoutes([...knownActiveWorktrees.values()], {
-  verifyProviderIdle: true
-});
 sessionEventListeners.add((event) => feishuGateway.handleSessionEvent(event));
 configureChoiceParserRuntime({
   ...(store.settings().choiceParser ?? {}),
   agentProxy: store.settings().agentProxy
 });
-const recoveredDeliveries = collaborationCore.recoverInterruptedDeliveries();
-if (recoveredDeliveries > 0) emitEvent("CollaborationDeliveriesRecovered", { count: recoveredDeliveries });
-agentWorkQueueInterval = setInterval(() => {
-  tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
-}, 2000);
-agentWorkQueueInterval.unref?.();
-tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
-scheduledSessionTaskService.start();
-
 if (process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
   seedSessions();
   mockProgressTimer = setInterval(updateMockProgress, 2500);
@@ -10650,17 +10741,22 @@ if (process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`Corptie backend (${environmentName}) listening on http://127.0.0.1:${port}`);
-  // Validate old bindings after the loopback API is ready so startup latency is
-  // unaffected. The preflight first attempts an in-place/gateway refresh and
-  // replaces a binding only after an exact not-sent/unconfirmed Provider proof.
+  // Store-backed APIs and state streams are the Backend readiness boundary.
+  // Provider runtimes, recovery, and route verification are optional
+  // capabilities: start them only after the frontend can connect, and contain
+  // every failure inside the affected background capability.
   setImmediate(() => {
-    toolBootstrapBindingPreflight.run()
-      .then((summary) => {
-        if (summary.scanned > 0) console.info(`[tool-bootstrap-preflight] ${JSON.stringify(summary)}`);
-      })
-      .catch((error) => {
-        console.warn(`[tool-bootstrap-preflight] failed code=${error?.code ?? "TOOL_BOOTSTRAP_PREFLIGHT_FAILED"}`);
-      });
+    const reconciled = store.reconcileInterruptedSessionExecutionAtStartup();
+    if (Object.values(reconciled).some((count) => count > 0)) {
+      console.warn(`[startup-interruption-reconcile] ${JSON.stringify(reconciled)}`);
+    }
+    trackStartupMaintenance(runProviderStartupMaintenance([...knownActiveWorktrees.values()]));
+    scheduledSessionTaskService.start();
+    agentWorkQueueInterval = setInterval(() => {
+      tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
+    }, 2000);
+    agentWorkQueueInterval.unref?.();
+    tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));
   });
   // Provider callbacks converge truth into SQLite before wake publication.
   // There is intentionally no periodic read/repair loop here.
@@ -10718,6 +10814,143 @@ server.listen(port, "127.0.0.1", () => {
       }));
   });
 });
+
+async function runProviderStartupMaintenance(knownWorktrees) {
+  const [corptieCodexRuntime] = await Promise.all([
+    runContainedStartupOperation("codex-runtime", async () => {
+      const runtime = await ensureCorptieCodexRuntime({
+        environmentName,
+        bundledMemoryPath: bundledAgentMemoryPath,
+        bundledSkillPath: bundledCollaborationSkillPath,
+        bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
+        collaborationMcpServerPath
+      });
+      await codexRuntime.initialize();
+      console.log(`[agent-memory] ready shared=${runtime.sharedMemoryPath}`);
+      if (runtime.rolloutPathRepair.repairedCount > 0) {
+        console.warn(`[codex-runtime] repaired migrated rollout paths count=${runtime.rolloutPathRepair.repairedCount} backups=${runtime.rolloutPathRepair.backups.length}`);
+      }
+      console.log(`[codex-runtime] ready home=${runtime.codexHome} auth=${runtime.authAvailable ? "available" : "missing"} agents=${runtime.agentsAvailable ? "ready" : "missing"} skill=${runtime.skillAvailable ? "ready" : "missing"} mcp=${runtime.mcpAvailable ? "ready" : "missing"}`);
+      setProviderRuntimeReadiness("codex-app-server", { state: "ready" });
+      return runtime;
+    }, "codex-app-server"),
+    runContainedStartupOperation("claude-runtime", async () => {
+      const runtime = await ensureCorptieClaudeRuntime({
+        environmentName,
+        bundledMemoryPath: bundledAgentMemoryPath,
+        bundledSkillPath: bundledCollaborationSkillPath,
+        bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath
+      });
+      console.log(`[claude-runtime] ready home=${runtime.configDir} auth=${runtime.credentialsAvailable ? "available" : "missing"} memory=${runtime.memoryAvailable ? "ready" : "missing"} plugin=${runtime.pluginPath} skill=${runtime.skillAvailable ? "ready" : "missing"} mcp=ready`);
+      setProviderRuntimeReadiness("claude-sdk", { state: "ready" });
+      return runtime;
+    }, "claude-sdk"),
+    runContainedStartupOperation("openclacky-runtime", async () => {
+      await ensureCorptieOpenClackyRuntime({ environmentName });
+      openClackyManager.start();
+      setProviderRuntimeReadiness("openclacky", { state: "ready" });
+    }, "openclacky")
+  ]);
+  if (corptieCodexRuntime) {
+    const recovered = recoverCollaborationDeliveriesAfterCodexRolloutRepair({
+      core: collaborationCore,
+      store,
+      rolloutPathRepair: corptieCodexRuntime.rolloutPathRepair
+    });
+    if (recovered.length > 0) {
+      console.warn(`[collaboration-recovery] requeued ${recovered.length} exhausted Delivery item(s) after Codex rollout relocation repair`);
+    }
+  }
+  // This remains post-listen background maintenance, but it must not race the
+  // recovery path against the same Provider process initialize().
+  const toolBootstrapSummary = await runContainedStartupOperation(
+    "tool-bootstrap-preflight",
+    () => toolBootstrapBindingPreflight.run()
+  );
+  if (toolBootstrapSummary?.scanned > 0) {
+    console.info(`[tool-bootstrap-preflight] ${JSON.stringify(toolBootstrapSummary)}`);
+  }
+  const operations = [
+    runContainedStartupOperation("archived-session-runtime-release", async () => {
+      const scheduled = sessionRuntimeReleaseService.reconcileArchivedSessions();
+      if (scheduled > 0) console.info(`[session-runtime-release] scheduled archived=${scheduled}`);
+    }),
+    runContainedStartupOperation("codex-reset-monitor", async () => {
+      codexResetForecastMonitor.start();
+    }),
+    runContainedStartupOperation("session-recovery", resumeSessionRecoveryAttemptsAtStartup),
+    runContainedStartupOperation("work-item-session-repair", async () => {
+      const repaired = await repairBrokenWorkItemSessionsAtStartup();
+      if (repaired > 0) {
+        console.warn(`[work-item-self-repair] startup repaired ${repaired} WorkItem Session(s)`);
+      }
+    }),
+    runContainedStartupOperation("replaced-session-cleanup", async () => {
+      const deleted = await deleteHistoricalUnusableWorkItemSessionsAtStartup();
+      if (deleted > 0) {
+        console.warn(`[work-item-self-repair] startup deleted ${deleted} replaced unusable Session(s)`);
+      }
+    }),
+    runContainedStartupOperation("workspace-transition-recovery", recoverPendingWorkspaceTransitions),
+    runContainedStartupOperation("workspace-route-reconciliation", () => reconcileMovedWorkspaceRoutes(
+      knownWorktrees,
+      { verifyProviderIdle: true }
+    ))
+  ];
+  await Promise.all(operations);
+}
+
+async function runContainedStartupOperation(name, operation, providerId = null) {
+  try {
+    return await operation();
+  } catch (error) {
+    if (providerId) {
+      setProviderRuntimeReadiness(providerId, {
+        state: "not_ready",
+        reasonCode: "PROVIDER_INITIALIZATION_FAILED",
+        message: error?.message ?? "Provider initialization failed.",
+        retryable: true
+      });
+    }
+    console.warn(`[startup-maintenance] operation=${name} failed code=${error?.code ?? "unknown"} error=${error?.message ?? error}`);
+    return undefined;
+  }
+}
+
+async function recoverPendingWorkspaceTransitions() {
+  for (const transition of store.listPendingWorkspaceTransitions()) {
+    const logical = store.getLogicalSession(transition.logicalSessionId);
+    try {
+      if (transition.transitionKind === "provider") {
+        const sessionId = logical?.legacySessionId;
+        const unsettled = sessionId ? store.listUnsettledSessionTurns(sessionId) : [];
+        if (unsettled.length > 0) {
+          console.log(`[provider-switch] recovery waiting transition=${transition.transitionId} unsettled=${unsettled.length}`);
+          continue;
+        }
+        const reference = sessionBindingRepository.resolve(
+          logical?.legacySessionId ?? logical?.logicalSessionId
+        );
+        const recovered = await sessionProviderSwitchCoordinator.completeProviderSwitch(
+          transition.transitionId,
+          undefined,
+          reference,
+          logical
+        );
+        console.log(`[provider-switch] recovered transition=${transition.transitionId} status=${recovered.status}`);
+        continue;
+      }
+      const runtime = await workspaceTransitionRuntimeForLogicalSession(logical);
+      const recovered = await runtime.manager.recoverWorkspaceTransition(
+        transition.transitionId,
+        runtime.options
+      );
+      console.log(`[workspace-transition] recovered transition=${transition.transitionId} status=${recovered.status}`);
+    } catch (error) {
+      console.warn(`[workspace-transition] recovery failed transition=${transition.transitionId} error=${error.message}`);
+    }
+  }
+}
 
 let shutdownPromise = null;
 

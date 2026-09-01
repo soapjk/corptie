@@ -32,6 +32,10 @@ struct StateChangeSetEnvelope: Decodable, Sendable {
     let revision: Int64
     let upserts: ControlPlaneStatePayload
     let deletes: StateEntityDeletes
+    /// Artifact bodies remain behind their paginated API. The revisioned State
+    /// stream carries only IDs whose metadata/version/reference projection was
+    /// invalidated, allowing the dedicated client to refetch loaded scopes.
+    var artifactInvalidations: [String]? = nil
 }
 
 enum AppStateApplyResult: Equatable {

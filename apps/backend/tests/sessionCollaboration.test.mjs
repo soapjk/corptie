@@ -765,11 +765,12 @@ test("WorkItem creation validates, persists, and returns an existing Artifact re
       workItemId: source.id, cwd: f.directory
     });
     f.store.db.run("UPDATE work_items SET current_session_id=? WHERE id=?", ["provider:artifact-worker", source.id]);
-    assert.throws(() => f.service.createWorkItem({ sessionId: "provider:artifact-worker" }, workerAgent.agentId, {
-      title: "Unauthorized Artifact propagation",
-      idempotencyKey: "create:unauthorized-artifact",
+    const workerCreated = f.service.createWorkItem({ sessionId: "provider:artifact-worker" }, workerAgent.agentId, {
+      title: "Same-Objective Artifact propagation",
+      idempotencyKey: "create:same-objective-artifact",
       artifactReference: { artifactId: artifact.artifactId }
-    }), { code: "ARTIFACT_READ_FORBIDDEN" });
+    });
+    assert.equal(workerCreated.workItem.references.artifacts[0].artifactId, artifact.artifactId);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -823,7 +824,7 @@ test("WorkItem creation validates Workspace file authority and returns durable f
   }
 });
 
-test("related WorkItems require an explicit Reference and never receive implicit or transitive body access", async () => {
+test("same-Objective Work Sessions discover private WorkItem Artifacts as read-only while explicit References remain fixed", async () => {
   const f = await fixture();
   try {
     const agentA = f.store.createAgent({ id: "agent:share-a", name: "Share A", role: "independentContributor" });
@@ -865,12 +866,18 @@ test("related WorkItems require an explicit Reference and never receive implicit
       () => readPinnedArtifact(f.artifactService, contextB, artifactA, artifactA.references[0]),
       { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
     );
-    assert.equal(f.artifactService.list(contextB).some((artifact) => artifact.artifactId === artifactA.artifactId), false);
-    assert.equal((await f.artifactService.search(contextB, "A contract")).results.length, 0);
+    assert.equal(f.artifactService.list(contextB).find((artifact) => artifact.artifactId === artifactA.artifactId)?.access.write, false);
+    assert.equal((await f.artifactService.search(contextB, "A contract")).results.length, 1);
     await assert.rejects(
       () => readPinnedArtifact(f.artifactService, contextU, artifactA, artifactA.references[0]),
       { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
     );
+    const artifactAVersion = artifactA.versions[0];
+    assert.equal((await f.artifactService.get(contextU, artifactA.artifactId, {
+      version: artifactAVersion.version,
+      contentHash: artifactAVersion.contentHash,
+      turnExecutionId: `collaboration-artifact-turn:${++collaborationArtifactTurn}`
+    })).content, "read-only from A");
     const sharedA = f.service.shareArtifact({ sessionId: "provider:share-a" }, agentA.agentId, {
       workItemId: workB.id, artifactId: artifactA.artifactId,
       relation: "handoff", required: true, versionPolicy: "fixed"
@@ -887,7 +894,7 @@ test("related WorkItems require an explicit Reference and never receive implicit
     assert.equal(f.store.listArtifactReferences({ artifactId: artifactA.artifactId, workItemId: workB.id }).length, 1);
     await assert.rejects(() => f.artifactService.publishVersion(contextB, artifactA.artifactId, {
       content: "recipient mutation"
-    }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    }), { code: "ARTIFACT_PRIVATE_PUBLISH_FORBIDDEN" });
     assert.throws(() => f.service.shareArtifact({ sessionId: "provider:share-b" }, agentB.agentId, {
       workItemId: workA.id, artifactId: artifactA.artifactId
     }), { code: "ARTIFACT_RESHARE_FORBIDDEN" });

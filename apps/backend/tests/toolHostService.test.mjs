@@ -100,10 +100,7 @@ test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact c
     actorId: "agent:artifact", sessionId: "session:artifact",
     objectiveId: "objective:artifact", sessionKind: "worker"
   });
-  const expected = [
-    "corptie_artifact_list", "corptie_artifact_get",
-    "corptie_artifact_search", "corptie_artifact_create"
-  ];
+  const expected = artifactDynamicTools.map((tool) => tool.name);
   for (const id of providerIds) {
     assert.deepEqual(attachments.get(id).tools.map((tool) => tool.name), expected);
     assert.equal(attachments.get(id).tools.find((tool) => tool.name === "corptie_artifact_create")
@@ -111,7 +108,7 @@ test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact c
   }
 });
 
-test("Artifact Host Tool authorization gives Workers create/read but no Objective management operations", async () => {
+test("Artifact Host Tool authorization exposes provider-neutral scoped management and defers exact permission checks to the service", async () => {
   const catalog = new HostToolCatalog([{
     id: "artifacts", tools: artifactDynamicTools,
     authorize: authorizeArtifactDynamicTool, execute: () => ({ ok: true })
@@ -123,18 +120,10 @@ test("Artifact Host Tool authorization gives Workers create/read but no Objectiv
       objectiveId: "objective:one", workItemId: "work_item:one"
     }
   };
-  assert.deepEqual(catalog.definitions(worker).map((tool) => tool.name), [
-    "corptie_artifact_list", "corptie_artifact_get",
-    "corptie_artifact_search", "corptie_artifact_create"
-  ]);
+  assert.deepEqual(catalog.definitions(worker).map((tool) => tool.name), artifactDynamicTools.map((tool) => tool.name));
   assert.deepEqual(await catalog.execute({
     ...worker, tool: "corptie_artifact_create", arguments: { title: "Evidence" }
   }), { ok: true });
-  for (const tool of ["corptie_artifact_publish_version", "corptie_artifact_reference", "corptie_artifact_revoke_reference"]) {
-    await assert.rejects(() => catalog.execute({ ...worker, tool }), {
-      code: "SESSION_TOOL_FORBIDDEN"
-    });
-  }
   assert.deepEqual(catalog.definitions({
     actorId: "agent:manager",
     metadata: { sessionKind: "objectiveChat", sessionId: "session:manager", objectiveId: "objective:one" }

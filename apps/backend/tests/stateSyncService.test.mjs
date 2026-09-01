@@ -98,6 +98,22 @@ test("change set coalesces row history and hydrates authoritative entities", () 
   assert.deepEqual(changes.upserts.workItems, [{ id: "w1" }]);
 });
 
+test("Artifact table changes coalesce into dedicated cache invalidations", () => {
+  const service = fixture({
+    revision: 5,
+    oldest: 2,
+    changes: [
+      { revision: 3, entityType: "artifact", entityId: "artifact:one", operation: "upsert" },
+      { revision: 4, entityType: "artifact", entityId: "artifact:one", operation: "upsert" },
+      { revision: 5, entityType: "artifact", entityId: "artifact:two", operation: "delete" }
+    ]
+  });
+
+  const changes = service.changesAfter(2);
+  assert.deepEqual(changes.artifactInvalidations, ["artifact:one", "artifact:two"]);
+  assert.deepEqual(changes.upserts.workItems, []);
+});
+
 test("change set emits deletes and requires snapshot beyond replay window", () => {
   const service = fixture({
     revision: 8,

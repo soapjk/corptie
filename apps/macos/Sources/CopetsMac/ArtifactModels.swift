@@ -30,6 +30,22 @@ struct ObjectiveArtifact: Identifiable, Codable, Hashable, Sendable {
     let versions: [ArtifactVersion]
     let references: [ArtifactReference]
     let audit: [ArtifactAuditEvent]
+    let availableActions: [String]?
+}
+
+enum ArtifactCollectionLoadState: Equatable, Sendable {
+    case idle
+    case loading(previousValue: [ObjectiveArtifact]?)
+    case loaded([ObjectiveArtifact])
+    case failed(message: String, previousValue: [ObjectiveArtifact]?)
+
+    var value: [ObjectiveArtifact]? {
+        switch self {
+        case .idle: nil
+        case .loading(let previous), .failed(_, let previous): previous
+        case .loaded(let artifacts): artifacts
+        }
+    }
 }
 
 struct ArtifactVersion: Identifiable, Codable, Hashable, Sendable {
@@ -84,7 +100,11 @@ struct ArtifactAuditEvent: Identifiable, Codable, Hashable, Sendable {
     let createdAt: String
 }
 
-struct ArtifactListEnvelope: Codable, Sendable { let artifacts: [ObjectiveArtifact] }
+struct ArtifactListEnvelope: Codable, Sendable {
+    let artifacts: [ObjectiveArtifact]
+    let totalCount: Int?
+    let nextOffset: Int?
+}
 
 struct ArtifactDetailEnvelope: Codable, Sendable {
     let artifactId: String
@@ -136,6 +156,9 @@ struct ArtifactImportEnvelope: Codable, Sendable {
 struct ArtifactPublicationEnvelope: Codable, Sendable {
     let artifact: ObjectiveArtifact
     let version: ArtifactVersion
+    let reference: ArtifactReference?
+    let operationStatus: String?
+    let idempotentReplay: Bool?
 }
 
 struct ArtifactExportReceipt: Codable, Sendable {

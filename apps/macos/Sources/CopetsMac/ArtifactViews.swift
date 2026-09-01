@@ -11,9 +11,9 @@ struct ArtifactSectionView: View {
     @State private var importReceipt: ArtifactImportReceipt?
     @State private var isImporting = false
 
-    private var artifacts: [ObjectiveArtifact] {
-        if let workItemId { return client.artifactsByWorkItem[workItemId] ?? [] }
-        return client.artifactsByObjective[objectiveId] ?? []
+    private var loadState: ArtifactCollectionLoadState {
+        if let workItemId { return client.workItemLoadStates[workItemId] ?? .idle }
+        return client.objectiveLoadStates[objectiveId] ?? .idle
     }
 
     var body: some View {
@@ -22,6 +22,9 @@ struct ArtifactSectionView: View {
                 Label(L10n("Artifacts"), systemImage: "doc.on.doc")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
+                Text("\(CorptieAppEnvironment.displayName) · :\(CorptieAppEnvironment.backendPort)")
+                    .font(.system(size: 8, weight: .medium))
+                    .foregroundStyle(CorptieAppEnvironment.isDevelopment ? Color.orange : Color.secondary)
                 Spacer()
                 Button { importDocument() } label: { Image(systemName: "square.and.arrow.down") }
                     .buttonStyle(.plain)
@@ -32,13 +35,78 @@ struct ArtifactSectionView: View {
                     .help(L10n("Create Artifact"))
             }
 
+            artifactLoadContent
+
+            if let receipt = importReceipt {
+                Label("SHA-256 \(receipt.contentHash.prefix(12))… · \(receipt.byteLength) bytes · source preserved", systemImage: "checkmark.shield")
+                    .font(.system(size: 9)).foregroundStyle(.green)
+            }
+        }
+        .task(id: workItemId ?? objectiveId) { await refresh() }
+        .onDisappear { if let workItemId { client.cancelRefresh(workItemId: workItemId) } }
+        .sheet(item: $selection) { artifact in
+            ArtifactDetailContainer(
+                artifactId: artifact.artifactId,
+                objectiveId: objectiveId,
+                workItemId: workItemId
+            ) { Task { await refresh() } }
+        }
+        .sheet(isPresented: $showCreate) {
+            ArtifactCreateView(objectiveId: objectiveId, workItemId: workItemId) {
+                showCreate = false
+                Task { await refresh() }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var artifactLoadContent: some View {
+        switch loadState {
+        case .idle:
+            artifactLoading
+        case .loading(let previous):
+            if let previous {
+                Label(L10n("Refreshing Artifacts — displayed data may be stale."), systemImage: "clock.arrow.circlepath")
+                    .font(.system(size: 9)).foregroundStyle(.secondary)
+                artifactRows(previous)
+            } else {
+                artifactLoading
+            }
+        case .loaded(let artifacts):
             if artifacts.isEmpty {
                 Text(L10n("No private Artifacts are referenced."))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
             } else {
-                LazyVStack(spacing: 6) {
-                    ForEach(artifacts) { artifact in
+                artifactRows(artifacts)
+            }
+        case .failed(let message, let previous):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 9)).foregroundStyle(.red).textSelection(.enabled)
+                Button(L10n("Retry")) { Task { await refresh() } }
+                    .buttonStyle(.borderless)
+                    .accessibilityHint(L10n("Retry loading Artifacts for this Work Item."))
+                if let previous {
+                    Text(L10n("Displayed Artifact data may be stale."))
+                        .font(.system(size: 9)).foregroundStyle(.secondary)
+                    artifactRows(previous)
+                }
+            }
+        }
+    }
+
+    private var artifactLoading: some View {
+        HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text(L10n("Loading Artifacts…"))
+                .font(.system(size: 10)).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func artifactRows(_ artifacts: [ObjectiveArtifact]) -> some View {
+        LazyVStack(spacing: 6) {
+            ForEach(artifacts) { artifact in
                         Button { selection = artifact } label: {
                             HStack(spacing: 8) {
                                 if artifact.visibility == .repositoryTracked {
@@ -50,7 +118,7 @@ struct ArtifactSectionView: View {
                                 }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(artifact.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                                    Text("v\(artifact.approvedVersion ?? artifact.currentVersion) · \(artifact.visibility.rawValue)")
+                                    Text("v\(ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, workItemId: workItemId)) · \(artifact.visibility.rawValue)")
                                         .font(.system(size: 9)).foregroundStyle(.secondary)
                                 }
                                 Spacer()
@@ -66,26 +134,6 @@ struct ArtifactSectionView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            if let error = client.errorMessage {
-                Text(error).font(.system(size: 9)).foregroundStyle(.red).textSelection(.enabled)
-            }
-            if let receipt = importReceipt {
-                Label("SHA-256 \(receipt.contentHash.prefix(12))… · \(receipt.byteLength) bytes · source preserved", systemImage: "checkmark.shield")
-                    .font(.system(size: 9)).foregroundStyle(.green)
-            }
-        }
-        .task(id: workItemId ?? objectiveId) { await refresh() }
-        .sheet(item: $selection) { artifact in
-            ArtifactDetailView(artifact: artifact) { Task { await refresh() } }
-        }
-        .sheet(isPresented: $showCreate) {
-            ArtifactCreateView(objectiveId: objectiveId, workItemId: workItemId) {
-                showCreate = false
-                Task { await refresh() }
             }
         }
     }
@@ -115,6 +163,44 @@ struct ArtifactSectionView: View {
             }
             isImporting = false
             await refresh()
+        }
+    }
+}
+
+enum ArtifactVersionSelectionPolicy {
+    static func preferredVersion(for artifact: ObjectiveArtifact, workItemId: String?) -> Int {
+        if let workItemId,
+           let reference = artifact.references.first(where: {
+               $0.workItemId == workItemId && $0.revokedAt == nil
+           }) {
+            return reference.pinnedVersion
+        }
+        return artifact.approvedVersion ?? artifact.currentVersion
+    }
+}
+
+private struct ArtifactDetailContainer: View {
+    @ObservedObject private var client = ArtifactAPIClient.shared
+    let artifactId: String
+    let objectiveId: String
+    let workItemId: String?
+    let onChanged: () -> Void
+
+    var body: some View {
+        if let artifact = client.artifact(
+            artifactId: artifactId,
+            objectiveId: objectiveId,
+            workItemId: workItemId
+        ) {
+            ArtifactDetailView(artifact: artifact, workItemId: workItemId, onChanged: onChanged)
+                .id("\(artifact.artifactId):\(artifact.resourceVersion)")
+        } else {
+            ContentUnavailableView(
+                L10n("Artifact Unavailable"),
+                systemImage: "doc.badge.ellipsis",
+                description: Text(L10n("This Artifact is no longer available in the current scope."))
+            )
+            .frame(width: 520, height: 320)
         }
     }
 }
@@ -186,6 +272,7 @@ private struct ArtifactDetailView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
     let artifact: ObjectiveArtifact
+    let workItemId: String?
     let onChanged: () -> Void
 
     @State private var detail: ArtifactDetailEnvelope?
@@ -200,10 +287,14 @@ private struct ArtifactDetailView: View {
     @State private var openError: String?
     @State private var readTurnExecutionId = UUID().uuidString
 
-    init(artifact: ObjectiveArtifact, onChanged: @escaping () -> Void) {
+    init(artifact: ObjectiveArtifact, workItemId: String?, onChanged: @escaping () -> Void) {
         self.artifact = artifact
+        self.workItemId = workItemId
         self.onChanged = onChanged
-        _selectedVersion = State(initialValue: artifact.approvedVersion ?? artifact.currentVersion)
+        _selectedVersion = State(initialValue: ArtifactVersionSelectionPolicy.preferredVersion(
+            for: artifact,
+            workItemId: workItemId
+        ))
     }
 
     var body: some View {
@@ -221,9 +312,13 @@ private struct ArtifactDetailView: View {
                     Button(L10n("Open with System Application")) { openWithSystemApplication() }
                         .disabled(isOpeningInSystemApplication)
                     Divider()
-                    Button(L10n("Publish New Version")) { showPublish = true }
+                    if can("publish_and_repin") || can("publish") {
+                        Button(L10n("Publish New Version")) { showPublish = true }
+                    }
                     Button(L10n("Secure Export")) { chooseExport() }
-                    Button(L10n("Mark Superseded"), role: .destructive) { showSupersede = true }
+                    if can("supersede") {
+                        Button(L10n("Mark Superseded"), role: .destructive) { showSupersede = true }
+                    }
                 } label: { Image(systemName: "ellipsis.circle") }
                 Button(L10n("Close")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
@@ -250,7 +345,7 @@ private struct ArtifactDetailView: View {
                 turnExecutionId: readTurnExecutionId
             )
         }
-        .sheet(isPresented: $showPublish) { ArtifactPublishView(artifact: artifact) { showPublish = false; onChanged(); dismiss() } }
+        .sheet(isPresented: $showPublish) { ArtifactPublishView(artifact: artifact, workItemId: workItemId) { showPublish = false; onChanged(); dismiss() } }
         .confirmationDialog(L10n("Mark this Artifact superseded?"), isPresented: $showSupersede) {
             Button(L10n("Mark Superseded"), role: .destructive) { Task { if await client.markSuperseded(artifactId: artifact.artifactId) { onChanged(); dismiss() } } }
         }
@@ -296,17 +391,21 @@ private struct ArtifactDetailView: View {
                 HStack {
                     Text("\(reference.relation) · \(reference.workItemId ?? reference.sessionId ?? "-") · v\(reference.pinnedVersion)")
                     if reference.required { Text(L10n("Required")).foregroundStyle(.orange) }
-                    if let pending = reference.pendingVersion {
+                    if let pending = reference.pendingVersion, can("acknowledge_reference") {
                         Button("v\(pending) pending — acknowledge") { Task { if await client.acknowledge(referenceId: reference.referenceId) { onChanged(); dismiss() } } }
                             .foregroundStyle(.orange)
                     }
                     Spacer()
-                    if reference.revokedAt == nil {
+                    if reference.revokedAt == nil && can("revoke_reference") {
                         Button(L10n("Revoke"), role: .destructive) { Task { if await client.revoke(referenceId: reference.referenceId, reason: "Revoked by local user") { onChanged(); dismiss() } } }
                     }
                 }.font(.caption)
             }
         }
+    }
+
+    private func can(_ action: String) -> Bool {
+        workItemId == nil || artifact.availableActions?.contains(action) == true
     }
 
     private var contentPage: some View {
@@ -448,12 +547,14 @@ private struct ArtifactPublishView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
     let artifact: ObjectiveArtifact
+    let workItemId: String?
     let onPublished: () -> Void
     @State private var summary: String
     @State private var content = ""
 
-    init(artifact: ObjectiveArtifact, onPublished: @escaping () -> Void) {
+    init(artifact: ObjectiveArtifact, workItemId: String?, onPublished: @escaping () -> Void) {
         self.artifact = artifact
+        self.workItemId = workItemId
         self.onPublished = onPublished
         _summary = State(initialValue: artifact.summary)
     }
@@ -465,7 +566,7 @@ private struct ArtifactPublishView: View {
             TextEditor(text: $content).font(.system(.body, design: .monospaced)).frame(minHeight: 260)
             Text(L10n("Started WorkItems remain pinned. latest-approved references receive an audited impact notice requiring acknowledgement."))
                 .font(.caption).foregroundStyle(.orange)
-            HStack { Spacer(); Button(L10n("Cancel")) { dismiss() }; Button(L10n("Publish")) { Task { if await client.publish(artifactId: artifact.artifactId, content: content, summary: summary) { onPublished(); dismiss() } } }.disabled(content.isEmpty) }
+            HStack { Spacer(); Button(L10n("Cancel")) { dismiss() }; Button(L10n("Publish")) { Task { if await client.publish(artifact: artifact, workItemId: workItemId, content: content, summary: summary) { onPublished(); dismiss() } } }.disabled(content.isEmpty) }
         }.padding(20).frame(width: 580, height: 440)
     }
 }

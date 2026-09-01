@@ -3485,12 +3485,8 @@ struct DetailView: View {
                         status: selectedSession != nil
                             ? selectedSession?.executionTaskStatus ?? detail.status
                             : detail.status,
-                        isConnecting: selectedSession != nil
-                            ? selectedSession?.isConnecting ?? detail.isConnecting
-                            : detail.isConnecting,
-                        connectionColor: selectedSession != nil
-                            ? selectedSession?.connectionColor ?? detail.connectionColor
-                            : detail.connectionColor,
+                        isReady: selectedSession?.isReady ?? detail.isReady,
+                        notReadyReason: selectedSession?.notReadyReason ?? detail.notReadyReason,
                         activityStatus: selectedSession != nil
                             ? selectedSession?.activityStatus
                             : detail.activityStatus
@@ -3514,8 +3510,8 @@ struct DetailView: View {
                 if let session = selectedSession {
                     ThreadMetaView(
                         status: session.executionTaskStatus,
-                        isConnecting: session.isConnecting,
-                        connectionColor: session.connectionColor,
+                        isReady: session.isReady,
+                        notReadyReason: session.notReadyReason,
                         activityStatus: session.activityStatus
                     )
                 }
@@ -3553,9 +3549,7 @@ struct DetailView: View {
 
             SessionSendFailureView()
 
-            if backendClient.selectedSession?.id == sessionId
-                && !backendClient.selectedCanSendNow
-                && !backendClient.selectedCanInterruptNow {
+            if !backendClient.selectedIsReady {
                 ReadOnlyComposer(
                     reason: composerUnavailableReason,
                     isRecovering: backendClient.selectedSession?.transitionState == "sessionRecovery"
@@ -3660,6 +3654,9 @@ struct DetailView: View {
     }
 
     private var composerUnavailableReason: String? {
+        if let reason = backendClient.selectedNotReadyReason?.message {
+            return reason
+        }
         if backendClient.selectedSession?.transitionState == "sessionRecovery" {
             return L10n("Session recovery is in progress. Sending messages is temporarily unavailable.")
         }
@@ -8324,20 +8321,45 @@ struct ThreadMetaView: View {
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
+    @State private var isShowingNotReadyReason = false
     let status: TaskStatus
-    let isConnecting: Bool
-    let connectionColor: Color
+    let isReady: Bool
+    let notReadyReason: SessionNotReadyReason?
     let activityStatus: String?
 
     var body: some View {
         HStack(spacing: 10) {
             HStack(spacing: 5) {
-                ConnectionIndicatorLight(
-                    color: isConnecting ? CorptiePalette.disconnected : connectionColor,
-                    size: 5,
-                    glowSize: 10,
-                    isBreathing: isConnecting
-                )
+                Button {
+                    if !isReady { isShowingNotReadyReason = true }
+                } label: {
+                    ConnectionIndicatorLight(
+                        color: isReady ? CorptiePalette.connectedDot : CorptiePalette.disconnected,
+                        size: 6,
+                        glowSize: 12,
+                        isBreathing: false
+                    )
+                }
+                .buttonStyle(.plain)
+                .contentShape(Circle())
+                .help(isReady ? L10n("Ready") : L10n("Not Ready — click for details"))
+                .accessibilityLabel(isReady ? L10n("Session Ready") : L10n("Session Not Ready"))
+                .popover(isPresented: $isShowingNotReadyReason, arrowEdge: .top) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(L10n("Session Not Ready"))
+                            .font(.system(size: 12, weight: .bold))
+                        Text(notReadyReason?.message ?? L10n("This Session cannot accept messages right now."))
+                            .font(.system(size: 11, weight: .medium))
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let code = notReadyReason?.code, !code.isEmpty {
+                            Text(code)
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(12)
+                    .frame(width: 280, alignment: .leading)
+                }
                 Text(status.label)
                     .foregroundStyle(status.color)
                 if let sessionId = backendClient.selectedSession?.id,

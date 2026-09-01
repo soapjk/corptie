@@ -1,4 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
+import {
+  buildSessionRecoveryHandoffSource,
+  deterministicSessionRecoveryHandoff,
+  normalizeSessionRecoveryHandoff,
+  renderSessionRecoveryHandoff
+} from "./sessionRecoveryHandoff.mjs";
 
 export const SESSION_RECOVERY_SCHEMA_VERSION = 1;
 
@@ -244,7 +250,7 @@ export function recoveryCapabilitySnapshot(descriptor = {}) {
   });
 }
 
-export function planReplay({ attempt, timelineEvents, capabilities, thresholds = {} }) {
+export function planReplay({ attempt, timelineEvents, capabilities, thresholds = {}, handoff = null }) {
   const frozen = timelineEvents
     .filter((event) => Number(event.sequence) <= attempt.boundarySequence)
     .sort((left, right) => Number(left.sequence) - Number(right.sequence));
@@ -281,14 +287,7 @@ export function planReplay({ attempt, timelineEvents, capabilities, thresholds =
     } else if (canInjectSystem && entries.some((entry) => ["user_message", "assistant_message"].includes(entry.kind))) {
       strategy = "handoff_only";
       const visible = entries.filter((entry) => ["user_message", "assistant_message", "artifact_reference"].includes(entry.kind));
-      const lastSequence = visible.at(-1)?.sequence ?? Math.max(1, attempt.boundarySequence);
-      selected = [normalizeReplayEntry({
-        kind: "omission_marker",
-        sequence: Math.max(1, lastSequence - 1),
-        content: `Restricted recovery handoff; ${Math.max(0, visible.length - 12)} earlier visible entries omitted.`,
-        metadata: { omittedEntryCount: Math.max(0, visible.length - 12), executable: false }
-      }), ...visible.slice(-12)].sort((a, b) => a.sequence - b.sequence)
-        .filter((entry, index, array) => index === 0 || entry.sequence !== array[index - 1].sequence);
+      selected = recoveryHandoffEntries({ attempt, visible, handoff, tailCount: thresholds.handoffTailCount ?? 8 });
     } else {
       strategy = "manual_required";
       selected = [];
@@ -358,8 +357,42 @@ export function planReplay({ attempt, timelineEvents, capabilities, thresholds =
   return Object.freeze({ strategy, manifest, manifestHash: replayManifestHash(manifest) });
 }
 
+function recoveryHandoffEntries({ attempt, visible, handoff, tailCount }) {
+  const source = handoff?.source ?? buildSessionRecoveryHandoffSource(visible);
+  const compressionMode = handoff?.mode === "background_agent" ? "background_agent" : "extractive_fallback";
+  const handoffValue = handoff?.value
+    ? normalizeSessionRecoveryHandoff(handoff.value)
+    : deterministicSessionRecoveryHandoff(source);
+  const recent = visible.slice(-Math.max(1, tailCount));
+  const firstRecentSequence = recent[0]?.sequence ?? Math.max(2, attempt.boundarySequence);
+  const checkpointSequence = Math.max(1, firstRecentSequence - 1);
+  const sourceSequence = Math.max(1, attempt.boundarySequence);
+  const checkpoint = normalizeReplayEntry({
+    kind: "checkpoint",
+    sequence: checkpointSequence,
+    content: renderSessionRecoveryHandoff(handoffValue),
+    sourceSequence,
+    sourceContentHash: stableRecoveryHash(source),
+    metadata: {
+      compressionMode,
+      sourceEntryCount: source.totalEntryCount,
+      sampledEntryCount: source.selectedEntryCount,
+      omittedEntryCount: source.omittedEntryCount,
+      executable: false
+    }
+  });
+  return [checkpoint, ...recent]
+    .sort((left, right) => left.sequence - right.sequence)
+    .filter((entry, index, array) => index === 0 || entry.sequence !== array[index - 1].sequence);
+}
+
+function recoveryHandoffCharacterBudget(maxContextTokens) {
+  if (!Number.isInteger(maxContextTokens) || maxContextTokens <= 0) return 64_000;
+  return Math.min(120_000, Math.max(24_000, Math.floor(maxContextTokens * 0.8)));
+}
+
 export class SessionRecoveryCoordinator {
-  constructor({ store, providerPort, resolveProviderDescriptor, clock = () => new Date(), observe = () => {} }) {
+  constructor({ store, providerPort, resolveProviderDescriptor, compressHandoff = null, clock = () => new Date(), observe = () => {} }) {
     if (!store?.freezeSessionRecoveryAttempt
       || !store?.claimSessionRecoveryBoundary
       || !store?.replaceSessionRecoveryReplacement
@@ -373,6 +406,7 @@ export class SessionRecoveryCoordinator {
     this.store = store;
     this.providerPort = providerPort;
     this.resolveProviderDescriptor = resolveProviderDescriptor;
+    this.compressHandoff = typeof compressHandoff === "function" ? compressHandoff : null;
     this.clock = clock;
     this.observe = observe;
     this.inFlight = new Map();
@@ -463,7 +497,24 @@ export class SessionRecoveryCoordinator {
     );
     const timelineEvents = this.store.listSessionEventsThrough(attempt.sessionId, attempt.boundarySequence);
     const planStarted = performance.now();
-    const plan = planReplay({ attempt, timelineEvents, capabilities });
+    let plan = planReplay({ attempt, timelineEvents, capabilities });
+    if (plan.strategy === "handoff_only" && this.compressHandoff) {
+      const sourceEntries = replayEntriesFromTimeline(timelineEvents);
+      const source = buildSessionRecoveryHandoffSource(sourceEntries, {
+        characterBudget: recoveryHandoffCharacterBudget(capabilities.maxContextTokens)
+      });
+      try {
+        const handoff = normalizeSessionRecoveryHandoff(await this.compressHandoff({ attempt, source }));
+        plan = planReplay({ attempt, timelineEvents, capabilities, handoff: { value: handoff, mode: "background_agent", source } });
+      } catch (error) {
+        this.observe({ type: "SessionRecoveryHandoffCompressionFailed",
+          attemptId: attempt.attemptId,
+          logicalSessionId: attempt.logicalSessionId,
+          code: safeRecoveryCauseCode(error?.code),
+          message: safeRecoveryCauseMessage(error?.message)
+        });
+      }
+    }
     if (plan.strategy === "manual_required") {
       return this.store.failSessionRecoveryAttempt(attempt.attemptId, "RECOVERY_MANUAL_REQUIRED", "Provider capabilities or local history are insufficient for safe automatic recovery.");
     }
@@ -597,6 +648,9 @@ export function validateRecoveryReceipts({ attempt, replacement, capabilities, p
   fail(validation?.artifactReferencesHash === stableRecoveryHash(attempt.artifactReferences), "RECOVERY_ARTIFACT_REFERENCE_MISMATCH", "Replacement Artifact References do not match.");
   fail(replayReceipt?.manifestHash === plan.manifestHash, "RECOVERY_REPLAY_HASH_MISMATCH", "Provider replay acknowledgement hash does not match.");
   fail(replayReceipt?.sideEffectsObserved === false, "RECOVERY_SIDE_EFFECT_DETECTED", "Replay reported a historical side effect.");
+  if (plan.strategy === "handoff_only") {
+    fail(replayReceipt?.injectedAtCreation === true, "RECOVERY_HANDOFF_NOT_INJECTED", "Provider did not accept the recovery handoff during replacement creation.");
+  }
   if (capabilities.capabilities.includes(SESSION_RECOVERY_CAPABILITIES.replayAcknowledgement)) {
     fail(replayReceipt?.acknowledged === true, "RECOVERY_REPLAY_NOT_ACKNOWLEDGED", "Provider did not acknowledge replay.");
   }
@@ -659,6 +713,12 @@ function eventToReplayEntries(event) {
   }
   if (isDirectAssistantMessageType(type)) {
     const content = recoveryMessageText(payload.item?.text, payload.text, payload.message, payload.summary);
+    // Codex can persist a structurally complete, completed agentMessage with an
+    // explicit empty text body when a Turn produces no user-visible assistant
+    // content. It is an empty Provider placeholder, not a missing historical
+    // message. Recovery has nothing to replay for it, while malformed envelopes
+    // (for example item: {}) must still fail closed below.
+    if (content == null && isExplicitEmptyAssistantCompletion(payload)) return [];
     if (content == null) throw recoveryError("RECOVERY_TIMELINE_MESSAGE_INVALID", "Persisted assistant message content is missing or invalid.");
     return [normalizeReplayEntry({ kind: "assistant_message", sequence, turnId: payload.turnId ?? payload.item?.turnId, role: "assistant", content, metadata: { executable: false } })];
   }
@@ -737,6 +797,18 @@ function duplicateAssistantCompletion(previous, completion) {
 
 function isDirectAssistantMessageType(type) {
   return /^(?:assistant\/message|assistant\.message\.completed)$/i.test(type);
+}
+
+function isExplicitEmptyAssistantCompletion(payload) {
+  const item = payload?.item;
+  return item?.type === "agentMessage"
+    && item?.status === "completed"
+    && typeof item.id === "string"
+    && item.id.trim().length > 0
+    && typeof item.turnId === "string"
+    && item.turnId.trim().length > 0
+    && typeof item.text === "string"
+    && item.text.trim().length === 0;
 }
 
 function isTurnCompletionType(type) {

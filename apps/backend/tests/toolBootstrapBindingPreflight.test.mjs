@@ -25,11 +25,13 @@ function fixture(options = {}) {
   const records = new Map([
     ["logical:0\0binding:0", {
       status: "applied", appliedVersion: "old", desiredVersion: "old",
+      resourceVersion: 41,
       desiredDomains: [{ domainId: "artifacts" }],
       exposurePlan: {}
     }],
     ["logical:1\0binding:1", {
       status: "applied", appliedVersion: "current", desiredVersion: "current",
+      resourceVersion: 42,
       desiredDomains: [],
       exposurePlan: { bootstrapSchemaHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH }
     }]
@@ -120,6 +122,7 @@ test("startup preflight replaces a binding only for the exact not-sent unconfirm
   assert.equal(value.recoveries[0].logicalSessionId, "logical:0");
   assert.equal(value.recoveries[0].sourceBindingId, "binding:0");
   assert.match(value.recoveries[0].idempotencyKey, new RegExp(TOOL_HOST_BOOTSTRAP_SCHEMA_HASH));
+  assert.match(value.recoveries[0].idempotencyKey, /materialization:41$/);
 
   const ambiguous = fixture({ ensureApplied: async () => {
     throw Object.assign(new Error("unknown"), {

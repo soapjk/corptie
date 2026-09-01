@@ -82,7 +82,12 @@ export class StateSyncService {
     }
     const upserts = emptyCollections();
     const deletes = emptyCollections();
+    const artifactInvalidations = new Set();
     for (const row of latestByEntity.values()) {
+      if (row.entityType === "artifact") {
+        artifactInvalidations.add(row.entityId);
+        continue;
+      }
       const collection = ENTITY_COLLECTION[row.entityType];
       if (!collection) continue;
       const entity = state[collection].find((candidate) => ENTITY_ID[collection](candidate) === row.entityId);
@@ -114,7 +119,8 @@ export class StateSyncService {
       baseRevision: after,
       revision: currentRevision,
       upserts,
-      deletes
+      deletes,
+      artifactInvalidations: [...artifactInvalidations].sort()
     };
   }
 
@@ -162,6 +168,7 @@ function emptyChangeSet(revision) {
     baseRevision: revision,
     revision,
     upserts: emptyCollections(),
-    deletes: emptyCollections()
+    deletes: emptyCollections(),
+    artifactInvalidations: []
   };
 }

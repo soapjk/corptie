@@ -36,8 +36,8 @@ test("Worker Session context preserves normal handling for in-scope requests", (
   assert.match(context.prompt, /Every provider path remains neutral/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
   assert.match(context.prompt, /corptie_artifact_create/);
-  assert.match(context.prompt, /forces work_item_private visibility/);
-  assert.match(context.prompt, /relation=acceptance_evidence, required=false, version_policy=fixed/);
+  assert.match(context.prompt, /scope=objective/);
+  assert.match(context.prompt, /another WorkItem are readable but immutable/);
 });
 
 test("Worker Session context continues otherwise-allowed requests outside the WorkItem scope", () => {
@@ -86,8 +86,8 @@ test("Worker Session context includes its bound WorkItem and Objective details",
   assert.match(context.prompt, /Every provider path remains neutral/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
   assert.match(context.prompt, /corptie_artifact_create/);
-  assert.match(context.prompt, /forces work_item_private visibility/);
-  assert.match(context.prompt, /relation=acceptance_evidence, required=false, version_policy=fixed/);
+  assert.match(context.prompt, /scope=work_item/);
+  assert.match(context.prompt, /full-text search/);
 });
 
 test("Worker Session context rejects a mismatched WorkItem", () => {

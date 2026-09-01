@@ -156,7 +156,7 @@ export const platformDynamicTools = Object.freeze([
     "corptie_platform_artifacts_manage",
     "Manage the complete lifecycle of Artifacts in an explicitly selected Objective. Every mutation is attributed to the authenticated platform Assistant Session.",
     {
-      action: { type: "string", enum: ["list", "get", "search", "create", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "verify_integrity", "export", "backup", "restore"] },
+      action: { type: "string", enum: ["list", "get", "search", "create", "update_metadata", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "restore_artifact", "verify_integrity", "export", "backup", "restore"] },
       objective_id: id("Explicit target Objective id."),
       artifact_id: { type: "string", pattern: "^artifact:" },
       reference_id: { type: "string", minLength: 1 },
@@ -164,6 +164,9 @@ export const platformDynamicTools = Object.freeze([
       query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 65536 },
       offset: { type: "integer", minimum: 0 }, version: { type: "integer", minimum: 1 },
       visibility: artifactVisibility, bound_work_item_id: id("Same-Objective WorkItem id."),
+      scope: { type: "string", enum: ["objective", "work_item"] }, kind: { type: "string" },
+      category_path: { type: "string" }, tags: stringArray, aliases: stringArray, keywords: stringArray,
+      kinds: stringArray, category_prefix: { type: "string" },
       bound_session_id: id("Same-Objective Session id."), repository_locator: { type: "string", minLength: 1 },
       mime_type: { type: "string", minLength: 1 }, approval_status: { type: "string", enum: ["draft", "approved"] },
       work_item_id: id("Same-Objective WorkItem reference target."), session_id: id("Same-Objective Session reference target."),

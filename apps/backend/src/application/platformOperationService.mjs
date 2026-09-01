@@ -8,7 +8,7 @@ const PLATFORM_OPERATIONS = Object.freeze({
   corptie_platform_objectives_manage: ["list", "get", "create", "update", "delete"],
   corptie_platform_work_items_manage: ["list", "get", "create", "update", "delete", "dependencies", "add_dependency", "remove_dependency"],
   corptie_platform_sessions_manage: ["list", "get", "create", "send", "interrupt", "resume", "disconnect", "rename", "archive", "pin", "delete", "clear", "restart", "respond_to_approval", "manage_turn_changes", "list_models", "read_account_usage", "read_session_usage", "switch_model", "switch_reasoning", "update_permissions"],
-  corptie_platform_artifacts_manage: ["list", "get", "search", "create", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "verify_integrity", "export", "backup", "restore"],
+  corptie_platform_artifacts_manage: ["list", "get", "search", "create", "update_metadata", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "restore_artifact", "verify_integrity", "export", "backup", "restore"],
   corptie_platform_collaboration_manage: ["discover_sessions", "get_session", "create_work_item", "start_worker", "request"]
 });
 
@@ -37,6 +37,7 @@ export class PlatformOperationService {
       store: options.store, objectiveService: options.objectiveService, sessionService: options.sessionService,
       artifactService: options.artifactService, collaborationCore: options.collaborationCore,
       confirmationService: options.confirmationService,
+      sessionRuntimeReleaseService: options.sessionRuntimeReleaseService ?? null,
       listSessions: options.listSessions ?? ((input) => options.sessionService.listSessions(input)),
       createSession: options.createSession, onEntityChanged: options.onEntityChanged ?? null,
       idFactory: options.idFactory ?? randomUUID, clock: options.clock ?? (() => new Date().toISOString())
@@ -145,7 +146,14 @@ export class PlatformOperationService {
       case "resume": return this.sessionService.resumeSession(required(args.session_id, "session_id"), context);
       case "disconnect": return this.sessionService.disconnectSession(required(args.session_id, "session_id"), context);
       case "rename": return this.sessionService.renameSession(required(args.session_id, "session_id"), required(args.title, "title"), context);
-      case "archive": return found(this.store.archiveSession(required(args.session_id, "session_id"), args.archived !== false), "SESSION_NOT_FOUND");
+      case "archive": {
+        const sessionId = required(args.session_id, "session_id");
+        const archived = args.archived !== false;
+        const session = found(this.store.archiveSession(sessionId, archived), "SESSION_NOT_FOUND");
+        if (archived) void this.sessionRuntimeReleaseService?.request(session.id, "manual-archive");
+        else if (this.sessionRuntimeReleaseService) await this.sessionRuntimeReleaseService.restore(session.id);
+        return session;
+      }
       case "pin": return found(this.store.pinSession(required(args.session_id, "session_id"), args.pinned !== false), "SESSION_NOT_FOUND");
       case "delete": return this.sessionService.deleteSession(required(args.session_id, "session_id"), context);
       case "clear": return this.sessionService.clearConversation(required(args.session_id, "session_id"), context);
@@ -163,7 +171,7 @@ export class PlatformOperationService {
   }
 
   async #artifacts(args, binding, tool) {
-    assertKnown(args, ["action", "objective_id", "artifact_id", "reference_id", "title", "summary", "content", "query", "limit", "offset", "version", "visibility", "bound_work_item_id", "bound_session_id", "repository_locator", "mime_type", "approval_status", "work_item_id", "session_id", "relation", "required", "version_policy", "reason", "source_path", "destination_path", "confirmation_id", "confirmed_repository_write", "confirmed_overwrite", "include_revoked", "idempotency_key"]);
+    assertKnown(args, ["action", "objective_id", "artifact_id", "reference_id", "title", "summary", "content", "query", "limit", "offset", "version", "visibility", "scope", "kind", "category_path", "tags", "aliases", "keywords", "kinds", "category_prefix", "bound_work_item_id", "bound_session_id", "repository_locator", "mime_type", "approval_status", "work_item_id", "session_id", "relation", "required", "version_policy", "reason", "source_path", "destination_path", "confirmation_id", "confirmed_repository_write", "confirmed_overwrite", "include_revoked", "idempotency_key"]);
     if (!this.artifactService) throw coded("PLATFORM_ARTIFACTS_UNAVAILABLE", "Artifact platform service is unavailable.");
     const objectiveId = required(args.objective_id, "objective_id");
     const context = { kind: "platform_admin", actorId: binding.agent.agentId, sessionId: binding.actorSessionId, objectiveId };
@@ -175,8 +183,9 @@ export class PlatformOperationService {
     switch (action) {
       case "list": return { artifacts: this.artifactService.list(context, { includeRevoked: args.include_revoked }) };
       case "get": return this.artifactService.get(context, required(args.artifact_id, "artifact_id"), { version: args.version, offset: args.offset, limit: args.limit });
-      case "search": return this.artifactService.search(context, required(args.query, "query"), { limit: args.limit });
+      case "search": return this.artifactService.search(context, required(args.query, "query"), { limit: args.limit, scope: args.scope, kinds: args.kinds, categoryPrefix: args.category_prefix, tags: args.tags });
       case "create": return this.artifactService.create(context, artifactCreateInput(args, args.visibility === "repository_tracked"));
+      case "update_metadata": return this.artifactService.updateMetadata(context, required(args.artifact_id, "artifact_id"), { title: args.title, summary: args.summary, kind: args.kind, categoryPath: args.category_path, tags: args.tags, aliases: args.aliases, keywords: args.keywords });
       case "import": assertAbsolute(args.source_path, "source_path"); return this.artifactService.importLocalFile(context, { ...artifactCreateInput(args, false), path: args.source_path });
       case "publish": return this.artifactService.publishVersion(context, required(args.artifact_id, "artifact_id"), { content: args.content, summary: args.summary, mimeType: args.mime_type, approvalStatus: args.approval_status });
       case "reference": return this.artifactService.createReference(context, required(args.artifact_id, "artifact_id"), { workItemId: args.work_item_id, sessionId: args.session_id, relation: args.relation, required: args.required, versionPolicy: args.version_policy, version: args.version });
@@ -185,6 +194,7 @@ export class PlatformOperationService {
       case "change_visibility": return this.artifactService.changeVisibility(context, required(args.artifact_id, "artifact_id"), required(args.visibility, "visibility"), { confirmed: true });
       case "supersede": return this.artifactService.supersede(context, required(args.artifact_id, "artifact_id"));
       case "revoke": return this.artifactService.revokeArtifact(context, required(args.artifact_id, "artifact_id"), required(args.reason, "reason"));
+      case "restore_artifact": return this.artifactService.restoreArtifact(context, required(args.artifact_id, "artifact_id"));
       case "verify_integrity": { const artifact = this.store.getArtifact(required(args.artifact_id, "artifact_id")); if (!artifact || artifact.objectiveId !== objectiveId) throw coded("ARTIFACT_NOT_FOUND", "Artifact not found in the selected Objective."); return this.artifactService.verifyIntegrity(artifact.artifactId); }
       case "export": assertAbsolute(args.destination_path, "destination_path"); return this.artifactService.exportArtifact(context, required(args.artifact_id, "artifact_id"), { version: args.version, destinationPath: args.destination_path, confirmed: true, confirmedRepositoryWrite: args.confirmed_repository_write === true, confirmedOverwrite: args.confirmed_overwrite === true });
       case "backup": assertAbsolute(args.destination_path, "destination_path"); return this.artifactService.backupObjective(context, { destinationPath: args.destination_path, confirmed: true });
@@ -227,7 +237,7 @@ export class PlatformOperationService {
   #storedUsage(sessionId) { const session = found(resolveSession(this.store, sessionId), "SESSION_NOT_FOUND"); const usage = this.store.getSessionUsageSnapshot?.(session.id); return { account: usage?.account ?? { available: false, provider: session.external?.provider ?? "unknown", model: usage?.model ?? session.external?.currentModel ?? null }, context: usage?.context ?? null }; }
 }
 
-function artifactCreateInput(args, confirmedRepositoryTracked) { return { title: args.title, summary: args.summary, content: args.content, visibility: args.visibility, boundWorkItemId: args.bound_work_item_id, boundSessionId: args.bound_session_id, repositoryLocator: args.repository_locator, confirmedRepositoryTracked, mimeType: args.mime_type, approvalStatus: args.approval_status }; }
+function artifactCreateInput(args, confirmedRepositoryTracked) { return { title: args.title, summary: args.summary, content: args.content, visibility: args.visibility, scope: args.scope, kind: args.kind, categoryPath: args.category_path, tags: args.tags, aliases: args.aliases, keywords: args.keywords, boundWorkItemId: args.bound_work_item_id, boundSessionId: args.bound_session_id, repositoryLocator: args.repository_locator, confirmedRepositoryTracked, mimeType: args.mime_type, approvalStatus: args.approval_status }; }
 function sessionDescriptor(store, session) { const logical = store.getLogicalSessionByLegacySessionId(session.id); return { sessionId: logical?.logicalSessionId ?? session.id, providerSessionId: session.id, agentId: session.agentId ?? null, objectiveId: session.objectiveId ?? null, workItemId: session.workItemId ?? null, sessionKind: session.sessionKind, status: session.status, activeBinding: logical?.activeBinding ?? null }; }
 function resolveSession(store, id) { return store.getSession(id) ?? store.getSession(store.getLogicalSession(id)?.legacySessionId); }
 function receiptTarget(tool, args, result) {

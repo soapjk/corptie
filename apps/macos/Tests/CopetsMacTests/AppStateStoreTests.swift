@@ -248,6 +248,16 @@ struct AppStateStoreTests {
         #expect(snapshot.state.workItems[0].acceptanceCriteria == "")
         #expect(snapshot.state.workItems[0].acceptanceAssessment == nil)
     }
+
+    @Test func changeSetDecodesArtifactInvalidationsWithoutEmbeddingArtifactPayloads() throws {
+        let payload = Data(#"{"snapshotRequired":false,"baseRevision":20,"revision":22,"upserts":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]},"deletes":{"sessions":[],"workItems":[],"objectives":[],"agents":[],"skills":[],"repositories":[],"integrationRuns":[]},"artifactInvalidations":["artifact:one"]}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+        let changes = try decoder.decode(StateChangeSetEnvelope.self, from: payload)
+
+        #expect(changes.artifactInvalidations == ["artifact:one"])
+    }
 }
 
 private extension ControlPlaneStatePayload {
