@@ -942,7 +942,10 @@ export class ClaudeAgentManager {
   }
 
   toDetail(session) {
-    const canSend = session.turnState !== "running" && !hasPendingChoices(session) && session.status !== "cancelled";
+    // A cancelled status settles the previous Turn; it does not close the
+    // Corptie Session or invalidate its persisted Claude session id. A later
+    // send lazily starts a new Query and resumes that same Provider Session.
+    const canSend = session.turnState !== "running" && !hasPendingChoices(session);
     return {
       id: session.id,
       title: session.title,
@@ -1534,16 +1537,10 @@ function activityStatusForSession(session) {
   if (session.status === "failed") {
     return "Claude request failed";
   }
-  if (session.status === "cancelled") {
-    return "Claude session closed";
-  }
   return "Ready";
 }
 
 function unavailableReasonForSession(session) {
-  if (session.status === "cancelled") {
-    return "Claude session is closed.";
-  }
   return "Claude is still processing the previous request.";
 }
 

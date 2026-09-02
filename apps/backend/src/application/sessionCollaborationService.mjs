@@ -913,8 +913,12 @@ export function collaborationSessionEligibility(store, sessionOrId) {
   if (session?.archived || logical?.archived) reasons.push("session_archived");
   if (!logical?.activeBinding) reasons.push("active_binding_missing");
   else if (logical.activeBinding.state !== "active") reasons.push(`binding_${logical.activeBinding.state}`);
-  if (["failed", "cancelled", "canceled"].includes(session?.status)) reasons.push(`session_${session.status}`);
-  if (session?.capabilities?.canSend === false || session?.rawStatus?.capabilities?.canSend === false) {
+  const interrupted = ["cancelled", "canceled"].includes(session?.status);
+  if (session?.status === "failed") reasons.push("session_failed");
+  if (!interrupted && (
+    session?.capabilities?.canSend === false
+    || session?.rawStatus?.capabilities?.canSend === false
+  )) {
     reasons.push("send_capability_unavailable");
   }
   return {

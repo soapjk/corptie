@@ -467,6 +467,29 @@ test("Claude interrupt repairs a stale running session without an active Query",
   assert.equal(session.interruptRequested, false);
 });
 
+test("Claude cancelled Turn keeps the same Session ready for the next message", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({
+    id: "claude-cancelled-sendable",
+    cwd: "/tmp/project",
+    agentSessionId: "sdk-session-existing"
+  });
+  const session = manager.get("claude-cancelled-sendable");
+  session.status = "cancelled";
+  session.turnState = "idle";
+  manager.ensureQueryStarted = async () => {};
+  manager.enqueueInput = () => {};
+
+  const before = manager.toSessionSummary(session);
+  assert.equal(before.status, "cancelled");
+  assert.equal(before.capabilities.canSend, true);
+  assert.ok(before.sendUnavailableReason == null);
+
+  const after = await manager.send("claude-cancelled-sendable", "Continue");
+  assert.equal(after.status, "running");
+  assert.equal(session.agentSessionId, "sdk-session-existing");
+});
+
 test("Claude reports a normalized turn-settled event to product orchestration", async () => {
   let settle;
   const settled = new Promise((resolve) => { settle = resolve; });

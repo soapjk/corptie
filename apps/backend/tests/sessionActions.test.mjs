@@ -62,6 +62,19 @@ test("a failed Session remains sendable only when its Provider supports binding 
   assert.equal(unavailable.actions.send.reason, "PROVIDER_UNAVAILABLE");
 });
 
+test("cancelled and canceled settle only the current Turn and remain sendable", () => {
+  for (const status of ["cancelled", "canceled"]) {
+    const interrupted = withSessionActions({
+      status,
+      canSend: false,
+      capabilities: { canSend: false }
+    }, descriptor);
+
+    assert.equal(interrupted.actions.send.available, true);
+    assert.equal(interrupted.actions.send.reason, null);
+  }
+});
+
 test("approval becomes available only while the Session has a pending approval", () => {
   const idle = withSessionActions({ status: "complete", capabilities: {} }, descriptor);
   const blocked = withSessionActions({ status: "blocked", capabilities: {} }, descriptor);
