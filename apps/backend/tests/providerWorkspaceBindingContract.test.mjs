@@ -11,6 +11,7 @@ import { startupContextHash } from "../src/application/workSessionStartupCoordin
 import { createCodexAppServerProvider } from "../src/agent-provider/providers/codexAppServerProvider.mjs";
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createOpenClackyProvider } from "../src/agent-provider/providers/openClackyProvider.mjs";
+import { ProviderWorkSessionPort } from "../src/agent-provider/providerWorkSessionPort.mjs";
 
 const binding = Object.freeze({
   logicalSessionId: "session:one",
@@ -54,6 +55,34 @@ test("Codex, Claude, and OpenClacky advertise and implement one workspace.bind c
     assert.equal(proof.canonicalWorkingDirectory, binding.workingDirectory);
     assert.equal(inspected.trustedContextHash, binding.trustedContextHash);
   }
+});
+
+test("Codex, Claude, and OpenClacky traverse the same ProviderWorkSessionPort contract", async () => {
+  const providers = [
+    createCodexAppServerProvider({ ...operations("codex:resource"), createSession() {} }, {
+      capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND]
+    }),
+    createClaudeAgentSdkProvider({}, operations("claude:resource")),
+    createOpenClackyProvider({}, operations("openclacky:resource"))
+  ];
+  const registry = new AgentProviderRegistry(providers);
+  const lifecycle = [];
+  const port = new ProviderWorkSessionPort({
+    workspaceBinding: new ProviderWorkspaceBindingService({ registry }),
+    createSession: async (context) => { lifecycle.push(`create:${context.providerId}`); return context; },
+    activateSession: async (context) => { lifecycle.push(`activate:${context.providerId}`); },
+    compensateSession: async (context) => { lifecycle.push(`compensate:${context.providerId}`); }
+  });
+  for (const provider of registry.descriptors()) {
+    const context = { ...binding, providerId: provider.id };
+    await port.createSession(context);
+    const proof = await port.bindWorkspace(context, { workingDirectory: binding.workingDirectory });
+    assert.equal(proof.providerBindingId, binding.providerBindingId);
+    assert.equal((await port.inspectBinding(context)).bindingGeneration, 1);
+    await port.activateSession(context);
+    await port.compensateSession(context);
+  }
+  assert.equal(lifecycle.length, 9);
 });
 
 test("a Provider without workspace.bind fails explicitly instead of falling back to model Git discovery", async () => {

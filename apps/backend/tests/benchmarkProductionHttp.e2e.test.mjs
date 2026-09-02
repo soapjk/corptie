@@ -282,32 +282,48 @@ async function establishWorkSession({ store, source }) {
     contributorAgentIds: [agent.agentId], workspaceIds: [source.identity.repositoryId] });
   const task = objectiveService.createTask({ id: TASK_ID, objectiveId: objective.id,
     title: "Benchmark production", mainAgentId: agent.agentId, mainWorkspaceId: source.identity.repositoryId });
+  store.createSession({ id: "provider:benchmark-source", title: "Benchmark source",
+    provider: "test-provider", agentId: agent.agentId, sessionKind: "objectiveChat",
+    objectiveId: objective.id, cwd: source.directory });
+  store.createLogicalSessionRoute({ logicalSessionId: "session:benchmark-source",
+    legacySessionId: "provider:benchmark-source", providerThreadId: "thread:benchmark-source",
+    providerSessionId: "provider:benchmark-source", providerId: "test-provider",
+    boundCwd: source.directory, sessionName: "Benchmark source" });
   const coordinator = new WorkSessionStartupCoordinator({ store, leaseOwner: "benchmark-test",
-    validateStart: async () => ({ task: store.getTask(task.id), objective, agent, providerId: "test-provider" }),
+    authorizeStart: async (command) => ({ ...command, objectiveId: objective.id,
+      repositoryId: source.identity.repositoryId, taskTitle: task.title }),
     prepareWorktree: async ({ startupOperationId }) => ({ repositoryId: source.identity.repositoryId,
       worktreeId: source.identity.worktreeId, canonicalWorktreePath: source.directory,
       headIdentity: { kind: "branch", branch: "master" }, sourceCommitOid: source.commitOid,
       sourceTreeOid: source.treeOid, baseRef: "HEAD", repositoryInventoryVersion: "inventory:benchmark",
       workspaceResourceVersion: 1, createdByStartupOperationId: startupOperationId, reused: true }),
     inspectWorktree: async ({ allocation }) => allocation,
-    createSession: async ({ providerBindingId }) => {
-      const session = store.createSession({ id: "session:benchmark", title: "Benchmark production",
-        provider: "test-provider", agentId: agent.agentId, sessionKind: "worker",
-        objectiveId: objective.id, taskId: task.id, cwd: source.directory });
-      store.createLogicalSessionRoute({ logicalSessionId: "logical:benchmark", legacySessionId: session.id,
-        providerThreadId: "thread:benchmark", providerSessionId: "provider-session:benchmark",
-        bindingId: providerBindingId, providerId: "test-provider", repositoryId: source.identity.repositoryId,
-        worktreeId: source.identity.worktreeId, boundCwd: source.directory, sessionName: "Benchmark production" });
-      return session;
-    },
-    bindProviderWorkspace: async (input) => ({ providerBindingId: input.providerBindingId,
-      bindingGeneration: input.bindingGeneration, providerResourceId: "provider-resource:benchmark",
-      canonicalWorkingDirectory: input.workingDirectory, trustedContextHash: input.trustedContextHash,
-      acceptedAt: new Date().toISOString() }),
-    inspectProviderBinding: async () => { throw Object.assign(new Error("not yet bound"), { code: "START_PROVIDER_BINDING_NOT_FOUND" }); },
-    activateSession: async () => {}, compensateWorktree: async () => ({ removed: false }) });
-  return coordinator.start({ taskId: task.id, requestedAgentId: agent.agentId,
-    providerId: "test-provider", idempotencyKey: "benchmark-startup", source: "test" });
+    providerWorkSessionPort: {
+      createSession: async ({ providerBindingId }) => {
+        const session = store.createSession({ id: "session:benchmark", title: "Benchmark production",
+          provider: "test-provider", agentId: agent.agentId, sessionKind: "worker",
+          objectiveId: objective.id, taskId: task.id, cwd: source.directory,
+          deferTaskProjection: true });
+        store.createLogicalSessionRoute({ logicalSessionId: "logical:benchmark", legacySessionId: session.id,
+          providerThreadId: "thread:benchmark", providerSessionId: "provider-session:benchmark",
+          bindingId: providerBindingId, providerId: "test-provider", repositoryId: source.identity.repositoryId,
+          worktreeId: source.identity.worktreeId, boundCwd: source.directory, sessionName: "Benchmark production" });
+        return session;
+      },
+      bindWorkspace: async (input) => ({ providerBindingId: input.providerBindingId,
+        bindingGeneration: input.bindingGeneration, providerResourceId: "provider-resource:benchmark",
+        canonicalWorkingDirectory: input.workingDirectory, trustedContextHash: input.trustedContextHash,
+        acceptedAt: new Date().toISOString() }),
+      inspectBinding: async () => { throw Object.assign(new Error("not yet bound"), { code: "START_PROVIDER_BINDING_NOT_FOUND" }); },
+      activateSession: async (activation) => activation.dispatchInitialTurn === true ? undefined : ({
+        providerResourceId: "provider-resource:benchmark",
+        canonicalWorkingDirectory: activation.workingDirectory,
+        toolContractHash: "c".repeat(64), instructionSourcesHash: "d".repeat(64)
+      }), compensateSession: async () => {}
+    }, compensateWorktree: async () => ({ removed: false }) });
+  return coordinator.start({ taskId: task.id, assigneeAgentId: agent.agentId,
+    expectedTaskVersion: 1, providerId: "test-provider", idempotencyKey: "benchmark-startup",
+    sourceSessionId: "session:benchmark-source" });
 }
 
 function seedAppliedToolHost(store, startup) {

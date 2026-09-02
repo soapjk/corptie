@@ -287,7 +287,8 @@ export class ProjectWorktreeIntegrationService {
       description,
       acceptanceCriteria,
       prompt,
-      integrationRunId: run.id
+      integrationRunId: run.id,
+      sourceSessionId: this.#sourceSessionId(run)
     });
     const updatedRun = this.store.updateProjectIntegrationRun(run.id, {
       status: "conflict_resolution_running",
@@ -308,6 +309,23 @@ export class ProjectWorktreeIntegrationService {
     } finally {
       this.activeConflictRuns.delete(conflictRunKey);
     }
+  }
+
+  #sourceSessionId(run) {
+    for (const item of run.items ?? []) {
+      const task = item.taskId ? this.store.getTask(item.taskId) : null;
+      const logical = task?.current_session_id
+        ? this.store.getLogicalSessionByLegacySessionId(task.current_session_id)
+        : null;
+      if (logical?.logicalSessionId && !logical.archived && logical.activeBinding?.state === "active") {
+        return logical.logicalSessionId;
+      }
+    }
+    throw new ProjectWorktreeIntegrationError(
+      "SOURCE_SESSION_NOT_FOUND",
+      "Conflict resolution requires an active source Work Session from the Integration Run.",
+      409
+    );
   }
 
   async #scope(projectId, objectiveId) {

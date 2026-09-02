@@ -30,6 +30,39 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.equal(Object.hasOwn(createTask.inputSchema.properties, "source_task_id"), false);
   assert.equal(createTask.inputSchema.properties.artifact_reference.required[0], "artifact_id");
   assert.equal(createTask.inputSchema.properties.file_reference.required[0], "path");
+  const startTask = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_tasks_start");
+  assert.deepEqual(startTask.inputSchema.required, [
+    "task_id", "agent_id", "provider_id", "resource_version", "idempotency_key"
+  ]);
+  assert.equal(startTask.inputSchema.properties.resource_version.type, "integer");
+});
+
+test("dynamic Task start performs the sole snake_case boundary mapping", async () => {
+  const calls = [];
+  const client = {
+    sessionScope: { sessionId: "session:source" },
+    post: async (path, body) => { calls.push({ path, body }); return { status: "ready" }; }
+  };
+  await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_start", {
+    task_id: "task:one",
+    agent_id: "agent:worker",
+    provider_id: "claude-sdk",
+    resource_version: 7,
+    title: "Worker",
+    idempotency_key: "start:one"
+  });
+  assert.deepEqual(calls, [{
+    path: "/internal/collaboration/tasks/task%3Aone/start",
+    body: {
+      taskId: "task:one",
+      assigneeAgentId: "agent:worker",
+      providerId: "claude-sdk",
+      title: "Worker",
+      expectedTaskVersion: 7,
+      idempotencyKey: "start:one",
+      sourceSessionId: "session:source"
+    }
+  }]);
 });
 
 test("dynamic Artifact sharing maps a read-only Task reference request", async () => {

@@ -118,10 +118,11 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_start", "Start an authorized collaboration Task through the Provider-neutral Session/Worktree lifecycle. Returns a staged receipt and never reports start success without an actual Session binding.", {
     task_id: taskIdSchema,
     agent_id: agentIdSchema,
+    provider_id: { type: "string", minLength: 1 },
     title: { type: "string", minLength: 1 },
-    resource_version: { type: "string", minLength: 1 },
+    resource_version: { type: "integer", minimum: 1 },
     idempotency_key: { type: "string", minLength: 1 }
-  }, ["task_id", "resource_version", "idempotency_key"]),
+  }, ["task_id", "agent_id", "provider_id", "resource_version", "idempotency_key"]),
   tool("corptie_agents_discover", "Discover registered peer Agents and their capabilities.", {
     status: { type: "string", enum: ["available", "unavailable"] }
   }),
@@ -212,7 +213,13 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       version: input.version
     })),
     corptie_collaboration_tasks_start: () => client.post(`/internal/collaboration/tasks/${encodeURIComponent(input.task_id)}/start`, compact({
-      agentId: input.agent_id, title: input.title, resourceVersion: input.resource_version, idempotencyKey: input.idempotency_key
+      taskId: input.task_id,
+      assigneeAgentId: input.agent_id,
+      expectedTaskVersion: input.resource_version,
+      providerId: input.provider_id,
+      title: input.title,
+      idempotencyKey: input.idempotency_key,
+      sourceSessionId: client.sessionScope?.sessionId
     })),
     corptie_agents_discover: () => client.get("/internal/collaboration/agents", { status: input.status }),
     corptie_agents_get: () => client.get(`/internal/collaboration/agents/${encodeURIComponent(input.agent_id)}`),

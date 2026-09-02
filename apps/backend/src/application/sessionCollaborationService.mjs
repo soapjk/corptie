@@ -21,12 +21,14 @@ export class SessionCollaborationService {
     this.objectiveService = options.objectiveService;
     this.artifactService = options.artifactService ?? null;
     this.collaborationCore = options.collaborationCore;
-    this.launchTask = options.startTask;
+    this.workSessionStartApplicationService = options.workSessionStartApplicationService;
+    this.defaultProviderId = options.defaultProviderId;
     this.onRoutingEvent = options.onRoutingEvent ?? ((event, details) => {
       console.info(`[collaboration-routing] event=${event} ${JSON.stringify(details)}`);
     });
-    if (!this.store || !this.objectiveService || !this.collaborationCore || typeof this.launchTask !== "function") {
-      throw new TypeError("SessionCollaborationService requires store, objectiveService, collaborationCore, and startTask().");
+    if (!this.store || !this.objectiveService || !this.collaborationCore
+      || typeof this.workSessionStartApplicationService?.start !== "function" || !this.defaultProviderId) {
+      throw new TypeError("SessionCollaborationService requires store, objectiveService, collaborationCore, and WorkSessionStartApplicationService.");
     }
   }
 
@@ -313,32 +315,33 @@ export class SessionCollaborationService {
   }
 
   async startTask(metadata, actorId, input = {}) {
-    assertKnown(input, ["taskId", "agentId", "title", "resourceVersion", "idempotencyKey"]);
+    assertStartKnown(input);
     const scope = this.#scope(metadata, actorId, { mutation: true });
-    const item = this.getTask(metadata, actorId, input.taskId);
-    const expectedVersion = required(input.resourceVersion, "resource_version");
-    const actualVersion = String(item.resource_version ?? 1);
-    if (expectedVersion !== actualVersion) throw coded("RESOURCE_VERSION_CONFLICT", `Expected Task version ${expectedVersion}, current version is ${actualVersion}.`, 409);
-    const idempotencyKey = required(input.idempotencyKey, "idempotency_key");
-    if (item.current_session_id) return this.#startReceipt(item, this.store.getSession(item.current_session_id), "already_running", true);
-    const agentId = optional(input.agentId) ?? item.main_agent_id;
-    const agent = this.#requireContributor(scope.session.objectiveId, required(agentId, "agent_id"));
+    if (input.sourceSessionId !== scope.logicalSessionId) {
+      throw coded("SOURCE_SESSION_ACTOR_MISMATCH", "Work Session command source does not match the authenticated Session.", 403);
+    }
+    const taskId = required(input.taskId, "task_id");
+    const expectedVersion = input.expectedTaskVersion;
+    const idempotencyKey = input.idempotencyKey;
+    const assigneeAgentId = input.assigneeAgentId;
     try {
-      const launched = await this.launchTask({
-        task: item,
-        agent,
+      const launched = await this.workSessionStartApplicationService.start({
+        taskId,
+        assigneeAgentId,
+        expectedTaskVersion: Number(expectedVersion),
+        providerId: required(input.providerId, "provider_id"),
         title: optional(input.title),
         idempotencyKey,
-        source: "collaboration"
+        sourceSessionId: input.sourceSessionId
       });
-      const session = this.#resolveSession(launched?.id ?? launched?.sessionId ?? this.store.getTask(item.id)?.current_session_id);
+      const session = this.#resolveSession(launched?.session?.id ?? this.store.getTask(taskId)?.current_session_id);
       if (!session) throw coded("START_SESSION_UNRESOLVED", "Provider accepted the launch but no Corptie Session binding was persisted.");
-      return this.#startReceipt(this.store.getTask(item.id), session, "running", false, idempotencyKey);
+      return this.#startReceipt(this.store.getTask(taskId), session, "running", false, idempotencyKey);
     } catch (error) {
       error.receipt ??= {
         phase: "failed",
-        taskId: item.id,
-        executionStatus: this.store.getTask(item.id)?.execution_status ?? "start_failed",
+        taskId,
+        executionStatus: this.store.getTask(taskId)?.execution_status ?? "start_failed",
         idempotencyKey
       };
       throw error;
@@ -530,14 +533,16 @@ export class SessionCollaborationService {
     let session = task.current_session_id ? this.#resolveSession(task.current_session_id) : null;
     let eligibility = session ? collaborationSessionEligibility(this.store, session) : null;
     if (!eligibility?.active) {
-      const launched = await this.launchTask({
-        task,
-        agent,
+      const launched = await this.workSessionStartApplicationService.start({
+        taskId: task.id,
+        assigneeAgentId: agent.agentId,
+        expectedTaskVersion: Number(task.resource_version ?? 1),
+        providerId: this.defaultProviderId,
         title: optional(request.title),
-        autoUniqueTitle: true,
-        source: "session_channel_confirmation"
+        idempotencyKey: `channel-request:${channelRequest.requestId}:start`,
+        sourceSessionId: channelRequest.requestingSessionId
       });
-      session = this.#resolveSession(launched?.id ?? launched?.sessionId ?? this.store.getTask(task.id)?.current_session_id);
+      session = this.#resolveSession(launched?.session?.id ?? this.store.getTask(task.id)?.current_session_id);
       eligibility = collaborationSessionEligibility(this.store, session);
     }
     if (!eligibility?.active) {
@@ -622,14 +627,16 @@ export class SessionCollaborationService {
       : null;
     let target = existing?.active ? existing : null;
     if (!target) {
-      const launched = await this.launchTask({
-        task,
-        agent,
+      const launched = await this.workSessionStartApplicationService.start({
+        taskId: task.id,
+        assigneeAgentId: agent.agentId,
+        expectedTaskVersion: Number(task.resource_version ?? 1),
+        providerId: this.defaultProviderId,
         title: request.title,
-        autoUniqueTitle: true,
-        source: "collaboration_confirmation"
+        idempotencyKey: `collaboration-confirmation:${confirmation.confirmationId}:start`,
+        sourceSessionId: confirmation.initiatorSessionId
       });
-      target = collaborationTargetEligibility(this.store, targetContext, launched?.id ?? launched?.sessionId);
+      target = collaborationTargetEligibility(this.store, targetContext, launched?.session?.id);
     }
     if (!target?.active) {
       throw coded("CREATED_SESSION_NOT_ACTIVE", `The target Worker Session was not created successfully: ${target?.reasons.join(", ") || "unresolved"}.`, 503);
@@ -753,11 +760,14 @@ export class SessionCollaborationService {
     });
     let launched;
     try {
-      launched = await this.launchTask({
-        task: productTask,
-        agent,
+      launched = await this.workSessionStartApplicationService.start({
+        taskId: productTask.id,
+        assigneeAgentId: agent.agentId,
+        expectedTaskVersion: Number(productTask.resource_version ?? 1),
+        providerId: this.defaultProviderId,
         title: productTask.title,
-        autoUniqueTitle: true
+        idempotencyKey: `collaboration-delivery:${task.taskId}:start`,
+        sourceSessionId: task.initiatorSessionId ?? task.sourceSessionId
       });
     } catch (error) {
       this.onRoutingEvent("task_session_creation_failed", {
@@ -768,7 +778,7 @@ export class SessionCollaborationService {
       });
       throw error;
     }
-    const created = collaborationTargetEligibility(this.store, task, launched?.id ?? launched?.sessionId);
+    const created = collaborationTargetEligibility(this.store, task, launched?.session?.id);
     if (!created.active) {
       throw coded(
         "CREATED_SESSION_NOT_ACTIVE",
@@ -997,5 +1007,18 @@ function assertKnown(input, fields) {
   const allowed = new Set(fields);
   const unknown = Object.keys(input).find((field) => !allowed.has(field));
   if (unknown) throw coded("UNKNOWN_FIELD", `Unknown collaboration Task field: ${unknown}.`);
+}
+function assertStartKnown(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw coded("UNKNOWN_START_FIELD", "Work Session start input must be an object.");
+  }
+  const allowed = new Set([
+    "taskId", "assigneeAgentId", "providerId", "title", "expectedTaskVersion",
+    "idempotencyKey", "sourceSessionId"
+  ]);
+  const unknown = Object.keys(input).filter((field) => !allowed.has(field));
+  if (unknown.length > 0) {
+    throw coded("UNKNOWN_START_FIELD", `Unknown Work Session start field: ${unknown.sort().join(", ")}.`);
+  }
 }
 function coded(code, message, statusCode = 400) { const error = new Error(message); error.code = code; error.statusCode = statusCode; return error; }

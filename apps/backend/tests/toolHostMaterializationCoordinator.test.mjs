@@ -99,6 +99,31 @@ test("100 concurrent desiredVersion requests single-flight into one Provider app
   }
 });
 
+test("pre-ready Worker Session is authorized only by its exact startup operation", async () => {
+  const value = await fixture();
+  try {
+    value.binding.currentTaskSessionId = null;
+    value.binding.taskSessionAuthorization = "startup";
+    value.binding.startupOperationId = "startup:one";
+    const result = await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      phase: "bootstrap"
+    });
+    assert.equal(result.status, "applied");
+
+    value.binding.startupOperationId = null;
+    await assert.rejects(() => value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      phase: "bootstrap"
+    }), { code: "ACTOR_NOT_BOUND" });
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("invalidating an applied proof keeps the existing binding and fails readiness closed", async () => {
   const value = await fixture();
   try {

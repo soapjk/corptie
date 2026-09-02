@@ -22,7 +22,10 @@ async function fixture() {
   const launches = [];
   const service = new SessionCollaborationService({
     store, objectiveService, artifactService, collaborationCore: core,
-    startTask: async (input) => { launches.push(input); return { id: "worker:launched" }; }
+    workSessionStartApplicationService: {
+      start: async (input) => { launches.push(input); return { session: { id: "worker:launched" } }; }
+    },
+    defaultProviderId: "codex-app-server"
   });
   return { directory, store, core, objectiveService, artifactService, service, launches };
 }
@@ -330,14 +333,14 @@ test("peer Objective discovery exposes context without allowing Objective Chat a
     assert.equal(confirmation.targetObjectiveId, peerObjective.id);
     assert.equal(confirmation.targetObjectiveName, "MarketCow");
     assert.equal(f.store.listTasksByObjective(peerObjective.id).length, 1);
-    f.service.launchTask = async ({ task, agent, autoUniqueTitle }) => {
-      assert.equal(autoUniqueTitle, true);
+    f.service.workSessionStartApplicationService.start = async ({ taskId, assigneeAgentId }) => {
+      const task = f.store.getTask(taskId);
       session(f.store, f.core, {
         providerSessionId: "provider:marketcow-collaboration", logicalSessionId: "session:marketcow-collaboration",
-        agentId: agent.agentId, kind: "worker", objectiveId: task.objective_id,
+        agentId: assigneeAgentId, kind: "worker", objectiveId: task.objective_id,
         taskId: task.id, cwd: f.directory
       });
-      return { id: "provider:marketcow-collaboration" };
+      return { session: { id: "provider:marketcow-collaboration" } };
     };
     const prepared = await f.service.prepareTaskConfirmationTarget(confirmation);
     assert.equal(f.store.selectAll("SELECT * FROM collaboration_requests").length, 0);
@@ -546,13 +549,14 @@ test("an unrouted confirmation creates its Task and target Session before the fo
       title: "Create a safe route",
       summary: "No closed Session may receive this message."
     });
-    f.service.launchTask = async ({ task, agent }) => {
+    f.service.workSessionStartApplicationService.start = async ({ taskId, assigneeAgentId }) => {
+      const task = f.store.getTask(taskId);
       session(f.store, f.core, {
         providerSessionId: "provider:peer-created", logicalSessionId: "session:peer-created",
-        agentId: agent.agentId, kind: "worker", objectiveId: task.objective_id,
+        agentId: assigneeAgentId, kind: "worker", objectiveId: task.objective_id,
         taskId: task.id, cwd: f.directory
       });
-      return { id: "provider:peer-created" };
+      return { session: { id: "provider:peer-created" } };
     };
 
     const prepared = await f.service.prepareTaskConfirmationTarget(confirmation);
@@ -950,7 +954,7 @@ test("collaboration start delegates shared orchestration receipts and retries wi
       title: "Retryable launch", agentId: agent.agentId, idempotencyKey: "create:retryable"
     });
 
-    f.service.launchTask = async () => {
+    f.service.workSessionStartApplicationService.start = async () => {
       f.store.db.run(
         `UPDATE tasks SET execution_status='start_failed' WHERE id=?`,
         [created.task.id]
@@ -965,7 +969,8 @@ test("collaboration start delegates shared orchestration receipts and retries wi
     };
     await assert.rejects(
       f.service.startTask(metadata, agent.agentId, {
-        taskId: created.task.id, resourceVersion: "1", idempotencyKey: "start:one"
+        taskId: created.task.id, assigneeAgentId: agent.agentId, providerId: "codex-app-server",
+        expectedTaskVersion: 1, idempotencyKey: "start:one", sourceSessionId: "session:objective-start"
       }),
       (error) => error.code === "PROVIDER_UNAVAILABLE"
         && error.receipt?.taskId === created.task.id
@@ -975,7 +980,7 @@ test("collaboration start delegates shared orchestration receipts and retries wi
     assert.equal(f.store.getTask(created.task.id).execution_status, "start_failed");
     assert.equal(f.objectiveService.listTasksByObjective(objective.id).filter((item) => item.title === "Retryable launch").length, 1);
 
-    f.service.launchTask = async () => {
+    f.service.workSessionStartApplicationService.start = async () => {
       session(f.store, f.core, {
         providerSessionId: "provider:launched", logicalSessionId: "session:launched",
         agentId: agent.agentId, kind: "worker", objectiveId: objective.id,
@@ -985,10 +990,11 @@ test("collaboration start delegates shared orchestration receipts and retries wi
         "UPDATE tasks SET current_session_id=?, execution_status='running', lifecycle_state='in_progress' WHERE id=?",
         ["provider:launched", created.task.id]
       );
-      return { id: "provider:launched" };
+      return { session: { id: "provider:launched" } };
     };
     const started = await f.service.startTask(metadata, agent.agentId, {
-      taskId: created.task.id, resourceVersion: "1", idempotencyKey: "start:one"
+      taskId: created.task.id, assigneeAgentId: agent.agentId, providerId: "codex-app-server",
+      expectedTaskVersion: 1, idempotencyKey: "start:one", sourceSessionId: "session:objective-start"
     });
     assert.equal(started.executionStatus, "running");
     assert.equal(started.session.sessionId, "session:launched");

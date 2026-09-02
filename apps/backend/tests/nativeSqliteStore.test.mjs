@@ -1758,11 +1758,11 @@ test("a recreated Worktree releases ownership held by a terminal startup operati
     );
     store.db.run(
       `INSERT INTO work_session_startup_operations (
-        startup_operation_id, objective_id, task_id, requested_agent_id, provider_id,
-        repository_id, idempotency_key, request_fingerprint, state, worktree_id,
+        startup_operation_id, objective_id, task_id, assignee_agent_id, expected_task_version, provider_id,
+        repository_id, source_session_id, idempotency_key, request_fingerprint, state, worktree_id,
         correlation_id, allocated_at, failed_at, updated_at
-      ) VALUES ('startup:failed','objective:one','task:one','agent:worker','test-provider',
-        'repository:recreated','start:failed','fingerprint','failed_compensated','worktree:worker',
+      ) VALUES ('startup:failed','objective:one','task:one','agent:worker',1,'test-provider',
+        'repository:recreated','session:source','start:failed','fingerprint','failed_compensated','worktree:worker',
         'correlation:failed','2026-08-30T00:00:00.000Z','2026-08-30T00:00:01.000Z','2026-08-30T00:00:01.000Z')`
     );
 

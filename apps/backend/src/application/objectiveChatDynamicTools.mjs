@@ -24,9 +24,11 @@ export class ObjectiveChatOperationService {
     this.store = options.store;
     this.objectiveService = options.objectiveService;
     this.contextService = options.contextService;
-    this.startTask = options.startTask;
-    if (!this.store || !this.objectiveService || !this.contextService || typeof this.startTask !== "function") {
-      throw new TypeError("ObjectiveChatOperationService requires store, objectiveService, contextService, and startTask().");
+    this.workSessionStartApplicationService = options.workSessionStartApplicationService;
+    this.defaultProviderId = options.defaultProviderId;
+    if (!this.store || !this.objectiveService || !this.contextService
+      || typeof this.workSessionStartApplicationService?.start !== "function" || !this.defaultProviderId) {
+      throw new TypeError("ObjectiveChatOperationService requires store, objectiveService, contextService, and WorkSessionStartApplicationService.");
     }
   }
 
@@ -42,15 +44,15 @@ export class ObjectiveChatOperationService {
       case "corptie_objective_agents_list": return this.#agents(objectiveId);
       case "corptie_objective_tasks_manage": return this.#tasks(objectiveId, args);
       case "corptie_objective_task_start": {
-        const task = this.#task(objectiveId, text(args.task_id, "task_id"));
-        const agent = this.store.getAgent(text(args.agent_id, "agent_id"));
-        if (!agent) throw coded("AGENT_NOT_FOUND", "Agent not found.");
-        if (agent.role !== "independentContributor") throw coded("AGENT_NOT_INDEPENDENT_CONTRIBUTOR", "A Worker Session requires an Independent Contributor.");
-        const objective = this.objectiveService.getObjective(objectiveId);
-        if (!objective.contributorAgentIds.includes(agent.agentId)) {
-          throw coded("AGENT_OUTSIDE_OBJECTIVE", "Agent is not a contributor to this Objective.");
-        }
-        return this.startTask({ task, agent, title: optionalText(args.title) });
+        return this.workSessionStartApplicationService.start({
+          taskId: text(args.task_id, "task_id"),
+          assigneeAgentId: text(args.agent_id, "agent_id"),
+          expectedTaskVersion: positiveInteger(args.resource_version, "resource_version"),
+          providerId: optionalText(args.provider_id) ?? this.defaultProviderId,
+          title: optionalText(args.title),
+          idempotencyKey: text(args.idempotency_key, "idempotency_key"),
+          sourceSessionId: text(input.metadata.sessionId, "source_session_id")
+        });
       }
       default: throw coded("HOST_TOOL_UNSUPPORTED", `Unsupported Objective Chat tool: ${input.tool}`);
     }
@@ -144,5 +146,6 @@ function scopedObjectiveId(metadata) {
 }
 function text(value, field) { const result = typeof value === "string" ? value.trim() : ""; if (!result) throw coded("INVALID_INPUT", `${field} is required.`); return result; }
 function optionalText(value) { const result = typeof value === "string" ? value.trim() : ""; return result || null; }
+function positiveInteger(value, field) { const result = Number(value); if (!Number.isInteger(result) || result < 1) throw coded("TASK_VERSION_CONFLICT", `${field} must be a positive integer.`); return result; }
 function object(value, field) { if (!value || typeof value !== "object" || Array.isArray(value)) throw coded("INVALID_INPUT", `${field} must be an object.`); return value; }
 function coded(code, message) { const error = new Error(message); error.code = code; return error; }

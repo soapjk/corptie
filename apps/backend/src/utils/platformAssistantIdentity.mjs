@@ -45,7 +45,18 @@ export function resolvePlatformAdminSession(store, input = {}) {
     error.code = "PLATFORM_ADMIN_SESSION_REQUIRED";
     throw error;
   }
-  return Object.freeze({ agent, session, actorSessionId: session.id });
+  const logical = store.getLogicalSessionByLegacySessionId(session.id);
+  if (!logical?.logicalSessionId || logical.archived || logical.activeBinding?.state !== "active") {
+    const error = new Error("Platform administration requires an active logical Session binding.");
+    error.code = "PLATFORM_ADMIN_SESSION_REQUIRED";
+    throw error;
+  }
+  return Object.freeze({
+    agent,
+    session,
+    actorSessionId: session.id,
+    logicalSessionId: logical.logicalSessionId
+  });
 }
 
 function text(value) {
