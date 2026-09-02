@@ -256,10 +256,13 @@ struct SessionWorkspace: Codable, Equatable, Sendable {
 
 struct WorkspaceRecoveryStatus: Decodable, Equatable, Sendable {
     let orphaned: Bool
+    let recoveryKind: String?
     let originalPath: String?
     let originalBranchName: String?
     let canRebuild: Bool?
     let worktrees: [WorkspaceRecoveryWorktree]
+
+    var blocksSessionInput: Bool { orphaned }
 }
 
 struct WorkspaceRecoveryWorktree: Identifiable, Decodable, Equatable, Sendable {

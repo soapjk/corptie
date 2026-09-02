@@ -163,6 +163,7 @@ final class BackendClient: ObservableObject {
             : (selectedSession?.executionTaskStatus ?? .complete)
     }
     var selectedCanSendNow: Bool {
+        if workspaceRecoveryStatus?.blocksSessionInput == true { return false }
         if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.canSend ?? false }
         return selectedSession?.isReady ?? false
     }
@@ -2215,17 +2216,25 @@ final class BackendClient: ObservableObject {
         refreshImmediately: Bool
     ) {
         projectStatusRefreshTask?.cancel()
-        guard !suppressBackgroundPolling, projectId(for: session) != nil else {
+        guard !suppressBackgroundPolling else {
             projectStatusRefreshTask = nil
             return
         }
         projectStatusRefreshTask = Task { [weak self] in
-            if refreshImmediately { await self?.loadProjectWorktreeStatus(for: session) }
+            if refreshImmediately { await self?.loadWorkspaceStatus(for: session) }
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
-                await self?.loadProjectWorktreeStatus(for: session)
+                await self?.loadWorkspaceStatus(for: session)
             }
+        }
+    }
+
+    private func loadWorkspaceStatus(for session: TaskSession) async {
+        if projectId(for: session) != nil {
+            await loadProjectWorktreeStatus(for: session)
+        } else {
+            await loadWorkspaceRecoveryStatus(for: session)
         }
     }
 
@@ -2618,9 +2627,9 @@ final class BackendClient: ObservableObject {
                 }
                 workspaceRecoveryStatus = nil
                 sendStatusMessage = action == "rebuild"
-                    ? L10n("Original Worktree rebuilt")
+                    ? L10n("Workspace rebuilt")
                     : L10n("Session switched to an available Worktree")
-                await loadProjectWorktreeStatus(for: session)
+                await loadWorkspaceStatus(for: session)
             } catch {
                 lastError = error.localizedDescription
                 await loadWorkspaceRecoveryStatus(for: session)
@@ -3471,6 +3480,9 @@ final class BackendClient: ObservableObject {
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
+                if selectedSession?.id == session.id {
+                    await loadWorkspaceRecoveryStatus(for: session)
+                }
                 onFailure()
             }
         }

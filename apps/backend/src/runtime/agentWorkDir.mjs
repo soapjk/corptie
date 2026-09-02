@@ -45,6 +45,16 @@ export function effectiveAgentWorkDir(agent, options = {}) {
   return configured ? resolve(configured) : resolveAgentWorkDir(agent, options);
 }
 
+// Only an Assistant's exact persisted runtime workspace may be recreated from a
+// Session binding. This prevents the recovery endpoint from turning an
+// arbitrary stale boundCwd value into a recursive mkdir target.
+export function recoverableAgentWorkDir(agent, boundCwd, options = {}) {
+  const bound = typeof boundCwd === "string" ? boundCwd.trim() : "";
+  if (agent?.role !== "assistant" || !bound) return null;
+  const expected = effectiveAgentWorkDir(agent, options);
+  return resolve(bound) === expected ? expected : null;
+}
+
 // 确保 Agent 工作目录存在（幂等），返回规范化后的绝对路径。
 // 若目录路径已存在且不是目录（是文件/符号链接指向文件），抛错避免破坏用户数据。
 export async function ensureAgentWorkDir(agent, options = {}) {
