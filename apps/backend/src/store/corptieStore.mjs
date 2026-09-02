@@ -94,14 +94,26 @@ export class CorptieStore {
   async initialize(options = {}) {
     if (options.resolveDataPath !== false) await this.resolveDataPath();
     if (!this.dbPath) throw new Error("Store data path must be resolved before initialization.");
-    await mkdir(dirname(this.dbPath), { recursive: true });
-    this.db = new NativeDatabase(this.dbPath);
+    const readOnly = options.readOnly === true;
+    // Read Workers never create storage. Avoid dispatching an existing-path
+    // mkdir through libuv's shared filesystem pool: on a busy external Data
+    // Root that metadata operation can queue behind long-running SQLite reads
+    // even though opening the database itself takes only milliseconds.
+    if (!readOnly) await mkdir(dirname(this.dbPath), { recursive: true });
+    this.db = new NativeDatabase(this.dbPath, { readOnly });
     try {
-      this.db.run("PRAGMA journal_mode = WAL");
-      this.db.run("PRAGMA synchronous = FULL");
+      if (readOnly) {
+        this.db.run("PRAGMA query_only = ON");
+        this.db.run(`PRAGMA cache_size = -${Math.max(1_024, Number(options.readCacheSizeKiB) || 65_536)}`);
+        this.db.run(`PRAGMA mmap_size = ${Math.max(0, Number(options.readMmapSizeBytes) || 268_435_456)}`);
+        this.db.run("PRAGMA temp_store = MEMORY");
+      } else {
+        this.db.run("PRAGMA journal_mode = WAL");
+        this.db.run("PRAGMA synchronous = FULL");
+      }
       this.db.run("PRAGMA busy_timeout = 5000");
       this.db.run("PRAGMA foreign_keys = ON");
-      if (options.performMigrations !== false) this.migrate();
+      if (!readOnly && options.performMigrations !== false) this.migrate();
     } catch (error) {
       this.db.close();
       this.db = null;
@@ -13308,8 +13320,8 @@ function notifyCommittedListener(listener, payload) {
 }
 
 class NativeDatabase {
-  constructor(path) {
-    this.database = new DatabaseSync(path);
+  constructor(path, options = {}) {
+    this.database = new DatabaseSync(path, { readOnly: options.readOnly === true });
     this.rowsModified = 0;
     this.observability = new SqliteQueryObservability();
     this.writeBlocked = false;
