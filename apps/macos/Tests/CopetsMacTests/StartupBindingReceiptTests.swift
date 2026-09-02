@@ -4,6 +4,27 @@ import Testing
 @testable import CorptieMac
 
 struct StartupBindingReceiptTests {
+    @Test func workSessionStartRequestUsesTheAuthoritativeFieldContract() throws {
+        let request = WorkSessionStartRequest(
+            taskId: "task:one",
+            assigneeAgentId: "agent:worker",
+            expectedTaskVersion: 3,
+            providerId: "openclacky",
+            title: "Worker",
+            idempotencyKey: "start:one",
+            sourceSessionId: "session:source"
+        )
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        #expect(Set(object.keys) == Set([
+            "taskId", "assigneeAgentId", "expectedTaskVersion", "providerId", "title",
+            "idempotencyKey", "sourceSessionId"
+        ]))
+        #expect(object["assigneeAgentId"] as? String == "agent:worker")
+        #expect(object["expectedTaskVersion"] as? Int == 3)
+        #expect(object["agentId"] == nil)
+        #expect(object["requestedAgentId"] == nil)
+    }
+
     @Test func decodesAndVerifiesCompleteSchemaV2Receipt() throws {
         let payload = try readyPayload()
         let decoded = try JSONDecoder().decode(CorptieTaskStartupReady.self, from: payload)
@@ -97,6 +118,8 @@ struct StartupBindingReceiptTests {
             "workspaceResourceVersion": 1,
             "resourceVersion": 5,
             "providerContextHash": String(repeating: "c", count: 64),
+            "toolContractHash": String(repeating: "d", count: 64),
+            "instructionSourcesHash": String(repeating: "e", count: 64),
             "phaseTimestamps": [
                 "allocatedAt": "2026-08-30T00:00:00.000Z",
                 "worktreePreparedAt": "2026-08-30T00:00:00.010Z",

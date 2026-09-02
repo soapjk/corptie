@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://corptie.local/contracts/work-session-start-command.schema.json",
+  "title": "WorkSessionStartCommand",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "taskId",
+    "assigneeAgentId",
+    "expectedTaskVersion",
+    "providerId",
+    "idempotencyKey",
+    "sourceSessionId"
+  ],
+  "properties": {
+    "taskId": { "type": "string", "pattern": "^task:", "minLength": 6 },
+    "assigneeAgentId": { "type": "string", "pattern": "^agent:", "minLength": 7 },
+    "expectedTaskVersion": { "type": "integer", "minimum": 1 },
+    "providerId": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "sourceSessionId": {
+      "type": "string",
+      "pattern": "^(session|logical):",
+      "minLength": 9
+    }
+  }
+}

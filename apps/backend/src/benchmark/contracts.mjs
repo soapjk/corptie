@@ -37,7 +37,7 @@ const profiles = {
   },
   StartupBindingReceipt: {
     stage: "startup", producer: "startup-binding", schemaVersion: 2,
-    fields: ["schemaVersion", "status", "startupOperationId", "objectiveId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "canonicalWorktreePath", "headIdentity", "providerBindingId", "bindingGeneration", "sourceCommitOid", "sourceTreeOid", "baseRef", "repositoryInventoryVersion", "workspaceResourceVersion", "resourceVersion", "providerContextHash", "phaseTimestamps", "compensation", "error", "receiptHash"],
+    fields: ["schemaVersion", "status", "startupOperationId", "objectiveId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "canonicalWorktreePath", "headIdentity", "providerBindingId", "bindingGeneration", "sourceCommitOid", "sourceTreeOid", "baseRef", "repositoryInventoryVersion", "workspaceResourceVersion", "resourceVersion", "providerContextHash", "toolContractHash", "instructionSourcesHash", "phaseTimestamps", "compensation", "error", "receiptHash"],
     required: ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "startupOperationId", "receiptHash"], forbidden: ["catalogVersion", "toolsetVersion", "sourceFingerprint", "runId", "observationId"]
   },
   RepositorySourceSnapshotReceipt: {

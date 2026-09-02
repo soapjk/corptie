@@ -2176,10 +2176,11 @@ export class CorptieStore {
         startup_operation_id TEXT PRIMARY KEY,
         objective_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
-        requested_agent_id TEXT NOT NULL,
+        assignee_agent_id TEXT NOT NULL,
+        expected_task_version INTEGER NOT NULL,
         provider_id TEXT NOT NULL,
         repository_id TEXT NOT NULL,
-        actor_logical_session_id TEXT,
+        source_session_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         request_fingerprint TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'application',
@@ -2201,11 +2202,14 @@ export class CorptieStore {
         attempt INTEGER NOT NULL DEFAULT 1,
         resource_version INTEGER NOT NULL DEFAULT 1,
         error_code TEXT,
+        error_stage TEXT,
         error_message_redacted TEXT,
         error_retryable INTEGER,
         correlation_id TEXT NOT NULL,
         compensation_state TEXT,
         compensation_result_json TEXT,
+        initial_turn_state TEXT NOT NULL DEFAULT 'pending' CHECK (initial_turn_state IN ('pending','accepted','failed')),
+        initial_turn_error_code TEXT,
         allocated_at TEXT NOT NULL,
         worktree_prepared_at TEXT,
         session_bound_at TEXT,
@@ -2217,7 +2221,7 @@ export class CorptieStore {
         CHECK ((state='ready' AND ready_at IS NOT NULL) OR (state<>'ready' AND ready_at IS NULL)),
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
         FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
-        FOREIGN KEY (requested_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
+        FOREIGN KEY (assignee_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
         FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE RESTRICT,
         FOREIGN KEY (worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE RESTRICT,
         FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE RESTRICT,
@@ -2253,6 +2257,9 @@ export class CorptieStore {
         provider_id TEXT NOT NULL,
         provider_resource_id TEXT,
         provider_cwd_proof TEXT,
+        tool_contract_hash TEXT,
+        instruction_sources_hash TEXT,
+        activation_proof_json TEXT,
         provider_context_hash TEXT NOT NULL,
         resource_version INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
@@ -2285,6 +2292,9 @@ export class CorptieStore {
       WHEN NEW.status='ready' AND (
         NEW.provider_resource_id IS NULL OR TRIM(NEW.provider_resource_id)=''
         OR NEW.provider_cwd_proof IS NULL OR TRIM(NEW.provider_cwd_proof)=''
+        OR NEW.tool_contract_hash IS NULL OR TRIM(NEW.tool_contract_hash)=''
+        OR NEW.instruction_sources_hash IS NULL OR TRIM(NEW.instruction_sources_hash)=''
+        OR NEW.activation_proof_json IS NULL OR TRIM(NEW.activation_proof_json)=''
       )
       BEGIN
         SELECT RAISE(ABORT, 'START_PROVIDER_PROOF_REQUIRED');
@@ -3036,6 +3046,45 @@ export class CorptieStore {
     this.ensureColumn("git_worktrees", "dedicated", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("git_worktrees", "created_by_startup_operation_id", "TEXT");
     this.ensureColumn("git_worktrees", "resource_version", "INTEGER NOT NULL DEFAULT 1");
+    const startupColumns = this.selectAll("PRAGMA table_info(work_session_startup_operations)");
+    if (startupColumns.some((entry) => entry.name === "requested_agent_id")
+      && !startupColumns.some((entry) => entry.name === "assignee_agent_id")) {
+      this.db.run(
+        "ALTER TABLE work_session_startup_operations RENAME COLUMN requested_agent_id TO assignee_agent_id"
+      );
+    }
+    if (startupColumns.some((entry) => entry.name === "actor_logical_session_id")
+      && !startupColumns.some((entry) => entry.name === "source_session_id")) {
+      this.db.run(
+        "ALTER TABLE work_session_startup_operations RENAME COLUMN actor_logical_session_id TO source_session_id"
+      );
+    }
+    this.ensureColumn(
+      "work_session_startup_operations",
+      "expected_task_version",
+      "INTEGER NOT NULL DEFAULT 1"
+    );
+    this.ensureColumn("work_session_startup_operations", "error_stage", "TEXT");
+    this.ensureColumn(
+      "work_session_startup_operations",
+      "initial_turn_state",
+      "TEXT NOT NULL DEFAULT 'pending'"
+    );
+    this.ensureColumn("work_session_startup_operations", "initial_turn_error_code", "TEXT");
+    this.ensureColumn("work_session_startup_bindings", "tool_contract_hash", "TEXT");
+    this.ensureColumn("work_session_startup_bindings", "instruction_sources_hash", "TEXT");
+    this.ensureColumn("work_session_startup_bindings", "activation_proof_json", "TEXT");
+    this.db.run("DROP TRIGGER IF EXISTS work_session_startup_binding_ready_guard");
+    this.db.run(`CREATE TRIGGER work_session_startup_binding_ready_guard
+      BEFORE UPDATE OF status ON work_session_startup_bindings
+      WHEN NEW.status='ready' AND (
+        NEW.provider_resource_id IS NULL OR TRIM(NEW.provider_resource_id)=''
+        OR NEW.provider_cwd_proof IS NULL OR TRIM(NEW.provider_cwd_proof)=''
+        OR NEW.tool_contract_hash IS NULL OR TRIM(NEW.tool_contract_hash)=''
+        OR NEW.instruction_sources_hash IS NULL OR TRIM(NEW.instruction_sources_hash)=''
+        OR NEW.activation_proof_json IS NULL OR TRIM(NEW.activation_proof_json)=''
+      )
+      BEGIN SELECT RAISE(ABORT, 'START_PROVIDER_ACTIVATION_PROOF_REQUIRED'); END`);
     this.runDataMigrationOnce("remove-legacy-task-start-operations-v1", () => {
       this.db.run("DROP INDEX IF EXISTS idx_task_start_operations_context");
       this.db.run("DROP TABLE IF EXISTS task_start_operations");
@@ -7524,7 +7573,7 @@ export class CorptieStore {
         input.agentId ?? null
       ]
     );
-    if (input.taskId) {
+    if (input.taskId && input.deferTaskProjection !== true) {
       this.db.run(
         `UPDATE tasks SET current_session_id = ?, updated_at = ? WHERE id = ?`,
         [id, now, input.taskId]

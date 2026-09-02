@@ -67,11 +67,13 @@ import {
 import { TaskExecutionOrchestrator } from "./application/taskExecutionOrchestrator.mjs";
 import { TaskWorkspaceService } from "./application/taskWorkspaceService.mjs";
 import { WorkSessionStartupCoordinator } from "./application/workSessionStartupCoordinator.mjs";
+import { WorkSessionStartApplicationService } from "./application/workSessionStartApplicationService.mjs";
 import { WorktreeStartupPreparer } from "./application/worktreeStartupPreparer.mjs";
 import {
   ProviderWorkspaceBindingService,
   persistedProviderWorkspaceProof
 } from "./agent-provider/providerWorkspaceBindingService.mjs";
+import { ProviderWorkSessionPort } from "./agent-provider/providerWorkSessionPort.mjs";
 import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
@@ -322,6 +324,7 @@ let sessionWorkspaceOperations = null;
 let projectCodeApplicationService = null;
 let projectCodeStartupReceipts = null;
 let workSessionStartupCoordinator = null;
+let workSessionStartApplicationService = null;
 let sessionRecoveryCoordinator = null;
 let projectToolsetProduction = null;
 let projectToolsetInitializer = null;
@@ -388,21 +391,8 @@ const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
   resume: resumePersistentRuntime
 });
 const objectiveChatContextService = new ObjectiveChatContextService({ store, artifactService });
-const objectiveChatOperationService = new ObjectiveChatOperationService({
-  store,
-  objectiveService,
-  contextService: objectiveChatContextService,
-  startTask: ({ task, agent, title }) => launchAndBindTaskSession({ task, agent, title })
-});
-const sessionCollaborationService = new SessionCollaborationService({
-  store,
-  objectiveService,
-  artifactService,
-  collaborationCore,
-  startTask: ({ task, agent, title, idempotencyKey, source }) => launchAndBindTaskSession({
-    task, agent, title, idempotencyKey, source
-  })
-});
+let objectiveChatOperationService = null;
+let sessionCollaborationService = null;
 const sessionChannelService = new SessionChannelService({ store, collaborationCore });
 const hubService = new HubService({
   store,
@@ -988,6 +978,25 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     backgroundPermissionProfiles: ["read-only", "workspace-write"]
   },
   additionalProviders: [openClackyProvider]
+});
+objectiveChatOperationService = new ObjectiveChatOperationService({
+  store,
+  objectiveService,
+  contextService: objectiveChatContextService,
+  workSessionStartApplicationService: {
+    start: (command) => workSessionStartApplicationService.start(command)
+  },
+  defaultProviderId: agentProviderRegistry.defaultProviderId
+});
+sessionCollaborationService = new SessionCollaborationService({
+  store,
+  objectiveService,
+  artifactService,
+  collaborationCore,
+  workSessionStartApplicationService: {
+    start: (command) => workSessionStartApplicationService.start(command)
+  },
+  defaultProviderId: agentProviderRegistry.defaultProviderId
 });
 const providerRuntimeReadiness = new Map(agentProviderRegistry.descriptors().map((provider) => [
   provider.id,
@@ -1651,18 +1660,26 @@ platformOperationService = new PlatformOperationService({
   confirmationService: platformConfirmationService,
   sessionRuntimeReleaseService,
   listSessions: (input) => listGatewaySessions(input),
-  createSession: async ({ agentId, providerId, taskId, title, prompt }) => {
+  createSession: async ({
+    agentId, providerId, taskId, expectedTaskVersion, title, prompt, sourceSessionId, idempotencyKey
+  }) => {
+    if (taskId) {
+      const started = await workSessionStartApplicationService.start({
+        taskId,
+        assigneeAgentId: agentId,
+        expectedTaskVersion,
+        providerId,
+        title,
+        idempotencyKey,
+        sourceSessionId
+      });
+      return started.session;
+    }
     const agent = store.getAgent(agentId);
     if (!agent) {
       const error = new Error(`Agent not found: ${agentId}`);
       error.code = "AGENT_NOT_FOUND";
       throw error;
-    }
-    if (taskId) {
-      const task = objectiveService.getTask(taskId);
-      return launchAndBindTaskSession({
-        agent, task, providerId, title, initialPrompt: prompt, source: "platform-operation"
-      });
     }
     return launchAgentSession({ agent, providerId, title, prompt });
   },
@@ -2030,89 +2047,105 @@ const startupWorktreePreparer = new WorktreeStartupPreparer({
 const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
   registry: agentProviderRegistry
 });
-workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
-  store,
-  validateStart: async (operation) => {
-    const task = objectiveService.getTask(operation.taskId);
-    const objective = objectiveService.getObjective(task.objective_id);
-    const agent = store.getAgent(operation.requestedAgentId);
-    if (!agent) {
-      const error = new Error(`Agent not found: ${operation.requestedAgentId}`);
-      error.code = "AGENT_NOT_FOUND";
-      error.statusCode = 404;
-      throw error;
-    }
-    if (agent.role !== "independentContributor") {
-      const error = new Error("Only an Independent Contributor can own a Worker Session.");
-      error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
-      throw error;
-    }
-    // currentSessionId is a recency pointer, not an exclusivity lock. Objective
-    // Chat and Worker Sessions may coexist for the same reusable Agent.
-    store.assertTaskAssociations({
-      mainWorkspaceId: task.main_workspace_id,
-      mainAgentId: agent.agentId
-    }, objective);
-    const providerId = resolveSessionProviderId(operation.providerId);
-    if (!providerId) {
-      const error = new Error(`Agent Provider is not registered: ${operation.providerId}`);
-      error.code = "AGENT_PROVIDER_NOT_FOUND";
-      throw error;
-    }
-    agentProviderRegistry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE);
-    try {
-      agentProviderRegistry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND);
-    } catch (error) {
-      error.code = "START_PROVIDER_BIND_UNSUPPORTED";
-      error.statusCode = 409;
-      error.retryable = false;
-      throw error;
-    }
-    return { task, objective, agent, providerId };
+const providerWorkSessionPort = new ProviderWorkSessionPort({
+  workspaceBinding: providerWorkspaceBindingService,
+  createSession: ({ taskId, assigneeAgentId, providerId, title, workspace }) => {
+    const task = objectiveService.getTask(taskId);
+    const agent = store.getAgent(assigneeAgentId);
+    return createProviderWorkSession({
+      assigneeAgentId,
+      assigneeName: agent?.name,
+      taskId,
+      taskTitle: task.title,
+      objectiveId: task.objective_id,
+      providerId,
+      title,
+      workingDirectory: workspace.canonicalWorktreePath,
+      autoUniqueTitle: true,
+      deferInitialPromptUntilBound: true,
+      deferToolHostFinalization: true
+    });
   },
-  prepareWorktree: (input) => startupWorktreePreparer.prepare(input),
-  inspectWorktree: (input) => startupWorktreePreparer.inspect(input),
-  createSession: ({ task, agent, providerId, title, workspace, source }) => launchTaskSession({
-    agent,
-    task,
-    providerId,
-    title,
-    workingDirectory: workspace.canonicalWorktreePath,
-    autoUniqueTitle: true,
-    deferInitialPromptUntilBound: true,
-    deferToolHostFinalization: true,
-    ...(source === "integration-plan-resolution"
-      ? { sandbox: "danger-full-access", approvalPolicy: "never" }
-      : {})
-  }),
-  bindProviderWorkspace: (input) => providerWorkspaceBindingService.bindWorkspace(input),
-  inspectProviderBinding: (input) => providerWorkspaceBindingService.inspectBinding(input),
-  activateSession: async ({ session, task, agent, initialPrompt }) => {
+  activateSession: async ({ session, taskId, assigneeAgentId, workingDirectory, dispatchInitialTurn }) => {
+    const task = objectiveService.getTask(taskId);
     try {
-      await sessionApplicationService.resumeSession(session.id, {
-        source: "task-start",
-        purpose: "session-create-finalization",
-        actorId: agent.agentId,
-        objectiveId: task.objective_id,
-        taskId: task.id,
-        sessionKind: "worker"
-      });
-      return await sendUnifiedSessionMessage(session.id, initialPrompt || taskExecutionPrompt(task), {
+      if (dispatchInitialTurn !== true) {
+        await sessionApplicationService.resumeSession(session.id, {
+          source: "task-start",
+          purpose: "session-create-finalization",
+          actorId: assigneeAgentId,
+          objectiveId: task.objective_id,
+          taskId,
+          sessionKind: "worker"
+        });
+        const current = store.getSession(session.id);
+        const logical = store.getLogicalSessionByLegacySessionId(session.id);
+        const activeBinding = logical?.activeBinding;
+        const materialization = activeBinding?.bindingId
+          ? store.getSessionToolCatalogMaterialization(logical.logicalSessionId, activeBinding.bindingId)
+          : null;
+        const toolContractHash = materialization?.status === "applied"
+          ? materialization.providerReceipt?.providerDefinitionsHash
+          : null;
+        const actualCwdValue = current?.external?.cwd ?? activeBinding?.boundCwd;
+        if (typeof actualCwdValue !== "string" || !actualCwdValue.trim()
+          || typeof workingDirectory !== "string" || !workingDirectory.trim()) {
+          const error = new Error("Provider Session activation omitted its working-directory proof.");
+          error.code = "START_PROVIDER_BINDING_FAILED";
+          throw error;
+        }
+        const actualCwd = resolve(actualCwdValue);
+        const expectedCwd = resolve(workingDirectory);
+        if (!toolContractHash || actualCwd !== expectedCwd) {
+          const error = new Error("Provider Session activation did not apply the required Tool contract in the bound Worktree.");
+          error.code = "START_PROVIDER_BINDING_FAILED";
+          throw error;
+        }
+        const instructionSources = [
+          ...await requiredWorkspaceInstructionSources(expectedCwd),
+          ...await knownGlobalInstructionSources()
+        ].sort();
+        return {
+          providerResourceId: activeBinding.providerSessionId,
+          canonicalWorkingDirectory: actualCwd,
+          toolContractHash,
+          instructionSourcesHash: createHash("sha256").update(JSON.stringify(instructionSources)).digest("hex")
+        };
+      }
+      return await sendUnifiedSessionMessage(session.id, taskExecutionPrompt(task), {
         type: "session-initialization",
         origin: "task-start"
       });
     } catch (error) {
-      console.error(`[task-start] initial prompt enqueue failed session=${session.id}: ${error.message}`);
+      const initialTurn = dispatchInitialTurn === true;
+      error.code = initialTurn ? "START_INITIAL_TURN_FAILED" : "START_PROVIDER_BINDING_FAILED";
+      error.stage = initialTurn ? "initial_turn" : "provider_activation";
+      console.error(`[task-start] ${initialTurn ? "initial prompt enqueue" : "provider activation"} failed session=${session.id}: ${error.message}`);
       throw error;
     }
   },
-  markSessionStartupFailed: async (sessionId) => {
-    store.db.run(
-      "UPDATE sessions SET status='failed', updated_at=? WHERE id=? AND status NOT IN ('completed','deleted')",
-      [new Date().toISOString(), sessionId]
-    );
-    store.scheduleSave();
-  },
+  compensateSession: async ({ sessionId, errorCode }) => {
+    try {
+      await sessionApplicationService.deleteSession(sessionId, {
+        source: "work-session-start-compensation",
+        reason: errorCode
+      });
+    } catch (error) {
+      store.db.run(
+        "UPDATE sessions SET status='failed', updated_at=? WHERE id=? AND status NOT IN ('completed','deleted')",
+        [new Date().toISOString(), sessionId]
+      );
+      store.scheduleSave();
+      throw error;
+    }
+  }
+});
+workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
+  store,
+  authorizeStart: (command) => workSessionStartApplicationService.authorize(command),
+  prepareWorktree: (input) => startupWorktreePreparer.prepare(input),
+  inspectWorktree: (input) => startupWorktreePreparer.inspect(input),
+  providerWorkSessionPort,
   compensateWorktree: async ({ operation, allocation }) => {
     const inventory = store.getGitWorktree(allocation.worktreeId);
     if (!inventory || inventory.repositoryId !== allocation.repositoryId
@@ -2139,6 +2172,12 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
   },
   onChanged: (type, payload) => emitEvent(type, payload)
 });
+workSessionStartApplicationService = new WorkSessionStartApplicationService({
+  store,
+  coordinator: workSessionStartupCoordinator,
+  providerRegistry: agentProviderRegistry,
+  resolveProviderId: resolveSessionProviderId
+});
 const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService({
   store,
   inspectProject: async (projectId, options = {}) => {
@@ -2164,7 +2203,8 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
     });
   },
   createAndLaunchConflictTask: async ({
-    objective, projectId, agent, workspace, title, description, acceptanceCriteria, prompt, integrationRunId
+    objective, projectId, agent, workspace, title, description, acceptanceCriteria, prompt,
+    integrationRunId, sourceSessionId
   }) => {
     const task = objectiveService.createTask({
       objectiveId: objective.id,
@@ -2177,14 +2217,14 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
     });
     let session;
     try {
-      session = await launchPreparedTaskSession({
-        agent,
-        task,
+      session = await startPreparedWorkSession({
+        assigneeAgentId: agent.agentId,
+        taskId: task.id,
         providerId: agentProviderRegistry.defaultProviderId,
         title,
-        initialPrompt: prompt,
         workspace,
-        source: "integration-conflict-resolution"
+        idempotencyKey: `integration-conflict:${integrationRunId}:start`,
+        sourceSessionId
       });
     } catch (error) {
       objectiveService.deleteTask(task.id);
@@ -2368,14 +2408,17 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
     });
     let session;
     try {
-      session = await launchPreparedTaskSession({
-        agent,
-        task,
+      const sourceLogical = sourceTask.current_session_id
+        ? store.getLogicalSessionByLegacySessionId(sourceTask.current_session_id)
+        : null;
+      session = await startPreparedWorkSession({
+        assigneeAgentId: agent.agentId,
+        taskId: task.id,
         providerId: agentProviderRegistry.defaultProviderId,
         title,
-        initialPrompt: prompt,
         workspace,
-        source: "integration-plan-resolution"
+        idempotencyKey: `integration-plan:${job.id}:start`,
+        sourceSessionId: sourceLogical?.logicalSessionId
       });
     } catch (error) {
       objectiveService.deleteTask(task.id);
@@ -4122,6 +4165,19 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
   if (!logical || !active || active.bindingId !== providerBindingId) return null;
   const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
   const task = session?.taskId ? store.getTask(session.taskId) : null;
+  const startupAuthorization = session?.sessionKind === "worker" && task?.current_session_id !== session.id
+    ? store.selectOne(
+      `SELECT startup.startup_operation_id, startup.resource_version
+       FROM work_session_startup_operations startup
+       JOIN work_session_startup_bindings binding
+         ON binding.startup_operation_id=startup.startup_operation_id
+       WHERE startup.task_id=? AND startup.legacy_session_id=? AND startup.logical_session_id=?
+         AND startup.provider_id=? AND startup.state IN ('session_bound','provider_bound')
+         AND binding.provider_resource_id=? AND binding.status='binding'
+       ORDER BY startup.allocated_at DESC LIMIT 1`,
+      [session.taskId, session.id, logical.logicalSessionId, active.providerId, active.providerSessionId]
+    )
+    : null;
   return {
     logicalSessionId: logical.logicalSessionId,
     providerBindingId: active.bindingId,
@@ -4136,10 +4192,15 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
     objectiveId: session?.objectiveId ?? null,
     taskId: session?.taskId ?? null,
     currentTaskSessionId: task?.current_session_id ?? null,
+    taskSessionAuthorization: task?.current_session_id === session?.id
+      ? "current"
+      : (startupAuthorization ? "startup" : null),
+    startupOperationId: startupAuthorization?.startup_operation_id ?? null,
     agentId: session?.agentId ?? null,
     authorizationRevision: Math.max(
       Number(logical.routingVersion ?? 1),
-      Number(task?.resource_version ?? 1)
+      Number(task?.resource_version ?? 1),
+      Number(startupAuthorization?.resource_version ?? 1)
     )
   };
 }
@@ -4316,7 +4377,7 @@ async function resolveScheduledSessionRoute(logicalSessionId) {
   return {
     logicalSession: logical,
     sessionId: session.id,
-    requestedAgentId: agent.agentId,
+    assigneeAgentId: agent.agentId,
     binding: logical.activeBinding
   };
 }
@@ -5186,9 +5247,12 @@ function resolveSessionProviderId(provider) {
 
 // Startup coordinator 专用的低层 Session 构造端口。调用方必须提供已由
 // WorktreeStartupPreparer 验证的目录；此函数不发现、创建或切换 Worktree。
-async function launchTaskSession({
-  agent,
-  task,
+async function createProviderWorkSession({
+  assigneeAgentId,
+  assigneeName,
+  taskId,
+  taskTitle,
+  objectiveId,
   providerId: requestedProviderId,
   title,
   prompt: requestedPrompt,
@@ -5201,11 +5265,6 @@ async function launchTaskSession({
   deferToolHostFinalization = false,
   observePerformance = () => {}
 }) {
-  if (agent.role !== "independentContributor") {
-    const error = new Error("只有 Independent Contributor 才能创建 Worker Session。");
-    error.code = "AGENT_NOT_INDEPENDENT_CONTRIBUTOR";
-    throw error;
-  }
   const providerId = resolveSessionProviderId(requestedProviderId);
   if (!providerId) {
     const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
@@ -5220,6 +5279,7 @@ async function launchTaskSession({
     error.code = "START_WORKTREE_BINDING_REQUIRED";
     throw error;
   }
+  const task = objectiveService.getTask(taskId);
   const prompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
     ? requestedPrompt.trim()
     : taskExecutionPrompt(task);
@@ -5230,9 +5290,9 @@ async function launchTaskSession({
     {
       cwd,
       title,
-      defaultTitle: defaultSessionTitleForTask(task.title, agent.name),
+      defaultTitle: defaultSessionTitleForTask(taskTitle, assigneeName),
       prompt: deferInitialPromptUntilBound ? "" : prompt,
-      agent: agent.name,
+      agent: assigneeName,
       sessionKind: "worker",
       autoUniqueTitle,
       ...(sandbox ? { sandbox } : {}),
@@ -5241,9 +5301,9 @@ async function launchTaskSession({
     },
     {
       source: "entity",
-      actorId: agent.agentId,
-      objectiveId: task.objective_id,
-      taskId: task.id,
+      actorId: assigneeAgentId,
+      objectiveId,
+      taskId,
       sessionKind: "worker",
       deferToolHostFinalization
     }
@@ -5325,29 +5385,10 @@ async function launchObjectiveChatSession({ agent, objective, providerId: reques
   return store.bindSessionToObjective(session.id, objective.id);
 }
 
-async function launchAndBindTaskSession({
-  task,
-  agent,
-  title,
-  providerId = agentProviderRegistry.defaultProviderId,
-  idempotencyKey = null,
-  initialPrompt = null,
-  source = "application"
+async function startPreparedWorkSession({
+  taskId, assigneeAgentId, providerId, title, workspace, idempotencyKey, sourceSessionId
 }) {
-  const result = await workSessionStartupCoordinator.start({
-    taskId: task.id,
-    agentId: agent.agentId,
-    providerId,
-    title,
-    initialPrompt,
-    idempotencyKey: idempotencyKey ?? `start:${task.id}`,
-    source,
-    actorId: agent.agentId
-  });
-  return result.session;
-}
-
-async function launchPreparedTaskSession({ task, agent, workspace, source, ...options }) {
+  const task = objectiveService.getTask(taskId);
   const inventory = workspace?.worktreeId ? store.getGitWorktree(workspace.worktreeId) : null;
   const canonicalPath = resolve(workspace?.path ?? "");
   if (!inventory || inventory.repositoryId !== task.main_workspace_id
@@ -5358,7 +5399,6 @@ async function launchPreparedTaskSession({ task, agent, workspace, source, ...op
     error.statusCode = 409;
     throw error;
   }
-  const idempotencyKey = options.idempotencyKey ?? `start:${task.id}`;
   const startupOperationId = `startup:${createHash("sha256")
     .update(`${task.id}\0${idempotencyKey}`)
     .digest("hex")
@@ -5377,9 +5417,16 @@ async function launchPreparedTaskSession({ task, agent, workspace, source, ...op
     throw error;
   }
   store.scheduleSave();
-  return launchAndBindTaskSession({
-    task: store.getTask(task.id), agent, source, ...options, idempotencyKey
+  const started = await workSessionStartApplicationService.start({
+    taskId: task.id,
+    assigneeAgentId,
+    expectedTaskVersion: Number(task.resource_version ?? 1),
+    providerId,
+    title,
+    idempotencyKey,
+    sourceSessionId
   });
+  return started.session;
 }
 
 // Session 生命周期只投影到 Task.execution_status。Task.lifecycle_state
@@ -8911,8 +8958,7 @@ function route(request, response) {
     memoryRecallService,
     memoryLifecycleService,
     assistantService,
-    startTaskExecution: (input) => workSessionStartupCoordinator.start(input),
-    beginTaskExecution: (input) => workSessionStartupCoordinator.begin(input),
+    startWorkSession: (input) => workSessionStartApplicationService.start(input),
     getTaskStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
     launchAgentSession,

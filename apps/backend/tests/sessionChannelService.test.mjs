@@ -171,7 +171,10 @@ test("one authorization can provision the missing Task and Session before activa
       store: value.store,
       objectiveService,
       collaborationCore: value.service.collaborationCore,
-      startTask: async ({ task, agent }) => {
+      defaultProviderId: "test-provider",
+      workSessionStartApplicationService: { start: async (command) => {
+        const task = value.store.getTask(command.taskId);
+        const agent = value.store.getAgent(command.assigneeAgentId);
         launches.push({ taskId: task.id, agentId: agent.agentId });
         value.store.createSession({
           id: "provider:created", title: "Created peer", agentId: agent.agentId,
@@ -185,8 +188,8 @@ test("one authorization can provision the missing Task and Session before activa
         });
         value.service.collaborationCore.bindSession({ agentId: agent.agentId, sessionId: "provider:created" });
         value.store.bindSessionToTask("provider:created", task.id, task.objective_id);
-        return { id: "provider:created" };
-      }
+        return { session: value.store.getSession("provider:created") };
+      } }
     });
     const pending = value.service.requestChannel({
       requestingSessionId: "session:a",

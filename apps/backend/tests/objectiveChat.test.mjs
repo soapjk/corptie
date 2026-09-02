@@ -170,9 +170,14 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
       store,
       objectiveService,
       contextService: new ObjectiveChatContextService({ store }),
-      startTask: (input) => { starts.push(input); return { id: "worker" }; }
+      workSessionStartApplicationService: {
+        start: (input) => { starts.push(input); return { session: { id: "worker" } }; }
+      },
+      defaultProviderId: "codex-app-server"
     });
-    const metadata = { sessionKind: "objectiveChat", objectiveId: objective.id };
+    const metadata = {
+      sessionKind: "objectiveChat", objectiveId: objective.id, sessionId: "session:objective"
+    };
     const agents = await service.execute({ tool: "corptie_objective_agents_list", metadata, arguments: {} });
     assert.deepEqual(new Set(agents.map((agent) => agent.agentId)), new Set([contributor.agentId, planner.agentId]));
     assert.equal(agents.find((agent) => agent.agentId === contributor.agentId).canStartTask, true);
@@ -189,7 +194,11 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
     }), { code: "TASK_OUTSIDE_OBJECTIVE" });
     await service.execute({
       tool: "corptie_objective_task_start", metadata,
-      arguments: { task_id: scopedItem.id, agent_id: contributor.agentId }
+      arguments: {
+        task_id: scopedItem.id, agent_id: contributor.agentId,
+        resource_version: scopedItem.resource_version, provider_id: "codex-app-server",
+        idempotency_key: "objective-start:one"
+      }
     });
     assert.equal(starts.length, 1);
   } finally {
