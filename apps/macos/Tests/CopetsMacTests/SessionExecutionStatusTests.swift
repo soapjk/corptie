@@ -36,6 +36,41 @@ struct SessionExecutionStatusTests {
         #expect(session.executionTaskStatus == .failed)
     }
 
+    @Test func cancelledTurnWithFailedDeliveryKeepsSessionSendable() throws {
+        let data = try #require("""
+        {
+          "id":"session:interrupted","title":"Interrupted","agent":"Agent","status":"cancelled",
+          "executionStatus":"cancelled","deliveryStatus":"failed",
+          "providerConnectionStatus":"connected","syncHealth":"healthy",
+          "readiness":"ready",
+          "progress":1,"summary":"Previous Turn was interrupted.","updatedAt":"2026-09-02T10:00:00Z",
+          "accent":"cyan",
+          "capabilities":{"canSend":true},
+          "actions":{
+            "prepareExecution":{"available":true},
+            "resume":{"available":false},
+            "delete":{"available":true},
+            "restart":{"available":true},
+            "disconnect":{"available":true},
+            "send":{"available":true},
+            "interrupt":{"available":false},
+            "approve":{"available":false},
+            "switchModel":{"available":true},
+            "switchReasoning":{"available":true},
+            "updatePermissions":{"available":true},
+            "switchWorkspace":{"available":true},
+            "switchProvider":{"available":true}
+          }
+        }
+        """.data(using: .utf8))
+
+        let session = try JSONDecoder().decode(TaskSession.self, from: data)
+        #expect(session.executionTaskStatus == .cancelled)
+        #expect(session.deliveryStatus == "failed")
+        #expect(session.isReady)
+        #expect(session.canSendNow)
+    }
+
     @MainActor @Test func readinessIsIndependentFromExecutionAndCarriesTheDisableReason() throws {
         let data = try #require("""
         {
