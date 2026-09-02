@@ -3348,7 +3348,7 @@ func sessionDetailContentPhase(
 }
 
 struct DetailView: View {
-    private let backendClient: BackendClient
+    @ObservedObject private var backendClient: BackendClient
     @ObservedObject private var selectionController: SessionSelectionController
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
     @MainActor
@@ -3402,7 +3402,7 @@ struct DetailView: View {
         self.sessionId = sessionId
         self.presentationCache = presentationCache
         self.composerDraftRepository = composerDraftRepository
-        self.backendClient = backendClient
+        _backendClient = ObservedObject(wrappedValue: backendClient)
         _selectionController = ObservedObject(
             wrappedValue: backendClient.sessionSelectionController
         )
@@ -3469,9 +3469,43 @@ struct DetailView: View {
         )
     }
 
+    @ViewBuilder
+    private var backendConnectionBanner: some View {
+        if !backendClient.isOnline {
+            BackendDisconnectedSessionView(
+                wasExecuting: selectedSession?.executionTaskStatus == .running
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var sessionComposer: some View {
+        if !backendClient.isOnline {
+            ReadOnlyComposer(reason: backendDisconnectedSessionMessage(
+                wasExecuting: selectedSession?.executionTaskStatus == .running
+            ), isRecovering: false)
+        } else if let recovery = displayedWorkspaceRecoveryStatus,
+                  recovery.blocksSessionInput {
+            WorkspaceMissingComposer(status: recovery)
+        } else if !backendClient.selectedIsReady {
+            ReadOnlyComposer(
+                reason: composerUnavailableReason,
+                isRecovering: backendClient.selectedSession?.transitionState == "sessionRecovery"
+            )
+        } else {
+            MessageComposer(
+                sessionId: sessionId,
+                draftRepository: composerDraftRepository
+            )
+            .id(sessionId)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             DetailHeaderView()
+
+            backendConnectionBanner
 
             if let recovery = displayedWorkspaceRecoveryStatus,
                recovery.orphaned {
@@ -3548,22 +3582,7 @@ struct DetailView: View {
             }
 
             SessionSendFailureView()
-
-            if let recovery = displayedWorkspaceRecoveryStatus,
-               recovery.blocksSessionInput {
-                WorkspaceMissingComposer(status: recovery)
-            } else if !backendClient.selectedIsReady {
-                ReadOnlyComposer(
-                    reason: composerUnavailableReason,
-                    isRecovering: backendClient.selectedSession?.transitionState == "sessionRecovery"
-                )
-            } else {
-                MessageComposer(
-                    sessionId: sessionId,
-                    draftRepository: composerDraftRepository
-                )
-                    .id(sessionId)
-            }
+            sessionComposer
         }
         .padding(1)
         .background(
@@ -10905,6 +10924,37 @@ private struct OfflineView: View {
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+@MainActor
+func backendDisconnectedSessionMessage(wasExecuting: Bool) -> String {
+    if wasExecuting {
+        return L10n("Backend connection was lost while this Session was running. Its execution may have been interrupted; wait for reconnection before retrying.")
+    }
+    return L10n("Backend connection was lost. This Session is read-only until Corptie reconnects.")
+}
+
+private struct BackendDisconnectedSessionView: View {
+    let wasExecuting: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(backendDisconnectedSessionMessage(wasExecuting: wasExecuting))
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.3), lineWidth: 1)
+        )
     }
 }
 
