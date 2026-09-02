@@ -622,13 +622,18 @@ struct UnifiedConsoleView: View {
 
     private func taskRow(_ task: CorptieTask) -> some View {
         let session = workerSession(for: task)
+        let sessionActivity = CorptieTaskBoundSessionActivity.resolve(
+            task: task,
+            sessions: backendClient.sessions
+        )
         return Button {
             openTask(task, session: session)
         } label: {
             HStack(spacing: 9) {
                 Circle()
-                    .fill(taskStatusColor(task.lifecycleState))
+                    .fill(taskIndicatorColor(sessionActivity, lifecycleState: task.lifecycleState))
                     .frame(width: 7, height: 7)
+                    .accessibilityLabel(L10nFormat("Session: %@", sessionActivity.label))
                 Text(task.title)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
@@ -728,6 +733,18 @@ struct UnifiedConsoleView: View {
         case "blocked", "failed": return .red
         case "running", "in_progress", "active": return .blue
         default: return .secondary
+        }
+    }
+
+    private func taskIndicatorColor(
+        _ sessionActivity: CorptieTaskBoundSessionActivity,
+        lifecycleState: String
+    ) -> Color {
+        switch sessionActivity {
+        case .noSession, .unknown:
+            taskStatusColor(lifecycleState)
+        default:
+            sessionActivity.color
         }
     }
 
