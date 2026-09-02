@@ -532,7 +532,7 @@ export class OpenClackyManager {
         lastMessageAt: updatedAt,
         capabilities: {
           ...currentSummary.capabilities,
-          canSend: status === "complete" || status === "failed",
+          canSend: !["running", "blocked", "failed"].includes(status),
           canInterrupt: status === "running"
         }
       });
@@ -755,7 +755,7 @@ export function openClackySessionSummary(row = {}, options = {}) {
     suggestedOptions: [],
     activityStatus: status === "running" ? "working" : status,
     capabilities: {
-      canSend: status === "complete",
+      canSend: !["running", "blocked", "failed"].includes(status),
       canSwitchModel: true,
       canSwitchReasoning: true,
       canInterrupt: status === "running",
@@ -818,8 +818,9 @@ function assertOpenClackySessionRunnable(session) {
 function openClackyEventStatus(event, fallback) {
   switch (String(event?.type ?? "")) {
     case "task_finished":
-    case "interrupted":
       return "complete";
+    case "interrupted":
+      return "cancelled";
     case "request_confirmation":
     case "request_feedback":
       return "blocked";
@@ -842,6 +843,9 @@ function openClackyStatus(value) {
     case "working": return "running";
     case "error":
     case "failed": return "failed";
+    case "cancelled":
+    case "canceled":
+    case "interrupted": return "cancelled";
     case "blocked":
     case "waiting": return "blocked";
     default: return "complete";

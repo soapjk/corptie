@@ -6,7 +6,11 @@ import test from "node:test";
 
 import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
 import { ArtifactService } from "../src/application/artifactService.mjs";
-import { resolveRecipientSession, SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
+import {
+  collaborationSessionEligibility,
+  resolveRecipientSession,
+  SessionCollaborationService
+} from "../src/application/sessionCollaborationService.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
@@ -93,6 +97,47 @@ function registerRepository(store, repositoryId) {
     observedAt
   });
 }
+
+test("an interrupted Worker remains an active collaboration delivery target", async () => {
+  const f = await fixture();
+  try {
+    const agent = f.store.createAgent({
+      id: "agent:interrupted-target",
+      name: "Interrupted Target",
+      role: "independentContributor"
+    });
+    const objective = f.objectiveService.createObjective({
+      name: "Interrupted Target Objective",
+      contributorAgentIds: [agent.agentId]
+    });
+    const task = f.objectiveService.createTask({
+      objectiveId: objective.id,
+      title: "Continue after interruption",
+      mainAgentId: agent.agentId
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:interrupted-target",
+      logicalSessionId: "session:interrupted-target",
+      agentId: agent.agentId,
+      kind: "worker",
+      objectiveId: objective.id,
+      taskId: task.id,
+      cwd: f.directory
+    });
+    f.store.db.run(
+      `UPDATE sessions SET status='cancelled',
+       raw_json='{"capabilities":{"canSend":false}}'
+       WHERE id='provider:interrupted-target'`
+    );
+
+    const eligibility = collaborationSessionEligibility(f.store, "session:interrupted-target");
+    assert.equal(eligibility.active, true);
+    assert.deepEqual(eligibility.reasons, []);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
 
 test("same-Agent Sessions are separately discoverable and can collaborate without shared-context assumptions", async () => {
   const f = await fixture();
