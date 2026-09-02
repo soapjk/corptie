@@ -63,7 +63,8 @@ struct ManagedGitProject: Decodable, Sendable {
     let mainWorktreeId: String
     let mainPath: String
     let mainBranch: String?
-    let mainHeadOid: String
+    // An initialized Git repository has no HEAD commit until its first commit.
+    let mainHeadOid: String?
     let pendingWorktreeCount: Int
     var worktrees: [ManagedWorktree]
 }

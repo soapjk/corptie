@@ -235,7 +235,7 @@ export class GitWorkspaceManager {
         }
         const status = await this.gitOutput(worktree.path, ["status", "--porcelain=v1"]);
         const dirty = Boolean(status.trim());
-        const diffStat = dirty && options.includeDiffStat !== false
+        const diffStat = dirty && worktree.headOid && options.includeDiffStat !== false
           ? (await this.gitOutput(worktree.path, ["diff", "--stat", "HEAD"])).trim()
           : "";
         if (worktree.isMain) {
