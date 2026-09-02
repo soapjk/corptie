@@ -335,6 +335,8 @@ struct StartupBindingReceipt: Codable, Hashable {
     let workspaceResourceVersion: Int
     let resourceVersion: Int
     let providerContextHash: String
+    let toolContractHash: String
+    let instructionSourcesHash: String
     let phaseTimestamps: StartupPhaseTimestamps
     let compensation: StartupCompensation
     let error: String?
@@ -344,7 +346,8 @@ struct StartupBindingReceipt: Codable, Hashable {
         case schemaVersion, status, startupOperationId, objectiveId, taskId, logicalSessionId
         case repositoryId, worktreeId, canonicalWorktreePath, headIdentity, providerBindingId
         case bindingGeneration, sourceCommitOid, sourceTreeOid, baseRef, repositoryInventoryVersion
-        case workspaceResourceVersion, resourceVersion, providerContextHash, phaseTimestamps
+        case workspaceResourceVersion, resourceVersion, providerContextHash, toolContractHash
+        case instructionSourcesHash, phaseTimestamps
         case compensation, error, receiptHash
     }
 
@@ -382,6 +385,8 @@ struct StartupBindingReceipt: Codable, Hashable {
         workspaceResourceVersion = try container.decode(Int.self, forKey: .workspaceResourceVersion)
         resourceVersion = try container.decode(Int.self, forKey: .resourceVersion)
         providerContextHash = try container.decode(String.self, forKey: .providerContextHash)
+        toolContractHash = try container.decode(String.self, forKey: .toolContractHash)
+        instructionSourcesHash = try container.decode(String.self, forKey: .instructionSourcesHash)
         phaseTimestamps = try container.decode(StartupPhaseTimestamps.self, forKey: .phaseTimestamps)
         compensation = try container.decode(StartupCompensation.self, forKey: .compensation)
         error = try container.decodeIfPresent(String.self, forKey: .error)
@@ -395,6 +400,8 @@ struct StartupBindingReceipt: Codable, Hashable {
               sourceCommitOid.range(of: #"^[0-9a-f]{40,64}$"#, options: .regularExpression) != nil,
               sourceTreeOid.range(of: #"^[0-9a-f]{40,64}$"#, options: .regularExpression) != nil,
               providerContextHash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
+              toolContractHash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
+              instructionSourcesHash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil,
               receiptHash.range(of: #"^[0-9a-f]{64}$"#, options: .regularExpression) != nil else {
             throw DecodingError.dataCorruptedError(
                 forKey: .receiptHash, in: container,
@@ -425,6 +432,8 @@ struct StartupBindingReceipt: Codable, Hashable {
         try container.encode(workspaceResourceVersion, forKey: .workspaceResourceVersion)
         try container.encode(resourceVersion, forKey: .resourceVersion)
         try container.encode(providerContextHash, forKey: .providerContextHash)
+        try container.encode(toolContractHash, forKey: .toolContractHash)
+        try container.encode(instructionSourcesHash, forKey: .instructionSourcesHash)
         try container.encode(phaseTimestamps, forKey: .phaseTimestamps)
         try container.encode(compensation, forKey: .compensation)
         if let receiptError = error { try container.encode(receiptError, forKey: .error) }
@@ -565,6 +574,19 @@ struct CorptieTaskStartupReady: Codable {
             throw DecodingError.dataCorruptedError(forKey: .receipt, in: container, debugDescription: "Startup receipt hash mismatch")
         }
     }
+}
+
+/// Shared macOS projection of the authoritative WorkSessionStartCommand.
+/// Task startup callers must provide a source logical Session; Agent is only
+/// the assignee resource and never the actor.
+struct WorkSessionStartRequest: Codable, Equatable {
+    let taskId: String
+    let assigneeAgentId: String
+    let expectedTaskVersion: Int
+    let providerId: String
+    let title: String?
+    let idempotencyKey: String
+    let sourceSessionId: String
 }
 
 private struct StartupAnyCodingKey: CodingKey {

@@ -535,7 +535,10 @@ export class ToolHostMaterializationCoordinator {
       if (!binding.sessionId || !binding.objectiveId || !binding.taskId) {
         throw toolError("ACTOR_NOT_BOUND", "Worker Session binding is incomplete.", 403);
       }
-      if (binding.currentTaskSessionId !== binding.sessionId) {
+      const authorizedByStartup = binding.taskSessionAuthorization === "startup"
+        && typeof binding.startupOperationId === "string"
+        && binding.startupOperationId.startsWith("startup:");
+      if (binding.currentTaskSessionId !== binding.sessionId && !authorizedByStartup) {
         throw toolError("ACTOR_NOT_BOUND", "Worker Session is not the Task current Session.", 403);
       }
     }
@@ -617,6 +620,8 @@ export function authorizationScopeFingerprint(binding) {
     objectiveId: binding.objectiveId ?? null,
     taskId: binding.taskId ?? null,
     currentTaskSessionId: binding.currentTaskSessionId ?? null,
+    taskSessionAuthorization: binding.taskSessionAuthorization ?? null,
+    startupOperationId: binding.startupOperationId ?? null,
     providerBindingId: binding.providerBindingId,
     bindingState: binding.state,
     tombstoned: binding.tombstoned === true,

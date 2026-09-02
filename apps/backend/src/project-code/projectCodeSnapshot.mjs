@@ -29,7 +29,8 @@ const startupFields = new Set([
   "schemaVersion", "status", "startupOperationId", "objectiveId", "taskId", "logicalSessionId",
   "repositoryId", "worktreeId", "canonicalWorktreePath", "headIdentity", "providerBindingId",
   "bindingGeneration", "sourceCommitOid", "sourceTreeOid", "baseRef", "repositoryInventoryVersion",
-  "workspaceResourceVersion", "resourceVersion", "providerContextHash", "phaseTimestamps",
+  "workspaceResourceVersion", "resourceVersion", "providerContextHash", "toolContractHash",
+  "instructionSourcesHash", "phaseTimestamps",
   "compensation", "error", "receiptHash"
 ]);
 
@@ -374,6 +375,9 @@ function assertExactStartupShape(receipt) {
     throw contractError("STARTUP_BINDING_MISMATCH", "A compensated Startup receipt cannot authorize project-code search.");
   }
   if (!Number.isInteger(receipt.bindingGeneration) || receipt.bindingGeneration < 1) throw contractError("STARTUP_BINDING_MISMATCH", "Startup bindingGeneration is invalid.");
+  if (!/^[0-9a-f]{64}$/.test(receipt.toolContractHash) || !/^[0-9a-f]{64}$/.test(receipt.instructionSourcesHash)) {
+    throw contractError("STARTUP_BINDING_MISMATCH", "Startup activation proof hashes are invalid.");
+  }
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(receipt.sourceCommitOid) || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(receipt.sourceTreeOid)) {
     throw contractError("STARTUP_BINDING_MISMATCH", "Startup source identity is invalid.");
   }

@@ -43,6 +43,17 @@ async function fixture(overrides = {}) {
     id: "task:one", objectiveId: objective.id, title: "Authoritative startup",
     mainAgentId: agent.agentId, mainWorkspaceId: "repository:one"
   });
+  store.createSession({
+    id: "provider:source", title: "Source", provider: "codex-app-server",
+    agentId: agent.agentId, sessionKind: "objectiveChat", objectiveId: objective.id,
+    cwd: directory
+  });
+  store.createLogicalSessionRoute({
+    logicalSessionId: "session:source", legacySessionId: "provider:source",
+    providerThreadId: "thread:source", providerSessionId: "provider:source",
+    providerId: "codex-app-server", boundCwd: directory, sessionName: "Source"
+  });
+  core.bindSession({ agentId: agent.agentId, sessionId: "provider:source" });
   const calls = { prepare: 0, inspectWorktree: 0, create: 0, bind: 0, inspectBinding: 0, activate: 0, compensate: 0 };
   const allocation = {
     repositoryId: "repository:one", worktreeId: "worktree:one",
@@ -52,11 +63,46 @@ async function fixture(overrides = {}) {
     repositoryInventoryVersion: "inventory:one", workspaceResourceVersion: 1,
     createdByStartupOperationId: null, reused: false
   };
+  const createSession = overrides.createSession ?? (async ({ providerId, workspace }) => {
+    calls.create += 1;
+    const id = `provider:worker:${calls.create}`;
+    store.createSession({
+      id, title: task.title, provider: providerId, agentId: agent.agentId,
+      sessionKind: "worker", objectiveId: objective.id, taskId: task.id,
+      cwd: workspace.canonicalWorktreePath, deferTaskProjection: true
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: `session:worker:${calls.create}`, legacySessionId: id,
+      providerThreadId: `thread:${calls.create}`, providerSessionId: id,
+      providerId, boundCwd: workspace.canonicalWorktreePath, sessionName: task.title
+    });
+    core.bindSession({ agentId: agent.agentId, sessionId: id });
+    return store.getSession(id);
+  });
+  const bindProviderWorkspace = overrides.bindProviderWorkspace ?? (async (input) => {
+    calls.bind += 1;
+    assert.equal(input.trustedContext.providerBindingId, input.providerBindingId);
+    assert.equal(input.trustedContext.bindingGeneration, input.bindingGeneration);
+    assert.equal(startupContextHash(input.trustedContext), input.trustedContextHash);
+    return proof(input, `resource:${calls.bind}`);
+  });
+  const inspectProviderBinding = overrides.inspectProviderBinding ?? (async () => {
+    calls.inspectBinding += 1;
+    const error = new Error("not bound"); error.code = "START_PROVIDER_BINDING_NOT_FOUND"; throw error;
+  });
+  const dispatchInitialTurn = overrides.activateSession ?? (async ({ receipt }) => {
+    calls.activate += 1;
+    assert.equal(store.selectOne(
+      "SELECT state FROM work_session_startup_operations WHERE startup_operation_id=?",
+      [receipt.startupOperationId]
+    ).state, "ready", "first Turn may dispatch only after ready receipt commits");
+  });
   const service = new WorkSessionStartupCoordinator({
     store,
     leaseOwner: overrides.leaseOwner ?? "test-worker",
-    validateStart: async (input) => ({
-      task: store.getTask(input.taskId), objective, agent, providerId: input.providerId
+    authorizeStart: async (input) => ({
+      ...input, objectiveId: objective.id, repositoryId: task.main_workspace_id,
+      taskTitle: task.title
     }),
     prepareWorktree: async (input) => {
       calls.prepare += 1;
@@ -66,50 +112,37 @@ async function fixture(overrides = {}) {
       calls.inspectWorktree += 1;
       return { ...candidate, createdByStartupOperationId: operation.startup_operation_id };
     },
-    createSession: async ({ providerId, workspace }) => {
-      calls.create += 1;
-      const id = `provider:worker:${calls.create}`;
-      store.createSession({
-        id, title: task.title, provider: providerId, agentId: agent.agentId,
-        sessionKind: "worker", objectiveId: objective.id, taskId: task.id,
-        cwd: workspace.canonicalWorktreePath
-      });
-      store.createLogicalSessionRoute({
-        logicalSessionId: `session:worker:${calls.create}`, legacySessionId: id,
-        providerThreadId: `thread:${calls.create}`, providerSessionId: id,
-        providerId, boundCwd: workspace.canonicalWorktreePath, sessionName: task.title
-      });
-      core.bindSession({ agentId: agent.agentId, sessionId: id });
-      return store.getSession(id);
+    providerWorkSessionPort: {
+      createSession,
+      bindWorkspace: bindProviderWorkspace,
+      inspectBinding: inspectProviderBinding,
+      activateSession: async (activation) => {
+        if (activation.dispatchInitialTurn !== true) {
+          const binding = store.selectOne(
+            "SELECT provider_resource_id FROM work_session_startup_bindings WHERE provider_binding_id=?",
+            [activation.providerBindingId]
+          );
+          return {
+            providerResourceId: binding.provider_resource_id,
+            canonicalWorkingDirectory: activation.workingDirectory,
+            toolContractHash: "c".repeat(64),
+            instructionSourcesHash: "d".repeat(64)
+          };
+        }
+        return dispatchInitialTurn(activation);
+      },
+      compensateSession: overrides.compensateSession ?? (async () => {})
     },
-    bindProviderWorkspace: async (input) => {
-      calls.bind += 1;
-      assert.equal(input.trustedContext.providerBindingId, input.providerBindingId);
-      assert.equal(input.trustedContext.bindingGeneration, input.bindingGeneration);
-      assert.equal(startupContextHash(input.trustedContext), input.trustedContextHash);
-      return proof(input, `resource:${calls.bind}`);
-    },
-    inspectProviderBinding: async () => {
-      calls.inspectBinding += 1;
-      const error = new Error("not bound"); error.code = "START_PROVIDER_BINDING_NOT_FOUND"; throw error;
-    },
-    activateSession: async ({ receipt }) => {
-      calls.activate += 1;
-      assert.equal(store.selectOne(
-        "SELECT state FROM work_session_startup_operations WHERE startup_operation_id=?",
-        [receipt.startupOperationId]
-      ).state, "ready", "first Turn may dispatch only after ready receipt commits");
-    },
-    compensateWorktree: async () => { calls.compensate += 1; return { removed: true }; },
-    ...overrides
+    compensateWorktree: overrides.compensateWorktree
+      ?? (async () => { calls.compensate += 1; return { removed: true }; }),
   });
   return { directory, store, service, calls, allocation, task };
 }
 
 function input(key = "start:one") {
   return {
-    taskId: "task:one", requestedAgentId: "agent:worker",
-    providerId: "codex-app-server", idempotencyKey: key, source: "test"
+    taskId: "task:one", assigneeAgentId: "agent:worker", expectedTaskVersion: 1,
+    providerId: "codex-app-server", idempotencyKey: key, sourceSessionId: "session:source"
   };
 }
 
@@ -147,7 +180,7 @@ test("commits a complete hash-verifiable StartupBindingReceipt before first Turn
     assert.equal(f.calls.activate, 1);
     assert.deepEqual(
       f.store.selectAll("SELECT event FROM work_session_startup_audit ORDER BY created_at, rowid").map((row) => row.event),
-      ["startup.allocated", "startup.worktree_prepared", "startup.session_bound", "startup.provider_bound", "startup.ready"]
+      ["startup.allocated", "startup.worktree_prepared", "startup.session_bound", "startup.provider_bound", "startup.provider_activated", "startup.ready"]
     );
   } finally { await cleanup(f); }
 });
@@ -161,6 +194,13 @@ test("Store exposes only the Revision 2 startup authority and no legacy start ta
     assert.ok(f.store.selectOne(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='work_session_startup_operations'"
     ));
+    const startupColumns = new Set(
+      f.store.selectAll("PRAGMA table_info(work_session_startup_operations)").map((column) => column.name)
+    );
+    assert.equal(startupColumns.has("assignee_agent_id"), true);
+    assert.equal(startupColumns.has("expected_task_version"), true);
+    assert.equal(startupColumns.has("source_session_id"), true);
+    assert.equal(startupColumns.has("requested_agent_id"), false);
     const legacyColumns = new Set([
       "start_idempotency_key", "start_error", "start_stage", "start_failure_stage",
       "start_error_code", "start_started_at", "start_stage_updated_at", "start_failed_at",
@@ -201,6 +241,54 @@ test("same idempotency key replays one operation, resource set, and receipt hash
   } finally { await cleanup(f); }
 });
 
+test("initial Turn failure is explicit and the same idempotency key retries without a second Session", async () => {
+  let attempts = 0;
+  const f = await fixture({
+    activateSession: async () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("queue unavailable"), {
+        code: "QUEUE_UNAVAILABLE"
+      });
+    }
+  });
+  try {
+    await assert.rejects(() => f.service.start(input()), {
+      code: "START_INITIAL_TURN_FAILED",
+      stage: "initial_turn"
+    });
+    assert.equal(f.store.getTask("task:one").execution_status, "running");
+    assert.equal(f.calls.create, 1);
+    const replay = await f.service.start(input());
+    assert.equal(replay.status, "ready");
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.turnDispatch.status, "accepted");
+    assert.equal(f.calls.create, 1);
+    assert.equal(attempts, 2);
+  } finally { await cleanup(f); }
+});
+
+test("restart recovery dispatches a ready receipt whose initial Turn was not durably accepted", async () => {
+  const f = await fixture();
+  try {
+    const ready = await f.service.start(input());
+    assert.equal(f.calls.activate, 1);
+    f.store.db.run(
+      "UPDATE work_session_startup_operations SET initial_turn_state='pending' WHERE startup_operation_id=?",
+      [ready.receipt.startupOperationId]
+    );
+    assert.equal(f.service.recoverInterruptedStarts(), 1);
+    await new Promise((resolve) => setImmediate(resolve));
+    for (let attempt = 0; attempt < 20 && f.calls.activate < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(f.calls.activate, 2);
+    assert.equal(
+      f.store.selectOne("SELECT initial_turn_state FROM work_session_startup_operations").initial_turn_state,
+      "accepted"
+    );
+  } finally { await cleanup(f); }
+});
+
 test("different idempotency keys cannot create concurrent startup operations for one Task", async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -214,7 +302,7 @@ test("different idempotency keys cannot create concurrent startup operations for
     assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM work_session_startup_operations").count, 1);
     const error = new Error("stop first"); error.code = "PROVIDER_UNAVAILABLE";
     release(Promise.reject(error));
-    await assert.rejects(() => first, { code: "PROVIDER_UNAVAILABLE" });
+    await assert.rejects(() => first, { code: "START_SESSION_CREATION_FAILED" });
   } finally { await cleanup(f); }
 });
 
@@ -255,7 +343,9 @@ test("a Provider proof mismatch never reports ready and compensates owned resour
     assert.equal(operation.state, "failed_compensated");
     assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM work_session_startup_receipts").count, 0);
     assert.equal(f.calls.compensate, 1);
-    assert.equal(f.store.getTask("task:one").execution_status, "start_failed");
+    assert.equal(f.store.getTask("task:one").execution_status, "idle");
+    assert.equal(f.store.getTask("task:one").lifecycle_state, "todo");
+    assert.equal(f.store.getTask("task:one").current_session_id, null);
   } finally { await cleanup(f); }
 });
 
@@ -274,6 +364,28 @@ test("receipt write failure rolls back ready state atomically", async () => {
       "ready"
     );
     assert.equal(f.calls.activate, 0);
+  } finally { await cleanup(f); }
+});
+
+test("ready CAS failure compensates temporary resources without overwriting a concurrent Task owner", async () => {
+  const f = await fixture();
+  try {
+    const bindWorkspace = f.service.providerWorkSessionPort.bindWorkspace;
+    f.service.providerWorkSessionPort.bindWorkspace = async (binding, options) => {
+      const proofValue = await bindWorkspace(binding, options);
+      f.store.db.run(
+        `UPDATE tasks SET lifecycle_state='in_progress', execution_status='blocked',
+         resource_version=resource_version+1, updated_at=? WHERE id='task:one'`,
+        [new Date().toISOString()]
+      );
+      return proofValue;
+    };
+    await assert.rejects(() => f.service.start(input()), { code: "START_READY_COMMIT_CONFLICT" });
+    const task = f.store.getTask("task:one");
+    assert.equal(task.lifecycle_state, "in_progress");
+    assert.equal(task.execution_status, "blocked");
+    assert.equal(task.current_session_id, null);
+    assert.equal(f.store.selectOne("SELECT state FROM work_session_startup_operations").state, "failed_compensated");
   } finally { await cleanup(f); }
 });
 
@@ -304,7 +416,7 @@ test("dirty owned Worktree produces manual-required compensation and no ready st
     compensateWorktree: async () => ({ removed: false, dirty: true, manualRequired: true })
   });
   try {
-    await assert.rejects(() => f.service.start(input()), { code: "PROVIDER_UNAVAILABLE" });
+    await assert.rejects(() => f.service.start(input()), { code: "START_SESSION_CREATION_FAILED" });
     const failed = f.service.getReceipt({
       startupOperationId: f.store.selectOne("SELECT startup_operation_id FROM work_session_startup_operations").startup_operation_id
     });
@@ -368,12 +480,12 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
     const allocation = { ...f.allocation, createdByStartupOperationId: operationId };
     f.store.db.run(
       `INSERT INTO work_session_startup_operations (
-        startup_operation_id, objective_id, task_id, requested_agent_id, provider_id,
-        repository_id, idempotency_key, request_fingerprint, source, state, worktree_id,
+        startup_operation_id, objective_id, task_id, assignee_agent_id, expected_task_version, provider_id,
+        repository_id, source_session_id, idempotency_key, request_fingerprint, source, state, worktree_id,
         allocation_json, lease_owner, lease_expires_at, correlation_id, allocated_at,
         worktree_prepared_at, updated_at, resource_version
-      ) VALUES (?, 'objective:one', 'task:one', 'agent:worker', 'codex-app-server',
-        'repository:one', 'start:crashed', 'fingerprint', 'test', 'worktree_prepared',
+      ) VALUES (?, 'objective:one', 'task:one', 'agent:worker', 1, 'codex-app-server',
+        'repository:one', 'session:source', 'start:crashed', 'fingerprint', 'test', 'worktree_prepared',
         'worktree:one', ?, 'dead-process', '2026-08-30T00:00:00.001Z', 'correlation:crash', ?, ?, ?, 2)`,
       [operationId, JSON.stringify(allocation), now, now, now]
     );
@@ -389,30 +501,37 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
       store: reopened,
       leaseOwner: "recovery-worker",
       clock: () => "2026-08-30T00:01:00.000Z",
-      validateStart: async (value) => ({
-        task: reopened.getTask(value.taskId),
-        objective: reopened.getObjective("objective:one"),
-        agent: reopened.getAgent("agent:worker"), providerId: value.providerId
+      authorizeStart: async (value) => ({
+        ...value, objectiveId: "objective:one", repositoryId: "repository:one",
+        taskTitle: "Authoritative startup"
       }),
       prepareWorktree: async () => { throw new Error("must reuse committed allocation"); },
       inspectWorktree: async ({ allocation: value }) => value,
-      createSession: async ({ providerId, workspace }) => {
-        created += 1;
-        reopened.createSession({
-          id: "provider:recovered", title: "Recovered", provider: providerId,
-          agentId: "agent:worker", sessionKind: "worker", objectiveId: "objective:one",
-          taskId: "task:one", cwd: workspace.canonicalWorktreePath
-        });
-        reopened.createLogicalSessionRoute({
-          logicalSessionId: "session:recovered", legacySessionId: "provider:recovered",
-          providerThreadId: "thread:recovered", providerSessionId: "provider:recovered",
-          providerId, boundCwd: workspace.canonicalWorktreePath, sessionName: "Recovered"
-        });
-        core.bindSession({ agentId: "agent:worker", sessionId: "provider:recovered" });
-        return reopened.getSession("provider:recovered");
-      },
-      bindProviderWorkspace: async (value) => proof(value, "resource:recovered"),
-      inspectProviderBinding: async () => null
+      providerWorkSessionPort: {
+        createSession: async ({ providerId, workspace }) => {
+          created += 1;
+          reopened.createSession({
+            id: "provider:recovered", title: "Recovered", provider: providerId,
+            agentId: "agent:worker", sessionKind: "worker", objectiveId: "objective:one",
+            taskId: "task:one", cwd: workspace.canonicalWorktreePath, deferTaskProjection: true
+          });
+          reopened.createLogicalSessionRoute({
+            logicalSessionId: "session:recovered", legacySessionId: "provider:recovered",
+            providerThreadId: "thread:recovered", providerSessionId: "provider:recovered",
+            providerId, boundCwd: workspace.canonicalWorktreePath, sessionName: "Recovered"
+          });
+          core.bindSession({ agentId: "agent:worker", sessionId: "provider:recovered" });
+          return reopened.getSession("provider:recovered");
+        },
+        bindWorkspace: async (value) => proof(value, "resource:recovered"),
+        inspectBinding: async () => null,
+        activateSession: async (activation) => activation.dispatchInitialTurn === true ? undefined : ({
+          providerResourceId: "resource:recovered",
+          canonicalWorkingDirectory: activation.workingDirectory,
+          toolContractHash: "c".repeat(64), instructionSourcesHash: "d".repeat(64)
+        }),
+        compensateSession: async () => {}
+      }
     });
     const result = await recovered.recover(operationId);
     assert.equal(result.status, "ready");

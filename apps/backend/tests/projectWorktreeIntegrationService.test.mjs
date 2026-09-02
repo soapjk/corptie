@@ -39,6 +39,9 @@ function fixture() {
     getObjective: (id) => id === objective.id ? objective : null,
     listTasksByObjective: (id) => id === objective.id ? tasks : [],
     getSession: (id) => sessions.get(id) ?? null,
+    getLogicalSessionByLegacySessionId: (id) => sessions.has(id)
+      ? { logicalSessionId: `logical:${id}`, archived: false, activeBinding: { state: "active" } }
+      : null,
     getAgent: (id) => id === "agent:1"
       ? { agentId: id, name: "Integrator", provider: "codex", role: "independentContributor" }
       : null,

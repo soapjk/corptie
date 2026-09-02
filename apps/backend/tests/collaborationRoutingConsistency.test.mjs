@@ -66,7 +66,10 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
       store,
       objectiveService: objectives,
       collaborationCore: core,
-      startTask: async ({ task, agent }) => {
+      defaultProviderId: "test-provider",
+      workSessionStartApplicationService: { start: async (command) => {
+        const task = store.getTask(command.taskId);
+        const agent = store.getAgent(command.assigneeAgentId);
         bindSession(store, core, {
           providerSessionId: `provider:${task.id}`,
           logicalSessionId: `session:${task.id}`,
@@ -74,8 +77,8 @@ test("legacy Agent discovery delegates to the authoritative runtime binding and 
           objectiveId: task.objective_id,
           taskId: task.id
         });
-        return { id: `provider:${task.id}` };
-      }
+        return { session: store.getSession(`provider:${task.id}`) };
+      } }
     });
     const staged = [];
     let stagingError = null;
@@ -308,7 +311,8 @@ test("collaboration request permission is absent and the endpoint returns a stru
     });
     const service = new SessionCollaborationService({
       store, objectiveService: objectives, collaborationCore: core,
-      startTask: async () => { throw new Error("must not launch"); }
+      defaultProviderId: "test-provider",
+      workSessionStartApplicationService: { start: async () => { throw new Error("must not launch"); } }
     });
     server = http.createServer((request, response) => {
       const url = new URL(request.url, `http://${request.headers.host}`);

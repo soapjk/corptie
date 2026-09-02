@@ -843,17 +843,33 @@ final class EntityAPIClient: ObservableObject {
         providerId: String,
         title: String? = nil
     ) async -> EntitySessionLaunchResult {
-        var request = URLRequest(url: baseURL.appending(path: "sessions"))
+        guard let sourceSession = BackendClient.shared.selectedSession else {
+            let message = L10n("启动 CorptieTask 需要一个已激活的源会话。请先打开所属 Objective 的会话后重试。")
+            errorMessage = message
+            return .failure(message: message, code: "SOURCE_SESSION_NOT_FOUND")
+        }
+        let sourceSessionId = sourceSession.external?.logicalSessionId ?? sourceSession.id
+        guard let task = await task(id: taskId) else {
+            let message = errorMessage ?? L10n("CorptieTask 不存在或无法读取最新版本。")
+            errorMessage = message
+            return .failure(message: message, code: "TASK_NOT_FOUND")
+        }
+        var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/start"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // Stable for retries of the same launch intent, while selecting a
-        // different Agent or Provider intentionally starts a new operation.
-        let operationID = "task-start:\(taskId):\(agentId):\(providerId)"
-        request.setValue(operationID, forHTTPHeaderField: "X-Corptie-Operation-Id")
-        var body: [String: Any] = ["taskId": taskId, "agentId": agentId, "providerId": providerId]
-        if let title { body["title"] = title }
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.setValue(sourceSessionId, forHTTPHeaderField: "X-Corptie-Logical-Session-Id")
+        let idempotencyKey = "task-start:\(taskId):\(agentId):\(providerId)"
+        let command = WorkSessionStartRequest(
+            taskId: taskId,
+            assigneeAgentId: agentId,
+            expectedTaskVersion: task.resourceVersion,
+            providerId: providerId,
+            title: title,
+            idempotencyKey: idempotencyKey,
+            sourceSessionId: sourceSessionId
+        )
         do {
+            request.httpBody = try JSONEncoder().encode(command)
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)

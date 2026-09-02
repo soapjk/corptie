@@ -130,7 +130,7 @@ export class PlatformOperationService {
   }
 
   async #sessions(args, binding) {
-    assertKnown(args, ["action", "session_id", "agent_id", "provider_id", "task_id", "title", "prompt", "message", "archived", "pinned", "include_archived", "approval", "turn_id", "change_action", "model_id", "reasoning_level", "permissions", "idempotency_key"]);
+    assertKnown(args, ["action", "session_id", "agent_id", "provider_id", "task_id", "resource_version", "title", "prompt", "message", "archived", "pinned", "include_archived", "approval", "turn_id", "change_action", "model_id", "reasoning_level", "permissions", "idempotency_key"]);
     const context = {
       source: "platform-assistant",
       actorId: binding.agent.agentId,
@@ -140,7 +140,16 @@ export class PlatformOperationService {
     switch (required(args.action, "action")) {
       case "list": { const active = await this.listSessions({ archived: false }); if (args.include_archived !== true) return active; const archived = await this.listSessions({ archived: true }); return [...new Map([...active, ...archived].map((item) => [item.id, item])).values()]; }
       case "get": return this.#storedSession(required(args.session_id, "session_id"));
-      case "create": return this.createSession({ agentId: required(args.agent_id, "agent_id"), providerId: required(args.provider_id, "provider_id"), taskId: optional(args.task_id), title: optional(args.title), prompt: optional(args.prompt) });
+      case "create": return this.createSession({
+        agentId: required(args.agent_id, "agent_id"),
+        providerId: required(args.provider_id, "provider_id"),
+        taskId: optional(args.task_id),
+        expectedTaskVersion: args.task_id ? positiveInteger(args.resource_version, "resource_version") : undefined,
+        title: optional(args.title),
+        prompt: optional(args.prompt),
+        sourceSessionId: binding.logicalSessionId ?? binding.actorSessionId,
+        idempotencyKey: optional(args.idempotency_key)
+      });
       case "send": return this.sessionService.sendMessage(required(args.session_id, "session_id"), required(args.message, "message"), context);
       case "interrupt": return this.sessionService.interrupt(required(args.session_id, "session_id"), context);
       case "resume": return this.sessionService.resumeSession(required(args.session_id, "session_id"), context);
@@ -204,7 +213,7 @@ export class PlatformOperationService {
   }
 
   async #collaboration(args, binding) {
-    assertKnown(args, ["action", "session_id", "objective_id", "agent_id", "task_id", "title", "description", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations", "idempotency_key"]);
+    assertKnown(args, ["action", "session_id", "objective_id", "agent_id", "task_id", "resource_version", "title", "description", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations", "idempotency_key"]);
     if (!this.collaborationCore) throw coded("PLATFORM_COLLABORATION_UNAVAILABLE", "Collaboration platform service is unavailable.");
     switch (required(args.action, "action")) {
       case "discover_sessions": return { sessions: this.store.listSessions().filter((session) => !session.deletedAt).filter((session) => !args.objective_id || session.objectiveId === args.objective_id).filter((session) => !args.agent_id || session.agentId === args.agent_id).map((session) => sessionDescriptor(this.store, session)) };
@@ -219,7 +228,18 @@ export class PlatformOperationService {
           return this.store.getTask(item.id);
         });
       }
-      case "start_worker": { const task = this.objectiveService.getTask(required(args.task_id, "task_id")); const agentId = optional(args.agent_id) ?? task.main_agent_id; found(this.store.getAgent(required(agentId, "agent_id")), "AGENT_NOT_FOUND"); return this.createSession({ agentId, providerId: required(args.provider_id, "provider_id"), taskId: task.id, title: optional(args.title), prompt: null }); }
+      case "start_worker": {
+        return this.createSession({
+          agentId: required(args.agent_id, "agent_id"),
+          providerId: required(args.provider_id, "provider_id"),
+          taskId: required(args.task_id, "task_id"),
+          expectedTaskVersion: positiveInteger(args.resource_version, "resource_version"),
+          title: optional(args.title),
+          prompt: null,
+          sourceSessionId: binding.logicalSessionId ?? binding.actorSessionId,
+          idempotencyKey: required(args.idempotency_key, "idempotency_key")
+        });
+      }
       case "request": {
         const recipientSession = found(resolveSession(this.store, required(args.session_id, "session_id")), "SESSION_NOT_FOUND");
         if (recipientSession.id === binding.actorSessionId) throw coded("COLLABORATION_SELF_TARGET_FORBIDDEN", "Source and recipient Session must differ.");
@@ -257,6 +277,7 @@ function receiptTarget(tool, args, result) {
 function digest(value) { return createHash("sha256").update(stableJson(value)).digest("hex"); }
 function required(value, field) { const text = typeof value === "string" ? value.trim() : ""; if (!text) throw coded("INVALID_INPUT", `${field} is required.`); return text; }
 function optional(value) { const text = typeof value === "string" ? value.trim() : ""; return text || null; }
+function positiveInteger(value, field) { const result = Number(value); if (!Number.isInteger(result) || result < 1) throw coded("TASK_VERSION_CONFLICT", `${field} must be a positive integer.`); return result; }
 function array(value) { return Array.isArray(value) ? value : []; }
 function compact(value) { return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)); }
 function plainObject(value, field) { if (!value || typeof value !== "object" || Array.isArray(value)) throw coded("INVALID_INPUT", `${field} must be an object.`); return value; }

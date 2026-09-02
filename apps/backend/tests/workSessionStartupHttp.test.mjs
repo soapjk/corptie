@@ -6,7 +6,7 @@ import { handleEntityHttpRequest } from "../src/application/entityHttpApi.mjs";
 function request(method, path, body = {}) {
   return {
     method,
-    headers: {},
+    headers: { "x-corptie-logical-session-id": "session:source" },
     url: `http://localhost${path}`,
     async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)); }
   };
@@ -30,7 +30,7 @@ async function call(method, path, body, callbacks = {}) {
     response: res,
     url: new URL(req.url),
     objectiveService: { store: {} },
-    beginTaskExecution: callbacks.begin,
+    startWorkSession: callbacks.start,
     getTaskStartup: callbacks.get,
     getSessionStartupBinding: callbacks.session
   });
@@ -38,27 +38,31 @@ async function call(method, path, body, callbacks = {}) {
   return { handled, statusCode: res.statusCode, body: res.body };
 }
 
-test("POST start returns pending and polling returns only the authoritative ready receipt", async () => {
-  const pending = {
-    status: "pending", startupOperationId: "startup:one", phase: "allocated",
-    resourceVersion: 1, retryAfterMilliseconds: 250, error: null
-  };
+test("POST start returns only the authoritative ready receipt and polling exposes the same receipt", async () => {
   const ready = {
     status: "ready", idempotentReplay: false,
+    session: { id: "provider:one", taskId: "task:one" },
     receipt: { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", receiptHash: "hash" }
   };
-  let beginInput = null;
+  let startInput = null;
   const started = await call("POST", "/tasks/task%3Aone/start", {
-    requestedAgentId: "agent:worker", providerId: "codex-app-server", idempotencyKey: "start:one"
+    taskId: "task:one",
+    assigneeAgentId: "agent:worker", expectedTaskVersion: 1,
+    providerId: "codex-app-server", idempotencyKey: "start:one", sourceSessionId: "session:source"
   }, {
-    begin: (input) => { beginInput = input; return pending; }
+    start: (input) => { startInput = input; return ready; }
   });
   assert.equal(started.handled, true);
-  assert.equal(started.statusCode, 202);
-  assert.deepEqual(started.body, pending);
-  assert.equal(beginInput.taskId, "task:one");
-  assert.equal(Object.hasOwn(beginInput, "path"), false);
-  assert.equal(Object.hasOwn(beginInput, "worktreeId"), false);
+  assert.equal(started.statusCode, 201);
+  assert.deepEqual(started.body, {
+    session: ready.session,
+    start: { status: "ready", idempotentReplay: false, receipt: ready.receipt }
+  });
+  assert.equal(startInput.taskId, "task:one");
+  assert.equal(startInput.assigneeAgentId, "agent:worker");
+  assert.equal(startInput.sourceSessionId, "session:source");
+  assert.equal(Object.hasOwn(startInput, "path"), false);
+  assert.equal(Object.hasOwn(startInput, "worktreeId"), false);
 
   const polled = await call(
     "GET",
@@ -84,11 +88,12 @@ test("logical Session startup-binding endpoint exposes the same ready receipt", 
 
 test("start API rejects client-selected Workspace identity fields", async () => {
   const result = await call("POST", "/tasks/task%3Aone/start", {
-    requestedAgentId: "agent:worker", providerId: "codex-app-server",
-    idempotencyKey: "start:one", worktreeId: "worktree:forged"
-  }, { begin: () => { throw new Error("must not run"); } });
+    taskId: "task:one",
+    assigneeAgentId: "agent:worker", expectedTaskVersion: 1, providerId: "codex-app-server",
+    idempotencyKey: "start:one", sourceSessionId: "session:source", worktreeId: "worktree:forged"
+  }, { start: () => { throw new Error("must not run"); } });
   assert.equal(result.statusCode, 400);
-  assert.equal(result.body.code, "INVALID_INPUT");
+  assert.equal(result.body.code, "UNKNOWN_START_FIELD");
 });
 
 test("start API returns a ready replay as 200 and rejects legacy Agent aliases", async () => {
@@ -97,14 +102,20 @@ test("start API returns a ready replay as 200 and rejects legacy Agent aliases",
     receipt: { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", receiptHash: "hash" }
   };
   const replay = await call("POST", "/tasks/task%3Aone/start", {
-    requestedAgentId: "agent:worker", providerId: "codex-app-server", idempotencyKey: "start:one"
-  }, { begin: () => ready });
+    taskId: "task:one",
+    assigneeAgentId: "agent:worker", expectedTaskVersion: 1,
+    providerId: "codex-app-server", idempotencyKey: "start:one", sourceSessionId: "session:source"
+  }, { start: () => ({ ...ready, session: { id: "provider:one", taskId: "task:one" } }) });
   assert.equal(replay.statusCode, 200);
-  assert.deepEqual(replay.body, ready);
+  assert.deepEqual(replay.body, {
+    session: { id: "provider:one", taskId: "task:one" },
+    start: { status: "ready", idempotentReplay: true, receipt: ready.receipt }
+  });
 
   const legacy = await call("POST", "/tasks/task%3Aone/start", {
-    agentId: "agent:worker", providerId: "codex-app-server", idempotencyKey: "start:one"
-  }, { begin: () => { throw new Error("must not run"); } });
+    taskId: "task:one", agentId: "agent:worker", providerId: "codex-app-server",
+    idempotencyKey: "start:one", sourceSessionId: "session:source"
+  }, { start: () => { throw new Error("must not run"); } });
   assert.equal(legacy.statusCode, 400);
-  assert.equal(legacy.body.code, "INVALID_INPUT");
+  assert.equal(legacy.body.code, "UNKNOWN_START_FIELD");
 });

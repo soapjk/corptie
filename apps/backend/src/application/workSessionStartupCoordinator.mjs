@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { decodeWorkSessionStartCommand } from "../contracts/workSessionStartCommand.mjs";
 
 const ACTIVE_STATES = new Set([
   "allocated", "worktree_prepared", "session_bound", "provider_bound", "compensating"
@@ -22,32 +23,32 @@ const PHASE_TIMESTAMP = Object.freeze({
 export class WorkSessionStartupCoordinator {
   constructor(options = {}) {
     this.store = options.store;
-    this.validateStart = options.validateStart;
+    this.authorizeStart = options.authorizeStart;
     this.prepareWorktree = options.prepareWorktree;
     this.inspectWorktree = options.inspectWorktree;
-    this.createSession = options.createSession;
-    this.bindProviderWorkspace = options.bindProviderWorkspace;
-    this.inspectProviderBinding = options.inspectProviderBinding;
-    this.activateSession = options.activateSession ?? (() => {});
+    this.providerWorkSessionPort = options.providerWorkSessionPort;
     this.compensateWorktree = options.compensateWorktree ?? null;
-    this.markSessionStartupFailed = options.markSessionStartupFailed ?? null;
     this.onChanged = options.onChanged ?? (() => {});
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.leaseOwner = options.leaseOwner ?? `startup-worker:${process.pid}:${randomUUID()}`;
     this.leaseTtlMs = options.leaseTtlMs ?? 30_000;
     this.inFlight = new Map();
     for (const method of [
-      "validateStart", "prepareWorktree", "inspectWorktree", "createSession",
-      "bindProviderWorkspace", "inspectProviderBinding"
+      "authorizeStart", "prepareWorktree", "inspectWorktree"
     ]) {
       if (typeof this[method] !== "function") throw new TypeError(`WorkSessionStartupCoordinator requires ${method}().`);
+    }
+    for (const method of ["createSession", "bindWorkspace", "inspectBinding", "activateSession", "compensateSession"]) {
+      if (typeof this.providerWorkSessionPort?.[method] !== "function") {
+        throw new TypeError(`WorkSessionStartupCoordinator requires ProviderWorkSessionPort.${method}().`);
+      }
     }
     if (!this.store) throw new TypeError("WorkSessionStartupCoordinator requires a Store.");
   }
 
   async start(input = {}) {
     const operation = this.#allocate(input);
-    if (operation.state === "ready") return this.#readyView(operation, true);
+    if (operation.state === "ready") return this.#dispatchInitialTurn(operation, true);
     if (TERMINAL_FAILURE_STATES.has(operation.state)) return this.#failureView(operation);
     const running = this.inFlight.get(operation.startup_operation_id);
     if (running) return running;
@@ -55,19 +56,6 @@ export class WorkSessionStartupCoordinator {
       .finally(() => this.inFlight.delete(operation.startup_operation_id));
     this.inFlight.set(operation.startup_operation_id, promise);
     return promise;
-  }
-
-  begin(input = {}) {
-    const operation = this.#allocate(input);
-    if (operation.state === "ready") return this.#readyView(operation, true);
-    if (TERMINAL_FAILURE_STATES.has(operation.state)) return this.#failureView(operation);
-    if (!this.inFlight.has(operation.startup_operation_id)) {
-      const promise = this.#drive(operation.startup_operation_id)
-        .catch(() => this.#failureView(this.#operation(operation.startup_operation_id)))
-        .finally(() => this.inFlight.delete(operation.startup_operation_id));
-      this.inFlight.set(operation.startup_operation_id, promise);
-    }
-    return this.#pendingView(operation);
   }
 
   getReceipt({ startupOperationId, taskId = null } = {}) {
@@ -100,7 +88,11 @@ export class WorkSessionStartupCoordinator {
   recover(startupOperationId) {
     const operation = this.#operation(requiredText(startupOperationId, "startupOperationId"));
     if (!operation) throw coded("START_REFERENCE_INVALID", "Startup operation was not found.", 404, false);
-    if (operation.state === "ready") return Promise.resolve(this.#readyView(operation, true));
+    if (operation.state === "ready") {
+      return operation.initial_turn_state === "accepted"
+        ? Promise.resolve(this.#readyView(operation, true))
+        : this.#dispatchInitialTurn(operation, true);
+    }
     if (TERMINAL_FAILURE_STATES.has(operation.state)) return Promise.resolve(this.#failureView(operation));
     if (!this.#takeLease(operation)) return Promise.resolve(this.#pendingView(this.#operation(startupOperationId)));
     return this.#drive(startupOperationId);
@@ -110,8 +102,10 @@ export class WorkSessionStartupCoordinator {
     const now = this.clock();
     const rows = this.store.selectAll(
       `SELECT startup_operation_id FROM work_session_startup_operations
-       WHERE state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating')
-         AND (lease_expires_at IS NULL OR lease_expires_at<=?) ORDER BY allocated_at`,
+       WHERE (state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating')
+         AND (lease_expires_at IS NULL OR lease_expires_at<=?))
+         OR (state='ready' AND initial_turn_state='pending')
+       ORDER BY allocated_at`,
       [now]
     );
     for (const row of rows) {
@@ -174,19 +168,23 @@ export class WorkSessionStartupCoordinator {
     try {
       if (!operation) throw coded("START_REFERENCE_INVALID", "Startup operation disappeared.", 404, false);
       if (!this.#leaseOwned(operation) && !this.#takeLease(operation)) return this.#pendingView(this.#operation(operationId));
-      const context = await this.validateStart(this.#inputFor(operation));
+      const context = await this.authorizeStart(this.#inputFor(operation));
       operation = this.#operation(operationId);
 
       let allocation = jsonObject(operation.allocation_json);
       if (operation.state === "allocated") {
-        allocation = await this.prepareWorktree({
-          startupOperationId: operationId,
-          taskId: operation.task_id,
-          repositoryId: operation.repository_id ?? context.task.main_workspace_id,
-          idempotencyKey: operation.idempotency_key,
-          task: context.task
-        });
-        allocation = await this.#verifiedAllocation(operation, allocation);
+        try {
+          allocation = await this.prepareWorktree({
+            startupOperationId: operationId,
+            taskId: operation.task_id,
+            repositoryId: operation.repository_id,
+            idempotencyKey: operation.idempotency_key,
+            expectedTaskVersion: operation.expected_task_version
+          });
+          allocation = await this.#verifiedAllocation(operation, allocation);
+        } catch (error) {
+          throw phaseFailure(error, "START_WORKTREE_PREPARATION_FAILED", "worktree_preparation");
+        }
         operation = this.#transition(operation, "worktree_prepared", { allocation });
       } else if (allocation) {
         allocation = await this.#verifiedAllocation(operation, allocation);
@@ -194,16 +192,23 @@ export class WorkSessionStartupCoordinator {
 
       let session = operation.legacy_session_id ? this.store.getSession(operation.legacy_session_id) : null;
       if (operation.state === "worktree_prepared") {
-        if (!session) {
-          session = await this.createSession({
-            ...this.#inputFor(operation),
-            ...context,
-            workspace: allocation,
-            startupOperationId: operationId,
-            trustedContext: this.#trustedSnapshot(operation, allocation)
-          });
+        let logical;
+        try {
+          if (!session) {
+            session = await this.providerWorkSessionPort.createSession({
+              ...this.#inputFor(operation),
+              objectiveId: context.objectiveId,
+              repositoryId: context.repositoryId,
+              taskTitle: context.taskTitle,
+              workspace: allocation,
+              startupOperationId: operationId,
+              trustedContext: this.#trustedSnapshot(operation, allocation)
+            });
+          }
+          logical = this.#verifiedLogicalSession(operation, session, allocation);
+        } catch (error) {
+          throw phaseFailure(error, "START_SESSION_CREATION_FAILED", "session_creation");
         }
-        const logical = this.#verifiedLogicalSession(operation, session, allocation);
         operation = this.#transition(operation, "session_bound", {
           logicalSessionId: logical.logicalSessionId,
           legacySessionId: session.id
@@ -215,37 +220,37 @@ export class WorkSessionStartupCoordinator {
 
       let binding = this.#binding(operationId);
       if (operation.state === "session_bound") {
-        if (!binding) binding = this.#allocateProviderBinding(operation, allocation);
-        let proof = null;
         try {
-          proof = await this.inspectProviderBinding(this.#providerBindingInput(operation, binding, allocation));
+          if (!binding) binding = this.#allocateProviderBinding(operation, allocation);
+          let proof = null;
+          try {
+            proof = await this.providerWorkSessionPort.inspectBinding(
+              this.#providerBindingInput(operation, binding, allocation)
+            );
+          } catch (error) {
+            if (error?.code !== "START_PROVIDER_BINDING_NOT_FOUND") throw error;
+          }
+          if (!proof) {
+            proof = await this.providerWorkSessionPort.bindWorkspace(
+              this.#providerBindingInput(operation, binding, allocation),
+              { workingDirectory: allocation.canonicalWorktreePath }
+            );
+          }
+          this.acceptProviderProof(proof);
         } catch (error) {
-          if (error?.code !== "START_PROVIDER_BINDING_NOT_FOUND") throw error;
+          throw phaseFailure(error, "START_PROVIDER_BINDING_FAILED", "provider_binding");
         }
-        if (!proof) {
-          proof = await this.bindProviderWorkspace(this.#providerBindingInput(operation, binding, allocation));
-        }
-        this.acceptProviderProof(proof);
         operation = this.#operation(operationId);
       }
 
       if (operation.state === "provider_bound") {
-        const ready = this.#commitReady(operation, allocation);
         try {
-          await this.activateSession({
-            ...context,
-            session: this.store.getSession(ready.session.id),
-            receipt: ready.receipt,
-            startupOperationId: operationId,
-            initialPrompt: operation.initial_prompt
-          });
+          operation = await this.#ensureProviderActivated(operation, allocation);
         } catch (error) {
-          this.#audit(operationId, "startup.initial_turn_dispatch_failed", {
-            errorCode: stableErrorCode(error)
-          });
-          return { ...ready, turnDispatch: { status: "failed", errorCode: stableErrorCode(error) } };
+          throw phaseFailure(error, "START_PROVIDER_BINDING_FAILED", "provider_activation");
         }
-        return { ...ready, turnDispatch: { status: "accepted", errorCode: null } };
+        const ready = this.#commitReady(operation, allocation);
+        return this.#dispatchInitialTurn(this.#operation(operationId), ready.idempotentReplay);
       }
       if (operation.state === "ready") return this.#readyView(operation, true);
       return this.#pendingView(operation);
@@ -259,25 +264,22 @@ export class WorkSessionStartupCoordinator {
   }
 
   #allocate(input) {
-    const taskId = namespaced(input.taskId, "task:", "taskId");
-    const requestedAgentId = namespaced(input.requestedAgentId, "agent:", "requestedAgentId");
-    const idempotencyKey = requiredText(input.idempotencyKey, "idempotencyKey");
+    const command = decodeWorkSessionStartCommand(input);
+    const { taskId, assigneeAgentId, expectedTaskVersion, idempotencyKey, sourceSessionId } = command;
     const task = this.store.getTask(taskId);
     if (!task) throw coded("START_REFERENCE_INVALID", "Task was not found.", 404, false);
     const objectiveId = namespaced(task.objective_id, "objective:", "objectiveId");
     const repositoryId = namespaced(task.main_workspace_id, "repository:", "repositoryId");
-    const providerId = requiredText(input.providerId, "providerId");
+    const providerId = command.providerId;
     const normalized = {
-      authenticatedSessionId: optionalText(input.authenticatedSessionId),
+      sourceSessionId,
       objectiveId,
       taskId,
-      requestedAgentId,
+      assigneeAgentId,
+      expectedTaskVersion,
       providerId,
       repositoryId,
-      title: optionalText(input.title),
-      initialPrompt: optionalText(input.initialPrompt),
-      source: optionalText(input.source) ?? "application",
-      replacingSessionId: optionalText(input.replacingSessionId)
+      title: optionalText(command.title)
     };
     const fingerprint = sha256(canonicalJson(normalized));
     const operationId = `startup:${sha256(`${taskId}\0${idempotencyKey}`).slice(0, 32)}`;
@@ -308,19 +310,15 @@ export class WorkSessionStartupCoordinator {
       const correlationId = `startup-correlation:${randomUUID()}`;
       this.store.db.run(
         `INSERT INTO work_session_startup_operations (
-          startup_operation_id, objective_id, task_id, requested_agent_id, provider_id,
-          repository_id, actor_logical_session_id,
-          idempotency_key, request_fingerprint, source, requested_title, initial_prompt, replacing_session_id, state,
+          startup_operation_id, objective_id, task_id, assignee_agent_id, expected_task_version, provider_id,
+          repository_id, source_session_id,
+          idempotency_key, request_fingerprint, source, requested_title, state,
           lease_owner, lease_expires_at, correlation_id, allocated_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'allocated', ?, ?, ?, ?, ?)`,
-        [operationId, objectiveId, taskId, requestedAgentId, providerId,
-          repositoryId, normalized.authenticatedSessionId, idempotencyKey, fingerprint,
-          normalized.source, normalized.title, normalized.initialPrompt, normalized.replacingSessionId, this.leaseOwner,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, 'allocated', ?, ?, ?, ?, ?)`,
+        [operationId, objectiveId, taskId, assigneeAgentId, expectedTaskVersion, providerId,
+          repositoryId, sourceSessionId, idempotencyKey, fingerprint,
+          normalized.title, this.leaseOwner,
           expiresAt(now, this.leaseTtlMs), correlationId, now, now]
-      );
-      this.store.db.run(
-        `UPDATE tasks SET execution_status='starting', updated_at=? WHERE id=?`,
-        [now, taskId]
       );
       result = this.store.selectOne(
         "SELECT * FROM work_session_startup_operations WHERE startup_operation_id=?", [operationId]
@@ -328,7 +326,6 @@ export class WorkSessionStartupCoordinator {
       this.#insertAudit(result, "startup.allocated", null, 1, {});
     });
     this.store.scheduleSave();
-    this.onChanged("TaskChanged", { action: "startup-allocated", entity: this.store.getTask(taskId) });
     return result;
   }
 
@@ -453,6 +450,61 @@ export class WorkSessionStartupCoordinator {
     };
   }
 
+  async #ensureProviderActivated(operation, allocation) {
+    let binding = this.#binding(operation.startup_operation_id);
+    if (!binding) throw coded("START_PROVIDER_BINDING_FAILED", "Provider binding disappeared before activation.", 409, true);
+    if (binding.activation_proof_json) {
+      this.#verifiedActivationProof(binding, jsonObject(binding.activation_proof_json), allocation);
+      return operation;
+    }
+    const proof = await this.providerWorkSessionPort.activateSession({
+      ...this.#inputFor(operation),
+      ...this.#providerBindingInput(operation, binding, allocation),
+      session: this.store.getSession(operation.legacy_session_id),
+      dispatchInitialTurn: false
+    });
+    const verified = this.#verifiedActivationProof(binding, proof, allocation);
+    const now = this.clock();
+    const nextVersion = operation.resource_version + 1;
+    this.store.runInTransaction(() => {
+      this.store.db.run(
+        `UPDATE work_session_startup_bindings SET tool_contract_hash=?, instruction_sources_hash=?,
+         activation_proof_json=?, resource_version=resource_version+1
+         WHERE provider_binding_id=? AND status='binding' AND activation_proof_json IS NULL`,
+        [verified.toolContractHash, verified.instructionSourcesHash, canonicalJson(verified), binding.provider_binding_id]
+      );
+      requireSingleRowChange(this.store, "Provider activation proof lost its binding claim.");
+      this.store.db.run(
+        `UPDATE work_session_startup_operations SET resource_version=?, updated_at=?
+         WHERE startup_operation_id=? AND state='provider_bound' AND resource_version=?`,
+        [nextVersion, now, operation.startup_operation_id, operation.resource_version]
+      );
+      requireSingleRowChange(this.store, "Provider activation proof lost its startup claim.");
+      this.#insertAudit(operation, "startup.provider_activated", operation.resource_version, nextVersion, {
+        toolContractHash: verified.toolContractHash,
+        instructionSourcesHash: verified.instructionSourcesHash
+      });
+    });
+    this.store.scheduleSave();
+    return this.#operation(operation.startup_operation_id);
+  }
+
+  #verifiedActivationProof(binding, proof, allocation) {
+    if (!proof || typeof proof !== "object" || Array.isArray(proof)
+      || requiredText(proof.providerResourceId, "providerResourceId") !== binding.provider_resource_id
+      || canonicalPath(proof.canonicalWorkingDirectory) !== allocation.canonicalWorktreePath) {
+      throw coded("START_PROVIDER_BINDING_FAILED", "Provider activation did not prove the bound Session working directory.", 409, true);
+    }
+    const toolContractHash = sha256Text(proof.toolContractHash, "toolContractHash");
+    const instructionSourcesHash = sha256Text(proof.instructionSourcesHash, "instructionSourcesHash");
+    return {
+      providerResourceId: binding.provider_resource_id,
+      canonicalWorkingDirectory: allocation.canonicalWorktreePath,
+      toolContractHash,
+      instructionSourcesHash
+    };
+  }
+
   #commitReady(operation, allocation) {
     const binding = this.#binding(operation.startup_operation_id);
     const session = this.store.getSession(operation.legacy_session_id);
@@ -465,7 +517,8 @@ export class WorkSessionStartupCoordinator {
       || canonicalPath(inventory.canonicalPath || inventory.path) !== allocation.canonicalWorktreePath
       || binding.status !== "binding" || binding.binding_generation !== operation.binding_generation
       || !binding.provider_resource_id
-      || binding.provider_cwd_proof !== allocation.canonicalWorktreePath) {
+      || binding.provider_cwd_proof !== allocation.canonicalWorktreePath
+      || !binding.tool_contract_hash || !binding.instruction_sources_hash || !binding.activation_proof_json) {
       throw coded("START_READY_COMMIT_CONFLICT", "Authoritative identity changed before ready commit.", 409, true);
     }
     const now = this.clock();
@@ -491,6 +544,8 @@ export class WorkSessionStartupCoordinator {
       workspaceResourceVersion: allocation.workspaceResourceVersion,
       resourceVersion: nextVersion,
       providerContextHash: binding.provider_context_hash,
+      toolContractHash: binding.tool_contract_hash,
+      instructionSourcesHash: binding.instruction_sources_hash,
       phaseTimestamps: {
         allocatedAt: operation.allocated_at,
         worktreePreparedAt: operation.worktree_prepared_at,
@@ -531,11 +586,15 @@ export class WorkSessionStartupCoordinator {
       this.store.db.run(
         `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status='running',
          main_agent_id=?, acceptance_assessment_json='{}',
-         resource_version=resource_version+1, updated_at=? WHERE id=?`,
-        [session.id, operation.requested_agent_id, now, operation.task_id]
+         resource_version=resource_version+1, updated_at=?
+         WHERE id=? AND resource_version=? AND lifecycle_state='todo'
+           AND current_session_id IS NULL`,
+        [session.id, operation.assignee_agent_id, now, operation.task_id,
+          operation.expected_task_version]
       );
+      requireSingleRowChange(this.store, "Task version or lifecycle changed before ready commit.");
       this.store.db.run("UPDATE agents SET current_session_id=?, updated_at=? WHERE agent_id=?", [
-        session.id, now, operation.requested_agent_id
+        session.id, now, operation.assignee_agent_id
       ]);
       this.#insertAudit(operation, "startup.ready", operation.resource_version, nextVersion, {
         receiptHash: receipt.receiptHash,
@@ -619,11 +678,12 @@ export class WorkSessionStartupCoordinator {
       this.store.runInTransaction(() => {
         this.store.db.run(
           `UPDATE work_session_startup_operations SET state='compensating', error_code=?,
-           error_message_redacted=?, error_retryable=?, compensation_state='pending',
+           error_message_redacted=?, error_retryable=?, error_stage=?, compensation_state='pending',
            resource_version=?, lease_expires_at=?, updated_at=?
            WHERE startup_operation_id=? AND resource_version=?
              AND state IN ('allocated','worktree_prepared','session_bound','provider_bound')`,
-          [errorCode, safeSummary(error?.message), retryable ? 1 : 0, nextVersion,
+          [errorCode, safeSummary(error?.message), retryable ? 1 : 0,
+            optionalText(error?.stage) ?? phaseForState(current.state), nextVersion,
             expiresAt(now, this.leaseTtlMs), now, current.startup_operation_id, current.resource_version]
         );
         if (this.store.db.getRowsModified() !== 1) return;
@@ -648,12 +708,26 @@ export class WorkSessionStartupCoordinator {
       );
       completedSteps.push("provider_binding_retired");
     }
-    if (current.legacy_session_id && this.markSessionStartupFailed) {
+    if (current.legacy_session_id) {
       try {
-        await this.markSessionStartupFailed(current.legacy_session_id, { operation: current, errorCode });
-        completedSteps.push("logical_session_marked_failed");
+        // Release restrictive startup references before the Provider port
+        // removes the temporary logical/physical Session resources. The
+        // operation and failed binding retain their immutable audit identity.
+        this.store.db.run(
+          `UPDATE work_session_startup_operations SET logical_session_id=NULL,
+           legacy_session_id=NULL, updated_at=? WHERE startup_operation_id=? AND state='compensating'`,
+          [this.clock(), current.startup_operation_id]
+        );
+        this.store.scheduleSave();
+        await this.providerWorkSessionPort.compensateSession({
+          sessionId: current.legacy_session_id,
+          providerBinding: binding,
+          startupOperationId: current.startup_operation_id,
+          errorCode
+        });
+        completedSteps.push("provider_session_compensated");
       } catch {
-        failedStep = "logical_session_marked_failed";
+        failedStep = "provider_session_compensated";
         manualRequired = true;
       }
     }
@@ -695,9 +769,14 @@ export class WorkSessionStartupCoordinator {
       );
       requireSingleRowChange(this.store, "Startup compensation result lost its state claim.");
       this.store.db.run(
-        `UPDATE tasks SET execution_status='start_failed', updated_at=?,
-         current_session_id=CASE WHEN current_session_id=? THEN NULL ELSE current_session_id END WHERE id=?`,
-        [now, current.legacy_session_id, current.task_id]
+        `UPDATE tasks SET
+         execution_status=CASE WHEN current_session_id=? THEN 'idle' ELSE execution_status END,
+         lifecycle_state=CASE WHEN current_session_id=? THEN 'todo' ELSE lifecycle_state END,
+         updated_at=?,
+         current_session_id=CASE WHEN current_session_id=? THEN NULL ELSE current_session_id END,
+         main_agent_id=CASE WHEN current_session_id=? THEN NULL ELSE main_agent_id END WHERE id=?`,
+        [current.legacy_session_id, current.legacy_session_id, now,
+          current.legacy_session_id, current.legacy_session_id, current.task_id]
       );
       this.#insertAudit(latest, manualRequired ? "startup.compensation_failed" : "startup.compensation_completed",
         latest.resource_version, nextVersion, result);
@@ -752,6 +831,47 @@ export class WorkSessionStartupCoordinator {
     };
   }
 
+  async #dispatchInitialTurn(operation, idempotentReplay) {
+    const ready = this.#readyView(operation, idempotentReplay);
+    if (operation.initial_turn_state === "accepted") {
+      return { ...ready, turnDispatch: { status: "accepted", errorCode: null } };
+    }
+    try {
+      await this.providerWorkSessionPort.activateSession({
+        ...this.#inputFor(operation),
+        session: this.store.getSession(ready.session.id),
+        receipt: ready.receipt,
+        startupOperationId: operation.startup_operation_id,
+        activationProof: jsonObject(this.#binding(operation.startup_operation_id)?.activation_proof_json),
+        dispatchInitialTurn: true
+      });
+      this.store.db.run(
+        `UPDATE work_session_startup_operations SET initial_turn_state='accepted',
+         initial_turn_error_code=NULL, updated_at=? WHERE startup_operation_id=? AND state='ready'`,
+        [this.clock(), operation.startup_operation_id]
+      );
+      this.store.scheduleSave();
+      return { ...ready, turnDispatch: { status: "accepted", errorCode: null } };
+    } catch (cause) {
+      const error = phaseFailure(cause, "START_INITIAL_TURN_FAILED", "initial_turn");
+      error.code = "START_INITIAL_TURN_FAILED";
+      this.store.db.run(
+        `UPDATE work_session_startup_operations SET initial_turn_state='failed',
+         initial_turn_error_code=?, updated_at=? WHERE startup_operation_id=? AND state='ready'`,
+        [error.code, this.clock(), operation.startup_operation_id]
+      );
+      this.store.scheduleSave();
+      this.#audit(operation.startup_operation_id, "startup.initial_turn_dispatch_failed", {
+        errorCode: error.code
+      });
+      error.startup = {
+        ...this.#readyView(this.#operation(operation.startup_operation_id), idempotentReplay),
+        turnDispatch: { status: "failed", errorCode: error.code }
+      };
+      throw error;
+    }
+  }
+
   #pendingView(operation) {
     return {
       status: "pending",
@@ -774,6 +894,7 @@ export class WorkSessionStartupCoordinator {
       resourceVersion: operation.resource_version,
       error: {
         code: operation.error_code ?? "START_FAILED",
+        stage: operation.error_stage ?? phaseForState(operation.state),
         retryable: Boolean(operation.error_retryable),
         correlationId: operation.correlation_id,
         message: operation.error_message_redacted ?? "Work Session startup failed."
@@ -794,16 +915,13 @@ export class WorkSessionStartupCoordinator {
 
   #inputFor(operation) {
     return {
-      authenticatedSessionId: operation.actor_logical_session_id ?? null,
       taskId: operation.task_id,
-      objectiveId: operation.objective_id,
-      requestedAgentId: operation.requested_agent_id,
+      assigneeAgentId: operation.assignee_agent_id,
+      expectedTaskVersion: operation.expected_task_version,
       providerId: operation.provider_id,
       title: operation.requested_title,
-      initialPrompt: operation.initial_prompt,
       idempotencyKey: operation.idempotency_key,
-      source: operation.source,
-      replacingSessionId: operation.replacing_session_id
+      sourceSessionId: operation.source_session_id
     };
   }
 
@@ -835,7 +953,7 @@ export class WorkSessionStartupCoordinator {
         previous_resource_version, resource_version, binding_generation, details_json, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [`startup-audit:${randomUUID()}`, operation.startup_operation_id, event,
-        operation.actor_logical_session_id ?? null, operation.correlation_id,
+        operation.source_session_id ?? null, operation.correlation_id,
         previousResourceVersion, resourceVersion, operation.binding_generation ?? null,
         canonicalJson(details ?? {}), this.clock()]
     );
@@ -885,6 +1003,25 @@ function compensationFor(operation) {
   };
 }
 
+function phaseFailure(error, fallbackCode, stage) {
+  if (!error || typeof error !== "object") error = new Error(String(error));
+  if (!String(error.code ?? "").startsWith("START_")) error.code = fallbackCode;
+  error.stage ??= stage;
+  error.statusCode ??= 409;
+  error.retryable ??= true;
+  return error;
+}
+
+function phaseForState(state) {
+  return ({
+    allocated: "worktree_preparation",
+    worktree_prepared: "session_creation",
+    session_bound: "provider_binding",
+    provider_bound: "ready_commit",
+    compensating: "compensation"
+  })[state] ?? "startup";
+}
+
 function canonicalJson(value) {
   return JSON.stringify(sortValue(value));
 }
@@ -897,6 +1034,14 @@ function sortValue(value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function sha256Text(value, field) {
+  const result = requiredText(value, field).toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(result)) {
+    throw coded("START_PROVIDER_BINDING_FAILED", `${field} must be a SHA-256 digest.`, 409, true);
+  }
+  return result;
 }
 
 function canonicalPath(value) {

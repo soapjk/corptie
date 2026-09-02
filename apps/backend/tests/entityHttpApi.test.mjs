@@ -47,6 +47,23 @@ function mockRequest(method, pathname, search = "", body = {}, headers = {}) {
   };
 }
 
+function workSessionStartRequest(task, assigneeAgentId, providerId, suffix, title = undefined) {
+  const sourceSessionId = `session:http-source:${suffix}`;
+  return {
+    pathname: `/tasks/${encodeURIComponent(task.id)}/start`,
+    headers: { "x-corptie-logical-session-id": sourceSessionId },
+    body: {
+      taskId: task.id,
+      assigneeAgentId,
+      expectedTaskVersion: Number(task.resource_version ?? task.resourceVersion ?? 1),
+      providerId,
+      ...(title ? { title } : {}),
+      idempotencyKey: `start:${suffix}`,
+      sourceSessionId
+    }
+  };
+}
+
 async function createServices() {
   const directory = await mkdtemp(join(tmpdir(), "corptie-http-"));
   const store = new CorptieStore({
@@ -86,10 +103,10 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
   const request = mockRequest(method, pathname, search, body, requestHeaders);
   const response = mockResponse();
   const url = new URL(request.url);
-  const startTaskExecution = services.startTaskExecution ?? (services.launchSession
+  const startWorkSession = services.startWorkSession ?? (services.launchSession
     ? async (input) => {
         const task = services.objectiveService.store.getTask(input.taskId);
-        const agent = services.objectiveService.store.getAgent(input.requestedAgentId);
+        const agent = services.objectiveService.store.getAgent(input.assigneeAgentId);
         const session = await services.launchSession({
           task,
           agent,
@@ -123,8 +140,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     backgroundAgentService: services.backgroundAgentService,
     createSession: services.createSession,
     launchSession: services.launchSession,
-    startTaskExecution,
-    beginTaskExecution: services.beginTaskExecution,
+    startWorkSession,
     getTaskStartup: services.getTaskStartup,
     getSessionStartupBinding: services.getSessionStartupBinding,
     launchAgentSession: services.launchAgentSession,
@@ -1262,10 +1278,9 @@ test("binding a valid Workspace is persisted and immediately visible to Task sta
     let observedRepositoryId = null;
     const started = await callApi({
       method: "POST",
-      pathname: "/sessions",
-      body: { taskId: item.id, agentId: agent.agentId, providerId: "codex-app-server" },
-      startTaskExecution: async (input) => {
-        assert.equal(input.requestedAgentId, agent.agentId);
+      ...workSessionStartRequest(services.store.getTask(item.id), agent.agentId, "codex-app-server", "immediate"),
+      startWorkSession: async (input) => {
+        assert.equal(input.assigneeAgentId, agent.agentId);
         assert.equal(Object.hasOwn(input, "agentId"), false);
         observedRepositoryId = services.store.getTask(input.taskId).main_workspace_id;
         return {
@@ -2190,7 +2205,7 @@ test("POST /agents 为每个 Assistant 分配独立 Workspace", async () => {
   }
 });
 
-test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async () => {
+test("legacy Session creation rejects Task startup fields while Assistant Chat keeps its dedicated route", async () => {
   const services = await createServices();
   try {
     const objective = await callApi({
@@ -2210,7 +2225,7 @@ test("Session 创建入口严格区分 Assistant Chat 与 Worker 角色", async 
       launchSession: async () => { throw new Error("must not launch"); }
     });
     assert.equal(assistantAsWorker.statusCode, 400);
-    assert.equal(assistantAsWorker.body.code, "AGENT_NOT_INDEPENDENT_CONTRIBUTOR");
+    assert.equal(assistantAsWorker.body.code, "UNKNOWN_START_FIELD");
 
     const contributor = await callApi({
       method: "POST", pathname: "/agents", body: { name: "贡献者" }, ...services
@@ -2285,12 +2300,7 @@ test("Task creation persists the selected Agent and only the explicit run action
 
     const started = await callApi({
       method: "POST",
-      pathname: "/sessions",
-      body: {
-        taskId: created.body.id,
-        agentId: agent.agentId,
-        providerId: "test-provider"
-      },
+      ...workSessionStartRequest(services.store.getTask(created.body.id), agent.agentId, "test-provider", "explicit"),
       launchSession,
       observeTaskPerformance: (measurement) => performance.push(measurement),
       ...services
@@ -2303,14 +2313,9 @@ test("Task creation persists the selected Agent and only the explicit run action
     assert.equal(running.execution_status, "running");
     assert.equal(running.current_session_id, started.body.session.id);
     assert.equal(services.store.listTasksByObjective(objective.id).length, 1);
-    assert.deepEqual(performance.map((measurement) => measurement.operation), [
-      "task.create",
-      "task.execute"
-    ]);
+    assert.deepEqual(performance.map((measurement) => measurement.operation), ["task.create"]);
     assert.equal(performance[0].outcome, "succeeded");
     assert.equal(performance[0].taskId, created.body.id);
-    assert.equal(performance[1].phases.orchestrationMs >= 0, true);
-    assert.equal(performance[1].totalMs >= 0, true);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -2335,8 +2340,7 @@ test("execution failure is explicit and retrying the existing Task does not crea
 
     const failed = await callApi({
       method: "POST",
-      pathname: "/sessions",
-      body: { taskId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
+      ...workSessionStartRequest(services.store.getTask(created.body.id), agent.agentId, "test-provider", "failure"),
       launchSession: async () => {
         const error = new Error("Provider launch failed clearly");
         error.code = "PROVIDER_LAUNCH_FAILED";
@@ -2352,16 +2356,11 @@ test("execution failure is explicit and retrying the existing Task does not crea
     assert.match(failed.body.error, /Provider launch failed clearly/);
     assert.equal(services.store.listTasksByObjective(objective.id).length, 1);
     assert.equal(services.store.getTask(created.body.id).execution_status, "idle");
-    assert.equal(performance.length, 1);
-    assert.equal(performance[0].operation, "task.execute");
-    assert.equal(performance[0].outcome, "failed");
-    assert.equal(performance[0].errorCode, "PROVIDER_LAUNCH_FAILED");
-    assert.equal(performance[0].taskId, created.body.id);
+    assert.equal(performance.length, 0);
 
     const retried = await callApi({
       method: "POST",
-      pathname: "/sessions",
-      body: { taskId: created.body.id, agentId: agent.agentId, providerId: "test-provider" },
+      ...workSessionStartRequest(services.store.getTask(created.body.id), agent.agentId, "test-provider", "retry"),
       launchSession: async ({ task }) => {
         services.store.upsertSession({
           id: "session:retry",
@@ -2408,13 +2407,10 @@ test("Session 创建响应返回可直接增量写入客户端的完整分类与
     const worker = await callApi({
       ...services,
       method: "POST",
-      pathname: "/sessions",
-      body: {
-        taskId: task.body.id,
-        agentId: contributor.body.agent.agentId,
-        providerId: "codex-app-server",
-        title: "自定义 Worker"
-      },
+      ...workSessionStartRequest(
+        services.store.getTask(task.body.id), contributor.body.agent.agentId,
+        "codex-app-server", "projection", "自定义 Worker"
+      ),
       launchSession: async ({ agent, task: launchedTask, title }) => {
         assert.equal(title, "自定义 Worker");
         services.store.upsertSession({
