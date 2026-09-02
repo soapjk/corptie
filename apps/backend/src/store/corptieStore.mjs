@@ -1154,6 +1154,7 @@ export class CorptieStore {
         type TEXT NOT NULL,
         source_json TEXT,
         payload_json TEXT NOT NULL DEFAULT '{}',
+        storage_version INTEGER NOT NULL DEFAULT 1,
         has_agent_message INTEGER NOT NULL DEFAULT 0 CHECK (has_agent_message IN (0, 1)),
         created_at TEXT NOT NULL,
         UNIQUE(session_id, sequence)
@@ -3395,6 +3396,7 @@ export class CorptieStore {
     this.ensureColumn("session_events", "source_event_seqs_json", "TEXT");
     this.ensureColumn("session_events", "call_id", "TEXT");
     this.ensureColumn("session_events", "has_agent_message", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("session_events", "storage_version", "INTEGER NOT NULL DEFAULT 1");
     this.migrateSessionEventAgentMessageFlag();
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_session_events_canonical_completion
@@ -3820,6 +3822,7 @@ export class CorptieStore {
         received_at TEXT NOT NULL,
         raw_payload_json TEXT NOT NULL,
         normalized_event_json TEXT NOT NULL,
+        event_fingerprint TEXT,
         status TEXT NOT NULL CHECK (status IN ('received', 'applied', 'quarantined', 'failed')),
         failure_code TEXT,
         failure_message TEXT,
@@ -3928,6 +3931,7 @@ export class CorptieStore {
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
     `);
+    this.ensureColumn("provider_event_inbox", "event_fingerprint", "TEXT");
     this.ensureColumn(
       "provider_binding_cursors",
       "connection_status",
@@ -9105,14 +9109,14 @@ export class CorptieStore {
     );
   }
 
-  insertProviderInboxEvent(event, sessionId = null) {
+  insertProviderInboxEvent(event, sessionId = null, eventFingerprint = null) {
     this.db.run(
       `INSERT OR IGNORE INTO provider_event_inbox (
         provider_id, provider_session_id, provider_event_id, binding_id,
         logical_session_id, session_id, routing_version, provider_sequence,
         turn_id, item_id, event_type, occurred_at, received_at,
-        raw_payload_json, normalized_event_json, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received')`,
+        raw_payload_json, normalized_event_json, event_fingerprint, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'received')`,
       [
         event.providerId,
         event.providerSessionId,
@@ -9129,6 +9133,7 @@ export class CorptieStore {
         event.receivedAt,
         JSON.stringify(event.rawPayload ?? event.payload ?? {}),
         JSON.stringify(event),
+        eventFingerprint,
       ]
     );
     return this.db.getRowsModified() > 0;
@@ -9142,9 +9147,20 @@ export class CorptieStore {
   }) {
     this.db.run(
       `UPDATE provider_event_inbox
-       SET status = ?, failure_code = ?, failure_message = ?, applied_at = ?
+       SET status = ?, failure_code = ?, failure_message = ?, applied_at = ?,
+           raw_payload_json = CASE
+             WHEN ? = 'applied' AND event_fingerprint IS NOT NULL THEN '{}'
+             ELSE raw_payload_json
+           END,
+           normalized_event_json = CASE
+             WHEN ? = 'applied' AND event_fingerprint IS NOT NULL THEN '{}'
+             ELSE normalized_event_json
+           END
        WHERE provider_id = ? AND provider_session_id = ? AND provider_event_id = ?`,
-      [status, failureCode, failureMessage, appliedAt, providerId, providerSessionId, providerEventId]
+      [
+        status, failureCode, failureMessage, appliedAt, status, status,
+        providerId, providerSessionId, providerEventId
+      ]
     );
   }
 
@@ -9424,10 +9440,8 @@ export class CorptieStore {
 
   markEventOutboxPublished(outboxId, publishedAt = createdAtFromOrNow()) {
     this.db.run(
-      `UPDATE event_outbox
-       SET status = 'published', published_at = ?, attempt_count = attempt_count + 1, last_error = NULL
-       WHERE outbox_id = ? AND status = 'pending'`,
-      [publishedAt, outboxId]
+      "DELETE FROM event_outbox WHERE outbox_id = ? AND status = 'pending'",
+      [outboxId]
     );
   }
 
@@ -9689,8 +9703,9 @@ export class CorptieStore {
       this.db.run(
         `INSERT INTO session_events (
           event_id, session_id, log_id, sequence, type, producer, surface,
-          source_event_seqs_json, call_id, source_json, payload_json, has_agent_message, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          source_event_seqs_json, call_id, source_json, payload_json, storage_version,
+          has_agent_message, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           event.eventId,
           sessionId,
@@ -9703,6 +9718,7 @@ export class CorptieStore {
           callId,
           event.source ? JSON.stringify(event.source) : null,
           JSON.stringify(event.payload ?? {}),
+          Math.max(1, Number(event.storageVersion) || 1),
           eventHasAgentMessage(event) ? 1 : 0,
           event.createdAt || new Date().toISOString()
         ]
