@@ -1186,6 +1186,41 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
   }
 });
 
+test("runtime-only Session projection dependencies advance State Sync", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-session-projection-touch-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "session:runtime-readiness",
+      title: "Runtime readiness",
+      agent: "Codex",
+      provider: "codex-app-server",
+      status: "complete"
+    });
+    const before = store.stateRevision();
+
+    store.touchSessionProjectionDependency("session:runtime-readiness");
+
+    assert.equal(store.stateRevision(), before + 1);
+    assert.deepEqual(store.stateChangesAfter(before).map((change) => ({
+      entityType: change.entityType,
+      entityId: change.entityId,
+      operation: change.operation
+    })), [{
+      entityType: "session",
+      entityId: "session:runtime-readiness",
+      operation: "upsert"
+    }]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Session kind persists explicitly and Task binding classifies worker sessions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-kind-"));
   const store = new CorptieStore({
