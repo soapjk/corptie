@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   ProviderEventIngestionService,
   deterministicProviderEventId,
+  durableSessionEventPayload,
   normalizeProviderEvent
 } from "../src/application/providerEventIngestionService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -136,7 +137,11 @@ test("Provider event ingestion atomically commits Inbox, event, turn, item, curs
     const result = service.ingest(providerEvent());
 
     assert.equal(result.status, "applied");
-    assert.equal(store.providerInboxEvent(binding.providerId, binding.providerSessionId, "event:one").status, "applied");
+    const inbox = store.providerInboxEvent(binding.providerId, binding.providerSessionId, "event:one");
+    assert.equal(inbox.status, "applied");
+    assert.match(inbox.event_fingerprint, /^[a-f0-9]{64}$/);
+    assert.equal(inbox.raw_payload_json, "{}");
+    assert.equal(inbox.normalized_event_json, "{}");
     assert.equal(store.listSessionEvents(binding.sessionId).length, 1);
     assert.equal(store.getItems(binding.sessionId)[0].presentationRole, "final_answer");
     assert.equal(store.selectOne("SELECT execution_status FROM session_turns WHERE turn_id = ?", ["turn:one"]).execution_status, "running");
@@ -151,6 +156,37 @@ test("Provider event ingestion atomically commits Inbox, event, turn, item, curs
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("published Outbox rows are removed after their in-process delivery succeeds", async () => {
+  const { directory, store, service } = await fixture();
+  try {
+    service.ingest(providerEvent());
+    const rows = store.listPendingEventOutbox();
+    assert.equal(rows.length, 2);
+    for (const row of rows) store.markEventOutboxPublished(row.outbox_id);
+    assert.equal(store.listPendingEventOutbox().length, 0);
+    assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM event_outbox").count, 0);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Provider Session events replace projected item bodies with bounded references", () => {
+  const oversized = "x".repeat(20_000);
+  const payload = durableSessionEventPayload({
+    type: "turn.completed",
+    payload: {
+      status: "completed",
+      items: [{ id: "item:large", type: "agentMessage", text: oversized }]
+    }
+  });
+  assert.equal(payload.items, undefined);
+  assert.equal(payload.itemReferences.length, 1);
+  assert.equal(payload.itemReferences[0].id, "item:large");
+  assert.match(payload.itemReferences[0].contentHash, /^[a-f0-9]{64}$/);
+  assert.ok(payload.itemReferences[0].summary.length < oversized.length);
 });
 
 test("production observe boundary receives the committed Session event and returns its durable receipt", async () => {

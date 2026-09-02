@@ -73,7 +73,11 @@ export class ProviderEventIngestionService {
 
     let committedOutbox = [];
     const result = this.store.runInTransaction(() => {
-      const inserted = this.store.insertProviderInboxEvent(event, binding.sessionId);
+      const inserted = this.store.insertProviderInboxEvent(
+        event,
+        binding.sessionId,
+        providerEventFingerprint(event)
+      );
       if (!inserted) return duplicateResult(this.store, event);
 
       const projection = this.project({ event, binding, store: this.store }) ?? {};
@@ -89,7 +93,7 @@ export class ProviderEventIngestionService {
           routingVersion: event.routingVersion
         },
         payload: {
-          ...event.payload,
+          ...durableSessionEventPayload(event),
           ...(event.type === "turn.completed"
             ? { hasAgentMessage: projection.hasAgentMessage === true }
             : {}),
@@ -99,7 +103,8 @@ export class ProviderEventIngestionService {
           itemId: event.itemId ?? null
         },
         createdAt: event.occurredAt ?? event.receivedAt,
-        surface: projection.surface ?? false
+        surface: projection.surface ?? false,
+        storageVersion: 2
       });
       this.store.upsertProviderBindingCursor(event, {
         syncHealth: "healthy",
@@ -147,7 +152,11 @@ export class ProviderEventIngestionService {
 
   quarantine(event, code, message, sessionId = null) {
     return this.store.runInTransaction(() => {
-      const inserted = this.store.insertProviderInboxEvent(event, sessionId);
+      const inserted = this.store.insertProviderInboxEvent(
+        event,
+        sessionId,
+        providerEventFingerprint(event)
+      );
       if (!inserted) return duplicateResult(this.store, event);
       this.store.markProviderInboxEvent(event.providerId, event.providerSessionId, event.providerEventId, {
         status: "quarantined",
@@ -160,7 +169,11 @@ export class ProviderEventIngestionService {
 
   quarantineGap(event, binding, decision) {
     return this.store.runInTransaction(() => {
-      const inserted = this.store.insertProviderInboxEvent(event, binding.sessionId);
+      const inserted = this.store.insertProviderInboxEvent(
+        event,
+        binding.sessionId,
+        providerEventFingerprint(event)
+      );
       if (!inserted) return duplicateResult(this.store, event);
       this.store.markProviderInboxEvent(event.providerId, event.providerSessionId, event.providerEventId, {
         status: "quarantined",
@@ -183,6 +196,64 @@ export class ProviderEventIngestionService {
       };
     });
   }
+}
+
+const PROJECTED_ITEM_EVENT_TYPES = new Set([
+  "user.message.accepted",
+  "assistant.message.started",
+  "assistant.message.delta",
+  "assistant.message.completed",
+  "tool.started",
+  "tool.progress",
+  "tool.completed",
+  "tool.failed",
+  "approval.requested",
+  "approval.resolved"
+]);
+
+const TERMINAL_TURN_EVENT_TYPES = new Set([
+  "turn.completed",
+  "turn.failed",
+  "turn.cancelled"
+]);
+
+export function durableSessionEventPayload(event) {
+  const payload = event?.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? { ...event.payload }
+    : {};
+  if (PROJECTED_ITEM_EVENT_TYPES.has(event.type) && payload.item) {
+    payload.itemReference = providerItemReference(payload.item);
+    delete payload.item;
+  }
+  if (TERMINAL_TURN_EVENT_TYPES.has(event.type) && Array.isArray(payload.items)) {
+    payload.itemReferences = payload.items.map(providerItemReference).filter(Boolean);
+    delete payload.items;
+  }
+  return payload;
+}
+
+function providerItemReference(item) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  const content = stableJson(item);
+  const summary = compactText(item.summary ?? item.text ?? item.title);
+  return {
+    id: optionalText(item.id),
+    type: optionalText(item.type),
+    turnId: optionalText(item.turnId),
+    status: optionalText(item.status),
+    presentationRole: optionalText(item.presentationRole),
+    ...(summary ? { summary } : {}),
+    contentHash: createHash("sha256").update(content).digest("hex")
+  };
+}
+
+function compactText(value, maximumLength = 4096) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text) return null;
+  return text.length <= maximumLength
+    ? text
+    : `${text.slice(0, maximumLength)}\n[truncated; full content is stored in the Session Item projection]`;
 }
 
 function providerConnectionStatus(event) {
@@ -303,8 +374,18 @@ function providerSequenceDecision(cursor, incoming) {
 function duplicateResult(store, event, knownExisting = null) {
   const existing = knownExisting
     ?? store.providerInboxEvent(event.providerId, event.providerSessionId, event.providerEventId);
+  const fingerprint = providerEventFingerprint(event);
+  if (existing?.event_fingerprint) {
+    if (existing.event_fingerprint !== fingerprint) {
+      throw providerEventError(
+        "PROVIDER_EVENT_ID_CONFLICT",
+        "Provider event ID was reused with different normalized content."
+      );
+    }
+    return { status: "duplicate", event };
+  }
   const existingEvent = parseJsonObject(existing?.normalized_event_json);
-  if (!existingEvent || providerEventFingerprint(existingEvent) !== providerEventFingerprint(event)) {
+  if (!existingEvent || providerEventFingerprint(existingEvent) !== fingerprint) {
     throw providerEventError(
       "PROVIDER_EVENT_ID_CONFLICT",
       "Provider event ID was reused with different normalized content."
@@ -313,8 +394,8 @@ function duplicateResult(store, event, knownExisting = null) {
   return { status: "duplicate", event };
 }
 
-function providerEventFingerprint(event) {
-  return stableJson({
+export function providerEventFingerprint(event) {
+  return createHash("sha256").update(stableJson({
     schemaVersion: event.schemaVersion,
     providerId: event.providerId,
     providerSessionId: event.providerSessionId,
@@ -328,7 +409,7 @@ function providerEventFingerprint(event) {
     type: event.type,
     occurredAt: event.occurredAt ?? null,
     payload: event.payload ?? {}
-  });
+  })).digest("hex");
 }
 
 function stableJson(value) {
