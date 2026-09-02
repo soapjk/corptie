@@ -65,7 +65,7 @@ struct EarlierHistoryLoadingTests {
         }
     }
 
-    @Test func timelineUsesNonStructuralLoadingFailureAndExhaustedFeedback() throws {
+    @Test func timelineLoadsEarlierHistoryAutomaticallyWithoutOverlayControls() throws {
         let sourceRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -80,18 +80,14 @@ struct EarlierHistoryLoadingTests {
             encoding: .utf8
         )
 
-        #expect(view.contains(".overlay(alignment: .top)"))
-        #expect(view.contains("canLoadEarlier: canLoadEarlierMessages"))
         #expect(view.contains("let previousVisibleMessageLimit = visibleMessageLimit"))
         #expect(view.contains("visibleMessageLimit += 100"))
         #expect(view.contains("visibleMessageLimit = previousVisibleMessageLimit"))
+        #expect(view.contains("onNearTop: loadEarlierMessagesIfNeeded"))
         #expect(view.contains("onUnderfilledHistory: loadEarlierMessagesForUnderfilledViewport"))
         #expect(view.contains("loadEarlierMessages(preservingLatestFollow: true)"))
-        #expect(view.contains("Loading earlier messages…"))
-        #expect(view.contains("Earlier messages could not be loaded"))
-        #expect(view.contains("The earliest message is displayed"))
-        #expect(view.contains("Load earlier messages"))
-        #expect(view.contains("Button(action: retry)"))
+        #expect(!view.contains("EarlierHistoryStatusView"))
+        #expect(!view.contains("Load earlier messages"))
         #expect(backend.contains("earlierHistoryLoadSessionIDs.insert(session.id).inserted"))
         #expect(backend.contains("setEarlierHistoryLoadState(.loading"))
         #expect(backend.contains("EarlierHistoryLoadState.failed"))

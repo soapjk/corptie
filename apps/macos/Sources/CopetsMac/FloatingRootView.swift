@@ -3379,8 +3379,6 @@ struct DetailView: View {
     @State private var historyAnchorRestoreTask: Task<Void, Never>?
     @State private var earlierHistoryLoadState: EarlierHistoryLoadState
     @State private var historyRequestEpoch = 0
-    @State private var showsHistoryExhaustedFeedback = false
-    @State private var historyExhaustedFeedbackTask: Task<Void, Never>?
     @ObservedObject private var timelineState: SessionTimelineState
     @State private var displaysLoadingDetail: Bool
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
@@ -3604,10 +3602,7 @@ struct DetailView: View {
             pendingProjectionSourceSignature = nil
             historyAnchorRestoreTask?.cancel()
             historyAnchorRestoreTask = nil
-            historyExhaustedFeedbackTask?.cancel()
-            historyExhaustedFeedbackTask = nil
             earlierHistoryLoadState = backendClient.earlierHistoryLoadState(for: sessionId)
-            showsHistoryExhaustedFeedback = false
             historyRequestEpoch &+= 1
             requestedRestorationAnchorRowID = restorationTimelinePosition?.followsLatest == false
                 ? restorationTimelinePosition?.rowID
@@ -3628,8 +3623,6 @@ struct DetailView: View {
             displayProjectionTask = nil
             historyAnchorRestoreTask?.cancel()
             historyAnchorRestoreTask = nil
-            historyExhaustedFeedbackTask?.cancel()
-            historyExhaustedFeedbackTask = nil
         }
         .onChange(of: appKitDetailRevision) { _, _ in
             if let detail = displayedDetail {
@@ -3658,9 +3651,6 @@ struct DetailView: View {
                 historyRequestEpoch &+= 1
             } else if finishedWithoutStructuralAdvance {
                 historyRequestEpoch &+= 1
-            }
-            if nextState == .exhausted, nextState != previousState {
-                showHistoryExhaustedFeedback()
             }
         }
         .onReceive(backendClient.supplementaryDataController.$workspaceRecoveryStatus) { status in
@@ -3760,15 +3750,6 @@ struct DetailView: View {
                     .help(L10n("Jump to latest message"))
                     .padding(10)
                 }
-            }
-            .overlay(alignment: .top) {
-                EarlierHistoryStatusView(
-                    state: earlierHistoryLoadState,
-                    canLoadEarlier: canLoadEarlierMessages,
-                    showsExhaustedFeedback: showsHistoryExhaustedFeedback,
-                    retry: loadEarlierMessagesIfNeeded
-                )
-                .padding(.top, 6)
             }
         }
     }
@@ -4128,12 +4109,6 @@ struct DetailView: View {
         loadEarlierMessages(preservingLatestFollow: true)
     }
 
-    private var canLoadEarlierMessages: Bool {
-        guard let detail = displayedDetail else { return false }
-        let visibleWeight = cachedDisplayEntries.reduce(0) { $0 + $1.displayWeight }
-        return cachedTotalDisplayEntryCount > visibleWeight || detail.hasMoreHistory == true
-    }
-
     private func loadEarlierMessages(preservingLatestFollow: Bool) {
         guard backendClient.selectedSession?.id == sessionId,
               let detail = displayedDetail else { return }
@@ -4170,19 +4145,6 @@ struct DetailView: View {
                     }
                 }
             }
-        } else {
-            showHistoryExhaustedFeedback()
-        }
-    }
-
-    private func showHistoryExhaustedFeedback() {
-        showsHistoryExhaustedFeedback = true
-        historyExhaustedFeedbackTask?.cancel()
-        historyExhaustedFeedbackTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(1.8))
-            guard !Task.isCancelled else { return }
-            showsHistoryExhaustedFeedback = false
-            historyExhaustedFeedbackTask = nil
         }
     }
 
@@ -4613,73 +4575,6 @@ struct DetailView: View {
         ].joined(separator: ":")
     }
 
-}
-
-private struct EarlierHistoryStatusView: View {
-    let state: EarlierHistoryLoadState
-    let canLoadEarlier: Bool
-    let showsExhaustedFeedback: Bool
-    let retry: () -> Void
-
-    @ViewBuilder
-    var body: some View {
-        switch state {
-        case .loading:
-            statusCapsule {
-                ProgressView()
-                    .controlSize(.mini)
-                Text(L10n("Loading earlier messages…"))
-            }
-            .allowsHitTesting(false)
-        case .failed(let error):
-            Button(action: retry) {
-                statusCapsule {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(L10n("Earlier messages could not be loaded"))
-                    Text(L10n("Retry"))
-                        .foregroundStyle(.tint)
-                }
-            }
-            .buttonStyle(.plain)
-            .help(error)
-        case .exhausted where showsExhaustedFeedback:
-            statusCapsule {
-                Image(systemName: "checkmark.circle")
-                Text(L10n("The earliest message is displayed"))
-            }
-            .allowsHitTesting(false)
-        case .idle where canLoadEarlier, .exhausted where canLoadEarlier:
-            Button(action: retry) {
-                statusCapsule {
-                    Image(systemName: "clock.arrow.circlepath")
-                    Text(L10n("Load earlier messages"))
-                }
-            }
-            .buttonStyle(.plain)
-            .help(L10n("Load earlier messages"))
-        case .idle, .exhausted:
-            EmptyView()
-        }
-    }
-
-    private func statusCapsule<Content: View>(
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        HStack(spacing: 6) {
-            content()
-        }
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(CorptiePalette.secondaryText)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: Capsule())
-        .overlay {
-            Capsule()
-                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.08), radius: 4, y: 1)
-    }
 }
 
 private struct OrphanedWorkspaceRecoveryView: View {
