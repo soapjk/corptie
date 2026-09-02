@@ -1336,3 +1336,6 @@
 "Background choice tasks" = "后台选项解析任务";
 "Affected Artifact: %@ v%lld" = "受影响的 Artifact：%@ v%lld";
 "Session recovery is in progress. Sending messages is temporarily unavailable." = "正在恢复会话，暂时无法发送消息。";
+"Rebuild Workspace" = "重建工作区";
+"Workspace rebuilt" = "工作区已重建";
+"This Session is unavailable because its Workspace is missing. Rebuild the Workspace to continue." = "此会话因工作区丢失而不可用。请重建工作区后继续。";

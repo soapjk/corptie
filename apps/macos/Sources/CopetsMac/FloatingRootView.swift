@@ -3549,7 +3549,10 @@ struct DetailView: View {
 
             SessionSendFailureView()
 
-            if !backendClient.selectedIsReady {
+            if let recovery = displayedWorkspaceRecoveryStatus,
+               recovery.blocksSessionInput {
+                WorkspaceMissingComposer(status: recovery)
+            } else if !backendClient.selectedIsReady {
                 ReadOnlyComposer(
                     reason: composerUnavailableReason,
                     isRecovering: backendClient.selectedSession?.transitionState == "sessionRecovery"
@@ -4692,7 +4695,7 @@ private struct OrphanedWorkspaceRecoveryView: View {
 
             HStack(spacing: 8) {
                 if status.canRebuild == true {
-                    Button(L10n("Rebuild Original Worktree")) {
+                    Button(L10n("Rebuild Workspace")) {
                         backendClient.recoverSelectedWorkspace(action: "rebuild")
                     }
                     .buttonStyle(.borderedProminent)
@@ -10841,6 +10844,47 @@ private struct ReadOnlyComposer: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+        )
+    }
+}
+
+private struct WorkspaceMissingComposer: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    let status: WorkspaceRecoveryStatus
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "folder.badge.questionmark")
+                .font(.system(size: 13, weight: .bold))
+                .frame(width: 28, height: 28)
+                .foregroundStyle(.red)
+
+            Text(L10n("This Session is unavailable because its Workspace is missing. Rebuild the Workspace to continue."))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+
+            if status.canRebuild == true {
+                Button(L10n("Rebuild Workspace")) {
+                    backendClient.recoverSelectedWorkspace(action: "rebuild")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(backendClient.isRecoveringWorkspace)
+            }
+
+            if backendClient.isRecoveringWorkspace {
+                ProgressView().controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.red.opacity(0.24), lineWidth: 1)
         )
     }
 }

@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   effectiveAgentWorkDir,
   ensureAgentWorkDir,
+  recoverableAgentWorkDir,
   resolveAgentWorkDir
 } from "../src/runtime/agentWorkDir.mjs";
 
@@ -17,6 +18,19 @@ test("Assistant default workspaces are isolated by agent id", () => {
   assert.notEqual(first, second);
   assert.match(first, /assistants\/assistant%3Afirst\/workspace$/);
   assert.match(second, /assistants\/assistant%3Asecond\/workspace$/);
+});
+
+test("Workspace recovery only accepts an Assistant's exact managed work directory", () => {
+  const options = { corptieHome: "/tmp/corptie-agent-work-dir", environmentName: "development" };
+  const agent = { agentId: "assistant:recoverable", role: "assistant" };
+  const expected = effectiveAgentWorkDir(agent, options);
+
+  assert.equal(recoverableAgentWorkDir(agent, expected, options), expected);
+  assert.equal(recoverableAgentWorkDir(agent, "/tmp/unrelated-workspace", options), null);
+  assert.equal(
+    recoverableAgentWorkDir({ ...agent, role: "independentContributor" }, expected, options),
+    null
+  );
 });
 
 test("Agent runtime uses the persisted workDir for every Provider", async () => {
