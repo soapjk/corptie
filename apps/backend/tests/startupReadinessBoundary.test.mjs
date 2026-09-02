@@ -95,6 +95,7 @@ test("Provider initialization and recovery stay outside the backend readiness pa
 test("SQLite migration cannot block the fixed-cost transport event loop", async () => {
   const source = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
   const listenIndex = source.indexOf('server.listen(port, "127.0.0.1"');
+  const ownershipIndex = source.indexOf("await BackendDataRootOwnership.acquire(", listenIndex);
   const migrationIndex = source.indexOf("await migrateStoreOffMainThread(", listenIndex);
   const mainStoreOpenIndex = source.indexOf(
     "await store.initialize({ resolveDataPath: false, performMigrations: false })",
@@ -103,6 +104,8 @@ test("SQLite migration cannot block the fixed-cost transport event loop", async 
   const readyIndex = source.indexOf("backendStoreReady = true", mainStoreOpenIndex);
 
   assert.ok(listenIndex >= 0);
+  assert.ok(ownershipIndex > listenIndex, "Data Root ownership resolves after the fixed-cost listener opens");
+  assert.ok(migrationIndex > ownershipIndex, "only the owning Backend may migrate or open the production Store");
   assert.ok(migrationIndex > listenIndex, "the loopback listener must open before schema migration");
   assert.ok(mainStoreOpenIndex > migrationIndex, "the main Store must open only after the Worker releases SQLite");
   assert.ok(readyIndex > mainStoreOpenIndex, "Store-backed APIs must remain gated until the main connection opens");

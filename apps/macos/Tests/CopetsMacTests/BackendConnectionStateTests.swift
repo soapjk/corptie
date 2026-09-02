@@ -103,12 +103,17 @@ struct BackendConnectionStateTests {
         let start = Date(timeIntervalSince1970: 1_000)
         #expect(!StateStreamLivenessPolicy.hasExpired(
             lastActivityAt: start,
-            now: start.addingTimeInterval(44.9)
+            now: start.addingTimeInterval(34.9)
         ))
         #expect(StateStreamLivenessPolicy.hasExpired(
             lastActivityAt: start,
-            now: start.addingTimeInterval(45)
+            now: start.addingTimeInterval(35)
         ))
+    }
+
+    @Test func selectedSessionDisconnectMessageExplainsExecutionUncertainty() {
+        #expect(backendDisconnectedSessionMessage(wasExecuting: true).contains("execution may have been interrupted"))
+        #expect(backendDisconnectedSessionMessage(wasExecuting: false).contains("read-only"))
     }
 
     @Test func equalRevisionStreamReconnectRestoresReachabilityWithoutAStateFrame() {

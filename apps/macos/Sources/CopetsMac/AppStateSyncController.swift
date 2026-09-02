@@ -1,7 +1,10 @@
 import Foundation
 
 enum StateStreamLivenessPolicy {
-    static let inactivityTimeout: TimeInterval = 45
+    // Backend emits a heartbeat every 15 seconds. Two missed heartbeats plus a
+    // small scheduling margin is enough to declare the transport unavailable;
+    // retaining a stale `running` Session longer makes a dead Worker look busy.
+    static let inactivityTimeout: TimeInterval = 35
 
     static func hasExpired(
         lastActivityAt: Date,

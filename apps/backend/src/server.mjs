@@ -158,6 +158,7 @@ import {
 import { mapEvent as mapDshEvent } from "./dsh-adapter/dshEventMapper.mjs";
 import { storedSessionDetail } from "./application/storedSessionDetail.mjs";
 import { DataRootMigrationCoordinator } from "./runtime/dataRootMigrationCoordinator.mjs";
+import { BackendDataRootOwnership } from "./runtime/backendDataRootOwnership.mjs";
 import { ProviderEventIngestionService } from "./application/providerEventIngestionService.mjs";
 import { ProviderNeutralCodeTaskExecutionService } from "./application/providerNeutralCodeTaskExecutionService.mjs";
 import { ProviderEventProjector } from "./application/providerEventProjector.mjs";
@@ -10885,6 +10886,11 @@ async function resumeSessionRecoveryAttemptsAtStartup() {
 // transport. The main-thread Store opens only after the migration lock is
 // released and skips the already-completed schema pass.
 await store.resolveDataPath();
+const backendDataRootOwnership = await BackendDataRootOwnership.acquire({
+  stateDirectory: store.layout.stateDirectory,
+  environment: environmentName,
+  port
+});
 await migrateStoreOffMainThread({
   dbPath: store.dbPath,
   configPath: store.configPath,
@@ -11279,6 +11285,7 @@ function shutdown() {
     await store.close({
       checkpoint: dataRootMigrationCoordinator.status()?.phase !== "restartRequired"
     });
+    await backendDataRootOwnership.release();
     process.exit(0);
   })();
   return shutdownPromise;
