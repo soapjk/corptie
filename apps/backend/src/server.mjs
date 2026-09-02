@@ -203,7 +203,7 @@ import {
 } from "./utils/sessionTitles.mjs";
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
 import { recoverCollaborationDeliveriesAfterCodexRolloutRepair } from "./application/collaborationDeliveryInfrastructureRecovery.mjs";
-import { ensureAgentWorkDir } from "./runtime/agentWorkDir.mjs";
+import { ensureAgentWorkDir, recoverableAgentWorkDir } from "./runtime/agentWorkDir.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
 import { ensureCorptieOpenClackyRuntime, resolveCorptieOpenClackyRuntimePaths } from "./runtime/corptieOpenClackyRuntime.mjs";
 import { OpenClackyServerRuntime, resolveOpenClackyCommand, resolveOpenClackyManagedPort } from "./runtime/openClackyServerRuntime.mjs";
@@ -7480,11 +7480,12 @@ async function sessionDeletionPlan(sessionId) {
 async function sessionWorkspaceRecoveryStatus(sessionId) {
   const session = store.getSession(sessionId);
   const logical = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (!session || !logical?.activeBinding || !logical.repositoryId) {
+  if (!session || !logical?.activeBinding) {
     const error = new Error("Session workspace route not found.");
     error.statusCode = 404;
     throw error;
   }
+  let workspaceError = null;
   try {
     await assertWorkspaceRouteUsable({
       store,
@@ -7494,6 +7495,21 @@ async function sessionWorkspaceRecoveryStatus(sessionId) {
     return { orphaned: false, worktrees: [] };
   } catch (error) {
     if (!["WORKSPACE_UNAVAILABLE", "WORKSPACE_IDENTITY_CHANGED"].includes(error?.code)) throw error;
+    workspaceError = error;
+  }
+  if (!logical.repositoryId) {
+    const agent = store.getAgent(session.agentId);
+    const recoveryTarget = workspaceError?.code === "WORKSPACE_UNAVAILABLE"
+      ? recoverableAgentWorkDir(agent, logical.activeBinding.boundCwd)
+      : null;
+    return {
+      orphaned: true,
+      recoveryKind: recoveryTarget ? "agentWorkspace" : "unavailable",
+      originalPath: logical.activeBinding.boundCwd,
+      originalBranchName: null,
+      canRebuild: Boolean(recoveryTarget),
+      worktrees: []
+    };
   }
   const original = logical.activeWorkspaceId ? store.getGitWorktree(logical.activeWorkspaceId) : null;
   const knownMain = store.listGitWorktrees(logical.repositoryId).find((worktree) => {
@@ -7515,6 +7531,7 @@ async function sessionWorkspaceRecoveryStatus(sessionId) {
   }
   return {
     orphaned: true,
+    recoveryKind: "gitWorktree",
     originalPath: logical.activeBinding.boundCwd,
     originalBranchName: original?.branchName ?? null,
     canRebuild: Boolean(original?.branchName && !original?.isMain),
@@ -10385,6 +10402,21 @@ function route(request, response) {
         }
         if (input.action === "rebuild") {
           const logical = store.getLogicalSessionByLegacySessionId(sessionId);
+          if (!logical.repositoryId) {
+            if (status.recoveryKind !== "agentWorkspace" || status.canRebuild !== true) {
+              throw new Error("This Session workspace cannot be rebuilt safely.");
+            }
+            const session = store.getSession(sessionId);
+            const agent = session ? store.getAgent(session.agentId) : null;
+            const recoveryTarget = recoverableAgentWorkDir(agent, logical.activeBinding?.boundCwd);
+            if (!recoveryTarget) {
+              throw new Error("This Session workspace cannot be rebuilt safely.");
+            }
+            const path = await ensureAgentWorkDir(agent);
+            const rebuilt = { restored: { kind: "agent-workspace", path } };
+            emitEvent("SessionWorkspaceRebuilt", { sessionId, rebuilt }, { sessionId });
+            return rebuilt;
+          }
           const rebuilt = await gitWorkspaces.restoreMissingWorktree({
             logicalSessionId: logical.logicalSessionId
           });

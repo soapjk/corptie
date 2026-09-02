@@ -950,3 +950,6 @@
 "Background choice tasks" = "Background choice tasks";
 "Affected Artifact: %@ v%lld" = "Affected Artifact: %@ v%lld";
 "Session recovery is in progress. Sending messages is temporarily unavailable." = "Session recovery is in progress. Sending messages is temporarily unavailable.";
+"Rebuild Workspace" = "Rebuild Workspace";
+"Workspace rebuilt" = "Workspace rebuilt";
+"This Session is unavailable because its Workspace is missing. Rebuild the Workspace to continue." = "This Session is unavailable because its Workspace is missing. Rebuild the Workspace to continue.";

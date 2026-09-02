@@ -555,12 +555,6 @@ export class CodexAppServerClient {
             );
           }
           const text = this.latestAgentMessageText(threadId, turnId).trim();
-          if (text !== "CORPTIE_RECOVERY_STABILIZED") {
-            throw recoveryStabilizationError(
-              "RECOVERY_STABILIZATION_ACK_INVALID",
-              "Codex did not return the exact recovery stabilization acknowledgement."
-            );
-          }
           const snapshot = await this.request("thread/read", { threadId, includeTurns: true }, options.requestTimeoutMs ?? 30_000);
           const persisted = snapshot?.thread?.id === threadId
             && Array.isArray(snapshot.thread.turns)
@@ -576,7 +570,8 @@ export class CodexAppServerClient {
             providerObservationKind: "recovery_stabilization_turn_completed",
             providerThreadId: threadId,
             turnId,
-            toolAttempts: 0
+            toolAttempts: 0,
+            acknowledgementMatched: text === "CORPTIE_RECOVERY_STABILIZED"
           };
         }
         await new Promise((resolve) => setTimeout(resolve, 120));
