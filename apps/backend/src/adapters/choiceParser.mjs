@@ -11,8 +11,8 @@ import path from "node:path";
 import { CodexAppServerClient } from "./codexAppServer.mjs";
 import { resolveCodexCommand } from "../utils/codexCommand.mjs";
 
-class LocalChoiceParserRuntime {
-  constructor() {
+export class LocalChoiceParserRuntime {
+  constructor(options = {}) {
     this.process = null;
     this.output = "";
     this.signature = "";
@@ -21,6 +21,8 @@ class LocalChoiceParserRuntime {
     this.startPromise = null;
     this.queue = Promise.resolve();
     this.client = null;
+    this.createClient = options.createClient
+      ?? ((clientOptions) => new CodexAppServerClient(clientOptions));
   }
 
   configure(settings = {}) {
@@ -35,7 +37,19 @@ class LocalChoiceParserRuntime {
     this.stop("reconfigure");
     this.signature = signature;
     this.settings = settings;
-    this.startPromise = this.start(settings);
+    const startPromise = this.start(settings);
+    this.startPromise = startPromise;
+    // configure() is intentionally fire-and-forget during Backend startup.
+    // Preserve the rejected Promise for a later parse() caller, but observe it
+    // here as well so a slow/unavailable local Provider cannot terminate Node
+    // through an unhandled rejection.
+    startPromise.catch((error) => {
+      if (this.startPromise !== startPromise) return;
+      this.ready = false;
+      logChoiceParser("local-agent-start-failed", { id: "choice-parser-runtime", provider: "local-agent" }, {
+        error: error?.message ?? String(error)
+      });
+    });
   }
 
   stop(reason = "stop") {
@@ -63,7 +77,7 @@ class LocalChoiceParserRuntime {
       cwd
     });
     const startedAt = Date.now();
-    this.client = new CodexAppServerClient({
+    this.client = this.createClient({
       command,
       args,
       requestTimeoutMs: Math.max(30000, settings.timeoutMs ?? 12000),
