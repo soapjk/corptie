@@ -101,7 +101,7 @@ test("platform collaboration discovers exact Sessions, starts shared-lifecycle W
     bindSession(f, { id: "provider:target", logicalId: "session:target", agentId: workerAgent.agentId, kind: "worker", objectiveId: objective.id, taskId: task.id });
     const discovered = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "discover_sessions", objective_id: objective.id } });
     assert.deepEqual(discovered.result.sessions.map((entry) => entry.sessionId), ["session:target"]);
-    await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "start_worker", task_id: task.id, agent_id: workerAgent.agentId, provider_id: "claude-sdk", idempotency_key: "start-worker" } });
+    await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "start_worker", task_id: task.id, agent_id: workerAgent.agentId, resource_version: task.resource_version, provider_id: "claude-sdk", idempotency_key: "start-worker" } });
     assert.equal(f.started[0].taskId, task.id);
     const proposed = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "request", session_id: "session:target", title: "Review", summary: "Review the target", type: "question", idempotency_key: "request-target" } });
     assert.equal(proposed.result.confirmation.request.initiatorSessionId, "session:platform");

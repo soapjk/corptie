@@ -102,7 +102,10 @@ export function handleCollaborationHttpRequest({
       if (request.method === "POST" && scopedTaskAction) {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
         const input = await readJson(request);
-        input.taskId = decodeURIComponent(scopedTaskAction[1]);
+        const taskId = decodeURIComponent(scopedTaskAction[1]);
+        if (input.taskId !== taskId) {
+          throw apiError("TASK_REFERENCE_MISMATCH", "Work Session command Task does not match the HTTP resource.", 409);
+        }
         const result = await sessionCollaborationService.startTask(sessionMetadata, actorAgentId, input);
         return sendJson(response, 200, result);
       }
@@ -473,11 +476,21 @@ export function handleCollaborationHttpRequest({
     })
     .catch((error) => {
       sendJson(response, error.statusCode ?? statusForCode(error.code), {
-        error: error.message,
-        code: error.code ?? "COLLABORATION_ERROR"
+        error: safeCollaborationErrorMessage(error),
+        code: error.code ?? "COLLABORATION_ERROR",
+        ...(typeof error.stage === "string" ? { stage: error.stage } : {})
       });
     });
   return true;
+}
+
+function safeCollaborationErrorMessage(error) {
+  if (String(error?.code ?? "").startsWith("START_") && error?.stage && error.stage !== "validation") {
+    return `Work Session startup failed during ${error.stage}.`;
+  }
+  return String(error?.message ?? "Collaboration operation failed.")
+    .replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, "$1=[redacted]")
+    .replace(/\s+/g, " ").trim().slice(0, 1000);
 }
 
 function memoryMetadata(request) {

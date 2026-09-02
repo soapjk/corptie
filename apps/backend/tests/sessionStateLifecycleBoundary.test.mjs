@@ -61,37 +61,36 @@ test("initial prompts are persisted after Session and Binding creation before Pr
 
 test("Worker initial prompts drain only after the authoritative ready receipt commit", async () => {
   const source = await readFile(sourceURL, "utf8");
-  const serviceBegin = source.indexOf("workSessionStartupCoordinator = new WorkSessionStartupCoordinator");
+  const serviceBegin = source.indexOf("const providerWorkSessionPort = new ProviderWorkSessionPort");
   const serviceEnd = source.indexOf("projectWorktreeIntegrationService", serviceBegin);
   const serviceBody = source.slice(serviceBegin, serviceEnd);
 
   assert.match(serviceBody, /deferInitialPromptUntilBound:\s*true/);
   assert.match(serviceBody, /deferToolHostFinalization:\s*true/);
-  const finalizeIndex = serviceBody.indexOf("bindProviderWorkspace:");
+  const finalizeIndex = serviceBody.indexOf("workspaceBinding: providerWorkspaceBindingService");
   const activateIndex = serviceBody.indexOf("activateSession:");
   assert.ok(finalizeIndex >= 0 && activateIndex > finalizeIndex);
   assert.match(serviceBody.slice(activateIndex), /sessionApplicationService\.resumeSession\(session\.id,[\s\S]*purpose:\s*"session-create-finalization"/);
-  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, initialPrompt \|\| taskExecutionPrompt\(task\)/);
+  assert.match(serviceBody.slice(activateIndex), /sendUnifiedSessionMessage\(session\.id, taskExecutionPrompt\(task\)/);
 });
 
-test("Worker startup composition consumes the coordinator's requested Agent identity", async () => {
+test("Worker startup composition consumes only the authoritative assignee Agent identity", async () => {
   const source = await readFile(sourceURL, "utf8");
-  const serviceBegin = source.indexOf("workSessionStartupCoordinator = new WorkSessionStartupCoordinator");
+  const serviceBegin = source.indexOf("const providerWorkSessionPort = new ProviderWorkSessionPort");
   const serviceEnd = source.indexOf("projectWorktreeIntegrationService", serviceBegin);
   const serviceBody = source.slice(serviceBegin, serviceEnd);
 
-  assert.match(serviceBody, /store\.getAgent\(operation\.requestedAgentId\)/);
-  assert.doesNotMatch(serviceBody, /operation\.agentId/);
+  assert.match(serviceBody, /store\.getAgent\(assigneeAgentId\)/);
+  assert.doesNotMatch(serviceBody, /requestedAgentId|operation\.agentId/);
 });
 
 test("every Worker Session production entry routes through the authoritative startup coordinator", async () => {
   const source = await readFile(sourceURL, "utf8");
-  assert.equal(source.match(/launchTaskSession\(/g)?.length, 2, "only the coordinator adapter and function definition may reference the low-level launcher");
-  assert.match(source, /platform-operation/);
-  assert.match(source, /integration-conflict-resolution/);
-  assert.match(source, /integration-plan-resolution/);
-  assert.match(source, /async function launchPreparedTaskSession[\s\S]*launchAndBindTaskSession/);
-  assert.match(source, /async function launchAndBindTaskSession[\s\S]*workSessionStartupCoordinator\.start/);
+  assert.equal(source.match(/createProviderWorkSession\(/g)?.length, 2,
+    "only ProviderWorkSessionPort and the Provider-facing constructor may create a Worker Session");
+  assert.doesNotMatch(source, /launchAndBindTaskSession|launchTaskSession/);
+  assert.match(source, /workSessionStartApplicationService\.start\(/);
+  assert.match(source, /async function startPreparedWorkSession[\s\S]*workSessionStartApplicationService\.start/);
 });
 
 test("a replaced Worker Session cannot overwrite its Task lifecycle", async () => {

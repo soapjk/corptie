@@ -73,6 +73,8 @@ export function startupReceiptFor({ identity, commitOid, treeOid, sessionContext
     workspaceResourceVersion: binding.workspaceResourceVersion,
     resourceVersion: binding.resourceVersion,
     providerContextHash: "a".repeat(64),
+    toolContractHash: "b".repeat(64),
+    instructionSourcesHash: "c".repeat(64),
     phaseTimestamps: { allocatedAt: now, worktreePreparedAt: now, sessionBoundAt: now, providerBoundAt: now, readyAt: now },
     compensation: { attempted: false, result: "not_required", completedSteps: [], failedStep: null },
     error: null

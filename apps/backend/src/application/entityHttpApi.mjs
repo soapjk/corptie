@@ -47,6 +47,17 @@ function normalizeEnvironment(value = "") {
   return normalized === "dev" || normalized === "development" ? "development" : "production";
 }
 
+function safeApiErrorMessage(error) {
+  const code = typeof error?.code === "string" ? error.code : "INTERNAL";
+  const stage = typeof error?.stage === "string" ? error.stage : null;
+  if (code.startsWith("START_") && stage && stage !== "validation") {
+    return `Work Session startup failed during ${stage}.`;
+  }
+  return String(error?.message ?? "Entity operation failed.")
+    .replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, "$1=[redacted]")
+    .replace(/\s+/g, " ").trim().slice(0, 1000);
+}
+
 export function handleEntityHttpRequest({
   request,
   response,
@@ -58,8 +69,7 @@ export function handleEntityHttpRequest({
   memoryRecallService,
   memoryLifecycleService,
   assistantService,
-  startTaskExecution,
-  beginTaskExecution,
+  startWorkSession,
   getTaskStartup,
   getSessionStartupBinding,
   launchAgentSession,
@@ -855,20 +865,36 @@ export function handleEntityHttpRequest({
 
       const taskStartMatch = path.match(/^\/tasks\/([^/]+)\/start$/);
       if (request.method === "POST" && taskStartMatch) {
-        if (typeof beginTaskExecution !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
+        if (typeof startWorkSession !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Authoritative Work Session startup is unavailable.", 503);
         const taskId = decodeURIComponent(taskStartMatch[1]);
         const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["requestedAgentId", "providerId", "idempotencyKey", "title"]));
-        const startup = beginTaskExecution({
-          taskId,
-          requestedAgentId: input.requestedAgentId,
-          providerId: input.providerId,
-          idempotencyKey: input.idempotencyKey,
-          title: input.title,
-          source: "macos-start-api",
-          authenticatedSessionId: boundedHeaderText(request, "x-corptie-logical-session-id") || null
+        const allowed = new Set([
+          "taskId", "assigneeAgentId", "expectedTaskVersion", "providerId", "title",
+          "idempotencyKey", "sourceSessionId"
+        ]);
+        const unknown = Object.keys(input).filter((field) => !allowed.has(field));
+        if (unknown.length > 0) {
+          throw apiError("UNKNOWN_START_FIELD", `Unknown Work Session start field: ${unknown.sort().join(", ")}.`, 400);
+        }
+        const authenticatedSourceSessionId = boundedHeaderText(request, "x-corptie-logical-session-id") || null;
+        if (input.taskId !== taskId) {
+          throw apiError("TASK_REFERENCE_MISMATCH", "Work Session command Task does not match the HTTP resource.", 409);
+        }
+        if (input.sourceSessionId !== authenticatedSourceSessionId) {
+          throw apiError("SOURCE_SESSION_ACTOR_MISMATCH", "Work Session command source does not match the authenticated Session.", 403);
+        }
+        const startup = await startWorkSession(input);
+        if (startup.status !== "ready" || !startup.session || !startup.receipt) {
+          throw apiError("START_NOT_READY", "Work Session startup did not produce a ready receipt.", 409);
+        }
+        return sendJson(response, startup.idempotentReplay ? 200 : 201, {
+          session: startup.session,
+          start: {
+            status: startup.status,
+            idempotentReplay: startup.idempotentReplay,
+            receipt: startup.receipt
+          }
         });
-        return sendJson(response, startup.status === "ready" ? 200 : 202, startup);
       }
 
       const taskStartupMatch = path.match(/^\/tasks\/([^/]+)\/startup\/([^/]+)$/);
@@ -906,70 +932,23 @@ export function handleEntityHttpRequest({
         const input = await readJson(request);
         timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         rejectSessionAvatarInput(input);
-        const taskId = String(input.taskId ?? "").trim();
-        timing.taskId = taskId || null;
-        const agentId = String(input.agentId ?? "").trim();
-        if (!taskId && !agentId) {
-          activeTaskTiming = null;
-          if (typeof createSession !== "function") {
-            throw apiError("INTERNAL", "createSession is not configured.", 500);
-          }
-          const session = await createSession(input);
-          return sendJson(response, 201, { session });
-        }
-        if (!taskId) throw apiError("INVALID_INPUT", "taskId is required.", 400);
-        if (!agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
-        const task = objectiveService.getTask(taskId);
-        if (!task) throw apiError("TASK_NOT_FOUND", "Task not found.", 404);
-        const agent = objectiveService.store.getAgent(agentId);
-        if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
-        if (agent.role !== "independentContributor") {
+        const forbiddenStartFields = [
+          "taskId", "agentId", "requestedAgentId", "assigneeAgentId",
+          "expectedTaskVersion", "idempotencyKey", "sourceSessionId"
+        ].filter((field) => Object.hasOwn(input, field));
+        if (forbiddenStartFields.length > 0) {
           throw apiError(
-            "AGENT_NOT_INDEPENDENT_CONTRIBUTOR",
-            "只有 Independent Contributor 才能创建 Worker Session。",
+            "UNKNOWN_START_FIELD",
+            `Task Work Sessions must use POST /tasks/:taskId/start; unsupported Session field: ${forbiddenStartFields.sort().join(", ")}.`,
             400
           );
         }
-        const providerId = requiredProviderId(input);
-        const objective = objectiveService.getObjective(task.objective_id);
-        objectiveService.store.assertTaskAssociations(
-          {
-            mainWorkspaceId: task.main_workspace_id,
-            mainAgentId: agent.agentId
-          },
-          objective
-        );
-        timing.phases.validateReferencesMs = roundedMilliseconds(
-          performance.now() - timing.startedAt - timing.phases.requestParseMs
-        );
-        if (typeof startTaskExecution !== "function") {
-          throw apiError("INTERNAL", "startTaskExecution is not configured.", 500);
+        activeTaskTiming = null;
+        if (typeof createSession !== "function") {
+          throw apiError("INTERNAL", "createSession is not configured.", 500);
         }
-        phaseStartedAt = performance.now();
-        const started = await startTaskExecution({
-          taskId,
-          requestedAgentId: agentId,
-          providerId,
-          title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
-          idempotencyKey: timing.operationId,
-          source: "macos-entity-api",
-          actorId: "user:local-macos"
-        });
-        timing.phases.orchestrationMs = roundedMilliseconds(performance.now() - phaseStartedAt);
-        if (started.status !== "ready" || !started.receipt) {
-          throw apiError("START_NOT_READY", "Work Session startup did not produce a ready receipt.", 409);
-        }
-        const result = sendJson(response, started.idempotentReplay ? 200 : 201, {
-          session: started.session,
-          start: {
-            status: started.status,
-            idempotentReplay: started.idempotentReplay,
-            receipt: started.receipt,
-            turnDispatch: started.turnDispatch ?? null
-          }
-        });
-        finishTaskTiming("succeeded");
-        return result;
+        const session = await createSession(input);
+        return sendJson(response, 201, { session });
       }
 
       // ---- Memory ----
@@ -1167,7 +1146,7 @@ export function handleEntityHttpRequest({
       finishFormAssistTiming("failed", error);
       const code = error.code ?? "INTERNAL";
       sendJson(response, error.statusCode ?? statusForCode(code), {
-        error: error.code ? error.message : "Entity operation failed.",
+        error: error.code ? safeApiErrorMessage(error) : "Entity operation failed.",
         code,
         ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
         ...(typeof error.field === "string" ? { field: error.field } : {}),
