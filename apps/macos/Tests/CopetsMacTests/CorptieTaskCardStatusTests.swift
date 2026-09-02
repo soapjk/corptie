@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CorptieMac
 
@@ -47,6 +48,38 @@ struct CorptieTaskCardStatusTests {
             task: task,
             sessions: []
         ) == .paused)
+    }
+
+    @Test func findsTheLatestLiveTaskSessionBeforeTheTaskBindingSnapshotCatchesUp() {
+        let task = makeCorptieTask(currentSessionId: nil, executionStatus: "idle")
+        let older = makeCorptieTaskSession(
+            id: "session:older",
+            status: .complete,
+            updatedAt: "2026-08-19T00:00:00Z"
+        )
+        let latest = makeCorptieTaskSession(
+            id: "session:latest",
+            status: .running,
+            updatedAt: "2026-08-20T00:00:00Z"
+        )
+
+        #expect(CorptieTaskBoundSessionActivity.resolve(
+            task: task,
+            sessions: [older, latest]
+        ) == .processing)
+    }
+
+    @Test func unifiedTaskListIndicatorConsumesLiveSessionActivity() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/UnifiedConsoleView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        #expect(contents.contains("CorptieTaskBoundSessionActivity.resolve("))
+        #expect(contents.contains("taskIndicatorColor(sessionActivity, lifecycleState: task.lifecycleState)"))
+        #expect(!contents.contains(".fill(taskStatusColor(task.lifecycleState))"))
     }
 }
 

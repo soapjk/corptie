@@ -653,12 +653,15 @@ enum CorptieTaskBoundSessionActivity: Equatable {
     case unknown
 
     static func resolve(task: CorptieTask, sessions: [TaskSession]) -> Self {
-        guard let currentSessionId = task.currentSessionId,
-              !currentSessionId.isEmpty else { return .noSession }
-        let boundSession = sessions.first(where: { $0.id == currentSessionId })
+        let currentSessionId = task.currentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let boundSession = currentSessionId.flatMap { sessionId in
+            sessions.first(where: { $0.id == sessionId })
+        }
             ?? sessions
-                .filter { $0.taskId == task.id }
+                .filter { $0.taskId == task.id && $0.archived != true }
                 .max(by: { $0.updatedAt < $1.updatedAt })
+
+        guard currentSessionId?.isEmpty == false || boundSession != nil else { return .noSession }
 
         if let status = boundSession?.status {
             switch status {
