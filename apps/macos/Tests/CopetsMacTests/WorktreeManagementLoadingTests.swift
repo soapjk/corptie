@@ -125,6 +125,25 @@ struct WorktreeManagementLoadingTests {
     }
 
     @MainActor
+    @Test func unbornRepositoryLoadsWithoutInventingAHeadCommit() async {
+        let recorder = RequestRecorder(details: [
+            "repository:one": Self.detail(
+                repositoryId: "repository:one",
+                worktrees: [Self.worktree("wt:main", branch: "main", isMain: true, headOid: nil)],
+                mainHeadOid: nil
+            )
+        ])
+        let client = makeClient(recorder: recorder)
+
+        await client.loadRepositories()
+
+        #expect(client.listLoadState == .loaded)
+        #expect(client.errorMessage == nil)
+        #expect(client.detail?.project.mainHeadOid == nil)
+        #expect(client.selectedWorktree?.headOid == nil)
+    }
+
+    @MainActor
     @Test func loadFailureHasAVisibleFailureStateAndCanRefreshToChangedData() async {
         let recorder = RequestRecorder(details: [:])
         let client = makeClient(recorder: recorder)
@@ -227,10 +246,15 @@ struct WorktreeManagementLoadingTests {
         Issue.record("GitHub push inspection did not finish for \(worktreeId)")
     }
 
-    private static func detail(repositoryId: String, worktrees: [String]) -> String {
+    private static func detail(
+        repositoryId: String,
+        worktrees: [String],
+        mainHeadOid: String? = "abc123"
+    ) -> String {
         let suffix = repositoryId.split(separator: ":").last ?? "repo"
+        let encodedMainHeadOid = mainHeadOid.map { "\"\($0)\"" } ?? "null"
         return """
-        {"repository":\(repository(repositoryId)),"project":{"repositoryId":"\(repositoryId)","inventoryVersion":"inventory-\(suffix)","mainWorktreeId":"\(worktrees.first.flatMap { worktreeId(from: $0) } ?? "missing")","mainPath":"/tmp/\(suffix)","mainBranch":"main","mainHeadOid":"abc123","pendingWorktreeCount":0,"worktrees":[\(worktrees.joined(separator: ","))]},"latestJob":null}
+        {"repository":\(repository(repositoryId)),"project":{"repositoryId":"\(repositoryId)","inventoryVersion":"inventory-\(suffix)","mainWorktreeId":"\(worktrees.first.flatMap { worktreeId(from: $0) } ?? "missing")","mainPath":"/tmp/\(suffix)","mainBranch":"main","mainHeadOid":\(encodedMainHeadOid),"pendingWorktreeCount":0,"worktrees":[\(worktrees.joined(separator: ","))]},"latestJob":null}
         """
     }
 
@@ -239,8 +263,14 @@ struct WorktreeManagementLoadingTests {
         return "{\"id\":\"\(id)\",\"path\":\"/tmp/\(suffix)\",\"name\":\"\(suffix)\",\"discoveredAt\":\"2026-08-20T00:00:00Z\",\"lastValidatedAt\":\"2026-08-20T00:00:00Z\",\"mainPath\":\"/tmp/\(suffix)\",\"availability\":\"available\",\"worktreeCount\":1}"
     }
 
-    private static func worktree(_ id: String, branch: String, isMain: Bool = false) -> String {
-        "{\"worktreeId\":\"\(id)\",\"path\":\"/tmp/\(id)\",\"isMain\":\(isMain),\"availability\":\"available\",\"headOid\":\"abc123\",\"branchName\":\"\(branch)\",\"isDetached\":false,\"isLocked\":false,\"lockReason\":null,\"state\":\"\(isMain ? "main" : "synced")\",\"dirty\":false,\"statusSummary\":\"\",\"diffStat\":\"\",\"changedFiles\":[],\"operationState\":null,\"conflictFiles\":[],\"mergedIntoMain\":true,\"synchronizedWithMain\":true,\"aheadOfMain\":0,\"behindMain\":0,\"pendingIntegration\":false,\"associations\":[]}"
+    private static func worktree(
+        _ id: String,
+        branch: String,
+        isMain: Bool = false,
+        headOid: String? = "abc123"
+    ) -> String {
+        let encodedHeadOid = headOid.map { "\"\($0)\"" } ?? "null"
+        return "{\"worktreeId\":\"\(id)\",\"path\":\"/tmp/\(id)\",\"isMain\":\(isMain),\"availability\":\"available\",\"headOid\":\(encodedHeadOid),\"branchName\":\"\(branch)\",\"isDetached\":false,\"isLocked\":false,\"lockReason\":null,\"state\":\"\(isMain ? "main" : "synced")\",\"dirty\":false,\"statusSummary\":\"\",\"diffStat\":\"\",\"changedFiles\":[],\"operationState\":null,\"conflictFiles\":[],\"mergedIntoMain\":true,\"synchronizedWithMain\":true,\"aheadOfMain\":0,\"behindMain\":0,\"pendingIntegration\":false,\"associations\":[]}"
     }
 
     private static func worktreeId(from json: String) -> String? {
