@@ -5739,13 +5739,6 @@ struct DetailHeaderView: View {
                         Label(L10n("Read-only history"), systemImage: "clock.arrow.circlepath")
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.orange)
-                    } else if let continuationState = backendClient.selectedSession?.external?.workspace?.continuationState,
-                              ["pending", "queued", "running"].contains(continuationState) {
-                        Label(L10n("Continuing after Worktree switch"), systemImage: "arrow.trianglehead.2.clockwise.rotate.90")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(CorptiePalette.connected)
-                            .lineLimit(2)
-                            .truncationMode(.tail)
                     } else if backendClient.selectedSession?.external?.workspace?.continuationState == "failed" {
                         Label(L10n("Worktree continuation failed"), systemImage: "exclamationmark.triangle.fill")
                             .font(.system(size: 9, weight: .bold))

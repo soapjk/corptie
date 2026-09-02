@@ -711,7 +711,6 @@
 "This creates a local commit for the uncommitted changes in main. Nothing is pushed." = "这会为 main 中的未提交修改创建本地提交，不会推送到远程。";
 "Commit and Merge" = "提交并合并";
 "Commit and Continue" = "提交并继续";
-"Continuing after Worktree switch" = "正在切换后的 Worktree 中继续任务";
 "Worktree continuation failed" = "Worktree 自动续跑失败";
 "Plan reset: %@" = "套餐重置：%@";
 "Codex plan update" = "Codex 套餐更新";

@@ -13,6 +13,14 @@ struct SessionRestartInteractionTests {
     }
 
     @Test
+    func selectedSessionHeaderHidesOrdinaryWorkspaceContinuationState() throws {
+        let source = try contents(of: "FloatingRootView.swift")
+
+        #expect(!source.contains("Continuing after Worktree switch"))
+        #expect(source.contains("Worktree continuation failed"))
+    }
+
+    @Test
     func sessionsTabSidebarExposesRestartThroughTheSharedContextMenu() throws {
         let sessionsSource = try contents(of: "UnifiedConsoleView.swift")
         let rowStart = try #require(sessionsSource.range(of: "private struct SessionsSidebarRow: View"))
