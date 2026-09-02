@@ -1037,6 +1037,12 @@ test("an unborn repository starts its first Task in the main checkout without in
     assert.equal(await readFile(join(prepared.path, "untracked-project.txt"), "utf8"), "bootstrap project\n");
     assert.equal((await gitOutput(["worktree", "list", "--porcelain"], fixture.repository)).match(/^worktree /gm)?.length, 1);
     await assert.rejects(() => gitOutput(["rev-parse", "--verify", "HEAD"], fixture.repository));
+
+    const project = await manager.projectStatusForPath(fixture.repository, fixture.repositoryId);
+    assert.equal(project.mainHeadOid, null);
+    assert.equal(project.worktrees.length, 1);
+    assert.equal(project.worktrees[0].headOid, null);
+    assert.equal(project.worktrees[0].state, "mainDirty");
   } finally {
     await fixture.close();
   }

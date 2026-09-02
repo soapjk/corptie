@@ -179,6 +179,7 @@ struct WorktreeManagementView: View {
                 .listStyle(.sidebar)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityIdentifier("worktree.repository.column")
     }
 
@@ -245,6 +246,7 @@ struct WorktreeManagementView: View {
                 ContentUnavailableView(L10n("Select a Repository Workspace"), systemImage: "sidebar.left")
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityIdentifier("worktree.list.column")
     }
 
