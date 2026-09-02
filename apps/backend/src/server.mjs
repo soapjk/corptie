@@ -79,6 +79,7 @@ import { WorkspaceContinuationCoordinator } from "./application/workspaceContinu
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
 import { migrateStoreOffMainThread } from "./store/storeMigrationRunner.mjs";
+import { TimelineReadPool } from "./store/timelineReadPool.mjs";
 import { BenchmarkControlPlane } from "./benchmark/controlPlane.mjs";
 import { handleBenchmarkHttpRequest } from "./benchmark/httpApi.mjs";
 import { createArtifactEvidencePort } from "./benchmark/ports.mjs";
@@ -343,6 +344,7 @@ const reportedUnclassifiedProviderSessionIds = new Set();
 const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
+let timelineReadPool = null;
 const turnObservability = new CodeTaskObservabilityService({
   store,
   environment: environmentName,
@@ -5798,15 +5800,34 @@ async function getUnifiedSessionSnapshot(sessionId) {
   return getStoredSessionSnapshot(sessionId);
 }
 
+function getTimelineReadPool() {
+  if (timelineReadPool) return timelineReadPool;
+  timelineReadPool = new TimelineReadPool({
+    dbPath: store.dbPath,
+    configPath: store.configPath,
+    dataRoot: store.dataRoot,
+    size: Number(process.env.CORPTIE_TIMELINE_READ_CONCURRENCY) || 4
+  });
+  return timelineReadPool;
+}
+
+async function closeTimelineReadPool() {
+  const closing = timelineReadPool;
+  timelineReadPool = null;
+  await closing?.close();
+}
+
 async function getStoredSessionSnapshot(sessionId) {
   const reference = requireSessionReference(sessionId);
   const summary = reference.metadata.session;
   const stored = store.getDetail(reference.sessionId, { includeItems: false }) ?? {};
   const provider = summary.external?.provider ?? stored.source ?? "";
-  const timelineWindow = store.getLatestTimelineItemWindow(reference.sessionId, {
+  const timelineRead = await getTimelineReadPool().readStoredTimelineSnapshot({
+    sessionId: reference.sessionId,
     limit: DEFAULT_SESSION_HISTORY_WINDOW,
     provider
   });
+  const timelineWindow = timelineRead.window;
   const detail = decorateSessionForClient({
     ...stored,
     ...summary,
@@ -5831,9 +5852,9 @@ async function getStoredSessionSnapshot(sessionId) {
     publicSessionId: reference.logicalSessionId ?? reference.sessionId,
     hasMoreHistory: timelineWindow.hasEarlier,
     historyItemsCount: timelineWindow.historyItemsCount,
-    lastEventSequence: store.lastSessionEventSequence(reference.sessionId),
-    lastAgentMessageSequence: store.lastAgentMessageSequence(reference.sessionId),
-    timelineRevision: store.sessionTimelineRevision(reference.sessionId)
+    lastEventSequence: timelineRead.lastEventSequence,
+    lastAgentMessageSequence: timelineRead.lastAgentMessageSequence,
+    timelineRevision: timelineRead.timelineRevision
   };
 }
 
@@ -5843,7 +5864,8 @@ async function getStoredSessionSnapshot(sessionId) {
 async function readSessionHistory(sessionId, beforeId, limit) {
   const reference = requireSessionReference(sessionId);
   const provider = reference.metadata?.session?.external?.provider ?? "";
-  const page = store.getSessionTimelineHistoryPage(reference.sessionId, {
+  const page = await getTimelineReadPool().readTimelineHistoryPage({
+    sessionId: reference.sessionId,
     beforeId,
     limit,
     provider
@@ -5858,21 +5880,16 @@ async function readSessionHistory(sessionId, beforeId, limit) {
 async function readSessionTimelineWindow(sessionId, options) {
   const reference = requireSessionReference(sessionId);
   const provider = reference.metadata?.session?.external?.provider ?? "";
-  const storedWindow = options.anchorId && typeof store.getTimelineItemWindow === "function"
-    ? store.getTimelineItemWindow(reference.sessionId, {
-      ...options,
-      provider
-    })
-    : !options.anchorId && typeof store.getLatestTimelineItemWindow === "function"
-      ? store.getLatestTimelineItemWindow(reference.sessionId, {
-        limit: options.limit,
-        provider
-      })
-      : null;
+  const timelineRead = await getTimelineReadPool().readTimelineWindow({
+    sessionId: reference.sessionId,
+    ...options,
+    provider
+  });
+  const storedWindow = timelineRead.window;
   if (storedWindow) {
     return {
       protocolVersion: 2,
-      revision: store.sessionTimelineRevision(reference.sessionId),
+      revision: timelineRead.timelineRevision,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId,
       ...storedWindow,
@@ -5899,7 +5916,7 @@ async function readSessionTimelineWindow(sessionId, options) {
   };
   return {
     protocolVersion: 2,
-    revision: store.sessionTimelineRevision(reference.sessionId),
+    revision: timelineRead.timelineRevision,
     sessionId: reference.sessionId,
     logicalSessionId: reference.logicalSessionId,
     ...window
@@ -8665,6 +8682,7 @@ async function quiescePersistentRuntime() {
     claudeProviderRuntime.manager.close()
   ]);
   await Promise.allSettled([...startupMaintenanceTasks]);
+  await closeTimelineReadPool();
   await suspendBackendLogging();
 }
 
@@ -9349,11 +9367,11 @@ function route(request, response) {
   if (request.method === "GET" && sessionTimelineChangesMatch) {
     const sessionId = decodeURIComponent(sessionTimelineChangesMatch[1]);
     sessionApplicationService.referenceFor(sessionId)
-      .then((reference) => store.sessionTimelineChangesAfter(
-        reference.sessionId,
-        Number(url.searchParams.get("after") ?? 0),
-        Number(url.searchParams.get("limit") ?? 200)
-      ))
+      .then((reference) => getTimelineReadPool().readTimelineChanges({
+        sessionId: reference.sessionId,
+        after: Number(url.searchParams.get("after") ?? 0),
+        limit: Number(url.searchParams.get("limit") ?? 200)
+      }))
       .then((result) => sendJson(response, result.snapshotRequired ? 410 : 200, result))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), {
         error: error.message,
@@ -11281,6 +11299,7 @@ function shutdown() {
     await feishuGateway.close();
     await codexRuntime.close();
     await runIsolationCoordinator?.close();
+    await closeTimelineReadPool();
     turnObservability.flush();
     await store.close({
       checkpoint: dataRootMigrationCoordinator.status()?.phase !== "restartRequired"
