@@ -163,12 +163,14 @@ final class BackendClient: ObservableObject {
             : (selectedSession?.executionTaskStatus ?? .complete)
     }
     var selectedCanSendNow: Bool {
+        if !isOnline { return false }
         if workspaceRecoveryStatus?.blocksSessionInput == true { return false }
         if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.canSend ?? false }
         return selectedSession?.isReady ?? false
     }
 
     var selectedIsReady: Bool {
+        if !isOnline { return false }
         if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.isReady ?? false }
         return selectedSession?.isReady ?? false
     }
@@ -4914,11 +4916,13 @@ final class BackendClient: ObservableObject {
     }
 
     private func detailByMergingPendingMessages(_ detail: CodexThreadDetail) -> CodexThreadDetail {
+        let selectedSessionID = selectedSession?.id
+        let selectedCachedSessionID: String? = selectedSessionID.flatMap { selectedID in
+            cachedDetail(for: selectedID)?.id == detail.id ? selectedID : nil
+        }
         guard let sessionID = sessions.first(where: {
             ($0.external?.threadId ?? $0.id) == detail.id
-        })?.id ?? (selectedSession?.id.flatMap { selectedID in
-            cachedDetail(for: selectedID)?.id == detail.id ? selectedID : nil
-        }) else { return detail }
+        })?.id ?? selectedCachedSessionID else { return detail }
         let pending = pendingUserMessagesBySessionID[sessionID] ?? []
         let merged = mergedItems(serverItems: detail.items, pendingItems: pending)
         pendingUserMessagesBySessionID[sessionID] = remainingPendingItems(
