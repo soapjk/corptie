@@ -341,7 +341,7 @@ struct ProjectGitStatus: Decodable, Equatable, Sendable {
     let mainWorktreeId: String
     let mainPath: String
     let mainBranch: String
-    let mainHeadOid: String
+    let mainHeadOid: String?
     let pendingWorktreeCount: Int
     let worktrees: [ProjectWorktreeStatus]
 }
@@ -420,7 +420,7 @@ struct ProjectWorktreeActionResponse: Decodable, Sendable {
 struct ProjectIntegrationStatusResponse: Decodable, Equatable, Sendable {
     let projectId: String
     let objective: ProjectIntegrationObjective
-    let mainHeadOid: String
+    let mainHeadOid: String?
     let eligibleWorktrees: [ProjectIntegrationCandidate]
     let excludedWorktrees: [ProjectIntegrationExcludedCandidate]
     let eligibleAgents: [ProjectIntegrationAgent]

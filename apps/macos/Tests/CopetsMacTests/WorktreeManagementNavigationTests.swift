@@ -120,6 +120,10 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("worktree.repository.column"))
         XCTAssertTrue(contents.contains("worktree.list.column"))
         XCTAssertTrue(contents.contains("worktree.detail.column"))
+        XCTAssertGreaterThanOrEqual(
+            contents.components(separatedBy: ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)").count - 1,
+            2
+        )
         XCTAssertTrue(contents.contains("@ObservedObject private var backendClient = BackendClient.shared"))
         XCTAssertTrue(contents.contains(".task(id: worktreeReloadTrigger)"))
         XCTAssertTrue(contents.contains("guard backendClient.isOnline else"))
