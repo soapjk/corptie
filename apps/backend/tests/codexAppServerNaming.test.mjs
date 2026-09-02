@@ -711,6 +711,32 @@ test("recovery stabilization persists a completed no-tool Turn before binding co
   assert.equal(receipt.durable, true);
   assert.equal(receipt.turnId, "turn:stabilize");
   assert.equal(receipt.toolAttempts, 0);
+  assert.equal(receipt.acknowledgementMatched, true);
+});
+
+test("recovery stabilization uses persisted Turn proof instead of exact model wording", async () => {
+  const client = new CodexAppServerClient();
+  client.initialize = async () => {};
+  client.requireThreadToolPlanConfirmation = () => ({ providerRevision: "confirmed" });
+  client.startTurn = async (threadId) => {
+    client.liveItemsByThread.set(threadId, new Map([[
+      "message:ack",
+      { id: "message:ack", turnId: "turn:stabilize", type: "agentMessage", text: "CORPTIE_RECOVERY_STABILIZED." }
+    ]]));
+    client.notifications.push({
+      method: "turn/completed",
+      params: { threadId, turn: { id: "turn:stabilize", status: "completed" } }
+    });
+    return { turn: { id: "turn:stabilize" } };
+  };
+  client.request = async () => ({
+    thread: { id: "thread:recovery", turns: [{ id: "turn:stabilize", status: "completed" }] }
+  });
+
+  const receipt = await client.stabilizeRecoveryThread("thread:recovery", { dynamicTools: [] });
+
+  assert.equal(receipt.durable, true);
+  assert.equal(receipt.acknowledgementMatched, false);
 });
 
 test("recovery stabilization rejects and records any dynamic Tool attempt", async () => {

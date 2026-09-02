@@ -133,12 +133,38 @@ test("Codex runtime bootstrap keeps a failed Session sendable for binding recove
   });
 });
 
+test("Codex runtime bootstrap advertises durable Session recovery stabilization", async () => {
+  const operations = recordingCodexOperations();
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: operations
+  });
+  const provider = registry.get("codex-app-server");
+
+  assert.equal(
+    provider.descriptor.capabilities.includes(
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RECOVERY_STABILIZE
+    ),
+    true
+  );
+  assert.deepEqual(
+    await registry.invoke(
+      "codex-app-server",
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RECOVERY_STABILIZE,
+      { providerSessionId: "thread:recovery" },
+      { expectedMarker: "CORPTIE_RECOVERY_STABILIZED" }
+    ),
+    { durable: true }
+  );
+});
+
 function recordingCodexOperations() {
   return {
     listSessions: () => [],
     readSession: (reference) => ({ id: reference.providerSessionId }),
     createSession: () => ({}),
     resumeSession: () => ({}),
+    stabilizeRecoverySession: () => ({ durable: true }),
     prepareExecution: () => ({}),
     deleteSession: () => true,
     restartSession: () => ({}),
