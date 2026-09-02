@@ -161,3 +161,17 @@ test("OpenClacky Session summary normalization is command-response-only", () => 
   assert.equal(summary.status, "complete");
   assert.equal(summary.external.cwd, "/tmp/project");
 });
+
+test("OpenClacky cancelled Turn remains visible and sendable", () => {
+  const summary = openClackySessionSummary({
+    id: "clacky-interrupted",
+    name: "Interrupted task",
+    status: "cancelled",
+    working_dir: "/tmp/project",
+    updated_at: "2026-08-26T00:00:00Z"
+  });
+
+  assert.equal(summary.status, "cancelled");
+  assert.equal(summary.capabilities.canSend, true);
+  assert.equal(summary.sendUnavailableReason, null);
+});
