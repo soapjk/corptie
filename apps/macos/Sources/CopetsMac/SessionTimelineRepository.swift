@@ -76,6 +76,19 @@ final class SessionTimelineRepository {
         trimIfNeeded()
     }
 
+    /// A Workspace transition changes the Provider binding beneath one logical
+    /// Session. Re-key the resident projection in place so presentation never
+    /// observes an empty Timeline while the authoritative stored snapshot is
+    /// being refreshed. Pagination and optimistic rows belong to the logical
+    /// Session and therefore survive this Provider identity change.
+    @discardableResult
+    func rebindProviderIdentity(for session: TaskSession) -> CodexThreadDetail? {
+        guard let current = statesBySessionID[session.id]?.detail else { return nil }
+        let rebound = SessionTimelineBindingReconciler.rebind(current, to: session)
+        publish(rebound, for: session.id)
+        return rebound
+    }
+
     func remove(_ sessionID: String) {
         guard !pinnedSessionIDs.contains(sessionID) else { return }
         statesBySessionID[sessionID] = nil
@@ -104,5 +117,59 @@ final class SessionTimelineRepository {
             let evictedSessionID = recency.remove(at: evictionIndex)
             statesBySessionID[evictedSessionID] = nil
         }
+    }
+}
+
+enum SessionTimelineBindingReconciler {
+    static func routeIdentity(of session: TaskSession) -> String {
+        let external = session.external
+        return [
+            external?.provider ?? "",
+            external?.threadId ?? session.id,
+            external?.sessionId ?? "",
+            String(external?.routingVersion ?? 0),
+            external?.workspace?.id ?? ""
+        ].joined(separator: "\u{1f}")
+    }
+
+    static func sameRoute(_ left: TaskSession, _ right: TaskSession) -> Bool {
+        left.id == right.id && routeIdentity(of: left) == routeIdentity(of: right)
+    }
+
+    static func rebind(_ detail: CodexThreadDetail, to session: TaskSession) -> CodexThreadDetail {
+        let threadID = session.external?.threadId ?? session.id
+        guard detail.id != threadID
+                || detail.cwd != session.external?.workspace?.path
+                || detail.source != session.external?.source else {
+            return detail
+        }
+        return CodexThreadDetail(
+            id: threadID,
+            title: detail.title,
+            status: detail.status,
+            source: session.external?.source ?? detail.source,
+            connectionStatus: session.external?.connectionStatus ?? detail.connectionStatus,
+            currentModel: session.external?.currentModel ?? detail.currentModel,
+            currentReasoningLevel: session.external?.currentReasoningLevel ?? detail.currentReasoningLevel,
+            activityStatus: session.activityStatus ?? detail.activityStatus,
+            cwd: session.external?.workspace?.path ?? session.external?.cwd ?? detail.cwd,
+            createdAt: detail.createdAt,
+            updatedAt: max(detail.updatedAt, session.updatedAt),
+            canSend: session.actions?.send.available ?? session.capabilities?.canSend ?? detail.canSend,
+            sendUnavailableReason: session.actions?.send.reason ?? detail.sendUnavailableReason,
+            transitionState: session.transitionState ?? detail.transitionState,
+            readiness: session.readiness ?? detail.readiness,
+            notReadyReason: session.notReadyReason ?? detail.notReadyReason,
+            capabilities: session.capabilities ?? detail.capabilities,
+            turnCount: detail.turnCount,
+            items: detail.items,
+            lastAgentMessageSequence: max(
+                detail.lastAgentMessageSequence ?? 0,
+                session.lastAgentMessageSequence ?? 0
+            ),
+            hasMoreHistory: detail.hasMoreHistory,
+            historyItemsCount: detail.historyItemsCount,
+            actions: session.actions ?? detail.actions
+        )
     }
 }

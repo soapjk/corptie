@@ -317,8 +317,9 @@ final class BackendClient: ObservableObject {
     }
     private var eventStreamTask: Task<Void, Never>?
     private var coldTimelineLoadTask: Task<Void, Never>?
+    private var routeTimelineSyncTasks: [String: Task<Void, Never>] = [:]
     private var performanceFixtureStreamTask: Task<Void, Never>?
-    private var pendingUserMessagesByThread: [String: [CodexThreadItem]] = [:]
+    private var pendingUserMessagesBySessionID: [String: [CodexThreadItem]] = [:]
     private var handledChoiceIds = Set<String>()
     private var knownTimelineRevisionBySessionID: [String: Int] = [:]
     private lazy var activeTimelineSyncEngine = ActiveTimelineSyncEngine(
@@ -391,6 +392,8 @@ final class BackendClient: ObservableObject {
         eventStreamTask?.cancel()
         coldTimelineLoadTask?.cancel()
         coldTimelineLoadTask = nil
+        routeTimelineSyncTasks.values.forEach { $0.cancel() }
+        routeTimelineSyncTasks.removeAll()
         performanceFixtureStreamTask?.cancel()
         let chatFeatures = ChatTimelineFeatureFlags.current
         if chatFeatures.fixtureMode == .standard {
@@ -664,9 +667,11 @@ final class BackendClient: ObservableObject {
         }
         if eventName == "SessionWorkspaceSwitched" {
             if let payload = data.data(using: .utf8),
-               let event = try? JSONDecoder().decode(SessionWorkspaceSwitchedEventEnvelope.self, from: payload),
-               restartActivityBySessionId[event.payload.session.id] != nil {
-                completeRestartActivity(for: event.payload.session.id)
+               let event = try? JSONDecoder().decode(SessionWorkspaceSwitchedEventEnvelope.self, from: payload) {
+                acceptCommittedSessionRoute(event.payload.session)
+                if restartActivityBySessionId[event.payload.session.id] != nil {
+                    completeRestartActivity(for: event.payload.session.id)
+                }
             }
             if let selectedSession { await loadScheduledTasks(for: selectedSession) }
             scheduleSelectedProjectStatusEventRefresh(data: data)
@@ -3137,9 +3142,12 @@ final class BackendClient: ObservableObject {
 
     private func synchronizeStoredTimeline(
         for session: TaskSession,
-        localRevision: Int
+        localRevision: Int,
+        forceSnapshot: Bool = false
     ) async -> Bool {
-        if localRevision > 0,
+        guard sessionRouteIsCurrent(session) else { return false }
+        if !forceSnapshot,
+           localRevision > 0,
            let currentDetail = SessionTimelineRepository.shared.detail(for: session.id),
            let envelope = await fetchTimelineChanges(for: session, after: localRevision) {
             let mergeResult = await timelineDeltaProcessor.merge(
@@ -3149,6 +3157,7 @@ final class BackendClient: ObservableObject {
             )
             switch mergeResult {
             case .applied(let detail, let revision):
+                guard sessionRouteIsCurrent(session) else { return false }
                 let reconciledDetail = detailByMergingPendingMessages(detail)
                 storeCachedDetail(
                     reconciledDetail,
@@ -3178,6 +3187,7 @@ final class BackendClient: ObservableObject {
             }
             return false
         }
+        guard sessionRouteIsCurrent(session) else { return false }
         let reconciledDetail = detailByMergingPendingMessages(snapshot.detail)
         storeCachedDetail(
             reconciledDetail,
@@ -3189,6 +3199,30 @@ final class BackendClient: ObservableObject {
             selectedTimelineLoadError = nil
         }
         return true
+    }
+
+    private func sessionRouteIsCurrent(_ requested: TaskSession) -> Bool {
+        let current = appState.session(requested.id)
+            ?? archivedSessions.first(where: { $0.id == requested.id })
+        guard let current else { return false }
+        return SessionTimelineBindingReconciler.sameRoute(requested, current)
+    }
+
+    private func acceptCommittedSessionRoute(_ committed: TaskSession) {
+        let session = appState.acceptSessionWorkspaceTransition(committed) ?? committed
+        SessionTimelineRepository.shared.rebindProviderIdentity(for: session)
+        routeTimelineSyncTasks[session.id]?.cancel()
+        let localRevision = SessionTimelineRepository.shared.timelineRevision(for: session.id)
+        routeTimelineSyncTasks[session.id] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await self.synchronizeStoredTimeline(
+                for: session,
+                localRevision: localRevision,
+                forceSnapshot: true
+            )
+            guard self.sessionRouteIsCurrent(session) else { return }
+            self.routeTimelineSyncTasks[session.id] = nil
+        }
     }
 
     private func warmPresentationCache(_ detail: CodexThreadDetail, for sessionID: String) async {
@@ -3525,15 +3559,16 @@ final class BackendClient: ObservableObject {
             status: "queued",
             createdAt: now
         )
-        pendingUserMessagesByThread[threadId, default: []].append(item)
+        pendingUserMessagesBySessionID[session.id, default: []].append(item)
 
-        guard let detail = selectedDetail, detail.id == threadId else {
+        guard let residentDetail = cachedDetail(for: session.id) else {
             storeCachedDetail(
                 optimisticDetail(for: session, threadId: threadId, now: now),
                 for: session.id
             )
             return
         }
+        let detail = SessionTimelineBindingReconciler.rebind(residentDetail, to: session)
         storeCachedDetail(CodexThreadDetail(
             id: detail.id,
             title: detail.title,
@@ -3550,7 +3585,7 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: detail.sendUnavailableReason,
             capabilities: detail.capabilities,
             turnCount: detail.turnCount,
-            items: mergedItems(serverItems: detail.items, pendingItems: pendingUserMessagesByThread[threadId] ?? []),
+            items: mergedItems(serverItems: detail.items, pendingItems: pendingUserMessagesBySessionID[session.id] ?? []),
             lastAgentMessageSequence: detail.lastAgentMessageSequence,
             hasMoreHistory: detail.hasMoreHistory,
             historyItemsCount: detail.historyItemsCount,
@@ -3575,7 +3610,7 @@ final class BackendClient: ObservableObject {
             sendUnavailableReason: nil,
             capabilities: session.capabilities,
             turnCount: 0,
-            items: pendingUserMessagesByThread[threadId] ?? [],
+            items: pendingUserMessagesBySessionID[session.id] ?? [],
             lastAgentMessageSequence: session.lastAgentMessageSequence
         )
     }
@@ -4879,9 +4914,17 @@ final class BackendClient: ObservableObject {
     }
 
     private func detailByMergingPendingMessages(_ detail: CodexThreadDetail) -> CodexThreadDetail {
-        let pending = pendingUserMessagesByThread[detail.id] ?? []
+        guard let sessionID = sessions.first(where: {
+            ($0.external?.threadId ?? $0.id) == detail.id
+        })?.id ?? (selectedSession?.id.flatMap { selectedID in
+            cachedDetail(for: selectedID)?.id == detail.id ? selectedID : nil
+        }) else { return detail }
+        let pending = pendingUserMessagesBySessionID[sessionID] ?? []
         let merged = mergedItems(serverItems: detail.items, pendingItems: pending)
-        pendingUserMessagesByThread[detail.id] = remainingPendingItems(afterMerging: detail.items, pendingItems: pending)
+        pendingUserMessagesBySessionID[sessionID] = remainingPendingItems(
+            afterMerging: detail.items,
+            pendingItems: pending
+        )
 
         guard merged != detail.items else {
             return detail

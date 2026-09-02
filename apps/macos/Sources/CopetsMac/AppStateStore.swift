@@ -215,6 +215,36 @@ final class AppStateStore: ObservableObject {
         return true
     }
 
+    /// `SessionWorkspaceSwitched` is emitted only after the logical Session's
+    /// new route is committed. Merge that route immediately so a send racing
+    /// the revisioned State stream cannot target the previous Provider Thread.
+    /// Timeline/read cursors remain monotonic because they are Session state,
+    /// not Provider binding state.
+    @discardableResult
+    func acceptSessionWorkspaceTransition(_ session: TaskSession) -> TaskSession? {
+        guard var current = state.sessions[session.id],
+              let committedExternal = session.external else { return nil }
+        current.external = committedExternal
+        current.transitionState = session.transitionState
+        current.readiness = session.readiness
+        current.notReadyReason = session.notReadyReason
+        current.actions = session.actions
+        current.updatedAt = max(current.updatedAt, session.updatedAt)
+        current.timelineRevision = max(current.timelineRevision ?? 0, session.timelineRevision ?? 0)
+        current.lastAgentMessageSequence = max(
+            current.lastAgentMessageSequence ?? 0,
+            session.lastAgentMessageSequence ?? 0
+        )
+        current.lastReadMessageSequence = max(
+            current.lastReadMessageSequence ?? 0,
+            session.lastReadMessageSequence ?? 0
+        )
+        var next = state
+        next.sessions[session.id] = current
+        state = next
+        return current
+    }
+
     /// `/clear` commits the replacement before returning it. Apply that exact
     /// command result atomically without exposing a generic Session snapshot
     /// mutation API to presentation code.
