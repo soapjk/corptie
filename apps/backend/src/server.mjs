@@ -2527,8 +2527,26 @@ function runtimeQueuePosition(sessionId, taskId) {
 
 function setProviderRuntimeReadiness(providerId, readiness) {
   const resolved = agentProviderRegistry.resolveId(providerId) ?? providerId;
+  const previous = providerRuntimeReadiness.get(resolved) ?? null;
+  if (JSON.stringify(previous) === JSON.stringify(readiness)) return;
   providerRuntimeReadiness.set(resolved, readiness);
-  scheduleStateSyncPublish();
+
+  // Runtime readiness is part of the client-visible Session projection even
+  // though it is not stored on the Session row. Merely scheduling State Sync
+  // is insufficient: clients whose durable cursor already equals the Store
+  // revision receive no frame and remain stuck with the startup `not_ready`
+  // projection. Touch every affected Session's projection dependency so the
+  // ordinary revision log publishes provider-neutral Session upserts.
+  const affectedSessionIds = store.listSessions({ archived: false })
+    .filter((session) => {
+      const identity = session.external?.provider ?? session.provider ?? null;
+      return identity && agentProviderRegistry.resolveId(identity) === resolved;
+    })
+    .map((session) => session.id);
+  for (const sessionId of affectedSessionIds) {
+    store.touchSessionProjectionDependency(sessionId);
+  }
+  if (affectedSessionIds.length === 0) scheduleStateSyncPublish();
 }
 
 function decorateSessionForClient(session, options = {}) {
