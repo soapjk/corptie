@@ -5,6 +5,29 @@ import XCTest
 
 @MainActor
 final class AppKitChatTimelineControlTests: XCTestCase {
+    func testImageMessageReservesStableNativeRowGeometry() {
+        let plain = AppKitChatTimelineRow(
+            id: "plain", contentRevision: 1, nativeText: "Image", copyText: "Image",
+            nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false
+        )
+        let image = AppKitChatTimelineRow(
+            id: "image", contentRevision: 1, nativeText: "Image", copyText: "Image",
+            nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
+            isExpanded: false, showsHeader: false,
+            images: [ChatTimelineImage(
+                managedPath: "chat-resources/sessions/one/images/a.png",
+                displayURL: URL(string: "http://127.0.0.1/image"),
+                originalPath: "/tmp/original.png"
+            )]
+        )
+
+        let plainLayout = NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 500)
+        let imageLayout = NativeTimelineLayoutCache.shared.layout(for: image, columnWidth: 500)
+        XCTAssertEqual(imageLayout.rowHeight - plainLayout.rowHeight, 96)
+        XCTAssertGreaterThanOrEqual(imageLayout.cardWidth, 220)
+    }
+
     func testLiveResizeReflowsOnlyVisibleRowsThenExactReflowCoversAllRows() {
         let visible = NSRange(location: 40, length: 12)
 

@@ -145,20 +145,12 @@ struct WorkCreateView: View {
     }
 
     private func workAvatar(path: String?, size: CGFloat) -> some View {
-        Group {
-            if let path, !path.isEmpty {
-                AnimatedAvatarImage(path: path)
-            } else {
-                DefaultInitialAvatarView(
-                    familySeed: name,
-                    variationSeed: creationId,
-                    initials: DefaultAvatarInitials.make(from: name),
-                    size: size
-                )
-            }
-        }
-        .frame(width: size, height: size)
-        .clipShape(Circle())
+        ObjectiveAvatarView(
+            objectiveID: creationId,
+            name: name,
+            avatarPath: path,
+            size: size
+        )
     }
 
     private func applyGeneratedFields(_ fields: [String: String]) {

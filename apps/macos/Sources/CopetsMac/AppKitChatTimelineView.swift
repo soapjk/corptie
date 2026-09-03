@@ -338,6 +338,7 @@ final class NativeTimelineLayoutCache {
         let showsHeader: Bool
         let actionCount: Int
         let widthBucket: Int
+        let imagePaths: [String]
     }
 
     static let shared = NativeTimelineLayoutCache()
@@ -363,7 +364,8 @@ final class NativeTimelineLayoutCache {
             isExpanded: row.isExpanded,
             showsHeader: row.showsHeader,
             actionCount: row.actions.count,
-            widthBucket: Int((normalizedWidth * 2).rounded())
+            widthBucket: Int((normalizedWidth * 2).rounded()),
+            imagePaths: row.images.map { $0.managedPath }
         )
         if let cached = values[key] {
             touch(key)
@@ -413,7 +415,7 @@ final class NativeTimelineLayoutCache {
                 rowHeight = max(
                     row.showsHeader ? 54 : 30,
                     textHeight + verticalChrome + footerHeight + actionHeight + messageActionBarHeight
-                )
+                ) + (row.images.isEmpty ? 0 : 96)
             }
         }
         let layout = Layout(
@@ -511,6 +513,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let showsHeader: Bool
     let hoverTimestamp: String
     let actions: [Action]
+    let images: [ChatTimelineImage]
 
     var showsMessageActionBar: Bool {
         !showsHeader
@@ -536,7 +539,8 @@ struct AppKitChatTimelineRow: Identifiable {
         processState: ProcessState = .completed,
         showsHeader: Bool = true,
         hoverTimestamp: String = "",
-        actions: [Action] = []
+        actions: [Action] = [],
+        images: [ChatTimelineImage] = []
     ) {
         self.id = id
         self.contentRevision = contentRevision
@@ -556,6 +560,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.showsHeader = showsHeader
         self.hoverTimestamp = hoverTimestamp
         self.actions = actions
+        self.images = images
     }
 
     enum NativeStyle: Hashable {
@@ -593,6 +598,12 @@ struct AppKitChatTimelineRow: Identifiable {
             return "Execution stopped · \(steps)"
         }
     }
+}
+
+struct ChatTimelineImage: Hashable {
+    let managedPath: String
+    let displayURL: URL?
+    let originalPath: String?
 }
 
 struct AppKitChatRowReuseIdentity: Equatable {
@@ -666,7 +677,7 @@ enum ChatBubbleWidthPolicy {
         if row.collaborationRoute != nil {
             return min(fullAvailableWidth, maximumWidth)
         }
-        return preferredWidth(
+        let preferred = preferredWidth(
             text: row.nativeText,
             style: row.nativeStyle,
             title: row.showsHeader ? row.title : "",
@@ -674,6 +685,7 @@ enum ChatBubbleWidthPolicy {
             processWidth: row.processCount == nil ? 0 : collapsedProcessWidth,
             availableWidth: fullAvailableWidth
         )
+        return row.images.isEmpty ? preferred : min(fullAvailableWidth, max(220, preferred))
     }
 }
 
@@ -2044,6 +2056,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private let metadataLabel = NSTextField(labelWithString: "")
     private let hoverTimestampLabel = NSTextField(labelWithString: "")
     private let label = NativeTimelineTextView()
+    private let imageStack = NSStackView()
     private let rawStatusScrollView = NSScrollView()
     private let rawStatusTextView = NSTextView()
     private let disclosureButton = NSButton()
@@ -2066,6 +2079,10 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var messageActionBarTrailingConstraint: NSLayoutConstraint!
     private var labelTopToTitleConstraint: NSLayoutConstraint!
     private var labelTopToCardConstraint: NSLayoutConstraint!
+    private var imageTopToTitleConstraint: NSLayoutConstraint!
+    private var imageTopToCardConstraint: NSLayoutConstraint!
+    private var labelTopToImagesConstraint: NSLayoutConstraint!
+    private var imageStackHeightConstraint: NSLayoutConstraint!
     private var labelBottomToProcessConstraint: NSLayoutConstraint!
     private var labelBottomToActionsConstraint: NSLayoutConstraint!
     private var labelTopToProcessButtonConstraint: NSLayoutConstraint!
@@ -2085,6 +2102,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var copiedText = ""
     private var representedRowID: String?
     private var representedContentRevision: Int?
+    private var representedImages: [ChatTimelineImage] = []
     private(set) var contentConfigurationCount = 0
     private(set) var widthLayoutUpdateCount = 0
 
@@ -2105,6 +2123,10 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         metadataLabel.translatesAutoresizingMaskIntoConstraints = false
         hoverTimestampLabel.translatesAutoresizingMaskIntoConstraints = false
         label.translatesAutoresizingMaskIntoConstraints = false
+        imageStack.translatesAutoresizingMaskIntoConstraints = false
+        imageStack.orientation = .horizontal
+        imageStack.alignment = .centerY
+        imageStack.spacing = 7
         rawStatusScrollView.translatesAutoresizingMaskIntoConstraints = false
         disclosureButton.translatesAutoresizingMaskIntoConstraints = false
         copyButton.translatesAutoresizingMaskIntoConstraints = false
@@ -2182,6 +2204,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         [
             titleLabel,
             metadataLabel,
+            imageStack,
             label,
             rawStatusScrollView,
             disclosureButton,
@@ -2203,6 +2226,10 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         messageActionBarTrailingConstraint = messageActionBar.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -2)
         labelTopToTitleConstraint = label.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 6)
         labelTopToCardConstraint = label.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 10)
+        imageTopToTitleConstraint = imageStack.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 7)
+        imageTopToCardConstraint = imageStack.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 10)
+        labelTopToImagesConstraint = label.topAnchor.constraint(equalTo: imageStack.bottomAnchor, constant: 7)
+        imageStackHeightConstraint = imageStack.heightAnchor.constraint(equalToConstant: 0)
         labelBottomToProcessConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: processSeparator.topAnchor, constant: -5)
         labelBottomToActionsConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: actionStack.topAnchor, constant: -4)
         labelTopToProcessButtonConstraint = label.topAnchor.constraint(equalTo: processButton.bottomAnchor, constant: 8)
@@ -2230,6 +2257,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             messageActionBar.heightAnchor.constraint(equalToConstant: 22),
             label.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             label.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
+            imageStack.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
+            imageStack.trailingAnchor.constraint(lessThanOrEqualTo: cardView.trailingAnchor, constant: -10),
+            imageStackHeightConstraint,
             labelHeightConstraint,
             rawStatusScrollView.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             rawStatusScrollView.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
@@ -2298,6 +2328,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
         configureActions(row.actions)
+        configureImages(row.images, rowID: row.id)
         copiedText = row.copyText
         let showsMessageActions = row.showsMessageActionBar
         NSLayoutConstraint.deactivate([
@@ -2328,6 +2359,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         NSLayoutConstraint.deactivate([
             labelTopToTitleConstraint,
             labelTopToCardConstraint,
+            imageTopToTitleConstraint,
+            imageTopToCardConstraint,
+            labelTopToImagesConstraint,
             labelTopToProcessButtonConstraint,
             labelBottomToCardConstraint,
             rawStatusTopConstraint,
@@ -2365,7 +2399,12 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             }
         } else {
             if row.collaborationRoute == nil {
-                (showsHeader ? labelTopToTitleConstraint : labelTopToCardConstraint).isActive = true
+                if row.images.isEmpty {
+                    (showsHeader ? labelTopToTitleConstraint : labelTopToCardConstraint).isActive = true
+                } else {
+                    (showsHeader ? imageTopToTitleConstraint : imageTopToCardConstraint).isActive = true
+                    labelTopToImagesConstraint.isActive = true
+                }
             }
             processButtonBottomConstraint.isActive = true
         }
@@ -2512,6 +2551,67 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         }
     }
 
+    private func configureImages(_ images: [ChatTimelineImage], rowID: String) {
+        representedImages = Array(images.prefix(4))
+        imageStack.arrangedSubviews.forEach {
+            imageStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+        let visible = Array(images.prefix(4))
+        imageStack.isHidden = visible.isEmpty
+        imageStackHeightConstraint.constant = visible.isEmpty ? 0 : 88
+        for (index, attachment) in visible.enumerated() {
+            let button = NSButton()
+            button.isBordered = false
+            button.imagePosition = .imageOnly
+            button.imageScaling = .scaleProportionallyUpOrDown
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 9
+            button.layer?.masksToBounds = true
+            button.tag = index
+            button.target = self
+            button.action = #selector(openImage(_:))
+            button.toolTip = attachment.originalPath == nil
+                ? "Open image"
+                : "Reveal original image in Finder"
+            button.setAccessibilityLabel("Attached image \(index + 1)")
+            button.image = NSImage(systemSymbolName: "photo", accessibilityDescription: nil)
+            button.widthAnchor.constraint(equalToConstant: 88).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 88).isActive = true
+            imageStack.addArrangedSubview(button)
+            guard let url = attachment.displayURL else { continue }
+            ChatTimelineImageLoader.shared.load(url) { [weak self, weak button] image in
+                guard self?.representedRowID == rowID else { return }
+                button?.image = image ?? NSImage(
+                    systemSymbolName: "exclamationmark.triangle",
+                    accessibilityDescription: "Image is missing"
+                )
+            }
+        }
+    }
+
+    @objc private func openImage(_ sender: NSButton) {
+        // The represented row is reconfigured atomically, so the visible button
+        // index always maps to the current row's attachment.
+        guard sender.tag < representedImages.count else { return }
+        let image = representedImages[sender.tag]
+        if let originalPath = image.originalPath,
+           FileManager.default.fileExists(atPath: originalPath) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: originalPath)])
+        } else if image.originalPath != nil, let url = image.displayURL {
+            let alert = NSAlert()
+            alert.messageText = "Original image is missing"
+            alert.informativeText = "Corptie kept a managed copy for this conversation."
+            alert.addButton(withTitle: "View managed copy")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(url)
+            }
+        } else if let url = image.displayURL {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
@@ -2549,6 +2649,33 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     @objc private func performTimelineAction(_ sender: NSButton) {
         guard timelineActions.indices.contains(sender.tag) else { return }
         onAction?(timelineActions[sender.tag])
+    }
+}
+
+@MainActor
+private final class ChatTimelineImageLoader {
+    static let shared = ChatTimelineImageLoader()
+    private let cache = NSCache<NSURL, NSImage>()
+
+    private init() {
+        cache.totalCostLimit = 64 * 1_024 * 1_024
+        cache.countLimit = 160
+    }
+
+    func load(_ url: URL, completion: @escaping (NSImage?) -> Void) {
+        if let image = cache.object(forKey: url as NSURL) {
+            completion(image)
+            return
+        }
+        Task { [weak self] in
+            let data = try? await URLSession.shared.data(from: url).0
+            let image = data.flatMap(NSImage.init(data:))
+            if let image {
+                let pixels = Int(image.size.width * image.size.height)
+                self?.cache.setObject(image, forKey: url as NSURL, cost: min(pixels * 4, 20 * 1_024 * 1_024))
+            }
+            completion(image)
+        }
     }
 }
 
