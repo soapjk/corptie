@@ -148,6 +148,64 @@ struct DefaultInitialAvatarView: View {
     }
 }
 
+enum MacOSAppIconGeometry {
+    static let cornerRadiusRatio: CGFloat = 0.2237
+
+    static func cornerRadius(for size: CGFloat) -> CGFloat {
+        max(0, size * cornerRadiusRatio)
+    }
+}
+
+struct MacOSAppIconShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        RoundedRectangle(
+            cornerRadius: MacOSAppIconGeometry.cornerRadius(for: min(rect.width, rect.height)),
+            style: .continuous
+        )
+        .path(in: rect)
+    }
+}
+
+struct ObjectiveAvatarView: View {
+    let objectiveID: String
+    let name: String
+    let avatarPath: String?
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            if let avatarPath, !avatarPath.isEmpty {
+                AnimatedAvatarImage(path: avatarPath)
+            } else {
+                MacOSAppIconShape()
+                    .fill(
+                        DefaultAvatarGradientStyle.make(
+                            familySeed: name,
+                            variationSeed: objectiveID
+                        ).gradient
+                    )
+                MacOSAppIconShape()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.white.opacity(0.26), Color.clear],
+                            center: .topLeading,
+                            startRadius: 0,
+                            endRadius: size * 0.78
+                        )
+                    )
+                Text(DefaultAvatarInitials.make(from: name, fallback: "?"))
+                    .font(.system(size: max(8, size * 0.29), weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white)
+                    .shadow(color: Color.black.opacity(0.24), radius: 1, y: 1)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(MacOSAppIconShape())
+    }
+}
+
 enum DefaultAvatarInitials {
     static func make(from value: String, fallback: String = "A") -> String {
         let words = value

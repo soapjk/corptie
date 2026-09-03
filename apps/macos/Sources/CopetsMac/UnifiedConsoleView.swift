@@ -350,6 +350,7 @@ struct UnifiedConsoleView: View {
                                 consoleRailIcon(
                                     text: workInitials(work.name),
                                     avatarPath: work.avatarPath,
+                                    objectiveID: work.id,
                                     label: work.name,
                                     isSelected: selectedWorkId == work.id,
                                     hasUnread: unreadSummary.workIDs.contains(work.id)
@@ -411,25 +412,33 @@ struct UnifiedConsoleView: View {
         systemImage: String? = nil,
         text: String? = nil,
         avatarPath: String? = nil,
+        objectiveID: String? = nil,
         label: String,
         isSelected: Bool,
         hasUnread: Bool
     ) -> some View {
-        ZStack {
-            Circle()
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .frame(width: 42, height: 42)
-            if let avatarPath, !avatarPath.isEmpty {
-                AnimatedAvatarImage(path: avatarPath)
-                    .frame(width: 42, height: 42)
-                    .clipShape(Circle())
-            } else if let systemImage {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .semibold))
+        Group {
+            if let objectiveID {
+                ObjectiveAvatarView(
+                    objectiveID: objectiveID,
+                    name: label,
+                    avatarPath: avatarPath,
+                    size: 42
+                )
             } else {
-                Text(text ?? "?")
-                    .font(.system(size: 12, weight: .bold, design: .rounded))
-                    .lineLimit(1)
+                ZStack {
+                    Circle()
+                        .fill(Color(nsColor: .controlBackgroundColor))
+                        .frame(width: 42, height: 42)
+                    if let systemImage {
+                        Image(systemName: systemImage)
+                            .font(.system(size: 16, weight: .semibold))
+                    } else {
+                        Text(text ?? "?")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                    }
+                }
             }
         }
         .foregroundStyle(Color.primary)

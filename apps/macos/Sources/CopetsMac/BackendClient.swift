@@ -1902,6 +1902,7 @@ final class BackendClient: ObservableObject {
             } else {
                 sendText(
                     option.label,
+                    images: [],
                     to: session,
                     reloadDetail: selectedSession?.id == session.id,
                     isChoiceSelection: true,
@@ -3341,6 +3342,7 @@ final class BackendClient: ObservableObject {
     @discardableResult
     func sendMessage(
         _ text: String,
+        images: [ChatImageReference] = [],
         onSuccess: @escaping () -> Void = {},
         onFailure: @escaping () -> Void = {}
     ) -> Bool {
@@ -3359,12 +3361,56 @@ final class BackendClient: ObservableObject {
 
         return sendText(
             text,
+            images: images,
             to: selectedSession,
             reloadDetail: true,
             isChoiceSelection: false,
             onSuccess: onSuccess,
             onFailure: onFailure
         )
+    }
+
+    func importChatImage(
+        at fileURL: URL,
+        to session: TaskSession,
+        preserveOriginal: Bool
+    ) async throws -> ChatImageReference {
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/images"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "sourcePath": fileURL.path,
+            "preserveOriginal": preserveOriginal
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Could not attach image."))
+        }
+        if let direct = try? JSONDecoder().decode(ChatImageReference.self, from: data) {
+            return direct
+        }
+        return try JSONDecoder().decode(ChatImageImportResponse.self, from: data).image
+    }
+
+    func presentChatImageError(_ error: Error) {
+        lastError = error.localizedDescription
+    }
+
+    func removeUnsentChatImage(_ image: ChatImageReference, from session: TaskSession) async {
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/images"))
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["managedPath": image.managedPath])
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
+    func chatImageURL(sessionID: String, managedPath: String) -> URL? {
+        var components = URLComponents(
+            url: baseURL.appending(path: "sessions/\(sessionID)/images"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "path", value: managedPath)]
+        return components?.url
     }
 
     func respondToCollaborationConfirmation(confirmationId: String, approve: Bool, in session: TaskSession? = nil) {
@@ -3420,12 +3466,14 @@ final class BackendClient: ObservableObject {
     func sendMessage(
         _ text: String,
         to session: TaskSession,
+        images: [ChatImageReference] = [],
         isChoiceSelection: Bool = false,
         onSuccess: @escaping () -> Void = {},
         onFailure: @escaping () -> Void = {}
     ) -> Bool {
         sendText(
             text,
+            images: images,
             to: session,
             reloadDetail: selectedSession?.id == session.id,
             isChoiceSelection: isChoiceSelection,
@@ -3464,6 +3512,7 @@ final class BackendClient: ObservableObject {
     @discardableResult
     private func sendText(
         _ text: String,
+        images: [ChatImageReference],
         to session: TaskSession,
         reloadDetail: Bool,
         isChoiceSelection: Bool,
@@ -3471,7 +3520,7 @@ final class BackendClient: ObservableObject {
         onFailure: @escaping () -> Void = {}
     ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        guard !trimmed.isEmpty || !images.isEmpty else {
             return false
         }
         let latencyTrace = SessionMessageLatencyTrace(sessionId: session.id)
@@ -3501,6 +3550,12 @@ final class BackendClient: ObservableObject {
                 request.setValue(String(requestStartedAtMs), forHTTPHeaderField: "x-corptie-message-request-started-at-ms")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
                     "text": trimmed,
+                    "images": images.map { image in
+                        [
+                            "managedPath": image.managedPath,
+                            "originalPath": image.originalPath ?? NSNull()
+                        ] as [String: Any]
+                    },
                     "isChoiceSelection": isChoiceSelection,
                     "messageId": messageID,
                     "deliveryId": deliveryID
@@ -3526,6 +3581,7 @@ final class BackendClient: ObservableObject {
                 if presentsAcknowledgedUserMessage {
                     appendAcknowledgedUserMessage(
                         trimmed,
+                        images: images,
                         messageID: messageID,
                         deliveryID: deliveryID,
                         to: session
@@ -3584,6 +3640,7 @@ final class BackendClient: ObservableObject {
 
     private func appendAcknowledgedUserMessage(
         _ text: String,
+        images: [ChatImageReference] = [],
         messageID: String,
         deliveryID: String,
         to session: TaskSession
@@ -3602,7 +3659,8 @@ final class BackendClient: ObservableObject {
             text: text,
             options: nil,
             status: "queued",
-            createdAt: now
+            createdAt: now,
+            images: images
         )
         pendingUserMessagesBySessionID[session.id, default: []].append(item)
 
@@ -5039,6 +5097,10 @@ final class BackendClient: ObservableObject {
         }
         return String(data: data, encoding: .utf8)
     }
+}
+
+private struct ChatImageImportResponse: Decodable {
+    let image: ChatImageReference
 }
 
 private func nonEmptyPreference(_ value: String?) -> String? {
