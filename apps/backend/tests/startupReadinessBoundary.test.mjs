@@ -75,15 +75,15 @@ test("Provider initialization and recovery stay outside the backend readiness pa
     /promise\.finally\(\(\) => startupMaintenanceTasks\.delete/,
     "startup task tracking must not create an unhandled rejected finally Promise"
   );
-  assert.doesNotMatch(
-    source,
-    /reason: "PROVIDER_EMPTY_BINDING_UNAVAILABLE"/,
-    "empty binding prewarming must never create a new Session Recovery attempt"
-  );
   assert.match(
     source,
-    /unavailable\.code = "PROVIDER_BINDING_RECOVERY_REQUIRED"/,
-    "an unavailable existing Thread must remain Not Ready for explicit Recovery"
+    /idempotencyKey: `startup-empty-binding-recovery:\$\{candidate\.bindingId\}`/,
+    "a proven unavailable zero-Turn binding must use an idempotent recovery attempt"
+  );
+  assert.doesNotMatch(
+    source,
+    /PROVIDER_BINDING_RECOVERY_REQUIRED/,
+    "a proven unavailable zero-Turn binding must not require manual recovery"
   );
   assert.match(
     source,

@@ -1617,39 +1617,47 @@ const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
   providerId: "codex-app-server",
   concurrency: 4,
   onChanged: (candidate) => store.touchSessionProjectionDependency(candidate.sessionId),
+  isUnavailable: isUnavailableEmptyBinding,
+  recoverUnavailable: async (candidate, error) => {
+    const attempt = await sessionRecoveryCoordinator.recover({
+      logicalSessionId: candidate.logicalSessionId,
+      providerId: candidate.providerId,
+      idempotencyKey: `startup-empty-binding-recovery:${candidate.bindingId}`,
+      triggerDeliveryId: null,
+      reason: error?.code ?? "provider-empty-binding-unavailable"
+    });
+    const reference = requireSessionReference(candidate.sessionId);
+    return {
+      candidate: {
+        sessionId: reference.sessionId,
+        logicalSessionId: reference.logicalSessionId,
+        bindingId: reference.bindingId,
+        providerId: reference.providerId,
+        providerSessionId: reference.providerSessionId,
+        routingVersion: reference.routingVersion
+      },
+      attemptId: attempt.attemptId ?? null
+    };
+  },
   ensureUsable: async (candidate) => {
-    let logical = store.getLogicalSession(candidate.logicalSessionId);
-    let binding = logical?.activeBinding ?? null;
+    const logical = store.getLogicalSession(candidate.logicalSessionId);
+    const binding = logical?.activeBinding ?? null;
     if (!binding) {
       const error = new Error("Session has no active Provider binding during startup verification.");
       error.code = "SESSION_BINDING_NOT_FOUND";
       throw error;
     }
-    const session = store.getSession(candidate.sessionId);
-    const resumeContext = {
-      purpose: binding.bindingId === candidate.bindingId
-        ? "startup-binding-runtime-verification"
-        : "session-create-finalization",
-      actorId: session?.agentId ?? null,
-      sessionId: candidate.sessionId,
-      logicalSessionId: logical.logicalSessionId,
-      providerBindingId: binding.bindingId,
-      sessionKind: session?.sessionKind ?? "legacy",
-      workId: session?.workId ?? null,
-      workItemId: session?.workItemId ?? null
-    };
-    try {
-      await sessionApplicationService.resumeSession(candidate.sessionId, resumeContext);
-    } catch (error) {
-      if (!isUnavailableEmptyBinding(error)) throw error;
-      const unavailable = new Error(
-        "The existing Provider Thread could not be reconnected and was preserved. Explicit Session Recovery is required."
-      );
-      unavailable.code = "PROVIDER_BINDING_RECOVERY_REQUIRED";
-      unavailable.cause = error;
-      throw unavailable;
+    if (binding.bindingId !== candidate.bindingId) {
+      const error = new Error("Session Provider binding changed before startup verification.");
+      error.code = "SESSION_BINDING_CHANGED";
+      throw error;
     }
-    return { recovered: false, bindingId: binding.bindingId };
+    await sessionApplicationService.probeBindingReadiness(candidate.sessionId, {
+      purpose: "startup-binding-runtime-verification",
+      logicalSessionId: logical.logicalSessionId,
+      providerBindingId: binding.bindingId
+    });
+    return { bindingId: binding.bindingId };
   }
 });
 sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
@@ -5849,10 +5857,30 @@ async function prepareCodexProviderExecution(reference, context = {}) {
 }
 
 async function probeCodexProviderBinding(reference, context = {}) {
-  return prepareCodexProviderExecution(reference, {
-    ...context,
-    bindingReadinessProbe: true
+  const logical = reference.logicalSessionId
+    ? store.getLogicalSession(reference.logicalSessionId)
+    : store.getLogicalSessionByLegacySessionId(reference.sessionId);
+  const binding = logical?.activeBinding ?? null;
+  if (!binding || binding.bindingId !== reference.bindingId) {
+    const error = new Error("The Provider binding changed before its readiness probe.");
+    error.code = "SESSION_BINDING_CHANGED";
+    throw error;
+  }
+  const cwd = binding.boundCwd
+    ?? reference.metadata?.session?.external?.cwd
+    ?? null;
+  const startedAt = Date.now();
+  const result = await codexRuntime.ensureThreadResumed(reference.providerSessionId, {
+    cwd: cwd ?? undefined,
+    runtimeWorkspaceRoots: cwd ? [cwd] : undefined
   });
+  return {
+    ready: true,
+    sessionId: reference.logicalSessionId ?? reference.sessionId,
+    providerSessionId: reference.providerSessionId,
+    threadAlreadyLoaded: result?.alreadyLoaded === true,
+    durationMs: Date.now() - startedAt
+  };
 }
 
 function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
