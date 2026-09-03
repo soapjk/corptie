@@ -1,7 +1,7 @@
 const ENTITY_COLLECTION = Object.freeze({
   session: "sessions",
   task: "tasks",
-  objective: "objectives",
+  work: "works",
   agent: "agents",
   skill: "skills",
   repository: "repositories",
@@ -11,7 +11,7 @@ const ENTITY_COLLECTION = Object.freeze({
 const ENTITY_ID = Object.freeze({
   sessions: (entity) => entity.id,
   tasks: (entity) => entity.id,
-  objectives: (entity) => entity.id,
+  works: (entity) => entity.id,
   agents: (entity) => entity.agentId,
   skills: (entity) => entity.skillId,
   repositories: (entity) => entity.id,

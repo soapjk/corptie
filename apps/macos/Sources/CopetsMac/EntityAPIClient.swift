@@ -16,12 +16,12 @@ struct EntityRefreshGeneration: Equatable {
 
 private struct SessionGroupingEntityState: Equatable {
     let tasks: [String: CorptieTask]
-    let objectives: [String: Objective]
+    let works: [String: Work]
     let agents: [String: Agent]
 }
 
 // 实体层轻量 API 客户端（15 Phase 5 净新增）。
-// 独立于 BackendClient.swift 巨石，直连后端 entityHttpApi（/objectives、/tasks）。
+// 独立于 BackendClient.swift 巨石，直连后端 entityHttpApi（/works、/tasks）。
 // 与 BackendClient 使用相同后端地址（CorptieAppEnvironment.backendBaseURL）与 URLSession 模式。
 
 @MainActor
@@ -29,7 +29,7 @@ final class EntityAPIClient: ObservableObject {
     static let shared = EntityAPIClient()
 
     private let appState: AppStateStore
-    var objectives: [Objective] { appState.objectives }
+    var works: [Work] { appState.works }
     var agents: [Agent] { appState.agents }
     var tasks: [CorptieTask] { appState.tasks }
     @Published private(set) var tasksRevision: UInt64 = 0
@@ -37,7 +37,8 @@ final class EntityAPIClient: ObservableObject {
     @Published private(set) var tasksLoadError: String?
     @Published private(set) var browsedTasksHasMore = false
     @Published private(set) var browsedMemoriesHasMore = false
-    @Published private(set) var objectivesLoadError: String?
+    @Published private(set) var worksLoadError: String?
+    @Published private(set) var workspaces: [WorkspaceResource] = []
 
     /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
     var assistantAgents: [Agent] { agents.filter { $0.isAssistant } }
@@ -48,10 +49,10 @@ final class EntityAPIClient: ObservableObject {
     private let skillDeletionHTTPClient = SkillDeletionHTTPClient()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
-    private var objectivesRefreshGeneration = EntityRefreshGeneration()
+    private var worksRefreshGeneration = EntityRefreshGeneration()
     private var appStateCancellables = Set<AnyCancellable>()
     private var browsedTasksNextCursor: String?
-    private var browsedTasksObjectiveId: String?
+    private var browsedTasksWorkId: String?
     private var browsedTasks: [CorptieTask] = []
     private var browsedMemories: [MemoryItem] = []
     private var browsedMemoryQueryItems: [URLQueryItem] = []
@@ -80,7 +81,7 @@ final class EntityAPIClient: ObservableObject {
             .map { state in
                 SessionGroupingEntityState(
                     tasks: state.tasks,
-                    objectives: state.objectives,
+                    works: state.works,
                     agents: state.agents
                 )
             }
@@ -93,32 +94,33 @@ final class EntityAPIClient: ObservableObject {
             .store(in: &appStateCancellables)
     }
 
-    func refreshObjectives() async {
-        let generation = objectivesRefreshGeneration.begin()
+    func refreshWorks() async {
+        let generation = worksRefreshGeneration.begin()
         isLoading = true
         defer {
-            if objectivesRefreshGeneration.isCurrent(generation) {
+            if worksRefreshGeneration.isCurrent(generation) {
                 isLoading = false
             }
         }
         do {
             await AppStateSyncController.shared.refreshSnapshot()
-            guard objectivesRefreshGeneration.isCurrent(generation) else { return }
+            guard worksRefreshGeneration.isCurrent(generation) else { return }
             if let syncError = appState.syncError { throw EntityLaunchError(message: syncError, code: "STATE_SYNC_FAILED") }
-            objectivesLoadError = nil
+            worksLoadError = nil
             errorMessage = nil
         } catch {
-            guard objectivesRefreshGeneration.isCurrent(generation) else { return }
-            objectivesLoadError = error.localizedDescription
+            guard worksRefreshGeneration.isCurrent(generation) else { return }
+            worksLoadError = error.localizedDescription
             errorMessage = error.localizedDescription
         }
     }
 
     /// Entity requests made while the production launch agent is still starting
     /// are retried when the canonical backend Session stream becomes available.
-    /// This keeps the first Objective view in sync without requiring a Tab switch.
+    /// This keeps the first Work view in sync without requiring a Tab switch.
     func refreshAfterBackendConnected() async {
-        await refreshObjectives()
+        await refreshWorks()
+        await refreshWorkspaces()
         await refreshRepositories()
         await refreshAgents()
     }
@@ -133,23 +135,37 @@ final class EntityAPIClient: ObservableObject {
         errorMessage = appState.syncError
     }
 
+    func refreshWorkspaces() async {
+        var request = URLRequest(url: baseURL.appending(path: "workspaces"))
+        request.httpMethod = "GET"
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                throw EntityLaunchError(message: "加载 Workspace 失败（HTTP \(http.statusCode)）", code: nil)
+            }
+            workspaces = try decoder.decode(WorkspaceListEnvelope.self, from: data).workspaces
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     // 拉取全局 Skill 维护中心列表：GET /skills → { skills }
     func refreshSkills() async {
         await AppStateSyncController.shared.refreshSnapshot()
         errorMessage = appState.syncError
     }
 
-    func tasks(for objective: Objective) async -> [CorptieTask]? {
-        await loadBrowsedTasks(objectiveId: objective.id, reset: true)
+    func tasks(for work: Work) async -> [CorptieTask]? {
+        await loadBrowsedTasks(workId: work.id, reset: true)
     }
 
     func allCorptieTasks() async -> [CorptieTask]? {
-        await loadBrowsedTasks(objectiveId: nil, reset: true)
+        await loadBrowsedTasks(workId: nil, reset: true)
     }
 
     func loadMoreBrowsedTasks() async -> [CorptieTask]? {
         guard browsedTasksHasMore, browsedTasksNextCursor != nil else { return browsedTasks }
-        return await loadBrowsedTasks(objectiveId: browsedTasksObjectiveId, reset: false)
+        return await loadBrowsedTasks(workId: browsedTasksWorkId, reset: false)
     }
 
     func clearCorptieTasksLoadError() {
@@ -178,9 +194,9 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    private func loadBrowsedTasks(objectiveId: String?, reset: Bool) async -> [CorptieTask]? {
+    private func loadBrowsedTasks(workId: String?, reset: Bool) async -> [CorptieTask]? {
         do {
-            let endpoint = objectiveId.map { baseURL.appending(path: "objectives/\($0)/tasks") }
+            let endpoint = workId.map { baseURL.appending(path: "works/\($0)/tasks") }
                 ?? baseURL.appending(path: "tasks")
             var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false)!
             var queryItems = [
@@ -200,13 +216,13 @@ final class EntityAPIClient: ObservableObject {
                 )
             }
             let page = try decoder.decode(CorptieTaskListEnvelope.self, from: data)
-            if reset || browsedTasksObjectiveId != objectiveId {
+            if reset || browsedTasksWorkId != workId {
                 browsedTasks = page.tasks
             } else {
                 var knownIDs = Set(browsedTasks.map(\.id))
                 browsedTasks.append(contentsOf: page.tasks.filter { knownIDs.insert($0.id).inserted })
             }
-            browsedTasksObjectiveId = objectiveId
+            browsedTasksWorkId = workId
             browsedTasksHasMore = page.hasMore == true
             browsedTasksNextCursor = page.nextCursor
             tasksLoadError = nil
@@ -265,7 +281,7 @@ final class EntityAPIClient: ObservableObject {
                         goal: String? = nil,
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
-                        priority: String? = nil, lifecycleState: String? = nil, mainWorkspaceId: String? = nil,
+                        priority: String? = nil, lifecycleState: String? = nil,
                         mainAgentId: String? = nil) async -> CorptieTask? {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)"))
         request.httpMethod = "PATCH"
@@ -278,7 +294,6 @@ final class EntityAPIClient: ObservableObject {
         if let verificationCriteria { body["verificationCriteria"] = verificationCriteria }
         if let priority { body["priority"] = priority }
         if let lifecycleState { body["lifecycleState"] = lifecycleState }
-        if let mainWorkspaceId { body["mainWorkspaceId"] = mainWorkspaceId }
         if let mainAgentId { body["mainAgentId"] = mainAgentId }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         return await performEntityMutation(request, as: CorptieTask.self)
@@ -366,7 +381,7 @@ final class EntityAPIClient: ObservableObject {
                 throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to authorize CorptieTask completion"), code: envelope?.code)
             }
             let receipt = try decoder.decode(CorptieTaskCompletionIntentReceipt.self, from: data)
-            guard receipt.taskId == task.id, receipt.objectiveId == task.objectiveId,
+            guard receipt.taskId == task.id, receipt.workId == task.workId,
                   receipt.interactionId == interactionId else {
                 throw EntityLaunchError(message: L10n("Completion authorization target mismatch"), code: "COMPLETION_INTENT_TARGET_MISMATCH")
             }
@@ -535,13 +550,13 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 创建 CorptieTask：POST /tasks { objectiveId, title, mainAgentId, ... } → task
+    // 创建 CorptieTask：POST /tasks { workId, title, mainAgentId, ... } → task
     @discardableResult
-    func createCorptieTask(id: String? = nil, objectiveId: String, title: String, description: String? = nil,
+    func createCorptieTask(id: String? = nil, workId: String, title: String, description: String? = nil,
                         goal: String? = nil,
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
-                        mainWorkspaceId: String? = nil, mainAgentId: String? = nil,
+                        mainAgentId: String? = nil,
                         priority: String? = nil) async -> CorptieTask? {
         var request = URLRequest(url: baseURL.appending(path: "tasks"))
         request.httpMethod = "POST"
@@ -549,13 +564,12 @@ final class EntityAPIClient: ObservableObject {
         if let id, !id.isEmpty {
             request.setValue(id, forHTTPHeaderField: "X-Corptie-Operation-Id")
         }
-        var body: [String: Any] = ["objectiveId": objectiveId, "title": title]
+        var body: [String: Any] = ["workId": workId, "title": title]
         if let id, !id.isEmpty { body["id"] = id }
         if let description, !description.isEmpty { body["description"] = description }
         if let goal, !goal.isEmpty { body["goal"] = goal }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
         if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }
-        if let mainWorkspaceId, !mainWorkspaceId.isEmpty { body["mainWorkspaceId"] = mainWorkspaceId }
         if let mainAgentId, !mainAgentId.isEmpty { body["mainAgentId"] = mainAgentId }
         if let priority { body["priority"] = priority }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -850,7 +864,7 @@ final class EntityAPIClient: ObservableObject {
         title: String? = nil
     ) async -> EntitySessionLaunchResult {
         guard let sourceSession = BackendClient.shared.selectedSession else {
-            let message = L10n("启动 CorptieTask 需要一个已激活的源会话。请先打开所属 Objective 的会话后重试。")
+            let message = L10n("启动 CorptieTask 需要一个已激活的源会话。请先打开所属 Work 的会话后重试。")
             errorMessage = message
             return .failure(message: message, code: "SOURCE_SESSION_NOT_FOUND")
         }
@@ -887,7 +901,7 @@ final class EntityAPIClient: ObservableObject {
             let startup = created.start
             guard startup.receipt.taskId == taskId,
                   created.session.taskId == startup.receipt.taskId,
-                  created.session.objectiveId == startup.receipt.objectiveId,
+                  created.session.workId == startup.receipt.workId,
                   created.session.sessionKind == .worker,
                   (startup.receipt.logicalSessionId.hasPrefix("session:")
                     || startup.receipt.logicalSessionId.hasPrefix("logical:")) else {
@@ -940,14 +954,14 @@ final class EntityAPIClient: ObservableObject {
     }
 
     @discardableResult
-    func startObjectiveChat(
-        objectiveId: String,
+    func startWorkChat(
+        workId: String,
         agentId: String,
         providerId: String,
         title: String? = nil,
         prompt: String? = nil
     ) async -> EntitySessionLaunchResult {
-        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)/sessions"))
+        var request = URLRequest(url: baseURL.appending(path: "works/\(workId)/sessions"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["agentId": agentId, "providerId": providerId]
@@ -958,7 +972,7 @@ final class EntityAPIClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                let message = envelope?.error ?? "启动 Objective Chat 失败（HTTP \(http.statusCode)）"
+                let message = envelope?.error ?? "启动 Work Chat 失败（HTTP \(http.statusCode)）"
                 errorMessage = message
                 return .failure(message: message, code: envelope?.code)
             }
@@ -971,47 +985,41 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 更新 Objective：PATCH /objectives/:id → objective（直接返回对象）
-    // priority/targetDate 传 "" 表示清除；tags/workspaceIds/relatedObjectiveIds/contributorAgentIds 传数组整体替换。
+    // 更新 Work：PATCH /works/:id → work（直接返回对象）
     @discardableResult
-    func updateObjective(objectiveId: String, name: String? = nil, description: String? = nil,
-                         idealState: String? = nil, priority: String? = nil, targetDate: String? = nil,
-                         tags: [String]? = nil, workspaceIds: [String]? = nil,
-                         relatedObjectiveIds: [String]? = nil, contributorAgentIds: [String]? = nil) async -> Objective? {
-        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
+    func updateWork(workId: String, name: String? = nil, description: String? = nil,
+                         profile: String? = nil, tags: [String]? = nil,
+                         contributorAgentIds: [String]? = nil) async -> Work? {
+        var request = URLRequest(url: baseURL.appending(path: "works/\(workId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = [:]
         if let name { body["name"] = name }
         if let description { body["description"] = description }
-        if let idealState { body["idealState"] = idealState }
-        if let priority { body["priority"] = priority }
-        if let targetDate { body["targetDate"] = targetDate }
+        if let profile { body["profile"] = profile }
         if let tags { body["tags"] = tags }
-        if let workspaceIds { body["workspaceIds"] = workspaceIds }
-        if let relatedObjectiveIds { body["relatedObjectiveIds"] = relatedObjectiveIds }
         if let contributorAgentIds { body["contributorAgentIds"] = contributorAgentIds }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        if let objective = await performEntityMutation(request, as: Objective.self) {
-            await refreshObjectives()
-            return objective
+        if let work = await performEntityMutation(request, as: Work.self) {
+            await refreshWorks()
+            return work
         }
         return nil
     }
 
-    // 删除 Objective：DELETE /objectives/:id → { ok }
-    func deleteObjective(objectiveId: String) async -> Bool {
-        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
+    // 删除 Work：DELETE /works/:id → { ok }
+    func deleteWork(workId: String) async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "works/\(workId)"))
         request.httpMethod = "DELETE"
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
-                errorMessage = envelope?.displayMessage ?? L10n("Unable to delete Objective.")
+                errorMessage = envelope?.displayMessage ?? L10n("Unable to delete Work.")
                 return false
             }
             errorMessage = nil
-            await refreshObjectives()
+            await refreshWorks()
             return true
         } catch {
             errorMessage = error.localizedDescription
@@ -1100,51 +1108,49 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 创建 Objective：POST /objectives { name, ... } → 直接返回 objective
+    // 创建 Work：POST /works { name, ... } → 直接返回 work
     @discardableResult
-    func createObjective(id: String? = nil, name: String, description: String? = nil, idealState: String? = nil,
-                         avatarPath: String? = nil, priority: String? = nil, tags: [String] = [],
-                         workspaceIds: [String] = [], relatedObjectiveIds: [String] = [],
-                         contributorAgentIds: [String] = []) async -> Objective? {
-        var request = URLRequest(url: baseURL.appending(path: "objectives"))
+    func createWork(id: String? = nil, name: String, description: String? = nil,
+                         avatarPath: String? = nil, profile: String = "general", tags: [String] = [],
+                         workspaceId: String? = nil,
+                         contributorAgentIds: [String] = []) async -> Work? {
+        var request = URLRequest(url: baseURL.appending(path: "works"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         var body: [String: Any] = ["name": name]
         if let id, !id.isEmpty { body["id"] = id }
         if let description { body["description"] = description }
-        if let idealState { body["idealState"] = idealState }
         if let avatarPath, !avatarPath.isEmpty { body["avatarPath"] = avatarPath }
-        if let priority { body["priority"] = priority }
+        body["profile"] = profile
         if !tags.isEmpty { body["tags"] = tags }
-        if !workspaceIds.isEmpty { body["workspaceIds"] = workspaceIds }
-        if !relatedObjectiveIds.isEmpty { body["relatedObjectiveIds"] = relatedObjectiveIds }
+        if let workspaceId, !workspaceId.isEmpty { body["workspaceId"] = workspaceId }
         if !contributorAgentIds.isEmpty { body["contributorAgentIds"] = contributorAgentIds }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        if let objective = await performEntityMutation(request, as: Objective.self) {
-            await refreshObjectives()
-            return objective
+        if let work = await performEntityMutation(request, as: Work.self) {
+            await refreshWorks()
+            return work
         }
         return nil
     }
 
     @discardableResult
-    func setObjectiveAvatar(objectiveId: String, sourcePath: String) async -> Objective? {
-        await patchObjectiveAvatar(objectiveId: objectiveId, body: ["avatarPath": sourcePath])
+    func setWorkAvatar(workId: String, sourcePath: String) async -> Work? {
+        await patchWorkAvatar(workId: workId, body: ["avatarPath": sourcePath])
     }
 
     @discardableResult
-    func clearObjectiveAvatar(objectiveId: String) async -> Objective? {
-        await patchObjectiveAvatar(objectiveId: objectiveId, body: ["avatarPath": NSNull()])
+    func clearWorkAvatar(workId: String) async -> Work? {
+        await patchWorkAvatar(workId: workId, body: ["avatarPath": NSNull()])
     }
 
-    private func patchObjectiveAvatar(objectiveId: String, body: [String: Any]) async -> Objective? {
-        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
+    private func patchWorkAvatar(workId: String, body: [String: Any]) async -> Work? {
+        var request = URLRequest(url: baseURL.appending(path: "works/\(workId)"))
         request.httpMethod = "PATCH"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        if let objective = await performEntityMutation(request, as: Objective.self) {
-            await refreshObjectives()
-            return objective
+        if let work = await performEntityMutation(request, as: Work.self) {
+            await refreshWorks()
+            return work
         }
         return nil
     }
@@ -1172,6 +1178,35 @@ final class EntityAPIClient: ObservableObject {
             await refreshRepositories()
             errorMessage = nil
             return .success(repository)
+        } catch {
+            errorMessage = error.localizedDescription
+            return .failure(error.localizedDescription)
+        }
+    }
+
+    /// 注册普通文件夹 Workspace；Git 是可选能力，不是 Work 的前置条件。
+    @discardableResult
+    func registerWorkspace(path: String, initializeGit: Bool = false) async -> WorkspaceRegistrationResult {
+        var request = URLRequest(url: baseURL.appending(path: "workspaces/detect"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "dirPath": path,
+            "initializeGit": initializeGit
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                let message = envelope?.error ?? "添加 Workspace 失败（HTTP \(http.statusCode)）"
+                errorMessage = message
+                return .failure(message)
+            }
+            let registration = try decoder.decode(WorkspaceRegistrationEnvelope.self, from: data)
+            await refreshWorkspaces()
+            await refreshRepositories()
+            errorMessage = nil
+            return .success(registration)
         } catch {
             errorMessage = error.localizedDescription
             return .failure(error.localizedDescription)

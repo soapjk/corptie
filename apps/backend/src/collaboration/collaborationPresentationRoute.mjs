@@ -10,8 +10,8 @@ export function collaborationMessagePresentationRoute(envelope) {
   return {
     senderAgentId,
     recipientAgentId,
-    sourceObjectiveId: protocol.resources?.sourceObjectiveId ?? null,
-    targetObjectiveId: protocol.resources?.targetObjectiveId ?? null,
+    sourceWorkId: protocol.resources?.sourceWorkId ?? null,
+    targetWorkId: protocol.resources?.targetWorkId ?? null,
     sourceSessionId,
     targetSessionId,
     sourceSessionTitle: sessionNameAtSend(task, sourceSessionId),

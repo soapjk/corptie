@@ -182,7 +182,7 @@ function resolveSessionAuthority({ store, startupReceipts, authenticatedSession,
   const logical = store.getLogicalSession(authenticatedSession.logicalSessionId);
   const startup = startupReceipts.require(authenticatedSession.logicalSessionId);
   const binding = logical?.activeBinding;
-  if (!ownership?.objectiveId || ownership.taskId !== authenticatedSession.taskId
+  if (!ownership?.workId || ownership.taskId !== authenticatedSession.taskId
     || !binding || binding.state !== "active"
     || binding.worktreeId !== startup.worktreeId || resolve(binding.boundCwd) !== resolve(startup.canonicalWorktreePath)
     || resolve(workingDirectory) !== resolve(startup.canonicalWorktreePath)) {
@@ -190,7 +190,7 @@ function resolveSessionAuthority({ store, startupReceipts, authenticatedSession,
   }
   return Object.freeze({
     logicalSessionId: authenticatedSession.logicalSessionId,
-    objectiveId: ownership.objectiveId,
+    workId: ownership.workId,
     taskId: ownership.taskId,
     repositoryId: startup.repositoryId,
     worktreeId: startup.worktreeId,

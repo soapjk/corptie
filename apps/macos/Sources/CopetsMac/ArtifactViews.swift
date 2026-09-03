@@ -3,17 +3,17 @@ import SwiftUI
 
 struct ArtifactSectionView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
-    let objectiveId: String
+    let workId: String
     let taskId: String?
 
-    @State private var selection: ObjectiveArtifact?
+    @State private var selection: WorkArtifact?
     @State private var showCreate = false
     @State private var importReceipt: ArtifactImportReceipt?
     @State private var isImporting = false
 
     private var loadState: ArtifactCollectionLoadState {
         if let taskId { return client.taskLoadStates[taskId] ?? .idle }
-        return client.objectiveLoadStates[objectiveId] ?? .idle
+        return client.workLoadStates[workId] ?? .idle
     }
 
     var body: some View {
@@ -37,9 +37,9 @@ struct ArtifactSectionView: View {
 
             artifactLoadContent
 
-            if client.hasMore(objectiveId: objectiveId, taskId: taskId) {
+            if client.hasMore(workId: workId, taskId: taskId) {
                 Button(L10n("Load more Artifacts")) {
-                    Task { await client.loadMore(objectiveId: objectiveId, taskId: taskId) }
+                    Task { await client.loadMore(workId: workId, taskId: taskId) }
                 }
                 .buttonStyle(.borderless)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -50,17 +50,17 @@ struct ArtifactSectionView: View {
                     .font(.system(size: 9)).foregroundStyle(.green)
             }
         }
-        .task(id: taskId ?? objectiveId) { await refresh() }
+        .task(id: taskId ?? workId) { await refresh() }
         .onDisappear { if let taskId { client.cancelRefresh(taskId: taskId) } }
         .sheet(item: $selection) { artifact in
             ArtifactDetailContainer(
                 artifactId: artifact.artifactId,
-                objectiveId: objectiveId,
+                workId: workId,
                 taskId: taskId
             ) { Task { await refresh() } }
         }
         .sheet(isPresented: $showCreate) {
-            ArtifactCreateView(objectiveId: objectiveId, taskId: taskId) {
+            ArtifactCreateView(workId: workId, taskId: taskId) {
                 showCreate = false
                 Task { await refresh() }
             }
@@ -112,7 +112,7 @@ struct ArtifactSectionView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func artifactRows(_ artifacts: [ObjectiveArtifact]) -> some View {
+    private func artifactRows(_ artifacts: [WorkArtifact]) -> some View {
         LazyVStack(spacing: 6) {
             ForEach(artifacts) { artifact in
                         Button { selection = artifact } label: {
@@ -148,7 +148,7 @@ struct ArtifactSectionView: View {
 
     private func refresh() async {
         if let taskId { await client.refresh(taskId: taskId) }
-        else { await client.refresh(objectiveId: objectiveId) }
+        else { await client.refresh(workId: workId) }
     }
 
     private func importDocument() {
@@ -160,9 +160,9 @@ struct ArtifactSectionView: View {
         isImporting = true
         Task {
             let imported = await client.importFile(
-                objectiveId: objectiveId,
+                workId: workId,
                 fileURL: url,
-                visibility: taskId == nil ? .objectivePrivate : .taskPrivate,
+                visibility: taskId == nil ? .workPrivate : .taskPrivate,
                 boundTaskId: taskId
             )
             importReceipt = imported?.receipt
@@ -176,7 +176,7 @@ struct ArtifactSectionView: View {
 }
 
 enum ArtifactVersionSelectionPolicy {
-    static func preferredVersion(for artifact: ObjectiveArtifact, taskId: String?) -> Int {
+    static func preferredVersion(for artifact: WorkArtifact, taskId: String?) -> Int {
         if let taskId,
            let reference = artifact.references.first(where: {
                $0.taskId == taskId && $0.revokedAt == nil
@@ -190,14 +190,14 @@ enum ArtifactVersionSelectionPolicy {
 private struct ArtifactDetailContainer: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     let artifactId: String
-    let objectiveId: String
+    let workId: String
     let taskId: String?
     let onChanged: () -> Void
 
     var body: some View {
         if let artifact = client.artifact(
             artifactId: artifactId,
-            objectiveId: objectiveId,
+            workId: workId,
             taskId: taskId
         ) {
             ArtifactDetailView(artifact: artifact, taskId: taskId, onChanged: onChanged)
@@ -216,7 +216,7 @@ private struct ArtifactDetailContainer: View {
 private struct ArtifactCreateView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
-    let objectiveId: String
+    let workId: String
     let taskId: String?
     let onCreated: () -> Void
 
@@ -263,8 +263,8 @@ private struct ArtifactCreateView: View {
         isSaving = true
         Task {
             let artifact = await client.create(
-                objectiveId: objectiveId, title: title, summary: summary, content: content,
-                visibility: taskId == nil ? .objectivePrivate : .taskPrivate,
+                workId: workId, title: title, summary: summary, content: content,
+                visibility: taskId == nil ? .workPrivate : .taskPrivate,
                 boundTaskId: taskId
             )
             if let artifact, let taskId {
@@ -279,7 +279,7 @@ private struct ArtifactCreateView: View {
 private struct ArtifactDetailView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
-    let artifact: ObjectiveArtifact
+    let artifact: WorkArtifact
     let taskId: String?
     let onChanged: () -> Void
 
@@ -295,7 +295,7 @@ private struct ArtifactDetailView: View {
     @State private var openError: String?
     @State private var readTurnExecutionId = UUID().uuidString
 
-    init(artifact: ObjectiveArtifact, taskId: String?, onChanged: @escaping () -> Void) {
+    init(artifact: WorkArtifact, taskId: String?, onChanged: @escaping () -> Void) {
         self.artifact = artifact
         self.taskId = taskId
         self.onChanged = onChanged
@@ -554,13 +554,13 @@ struct ArtifactContentPreview: NSViewRepresentable {
 private struct ArtifactPublishView: View {
     @ObservedObject private var client = ArtifactAPIClient.shared
     @Environment(\.dismiss) private var dismiss
-    let artifact: ObjectiveArtifact
+    let artifact: WorkArtifact
     let taskId: String?
     let onPublished: () -> Void
     @State private var summary: String
     @State private var content = ""
 
-    init(artifact: ObjectiveArtifact, taskId: String?, onPublished: @escaping () -> Void) {
+    init(artifact: WorkArtifact, taskId: String?, onPublished: @escaping () -> Void) {
         self.artifact = artifact
         self.taskId = taskId
         self.onPublished = onPublished

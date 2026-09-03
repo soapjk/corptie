@@ -140,7 +140,7 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
-    func testCollaborationCardPrioritizesSessionObjectiveAndMessageWithoutAgentNames() throws {
+    func testCollaborationCardPrioritizesSessionWorkAndMessageWithoutAgentNames() throws {
         var collaboration = item(
             id: "collaboration",
             type: "userMessage",
@@ -158,13 +158,13 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         collaboration.collaborationRecipientSessionId = "session:ui"
         collaboration.collaborationRecipientSessionKind = "worker"
         collaboration.collaborationTargetCorptieTaskId = "task:ui"
-        collaboration.collaborationInitiatorSessionTitle = "Platform Objective Chat"
+        collaboration.collaborationInitiatorSessionTitle = "Platform Work Chat"
         collaboration.collaborationInitiatorSessionId = "session:platform"
-        collaboration.collaborationInitiatorSessionKind = "objectiveChat"
-        collaboration.collaborationSourceObjectiveName = "Platform"
-        collaboration.collaborationSourceObjectiveId = "objective:platform"
-        collaboration.collaborationTargetObjectiveName = "macOS"
-        collaboration.collaborationTargetObjectiveId = "objective:macos"
+        collaboration.collaborationInitiatorSessionKind = "workChat"
+        collaboration.collaborationSourceWorkName = "Platform"
+        collaboration.collaborationSourceWorkId = "work:platform"
+        collaboration.collaborationTargetWorkName = "macOS"
+        collaboration.collaborationTargetWorkId = "work:macos"
         collaboration.collaborationTaskTitle = "Review collaboration card"
         collaboration.collaborationMessageKind = "change_request"
         collaboration.collaborationProcessingStatus = "running"
@@ -179,16 +179,16 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertTrue(presentation.metadata.contains(L10n("处理中")))
         XCTAssertEqual(presentation.route.destinationKind, .existingSession)
         XCTAssertEqual(presentation.route.routeLabel, L10n("发送到现有会话"))
-        XCTAssertEqual(presentation.route.sourceSession, "Session · Platform Objective Chat")
-        XCTAssertEqual(presentation.route.sourceObjective, "Objective · Platform")
+        XCTAssertEqual(presentation.route.sourceSession, "Session · Platform Work Chat")
+        XCTAssertEqual(presentation.route.sourceWork, "Work · Platform")
         XCTAssertEqual(presentation.route.targetName, "Session · Sessions UI")
-        XCTAssertEqual(presentation.route.targetObjective, "Objective · macOS")
+        XCTAssertEqual(presentation.route.targetWork, "Work · macOS")
         let visibleContent = [
             presentation.bodyMarkdown,
             presentation.route.sourceSession,
-            presentation.route.sourceObjective,
+            presentation.route.sourceWork,
             presentation.route.targetName,
-            presentation.route.targetObjective
+            presentation.route.targetWork
         ].joined(separator: "\n")
         XCTAssertFalse(visibleContent.contains("Platform Agent"))
         XCTAssertFalse(visibleContent.contains("macOS Agent"))
@@ -196,8 +196,8 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertFalse(visibleContent.contains("agent:macos"))
         XCTAssertFalse(visibleContent.contains("session:platform"))
         XCTAssertFalse(visibleContent.contains("session:ui"))
-        XCTAssertFalse(visibleContent.contains("objective:platform"))
-        XCTAssertFalse(visibleContent.contains("objective:macos"))
+        XCTAssertFalse(visibleContent.contains("work:platform"))
+        XCTAssertFalse(visibleContent.contains("work:macos"))
         XCTAssertFalse(visibleContent.contains("task:ui"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Please review the API contract."))
         XCTAssertEqual(presentation.messageText, "Please review the API contract.")
@@ -214,10 +214,10 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         confirmation.presentationText = "Investigate the delivery failure."
         confirmation.collaborationInitiatorSessionTitle = "Source Worker"
         confirmation.collaborationInitiatorSessionId = "session:source"
-        confirmation.collaborationSourceObjectiveName = "Platform"
-        confirmation.collaborationSourceObjectiveId = "objective:platform"
-        confirmation.collaborationTargetObjectiveName = "macOS"
-        confirmation.collaborationTargetObjectiveId = "objective:macos"
+        confirmation.collaborationSourceWorkName = "Platform"
+        confirmation.collaborationSourceWorkId = "work:platform"
+        confirmation.collaborationTargetWorkName = "macOS"
+        confirmation.collaborationTargetWorkId = "work:macos"
         confirmation.collaborationTaskTitle = "Repair delivery"
         confirmation.collaborationConfirmationStatus = "pending"
 
@@ -229,19 +229,19 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertEqual(presentation.route.destinationKind, .newCorptieTask)
         XCTAssertEqual(presentation.route.routeLabel, L10n("将创建新的 CorptieTask"))
         XCTAssertEqual(presentation.route.sourceSession, "Session · Source Worker")
-        XCTAssertEqual(presentation.route.sourceObjective, "Objective · Platform")
+        XCTAssertEqual(presentation.route.sourceWork, "Work · Platform")
         XCTAssertEqual(presentation.route.targetName, "CorptieTask · Repair delivery")
-        XCTAssertEqual(presentation.route.targetObjective, "Objective · macOS")
+        XCTAssertEqual(presentation.route.targetWork, "Work · macOS")
         let visibleContent = [
             presentation.bodyMarkdown,
             presentation.route.sourceSession,
-            presentation.route.sourceObjective,
+            presentation.route.sourceWork,
             presentation.route.targetName,
-            presentation.route.targetObjective
+            presentation.route.targetWork
         ].joined(separator: "\n")
         XCTAssertFalse(visibleContent.contains("session:source"))
-        XCTAssertFalse(visibleContent.contains("objective:platform"))
-        XCTAssertFalse(visibleContent.contains("objective:macos"))
+        XCTAssertFalse(visibleContent.contains("work:platform"))
+        XCTAssertFalse(visibleContent.contains("work:macos"))
         XCTAssertTrue(presentation.bodyMarkdown.contains("Investigate the delivery failure."))
     }
 
@@ -278,8 +278,8 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         collaboration.collaborationInitiatorSessionTitle = "Historical Initiator Session"
         collaboration.collaborationRecipientSessionId = "session:recipient-current"
         collaboration.collaborationRecipientSessionTitle = "Recipient Worker Session"
-        collaboration.collaborationSourceObjectiveId = "objective:source"
-        collaboration.collaborationTargetObjectiveId = "objective:target"
+        collaboration.collaborationSourceWorkId = "work:source"
+        collaboration.collaborationTargetWorkId = "work:target"
 
         let presentation = try XCTUnwrap(nativeCollaborationCardPresentation(
             for: collaboration,
@@ -291,14 +291,14 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         let visibleContent = [
             presentation.bodyMarkdown,
             presentation.route.sourceSession,
-            presentation.route.sourceObjective,
+            presentation.route.sourceWork,
             presentation.route.targetName,
-            presentation.route.targetObjective
+            presentation.route.targetWork
         ].joined(separator: "\n")
         XCTAssertFalse(visibleContent.contains("agent:initiator"))
         XCTAssertFalse(visibleContent.contains("agent:recipient"))
-        XCTAssertFalse(visibleContent.contains("objective:source"))
-        XCTAssertFalse(visibleContent.contains("objective:target"))
+        XCTAssertFalse(visibleContent.contains("work:source"))
+        XCTAssertFalse(visibleContent.contains("work:target"))
         XCTAssertFalse(visibleContent.contains("session:historical-initiator"))
         XCTAssertFalse(visibleContent.contains("session:recipient-current"))
     }

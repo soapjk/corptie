@@ -5393,7 +5393,7 @@ func nativeCollaborationCardPresentation(
         let lowercased = value.lowercased()
         guard value != normalizedID,
               !lowercased.hasPrefix("session:"),
-              !lowercased.hasPrefix("objective:"),
+              !lowercased.hasPrefix("work:"),
               !lowercased.hasPrefix("task:") else { return fallback }
         return value
     }
@@ -5402,8 +5402,8 @@ func nativeCollaborationCardPresentation(
         guard nonEmpty(item.collaborationTaskId) != nil,
               nonEmpty(item.collaborationInitiatorSessionId) != nil,
               nonEmpty(item.collaborationRecipientSessionId) != nil,
-              nonEmpty(item.collaborationSourceObjectiveId) != nil,
-              nonEmpty(item.collaborationTargetObjectiveId) != nil,
+              nonEmpty(item.collaborationSourceWorkId) != nil,
+              nonEmpty(item.collaborationTargetWorkId) != nil,
               nonEmpty(item.presentationText) != nil else {
             return nil
         }
@@ -5439,15 +5439,15 @@ func nativeCollaborationCardPresentation(
         id: item.collaborationRecipientSessionId,
         fallback: L10n("目标会话")
     )
-    let sourceObjective = readableName(
-        item.collaborationSourceObjectiveName,
-        id: item.collaborationSourceObjectiveId,
-        fallback: L10n("来源 Objective")
+    let sourceWork = readableName(
+        item.collaborationSourceWorkName,
+        id: item.collaborationSourceWorkId,
+        fallback: L10n("来源 Work")
     )
-    let targetObjective = readableName(
-        item.collaborationTargetObjectiveName,
-        id: item.collaborationTargetObjectiveId,
-        fallback: L10n("目标 Objective")
+    let targetWork = readableName(
+        item.collaborationTargetWorkName,
+        id: item.collaborationTargetWorkId,
+        fallback: L10n("目标 Work")
     )
     let message = nonEmpty(item.presentationText)
         ?? nonEmpty(item.text)
@@ -5483,12 +5483,12 @@ func nativeCollaborationCardPresentation(
             routeLabel: hasTargetSession ? L10n("发送到现有会话") : L10n("将创建新的 CorptieTask"),
             sourceLabel: L10n("来源"),
             sourceSession: "Session · \(sourceSession)",
-            sourceObjective: "Objective · \(sourceObjective)",
+            sourceWork: "Work · \(sourceWork)",
             targetLabel: L10n("目标"),
             targetName: hasTargetSession
                 ? "Session · \(targetSession)"
                 : "CorptieTask · \(targetCorptieTask)",
-            targetObjective: "Objective · \(targetObjective)"
+            targetWork: "Work · \(targetWork)"
         )
     )
 }
@@ -7263,7 +7263,7 @@ private struct ProjectWorktreeManagerView: View {
                             || (run.conflictCorptieTaskId == nil && status.eligibleAgents.isEmpty)
                     )
                     .help(status.eligibleAgents.isEmpty && run.conflictCorptieTaskId == nil
-                        ? L10n("Add an IC Agent to this Objective before creating the resolution CorptieTask")
+                        ? L10n("Add an IC Agent to this Work before creating the resolution CorptieTask")
                         : L10n("Create and immediately start a CorptieTask to resolve these merge conflicts"))
                 }
             }
@@ -7322,7 +7322,7 @@ private struct ProjectWorktreeManagerView: View {
     private func integrationEntryHelp(_ state: ProjectWorktreeIntegrationEntryState) -> String {
         switch state {
         case .ready:
-            L10n("Serially merge every completed Worktree in this Objective into main")
+            L10n("Serially merge every completed Worktree in this Work into main")
         case .noEligibleWorktrees:
             L10n("Click to see why no Worktrees can be integrated")
         case .unresolvedConflicts:
@@ -7775,8 +7775,8 @@ private struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
                     Text(L10n("Create Conflict-Resolution CorptieTask"))
                         .font(.system(size: 18, weight: .bold))
                     Text(L10nFormat(
-                        "This CorptieTask will be created under Objective %@ and start immediately.",
-                        status.objective.name
+                        "This CorptieTask will be created under Work %@ and start immediately.",
+                        status.work.name
                     ))
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
@@ -7814,9 +7814,9 @@ private struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                 GridRow {
-                    Text(L10n("Objective"))
+                    Text(L10n("Work"))
                         .foregroundStyle(CorptiePalette.secondaryText)
-                    Text(status.objective.name)
+                    Text(status.work.name)
                         .fontWeight(.semibold)
                 }
                 GridRow {
@@ -7847,7 +7847,7 @@ private struct ProjectIntegrationConflictCorptieTaskConfirmationView: View {
                 .foregroundStyle(CorptiePalette.secondaryText)
             } else if status.eligibleAgents.isEmpty {
                 Label(
-                    L10n("This Objective has no available IC Agent."),
+                    L10n("This Work has no available IC Agent."),
                     systemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.system(size: 11, weight: .semibold))
@@ -8714,19 +8714,19 @@ struct ThreadItemView: View {
                                 value: collaborationPendingTargetCorptieTask
                             )
                         }
-                        if let sourceObjective = collaborationObjective(
-                            name: item.collaborationSourceObjectiveName,
-                            id: item.collaborationSourceObjectiveId,
-                            fallback: L10n("来源 Objective")
+                        if let sourceWork = collaborationWork(
+                            name: item.collaborationSourceWorkName,
+                            id: item.collaborationSourceWorkId,
+                            fallback: L10n("来源 Work")
                         ) {
-                            collaborationConfirmationField(icon: "arrow.up.right.square", label: "来源 Objective", value: sourceObjective)
+                            collaborationConfirmationField(icon: "arrow.up.right.square", label: "来源 Work", value: sourceWork)
                         }
-                        if let targetObjective = collaborationObjective(
-                            name: item.collaborationTargetObjectiveName,
-                            id: item.collaborationTargetObjectiveId,
-                            fallback: L10n("目标 Objective")
+                        if let targetWork = collaborationWork(
+                            name: item.collaborationTargetWorkName,
+                            id: item.collaborationTargetWorkId,
+                            fallback: L10n("目标 Work")
                         ) {
-                            collaborationConfirmationField(icon: "arrow.down.left.square", label: "目标 Objective", value: targetObjective)
+                            collaborationConfirmationField(icon: "arrow.down.left.square", label: "目标 Work", value: targetWork)
                         }
                         collaborationConfirmationField(icon: "text.alignleft", label: "消息", value: collaborationPresentationText)
                     }
@@ -8816,7 +8816,7 @@ struct ThreadItemView: View {
         }
     }
 
-    private func collaborationObjective(name: String?, id: String?, fallback: String) -> String? {
+    private func collaborationWork(name: String?, id: String?, fallback: String) -> String? {
         guard nonEmpty(id) != nil else { return nil }
         guard let name = nonEmpty(name), name != nonEmpty(id), !looksLikeTechnicalID(name) else { return fallback }
         return name
@@ -8831,13 +8831,13 @@ struct ThreadItemView: View {
         let title = nonEmpty(item.collaborationTaskTitle).flatMap { looksLikeTechnicalID($0) ? nil : $0 }
         let resolvedIdentity = title ?? L10n("未命名协作任务")
         guard nonEmpty(item.collaborationTargetCorptieTaskId) == nil else { return resolvedIdentity }
-        return "\(resolvedIdentity) · \(L10n("确认后在目标 Objective 下新建"))"
+        return "\(resolvedIdentity) · \(L10n("确认后在目标 Work 下新建"))"
     }
 
     private func looksLikeTechnicalID(_ value: String) -> Bool {
         let normalized = value.lowercased()
         return normalized.hasPrefix("session:")
-            || normalized.hasPrefix("objective:")
+            || normalized.hasPrefix("work:")
             || normalized.hasPrefix("task:")
     }
 
@@ -8932,13 +8932,13 @@ struct ThreadItemView: View {
                         )
                         collaborationConfirmationField(
                             icon: "arrow.up.right.square",
-                            label: "来源 Objective",
-                            value: collaborationSourceObjectiveName
+                            label: "来源 Work",
+                            value: collaborationSourceWorkName
                         )
                         collaborationConfirmationField(
                             icon: "arrow.down.left.square",
-                            label: "目标 Objective",
-                            value: collaborationTargetObjectiveName
+                            label: "目标 Work",
+                            value: collaborationTargetWorkName
                         )
 
                         if let taskTitle = nonEmpty(item.collaborationTaskTitle) {
@@ -9054,20 +9054,20 @@ struct ThreadItemView: View {
         )
     }
 
-    private var collaborationSourceObjectiveName: String {
-        collaborationObjective(
-            name: item.collaborationSourceObjectiveName,
-            id: item.collaborationSourceObjectiveId,
-            fallback: L10n("来源 Objective")
-        ) ?? L10n("来源 Objective")
+    private var collaborationSourceWorkName: String {
+        collaborationWork(
+            name: item.collaborationSourceWorkName,
+            id: item.collaborationSourceWorkId,
+            fallback: L10n("来源 Work")
+        ) ?? L10n("来源 Work")
     }
 
-    private var collaborationTargetObjectiveName: String {
-        collaborationObjective(
-            name: item.collaborationTargetObjectiveName,
-            id: item.collaborationTargetObjectiveId,
-            fallback: L10n("目标 Objective")
-        ) ?? L10n("目标 Objective")
+    private var collaborationTargetWorkName: String {
+        collaborationWork(
+            name: item.collaborationTargetWorkName,
+            id: item.collaborationTargetWorkId,
+            fallback: L10n("目标 Work")
+        ) ?? L10n("目标 Work")
     }
 
     private var collaborationKindLabel: String {

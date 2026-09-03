@@ -28,7 +28,7 @@ struct UnbornRepositoryDecodingTests {
         let data = Data(#"""
         {
           "projectId": "repository:unborn",
-          "objective": { "id": "objective:one", "name": "Bootstrap" },
+          "work": { "id": "work:one", "name": "Bootstrap" },
           "mainHeadOid": null,
           "eligibleWorktrees": [],
           "excludedWorktrees": [],

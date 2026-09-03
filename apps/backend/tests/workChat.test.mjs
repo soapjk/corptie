@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import {
-  OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE,
-  ObjectiveChatContextService
-} from "../src/application/objectiveChatContextService.mjs";
-import { ObjectiveChatOperationService, objectiveChatDynamicTools } from "../src/application/objectiveChatDynamicTools.mjs";
+  WORK_CHAT_REPOSITORY_CHANGE_RULE,
+  WorkChatContextService
+} from "../src/application/workChatContextService.mjs";
+import { WorkChatOperationService, workChatDynamicTools } from "../src/application/workChatDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { assertExplicitSessionKind, inferSessionKind, normalizeSessionKind } from "../src/utils/sessionKinds.mjs";
 
@@ -60,44 +60,53 @@ test("startup migration repairs illegal stored classifications from authoritativ
 });
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), "corptie-objective-chat-"));
+  const directory = await mkdtemp(join(tmpdir(), "corptie-work-chat-"));
   const store = new CorptieStore({ dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
-  const objectiveService = new ObjectiveApplicationService({ store });
-  return { directory, store, objectiveService };
+  const contributor = store.createAgent({
+    id: "agent:work-chat-default",
+    name: "Work Chat Worker",
+    role: "independentContributor"
+  });
+  const workService = new WorkApplicationService({ store });
+  return { directory, store, workService, contributor };
 }
 
-test("objectiveChat is a distinct persisted Session kind bound to an Objective without a Task", async () => {
-  const { directory, store, objectiveService } = await fixture();
+function createWork(workService, contributor, input) {
+  return workService.createWork({ ...input, contributorAgentIds: [contributor.agentId] });
+}
+
+test("workChat is a distinct persisted Session kind bound to an Work without a Task", async () => {
+  const { directory, store, workService, contributor } = await fixture();
   try {
-    const objective = objectiveService.createObjective({ name: "Objective Chat" });
+    const work = createWork(workService, contributor, { name: "Work Chat" });
     store.createSession({ id: "chat", title: "Chat", agentId: "assistant", sessionKind: "assistantChat" });
-    const session = store.bindSessionToObjective("chat", objective.id);
-    assert.equal(session.sessionKind, "objectiveChat");
-    assert.equal(session.objectiveId, objective.id);
+    const session = store.bindSessionToWork("chat", work.id);
+    assert.equal(session.sessionKind, "workChat");
+    assert.equal(session.workId, work.id);
     assert.equal(session.taskId, null);
-    assert.equal(normalizeSessionKind("objectiveChat"), "objectiveChat");
-    assert.equal(inferSessionKind({ objectiveId: objective.id }), "objectiveChat");
+    assert.equal(normalizeSessionKind("workChat"), "workChat");
+    assert.equal(inferSessionKind({ workId: work.id }), "workChat");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("an Objective keeps only its first bound Objective Chat Session", async () => {
-  const { directory, store, objectiveService } = await fixture();
+test("an Work keeps only its first bound Work Chat Session", async () => {
+  const { directory, store, workService, contributor } = await fixture();
   try {
-    const objective = objectiveService.createObjective({ name: "Unique Objective Chat" });
+    const work = createWork(workService, contributor, { name: "Unique Work Chat" });
     store.createSession({ id: "first-chat", title: "First", sessionKind: "assistantChat" });
     store.createSession({ id: "second-chat", title: "Second", sessionKind: "assistantChat" });
 
-    const first = store.bindSessionToObjective("first-chat", objective.id);
-    const reused = store.bindSessionToObjective("second-chat", objective.id);
+    const first = store.bindSessionToWork("first-chat", work.id);
+    const reused = store.bindSessionToWork("second-chat", work.id);
 
     assert.equal(reused.id, first.id);
-    assert.equal(store.getSession("second-chat").objectiveId, null);
+    assert.equal(store.getSession("second-chat").workId, null);
     assert.deepEqual(
-      store.listSessionsByObjective(objective.id).filter((session) => session.sessionKind === "objectiveChat").map((session) => session.id),
+      store.listSessionsByWork(work.id).filter((session) => session.sessionKind === "workChat").map((session) => session.id),
       ["first-chat"]
     );
   } finally {
@@ -106,15 +115,15 @@ test("an Objective keeps only its first bound Objective Chat Session", async () 
   }
 });
 
-test("Objective Chat context is bounded and includes traceable Objective state", async () => {
-  const { directory, store, objectiveService } = await fixture();
+test("Work Chat context is bounded and includes traceable Work state", async () => {
+  const { directory, store, workService, contributor } = await fixture();
   try {
-    const objective = objectiveService.createObjective({
-      name: "Ship feature", description: "Discuss and decompose", idealState: "Delivery remains reliable across every path"
+    const work = createWork(workService, contributor, {
+      name: "Ship feature", description: "Delivery remains reliable across every path", profile: "software"
     });
-    objectiveService.createTask({ objectiveId: objective.id, title: "Backend" });
-    const context = new ObjectiveChatContextService({ store, characterBudget: 3_000 }).build(objective.id);
-    assert.equal(context.objectiveId, objective.id);
+    workService.createTask({ workId: work.id, title: "Backend" });
+    const context = new WorkChatContextService({ store, characterBudget: 3_000 }).build(work.id);
+    assert.equal(context.workId, work.id);
     assert.ok(context.characters <= 3_100);
     assert.match(context.prompt, /Delivery remains reliable across every path/);
     assert.match(context.prompt, /Backend/);
@@ -125,17 +134,17 @@ test("Objective Chat context is bounded and includes traceable Objective state",
   }
 });
 
-test("Objective Chat context delegates every code or repository mutation to a new Task", async () => {
-  const { directory, store, objectiveService } = await fixture();
+test("Work Chat context delegates every code or repository mutation to a new Task", async () => {
+  const { directory, store, workService, contributor } = await fixture();
   try {
-    const objective = objectiveService.createObjective({ name: "Delegated implementation" });
-    const context = new ObjectiveChatContextService({ store }).build(objective.id);
+    const work = createWork(workService, contributor, { name: "Delegated implementation" });
+    const context = new WorkChatContextService({ store }).build(work.id);
 
-    assert.ok(context.prompt.includes(OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE));
+    assert.ok(context.prompt.includes(WORK_CHAT_REPOSITORY_CHANGE_RULE));
     assert.match(context.prompt, /requires any code change or repository-content mutation/);
     assert.match(context.prompt, /Do not switch or create a worktree/);
     assert.match(context.prompt, /do not edit, create, delete, rename, stage, commit/);
-    assert.match(context.prompt, /First create a new Task in this Objective/);
+    assert.match(context.prompt, /First create a new Task in this Work/);
     assert.match(context.prompt, /title, description, and acceptance criteria must record the concrete/);
     assert.match(context.prompt, /assign and start that Task so its Worker Session performs the actual changes and verification/);
   } finally {
@@ -144,60 +153,60 @@ test("Objective Chat context delegates every code or repository mutation to a ne
   }
 });
 
-test("Objective Chat repository delegation rule preserves non-mutating discussion scope", () => {
+test("Work Chat repository delegation rule preserves non-mutating discussion scope", () => {
   assert.match(
-    OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE,
+    WORK_CHAT_REPOSITORY_CHANGE_RULE,
     /applies only when code or repository content must change/
   );
   assert.match(
-    OBJECTIVE_CHAT_REPOSITORY_CHANGE_RULE,
-    /Continue handling discussion, planning, status review, and other non-mutating Objective work normally/
+    WORK_CHAT_REPOSITORY_CHANGE_RULE,
+    /Continue handling discussion, planning, status review, and other non-mutating Work work normally/
   );
 });
 
-test("Objective Chat tools enforce the bound Objective and contributor scope", async () => {
-  const { directory, store, objectiveService } = await fixture();
+test("Work Chat tools enforce the bound Work and contributor scope", async () => {
+  const { directory, store, workService } = await fixture();
   try {
     const contributor = store.createAgent({ name: "IC", role: "independentContributor", provider: "codex" });
     const planner = store.createAgent({ name: "Planner", role: "independentContributor", provider: "codex" });
     const outsider = store.createAgent({ name: "Outside", role: "independentContributor", provider: "codex" });
-    const objective = objectiveService.createObjective({ name: "Scoped", contributorAgentIds: [contributor.agentId, planner.agentId] });
-    const other = objectiveService.createObjective({ name: "Other" });
-    const scopedItem = objectiveService.createTask({ objectiveId: objective.id, title: "Scoped item" });
-    const otherItem = objectiveService.createTask({ objectiveId: other.id, title: "Other item" });
+    const work = workService.createWork({ name: "Scoped", contributorAgentIds: [contributor.agentId, planner.agentId] });
+    const other = createWork(workService, contributor, { name: "Other" });
+    const scopedItem = workService.createTask({ workId: work.id, title: "Scoped item" });
+    const otherItem = workService.createTask({ workId: other.id, title: "Other item" });
     const starts = [];
-    const service = new ObjectiveChatOperationService({
+    const service = new WorkChatOperationService({
       store,
-      objectiveService,
-      contextService: new ObjectiveChatContextService({ store }),
+      workService,
+      contextService: new WorkChatContextService({ store }),
       workSessionStartApplicationService: {
         start: (input) => { starts.push(input); return { session: { id: "worker" } }; }
       },
       defaultProviderId: "codex-app-server"
     });
     const metadata = {
-      sessionKind: "objectiveChat", objectiveId: objective.id, sessionId: "session:objective"
+      sessionKind: "workChat", workId: work.id, sessionId: "session:work"
     };
-    const agents = await service.execute({ tool: "corptie_objective_agents_list", metadata, arguments: {} });
+    const agents = await service.execute({ tool: "corptie_work_agents_list", metadata, arguments: {} });
     assert.deepEqual(new Set(agents.map((agent) => agent.agentId)), new Set([contributor.agentId, planner.agentId]));
     assert.equal(agents.find((agent) => agent.agentId === contributor.agentId).canStartTask, true);
     assert.equal(agents.find((agent) => agent.agentId === planner.agentId).canStartTask, true);
     assert.equal(agents.some((agent) => agent.agentId === outsider.agentId), false);
     const created = await service.execute({
-      tool: "corptie_objective_tasks_manage", metadata,
+      tool: "corptie_work_tasks_manage", metadata,
       arguments: { action: "create", title: "New scoped item" }
     });
-    assert.equal(created.objective_id, objective.id);
+    assert.equal(created.work_id, work.id);
     await assert.rejects(() => service.execute({
-      tool: "corptie_objective_tasks_manage", metadata,
+      tool: "corptie_work_tasks_manage", metadata,
       arguments: { action: "get", task_id: otherItem.id }
-    }), { code: "TASK_OUTSIDE_OBJECTIVE" });
+    }), { code: "TASK_OUTSIDE_WORK" });
     await service.execute({
-      tool: "corptie_objective_task_start", metadata,
+      tool: "corptie_work_task_start", metadata,
       arguments: {
         task_id: scopedItem.id, agent_id: contributor.agentId,
         resource_version: scopedItem.resource_version, provider_id: "codex-app-server",
-        idempotency_key: "objective-start:one"
+        idempotency_key: "work-start:one"
       }
     });
     assert.equal(starts.length, 1);
@@ -207,8 +216,8 @@ test("Objective Chat tools enforce the bound Objective and contributor scope", a
   }
 });
 
-test("Objective Chat dynamic tools expose no arbitrary Task update or delete surface", () => {
-  const names = objectiveChatDynamicTools.map((tool) => tool.name);
-  assert.deepEqual(names, ["corptie_objective_context", "corptie_objective_agents_list"]);
+test("Work Chat dynamic tools expose no arbitrary Task update or delete surface", () => {
+  const names = workChatDynamicTools.map((tool) => tool.name);
+  assert.deepEqual(names, ["corptie_work_context", "corptie_work_agents_list"]);
   assert.equal(names.some((name) => name.includes("manage") || name.includes("delete") || name.includes("update")), false);
 });

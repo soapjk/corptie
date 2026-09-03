@@ -13,9 +13,9 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
   });
   try {
     await store.initialize();
-    const objective = store.createObjective({ name: "Continuous work" });
+    const work = store.createWork({ name: "Continuous work" });
     const task = store.createTask({
-      objectiveId: objective.id,
+      workId: work.id,
       title: "First problem",
       goal: "Finish the first problem",
       acceptanceCriteria: "First result accepted",
@@ -28,7 +28,7 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
       provider: "test",
       status: "running"
     });
-    store.bindSessionToTask("session:task-revision", task.id, objective.id);
+    store.bindSessionToTask("session:task-revision", task.id, work.id);
 
     const result = store.reviseTask(task.id, {
       expectedRevision: 1,

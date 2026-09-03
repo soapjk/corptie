@@ -406,10 +406,17 @@ async function sessionCreate(payload, { sessionApplicationService, createSession
     : "";
   const candidates = requestedWorkspaceId && store
     ? (store.listSessions({ archived: false }) ?? [])
-      .filter((session) => session.objectiveId === requestedWorkspaceId && session.agentId)
+      .filter((session) => session.workId === requestedWorkspaceId && session.agentId)
       .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))
     : [];
   const inheritedSession = candidates[0] ?? null;
+  // A Work owns one stable Work Chat. DSH asks session.create when mounting an
+  // empty conversation surface, but for a Work scope that operation means
+  // attach to the existing business Session, not create a second Provider
+  // Session and collide with the Work Chat uniqueness constraint.
+  if (inheritedSession?.sessionKind === "workChat") {
+    return { sessionId: inheritedSession.id };
+  }
   const cwd = typeof payload?.cwd === "string"
     ? payload.cwd
     : inheritedSession?.external?.cwd;
@@ -418,7 +425,7 @@ async function sessionCreate(payload, { sessionApplicationService, createSession
     throw new Error("session.create is unavailable without the unified Session factory");
   }
   if (!actorId) {
-    const error = new Error("session.create requires an existing Agent in the selected Corptie Objective");
+    const error = new Error("session.create requires an existing Agent in the selected Corptie Work");
     error.code = "AGENT_REQUIRED";
     throw error;
   }
@@ -427,7 +434,7 @@ async function sessionCreate(payload, { sessionApplicationService, createSession
     ...(inheritedSession?.sessionKind ? { sessionKind: inheritedSession.sessionKind } : {})
   }, {
     actorId,
-    objectiveId: requestedWorkspaceId || inheritedSession?.objectiveId || null,
+    workId: requestedWorkspaceId || inheritedSession?.workId || null,
     sessionKind: inheritedSession?.sessionKind ?? null
   });
   const sessionId = session?.publicSessionId ?? session?.sessionId ?? session?.id;
@@ -643,41 +650,34 @@ function unsetPath(target, path) {
 
 /**
  * workspace.list：DSH 前端 workspace 侧边栏 boot 时会拉取。
- * 映射 Corptie 的 Objective → DSH WorkspaceView：
- *   workspaceId  ← objective.id
- *   title        ← objective.name
- *   sessionIds   ← 该 objective 下所有未归档 session 的 id
- *   path         ← 活跃 task 的 main_workspace_id 解析出的真实目录路径（仅用于 hover 展示 + 复制，零副作用）
- *   createdAt    ← objective.createdAt
- *   updatedAt    ← objective.updatedAt
+ * 映射 Corptie 的 Work → DSH WorkspaceView：
+ *   workspaceId  ← work.id
+ *   title        ← work.name
+ *   sessionIds   ← 该 work 下所有未归档 session 的 id
+ *   path         ← Work 唯一 Workspace 的真实目录路径（仅用于 hover 展示 + 复制，零副作用）
+ *   createdAt    ← work.createdAt
+ *   updatedAt    ← work.updatedAt
  *
  * 「按 Assistant 分类会话」的第二组织方式暂不实现：assistant role 当前只在
  * 协作目录（collaborator_registry）里有「不可路由」语义，agents 表无 role 写入路径，
- * 会话归属的权威来源仍是 objective/task。待 assistant role 真正落地到
+ * 会话归属的权威来源仍是 work/task。待 assistant role 真正落地到
  * agents 表后再扩展。
  */
 async function workspaceList(_payload, { store }) {
   let items = [];
   let archivedSessionIds = [];
   try {
-    const objectives = store.listObjectives() ?? [];
+    const works = store.listWorks() ?? [];
     const sessions = store.listSessions({ archived: false }) ?? [];
 
-    // 活跃 task 的 main_workspace_id（repository id）解析为真实目录路径，
-    // 用于 workspace.path 展示（DSH path 只用于 hover 卡片 + 复制，零副作用）。
-    const activePathByObjective = new Map();
-    for (const obj of objectives) {
-      const tasks = store.listTasksByObjective(obj.id) ?? [];
-      const active = tasks.find((w) => w?.main_workspace_id);
-      if (active?.main_workspace_id) {
-        const resolved = typeof store.resolveWorkspacePath === "function"
-          ? store.resolveWorkspacePath(active.main_workspace_id)
-          : null;
-        if (resolved) activePathByObjective.set(obj.id, resolved);
-      }
+    // Work 的唯一 Workspace 提供展示路径；Task 不保存重复的 Workspace 绑定。
+    const activePathByWork = new Map();
+    for (const work of works) {
+      const resolved = store.resolveWorkspaceRoot?.(work.workspaceId) ?? null;
+      if (resolved) activePathByWork.set(work.id, resolved);
     }
 
-    items = mapWorkspaceList(objectives, sessions, activePathByObjective);
+    items = mapWorkspaceList(works, sessions, activePathByWork);
 
     const archived = store.listSessions({ archived: true });
     archivedSessionIds = (archived ?? [])
@@ -691,22 +691,22 @@ async function workspaceList(_payload, { store }) {
 }
 
 /**
- * 纯函数：Objective[] + Session[] + activePath 映射 → DSH WorkspaceView[]。
- * 分离出来便于单测；session 按 objectiveId 分组（一次性遍历，避免 N+1）。
+ * 纯函数：Work[] + Session[] + activePath 映射 → DSH WorkspaceView[]。
+ * 分离出来便于单测；session 按 workId 分组（一次性遍历，避免 N+1）。
  */
-export function mapWorkspaceList(objectives, sessions, activePathByObjective = new Map()) {
-  const sessionsByObjective = new Map();
+export function mapWorkspaceList(works, sessions, activePathByWork = new Map()) {
+  const sessionsByWork = new Map();
   for (const s of sessions ?? []) {
-    const oid = s?.objectiveId;
+    const oid = s?.workId;
     if (typeof oid !== "string" || !oid) continue;
-    if (!sessionsByObjective.has(oid)) sessionsByObjective.set(oid, []);
-    sessionsByObjective.get(oid).push(s?.id);
+    if (!sessionsByWork.has(oid)) sessionsByWork.set(oid, []);
+    sessionsByWork.get(oid).push(s?.id);
   }
-  return (objectives ?? []).map((obj) => ({
+  return (works ?? []).map((obj) => ({
     workspaceId: obj.id,
     title: obj.name,
-    sessionIds: sessionsByObjective.get(obj.id) ?? [],
-    path: activePathByObjective.get(obj.id) ?? "",
+    sessionIds: sessionsByWork.get(obj.id) ?? [],
+    path: activePathByWork.get(obj.id) ?? "",
     createdAt: obj.createdAt ?? "",
     updatedAt: obj.updatedAt ?? "",
   }));

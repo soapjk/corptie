@@ -3,8 +3,8 @@ const encoder = new TextEncoder();
 export const ARTIFACT_CONTEXT_POLICY_REVISION = "artifact-context-budget-v2";
 
 export const ARTIFACT_CONTEXT_DEFAULT_LIMITS = Object.freeze({
-  objectiveChatSnapshot: Object.freeze({ maxEstimatedTokens: 8_192, maxUtf8Bytes: 32_768 }),
-  objectiveArtifactIndex: Object.freeze({ maxEstimatedTokens: 2_048, maxUtf8Bytes: 8_192, maxItems: 80 }),
+  workChatSnapshot: Object.freeze({ maxEstimatedTokens: 8_192, maxUtf8Bytes: 32_768 }),
+  workArtifactIndex: Object.freeze({ maxEstimatedTokens: 2_048, maxUtf8Bytes: 8_192, maxItems: 80 }),
   workerArtifactIndex: Object.freeze({ maxEstimatedTokens: 4_096, maxUtf8Bytes: 16_384, maxItems: 80 }),
   artifactSummary: Object.freeze({ maxEstimatedTokens: 256, maxUtf8Bytes: 1_024 })
 });

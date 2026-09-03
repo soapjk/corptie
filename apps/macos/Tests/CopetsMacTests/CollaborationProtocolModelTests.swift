@@ -49,8 +49,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "contextId": "context:c4471174",
           "parentTaskId": null,
           "protocolVersion": "2.0",
-          "sourceObjectiveId": "objective:source",
-          "targetObjectiveId": "objective:target",
+          "sourceWorkId": "work:source",
+          "targetWorkId": "work:target",
           "sourceTaskId": "task:source",
           "taskId": "task:target",
           "initiatorAgentId": "agent:initiator",
@@ -87,8 +87,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
         let task = try JSONDecoder().decode(CollaborationTask.self, from: data)
         XCTAssertEqual(task.initiatorAgentId, "agent:initiator")
         XCTAssertEqual(task.recipientAgentId, "agent:recipient")
-        XCTAssertEqual(task.sourceObjectiveId, "objective:source")
-        XCTAssertEqual(task.targetObjectiveId, "objective:target")
+        XCTAssertEqual(task.sourceWorkId, "work:source")
+        XCTAssertEqual(task.targetWorkId, "work:target")
         XCTAssertEqual(task.initiatorSessionId, "session:historical-initiator")
         XCTAssertEqual(task.recipientSessionId, "session:recipient-current")
         XCTAssertEqual(task.initiatorNameAtSend, "Historical Initiator Session")
@@ -98,7 +98,7 @@ final class CollaborationProtocolModelTests: XCTestCase {
         XCTAssertEqual(task.idempotencyKey, "request:repair-identity")
     }
 
-    func testPendingConfirmationDecodesExplicitAgentSessionAndObjectiveRoute() throws {
+    func testPendingConfirmationDecodesExplicitAgentSessionAndWorkRoute() throws {
         let data = Data(#"""
         {
           "confirmationId": "confirmation:1",
@@ -106,10 +106,10 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "initiatorName": "Stable Source Agent",
           "recipientAgentId": "agent:target",
           "recipientName": "Stable Target Agent",
-          "sourceObjectiveId": "objective:source",
-          "sourceObjectiveName": "MarketCow",
-          "targetObjectiveId": "objective:target",
-          "targetObjectiveName": "PolyMarket 实时套利",
+          "sourceWorkId": "work:source",
+          "sourceWorkName": "MarketCow",
+          "targetWorkId": "work:target",
+          "targetWorkName": "PolyMarket 实时套利",
           "initiatorSessionId": "logical:source",
           "initiatorSessionTitle": "Snapshot repair",
           "initiatorSessionKind": "worker",
@@ -121,21 +121,21 @@ final class CollaborationProtocolModelTests: XCTestCase {
           "routeStatus": "active",
           "routingVersion": 3,
           "taskTitle": "Run shadow",
-          "summary": "Use the selected Objective.",
+          "summary": "Use the selected Work.",
           "acceptanceCriteria": []
         }
         """#.utf8)
 
         let confirmation = try JSONDecoder().decode(PendingCollaborationConfirmation.self, from: data)
         XCTAssertEqual(confirmation.initiatorName, "Stable Source Agent")
-        XCTAssertEqual(confirmation.targetObjectiveName, "PolyMarket 实时套利")
+        XCTAssertEqual(confirmation.targetWorkName, "PolyMarket 实时套利")
         XCTAssertEqual(confirmation.recipientSessionTitle, "One-hour shadow")
         XCTAssertEqual(confirmation.recipientSessionKind, "worker")
         XCTAssertEqual(confirmation.recipientCorptieTaskId, "task:target")
         XCTAssertEqual(confirmation.routingVersion, 3)
     }
 
-    func testMessageEnvelopeDecodesObjectiveCorptieTaskPayloadAndErrorContract() throws {
+    func testMessageEnvelopeDecodesWorkCorptieTaskPayloadAndErrorContract() throws {
         let data = Data(#"""
         {
           "messageId": "message:1",
@@ -159,8 +159,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
             "resources": {
               "sourceAgentId": "agent:a",
               "targetAgentId": "agent:b",
-              "sourceObjectiveId": "objective:a",
-              "targetObjectiveId": "objective:b",
+              "sourceWorkId": "work:a",
+              "targetWorkId": "work:b",
               "sourceTaskId": "task:source",
               "targetTaskId": "task:target"
             },
@@ -184,8 +184,8 @@ final class CollaborationProtocolModelTests: XCTestCase {
         XCTAssertEqual(message.idempotencyKey, "message:implement-it")
         XCTAssertEqual(message.envelope?.sender.sessionId, "session:a")
         XCTAssertEqual(message.envelope?.recipient.sessionId, "session:b")
-        XCTAssertEqual(message.envelope?.resources.sourceObjectiveId, "objective:a")
-        XCTAssertEqual(message.envelope?.resources.targetObjectiveId, "objective:b")
+        XCTAssertEqual(message.envelope?.resources.sourceWorkId, "work:a")
+        XCTAssertEqual(message.envelope?.resources.targetWorkId, "work:b")
         XCTAssertEqual(message.envelope?.resources.sourceTaskId, "task:source")
         XCTAssertEqual(message.envelope?.resources.targetTaskId, "task:target")
         XCTAssertEqual(message.envelope?.payload.evidence?.count, 1)

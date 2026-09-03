@@ -17,26 +17,26 @@ struct CorptieTaskDeletionInteractionTests {
     }
 
     @Test
-    func objectiveRowsExposeFullWidthEditAndDeleteContextActions() throws {
+    func workRowsExposeFullWidthEditAndDeleteContextActions() throws {
         let contents = try warRoomSource()
 
         #expect(contents.contains("Button(L10n(\"View Tasks\"), systemImage: \"rectangle.grid.1x2\")"))
-        #expect(contents.contains("objectivePendingEdit = objective"))
-        #expect(contents.contains("objectivePendingDeletion = objective"))
-        #expect(contents.contains("private func deleteObjective(_ objective: Objective) async"))
+        #expect(contents.contains("workPendingEdit = work"))
+        #expect(contents.contains("workPendingDeletion = work"))
+        #expect(contents.contains("private func deleteWork(_ work: Work) async"))
 
         let clientSource = try entityAPIClientSource()
         #expect(clientSource.contains("!(200..<300).contains(http.statusCode)"))
-        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to delete Objective.\")"))
+        #expect(clientSource.contains("envelope?.displayMessage ?? L10n(\"Unable to delete Work.\")"))
     }
 
     @Test
-    func productionConsoleObjectiveAvatarsAndTaskRowsExposeContextActions() throws {
+    func productionConsoleWorkAvatarsAndTaskRowsExposeContextActions() throws {
         let source = try unifiedConsoleSource()
 
-        #expect(source.contains("private var objectiveRail: some View"))
-        #expect(source.contains("objectivePendingEdit = objective"))
-        #expect(source.contains("objectivePendingDeletion = objective"))
+        #expect(source.contains("private var workRail: some View"))
+        #expect(source.contains("workPendingEdit = work"))
+        #expect(source.contains("workPendingDeletion = work"))
         #expect(source.contains("private func taskRow(_ task: CorptieTask) -> some View"))
         #expect(!source.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
         #expect(source.contains("taskPendingEdit = task"))
@@ -84,7 +84,7 @@ struct CorptieTaskDeletionInteractionTests {
         #expect(contents.contains("此操作无法撤销"))
         #expect(contents.contains("@State private var deleteWorktree = true"))
         #expect(contents.contains("@State private var artifactDisposition: CorptieTaskArtifactDisposition = .delete"))
-        #expect(contents.contains("移入 Objective 层级"))
+        #expect(contents.contains("移入 Work 层级"))
         #expect(contents.contains("留在原地"))
     }
 

@@ -37,24 +37,24 @@ async function fixture() {
   });
   await store.initialize();
   const agent = store.createAgent({ name: "Artifact E2E", provider: "receipt-provider" });
-  store.createObjective({ id: "objective:e2e", name: "Artifact E2E", contributorAgentIds: [agent.agentId] });
+  store.createWork({ id: "work:e2e", name: "Artifact E2E", contributorAgentIds: [agent.agentId] });
   store.createTask({
-    id: "task:e2e", objectiveId: "objective:e2e", title: "Worker E2E", mainAgentId: agent.agentId
+    id: "task:e2e", workId: "work:e2e", title: "Worker E2E", mainAgentId: agent.agentId
   });
   const sessions = [
     { id: "session:worker-e2e", kind: "worker", taskId: "task:e2e" },
-    { id: "session:objective-e2e", kind: "objectiveChat", taskId: null }
+    { id: "session:work-e2e", kind: "workChat", taskId: null }
   ];
   for (const session of sessions) {
     store.upsertSession({
       id: session.id, title: session.id, provider: "receipt-provider", status: "running",
-      sessionKind: session.kind, agentId: agent.agentId, objectiveId: "objective:e2e",
+      sessionKind: session.kind, agentId: agent.agentId, workId: "work:e2e",
       taskId: session.taskId
     });
     if (session.kind === "worker") {
-      store.bindSessionToTask(session.id, session.taskId, "objective:e2e");
+      store.bindSessionToTask(session.id, session.taskId, "work:e2e");
     } else {
-      store.bindSessionToObjective(session.id, "objective:e2e");
+      store.bindSessionToWork(session.id, "work:e2e");
     }
     store.createLogicalSessionRoute({
       logicalSessionId: `logical:${session.kind}-e2e`, legacySessionId: session.id,
@@ -122,7 +122,7 @@ async function fixture() {
       providerSessionId: active.providerSessionId, routingVersion: active.routingVersion,
       state: active.state, isCurrent: logical.activeThreadId === active.providerThreadId,
       tombstoned: false, sessionId: session.id, sessionKind: session.sessionKind,
-      objectiveId: session.objectiveId, taskId: session.taskId,
+      workId: session.workId, taskId: session.taskId,
       currentTaskSessionId: task?.current_session_id ?? null,
       agentId: session.agentId, authorizationRevision: task?.resource_version ?? 1
     };
@@ -187,15 +187,15 @@ test("Worker first Turn eagerly applies artifacts through a Provider-confirmed p
   }
 });
 
-test("Objective Chat search/load applies on demand and gateway dispatch reasserts the canonical Artifact tool", async () => {
+test("Work Chat search/load applies on demand and gateway dispatch reasserts the canonical Artifact tool", async () => {
   const value = await fixture();
   try {
-    const logicalSessionId = "logical:objectiveChat-e2e";
+    const logicalSessionId = "logical:workChat-e2e";
     const binding = value.currentBinding(logicalSessionId);
     const metadata = {
       logicalSessionId, providerBindingId: binding.providerBindingId,
       sessionId: binding.sessionId, sessionKind: binding.sessionKind,
-      objectiveId: binding.objectiveId, taskId: null
+      workId: binding.workId, taskId: null
     };
     const search = await value.toolHost.execute({
       tool: TOOL_CATALOG_SEARCH, actorId: value.agent.agentId, metadata,

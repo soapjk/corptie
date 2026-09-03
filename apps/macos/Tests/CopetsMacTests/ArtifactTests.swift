@@ -17,9 +17,9 @@ final class ArtifactTests: XCTestCase {
     func testArtifactEndpointEncodesCanonicalIdentifiersExactlyOnce() {
         let url = ArtifactAPIClient.endpointURL(
             baseURL: URL(string: "http://127.0.0.1:47321/")!,
-            path: "objectives/objective:196ee12b/artifacts"
+            path: "works/work:196ee12b/artifacts"
         )
-        XCTAssertEqual(url.absoluteString, "http://127.0.0.1:47321/objectives/objective:196ee12b/artifacts")
+        XCTAssertEqual(url.absoluteString, "http://127.0.0.1:47321/works/work:196ee12b/artifacts")
         XCTAssertFalse(url.absoluteString.contains("%253A"))
     }
 
@@ -55,10 +55,10 @@ final class ArtifactTests: XCTestCase {
     }
 
     func testCorptieTaskPinnedVersionWinsOverStaleApprovedVersion() throws {
-        let json = #"{"artifactId":"artifact:1","objectiveId":"objective:1","title":"Spec","summary":"","visibility":"task_private","boundTaskId":"task:1","boundSessionId":null,"repositoryLocator":null,"currentVersion":2,"approvedVersion":1,"status":"active","sourceSessionId":null,"sourceEventId":null,"createdByActorId":"session:1","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-01T00:01:00Z","resourceVersion":2,"versions":[],"references":[{"referenceId":"reference:1","artifactId":"artifact:1","objectiveId":"objective:1","taskId":"task:1","sessionId":null,"relation":"implementation_spec","required":true,"versionPolicy":"fixed","pinnedVersion":2,"pinnedHash":"hash-v2","pendingVersion":null,"pendingHash":null,"authorizedByActorId":"session:1","authorizedAt":"2026-09-01T00:00:00Z","revokedAt":null,"revokedByActorId":null,"revocationReason":null,"resourceVersion":2}],"audit":[],"availableActions":[]}"#.data(using: .utf8)!
+        let json = #"{"artifactId":"artifact:1","workId":"work:1","title":"Spec","summary":"","visibility":"task_private","boundTaskId":"task:1","boundSessionId":null,"repositoryLocator":null,"currentVersion":2,"approvedVersion":1,"status":"active","sourceSessionId":null,"sourceEventId":null,"createdByActorId":"session:1","createdAt":"2026-09-01T00:00:00Z","updatedAt":"2026-09-01T00:01:00Z","resourceVersion":2,"versions":[],"references":[{"referenceId":"reference:1","artifactId":"artifact:1","workId":"work:1","taskId":"task:1","sessionId":null,"relation":"implementation_spec","required":true,"versionPolicy":"fixed","pinnedVersion":2,"pinnedHash":"hash-v2","pendingVersion":null,"pendingHash":null,"authorizedByActorId":"session:1","authorizedAt":"2026-09-01T00:00:00Z","revokedAt":null,"revokedByActorId":null,"revocationReason":null,"resourceVersion":2}],"audit":[],"availableActions":[]}"#.data(using: .utf8)!
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let artifact = try decoder.decode(ObjectiveArtifact.self, from: json)
+        let artifact = try decoder.decode(WorkArtifact.self, from: json)
 
         XCTAssertEqual(
             ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: "task:1"),

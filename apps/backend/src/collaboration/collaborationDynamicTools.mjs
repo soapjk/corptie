@@ -1,9 +1,8 @@
 import {
   agentIdSchema,
   COLLABORATION_RELATION_TYPES,
-  repositoryIdSchema,
   sessionIdSchema,
-  objectiveIdSchema,
+  workIdSchema,
   taskFieldsSchema,
   taskIdSchema
 } from "../domain/taskToolSchema.mjs";
@@ -38,9 +37,9 @@ const artifactRelations = [
 ];
 const artifactReferenceSchema = {
   type: "object",
-  description: "Optional existing Artifact to authorize for the new Task. The authenticated Session must already be able to read it, and it must belong to the same Objective.",
+  description: "Optional existing Artifact to authorize for the new Task. The authenticated Session must already be able to read it, and it must belong to the same Work.",
   properties: {
-    artifact_id: { type: "string", pattern: "^artifact:", description: "Existing Objective Artifact identity." },
+    artifact_id: { type: "string", pattern: "^artifact:", description: "Existing Work Artifact identity." },
     relation: { type: "string", enum: artifactRelations },
     required: { type: "boolean" },
     version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
@@ -77,39 +76,38 @@ function tool(name, description, properties = {}, required = []) {
 }
 
 export const collaborationDynamicTools = Object.freeze([
-  tool("corptie_collaboration_capabilities", "Read collaboration actions authorized for this exact authenticated Session. Session is the only actor and routing principal; Agent, Objective, and Task are resources bound to it."),
-  tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions. Without peer filters, results stay in the authenticated Objective; explicit agent_id/objective_id filters may return minimal peer-Objective routing descriptors with Workspace and Provider details redacted.", {
+  tool("corptie_collaboration_capabilities", "Read collaboration actions authorized for this exact authenticated Session. Session is the only actor and routing principal; Agent, Work, and Task are resources bound to it."),
+  tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions. Without peer filters, results stay in the authenticated Work; explicit agent_id/work_id filters may return minimal peer-Work routing descriptors with Workspace and Provider details redacted.", {
     agent_id: agentIdSchema,
-    objective_id: objectiveIdSchema,
+    work_id: workIdSchema,
     task_id: taskIdSchema,
-    session_kind: { type: "string", enum: ["objectiveChat", "worker", "assistantChat", "legacy"] }
+    session_kind: { type: "string", enum: ["workChat", "worker", "assistantChat", "legacy"] }
   }),
-  tool("corptie_sessions_get", "Read one visible logical Session without assuming that Sessions owned by the same Agent share context. Peer-Objective results expose only the minimal collaboration route.", {
+  tool("corptie_sessions_get", "Read one visible logical Session without assuming that Sessions owned by the same Agent share context. Peer-Work results expose only the minimal collaboration route.", {
     session_id: sessionIdSchema
   }, ["session_id"]),
-  tool("corptie_collaboration_tasks_list", "List Tasks visible to this Session. Objective Chat sees its Objective; Worker sees its bound Task and explicitly related collaboration Tasks."),
+  tool("corptie_collaboration_tasks_list", "List Tasks visible to this Session. Work Chat sees its Work; Worker sees its bound Task and explicitly related collaboration Tasks."),
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create an independent Objective-scoped Task and record this Session as its creation origin. Creation never makes it a child or subtask of another Task.", {
+  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and record this Session as its creation origin. Creation never makes it a child or subtask of another Task.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
     priority: taskFieldsSchema.priority,
     agent_id: agentIdSchema,
-    main_workspace_id: repositoryIdSchema,
     artifact_reference: artifactReferenceSchema,
     file_reference: fileReferenceSchema,
     idempotency_key: { type: "string", minLength: 1 }
   }, ["title", "idempotency_key"]),
-  tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Objective; Worker relations must include its bound Task.", {
+  tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,
     relationship: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] }
   }, ["task_id", "target_task_id", "relationship"]),
-  tool("corptie_collaboration_tasks_share_artifact", "Grant one same-Objective, explicitly related Task read-only access to an Artifact. Worker Sessions may share only Artifacts owned by their current Task; recipients cannot re-share received Artifacts.", {
+  tool("corptie_collaboration_tasks_share_artifact", "Grant one same-Work, explicitly related Task read-only access to an Artifact. Worker Sessions may share only Artifacts owned by their current Task; recipients cannot re-share received Artifacts.", {
     task_id: taskIdSchema,
-    artifact_id: { type: "string", pattern: "^artifact:", description: "Artifact owned by the sharing Task, or any same-Objective Artifact when called by Objective Chat." },
+    artifact_id: { type: "string", pattern: "^artifact:", description: "Artifact owned by the sharing Task, or any same-Work Artifact when called by Work Chat." },
     relation: { type: "string", enum: artifactRelations },
     required: { type: "boolean" },
     version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
@@ -140,7 +138,7 @@ export const collaborationDynamicTools = Object.freeze([
     recipient_session_name: { type: "string", minLength: 1 },
     recipient_session_id: sessionIdSchema,
     session_agent_id: { ...agentIdSchema, description: "Agent resource used only when Corptie must create the target Worker Session." },
-    target_objective_id: objectiveIdSchema,
+    target_work_id: workIdSchema,
     task_id: taskIdSchema,
     title: { type: "string", minLength: 1 },
     body: { type: "string", minLength: 1 },
@@ -172,7 +170,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
   const handlers = {
     corptie_collaboration_capabilities: () => client.get("/internal/collaboration/session-capabilities"),
     corptie_sessions_discover: () => client.get("/internal/collaboration/sessions", {
-      agentId: input.agent_id, objectiveId: input.objective_id,
+      agentId: input.agent_id, workId: input.work_id,
       taskId: input.task_id, sessionKind: input.session_kind
     }),
     corptie_sessions_get: () => client.get(`/internal/collaboration/sessions/${encodeURIComponent(input.session_id)}`),
@@ -184,7 +182,6 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       acceptanceCriteria: input.acceptance_criteria,
       priority: input.priority,
       agentId: input.agent_id,
-      mainWorkspaceId: input.main_workspace_id,
       artifactReference: input.artifact_reference ? {
         artifactId: input.artifact_reference.artifact_id,
         relation: input.artifact_reference.relation,
@@ -232,7 +229,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       sessionAgentId: input.session_agent_id,
       recipientSessionName: input.recipient_session_name,
       recipientSessionId: input.recipient_session_id,
-      targetObjectiveId: input.target_objective_id,
+      targetWorkId: input.target_work_id,
       taskId: input.task_id,
       title: input.title,
       body: input.body,

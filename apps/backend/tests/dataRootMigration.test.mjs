@@ -19,15 +19,15 @@ async function fixture(options = {}) {
     manageProcessEnvironment: false
   });
   await store.initialize();
-  const objective = store.createObjective({ id: "objective:migration", name: "Migration" });
+  const work = store.createWork({ id: "work:migration", name: "Migration" });
   store.upsertSession({
     id: "session:migration", title: "Migration", provider: "codex-app-server",
-    status: "idle", sessionKind: "objectiveChat", objectiveId: objective.id
+    status: "idle", sessionKind: "workChat", workId: work.id
   });
   const artifacts = new ArtifactService({ store });
   await artifacts.initialize();
   const artifact = await artifacts.create(
-    { kind: "local_user", actorId: "local", objectiveId: objective.id },
+    { kind: "local_user", actorId: "local", workId: work.id },
     { title: "Evidence", content: "content whose sha256 must survive migration" }
   );
   await Promise.all([
@@ -90,7 +90,7 @@ test("migration verifies a full copy, commits only the selector, and requires re
     assert.equal(restarted.settings().dataRoot, targetRoot);
     assert.equal(status.phase, "completed");
     assert.equal(status.operationId, operation.operationId);
-    assert.equal(restarted.getObjective("objective:migration").name, "Migration");
+    assert.equal(restarted.getWork("work:migration").name, "Migration");
     await restarted.close();
   } finally {
     f.store.db?.setWriteBlocked(false);

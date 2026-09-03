@@ -179,7 +179,7 @@ struct MainWindowAndSidebarStateTests {
             encoding: .utf8
         )
         #expect(unifiedConsole.contains("HStack(spacing: 0)"))
-        #expect(unifiedConsole.contains("objectiveRail"))
+        #expect(unifiedConsole.contains("workRail"))
         #expect(unifiedConsole.contains("unifiedTaskSidebar"))
 
         let agents = try String(

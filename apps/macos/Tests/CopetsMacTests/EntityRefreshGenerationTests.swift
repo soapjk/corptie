@@ -29,7 +29,7 @@ struct EntityRefreshGenerationTests {
             state: ControlPlaneStatePayload(
                 sessions: [performanceSessionFixture()],
                 tasks: [],
-                objectives: [],
+                works: [],
                 agents: [],
                 skills: [],
                 repositories: [],
@@ -46,7 +46,7 @@ struct EntityRefreshGenerationTests {
             state: ControlPlaneStatePayload(
                 sessions: [performanceSessionFixture()],
                 tasks: [performanceCorptieTaskFixture()],
-                objectives: [],
+                works: [],
                 agents: [],
                 skills: [],
                 repositories: [],
@@ -67,7 +67,7 @@ struct EntityRefreshGenerationTests {
             agent: "Codex",
             agentId: nil,
             sessionKind: .worker,
-            objectiveId: nil,
+            workId: nil,
             taskId: nil,
             status: .running,
             progress: 0,
@@ -89,13 +89,12 @@ struct EntityRefreshGenerationTests {
     private func performanceCorptieTaskFixture() -> CorptieTask {
         CorptieTask(
             id: "task:performance",
-            objectiveId: "objective:performance",
+            workId: "work:performance",
             title: "Performance",
             description: "",
             acceptanceCriteria: "",
             priority: "medium",
             lifecycleState: "in_progress",
-            mainWorkspaceId: nil,
             mainAgentId: nil,
             currentSessionId: "session:performance",
             executionStatus: "running",

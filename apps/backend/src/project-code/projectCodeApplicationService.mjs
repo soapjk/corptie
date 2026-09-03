@@ -75,12 +75,12 @@ export class ProjectCodeSearchApplicationService {
     if (!logical?.activeBinding || !session || !task
       || startupReceipt.worktreeId !== logical.activeBinding.worktreeId
       || startupReceipt.canonicalWorktreePath !== logical.activeBinding.boundCwd
-      || startupReceipt.objectiveId !== ownership.objectiveId
+      || startupReceipt.workId !== ownership.workId
       || startupReceipt.taskId !== ownership.taskId) {
       throw contractError("STARTUP_BINDING_STALE", "Project-code request does not match the active Work Session route.");
     }
     const sessionContext = Object.freeze({
-      objectiveId: ownership.objectiveId,
+      workId: ownership.workId,
       taskId: ownership.taskId,
       logicalSessionId
     });
@@ -123,7 +123,7 @@ export class ProjectCodeSearchApplicationService {
       receiptId: receipt.receiptId,
       receiptType,
       logicalSessionId: context.sessionContext.logicalSessionId,
-      objectiveId: context.sessionContext.objectiveId,
+      workId: context.sessionContext.workId,
       taskId: context.sessionContext.taskId,
       repositoryId: receipt.repositoryId ?? context.startupReceipt.repositoryId,
       worktreeId: receipt.worktreeId ?? context.startupReceipt.worktreeId,

@@ -7,19 +7,19 @@ final class BackgroundTaskCenterTests: XCTestCase {
         let center = BackgroundTaskCenter()
         var invocationCount = 0
 
-        let first = center.start(id: "objective:stable", title: "Create Objective") {
+        let first = center.start(id: "work:stable", title: "Create Work") {
             invocationCount += 1
             try? await Task.sleep(for: .milliseconds(40))
             return .success("Created")
         }
-        let duplicate = center.start(id: "objective:stable", title: "Create Objective") {
+        let duplicate = center.start(id: "work:stable", title: "Create Work") {
             invocationCount += 1
             return .success("Duplicate")
         }
 
         XCTAssertTrue(first)
         XCTAssertFalse(duplicate)
-        try await waitForState(.succeeded, id: "objective:stable", center: center)
+        try await waitForState(.succeeded, id: "work:stable", center: center)
         XCTAssertEqual(invocationCount, 1)
     }
 
@@ -41,14 +41,14 @@ final class BackgroundTaskCenterTests: XCTestCase {
 
     func testRunningTaskCannotBeDismissedAndCompletedTaskCan() async throws {
         let center = BackgroundTaskCenter()
-        XCTAssertTrue(center.start(id: "objective:dismiss", title: "Create Objective") {
+        XCTAssertTrue(center.start(id: "work:dismiss", title: "Create Work") {
             try? await Task.sleep(for: .milliseconds(30))
             return .success("Created")
         })
-        center.dismiss(id: "objective:dismiss")
+        center.dismiss(id: "work:dismiss")
         XCTAssertEqual(center.records.count, 1)
-        try await waitForState(.succeeded, id: "objective:dismiss", center: center)
-        center.dismiss(id: "objective:dismiss")
+        try await waitForState(.succeeded, id: "work:dismiss", center: center)
+        center.dismiss(id: "work:dismiss")
         XCTAssertTrue(center.records.isEmpty)
     }
 

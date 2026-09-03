@@ -158,7 +158,7 @@ function benchmarkAttempt(boundarySequence) {
     targetBindingGeneration: 2, capabilityRevision: "benchmark:1", boundarySequence,
     boundaryTurnId: `turn:${Math.ceil(boundarySequence / 2)}`, repositoryId: "repository:benchmark",
     workspaceId: "worktree:benchmark", worktreeId: "worktree:benchmark", boundCwd: "/benchmark/worktree",
-    objectiveId: "objective:benchmark", taskId: "task:benchmark",
+    workId: "work:benchmark", taskId: "task:benchmark",
     instructionSources: [{ kind: "AGENTS.md", hash: stableRecoveryHash("instructions") }],
     permissionSnapshot: { sandbox: "workspace-write", approvalPolicy: "on-request" },
     toolCatalog: { appliedCatalogVersion: "catalog:1", appliedDomains: ["artifact"] },

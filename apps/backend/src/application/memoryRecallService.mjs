@@ -82,7 +82,7 @@ export class MemoryRecallService {
     const memories = [];
     // Order is intentional and is retained as a stable tie-breaker by rankMemory.
     if (scope.taskId) memories.push(...this.store.listMemoriesByOwner("task", scope.taskId));
-    if (scope.objectiveId) memories.push(...this.store.listMemoriesByOwner("objective", scope.objectiveId));
+    if (scope.workId) memories.push(...this.store.listMemoriesByOwner("work", scope.workId));
     if (scope.agentId) memories.push(...this.store.listMemoriesByOwner("agent", scope.agentId));
     return memories.filter((memory) => memory.promotion_status === "active" && !memory.revoked_at)
       .filter((memory) => !memory.expires_at || Date.parse(memory.expires_at) > now);

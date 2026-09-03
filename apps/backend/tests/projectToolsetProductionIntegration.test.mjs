@@ -12,13 +12,13 @@ import { createProjectCodeFixture, startupReceiptFor } from "./helpers/projectCo
 import { fixture as createRunFixture } from "./runIsolationTestHelpers.mjs";
 
 const externalRoot = "/Volumes/T9/.corptie/test-tmp";
-const objectiveId = "objective:11111111-1111-4111-8111-111111111111";
+const workId = "work:11111111-1111-4111-8111-111111111111";
 
 test("production initialize/update composes authoritative Startup, Snapshot, Toolset and real Run v6/Cleanup v4", async (t) => {
   await mkdir(externalRoot, { recursive: true });
   const source = await createProjectCodeFixture({ parent: externalRoot, files: swiftPackageFiles() });
   t.after(() => rm(source.directory, { recursive: true, force: true }));
-  const sessionContext = { objectiveId, taskId: "task:test", logicalSessionId: "logical:test" };
+  const sessionContext = { workId, taskId: "task:test", logicalSessionId: "logical:test" };
   const startupReceipt = startupReceiptFor({
     identity: source.identity, commitOid: source.commitOid, treeOid: source.treeOid,
     sessionContext, binding: source.binding
@@ -90,7 +90,7 @@ test("production authority fails closed for stale source and active receipt hash
   await mkdir(externalRoot, { recursive: true });
   const source = await createProjectCodeFixture({ parent: externalRoot, files: swiftPackageFiles() });
   t.after(() => rm(source.directory, { recursive: true, force: true }));
-  const sessionContext = { objectiveId, taskId: "task:test", logicalSessionId: "logical:test" };
+  const sessionContext = { workId, taskId: "task:test", logicalSessionId: "logical:test" };
   const startupReceipt = startupReceiptFor({ identity: source.identity, commitOid: source.commitOid, treeOid: source.treeOid, sessionContext, binding: source.binding });
   const store = productionStore({ source, sessionContext, startupReceipt });
   const startupReceipts = new ProjectCodeStartupReceiptRepository({ store });
@@ -144,8 +144,8 @@ function productionStore({ source, sessionContext, startupReceipt }) {
       return { ...sessionContext, sessionId: "session:test", agentId: "agent:test" };
     },
     getLogicalSession: () => logical,
-    getSession: () => ({ id: "session:test", sessionKind: "worker", taskId: sessionContext.taskId, objectiveId: sessionContext.objectiveId }),
-    getTask: () => ({ id: sessionContext.taskId, objective_id: sessionContext.objectiveId }),
+    getSession: () => ({ id: "session:test", sessionKind: "worker", taskId: sessionContext.taskId, workId: sessionContext.workId }),
+    getTask: () => ({ id: sessionContext.taskId, work_id: sessionContext.workId }),
     putProjectCodeReceipt(record) { receipts.set(record.receiptId, structuredClone(record)); return record; },
     getProjectCodeReceiptById(receiptId) {
       const value = receipts.get(receiptId); return value ? { ...structuredClone(value), logicalSessionId: value.logicalSessionId } : null;

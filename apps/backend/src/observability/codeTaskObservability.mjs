@@ -137,13 +137,13 @@ export class CodeTaskObservabilityService {
     const nowIso = this.now().toISOString();
     this.store.db.run(
       `INSERT INTO observation_turn_summaries (
-        turn_execution_id,logical_session_id,turn_id,task_id,objective_id,repository_id,worktree_id,
+        turn_execution_id,logical_session_id,turn_id,task_id,work_id,repository_id,worktree_id,
         finalized,ended_at,analysis_version,summary_hash,summary_json,computed_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(turn_execution_id) DO UPDATE SET finalized=excluded.finalized,ended_at=excluded.ended_at,
         analysis_version=excluded.analysis_version,summary_hash=excluded.summary_hash,summary_json=excluded.summary_json,
         computed_at=excluded.computed_at`,
-      [row.turn_execution_id, row.logical_session_id, row.turn_id, row.task_id, row.objective_id,
+      [row.turn_execution_id, row.logical_session_id, row.turn_id, row.task_id, row.work_id,
         row.repository_id, row.worktree_id, projection.finalized ? 1 : 0, projection.endedAt,
         CODE_TASK_ANALYSIS_VERSION, summaryHash, JSON.stringify(completeReport), nowIso]
     );
@@ -351,7 +351,7 @@ export class CodeTaskObservabilityService {
       this.store.db.run(`
       CREATE TABLE IF NOT EXISTS observation_turn_executions (
         turn_execution_id TEXT PRIMARY KEY, logical_session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
-        objective_id TEXT, task_id TEXT, provider_binding_id TEXT NOT NULL, binding_generation INTEGER NOT NULL,
+        work_id TEXT, task_id TEXT, provider_binding_id TEXT NOT NULL, binding_generation INTEGER NOT NULL,
         repository_id TEXT, worktree_id TEXT, source_commit_oid TEXT, source_tree_oid TEXT,
         status TEXT NOT NULL DEFAULT 'running', projection_state TEXT NOT NULL DEFAULT 'partial',
         observation_count INTEGER NOT NULL DEFAULT 0, dropped_event_count INTEGER NOT NULL DEFAULT 0,
@@ -373,7 +373,7 @@ export class CodeTaskObservabilityService {
         ON observation_correlation_index(turn_execution_id,observed_at_unix_nano,producer_sequence,observation_id);
       CREATE TABLE IF NOT EXISTS observation_turn_summaries (
         turn_execution_id TEXT PRIMARY KEY, logical_session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
-        task_id TEXT, objective_id TEXT, repository_id TEXT, worktree_id TEXT, finalized INTEGER NOT NULL,
+        task_id TEXT, work_id TEXT, repository_id TEXT, worktree_id TEXT, finalized INTEGER NOT NULL,
         ended_at TEXT, analysis_version TEXT NOT NULL, summary_hash TEXT NOT NULL, summary_json TEXT NOT NULL,
         computed_at TEXT NOT NULL,
         FOREIGN KEY(turn_execution_id) REFERENCES observation_turn_executions(turn_execution_id) ON DELETE CASCADE
@@ -419,11 +419,11 @@ export class CodeTaskObservabilityService {
     }
     this.store.db.run(
       `INSERT INTO observation_turn_executions (
-        turn_execution_id,logical_session_id,turn_id,objective_id,task_id,provider_binding_id,binding_generation,
+        turn_execution_id,logical_session_id,turn_id,work_id,task_id,provider_binding_id,binding_generation,
         repository_id,worktree_id,source_commit_oid,source_tree_oid,created_at,updated_at
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [observation.turnExecutionId, observation.identity.logicalSessionId, observation.identity.turnId,
-        observation.identity.objectiveId ?? null, observation.identity.taskId ?? null,
+        observation.identity.workId ?? null, observation.identity.taskId ?? null,
         observation.identity.providerBindingId, observation.identity.bindingGeneration,
         observation.identity.repositoryId ?? null, observation.identity.worktreeId ?? null,
         observation.sourceIdentity?.sourceCommitOid ?? authority.startupBindingReceipt?.sourceCommitOid ?? null,
@@ -627,7 +627,7 @@ export function authoritativeProviderReceipts({ event, binding, sessionEvent } =
     receiptId: `turn_execution_receipt:${turnDigest.slice(0, 32)}`, turnExecutionId, turnId,
     logicalSessionId: startup.logicalSessionId, providerBindingId: startup.providerBindingId,
     bindingGeneration: startup.bindingGeneration, sourceSessionEventId: sessionEvent?.eventId ?? null });
-  const identity = Object.freeze({ objectiveId: startup.objectiveId, taskId: startup.taskId,
+  const identity = Object.freeze({ workId: startup.workId, taskId: startup.taskId,
     logicalSessionId: startup.logicalSessionId, providerBindingId: startup.providerBindingId,
     bindingGeneration: startup.bindingGeneration, repositoryId: startup.repositoryId,
     worktreeId: startup.worktreeId, turnId });
@@ -732,7 +732,7 @@ function normalizeObservation(input, authority, manifest) {
     throw codedError("PROVIDER_BINDING_GENERATION_STALE", "StartupBindingReceipt generation is stale for this Observation.", 409);
   }
   if (!startup || startup.schemaVersion !== 2 || startup.status !== "ready" || !startup.startupOperationId || !startup.receiptHash
-    || nullable(startup.objectiveId) !== nullable(identity.objectiveId) || nullable(startup.taskId) !== nullable(identity.taskId)
+    || nullable(startup.workId) !== nullable(identity.workId) || nullable(startup.taskId) !== nullable(identity.taskId)
     || startup.logicalSessionId !== identity.logicalSessionId || startup.providerBindingId !== identity.providerBindingId
     || startup.bindingGeneration !== identity.bindingGeneration
     || nullable(startup.repositoryId) !== nullable(identity.repositoryId) || nullable(startup.worktreeId) !== nullable(identity.worktreeId)) {
@@ -1120,7 +1120,7 @@ function buildReport(row, projection, contextGrowth, rawCaptureStatus) {
   const versions = first?.versions ?? {};
   return { schemaVersion: 4, analysisVersion: CODE_TASK_ANALYSIS_VERSION,
     identity: { logicalSessionId: row.logical_session_id, turnId: row.turn_id, turnExecutionId: row.turn_execution_id,
-      objectiveId: row.objective_id, taskId: row.task_id, providerBindingId: row.provider_binding_id,
+      workId: row.work_id, taskId: row.task_id, providerBindingId: row.provider_binding_id,
       bindingGeneration: Number(row.binding_generation), repositoryId: row.repository_id, worktreeId: row.worktree_id },
     sourceIdentity: { sourceCommitOid: row.source_commit_oid, sourceTreeOid: row.source_tree_oid,
       snapshotReceiptId: first?.sourceIdentity?.snapshotReceiptId ?? null }, versions,
@@ -1184,8 +1184,8 @@ function toOtlp(report, spans) {
 
 function requiredIdentity(input) {
   if (!input || typeof input !== "object") throw codedError("OBSERVATION_IDENTITY_REQUIRED", "Observation identity is required.");
-  rejectUnknown(input, ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]);
-  return { objectiveId: optionalId(input.objectiveId, "objectiveId"), taskId: optionalId(input.taskId, "taskId"),
+  rejectUnknown(input, ["workId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]);
+  return { workId: optionalId(input.workId, "workId"), taskId: optionalId(input.taskId, "taskId"),
     logicalSessionId: requiredId(input.logicalSessionId, "logicalSessionId"), providerBindingId: requiredId(input.providerBindingId, "providerBindingId"),
     bindingGeneration: boundedInteger(input.bindingGeneration, 1, Number.MAX_SAFE_INTEGER, "bindingGeneration"),
     repositoryId: optionalId(input.repositoryId, "repositoryId"), worktreeId: optionalId(input.worktreeId, "worktreeId"),
@@ -1211,7 +1211,7 @@ function sanitizeAttributes(input = {}) { if (!input || typeof input !== "object
     if (["string", "number", "boolean"].includes(typeof value) && (typeof value !== "string" || value.length <= SAFE_SCALAR_MAX)) attributes[key] = value; else dropped += 1;
   }
   return { attributes, dropped }; }
-function sameIdentity(a, b) { return ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]
+function sameIdentity(a, b) { return ["workId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"]
   .every((key) => nullable(a[key]) === nullable(b[key])); }
 function requireReceiptRef(refs, kind, receiptId) { if (!receiptId || !refs.some((ref) => ref.kind === kind && ref.receiptId === receiptId))
   throw codedError("OBSERVATION_RECEIPT_REQUIRED", `A matching ${kind} receipt reference is required.`, 409); }

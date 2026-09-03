@@ -1,12 +1,12 @@
-// 实体层应用服务：Objective / Task / 依赖 DAG（15 Phase 1，净新增）
+// 实体层应用服务：Work / Task / 依赖 DAG（15 Phase 1，净新增）
 //
-// 职责：封装业务规则（字段校验、Objective 存在性、依赖环检测），
+// 职责：封装业务规则（字段校验、Work 存在性、依赖环检测），
 // 数据访问全部委托给 store（corptieStore.mjs 的 CRUD 方法）。
 
 import {
-  validateObjectiveInput,
+  validateWorkInput,
   validateTaskInput
-} from "../domain/objectiveTaskValidation.mjs";
+} from "../domain/workTaskValidation.mjs";
 import {
   buildAcceptanceAssessment,
   completionSuggestionForTask,
@@ -14,11 +14,11 @@ import {
   TaskAcceptanceError
 } from "./taskAcceptance.mjs";
 
-export class ObjectiveNotFoundError extends Error {
-  constructor(objectiveId) {
-    super(`Objective not found: ${objectiveId}`);
-    this.name = "ObjectiveNotFoundError";
-    this.code = "OBJECTIVE_NOT_FOUND";
+export class WorkNotFoundError extends Error {
+  constructor(workId) {
+    super(`Work not found: ${workId}`);
+    this.name = "WorkNotFoundError";
+    this.code = "WORK_NOT_FOUND";
   }
 }
 
@@ -57,7 +57,7 @@ export class DependencyCycleError extends Error {
   }
 }
 
-export class ObjectiveApplicationService {
+export class WorkApplicationService {
   constructor({ store, onEntityChanged = null }) {
     this.store = store;
     this.onEntityChanged = onEntityChanged;
@@ -68,81 +68,44 @@ export class ObjectiveApplicationService {
     return entity;
   }
 
-  // ---- Objective ----
+  // ---- Work ----
 
-  createObjective(input = {}) {
-    const normalized = validateObjectiveInput(input, "create");
+  createWork(input = {}) {
+    const normalized = validateWorkInput(input, "create");
     if (normalized.id) {
-      const existing = this.store.getObjective(normalized.id);
+      const existing = this.store.getWork(normalized.id);
       if (existing) {
-        if (!objectiveCreationMatches(existing, normalized)) {
-          throw new EntityCreationConflictError("Objective", normalized.id);
+        if (!workCreationMatches(existing, normalized)) {
+          throw new EntityCreationConflictError("Work", normalized.id);
         }
         return existing;
       }
     }
-    const objective = this.store.runInTransaction(() => {
-      const created = this.store.createObjective(normalized);
-      for (const targetId of normalized.relatedObjectiveIds ?? []) {
-        this.addReverseRelation(created.id, targetId);
-      }
-      return created;
-    });
-    return this.emit("ObjectiveChanged", objective, "created");
+    const work = this.store.runInTransaction(() => this.store.createWork(normalized));
+    return this.emit("WorkChanged", work, "created");
   }
 
-  listObjectives() {
-    return this.store.listObjectives();
+  listWorks() {
+    return this.store.listWorks();
   }
 
-  getObjective(id) {
-    const objective = this.store.getObjective(id);
-    if (!objective) throw new ObjectiveNotFoundError(id);
-    return objective;
+  getWork(id) {
+    const work = this.store.getWork(id);
+    if (!work) throw new WorkNotFoundError(id);
+    return work;
   }
 
-  updateObjective(id, patch = {}) {
-    const current = this.getObjective(id);
-    const normalized = validateObjectiveInput(patch, "update");
-    // relatedObjectiveIds 为对称关联：A 关联 B ⟺ B 关联 A。diff 出新增/移除，同步对侧。
-    const updated = this.store.runInTransaction(() => {
-      const entity = this.store.updateObjective(id, normalized);
-      if (Object.prototype.hasOwnProperty.call(normalized, "relatedObjectiveIds")) {
-        const old = new Set(current.relatedObjectiveIds ?? []);
-        const next = new Set(normalized.relatedObjectiveIds);
-        for (const targetId of next) if (!old.has(targetId)) this.addReverseRelation(id, targetId);
-        for (const targetId of old) if (!next.has(targetId)) this.removeReverseRelation(id, targetId);
-      }
-      return entity;
-    });
-    return this.emit("ObjectiveChanged", updated, "updated");
+  updateWork(id, patch = {}) {
+    this.getWork(id);
+    const normalized = validateWorkInput(patch, "update");
+    const updated = this.store.runInTransaction(() => this.store.updateWork(id, normalized));
+    return this.emit("WorkChanged", updated, "updated");
   }
 
-  // 对称关联维护：调用前已经完成自身与资源存在性校验。
-  addReverseRelation(fromId, targetId) {
-    if (!targetId || targetId === fromId) return;
-    const target = this.store.getObjective(targetId);
-    if (!target) throw new ObjectiveNotFoundError(targetId);
-    const ids = new Set(target.relatedObjectiveIds ?? []);
-    if (ids.has(fromId)) return;
-    ids.add(fromId);
-    this.store.updateObjective(targetId, { relatedObjectiveIds: [...ids] });
-  }
-
-  removeReverseRelation(fromId, targetId) {
-    if (!targetId) return;
-    const target = this.store.getObjective(targetId);
-    if (!target) return;
-    const ids = new Set(target.relatedObjectiveIds ?? []);
-    if (!ids.has(fromId)) return;
-    ids.delete(fromId);
-    this.store.updateObjective(targetId, { relatedObjectiveIds: [...ids] });
-  }
-
-  deleteObjective(id) {
-    this.getObjective(id);
-    const deleted = this.store.deleteObjective(id);
-    this.emit("ObjectiveChanged", { id }, "deleted");
+  deleteWork(id) {
+    this.getWork(id);
+    const deleted = this.store.deleteWork(id);
+    this.emit("WorkChanged", { id }, "deleted");
     return deleted;
   }
 
@@ -170,8 +133,8 @@ export class ObjectiveApplicationService {
     return this.store.listTasks();
   }
 
-  listTasksByObjective(objectiveId) {
-    return this.store.listTasksByObjective(objectiveId);
+  listTasksByWork(workId) {
+    return this.store.listTasksByWork(workId);
   }
 
   getTask(id) {
@@ -276,15 +239,15 @@ export class ObjectiveApplicationService {
     return deleted;
   }
 
-  // ---- Session 归属（打通 Objective → Task → Session 最后一环）----
+  // ---- Session 归属（打通 Work → Task → Session 最后一环）----
 
-  // 把一个已存在的 Session 归属到某个 Task，自动带上其 Objective。
-  // 返回更新后的 Session（含 objectiveId / taskId）。
+  // 把一个已存在的 Session 归属到某个 Task，自动带上其 Work。
+  // 返回更新后的 Session（含 workId / taskId）。
   bindSession(sessionId, taskId) {
     const task = this.getTask(taskId);
     const existingSession = this.store.getSession(sessionId);
     if (!existingSession) throw new SessionNotFoundError(sessionId);
-    const session = this.store.bindSessionToTask(sessionId, taskId, task.objective_id);
+    const session = this.store.bindSessionToTask(sessionId, taskId, task.work_id);
     this.emit("TaskChanged", this.store.getTask(taskId), "session-bound");
     return session;
   }
@@ -343,39 +306,33 @@ export class ObjectiveApplicationService {
   }
 }
 
-function objectiveCreationMatches(existing, input) {
+function workCreationMatches(existing, input) {
   const expected = {
     name: input.name,
     description: input.description ?? "",
-    idealState: input.idealState ?? "",
     status: input.status ?? "active",
-    budgetConfig: input.budgetConfig ?? {},
-    priority: input.priority ?? null,
-    targetDate: input.targetDate ?? null,
+    profile: input.profile ?? "general",
     tags: sortedStrings(input.tags ?? []),
-    workspaceIds: sortedStrings(input.workspaceIds ?? []),
-    relatedObjectiveIds: sortedStrings(input.relatedObjectiveIds ?? []),
-    contributorAgentIds: sortedStrings(input.contributorAgentIds ?? [])
+    workspaceId: input.workspaceId ?? existing.workspaceId,
+    contributorAgentIds: sortedStrings(input.contributorAgentIds ?? []),
+    primaryAgentId: input.primaryAgentId ?? input.contributorAgentIds?.[0] ?? null
   };
   const actual = {
     name: existing.name,
     description: existing.description ?? "",
-    idealState: existing.idealState ?? "",
     status: existing.status ?? "active",
-    budgetConfig: existing.budgetConfig ?? {},
-    priority: existing.priority ?? null,
-    targetDate: existing.targetDate ?? null,
+    profile: existing.profile ?? "general",
     tags: sortedStrings(existing.tags ?? []),
-    workspaceIds: sortedStrings(existing.workspaceIds ?? []),
-    relatedObjectiveIds: sortedStrings(existing.relatedObjectiveIds ?? []),
-    contributorAgentIds: sortedStrings(existing.contributorAgentIds ?? [])
+    workspaceId: existing.workspaceId,
+    contributorAgentIds: sortedStrings(existing.contributorAgentIds ?? []),
+    primaryAgentId: existing.primaryAgentId ?? null
   };
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
 function taskCreationMatches(existing, input) {
   const expected = {
-    objectiveId: input.objectiveId,
+    workId: input.workId,
     title: input.title,
     description: input.description ?? "",
     acceptanceCriteria: input.acceptanceCriteria ?? "",
@@ -383,11 +340,10 @@ function taskCreationMatches(existing, input) {
     goal: input.goal ?? "",
     verificationCriteria: input.verificationCriteria ?? "",
     lifecycleState: input.lifecycleState ?? "todo",
-    mainWorkspaceId: input.mainWorkspaceId ?? null,
     mainAgentId: input.mainAgentId ?? null
   };
   const actual = {
-    objectiveId: existing.objective_id,
+    workId: existing.work_id,
     title: existing.title,
     description: existing.description ?? "",
     acceptanceCriteria: existing.acceptance_criteria ?? "",
@@ -395,7 +351,6 @@ function taskCreationMatches(existing, input) {
     goal: existing.goal ?? "",
     verificationCriteria: existing.verification_criteria ?? "",
     lifecycleState: existing.lifecycle_state ?? "todo",
-    mainWorkspaceId: existing.main_workspace_id ?? null,
     mainAgentId: existing.main_agent_id ?? null
   };
   return JSON.stringify(actual) === JSON.stringify(expected);

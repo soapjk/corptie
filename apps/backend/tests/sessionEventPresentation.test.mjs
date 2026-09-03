@@ -83,7 +83,7 @@ test("collaboration cards require a queryable task and complete envelope", () =>
   const task = { kind: "collaboration", source: { taskId: "task:valid" } };
   const collaborationTask = { taskId: "task:valid" };
   const envelope = {
-    task: { taskId: "task:valid", sourceObjectiveId: "objective:source", targetObjectiveId: "objective:target" },
+    task: { taskId: "task:valid", sourceWorkId: "work:source", targetWorkId: "work:target" },
     message: {
       senderSessionId: "session:source",
       recipientSessionId: "session:target",

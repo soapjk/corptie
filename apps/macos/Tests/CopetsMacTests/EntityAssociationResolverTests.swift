@@ -7,6 +7,7 @@ struct EntityAssociationResolverTests {
     func repositoryIDsResolveForDisplayAndUnknownAssociationsRemainVisible() {
         let repository = GitRepository(
             id: "repository:known",
+            workspaceId: "workspace:known",
             path: "/tmp/known/.git",
             name: "known",
             discoveredAt: nil,
@@ -33,14 +34,14 @@ struct EntityAssociationResolverTests {
         {
           "error":"Field only accepts repository IDs.",
           "code":"INVALID_WORKSPACE_ID_TYPE",
-          "field":"mainWorkspaceId",
+          "field":"workspaceId",
           "expected":"registered repository: ID",
           "received":{"type":"string","value":"worktree:legacy"}
         }
         """#.utf8)
         let envelope = try JSONDecoder().decode(EntityErrorEnvelope.self, from: data)
         #expect(envelope.code == "INVALID_WORKSPACE_ID_TYPE")
-        #expect(envelope.field == "mainWorkspaceId")
+        #expect(envelope.field == "workspaceId")
         #expect(envelope.displayMessage.contains("registered repository: ID"))
     }
 }

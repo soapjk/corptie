@@ -21,10 +21,10 @@ export class TaskWorkspaceService {
   }
 
   async ensure({ task, session = null }) {
-    const repositoryId = typeof task?.main_workspace_id === "string"
-      ? task.main_workspace_id.trim()
-      : "";
-    if (!repositoryId) throw workspaceRequiredError();
+    const context = this.store.getTaskWorkspaceContext(task);
+    if (!context?.workspace) throw workspaceRequiredError();
+    const repositoryId = context.repository?.id ?? "";
+    if (!repositoryId) throw workspaceCapabilityUnavailableError(context.workspace.workspaceId);
 
     let project;
     try {
@@ -102,8 +102,15 @@ export class TaskWorkspaceService {
 }
 
 function workspaceRequiredError() {
-  const error = new Error("该工作项尚未绑定 Git 仓库（Workspace），无法执行。");
+  const error = new Error("Task 所属 Work 的文件空间不存在，无法执行。");
   error.code = "WORKSPACE_REQUIRED";
+  error.statusCode = 409;
+  return error;
+}
+
+function workspaceCapabilityUnavailableError(workspaceId) {
+  const error = new Error(`文件空间 ${workspaceId} 没有 Git 能力，不能使用 Git Worktree 执行策略。`);
+  error.code = "WORKSPACE_CAPABILITY_UNAVAILABLE";
   error.statusCode = 409;
   return error;
 }

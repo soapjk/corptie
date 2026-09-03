@@ -123,7 +123,7 @@ test("dynamic Channel open maps tool input to the authenticated collaboration HT
 
   const result = await callCollaborationDynamicTool(client, "corptie_collaboration_channel_open", {
     session_agent_id: "agent-b",
-    target_objective_id: "objective-b",
+    target_work_id: "work-b",
     title: "Peer Session",
     body: "Add the endpoint",
     message_kind: "question",
@@ -134,7 +134,7 @@ test("dynamic Channel open maps tool input to the authenticated collaboration HT
     path: "/internal/collaboration/channel-requests",
     body: {
       sessionAgentId: "agent-b",
-      targetObjectiveId: "objective-b",
+      targetWorkId: "work-b",
       title: "Peer Session",
       body: "Add the endpoint",
       messageKind: "question",
@@ -149,7 +149,7 @@ test("dynamic Channel open rejects an empty success response instead of reportin
   await assert.rejects(
     callCollaborationDynamicTool({ post: async () => ({}) }, "corptie_collaboration_channel_open", {
       session_agent_id: "agent-b",
-      target_objective_id: "objective-b",
+      target_work_id: "work-b",
       body: "Add the endpoint",
       idempotency_key: "open-empty"
     }),
@@ -193,7 +193,7 @@ test("dynamic read tools use the same backend endpoints as the MCP transport", a
   assert.deepEqual(result, { agents: [] });
 });
 
-test("Session discovery maps an explicit peer Objective boundary", async () => {
+test("Session discovery maps an explicit peer Work boundary", async () => {
   const calls = [];
   const client = {
     get: async (path, search) => {
@@ -204,17 +204,17 @@ test("Session discovery maps an explicit peer Objective boundary", async () => {
 
   await callCollaborationDynamicTool(client, "corptie_sessions_discover", {
     agent_id: "agent:marketcow",
-    objective_id: "objective:marketcow",
-    session_kind: "objectiveChat"
+    work_id: "work:marketcow",
+    session_kind: "workChat"
   });
 
   assert.deepEqual(calls, [{
     path: "/internal/collaboration/sessions",
     search: {
       agentId: "agent:marketcow",
-      objectiveId: "objective:marketcow",
+      workId: "work:marketcow",
       taskId: undefined,
-      sessionKind: "objectiveChat"
+      sessionKind: "workChat"
     }
   }]);
 });

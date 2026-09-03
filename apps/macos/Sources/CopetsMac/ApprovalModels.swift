@@ -43,7 +43,7 @@ struct ApprovalRequest: Identifiable {
     /// Agent 给出的「要做什么」方案摘要
     var proposal: String
     var riskLevel: RiskLevel
-    /// 影响范围（文件清单 / 仓库 / Objective / 协作方）
+    /// 影响范围（文件清单 / 仓库 / Work / 协作方）
     var affectedScope: [String]
     /// 风险说明（为什么需要这步）
     var rationale: String

@@ -5,15 +5,15 @@ function tool(name, description, properties = {}, required = []) {
   });
 }
 
-const artifactId = { type: "string", pattern: "^artifact:", description: "Stable Objective-scoped Artifact identity." };
+const artifactId = { type: "string", pattern: "^artifact:", description: "Stable Work-scoped Artifact identity." };
 const version = { type: "integer", minimum: 1 };
 const contentHash = { type: "string", pattern: "^[a-f0-9]{64}$", description: "Exact SHA-256 pinned by the active Artifact Reference." };
 
 export const artifactDynamicTools = Object.freeze([
-  tool("corptie_artifact_list", "List only Artifacts authorized for the authenticated current Objective Chat or Worker Session. The authorization scope is derived by Corptie and cannot be supplied by the model.", {
+  tool("corptie_artifact_list", "List only Artifacts authorized for the authenticated current Work Chat or Worker Session. The authorization scope is derived by Corptie and cannot be supplied by the model.", {
     include_revoked: { type: "boolean", description: "Include logically deleted Artifacts that this Session is allowed to restore." }
   }),
-  tool("corptie_artifact_get", "Read one immutable Artifact version authorized by the current Objective scope. artifact_id, version, and content_hash are mandatory; raw-byte pages never drift to another version.", {
+  tool("corptie_artifact_get", "Read one immutable Artifact version authorized by the current Work scope. artifact_id, version, and content_hash are mandatory; raw-byte pages never drift to another version.", {
     artifact_id: artifactId, version, content_hash: contentHash,
     reference_id: { type: "string", pattern: "^artifact_reference:", description: "Exact active Reference authorizing this body read." },
     offset: { type: "integer", minimum: 0 },
@@ -22,18 +22,18 @@ export const artifactDynamicTools = Object.freeze([
   }, ["artifact_id", "version", "content_hash"]),
   tool("corptie_artifact_search", "Search bounded Artifact metadata across only Artifacts authorized for the authenticated Session. Private bodies remain available only through fixed get pages.", {
     query: { type: "string", minLength: 1 }, limit: { type: "integer", minimum: 1, maximum: 50 },
-    scope: { type: "string", enum: ["objective", "task"] },
+    scope: { type: "string", enum: ["work", "task"] },
     kinds: { type: "array", items: { type: "string" } },
     category_prefix: { type: "string" },
     tags: { type: "array", items: { type: "string" } }
   }, ["query"]),
-  tool("corptie_artifact_create", "Create either an Objective-public Artifact or a current-Task Artifact. Every Work Session in the Objective can manage Objective-public Artifacts; another Task's Artifact is read-only. Worker creation remains idempotent.", {
+  tool("corptie_artifact_create", "Create either an Work-public Artifact or a current-Task Artifact. Every Work Session in the Work can manage Work-public Artifacts; another Task's Artifact is read-only. Worker creation remains idempotent.", {
     title: { type: "string", minLength: 1 }, summary: { type: "string" }, content: { type: "string" },
-    visibility: { type: "string", enum: ["objective_private", "task_private", "session_private", "repository_tracked"] },
+    visibility: { type: "string", enum: ["work_private", "task_private", "session_private", "repository_tracked"] },
     bound_task_id: { type: "string" }, bound_session_id: { type: "string" },
     repository_locator: { type: "string" }, confirmed_repository_tracked: { type: "boolean" },
     mime_type: { type: "string" }, approval_status: { type: "string", enum: ["draft", "approved"] },
-    scope: { type: "string", enum: ["objective", "task"] },
+    scope: { type: "string", enum: ["work", "task"] },
     kind: { type: "string" }, category_path: { type: "string" },
     tags: { type: "array", items: { type: "string" } },
     aliases: { type: "array", items: { type: "string" } },
@@ -49,7 +49,7 @@ export const artifactDynamicTools = Object.freeze([
     tags: { type: "array", items: { type: "string" } }, aliases: { type: "array", items: { type: "string" } },
     keywords: { type: "array", items: { type: "string" } }
   }, ["artifact_id"]),
-  tool("corptie_artifact_publish_version", "Publish a new immutable version. For the current Task's private Artifact, expected_resource_version, expected_pinned_version, expected_pinned_hash, and idempotency_key are required and the active fixed Reference is atomically repinned. Objective-public Artifacts use their normal shared management policy.", {
+  tool("corptie_artifact_publish_version", "Publish a new immutable version. For the current Task's private Artifact, expected_resource_version, expected_pinned_version, expected_pinned_hash, and idempotency_key are required and the active fixed Reference is atomically repinned. Work-public Artifacts use their normal shared management policy.", {
     artifact_id: artifactId, content: { type: "string" }, summary: { type: "string" },
     mime_type: { type: "string" }, approval_status: { type: "string", enum: ["draft", "approved"] },
     reference_id: { type: "string", pattern: "^artifact_reference:" },
@@ -85,7 +85,7 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
     sessionId: input.metadata?.sessionId,
     logicalSessionId: input.metadata?.logicalSessionId,
     turnExecutionId: input.turnExecutionId ?? input.turnId ?? input.metadata?.turnExecutionId,
-    objectiveId: input.metadata?.objectiveId,
+    workId: input.metadata?.workId,
     taskId: input.metadata?.taskId,
     providerBindingId: input.metadata?.providerBindingId
   };
@@ -136,11 +136,11 @@ export async function callArtifactDynamicTool(service, input = {}, options = {})
 }
 
 export function authorizeArtifactDynamicTool({ tool, metadata } = {}) {
-  const scoped = ["objectiveChat", "worker"].includes(metadata?.sessionKind)
-    && Boolean(metadata?.objectiveId && metadata?.sessionId);
+  const scoped = ["workChat", "worker"].includes(metadata?.sessionKind)
+    && Boolean(metadata?.workId && metadata?.sessionId);
   if (!scoped) return false;
   if (["corptie_artifact_list", "corptie_artifact_get", "corptie_artifact_search", "corptie_artifact_create",
     "corptie_artifact_update_metadata", "corptie_artifact_publish_version", "corptie_artifact_reference",
     "corptie_artifact_revoke_reference", "corptie_artifact_delete", "corptie_artifact_restore"].includes(tool)) return true;
-  return metadata.sessionKind === "objectiveChat";
+  return metadata.sessionKind === "workChat";
 }

@@ -48,12 +48,12 @@ import {
   visibleStoredSessionProjections
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
-import { ObjectiveChatContextService } from "./application/objectiveChatContextService.mjs";
+import { WorkChatContextService } from "./application/workChatContextService.mjs";
 import {
-  ObjectiveChatOperationService,
-  objectiveChatDynamicTools,
-  callObjectiveChatDynamicTool
-} from "./application/objectiveChatDynamicTools.mjs";
+  WorkChatOperationService,
+  workChatDynamicTools,
+  callWorkChatDynamicTool
+} from "./application/workChatDynamicTools.mjs";
 import { SessionWorkspaceCoordinator } from "./application/sessionWorkspaceCoordinator.mjs";
 import { resolveWorkspaceTransitionRuntime } from "./application/workspaceTransitionRuntimeRouting.mjs";
 import { assertManualSessionArchiveAllowed } from "./domain/sessionArchivePolicy.mjs";
@@ -118,7 +118,7 @@ import { CollaborationDeliveryRouteResolver } from "./collaboration/collaboratio
 import { formatTrustedChannelMessage, formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
 import { collaborationMessagePresentationRoute } from "./collaboration/collaborationPresentationRoute.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
-import { ObjectiveApplicationService } from "./application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "./application/workApplicationService.mjs";
 import {
   presentTaskAcceptance,
   taskExecutionPatch,
@@ -370,7 +370,7 @@ const providerEventIngestion = new ProviderEventIngestionService({
 const workspaceRoutePreparationCache = new WorkspaceRoutePreparationCache({ ttlMs: 15_000 });
 let codexResetForecastMonitor = null;
 const collaborationCore = new CollaborationCore(store);
-const objectiveService = new ObjectiveApplicationService({
+const workService = new WorkApplicationService({
   store,
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
@@ -395,8 +395,8 @@ const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
   quiesce: quiescePersistentRuntime,
   resume: resumePersistentRuntime
 });
-const objectiveChatContextService = new ObjectiveChatContextService({ store, artifactService });
-let objectiveChatOperationService = null;
+const workChatContextService = new WorkChatContextService({ store, artifactService });
+let workChatOperationService = null;
 let sessionCollaborationService = null;
 const sessionChannelService = new SessionChannelService({ store, collaborationCore });
 const hubService = new HubService({
@@ -420,7 +420,7 @@ const memoryExtractor = new MemoryExtractor({
 });
 const assistantService = new AssistantService({
   store,
-  objectiveService,
+  workService,
   intentResolver: createAssistantIntentResolver(store.choiceParserSettings()),
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
@@ -551,7 +551,7 @@ const hostToolCatalog = new HostToolCatalog([
     authorize: ({ tool, metadata }) => {
       if (tool === "corptie_collaboration_channel_open"
         || tool.startsWith("corptie_collaboration_tasks_")) {
-        return ["objectiveChat", "worker"].includes(metadata?.sessionKind) && Boolean(metadata?.objectiveId);
+        return ["workChat", "worker"].includes(metadata?.sessionKind) && Boolean(metadata?.workId);
       }
       if (tool === "corptie_collaboration_capabilities" || tool.startsWith("corptie_sessions_")) {
         return Boolean(metadata?.sessionId);
@@ -564,7 +564,7 @@ const hostToolCatalog = new HostToolCatalog([
         baseUrl: `http://127.0.0.1:${port}`,
         sessionScope: {
           sessionId: input.metadata?.sessionId,
-          objectiveId: input.metadata?.objectiveId,
+          workId: input.metadata?.workId,
           taskId: input.metadata?.taskId
         }
       });
@@ -618,10 +618,10 @@ const hostToolCatalog = new HostToolCatalog([
     execute: (input) => callPlatformDynamicTool(platformOperationService, input)
   },
   {
-    id: "objective-chat",
-    tools: objectiveChatDynamicTools,
-    authorize: ({ metadata }) => metadata?.sessionKind === "objectiveChat" && Boolean(metadata?.objectiveId),
-    execute: (input) => callObjectiveChatDynamicTool(objectiveChatOperationService, input)
+    id: "work-chat",
+    tools: workChatDynamicTools,
+    authorize: ({ metadata }) => metadata?.sessionKind === "workChat" && Boolean(metadata?.workId),
+    execute: (input) => callWorkChatDynamicTool(workChatOperationService, input)
   }
 ]);
 let toolHostService = null;
@@ -706,7 +706,7 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
   inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input),
   attachTools: async (attachment) => claudeToolHostAttachment(
     attachment,
-    withObjectiveChatClaudeContext(
+    withWorkChatClaudeContext(
       await claudeCollaborationRuntimeOptionsWithAgentContext(attachment.actorId, attachment.metadata),
       attachment.metadata
     )
@@ -941,7 +941,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     inspectWorkspaceBinding: (input) => persistedProviderWorkspaceProof(store, input),
     attachTools: async (attachment) => codexToolHostAttachment(
       attachment,
-      withObjectiveChatCodexContext(
+      withWorkChatCodexContext(
         await collaborationProviderRuntimeOptionsWithAgentContext(
           attachment.actorId,
           attachment.metadata
@@ -985,10 +985,10 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   },
   additionalProviders: [openClackyProvider]
 });
-objectiveChatOperationService = new ObjectiveChatOperationService({
+workChatOperationService = new WorkChatOperationService({
   store,
-  objectiveService,
-  contextService: objectiveChatContextService,
+  workService,
+  contextService: workChatContextService,
   workSessionStartApplicationService: {
     start: (command) => workSessionStartApplicationService.start(command)
   },
@@ -996,7 +996,7 @@ objectiveChatOperationService = new ObjectiveChatOperationService({
 });
 sessionCollaborationService = new SessionCollaborationService({
   store,
-  objectiveService,
+  workService,
   artifactService,
   collaborationCore,
   workSessionStartApplicationService: {
@@ -1066,7 +1066,7 @@ async function applyOpenClackyToolPlanAtTurnBoundary(binding, plan, request) {
     providerBindingId: binding.providerBindingId,
     sessionId: binding.sessionId,
     sessionKind: binding.sessionKind,
-    objectiveId: binding.objectiveId,
+    workId: binding.workId,
     taskId: binding.taskId
   };
   const providerAttachment = openClackyToolHostAttachment({
@@ -1144,7 +1144,7 @@ const sessionApplicationService = new SessionApplicationService({
       logicalSessionId: recoveredReference.logicalSessionId,
       providerBindingId: recoveredReference.bindingId,
       sessionKind: recoveredSession?.sessionKind ?? "legacy",
-      objectiveId: recoveredSession?.objectiveId ?? null,
+      workId: recoveredSession?.workId ?? null,
       taskId: recoveredSession?.taskId ?? null,
       desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
     });
@@ -1156,14 +1156,14 @@ const sessionApplicationService = new SessionApplicationService({
   resolveMessageContext: async (reference, messageContext = {}) => {
     const session = store.getSession(reference.sessionId);
     let baseContext = null;
-    if (session?.sessionKind === "objectiveChat" && session.objectiveId) {
-      baseContext = objectiveChatContextService.build(session.objectiveId, session);
+    if (session?.sessionKind === "workChat" && session.workId) {
+      baseContext = workChatContextService.build(session.workId, session);
     } else if (session?.sessionKind === "assistantChat") {
       baseContext = await sessionContextReferenceService.resolve(reference.sessionId);
     } else if (session?.sessionKind === "worker") {
       const ownership = store.assertLogicalWorkSessionBinding(reference.logicalSessionId);
       const task = store.getTask(ownership.taskId);
-      const objective = task?.objective_id ? store.getObjective(task.objective_id) : null;
+      const work = task?.work_id ? store.getWork(task.work_id) : null;
       const startupReceiptRow = store.selectOne(
         `SELECT receipt.receipt_json FROM work_session_startup_receipts receipt
          JOIN work_session_startup_operations operation
@@ -1173,7 +1173,7 @@ const sessionApplicationService = new SessionApplicationService({
         [reference.logicalSessionId]
       );
       baseContext = buildWorkSessionContext({
-        session, task, objective,
+        session, task, work,
         artifactIndex: artifactService.indexForSession(session),
         startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null
       });
@@ -1183,7 +1183,7 @@ const sessionApplicationService = new SessionApplicationService({
       const recall = await memoryRecallService.turn(messageContext.message, {
         sessionId: session.id,
         agentId: session.agentId,
-        objectiveId: session.objectiveId ?? null,
+        workId: session.workId ?? null,
         taskId: session.taskId ?? null
       }, { deepRecall: messageContext.deepRecall === true });
       if (recall.memories.length > 0) {
@@ -1221,7 +1221,7 @@ const sessionApplicationService = new SessionApplicationService({
       providerId,
       agentId: input.toolHost?.actorId ?? context.actorId ?? null,
       sessionKind: input.sessionKind,
-      objectiveId: context.objectiveId ?? null,
+      workId: context.workId ?? null,
       taskId: context.taskId ?? null
     });
     ensureCollaborationAgentForSession(session, input.toolHost?.actorId ?? context.actorId);
@@ -1288,7 +1288,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         sessionId: attempt.sessionId,
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
-        objectiveId: attempt.objectiveId,
+        workId: attempt.workId,
         taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
@@ -1355,7 +1355,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         sessionId: attempt.sessionId,
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
-        objectiveId: attempt.objectiveId,
+        workId: attempt.workId,
         taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
@@ -1401,7 +1401,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         sessionId: attempt.sessionId,
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
-        objectiveId: attempt.objectiveId,
+        workId: attempt.workId,
         taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       });
@@ -1493,7 +1493,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         sessionId: attempt.sessionId,
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
-        objectiveId: attempt.objectiveId,
+        workId: attempt.workId,
         taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
@@ -1538,7 +1538,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         sessionId: attempt.sessionId,
         logicalSessionId: attempt.logicalSessionId,
         sessionKind: storedSession?.sessionKind ?? "legacy",
-        objectiveId: attempt.objectiveId,
+        workId: attempt.workId,
         taskId: attempt.taskId,
         desiredToolDomains: desiredToolDomainIds(attempt.toolCatalog)
       };
@@ -1635,7 +1635,7 @@ const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
       logicalSessionId: logical.logicalSessionId,
       providerBindingId: binding.bindingId,
       sessionKind: session?.sessionKind ?? "legacy",
-      objectiveId: session?.objectiveId ?? null,
+      workId: session?.workId ?? null,
       workItemId: session?.workItemId ?? null
     };
     try {
@@ -1664,7 +1664,7 @@ function isUnavailableEmptyBinding(error) {
 }
 platformOperationService = new PlatformOperationService({
   store,
-  objectiveService,
+  workService,
   sessionService: sessionApplicationService,
   artifactService,
   collaborationCore,
@@ -1727,7 +1727,7 @@ const projectCodeRunIsolationPort = runIsolationCoordinator
         localSemantic: true,
         networkAccess: false,
         languages: [
-          "swift", "objective-c", "objective-cpp", "javascript", "typescript", "python", "rust",
+          "swift", "work-c", "work-cpp", "javascript", "typescript", "python", "rust",
           "go", "java", "kotlin", "c", "cpp", "json", "markdown", "text"
         ]
       }
@@ -1812,7 +1812,7 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
       sessionId: reference.sessionId,
       logicalSessionId: logical.logicalSessionId,
       sessionKind: session?.sessionKind ?? "legacy",
-      objectiveId: session?.objectiveId ?? null,
+      workId: session?.workId ?? null,
       taskId: session?.taskId ?? null,
       desiredToolDomains
     };
@@ -2034,7 +2034,7 @@ const taskDeletionService = new TaskDeletionService({
   handleArtifacts: ({ task, disposition, actor }) => artifactService.disposeBoundArtifactsForTaskDeletion({
     kind: "local_user",
     actorId: actor?.id,
-    objectiveId: task.objective_id
+    workId: task.work_id
   }, task.id, disposition),
   authorize: ({ actor }) => actor?.type === "user" && actor.id === "user:local-macos",
   onChanged: (type, payload) => emitEvent(type, payload)
@@ -2074,14 +2074,14 @@ const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
 const providerWorkSessionPort = new ProviderWorkSessionPort({
   workspaceBinding: providerWorkspaceBindingService,
   createSession: ({ taskId, assigneeAgentId, providerId, title, workspace }) => {
-    const task = objectiveService.getTask(taskId);
+    const task = workService.getTask(taskId);
     const agent = store.getAgent(assigneeAgentId);
     return createProviderWorkSession({
       assigneeAgentId,
       assigneeName: agent?.name,
       taskId,
       taskTitle: task.title,
-      objectiveId: task.objective_id,
+      workId: task.work_id,
       providerId,
       title,
       workingDirectory: workspace.canonicalWorktreePath,
@@ -2091,14 +2091,14 @@ const providerWorkSessionPort = new ProviderWorkSessionPort({
     });
   },
   activateSession: async ({ session, taskId, assigneeAgentId, workingDirectory, dispatchInitialTurn }) => {
-    const task = objectiveService.getTask(taskId);
+    const task = workService.getTask(taskId);
     try {
       if (dispatchInitialTurn !== true) {
         await sessionApplicationService.resumeSession(session.id, {
           source: "task-start",
           purpose: "session-create-finalization",
           actorId: assigneeAgentId,
-          objectiveId: task.objective_id,
+          workId: task.work_id,
           taskId,
           sessionKind: "worker"
         });
@@ -2227,16 +2227,15 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
     });
   },
   createAndLaunchConflictTask: async ({
-    objective, projectId, agent, workspace, title, description, acceptanceCriteria, prompt,
+    work, projectId, agent, workspace, title, description, acceptanceCriteria, prompt,
     integrationRunId, sourceSessionId
   }) => {
-    const task = objectiveService.createTask({
-      objectiveId: objective.id,
+    const task = workService.createTask({
+      workId: work.id,
       title,
       description,
       acceptanceCriteria,
       priority: "high",
-      mainWorkspaceId: projectId,
       mainAgentId: agent.agentId
     });
     let session;
@@ -2251,13 +2250,13 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
         sourceSessionId
       });
     } catch (error) {
-      objectiveService.deleteTask(task.id);
+      workService.deleteTask(task.id);
       throw error;
     }
     const finalized = store.finalizeConflictResolutionLaunch({
       sessionId: session.id,
       taskId: task.id,
-      objectiveId: objective.id,
+      workId: work.id,
       agentId: agent.agentId,
       integrationRunId
     });
@@ -2353,9 +2352,9 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       throw error;
     }
     const sourceTask = existingTask ?? context.sourceTask;
-    const objective = hasExistingPlanSession
-      ? store.getObjective(existingTask.objective_id)
-      : context.objective;
+    const work = hasExistingPlanSession
+      ? store.getWork(existingTask.work_id)
+      : context.work;
     const agent = existingAgent ?? context.agent;
     const branchLabel = item.branchName ?? item.worktreeId;
     const title = `解决 Worktree 合并计划 ${planLabel} 的全部冲突`;
@@ -2398,7 +2397,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         error.code = "CONFLICT_PLAN_SESSION_WORKSPACE_CHANGED";
         throw error;
       }
-      objectiveService.updateTask(existingTask.id, {
+      workService.updateTask(existingTask.id, {
         title,
         description,
         acceptanceCriteria,
@@ -2420,14 +2419,13 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         reused: true
       };
     }
-    const task = objectiveService.createTask({
+    const task = workService.createTask({
       id: planTaskId,
-      objectiveId: objective.id,
+      workId: work.id,
       title,
       description,
       acceptanceCriteria,
       priority: "high",
-      mainWorkspaceId: job.repositoryId,
       mainAgentId: agent.agentId
     });
     let session;
@@ -2445,7 +2443,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
         sourceSessionId: sourceLogical?.logicalSessionId
       });
     } catch (error) {
-      objectiveService.deleteTask(task.id);
+      workService.deleteTask(task.id);
       throw error;
     }
     await sendUnifiedSessionMessage(session.id, prompt, {
@@ -3639,7 +3637,7 @@ function controlPlaneSnapshot() {
     // Completed Work Items are cold history. The Work Room loads them through
     // the explicit 50-row Task cursor API only when the user opens that view.
     tasks: residentTasks.map(presentTaskAcceptance),
-    objectives: store.listObjectives(),
+    works: store.listWorks(),
     agents: store.listAgents().map((agent) => ({
       ...agent,
       skillIds: store.listRegistrySkillIdsForAgent(agent.agentId)
@@ -3681,7 +3679,7 @@ function readControlPlaneEntity(entityType, entityId) {
       const task = store.getTask(entityId);
       return task && task.lifecycle_state !== "done" ? presentTaskAcceptance(task) : null;
     }
-    case "objective": return store.getObjective(entityId);
+    case "work": return store.getWork(entityId);
     case "agent": {
       const agent = store.getAgent(entityId);
       return agent ? { ...agent, skillIds: store.listRegistrySkillIdsForAgent(agent.agentId) } : null;
@@ -3988,7 +3986,7 @@ async function collaborationAgentContextInstructions(agentId, metadata = null) {
     intent: "",
     scope: {
       sessionId: metadata?.sessionId ?? null,
-      objectiveId: metadata?.objectiveId ?? null,
+      workId: metadata?.workId ?? null,
       taskId: metadata?.taskId ?? null
     }
   });
@@ -4197,7 +4195,7 @@ function sessionToolMetadata(session) {
   return {
     purpose: "session",
     sessionKind: session?.sessionKind ?? "legacy",
-    objectiveId: session?.objectiveId ?? null,
+    workId: session?.workId ?? null,
     taskId: session?.taskId ?? null,
     sessionId: session?.id ?? null,
     logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
@@ -4243,7 +4241,7 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
     tombstoned: session?.deletedAt != null,
     sessionId: session?.id ?? null,
     sessionKind: session?.sessionKind ?? "legacy",
-    objectiveId: session?.objectiveId ?? null,
+    workId: session?.workId ?? null,
     taskId: session?.taskId ?? null,
     currentTaskSessionId: task?.current_session_id ?? null,
     taskSessionAuthorization: task?.current_session_id === session?.id
@@ -4275,7 +4273,7 @@ function prospectiveToolHostBinding({ logicalSessionId, binding = {}, session = 
     tombstoned: false,
     sessionId: session?.id ?? null,
     sessionKind: session?.sessionKind ?? "legacy",
-    objectiveId: session?.objectiveId ?? null,
+    workId: session?.workId ?? null,
     taskId: session?.taskId ?? null,
     currentTaskSessionId: task?.current_session_id ?? null,
     agentId: session?.agentId ?? null,
@@ -4314,14 +4312,14 @@ function desiredToolDomainIds(materialization = null) {
     .map((domainId) => domainId === "work-item-acceptance" ? "task-acceptance" : domainId))].sort();
 }
 
-function objectiveChatInstructions(metadata) {
-  return metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
-    ? objectiveChatContextService.build(metadata.objectiveId, metadata.sessionId ? store.getSession(metadata.sessionId) : null).prompt
+function workChatInstructions(metadata) {
+  return metadata?.sessionKind === "workChat" && metadata?.workId
+    ? workChatContextService.build(metadata.workId, metadata.sessionId ? store.getSession(metadata.sessionId) : null).prompt
     : "";
 }
 
-function withObjectiveChatCodexContext(options, metadata) {
-  const context = objectiveChatInstructions(metadata);
+function withWorkChatCodexContext(options, metadata) {
+  const context = workChatInstructions(metadata);
   if (!context) return options;
   return {
     ...options,
@@ -4329,8 +4327,8 @@ function withObjectiveChatCodexContext(options, metadata) {
   };
 }
 
-function withObjectiveChatClaudeContext(options, metadata) {
-  const context = objectiveChatInstructions(metadata);
+function withWorkChatClaudeContext(options, metadata) {
+  const context = workChatInstructions(metadata);
   if (!context) return options;
   const systemPrompt = options?.systemPrompt ?? { type: "preset", preset: "claude_code", append: "" };
   return {
@@ -4392,7 +4390,7 @@ function authorizeScheduledSessionTask({ actor, logicalSessionId, environment })
     throw error;
   }
   if (actor.type === "user" && actor.id === "user:local-macos") {
-    return { objectiveId: session.objectiveId ?? null, session };
+    return { workId: session.workId ?? null, session };
   }
   const actorAgent = actor.type === "agent" ? store.getAgent(actor.id) : null;
   const boundAgent = collaborationCore.getAgentForSession(session.id);
@@ -4401,7 +4399,7 @@ function authorizeScheduledSessionTask({ actor, logicalSessionId, environment })
     error.code = "AUTHORIZATION_REVOKED";
     throw error;
   }
-  return { objectiveId: session.objectiveId ?? null, session };
+  return { workId: session.workId ?? null, session };
 }
 
 async function resolveScheduledSessionRoute(logicalSessionId) {
@@ -5306,7 +5304,7 @@ async function createProviderWorkSession({
   assigneeName,
   taskId,
   taskTitle,
-  objectiveId,
+  workId,
   providerId: requestedProviderId,
   title,
   prompt: requestedPrompt,
@@ -5333,7 +5331,7 @@ async function createProviderWorkSession({
     error.code = "START_WORKTREE_BINDING_REQUIRED";
     throw error;
   }
-  const task = objectiveService.getTask(taskId);
+  const task = workService.getTask(taskId);
   const prompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
     ? requestedPrompt.trim()
     : taskExecutionPrompt(task);
@@ -5356,7 +5354,7 @@ async function createProviderWorkSession({
     {
       source: "entity",
       actorId: assigneeAgentId,
-      objectiveId,
+      workId,
       taskId,
       sessionKind: "worker",
       deferToolHostFinalization
@@ -5402,10 +5400,10 @@ async function launchAgentSession({ agent, providerId: requestedProviderId, titl
   return store.getSession(session.id) ?? session;
 }
 
-async function launchObjectiveChatSession({ agent, objective, providerId: requestedProviderId, title, prompt: requestedPrompt }) {
-  if (!objective.contributorAgentIds.includes(agent.agentId)) {
-    const error = new Error("只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。");
-    error.code = "AGENT_OUTSIDE_OBJECTIVE";
+async function launchWorkChatSession({ agent, work, providerId: requestedProviderId, title, prompt: requestedPrompt }) {
+  if (!work.contributorAgentIds.includes(agent.agentId)) {
+    const error = new Error("只有挂载在当前 Work 下的 Agent 才能创建 Work Chat Session。");
+    error.code = "AGENT_OUTSIDE_WORK";
     throw error;
   }
   const providerId = resolveSessionProviderId(requestedProviderId);
@@ -5414,59 +5412,60 @@ async function launchObjectiveChatSession({ agent, objective, providerId: reques
     error.code = "PROVIDER_UNSUPPORTED";
     throw error;
   }
-  const workspacePaths = objective.workspaceIds.map((id) => store.resolveWorkspacePath(id)).filter(Boolean);
-  const cwd = workspacePaths[0] ?? await ensureAgentWorkDir(agent, { environmentName });
+  const workspacePath = store.resolveWorkspaceRoot(work.workspaceId);
+  const workspacePaths = workspacePath ? [workspacePath] : [];
+  const cwd = workspacePath ?? await ensureAgentWorkDir(agent, { environmentName });
   const openingPrompt = typeof requestedPrompt === "string" ? requestedPrompt.trim() : "";
   const prompt = openingPrompt
     ? (agentProviderRegistry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)
         ? openingPrompt
-        : `${objectiveChatContextService.build(objective.id).prompt}\n\nUser opening message:\n${openingPrompt}`)
+        : `${workChatContextService.build(work.id).prompt}\n\nUser opening message:\n${openingPrompt}`)
     : undefined;
   const session = await createSessionThroughApplication(
     providerId,
     {
       cwd,
       title,
-      defaultTitle: `${objective.name}_Chat`,
+      defaultTitle: `${work.name}_Chat`,
       prompt,
       agent: agent.name,
-      sessionKind: "objectiveChat",
+      sessionKind: "workChat",
       runtimeWorkspaceRoots: workspacePaths.length > 0 ? workspacePaths : [cwd]
     },
-    { source: "objective", actorId: agent.agentId, objectiveId: objective.id, sessionKind: "objectiveChat" }
+    { source: "work", actorId: agent.agentId, workId: work.id, sessionKind: "workChat" }
   );
   collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
-  return store.bindSessionToObjective(session.id, objective.id);
+  return store.bindSessionToWork(session.id, work.id);
 }
 
-async function ensureObjectiveChatSession(objective) {
-  const existing = store.getObjectiveChatSession(objective.id);
+async function ensureWorkChatSession(work) {
+  const existing = store.getWorkChatSession(work.id);
   if (existing) return existing;
-  const agent = (objective.contributorAgentIds ?? [])
+  const agent = (work.contributorAgentIds ?? [])
     .map((agentId) => store.getAgent(agentId))
     .find(Boolean);
   if (!agent) {
-    const error = new Error("创建 Objective Chat 需要至少一个有效的 Contributor Agent。");
-    error.code = "OBJECTIVE_CONTRIBUTOR_REQUIRED";
+    const error = new Error("创建 Work Chat 需要至少一个有效的 Contributor Agent。");
+    error.code = "WORK_CONTRIBUTOR_REQUIRED";
     error.statusCode = 400;
     throw error;
   }
-  return launchObjectiveChatSession({
+  return launchWorkChatSession({
     agent,
-    objective,
+    work,
     providerId: agentProviderRegistry.defaultProviderId,
-    title: `${objective.name}_Chat`
+    title: `${work.name}_Chat`
   });
 }
 
-async function reconcileObjectiveChatsAtStartup() {
-  for (const objective of objectiveService.listObjectives()) {
-    if (store.getObjectiveChatSession(objective.id)) continue;
+async function reconcileWorkChatsAtStartup() {
+  for (const work of workService.listWorks()) {
+    if (store.getWorkChatSession(work.id)) continue;
     try {
-      const session = await ensureObjectiveChatSession(objective);
-      console.log(`[objective-chat] backfilled objective=${objective.id} session=${session.id}`);
+      const session = await ensureWorkChatSession(work);
+      console.log(`[work-chat] backfilled work=${work.id} session=${session.id}`);
     } catch (error) {
-      console.warn(`[objective-chat] backfill skipped objective=${objective.id} code=${error.code ?? "OBJECTIVE_CHAT_CREATE_FAILED"} error=${error.message}`);
+      console.warn(`[work-chat] backfill skipped work=${work.id} code=${error.code ?? "WORK_CHAT_CREATE_FAILED"} error=${error.message}`);
     }
   }
 }
@@ -5474,10 +5473,11 @@ async function reconcileObjectiveChatsAtStartup() {
 async function startPreparedWorkSession({
   taskId, assigneeAgentId, providerId, title, workspace, idempotencyKey, sourceSessionId
 }) {
-  const task = objectiveService.getTask(taskId);
+  const task = workService.getTask(taskId);
+  const taskRepositoryId = store.getTaskWorkspaceContext(task)?.repository?.id;
   const inventory = workspace?.worktreeId ? store.getGitWorktree(workspace.worktreeId) : null;
   const canonicalPath = resolve(workspace?.path ?? "");
-  if (!inventory || inventory.repositoryId !== task.main_workspace_id
+  if (!inventory || inventory.repositoryId !== taskRepositoryId
     || inventory.isMain === true || inventory.availability !== "available"
     || resolve(inventory.canonicalPath || inventory.path) !== canonicalPath) {
     const error = new Error("Prepared Integration Worktree does not match the Task Repository inventory.");
@@ -5493,7 +5493,7 @@ async function startPreparedWorkSession({
     `UPDATE git_worktrees SET dedicated=1, created_by_startup_operation_id=?
      WHERE worktree_id=? AND repository_id=?
        AND (created_by_startup_operation_id IS NULL OR created_by_startup_operation_id=?)`,
-    [startupOperationId, inventory.worktreeId, task.main_workspace_id, startupOperationId]
+    [startupOperationId, inventory.worktreeId, taskRepositoryId, startupOperationId]
   );
   if (store.db.getRowsModified() !== 1
     || store.getGitWorktree(inventory.worktreeId)?.createdByStartupOperationId !== startupOperationId) {
@@ -5596,7 +5596,7 @@ function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
     error.code = "TASK_SESSION_MISMATCH";
     throw error;
   }
-  return presentTaskAcceptance(objectiveService.recordAcceptanceAssessment(taskId, {
+  return presentTaskAcceptance(workService.recordAcceptanceAssessment(taskId, {
     sourceSessionId: sessionId,
     results: input.results
   }));
@@ -5624,7 +5624,7 @@ function reviseTaskForSession(agentId, input = {}, metadata = {}) {
     error.code = "TASK_SESSION_MISMATCH";
     throw error;
   }
-  const result = objectiveService.reviseTask(session.taskId, {
+  const result = workService.reviseTask(session.taskId, {
     ...input,
     createdBySessionId: session.id
   });
@@ -5824,10 +5824,11 @@ async function prepareCodexProviderExecution(reference, context = {}) {
       ?? await collaborationThreadOptionsForSession(sessionId)
   );
   const resumeStartedAt = Date.now();
-  const resume = context.bindingReadinessProbe === true
-    ? codexRuntime.resumeThread.bind(codexRuntime)
-    : codexRuntime.ensureThreadResumed.bind(codexRuntime);
-  const resumeResult = await resume(threadId, {
+  // A freshly started Codex thread has no rollout until its first Turn. The
+  // adapter owns that protocol distinction: ensureThreadResumed treats the
+  // live fresh thread as ready, while still using thread/resume for persisted
+  // bindings after a process restart. A readiness probe must not bypass it.
+  const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
     cwd: activeCwd,
     runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
     ...threadOptions
@@ -6338,10 +6339,10 @@ function collaborationConfirmationTimelineItem(confirmation, sessionId) {
     collaborationRecipientSessionId: confirmation.recipientSessionId,
     collaborationRecipientSessionTitle: confirmation.recipientSessionTitle ?? recipientSession?.title ?? null,
     collaborationRecipientSessionKind: confirmation.recipientSessionKind,
-    collaborationSourceObjectiveId: confirmation.sourceObjectiveId,
-    collaborationSourceObjectiveName: confirmation.sourceObjectiveName,
-    collaborationTargetObjectiveId: confirmation.targetObjectiveId,
-    collaborationTargetObjectiveName: confirmation.targetObjectiveName,
+    collaborationSourceWorkId: confirmation.sourceWorkId,
+    collaborationSourceWorkName: confirmation.sourceWorkName,
+    collaborationTargetWorkId: confirmation.targetWorkId,
+    collaborationTargetWorkName: confirmation.targetWorkName,
     collaborationSourceTaskId: confirmation.initiatorTaskId ?? request.sourceTaskId ?? null,
     collaborationTargetTaskId: confirmation.recipientTaskId ?? request.taskId ?? null,
     collaborationRelation: confirmationTask?.collaboration_relation ?? null,
@@ -6386,8 +6387,8 @@ function sessionChannelAuthorizationTimelineItem(channelRequest, sessionId) {
     collaborationRecipientSessionId: channelRequest.requestedRecipientSessionId,
     collaborationRecipientSessionTitle: recipientLogical?.sessionName ?? recipientSession?.title ?? request.title ?? null,
     collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-    collaborationSourceObjectiveId: sourceSession?.objectiveId ?? request.sourceContext?.objectiveId ?? null,
-    collaborationTargetObjectiveId: recipientSession?.objectiveId ?? request.targetObjectiveId ?? null,
+    collaborationSourceWorkId: sourceSession?.workId ?? request.sourceContext?.workId ?? null,
+    collaborationTargetWorkId: recipientSession?.workId ?? request.targetWorkId ?? null,
     collaborationSourceTaskId: sourceSession?.taskId ?? request.sourceContext?.taskId ?? null,
     collaborationTargetTaskId: recipientSession?.taskId ?? request.taskId ?? null,
     collaborationMessageKind: request.messageKind ?? "message",
@@ -6429,8 +6430,8 @@ function collaborationPresentationForTask(task, sessionId = task.sessionId) {
       collaborationRecipientSessionId: envelope.message.recipientSessionId,
       collaborationRecipientSessionTitle: recipientSession?.title ?? null,
       collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-      collaborationSourceObjectiveId: resources.sender?.objectiveId ?? null,
-      collaborationTargetObjectiveId: resources.recipient?.objectiveId ?? null,
+      collaborationSourceWorkId: resources.sender?.workId ?? null,
+      collaborationTargetWorkId: resources.recipient?.workId ?? null,
       collaborationSourceTaskId: resources.sender?.taskId ?? null,
       collaborationTargetTaskId: resources.recipient?.taskId ?? null,
       collaborationMessageKind: envelope.message.messageKind,
@@ -6466,8 +6467,8 @@ function collaborationPresentationForTask(task, sessionId = task.sessionId) {
   const targetSession = collaborationSessionPresentation(route.targetSessionId);
   const targetTaskId = envelope?.task.taskId ?? task.source?.targetTaskId ?? null;
   const targetTask = targetTaskId ? store.getTask(targetTaskId) : null;
-  const sourceObjectiveId = route.sourceObjectiveId ?? task.source?.sourceObjectiveId ?? null;
-  const targetObjectiveId = route.targetObjectiveId ?? task.source?.targetObjectiveId ?? null;
+  const sourceWorkId = route.sourceWorkId ?? task.source?.sourceWorkId ?? null;
+  const targetWorkId = route.targetWorkId ?? task.source?.targetWorkId ?? null;
   return {
     presentationRole: "collaboration",
     presentationText: envelope.message.body,
@@ -6482,10 +6483,10 @@ function collaborationPresentationForTask(task, sessionId = task.sessionId) {
     collaborationRecipientSessionId: route.targetSessionId ?? task.source?.recipientSessionId ?? sessionId ?? null,
     collaborationRecipientSessionTitle: route.targetSessionTitle ?? targetSession?.title ?? null,
     collaborationRecipientSessionKind: targetSession?.sessionKind ?? null,
-    collaborationSourceObjectiveId: sourceObjectiveId,
-    collaborationSourceObjectiveName: sourceObjectiveId ? store.getObjective(sourceObjectiveId)?.name ?? null : null,
-    collaborationTargetObjectiveId: targetObjectiveId,
-    collaborationTargetObjectiveName: targetObjectiveId ? store.getObjective(targetObjectiveId)?.name ?? null : null,
+    collaborationSourceWorkId: sourceWorkId,
+    collaborationSourceWorkName: sourceWorkId ? store.getWork(sourceWorkId)?.name ?? null : null,
+    collaborationTargetWorkId: targetWorkId,
+    collaborationTargetWorkName: targetWorkId ? store.getWork(targetWorkId)?.name ?? null : null,
     collaborationRequestTitle: envelope?.task.title ?? task.source?.taskTitle ?? null,
     collaborationSourceTaskId: envelope?.task.sourceTaskId ?? task.source?.sourceTaskId ?? null,
     collaborationTargetTaskId: targetTaskId,
@@ -8275,11 +8276,12 @@ async function inspectTaskWorktree(taskId) {
     ?? sessions.at(-1)
     ?? null;
   if (!session) {
-    if (!task.main_workspace_id) {
+    const repositoryId = store.getTaskWorkspaceContext(task)?.repository?.id;
+    if (!repositoryId) {
       return { status: "none", sessionId: null, worktree: null, canReclaim: false, blocker: null };
     }
     try {
-      const project = await projectApplicationService.requireProject(task.main_workspace_id);
+      const project = await projectApplicationService.requireProject(repositoryId);
       const startup = store.selectOne(
         `SELECT worktree_id FROM work_session_startup_operations
          WHERE task_id=? AND worktree_id IS NOT NULL
@@ -8918,7 +8920,7 @@ function route(request, response) {
         const platformScope = session?.sessionKind === "assistantChat"
           && isPlatformAssistant(store.getAgent(actorId));
         if (!actorId || !session || !providerBindingId || providerBindingId !== metadata.providerBindingId
-          || (!platformScope && !["objectiveChat", "worker"].includes(session.sessionKind))
+          || (!platformScope && !["workChat", "worker"].includes(session.sessionKind))
           || !actorMatches) {
           const error = new Error("Session Tool scope is invalid or no longer active.");
           error.code = "SESSION_TOOL_SCOPE_REQUIRED";
@@ -8968,7 +8970,7 @@ function route(request, response) {
     return;
   }
 
-  if (request.method === "POST" && url.pathname === "/internal/objective-chat/tool") {
+  if (request.method === "POST" && url.pathname === "/internal/work-chat/tool") {
     readJson(request)
       .then(async (input) => {
         const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
@@ -8977,14 +8979,14 @@ function route(request, response) {
         const requestedSessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
         const session = (requestedSessionId ? store.getSession(requestedSessionId) : null)
           ?? store.listSessionsByAgent(actorId).find((candidate) =>
-            candidate.sessionKind === "objectiveChat" && candidate.objectiveId === input.objectiveId
+            candidate.sessionKind === "workChat" && candidate.workId === input.workId
           );
         const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
-        if (!actorId || !session || session.sessionKind !== "objectiveChat"
-          || session.objectiveId !== input.objectiveId
+        if (!actorId || !session || session.sessionKind !== "workChat"
+          || session.workId !== input.workId
           || (session.agentId !== actorId && boundAgent?.agentId !== actorId)) {
-          const error = new Error("Objective Chat tool scope is invalid or no longer active.");
-          error.code = "OBJECTIVE_CHAT_SCOPE_REQUIRED";
+          const error = new Error("Work Chat tool scope is invalid or no longer active.");
+          error.code = "WORK_CHAT_SCOPE_REQUIRED";
           throw error;
         }
         const result = await toolHostService.execute({
@@ -8997,7 +8999,7 @@ function route(request, response) {
       })
       .catch((error) => sendJson(response, errorStatus(error, 403), {
         error: error.message,
-        code: error.code ?? "OBJECTIVE_CHAT_TOOL_FAILED"
+        code: error.code ?? "WORK_CHAT_TOOL_FAILED"
       }));
     return;
   }
@@ -9078,7 +9080,7 @@ function route(request, response) {
     request,
     response,
     url,
-    objectiveService,
+    workService,
     hubService,
     router: collaborationRouter,
     memoryExtractor,
@@ -9089,8 +9091,8 @@ function route(request, response) {
     getTaskStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
     launchAgentSession,
-    launchObjectiveChatSession,
-    ensureObjectiveChatSession,
+    launchWorkChatSession,
+    ensureWorkChatSession,
     createSession: (input) => {
       const providerId = requestedProviderId(input.providerId ?? input.agent);
       return createSessionThroughApplication(providerId, input, { source: "http" });
@@ -9842,11 +9844,11 @@ function route(request, response) {
   const projectDevelopmentServiceActionMatch = url.pathname.match(
     /^\/projects\/([^/]+)\/development-service\/actions\/([^/]+)$/
   );
-  const projectObjectiveIntegrationsMatch = url.pathname.match(
-    /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations$/
+  const projectWorkIntegrationsMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/works\/([^/]+)\/integrations$/
   );
-  const projectObjectiveIntegrationConflictMatch = url.pathname.match(
-    /^\/projects\/([^/]+)\/objectives\/([^/]+)\/integrations\/([^/]+)\/conflict-task$/
+  const projectWorkIntegrationConflictMatch = url.pathname.match(
+    /^\/projects\/([^/]+)\/works\/([^/]+)\/integrations\/([^/]+)\/conflict-task$/
   );
   const projectMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
   if (request.method === "GET" && url.pathname === "/worktree-management/repositories") {
@@ -9937,10 +9939,10 @@ function route(request, response) {
       }));
     return;
   }
-  if (request.method === "GET" && projectObjectiveIntegrationsMatch) {
-    const projectId = decodeURIComponent(projectObjectiveIntegrationsMatch[1]);
-    const objectiveId = decodeURIComponent(projectObjectiveIntegrationsMatch[2]);
-    projectWorktreeIntegrationService.status(projectId, objectiveId)
+  if (request.method === "GET" && projectWorkIntegrationsMatch) {
+    const projectId = decodeURIComponent(projectWorkIntegrationsMatch[1]);
+    const workId = decodeURIComponent(projectWorkIntegrationsMatch[2]);
+    projectWorktreeIntegrationService.status(projectId, workId)
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message,
@@ -9948,10 +9950,10 @@ function route(request, response) {
       }));
     return;
   }
-  if (request.method === "POST" && projectObjectiveIntegrationsMatch) {
-    const projectId = decodeURIComponent(projectObjectiveIntegrationsMatch[1]);
-    const objectiveId = decodeURIComponent(projectObjectiveIntegrationsMatch[2]);
-    projectWorktreeIntegrationService.integrateCompleted(projectId, objectiveId)
+  if (request.method === "POST" && projectWorkIntegrationsMatch) {
+    const projectId = decodeURIComponent(projectWorkIntegrationsMatch[1]);
+    const workId = decodeURIComponent(projectWorkIntegrationsMatch[2]);
+    projectWorktreeIntegrationService.integrateCompleted(projectId, workId)
       .then((result) => sendJson(response, 200, result))
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message,
@@ -9959,14 +9961,14 @@ function route(request, response) {
       }));
     return;
   }
-  if (request.method === "POST" && projectObjectiveIntegrationConflictMatch) {
-    const projectId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[1]);
-    const objectiveId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[2]);
-    const runId = decodeURIComponent(projectObjectiveIntegrationConflictMatch[3]);
+  if (request.method === "POST" && projectWorkIntegrationConflictMatch) {
+    const projectId = decodeURIComponent(projectWorkIntegrationConflictMatch[1]);
+    const workId = decodeURIComponent(projectWorkIntegrationConflictMatch[2]);
+    const runId = decodeURIComponent(projectWorkIntegrationConflictMatch[3]);
     readJson(request)
       .then((input) => projectWorktreeIntegrationService.createConflictTask(
         projectId,
-        objectiveId,
+        workId,
         runId,
         input
       ))
@@ -10049,7 +10051,7 @@ function route(request, response) {
       ? Math.min(requestedLimit, 100)
       : 50;
     const requestedSessionKind = url.searchParams.get("sessionKind");
-    const sessionKind = requestedSessionKind && ["assistantChat", "objectiveChat", "worker"].includes(requestedSessionKind)
+    const sessionKind = requestedSessionKind && ["assistantChat", "workChat", "worker"].includes(requestedSessionKind)
       ? requestedSessionKind
       : null;
     if (requestedSessionKind && !sessionKind) {
@@ -11164,7 +11166,7 @@ function startBackendRuntime() {
         console.warn(`[worktree-integration] startup recovery failed error=${error?.message ?? error}`);
       }));
     reconcileEntityTasksAtStartup();
-    trackStartupMaintenance(reconcileObjectiveChatsAtStartup());
+    trackStartupMaintenance(reconcileWorkChatsAtStartup());
     scheduledSessionTaskService.start();
     agentWorkQueueInterval = setInterval(() => {
       tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));

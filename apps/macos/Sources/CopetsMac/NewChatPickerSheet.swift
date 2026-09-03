@@ -2,7 +2,7 @@ import SwiftUI
 
 enum NewSessionKind: String, CaseIterable, Identifiable {
     case assistantChat
-    case objectiveChat
+    case workChat
     case worker
 
     var id: String { rawValue }
@@ -10,7 +10,7 @@ enum NewSessionKind: String, CaseIterable, Identifiable {
     @MainActor var title: String {
         switch self {
         case .assistantChat: L10n("Assistant Chat")
-        case .objectiveChat: L10n("Objective Chat")
+        case .workChat: L10n("Work Chat")
         case .worker: L10n("Worker Session")
         }
     }
@@ -50,7 +50,7 @@ enum WorkerSessionBackgroundRetryDecision: Equatable {
 }
 
 /// 统一 Session 创建入口。
-/// Assistant Chat 只绑定 Assistant；Objective Chat 绑定 Objective 与其 Contributor；
+/// Assistant Chat 只绑定 Assistant；Work Chat 绑定 Work 与其 Contributor；
 /// Worker Session 强制同时绑定 CorptieTask 与 IC Agent。
 struct NewSessionCreationSheet: View {
     @ObservedObject private var client = EntityAPIClient.shared
@@ -58,7 +58,7 @@ struct NewSessionCreationSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let fixedAgent: Agent?
-    let fixedObjective: Objective?
+    let fixedWork: Work?
     let fixedCorptieTask: CorptieTask?
     let submitsInBackground: Bool
     var onCreated: (TaskSession) -> Void
@@ -66,7 +66,7 @@ struct NewSessionCreationSheet: View {
     @State private var kind: NewSessionKind
     @State private var selectedAgentId: String?
     @State private var selectedCorptieTaskId: String?
-    @State private var selectedObjectiveId: String?
+    @State private var selectedWorkId: String?
     @State private var sessionTitle = ""
     @State private var selectedProviderId = ""
     @State private var titleWasEdited = false
@@ -77,19 +77,19 @@ struct NewSessionCreationSheet: View {
 
     init(
         fixedAgent: Agent? = nil,
-        fixedObjective: Objective? = nil,
+        fixedWork: Work? = nil,
         fixedCorptieTask: CorptieTask? = nil,
         submitsInBackground: Bool = false,
         onCreated: @escaping (TaskSession) -> Void = { _ in }
     ) {
         self.fixedAgent = fixedAgent
-        self.fixedObjective = fixedObjective
+        self.fixedWork = fixedWork
         self.fixedCorptieTask = fixedCorptieTask
         self.submitsInBackground = submitsInBackground
         self.onCreated = onCreated
-        _kind = State(initialValue: fixedCorptieTask != nil ? .worker : (fixedObjective != nil ? .objectiveChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat)))
+        _kind = State(initialValue: fixedCorptieTask != nil ? .worker : (fixedWork != nil ? .workChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat)))
         _selectedAgentId = State(initialValue: fixedAgent?.agentId)
-        _selectedObjectiveId = State(initialValue: fixedObjective?.id)
+        _selectedWorkId = State(initialValue: fixedWork?.id)
         _selectedCorptieTaskId = State(initialValue: fixedCorptieTask?.id)
         _sessionTitle = State(initialValue: SessionCreationTitlePolicy.defaultTitle(
             taskTitle: fixedCorptieTask?.title,
@@ -103,7 +103,7 @@ struct NewSessionCreationSheet: View {
             Text(L10n("新建会话"))
                 .font(.title3.bold())
 
-            if fixedAgent == nil, fixedObjective == nil {
+            if fixedAgent == nil, fixedWork == nil {
                 Picker(L10n("会话类型"), selection: $kind) {
                     ForEach(NewSessionKind.allCases) { option in
                         Text(option.title).tag(option)
@@ -124,8 +124,8 @@ struct NewSessionCreationSheet: View {
             switch kind {
             case .assistantChat:
                 assistantSection
-            case .objectiveChat:
-                objectiveSection
+            case .workChat:
+                workSection
             case .worker:
                 workerSection
             }
@@ -172,15 +172,15 @@ struct NewSessionCreationSheet: View {
             if kind == .worker, fixedCorptieTask == nil, tasks.isEmpty {
                 await loadCorptieTasks()
             }
-            if kind == .objectiveChat, client.objectives.isEmpty {
-                await client.refreshObjectives()
-                if selectedObjectiveId == nil { selectedObjectiveId = client.objectives.first?.id }
+            if kind == .workChat, client.works.isEmpty {
+                await client.refreshWorks()
+                if selectedWorkId == nil { selectedWorkId = client.works.first?.id }
             }
         }
         .onChange(of: selectedAgentId) { _, _ in applySuggestedTitle() }
         .onChange(of: selectedCorptieTaskId) { _, _ in applySuggestedTitle() }
-        .onChange(of: selectedObjectiveId) { _, _ in
-            if kind == .objectiveChat { normalizeAgentSelection() }
+        .onChange(of: selectedWorkId) { _, _ in
+            if kind == .workChat { normalizeAgentSelection() }
         }
         .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
     }
@@ -286,10 +286,6 @@ struct NewSessionCreationSheet: View {
                             .font(.body.weight(.medium))
                         HStack(spacing: 6) {
                             Text(task.lifecycleState)
-                            if task.mainWorkspaceId == nil {
-                                Text(L10n("未绑定 Workspace"))
-                                    .foregroundStyle(.orange)
-                            }
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -313,32 +309,32 @@ struct NewSessionCreationSheet: View {
     }
 
     @ViewBuilder
-    private var objectiveSection: some View {
+    private var workSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(L10n("选择 Objective"))
+            Text(L10n("选择 Work"))
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            if let fixedObjective {
+            if let fixedWork {
                 selectedRow(
-                    title: fixedObjective.name,
-                    subtitle: fixedObjective.description.isEmpty ? fixedObjective.status : fixedObjective.description,
+                    title: fixedWork.name,
+                    subtitle: fixedWork.description.isEmpty ? fixedWork.status : fixedWork.description,
                     systemImage: "target"
                 )
-            } else if client.objectives.isEmpty {
+            } else if client.works.isEmpty {
                 ContentUnavailableView(
-                    L10n("暂无 Objective"),
+                    L10n("暂无 Work"),
                     systemImage: "scope",
-                    description: Text(L10n("Objective Chat 必须绑定一个 Objective。"))
+                    description: Text(L10n("Work Chat 必须绑定一个 Work。"))
                 )
                 .frame(maxWidth: .infinity, minHeight: 120)
             } else {
-                List(client.objectives, selection: $selectedObjectiveId) { objective in
+                List(client.works, selection: $selectedWorkId) { work in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(objective.name).font(.body.weight(.medium))
-                        Text(objective.description.isEmpty ? objective.status : objective.description)
+                        Text(work.name).font(.body.weight(.medium))
+                        Text(work.description.isEmpty ? work.status : work.description)
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                     }
-                    .tag(objective.id)
+                    .tag(work.id)
                 }
                 .listStyle(.inset)
                 .frame(minHeight: 150)
@@ -346,10 +342,10 @@ struct NewSessionCreationSheet: View {
         }
         if fixedAgent == nil {
             choiceSection(
-                title: L10n("选择 Objective Agent"),
-                emptyTitle: L10n("Objective 暂无可用 Agent"),
-                emptyDescription: L10n("请先在 Objective 详情中挂载 Independent Contributor。"),
-                rows: objectiveAgents
+                title: L10n("选择 Work Agent"),
+                emptyTitle: L10n("Work 暂无可用 Agent"),
+                emptyDescription: L10n("请先在 Work 详情中挂载 Independent Contributor。"),
+                rows: workAgents
             ) { agent in agentChoiceRow(agent) }
         }
     }
@@ -358,10 +354,10 @@ struct NewSessionCreationSheet: View {
         client.agents.filter(\.isIndependentContributor)
     }
 
-    private var objectiveAgents: [Agent] {
-        let objective = fixedObjective ?? client.objectives.first(where: { $0.id == selectedObjectiveId })
-        guard let objective else { return [] }
-        let contributorIds = Set(objective.contributorAgentIds)
+    private var workAgents: [Agent] {
+        let work = fixedWork ?? client.works.first(where: { $0.id == selectedWorkId })
+        guard let work else { return [] }
+        let contributorIds = Set(work.contributorAgentIds)
         return client.agents.filter { contributorIds.contains($0.agentId) }
     }
 
@@ -369,7 +365,7 @@ struct NewSessionCreationSheet: View {
         guard selectedAgentId != nil, !selectedProviderId.isEmpty else { return false }
         switch kind {
         case .assistantChat: return true
-        case .objectiveChat: return selectedObjectiveId != nil
+        case .workChat: return selectedWorkId != nil
         case .worker: return selectedCorptieTaskId != nil
         }
     }
@@ -449,10 +445,10 @@ struct NewSessionCreationSheet: View {
 
     private func normalizeAgentSelection() {
         if let fixedAgent {
-            if let fixedObjective {
-                kind = .objectiveChat
-                selectedObjectiveId = fixedObjective.id
-                selectedAgentId = fixedObjective.contributorAgentIds.contains(fixedAgent.agentId) ? fixedAgent.agentId : nil
+            if let fixedWork {
+                kind = .workChat
+                selectedWorkId = fixedWork.id
+                selectedAgentId = fixedWork.contributorAgentIds.contains(fixedAgent.agentId) ? fixedAgent.agentId : nil
             } else {
                 selectedAgentId = fixedAgent.agentId
                 kind = fixedAgent.isAssistant ? .assistantChat : .worker
@@ -462,7 +458,7 @@ struct NewSessionCreationSheet: View {
         let candidates: [Agent]
         switch kind {
         case .assistantChat: candidates = client.assistantAgents
-        case .objectiveChat: candidates = objectiveAgents
+        case .workChat: candidates = workAgents
         case .worker: candidates = independentContributors
         }
         if !candidates.contains(where: { $0.agentId == selectedAgentId }) {
@@ -517,13 +513,13 @@ struct NewSessionCreationSheet: View {
                     providerId: selectedProviderId,
                     title: requestedTitle
                 )
-            case .objectiveChat:
-                guard let objectiveId = selectedObjectiveId else {
+            case .workChat:
+                guard let workId = selectedWorkId else {
                     isCreating = false
                     return
                 }
-                result = await client.startObjectiveChat(
-                    objectiveId: objectiveId,
+                result = await client.startWorkChat(
+                    workId: workId,
                     agentId: agentId,
                     providerId: selectedProviderId,
                     title: requestedTitle

@@ -1,7 +1,7 @@
 import SwiftUI
 
 // Agent 选择弹窗：搜索 / 选择已有 Agent / 新建 Agent。
-// 由 ObjectiveResourcesEditor 的 Contributor Agent 加号打开；选中的 id 直接写入 selectedIds。
+// 由 WorkResourcesEditor 的 Contributor Agent 加号打开；选中的 id 直接写入 selectedIds。
 
 struct AgentPickerView: View {
     enum RoleFilter {

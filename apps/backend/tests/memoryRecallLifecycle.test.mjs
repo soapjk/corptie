@@ -17,18 +17,18 @@ async function fixture() {
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
   const agent = store.createAgent({ id: "agent:recall", name: "Recall" });
-  store.createObjective({ id: "objective:recall", name: "Recall" });
-  store.createTask({ id: "task:recall", objectiveId: "objective:recall", title: "Recall" });
+  store.createWork({ id: "work:recall", name: "Recall" });
+  store.createTask({ id: "task:recall", workId: "work:recall", title: "Recall" });
   store.createSession({
     id: "session:recall", title: "Recall", provider: "codex-app-server", status: "running",
     sessionKind: "worker", agentId: agent.agentId,
-    objectiveId: "objective:recall", taskId: "task:recall"
+    workId: "work:recall", taskId: "task:recall"
   });
   return {
     directory, dbPath, configPath, store,
     scope: {
       sessionId: "session:recall", agentId: agent.agentId,
-      objectiveId: "objective:recall", taskId: "task:recall"
+      workId: "work:recall", taskId: "task:recall"
     }
   };
 }
@@ -43,11 +43,11 @@ function memory(store, input) {
   });
 }
 
-test("startup recall is bounded, trusted, high-confidence and respects Task→Objective→Agent ties", async () => {
+test("startup recall is bounded, trusted, high-confidence and respects Task→Work→Agent ties", async () => {
   const f = await fixture();
   try {
     memory(f.store, { ownerType: "agent", ownerId: "agent:recall", content: "same agent" });
-    memory(f.store, { ownerType: "objective", ownerId: "objective:recall", content: "same objective" });
+    memory(f.store, { ownerType: "work", ownerId: "work:recall", content: "same work" });
     memory(f.store, {
       ownerType: "task", ownerId: "task:recall", taskId: "task:recall",
       sourceSessionId: "session:recall", content: "same work item"
@@ -62,7 +62,7 @@ test("startup recall is bounded, trusted, high-confidence and respects Task→Ob
       clock: () => "2026-08-23T00:00:00.000Z"
     }).startup(f.scope);
     assert.equal(recall.memories.length, 8);
-    assert.deepEqual(recall.memories.slice(0, 3).map((item) => item.owner_type), ["task", "objective", "agent"]);
+    assert.deepEqual(recall.memories.slice(0, 3).map((item) => item.owner_type), ["task", "work", "agent"]);
     assert.ok(recall.memories.every((item) => item.trust_level === "trusted" && item.confidence >= 0.7));
     assert.equal(recall.mode, "bounded_trusted");
   } finally {

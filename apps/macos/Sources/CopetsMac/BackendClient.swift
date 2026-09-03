@@ -1396,7 +1396,7 @@ final class BackendClient: ObservableObject {
 
     private func projectSessionsFromAppState() {
         let nextSessions = sessions
-        // `appState.$state` 对任何实体（tasks/objectives/agents…）变化都会发射，
+        // `appState.$state` 对任何实体（tasks/works/agents…）变化都会发射，
         // 但这里只关心活动会话集合是否真的变了。相等时短路，避免无关实体的
         // 高频更新反复触发 sessionsDidChange → 下游预加载/列表重算。
         guard nextSessions != lastProjectedSessions else { return }
@@ -2052,7 +2052,7 @@ final class BackendClient: ObservableObject {
                 }
             }
             self.startProjectStatusFallbackRefresh(for: session, refreshImmediately: true)
-            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {
+            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .workChat {
                 // References are supplementary metadata. Do not put them in
                 // front of the message snapshot on the critical click path.
                 Task { [weak self] in await self?.loadContextReferences(for: session) }
@@ -2110,7 +2110,7 @@ final class BackendClient: ObservableObject {
 
     func loadContextReferences(for session: TaskSession? = nil) async {
         guard let target = session ?? selectedSession,
-              target.resolvedSessionKind == .assistantChat || target.resolvedSessionKind == .objectiveChat else {
+              target.resolvedSessionKind == .assistantChat || target.resolvedSessionKind == .workChat else {
             selectedContextReferences = []
             return
         }
@@ -2489,14 +2489,14 @@ final class BackendClient: ObservableObject {
 
     private func loadProjectIntegrationStatus(for session: TaskSession, projectId: String) async {
         guard selectedSession?.id == session.id,
-              let objectiveId = session.objectiveId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !objectiveId.isEmpty else {
+              let workId = session.workId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !workId.isEmpty else {
             selectedProjectIntegrationStatus = nil
             return
         }
         do {
             let url = baseURL.appending(
-                path: "projects/\(projectId)/objectives/\(objectiveId)/integrations"
+                path: "projects/\(projectId)/works/\(workId)/integrations"
             )
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let httpResponse = response as? HTTPURLResponse,
@@ -2527,10 +2527,10 @@ final class BackendClient: ObservableObject {
             recordProjectWorktreeActionError(L10n("The selected Session is not attached to a repository workspace."))
             return
         }
-        guard let objectiveId = session.objectiveId?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !objectiveId.isEmpty else {
+        guard let workId = session.workId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !workId.isEmpty else {
             completedWorktreeIntegrationGate.finish()
-            recordProjectWorktreeActionError(L10n("The selected Session is not attached to an Objective."))
+            recordProjectWorktreeActionError(L10n("The selected Session is not attached to an Work."))
             return
         }
         beginProjectWorktreeAction()
@@ -2542,7 +2542,7 @@ final class BackendClient: ObservableObject {
             }
             do {
                 var request = URLRequest(url: baseURL.appending(
-                    path: "projects/\(projectId)/objectives/\(objectiveId)/integrations"
+                    path: "projects/\(projectId)/works/\(workId)/integrations"
                 ))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -2581,7 +2581,7 @@ final class BackendClient: ObservableObject {
     func createIntegrationConflictCorptieTask(runId: String, agentId: String, title: String? = nil) {
         guard let session = selectedSession,
               let projectId = projectId(for: session),
-              let objectiveId = session.objectiveId,
+              let workId = session.workId,
               !isCreatingIntegrationConflictCorptieTask else { return }
         Task {
             beginProjectWorktreeAction()
@@ -2589,7 +2589,7 @@ final class BackendClient: ObservableObject {
             defer { isCreatingIntegrationConflictCorptieTask = false }
             do {
                 var request = URLRequest(url: baseURL.appending(
-                    path: "projects/\(projectId)/objectives/\(objectiveId)/integrations/\(runId)/conflict-task"
+                    path: "projects/\(projectId)/works/\(workId)/integrations/\(runId)/conflict-task"
                 ))
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "content-type")
@@ -2612,7 +2612,7 @@ final class BackendClient: ObservableObject {
                 if var current = selectedProjectIntegrationStatus {
                     current = ProjectIntegrationStatusResponse(
                         projectId: current.projectId,
-                        objective: current.objective,
+                        work: current.work,
                         mainHeadOid: current.mainHeadOid,
                         eligibleWorktrees: current.eligibleWorktrees,
                         excludedWorktrees: current.excludedWorktrees,
@@ -3119,10 +3119,10 @@ final class BackendClient: ObservableObject {
             initiatorName: item.collaborationSenderName,
             recipientAgentId: item.collaborationRecipientAgentId,
             recipientName: item.collaborationRecipientName ?? "Agent",
-            sourceObjectiveId: item.collaborationSourceObjectiveId,
-            sourceObjectiveName: item.collaborationSourceObjectiveName,
-            targetObjectiveId: item.collaborationTargetObjectiveId,
-            targetObjectiveName: item.collaborationTargetObjectiveName,
+            sourceWorkId: item.collaborationSourceWorkId,
+            sourceWorkName: item.collaborationSourceWorkName,
+            targetWorkId: item.collaborationTargetWorkId,
+            targetWorkName: item.collaborationTargetWorkName,
             initiatorSessionId: item.collaborationInitiatorSessionId,
             initiatorSessionTitle: item.collaborationInitiatorSessionTitle,
             initiatorSessionKind: item.collaborationInitiatorSessionKind,

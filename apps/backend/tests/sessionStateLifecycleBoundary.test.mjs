@@ -59,6 +59,15 @@ test("initial prompts are persisted after Session and Binding creation before Pr
   assert.doesNotMatch(source.slice(providerCreateBegin, providerCreateEnd), /startTurn/);
 });
 
+test("Codex binding readiness preserves a live empty thread until its first Turn", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const begin = source.indexOf("async function prepareCodexProviderExecution");
+  const end = source.indexOf("async function probeCodexProviderBinding", begin);
+  const body = source.slice(begin, end);
+  assert.match(body, /codexRuntime\.ensureThreadResumed\(threadId/);
+  assert.doesNotMatch(body, /bindingReadinessProbe[\s\S]*codexRuntime\.resumeThread/);
+});
+
 test("Worker initial prompts drain only after the authoritative ready receipt commit", async () => {
   const source = await readFile(sourceURL, "utf8");
   const serviceBegin = source.indexOf("const providerWorkSessionPort = new ProviderWorkSessionPort");

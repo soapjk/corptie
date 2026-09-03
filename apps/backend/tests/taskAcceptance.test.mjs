@@ -49,7 +49,7 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
   assert.equal(parseAcceptanceAssessment({}), null);
   const presented = presentTaskAcceptance({
     id: "task:canonical",
-    objective_id: "objective:1",
+    work_id: "work:1",
     title: "Canonical Task",
     description: "Description",
     goal: "Goal",
@@ -57,7 +57,6 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     verification_criteria: "Verification",
     priority: 3,
     lifecycle_state: "in_progress",
-    main_workspace_id: "workspace:1",
     main_agent_id: "agent:1",
     current_session_id: "session:1",
     execution_status: "running",
@@ -70,7 +69,7 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
   });
   assert.deepEqual(presented, {
     id: "task:canonical",
-    objectiveId: "objective:1",
+    workId: "work:1",
     title: "Canonical Task",
     description: "Description",
     goal: "Goal",
@@ -78,7 +77,6 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     verificationCriteria: "Verification",
     priority: 3,
     lifecycleState: "in_progress",
-    mainWorkspaceId: "workspace:1",
     mainAgentId: "agent:1",
     currentSessionId: "session:1",
     executionStatus: "running",
@@ -91,7 +89,7 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     updatedAt: "2026-09-01T01:00:00.000Z"
   });
   assert.equal(Object.hasOwn(presented, "status"), false);
-  assert.equal(Object.hasOwn(presented, "objective_id"), false);
+  assert.equal(Object.hasOwn(presented, "work_id"), false);
 });
 
 test("worker prompt carries the Task acceptance criteria", () => {
@@ -223,12 +221,12 @@ test("provider-neutral completion tool carries exact direct-user Session evidenc
   assert.ok(definition);
   assert.equal(definition.inputSchema.additionalProperties, false);
   assert.deepEqual(new Set(definition.inputSchema.required), new Set([
-    "targetTaskId", "objectiveId", "logicalSessionId", "userMessageEventId",
+    "targetTaskId", "workId", "logicalSessionId", "userMessageEventId",
     "userMessageSequence", "turnId", "requestId", "idempotencyKey"
   ]));
   const calls = [];
   const argumentsValue = {
-    targetTaskId: "task:one", objectiveId: "objective:one",
+    targetTaskId: "task:one", workId: "work:one",
     logicalSessionId: "session:logical", userMessageEventId: "user-message:one",
     userMessageSequence: 7, turnId: "turn:one", requestId: "request:one",
     idempotencyKey: "completion:one"

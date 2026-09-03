@@ -5943,7 +5943,7 @@ window.__ModuleLoader__.load({
 		const en = {
 			"view.chat": "Chat",
 			"hint.plan": PLAN_NEXT_ACTION_EN,
-			"hint.goal": "describe the objective for a long-running task",
+			"hint.goal": "describe the work for a long-running task",
 			"hint.goal.active": "goal active — edit / pause / resume / clear",
 			"placeholder.plan": PLAN_NEXT_ACTION_EN,
 			"placeholder.default": "Message the agent",

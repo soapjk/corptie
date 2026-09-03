@@ -79,18 +79,18 @@ struct CorptieTaskAcceptanceInteractionTests {
         #expect(CorptieTaskAcceptanceReviewState.resolve(item) == .manuallyRejected)
     }
 
-    @Test func objectiveDiscussionOpensItsExistingBoundSession() {
-        let existing = makeObjectiveSession(id: "session:discussion", objectiveId: "objective:one")
-        #expect(ObjectiveDiscussionRouteDecision.resolve(
-            objectiveId: "objective:one",
+    @Test func workDiscussionOpensItsExistingBoundSession() {
+        let existing = makeWorkSession(id: "session:discussion", workId: "work:one")
+        #expect(WorkDiscussionRouteDecision.resolve(
+            workId: "work:one",
             sessions: [existing]
         ) == .open(sessionId: existing.id))
     }
 
-    @Test func objectiveDiscussionUsesCreationFlowWhenNoBoundSessionExists() {
-        let other = makeObjectiveSession(id: "session:other", objectiveId: "objective:other")
-        #expect(ObjectiveDiscussionRouteDecision.resolve(
-            objectiveId: "objective:one",
+    @Test func workDiscussionUsesCreationFlowWhenNoBoundSessionExists() {
+        let other = makeWorkSession(id: "session:other", workId: "work:other")
+        #expect(WorkDiscussionRouteDecision.resolve(
+            workId: "work:one",
             sessions: [other]
         ) == .create)
     }
@@ -102,13 +102,12 @@ private func makeAcceptanceCorptieTask(
 ) -> CorptieTask {
     CorptieTask(
         id: "task:acceptance",
-        objectiveId: "objective:one",
+        workId: "work:one",
         title: "Acceptance",
         description: "",
         acceptanceCriteria: "Criterion",
         priority: "medium",
         lifecycleState: "in_progress",
-        mainWorkspaceId: nil,
         mainAgentId: nil,
         currentSessionId: nil,
         executionStatus: "idle",
@@ -142,14 +141,14 @@ private func acceptanceResult(verdict: String) -> CorptieTaskAcceptanceResult {
     )
 }
 
-private func makeObjectiveSession(id: String, objectiveId: String) -> TaskSession {
+private func makeWorkSession(id: String, workId: String) -> TaskSession {
     TaskSession(
         id: id,
         title: id,
         agent: "Agent",
         agentId: "agent:one",
-        sessionKind: .objectiveChat,
-        objectiveId: objectiveId,
+        sessionKind: .workChat,
+        workId: workId,
         taskId: nil,
         status: .complete,
         progress: 1,

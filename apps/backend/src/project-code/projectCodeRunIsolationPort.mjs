@@ -307,7 +307,7 @@ function authenticatedSession(input, snapshot = input.snapshot) {
   return Object.freeze({
     logicalSessionId: input.sessionContext.logicalSessionId,
     taskId: input.sessionContext.taskId,
-    objectiveId: input.sessionContext.objectiveId,
+    workId: input.sessionContext.workId,
     repositoryId: snapshot.receipt.repositoryId,
     worktreeId: snapshot.receipt.worktreeId
   });

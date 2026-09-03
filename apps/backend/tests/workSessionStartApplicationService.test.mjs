@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { WorkSessionStartApplicationService } from "../src/application/workSessionStartApplicationService.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 
@@ -22,25 +22,26 @@ async function fixture() {
     dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json")
   });
   await store.initialize();
-  const objectiveService = new ObjectiveApplicationService({ store });
+  const workService = new WorkApplicationService({ store });
   const worker = store.createAgent({
     id: "agent:worker", name: "Worker", role: "independentContributor"
   });
   const now = new Date().toISOString();
+  store.createWorkspace({ workspaceId: "workspace:one", kind: "linkedLocal", ownership: "userManaged", rootPath: directory });
   store.db.run(
-    "INSERT INTO git_repositories (repository_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?)",
-    ["repository:one", join(directory, ".git"), now, now]
+    "INSERT INTO git_repositories (repository_id, workspace_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?, ?)",
+    ["repository:one", "workspace:one", join(directory, ".git"), now, now]
   );
-  const objective = objectiveService.createObjective({
-    id: "objective:one", name: "One", contributorAgentIds: [worker.agentId],
-    workspaceIds: ["repository:one"]
+  const work = workService.createWork({
+    id: "work:one", name: "One", contributorAgentIds: [worker.agentId],
+    workspaceId: "workspace:one"
   });
-  const task = objectiveService.createTask({
-    id: "task:one", objectiveId: objective.id, title: "Task", mainWorkspaceId: "repository:one"
+  const task = workService.createTask({
+    id: "task:one", workId: work.id, title: "Task"
   });
   store.createSession({
     id: "provider:source", title: "Source", provider: "codex-app-server",
-    agentId: worker.agentId, sessionKind: "objectiveChat", objectiveId: objective.id, cwd: directory
+    agentId: worker.agentId, sessionKind: "workChat", workId: work.id, cwd: directory
   });
   store.createLogicalSessionRoute({
     logicalSessionId: "session:source", legacySessionId: "provider:source",
@@ -55,7 +56,7 @@ async function fixture() {
   const service = new WorkSessionStartApplicationService({
     store, coordinator, providerRegistry, resolveProviderId: (value) => value
   });
-  return { directory, store, objectiveService, objective, task, worker, service, calls };
+  return { directory, store, workService, work, task, worker, service, calls };
 }
 
 function command(patch = {}) {
@@ -99,15 +100,17 @@ test("missing assignee and unknown legacy fields fail before coordinator allocat
   } finally { await cleanup(f); }
 });
 
-test("Task version conflict and Objective authorization failures create no startup operation", async () => {
+test("Task version conflict and Work authorization failures create no startup operation", async () => {
   const f = await fixture();
   try {
     await assert.rejects(() => f.service.start(command({ expectedTaskVersion: 2 })), {
       code: "TASK_VERSION_CONFLICT"
     });
-    const other = f.objectiveService.createObjective({ id: "objective:other", name: "Other" });
-    f.store.db.run("UPDATE sessions SET objective_id=? WHERE id=?", [other.id, "provider:source"]);
-    await assert.rejects(() => f.service.start(command()), { code: "TASK_OUTSIDE_OBJECTIVE" });
+    const other = f.workService.createWork({
+      id: "work:other", name: "Other", contributorAgentIds: [f.worker.agentId]
+    });
+    f.store.db.run("UPDATE sessions SET work_id=? WHERE id=?", [other.id, "provider:source"]);
+    await assert.rejects(() => f.service.start(command()), { code: "TASK_OUTSIDE_WORK" });
     assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM work_session_startup_operations").count, 0);
   } finally { await cleanup(f); }
 });
@@ -119,14 +122,14 @@ test("non-contributor and non-Independent Contributor assignees are rejected exp
       id: "agent:outside", name: "Outside", role: "independentContributor"
     });
     await assert.rejects(() => f.service.start(command({ assigneeAgentId: outside.agentId })), {
-      code: "AGENT_OUTSIDE_OBJECTIVE"
+      code: "AGENT_OUTSIDE_WORK"
     });
     const assistant = f.store.createAgent({ id: "agent:assistant", name: "Assistant", role: "assistant" });
     // Simulate a legacy/corrupt contributor reference so startup still fails
-    // closed even if an invalid role escaped the ordinary Objective writer.
+    // closed even if an invalid role escaped the ordinary Work writer.
     f.store.db.run(
-      "UPDATE objectives SET contributor_agent_ids_json=? WHERE id=?",
-      [JSON.stringify([f.worker.agentId, assistant.agentId]), f.objective.id]
+      "INSERT INTO work_contributors (work_id, agent_id, role, is_primary, created_at) VALUES (?, ?, 'contributor', 0, ?)",
+      [f.work.id, assistant.agentId, new Date().toISOString()]
     );
     await assert.rejects(() => f.service.start(command({ assigneeAgentId: assistant.agentId })), {
       code: "AGENT_NOT_INDEPENDENT_CONTRIBUTOR"
