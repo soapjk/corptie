@@ -310,7 +310,7 @@ enum CorptieTaskColumn: String, CaseIterable, Identifiable {
 
     @MainActor var title: String {
         switch self {
-        case .todo: L10n("Not Started")
+        case .todo: L10n("Preparing")
         case .inProgress: L10n("In Progress")
         case .done: L10n("Completed")
         }
@@ -324,7 +324,7 @@ enum CorptieTaskColumn: String, CaseIterable, Identifiable {
         }
     }
 
-    // 后端 status 字符串 → 看板列（容错：未知值归「待开始」）
+    // 后端 status 字符串 → 看板列（容错：未知值归「准备中」）
     static func column(for status: String) -> CorptieTaskColumn {
         switch status {
         case "todo", "pending", "ready": .todo
@@ -353,7 +353,7 @@ enum CorptieTaskExecutionPresentation {
         case "failed", "start_failed": L10n("Failed to Start")
         case "paused": L10n("Paused")
         case "cancelled", "canceled": L10n("Interrupted")
-        case "idle", nil: L10n("Not Started")
+        case "idle", nil: L10n("Preparing")
         default: L10n("Unknown")
         }
     }

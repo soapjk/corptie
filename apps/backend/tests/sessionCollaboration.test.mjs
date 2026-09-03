@@ -751,6 +751,88 @@ test("Worker creates an independent Task with Session provenance and retries ide
   }
 });
 
+test("Work Chat Task creation persists context and returns only after automatic startup", async () => {
+  const f = await fixture();
+  try {
+    const agent = f.store.createAgent({
+      id: "agent:auto-start", name: "Auto Start", role: "independentContributor"
+    });
+    const work = f.workService.createWork({
+      name: "Automatic Work Chat Task", contributorAgentIds: [agent.agentId]
+    });
+    session(f.store, f.core, {
+      providerSessionId: "provider:auto-start-source",
+      logicalSessionId: "session:auto-start-source",
+      agentId: agent.agentId,
+      kind: "workChat",
+      workId: work.id,
+      cwd: f.directory
+    });
+    let startupCount = 0;
+    f.service.workSessionStartApplicationService.start = async (input) => {
+      startupCount += 1;
+      const task = f.store.getTask(input.taskId);
+      session(f.store, f.core, {
+        providerSessionId: "provider:auto-start-worker",
+        logicalSessionId: "session:auto-start-worker",
+        agentId: input.assigneeAgentId,
+        kind: "worker",
+        workId: work.id,
+        taskId: task.id,
+        cwd: f.directory
+      });
+      f.store.db.run(
+        `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress',
+         execution_status='running', resource_version=resource_version+1 WHERE id=?`,
+        ["provider:auto-start-worker", task.id]
+      );
+      return { session: { id: "provider:auto-start-worker" } };
+    };
+
+    const result = await f.service.createAndStartTask(
+      { sessionId: "provider:auto-start-source" },
+      agent.agentId,
+      {
+        title: "Persist structured context",
+        description: "Description belongs to Task context only",
+        acceptanceCriteria: "Criterion belongs to Task context only",
+        agentId: agent.agentId,
+        providerId: "codex-app-server",
+        idempotencyKey: "create:auto-start"
+      }
+    );
+
+    const stored = f.store.getTask(result.task.id);
+    assert.equal(result.phase, "started");
+    assert.equal(result.executionStatus, "running");
+    assert.equal(result.session.sessionId, "session:auto-start-worker");
+    assert.equal(stored.lifecycle_state, "in_progress");
+    assert.equal(stored.execution_status, "running");
+    assert.equal(stored.description, "Description belongs to Task context only");
+    assert.equal(stored.acceptance_criteria, "Criterion belongs to Task context only");
+    assert.equal(startupCount, 1);
+
+    const replay = await f.service.createAndStartTask(
+      { sessionId: "provider:auto-start-source" },
+      agent.agentId,
+      {
+        title: "Persist structured context",
+        description: "Description belongs to Task context only",
+        acceptanceCriteria: "Criterion belongs to Task context only",
+        agentId: agent.agentId,
+        providerId: "codex-app-server",
+        idempotencyKey: "create:auto-start"
+      }
+    );
+    assert.equal(replay.phase, "started");
+    assert.equal(startupCount, 1);
+    assert.equal(f.workService.listTasksByWork(work.id).length, 1);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("Task creation validates, persists, and returns an existing Artifact reference", async () => {
   const f = await fixture();
   try {

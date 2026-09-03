@@ -12,6 +12,12 @@ struct CorptieTaskAutoStartInteractionTests {
         #expect(source.contains("let providerId = selectedProviderId"))
         #expect(source.contains("await client.createSession("))
         #expect(source.contains("backendClient.acceptCreatedSession(session, selectImmediately: false)"))
+        let sessionStart = try #require(source.range(of: "await client.createSession("))
+        let createdCallback = try #require(source.range(
+            of: "onCreated(startedTask)",
+            range: sessionStart.lowerBound..<source.endIndex
+        ))
+        #expect(createdCallback.lowerBound > sessionStart.lowerBound)
     }
 
     @Test

@@ -1963,7 +1963,7 @@ struct CorptieTaskDetailView: View {
             case "review", "reviewing": (L10n("Awaiting Completion Approval"), .blue)
             case "done", "complete", "completed": (L10n("Completed"), .green)
             case "failed": (L10n("Failed"), .red)
-            default: (L10n("Not Started"), .secondary)
+            default: (L10n("Preparing"), .secondary)
             }
         }()
         return Label(label, systemImage: "circle.fill")
@@ -2454,7 +2454,7 @@ struct CorptieTaskEditView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Picker("", selection: $status) {
-                    Text(L10n("待开始")).tag("todo")
+                    Text(L10n("Preparing")).tag("todo")
                     Text(L10n("进行中")).tag("in_progress")
                     Text(L10n("已完成")).tag("done")
                 }
@@ -2523,7 +2523,7 @@ struct CorptieTaskEditView: View {
 
     private func statusLabel(_ s: String) -> String {
         switch s {
-        case "todo": L10n("Not Started")
+        case "todo": L10n("Preparing")
         case "in_progress": L10n("In Progress")
         case "review", "reviewing": L10n("Awaiting Completion Approval")
         case "done", "complete", "completed": L10n("Completed")

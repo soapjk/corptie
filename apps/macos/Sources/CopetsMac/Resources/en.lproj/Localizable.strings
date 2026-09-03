@@ -512,7 +512,6 @@
 "\u6807\u9898" = "Title";
 "\u72B6\u6001" = "Status";
 "\u624B\u52A8\u4FEE\u6539\u72B6\u6001\u5C06\u8986\u76D6\u7531\u6267\u884C\u6D41\u7A0B\u81EA\u52A8\u7EF4\u62A4\u7684\u72B6\u6001\uFF0C\u8BF7\u8C28\u614E\u64CD\u4F5C\u3002" = "Changing the status manually overrides the execution-managed status. Proceed carefully.";
-"\u5F85\u5F00\u59CB" = "Not Started";
 "\u8FDB\u884C\u4E2D" = "In Progress";
 "\u786E\u8BA4\u4FEE\u6539\u72B6\u6001" = "Confirm Status Change";
 "\u786E\u8BA4\u4FEE\u6539" = "Confirm Change";
@@ -524,7 +523,6 @@
 "Work" = "Work";
 "Description" = "Description";
 "Acceptance Criteria" = "Acceptance Criteria";
-"Not Started" = "Not Started";
 "In Progress" = "In Progress";
 "Completed" = "Completed";
 "No Work" = "No Work";
@@ -960,3 +958,4 @@
 "删除 CorptieTask：%@" = "Delete CorptieTask: %@";
 "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。" = "Deleting this CorptieTask permanently deletes %d associated Session(s) and their complete conversation history. The Worktree and Artifacts will be handled according to the options below. This cannot be undone.";
 "The Provider Session binding is being verified." = "The Provider Session binding is being verified.";
+"Preparing" = "Preparing";
