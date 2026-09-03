@@ -1070,6 +1070,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         warRoomWindow.makeKeyAndOrderFront(nil)
     }
 
+    func openSessionInMainWindow(sessionID: String) {
+        openWarRoom()
+        AppTabRouter.shared.openSession(sessionID)
+    }
+
     private func applyMainWindowLevel(to window: NSWindow) {
         window.level = MainWindowLevelPolicy.level(
             isPinned: MainWindowPresentationState.shared.isPinned

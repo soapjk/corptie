@@ -29,6 +29,11 @@ final class DetachedChatWindowManager {
         controller.close()
     }
 
+    func returnToMain(sessionID: String) {
+        close(sessionID: sessionID)
+        AppDelegate.shared?.openSessionInMainWindow(sessionID: sessionID)
+    }
+
     func closeAll() {
         let openControllers = Array(controllers.values)
         controllers.removeAll()
@@ -76,7 +81,10 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
         panel.contentView = NSHostingView(
             rootView: DetachedChatWindowView(
                 sessionID: sessionID,
-                close: { DetachedChatWindowManager.shared.close(sessionID: sessionID) }
+                close: { DetachedChatWindowManager.shared.close(sessionID: sessionID) },
+                returnToMain: {
+                    DetachedChatWindowManager.shared.returnToMain(sessionID: sessionID)
+                }
             )
         )
     }
@@ -102,6 +110,7 @@ private struct DetachedChatWindowView: View {
 
     let sessionID: String
     let close: () -> Void
+    let returnToMain: () -> Void
 
     private var session: TaskSession? {
         backendClient.sessions.first(where: { $0.id == sessionID })
@@ -111,16 +120,18 @@ private struct DetachedChatWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 24, height: 24)
-                        .background(Color.primary.opacity(0.07), in: Circle())
-                        .contentShape(Circle())
+                NativeWindowCloseButton(action: close)
+                    .frame(width: 14, height: 14)
+
+                Button(action: returnToMain) {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help(L10n("Close"))
-                .accessibilityLabel(L10n("Close"))
+                .help(L10n("Return to main window"))
+                .accessibilityLabel(L10n("Return to main window"))
 
                 Text(session?.title ?? L10n("Chat"))
                     .font(.system(size: 12, weight: .semibold))
@@ -167,6 +178,39 @@ private struct DetachedChatWindowView: View {
         .task(id: sessionID) {
             guard let session else { return }
             await backendClient.loadSessionMessages(session)
+        }
+    }
+}
+
+private struct NativeWindowCloseButton: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(action: action)
+    }
+
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSWindow.standardWindowButton(.closeButton, for: [.titled]) ?? NSButton()
+        button.target = context.coordinator
+        button.action = #selector(Coordinator.performAction)
+        button.setAccessibilityLabel(L10n("Close"))
+        button.toolTip = L10n("Close")
+        return button
+    }
+
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+    }
+
+    final class Coordinator: NSObject {
+        var action: () -> Void
+
+        init(action: @escaping () -> Void) {
+            self.action = action
+        }
+
+        @objc func performAction() {
+            action()
         }
     }
 }

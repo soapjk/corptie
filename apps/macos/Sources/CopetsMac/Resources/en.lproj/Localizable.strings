@@ -88,6 +88,7 @@
 "Context handoff" = "Context handoff";
 "Active thread" = "Active thread";
 "Return to the active workspace thread" = "Return to the active workspace thread";
+"Return to main window" = "Return to main window";
 "Workspace History" = "Workspace History";
 "The active thread was created through a context handoff." = "The active thread was created through a context handoff.";
 "Commands and terminals started by previous threads remain attached to their original workspace." = "Commands and terminals started by previous threads remain attached to their original workspace.";
