@@ -21,11 +21,39 @@ struct DetachedChatWindowTests {
         #expect(source.contains("controllers[session.id] = controller"))
         #expect(source.contains("panel.level = .floating"))
         #expect(source.contains("DetachedChatWindowManager.shared.close(sessionID: sessionID)"))
-        #expect(source.contains("NSWindow.standardWindowButton(.closeButton"))
+        #expect(source.contains("PersistentRedWindowCloseButton(action: close)"))
+        #expect(source.contains("Color(red: 1, green: 0.373, blue: 0.341)"))
+        #expect(source.contains(".frame(width: 14, height: 14)"))
+        #expect(source.contains(".frame(width: 22, height: 22)"))
         #expect(source.contains("Image(systemName: \"arrow.uturn.backward\")"))
         #expect(source.contains("func returnToMain(sessionID: String)"))
         #expect(source.contains("close(sessionID: sessionID)"))
         #expect(source.contains("AppDelegate.shared?.openSessionInMainWindow(sessionID: sessionID)"))
+    }
+
+    @Test
+    func detachedChatPanelCanBecomeKeyAndAcceptKeyboardInput() throws {
+        let source = try contents(of: "DetachedChatWindowManager.swift")
+
+        #expect(source.contains("private final class DetachedChatPanel: NSPanel"))
+        #expect(source.contains("override var canBecomeKey: Bool { true }"))
+        #expect(source.contains("override var canBecomeMain: Bool { true }"))
+        #expect(source.contains("panel.makeKeyAndOrderFront(nil)"))
+        #expect(source.contains("override func acceptsFirstMouse(for event: NSEvent?) -> Bool"))
+    }
+
+    @Test
+    func detachedChatKeyWindowSuppressesMainWindowActivation() throws {
+        #expect(MainWindowActivationPolicy.shouldPresentMainWindow(detachedChatWindowIsKey: false))
+        #expect(!MainWindowActivationPolicy.shouldPresentMainWindow(detachedChatWindowIsKey: true))
+
+        let managerSource = try contents(of: "DetachedChatWindowManager.swift")
+        #expect(managerSource.contains("var hasKeyWindow: Bool"))
+        #expect(managerSource.contains("controllers.values.contains(where: \\.isKeyWindow)"))
+
+        let appSource = try contents(of: "CopetsMacApp.swift")
+        #expect(appSource.contains("DispatchQueue.main.async { [weak self] in"))
+        #expect(appSource.contains("detachedChatWindowIsKey: DetachedChatWindowManager.shared.hasKeyWindow"))
     }
 
     @Test

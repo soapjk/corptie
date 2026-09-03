@@ -7,6 +7,10 @@ final class DetachedChatWindowManager {
 
     private var controllers: [String: DetachedChatWindowController] = [:]
 
+    var hasKeyWindow: Bool {
+        controllers.values.contains(where: \.isKeyWindow)
+    }
+
     func show(session: TaskSession) {
         if let controller = controllers[session.id] {
             controller.show()
@@ -46,7 +50,7 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
     private static let initialSize = NSSize(width: 560, height: 640)
 
     private let sessionID: String
-    private let panel: NSPanel
+    private let panel: DetachedChatPanel
     private let closeHandler: (String) -> Void
 
     init(sessionID: String, cascadeIndex: Int, close: @escaping (String) -> Void) {
@@ -59,7 +63,7 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
             x: visibleFrame.midX - Self.initialSize.width / 2 + offset,
             y: visibleFrame.midY - Self.initialSize.height / 2 - offset
         )
-        panel = NSPanel(
+        panel = DetachedChatPanel(
             contentRect: NSRect(origin: origin, size: Self.initialSize),
             styleMask: [.borderless, .fullSizeContentView, .resizable, .closable],
             backing: .buffered,
@@ -78,7 +82,7 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
         panel.isMovableByWindowBackground = true
         panel.minSize = NSSize(width: 420, height: 420)
         panel.maxSize = NSSize(width: 900, height: 1_000)
-        panel.contentView = NSHostingView(
+        panel.contentView = DetachedChatHostingView(
             rootView: DetachedChatWindowView(
                 sessionID: sessionID,
                 close: { DetachedChatWindowManager.shared.close(sessionID: sessionID) },
@@ -90,6 +94,8 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
     }
 
@@ -100,6 +106,29 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         closeHandler(sessionID)
+    }
+
+    var isKeyWindow: Bool {
+        panel.isKeyWindow
+    }
+}
+
+private final class DetachedChatPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown && !isKeyWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            makeKey()
+        }
+        super.sendEvent(event)
+    }
+}
+
+private final class DetachedChatHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
     }
 }
 
@@ -120,8 +149,7 @@ private struct DetachedChatWindowView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                NativeWindowCloseButton(action: close)
-                    .frame(width: 14, height: 14)
+                PersistentRedWindowCloseButton(action: close)
 
                 Button(action: returnToMain) {
                     Image(systemName: "arrow.uturn.backward")
@@ -182,35 +210,25 @@ private struct DetachedChatWindowView: View {
     }
 }
 
-private struct NativeWindowCloseButton: NSViewRepresentable {
+private struct PersistentRedWindowCloseButton: View {
     let action: () -> Void
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(action: action)
-    }
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                Circle()
+                    .fill(Color(red: 1, green: 0.373, blue: 0.341))
+                    .frame(width: 14, height: 14)
 
-    func makeNSView(context: Context) -> NSButton {
-        let button = NSWindow.standardWindowButton(.closeButton, for: [.titled]) ?? NSButton()
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.performAction)
-        button.setAccessibilityLabel(L10n("Close"))
-        button.toolTip = L10n("Close")
-        return button
-    }
-
-    func updateNSView(_ button: NSButton, context: Context) {
-        context.coordinator.action = action
-    }
-
-    final class Coordinator: NSObject {
-        var action: () -> Void
-
-        init(action: @escaping () -> Void) {
-            self.action = action
+                Image(systemName: "xmark")
+                    .font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.black.opacity(0.62))
+            }
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
         }
-
-        @objc func performAction() {
-            action()
-        }
+        .buttonStyle(.plain)
+        .help(L10n("Close"))
+        .accessibilityLabel(L10n("Close"))
     }
 }
