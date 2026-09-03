@@ -13,6 +13,7 @@ BACKEND_LOG_DIR="${HOME}/Library/Logs/Corptie"
 BACKEND_STDOUT_LOG="${BACKEND_LOG_DIR}/backend.out.log"
 BACKEND_STDERR_LOG="${BACKEND_LOG_DIR}/backend.err.log"
 CHECK_ONLY=false
+RESET_PRODUCTION_DATABASE=false
 MOUNT_POINT=""
 STAGED_APP=""
 OLD_APP=""
@@ -22,23 +23,33 @@ FINISHED=false
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/rebuild-install-restart-production.sh [--check-only]
+Usage: scripts/rebuild-install-restart-production.sh [--check-only] [--reset-production-database]
 
 Build the current checkout as a production installer, safely stop an idle
 production app, install it into /Applications, and open the new version.
 
 Options:
   --check-only  Only report whether production has unfinished sessions.
+  --reset-production-database
+                Permanently delete the production SQLite database before
+                installing. No backup is created. Settings and artifacts are
+                left in place.
 USAGE
 }
 
 for argument in "$@"; do
   case "${argument}" in
     --check-only) CHECK_ONLY=true ;;
+    --reset-production-database) RESET_PRODUCTION_DATABASE=true ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown argument: ${argument}" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+if [[ "${CHECK_ONLY}" == true && "${RESET_PRODUCTION_DATABASE}" == true ]]; then
+  echo "--check-only and --reset-production-database cannot be used together." >&2
+  exit 64
+fi
 
 if ! [[ "${HEALTH_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
   echo "CORPTIE_PRODUCTION_HEALTH_TIMEOUT_SECONDS must be a positive integer." >&2
@@ -138,6 +149,72 @@ check_production_sessions() {
   echo "Production has no unfinished sessions."
 }
 
+production_data_root() {
+  local pointer_file="${HOME}/Library/Application Support/Corptie/data-root.json"
+  local configured_root=""
+  if [[ -f "${pointer_file}" ]]; then
+    configured_root="$(${NODE_BIN} -e '
+      const fs = require("node:fs");
+      try {
+        const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        if (typeof value.dataRoot === "string" && value.dataRoot.trim()) {
+          process.stdout.write(value.dataRoot.trim());
+        }
+      } catch {}
+    ' "${pointer_file}")"
+  fi
+  printf '%s\n' "${configured_root:-${HOME}/.corptie}"
+}
+
+legacy_configured_data_dir() {
+  "${NODE_BIN}" -e '
+    const fs = require("node:fs");
+    for (const file of process.argv.slice(1)) {
+      try {
+        const value = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (typeof value.dataDir === "string" && value.dataDir.trim()) {
+          process.stdout.write(value.dataDir.trim());
+          break;
+        }
+      } catch {}
+    }
+  ' \
+    "${HOME}/Library/Application Support/Corptie/config.json" \
+    "${HOME}/Library/Application Support/Copets/config.json"
+}
+
+delete_sqlite_family() {
+  local database_path="$1" parent
+  parent="$(dirname "${database_path}")"
+  if [[ "${database_path}" != /* || "${parent}" == "/" || "${parent}" == "${HOME}" ]]; then
+    echo "Refusing to delete SQLite files at unsafe path: ${database_path}" >&2
+    return 1
+  fi
+  echo "  - ${database_path}{,-wal,-shm}"
+  rm -f "${database_path}" "${database_path}-wal" "${database_path}-shm"
+}
+
+reset_production_database() {
+  local data_root database_dir configured_data_dir
+  data_root="$(production_data_root)"
+  if [[ "${data_root}" != /* || "${data_root}" == "/" || "${data_root}" == "${HOME}" ]]; then
+    echo "Refusing to reset a production database under unsafe data root: ${data_root}" >&2
+    return 1
+  fi
+  database_dir="${data_root}/database"
+  configured_data_dir="$(legacy_configured_data_dir)"
+  echo "Permanently deleting production SQLite database and automatic-import candidates (no backup):"
+  delete_sqlite_family "${database_dir}/corptie.sqlite"
+  if [[ -n "${configured_data_dir}" ]]; then
+    delete_sqlite_family "${configured_data_dir}/corptie.sqlite"
+    delete_sqlite_family "${configured_data_dir}/copets.sqlite"
+  fi
+  delete_sqlite_family "${HOME}/Library/Application Support/Corptie/corptie.sqlite"
+  delete_sqlite_family "${HOME}/Library/Application Support/Corptie/copets.sqlite"
+  delete_sqlite_family "${HOME}/Library/Application Support/Copets/corptie.sqlite"
+  delete_sqlite_family "${HOME}/Library/Application Support/Copets/copets.sqlite"
+}
+
 stop_pids() {
   local label="$1"
   shift
@@ -227,19 +304,29 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 if production_is_running; then
-  check_production_sessions
+  if [[ "${RESET_PRODUCTION_DATABASE}" != true ]]; then
+    check_production_sessions
+  else
+    echo "Production database reset was explicitly requested; skipping unfinished-session inspection."
+  fi
   if [[ "${CHECK_ONLY}" == true ]]; then
     exit 0
   fi
-  # Close the small race between the first check and shutdown.
-  sleep 1
-  check_production_sessions
+  if [[ "${RESET_PRODUCTION_DATABASE}" != true ]]; then
+    # Close the small race between the first check and shutdown.
+    sleep 1
+    check_production_sessions
+  fi
   stop_production
 else
   echo "Production is not running."
   if [[ "${CHECK_ONLY}" == true ]]; then
     exit 0
   fi
+fi
+
+if [[ "${RESET_PRODUCTION_DATABASE}" == true ]]; then
+  reset_production_database
 fi
 
 echo "Building production installers from the current checkout..."
@@ -294,9 +381,19 @@ health_attempts=$((HEALTH_TIMEOUT_SECONDS * 2))
 for ((attempt = 1; attempt <= health_attempts; attempt += 1)); do
   if curl --fail --silent --max-time 1 "${BACKEND_URL}/health" \
     | "${NODE_BIN}" -e '
-        let input="";
-        process.stdin.on("data", chunk => input += chunk);
-        process.stdin.on("end", () => process.exit(JSON.parse(input).service === "corptie-backend" ? 0 : 1));
+      let input="";
+      process.stdin.on("data", chunk => input += chunk);
+      process.stdin.on("end", () => {
+        const health = JSON.parse(input);
+        process.exit(
+          health.service === "corptie-backend"
+            && health.ok === true
+            && health.storeReady === true
+            && health.maintenance === false
+            ? 0
+            : 1
+        );
+      });
       ' >/dev/null 2>&1; then
     FINISHED=true
     [[ -z "${OLD_APP}" ]] || rm -rf "${OLD_APP}"
