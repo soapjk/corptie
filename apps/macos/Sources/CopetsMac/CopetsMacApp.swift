@@ -65,6 +65,25 @@ enum MainWindowLevelPolicy {
     }
 }
 
+enum MainWindowInitialLayout {
+    static let idealContentSize = NSSize(width: 1_480, height: 900)
+    static let minimumContentSize = NSSize(width: 980, height: 620)
+    static let maximumVisibleFraction: CGFloat = 0.92
+
+    static func contentSize(for visibleFrame: NSRect) -> NSSize {
+        NSSize(
+            width: max(
+                minimumContentSize.width,
+                min(idealContentSize.width, floor(visibleFrame.width * maximumVisibleFraction))
+            ),
+            height: max(
+                minimumContentSize.height,
+                min(idealContentSize.height, floor(visibleFrame.height * maximumVisibleFraction))
+            )
+        )
+    }
+}
+
 @MainActor
 final class MainWindowPresentationState: ObservableObject {
     static let shared = MainWindowPresentationState()
@@ -122,12 +141,6 @@ struct LiveResizeLayoutStatistics: Equatable {
     fileprivate(set) var maximumLayoutDuration: TimeInterval = 0
 }
 
-@MainActor
-struct MainWindowChromeSurfaces {
-    let center: NSView
-    let trailing: NSView
-}
-
 /// Hosts the leading controls in AppKit's actual title-bar hierarchy. A content
 /// view drawn beneath a full-size transparent title bar is still subject to the
 /// window's drag-region event routing, even when its SwiftUI controls are
@@ -142,10 +155,99 @@ final class MainWindowLeadingChromeAccessoryController: NSTitlebarAccessoryViewC
 
         layoutAttribute = .left
         hostingView.sizingOptions = []
-        hostingView.frame = NSRect(x: 0, y: 0, width: 88, height: 22)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 56, height: 22)
         hostingView.autoresizingMask = []
         hostingView.layerContentsRedrawPolicy = .onSetNeedsDisplay
         view = hostingView
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+/// A native top title-bar accessory keeps the compact tab switcher on the same
+/// vertical center line as the traffic-light buttons. The accessory's view is
+/// stretched by AppKit; its two small hosting surfaces retain fixed geometry and
+/// are positioned without involving the heavyweight page hierarchy.
+@MainActor
+final class MainWindowTitlebarAccessoryController: NSTitlebarAccessoryViewController {
+    let surfaceView: MainWindowTitlebarSurfaceView
+
+    init(
+        centerSurface: NSView = NSHostingView(rootView: MainWindowTabBarSurfaceView()),
+        trailingSurface: NSView = NSHostingView(rootView: MainWindowTaskSurfaceView())
+    ) {
+        surfaceView = MainWindowTitlebarSurfaceView(
+            centerSurface: centerSurface,
+            trailingSurface: trailingSurface
+        )
+        super.init(nibName: nil, bundle: nil)
+        layoutAttribute = .top
+        view = surfaceView
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+}
+
+@MainActor
+final class MainWindowTitlebarSurfaceView: NSView {
+    let centerSurface: NSView
+    let trailingSurface: NSView
+
+    init(centerSurface: NSView, trailingSurface: NSView) {
+        self.centerSurface = centerSurface
+        self.trailingSurface = trailingSurface
+        super.init(frame: NSRect(
+            x: 0,
+            y: 0,
+            width: MainWindowLayoutMetrics.tabBarWidth,
+            height: MainWindowLayoutMetrics.titlebarHeight
+        ))
+
+        for surface in [centerSurface, trailingSurface] {
+            surface.autoresizingMask = []
+            surface.layerContentsRedrawPolicy = .onSetNeedsDisplay
+            addSubview(surface)
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: MainWindowLayoutMetrics.titlebarHeight)
+    }
+
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func layout() {
+        super.layout()
+        let verticalCenter = bounds.midY
+        let windowCenter = resolvedWindowCenterX()
+        centerSurface.frame = NSRect(
+            x: windowCenter - MainWindowLayoutMetrics.tabBarWidth / 2,
+            y: verticalCenter - MainWindowLayoutMetrics.tabBarHeight / 2,
+            width: MainWindowLayoutMetrics.tabBarWidth,
+            height: MainWindowLayoutMetrics.tabBarHeight
+        )
+        trailingSurface.frame = NSRect(
+            x: bounds.maxX
+                - MainWindowLayoutMetrics.titlebarTrailingInset
+                - MainWindowLayoutMetrics.taskSurfaceWidth,
+            y: verticalCenter - 11,
+            width: MainWindowLayoutMetrics.taskSurfaceWidth,
+            height: 22
+        )
+    }
+
+    private func resolvedWindowCenterX() -> CGFloat {
+        guard let contentView = window?.contentView else { return bounds.midX }
+        return convert(
+            NSPoint(x: contentView.bounds.midX, y: contentView.bounds.midY),
+            from: contentView
+        ).x
     }
 
     @available(*, unavailable)
@@ -214,7 +316,6 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
     private let backgroundView = NSView()
     private let contentContainer = NSView()
     private let hostingView: NSHostingView<Content>
-    private let chromeSurfaces: MainWindowChromeSurfaces?
     private let resizeState: MainWindowResizeState
     private var resizeReasons = Set<ResizeReason>()
     private var windowNotificationTokens: [NSObjectProtocol] = []
@@ -236,12 +337,10 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
 
     init(
         rootView: Content,
-        resizeState: MainWindowResizeState,
-        chromeSurfaces: MainWindowChromeSurfaces? = nil
+        resizeState: MainWindowResizeState
     ) {
         hostingView = NSHostingView(rootView: rootView)
         self.resizeState = resizeState
-        self.chromeSurfaces = chromeSurfaces
         super.init(frame: .zero)
 
         wantsLayer = true
@@ -263,33 +362,6 @@ final class MainWindowSurfaceContainer<Content: View>: NSView {
         hostingView.layerContentsRedrawPolicy = .duringViewResize
         contentContainer.addSubview(hostingView)
 
-        if let chromeSurfaces {
-            for surface in [chromeSurfaces.center, chromeSurfaces.trailing] {
-                surface.translatesAutoresizingMaskIntoConstraints = false
-                surface.setContentHuggingPriority(.required, for: .horizontal)
-                surface.setContentHuggingPriority(.required, for: .vertical)
-                addSubview(surface)
-            }
-            NSLayoutConstraint.activate([
-                chromeSurfaces.center.centerXAnchor.constraint(equalTo: centerXAnchor),
-                chromeSurfaces.center.topAnchor.constraint(
-                    equalTo: safeAreaLayoutGuide.topAnchor,
-                    constant: -12
-                ),
-                chromeSurfaces.center.widthAnchor.constraint(
-                    equalToConstant: CGFloat(AppTab.allCases.count) * 42
-                ),
-                chromeSurfaces.center.heightAnchor.constraint(equalToConstant: 30),
-
-                chromeSurfaces.trailing.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
-                chromeSurfaces.trailing.topAnchor.constraint(
-                    equalTo: safeAreaLayoutGuide.topAnchor,
-                    constant: -24
-                ),
-                chromeSurfaces.trailing.widthAnchor.constraint(equalToConstant: 220),
-                chromeSurfaces.trailing.heightAnchor.constraint(equalToConstant: 22)
-            ])
-        }
     }
 
     @available(*, unavailable)
@@ -704,8 +776,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self?.refreshLocalizedChrome()
             }
             .store(in: &cancellables)
-
-        SessionDSHWebViewStore.shared.preload()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -717,6 +787,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.post(name: .captureSessionTimelinePositions, object: nil)
         _ = SessionViewportController.shared.persistSynchronouslyForTermination()
         agentOrbManager?.closeAll()
+        DetachedChatWindowManager.shared.closeAll()
         completionSoundManager?.stop()
         automationNotificationManager?.stop()
         resetNotificationManager?.stop()
@@ -950,8 +1021,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
+        let visibleFrame = NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let initialContentSize = MainWindowInitialLayout.contentSize(for: visibleFrame)
         let window = MainWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 760),
+            contentRect: NSRect(origin: .zero, size: initialContentSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -964,20 +1038,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         window.isReleasedWhenClosed = false
         let resizeState = MainWindowResizeState()
         let leadingChrome = MainWindowLeadingChromeAccessoryController()
-        let centerChrome = NSHostingView(rootView: MainWindowTabBarSurfaceView())
-        let trailingChrome = NSHostingView(rootView: MainWindowTaskSurfaceView())
-        centerChrome.sizingOptions = []
-        trailingChrome.sizingOptions = []
-        for surface in [centerChrome, trailingChrome] {
-            surface.layerContentsRedrawPolicy = .onSetNeedsDisplay
-        }
+        let titlebarChrome = MainWindowTitlebarAccessoryController()
         let hostingView = MainWindowSurfaceContainer(
             rootView: MainWindowContentView().environmentObject(resizeState),
-            resizeState: resizeState,
-            chromeSurfaces: MainWindowChromeSurfaces(
-                center: centerChrome,
-                trailing: trailingChrome
-            )
+            resizeState: resizeState
         )
         // This is a user-resizable AppKit-owned window. The SwiftUI root must
         // follow its bounds, not feed its ideal size back into NSWindow. The
@@ -987,10 +1051,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             origin: .zero,
             size: window.contentRect(forFrameRect: window.frame).size
         )
-        window.contentMinSize = NSSize(width: 980, height: 620)
+        window.contentMinSize = MainWindowInitialLayout.minimumContentSize
         window.preservesContentDuringLiveResize = true
         window.contentView = hostingView
         window.addTitlebarAccessoryViewController(leadingChrome)
+        window.addTitlebarAccessoryViewController(titlebarChrome)
         applyMainWindowLevel(to: window)
         window.makeKeyAndOrderFront(nil)
         warRoomWindow = window

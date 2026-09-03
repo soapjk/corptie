@@ -2108,6 +2108,13 @@ final class BackendClient: ObservableObject {
         _ = await synchronizeStoredTimeline(for: session, localRevision: localRevision)
     }
 
+    func loadSessionMessages(_ session: TaskSession) async {
+        let localRevision = SessionTimelineRepository.shared.detail(for: session.id) == nil
+            ? 0
+            : SessionTimelineRepository.shared.timelineRevision(for: session.id)
+        _ = await synchronizeStoredTimeline(for: session, localRevision: localRevision)
+    }
+
     func loadContextReferences(for session: TaskSession? = nil) async {
         guard let target = session ?? selectedSession,
               target.resolvedSessionKind == .assistantChat || target.resolvedSessionKind == .workChat else {

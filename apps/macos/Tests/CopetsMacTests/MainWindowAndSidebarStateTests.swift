@@ -162,7 +162,7 @@ struct MainWindowAndSidebarStateTests {
         )
         #expect(mainTab.contains("systemName: windowState.isPinned ? \"pin.fill\" : \"pin\""))
         #expect(mainTab.contains("isActive: windowState.isPinned"))
-        #expect(mainTab.contains("MainWindowSidebarToggleButton(sidebarState: sidebarState)"))
+        #expect(!mainTab.contains("MainWindowSidebarToggleButton(sidebarState: sidebarState)"))
         #expect(mainTab.contains("setAccessibilityValue(L10n(isVisible ? \"Expanded\" : \"Collapsed\"))"))
         #expect(mainTab.contains(".environmentObject(router.sidebarState(for: tab))"))
 
@@ -188,12 +188,8 @@ struct MainWindowAndSidebarStateTests {
         )
         #expect(agents.contains("if sidebarState.isVisible && layoutMode == .split"))
 
-        let dsh = try String(
-            contentsOf: sourceRoot.appendingPathComponent("SessionDSHView.swift"),
-            encoding: .utf8
-        )
-        #expect(dsh.contains("DSHWebView(store: .shared, isSidebarVisible: sidebarState.isVisible)"))
-        #expect(dsh.contains("'[data-sidebar-collapsed]'"))
+        #expect(!mainTab.contains("sessionDSH"))
+        #expect(!mainTab.contains("SessionDSHView"))
     }
 
     @Test

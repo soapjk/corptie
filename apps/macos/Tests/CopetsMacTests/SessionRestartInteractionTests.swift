@@ -4,12 +4,29 @@ import Testing
 
 struct SessionRestartInteractionTests {
     @Test
-    func selectedSessionHeaderExposesTheSharedSessionActionsMenu() throws {
-        let source = try contents(of: "FloatingRootView.swift")
+    func selectedTaskContextMenuExposesSharedSessionActions() throws {
+        let source = try contents(of: "UnifiedConsoleView.swift")
 
         #expect(source.contains("SessionContextMenuContent("))
-        #expect(source.contains("accessibilityIdentifier(\"session.detail.actions\")"))
-        #expect(source.contains("@State private var isRenamingSession = false"))
+        #expect(source.contains("@State private var taskSessionPendingRename: TaskSession?"))
+        #expect(source.contains(".sheet(item: $taskSessionPendingRename)"))
+    }
+
+    @Test
+    func selectedSessionHeaderMenuOnlyOpensTheWorkspaceAndHidesItsIndicator() throws {
+        let source = try contents(of: "FloatingRootView.swift")
+        let headerStart = try #require(source.range(of: "struct DetailHeaderView: View"))
+        let menuEnd = try #require(source.range(of: ".accessibilityIdentifier(\"session.detail.actions\")"))
+        let menuStart = try #require(source.range(
+            of: "if backendClient.selectedSession != nil {",
+            range: headerStart.upperBound..<menuEnd.lowerBound
+        ))
+        let menu = source[menuStart.lowerBound..<menuEnd.upperBound]
+
+        #expect(menu.contains("Button(action: openWorkspaceInVSCode)"))
+        #expect(menu.contains("Button(action: openWorkspaceInFinder)"))
+        #expect(menu.contains(".menuIndicator(.hidden)"))
+        #expect(!menu.contains("SessionContextMenuContent("))
     }
 
     @Test
@@ -45,7 +62,7 @@ struct SessionRestartInteractionTests {
     @Test
     func restartRemainsDiscoverableWhenTemporarilyUnavailable() throws {
         let source = try contents(of: "FloatingRootView.swift")
-        let menuStart = try #require(source.range(of: "private struct SessionContextMenuContent: View"))
+        let menuStart = try #require(source.range(of: "struct SessionContextMenuContent: View"))
         let menuEnd = try #require(source.range(
             of: "private struct LiquidGlassControlBackground: View",
             range: menuStart.upperBound..<source.endIndex

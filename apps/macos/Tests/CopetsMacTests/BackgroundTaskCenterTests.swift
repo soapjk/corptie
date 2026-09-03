@@ -3,6 +3,50 @@ import XCTest
 
 @MainActor
 final class BackgroundTaskCenterTests: XCTestCase {
+    func testStatusActionsUseReadableHitTargetsAndAccessibleNames() throws {
+        XCTAssertEqual(BackgroundTaskStatusBar.actionHitSize, CGSize(width: 24, height: 22))
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/BackgroundTaskCenter.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+
+        XCTAssertTrue(contents.contains(".contentShape(Rectangle())"))
+        XCTAssertTrue(contents.contains(".accessibilityLabel(L10n(\"重试\"))"))
+        XCTAssertTrue(contents.contains(".accessibilityLabel(L10n(\"关闭\"))"))
+        XCTAssertTrue(contents.contains(".accessibilityElement(children: .contain)"))
+        let closeButton = try XCTUnwrap(contents.range(of: "center.dismiss(id: record.id)"))
+        XCTAssertNotNil(contents.range(
+            of: "in: Circle()",
+            range: closeButton.lowerBound..<contents.endIndex
+        ))
+    }
+
+    func testSuccessfulTaskAutomaticallyDisappearsAfterConfiguredDelay() async throws {
+        XCTAssertEqual(BackgroundTaskCenter.defaultSuccessVisibilityDuration, .seconds(3))
+        let center = BackgroundTaskCenter(successVisibilityDuration: .milliseconds(200))
+        XCTAssertTrue(center.start(id: "work:auto-dismiss", title: "Create Work") {
+            .success("Created")
+        })
+
+        try await waitForState(.succeeded, id: "work:auto-dismiss", center: center)
+        XCTAssertEqual(center.records.count, 1)
+        try await waitForRemoval(id: "work:auto-dismiss", center: center)
+        XCTAssertTrue(center.records.isEmpty)
+    }
+
+    func testFailedTaskRemainsVisiblePastSuccessDismissalDelay() async throws {
+        let center = BackgroundTaskCenter(successVisibilityDuration: .milliseconds(20))
+        XCTAssertTrue(center.start(id: "work:failure", title: "Create Work") {
+            .failure("Backend unavailable")
+        })
+
+        try await waitForState(.failed, id: "work:failure", center: center)
+        try await Task.sleep(for: .milliseconds(60))
+        XCTAssertEqual(center.records.first?.state, .failed)
+    }
+
     func testDuplicateStartIsRejectedWhileOperationIsRunning() async throws {
         let center = BackgroundTaskCenter()
         var invocationCount = 0
@@ -139,6 +183,14 @@ final class BackgroundTaskCenterTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTFail("Timed out waiting for \(state) for \(id)")
+    }
+
+    private func waitForRemoval(id: String, center: BackgroundTaskCenter) async throws {
+        for _ in 0..<100 {
+            if !center.records.contains(where: { $0.id == id }) { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("Timed out waiting for removal of \(id)")
     }
 }
 
