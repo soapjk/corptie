@@ -10,6 +10,8 @@ export class EmptyProviderBindingPreflight {
     this.store = options.store;
     this.providerId = options.providerId;
     this.ensureUsable = options.ensureUsable;
+    this.recoverUnavailable = options.recoverUnavailable ?? null;
+    this.isUnavailable = options.isUnavailable ?? (() => false);
     this.onChanged = options.onChanged ?? (() => {});
     this.concurrency = positiveInteger(options.concurrency ?? 2, "concurrency");
     this.pending = new Map();
@@ -85,11 +87,30 @@ export class EmptyProviderBindingPreflight {
 
   async #recover(candidate) {
     try {
-      const outcome = await this.ensureUsable(candidate);
+      let activeCandidate = candidate;
+      let replacement = null;
+      let outcome;
+      try {
+        outcome = await this.ensureUsable(activeCandidate);
+      } catch (error) {
+        if (typeof this.recoverUnavailable !== "function" || !this.isUnavailable(error)) {
+          throw error;
+        }
+        replacement = await this.recoverUnavailable(candidate, error);
+        activeCandidate = Object.freeze({ ...candidate, ...(replacement?.candidate ?? replacement ?? {}) });
+        // Replacement is not considered successful until the newly committed
+        // Provider route passes the same authoritative runtime verification.
+        outcome = await this.ensureUsable(activeCandidate);
+      }
       this.pending.delete(candidate.logicalSessionId);
       this.candidates.delete(candidate.logicalSessionId);
       this.onChanged(candidate, null);
-      return Object.freeze({ ...candidate, status: "ready", outcome: outcome ?? null });
+      return Object.freeze({
+        ...activeCandidate,
+        status: "ready",
+        recovered: replacement !== null,
+        outcome: outcome ?? null
+      });
     } catch (error) {
       const readiness = Object.freeze({
         state: "not_ready",
