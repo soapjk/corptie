@@ -8,6 +8,7 @@ struct Objective: Identifiable, Codable, Hashable {
     var name: String
     var description: String
     var idealState: String
+    var avatarPath: String? = nil
     var status: String
     var priority: String?
     var targetDate: String?
@@ -219,11 +220,28 @@ struct CorptieTaskDeletionWorktree: Codable, Equatable {
     let aheadOfMain: Int
 }
 
+struct CorptieTaskDeletionArtifact: Codable, Equatable, Identifiable {
+    var id: String { artifactId }
+    let artifactId: String
+    let title: String
+    let visibility: String?
+    let status: String?
+}
+
+enum CorptieTaskArtifactDisposition: String, CaseIterable, Identifiable {
+    case delete
+    case objective
+    case retain
+
+    var id: String { rawValue }
+}
+
 struct CorptieTaskDeletionPlan: Codable, Equatable {
     let taskId: String
     let status: String
     let retryable: Bool
     let associatedSessionCount: Int
+    let artifacts: [CorptieTaskDeletionArtifact]?
     let worktree: CorptieTaskDeletionWorktree?
     let risks: [CorptieTaskDeletionRisk]
     let blockers: [CorptieTaskDeletionRisk]

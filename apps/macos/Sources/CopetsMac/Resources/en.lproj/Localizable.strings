@@ -952,3 +952,11 @@
 "Rebuild Workspace" = "Rebuild Workspace";
 "Workspace rebuilt" = "Workspace rebuilt";
 "This Session is unavailable because its Workspace is missing. Rebuild the Workspace to continue." = "This Session is unavailable because its Workspace is missing. Rebuild the Workspace to continue.";
+"删除关联的 Worktree 和分支" = "Delete the associated Worktree and branch";
+"Artifact 处理（%d 个）" = "Artifact handling (%d)";
+"Artifact 处理" = "Artifact handling";
+"移入 Objective 层级" = "Move to Objective level";
+"留在原地" = "Leave in place";
+"删除 CorptieTask：%@" = "Delete CorptieTask: %@";
+"删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。" = "Deleting this CorptieTask permanently deletes %d associated Session(s) and their complete conversation history. The Worktree and Artifacts will be handled according to the options below. This cannot be undone.";
+"The Provider Session binding is being verified." = "The Provider Session binding is being verified.";

@@ -27,6 +27,27 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func objectiveCreationRequiresAnAgentAndDoesNotOfferATargetDate() throws {
+        let createSource = try source(named: "ObjectiveCreateView.swift")
+
+        #expect(createSource.contains("|| contributorAgentIds.isEmpty"))
+        #expect(createSource.contains("guard !trimmed.isEmpty, !contributorAgentIds.isEmpty"))
+        #expect(createSource.contains("请至少选择一个 Contributor Agent"))
+        #expect(createSource.contains("Button(L10n(\"选择头像\"))"))
+        #expect(createSource.contains("avatarPath: requestAvatarSourcePath"))
+        #expect(!createSource.contains("targetDate"))
+        #expect(!createSource.contains("DatePicker("))
+
+        let detailSource = try source(named: "ObjectiveDetailView.swift")
+        #expect(detailSource.contains("client.setObjectiveAvatar"))
+        #expect(detailSource.contains("client.clearObjectiveAvatar"))
+
+        let consoleSource = try source(named: "UnifiedConsoleView.swift")
+        #expect(consoleSource.contains("avatarPath: objective.avatarPath"))
+        #expect(consoleSource.contains("AnimatedAvatarImage(path: avatarPath)"))
+    }
+
+    @Test
     func combinedSessionAndTaskDetailUsesOneOuterScrollContainer() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let combinedStart = try #require(source.range(of: "if let taskId = session.taskId, !taskId.isEmpty"))
@@ -166,6 +187,21 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!row.contains("L10n(\"Not started\")"))
         #expect(!row.contains("Text(session == nil"))
         #expect(!row.contains("Text(task.lifecycleState)"))
+    }
+
+    @Test
+    func taskRowsExposeUnreadStateFromTheirBoundSession() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "private func taskRow("))
+        let rowEnd = try #require(source.range(
+            of: "private func openTask(",
+            range: rowStart.lowerBound..<source.endIndex
+        ))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+
+        #expect(row.contains("if let session, isSessionUnread(session)"))
+        #expect(row.contains(".fill(Color.red)"))
+        #expect(row.contains(".accessibilityLabel(L10n(\"Unread Session\"))"))
     }
 
     @Test

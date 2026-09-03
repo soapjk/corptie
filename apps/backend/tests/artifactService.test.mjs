@@ -47,6 +47,7 @@ const managerContext = (f) => ({ actorId: f.manager.agentId, sessionId: "session
 const workerContext = (f) => ({ actorId: f.worker.agentId, sessionId: "session:worker", objectiveId: "objective:one", taskId: "task:one" });
 const peerContext = (f) => ({ actorId: f.peer.agentId, sessionId: "session:peer", objectiveId: "objective:one", taskId: "task:peer" });
 const outsiderContext = (f) => ({ actorId: f.outsider.agentId, sessionId: "session:outsider", objectiveId: "objective:two", taskId: "task:two" });
+const localUserContext = { kind: "local_user", actorId: "user:local-macos", objectiveId: "objective:one" };
 let artifactReadTurn = 0;
 function pinnedReadOptions(artifact, reference = null, options = {}) {
   const selectedReference = reference ?? artifact.references?.find((candidate) => !candidate.revokedAt);
@@ -59,6 +60,37 @@ function pinnedReadOptions(artifact, reference = null, options = {}) {
     ...options
   };
 }
+
+test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", async () => {
+  const f = await fixture();
+  try {
+    const revoked = await f.service.create(workerContext(f), {
+      title: "Delete with Task", content: "delete", visibility: "task_private",
+      boundTaskId: "task:one", idempotencyKey: "task-delete-artifact-delete"
+    });
+    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "delete");
+    assert.equal(f.store.getArtifact(revoked.artifactId).status, "revoked");
+    assert.equal(f.store.getArtifact(revoked.artifactId).boundTaskId, null);
+
+    const promoted = await f.service.create(workerContext(f), {
+      title: "Promote with Task", content: "promote", visibility: "task_private",
+      boundTaskId: "task:one", idempotencyKey: "task-delete-artifact-promote"
+    });
+    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "objective");
+    const promotedRecord = f.store.getArtifact(promoted.artifactId);
+    assert.equal(promotedRecord.visibility, "objective_private");
+    assert.equal(promotedRecord.scope, "objective");
+    assert.equal(promotedRecord.boundTaskId, null);
+
+    const retained = await f.service.create(workerContext(f), {
+      title: "Retain with Task", content: "retain", visibility: "task_private",
+      boundTaskId: "task:one", idempotencyKey: "task-delete-artifact-retain"
+    });
+    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "retain");
+    assert.equal(f.store.getArtifact(retained.artifactId).boundTaskId, "task:one");
+    assert.equal(f.store.getArtifact(retained.artifactId).status, "active");
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
 
 test("Objective private content is hashed, atomically stored outside repositories, paged, and usage-audited", async () => {
   const f = await fixture();

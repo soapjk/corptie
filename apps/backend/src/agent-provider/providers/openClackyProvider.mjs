@@ -22,6 +22,7 @@ export function openClackyToolSchemaCapabilities(manager) {
 const OPENCLACKY_BASE_CAPABILITIES = Object.freeze([
   AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
@@ -73,6 +74,7 @@ export function createOpenClackyProvider(manager, options = {}) {
     resumeSession: (reference, context = {}) => manager.resume(reference.providerSessionId, {
       toolHost: context.toolHost ?? null
     }),
+    probeBinding: (reference) => manager.refreshOne(reference.providerSessionId),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     disconnectSession: (reference) => manager.disconnect(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),

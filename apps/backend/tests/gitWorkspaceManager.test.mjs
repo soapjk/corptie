@@ -246,6 +246,25 @@ test("uncommitted changes in the main worktree can be committed explicitly", asy
   }
 });
 
+test("Task deletion status inspects only the known target Worktree without rebuilding inventory", async () => {
+  const fixture = await createFixture("task-delete-targeted", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") },
+    createSnapshot: async () => assert.fail("Task deletion must not rebuild the full Worktree inventory")
+  });
+  await writeFile(join(fixture.activeWorktree, "draft.txt"), "keep or delete\n");
+  try {
+    const project = await manager.taskDeletionStatus("logical:one");
+    assert.equal(project.worktrees.length, 1);
+    assert.equal(project.worktrees[0].path, await realpath(fixture.activeWorktree));
+    assert.equal(project.worktrees[0].dirty, true);
+    assert.match(project.worktrees[0].statusSummary, /draft\.txt/);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("project status distinguishes working, pending, and synchronized worktrees", async () => {
   const fixture = await createFixture("project-status", { activeFeatureWorktree: true });
   const manager = new GitWorkspaceManager({

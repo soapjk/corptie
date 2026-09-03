@@ -150,6 +150,76 @@ export class GitWorkspaceManager {
     });
   }
 
+  async taskDeletionStatus(logicalSessionId) {
+    const logical = this.requireLogicalRoute(logicalSessionId);
+    if (!logical.repositoryId || !logical.activeWorkspaceId) {
+      throw new Error("The active session is not attached to a Git worktree.");
+    }
+    return this.taskDeletionStatusForWorktree(logical.repositoryId, logical.activeWorkspaceId);
+  }
+
+  async taskDeletionStatusForWorktree(repositoryId, worktreeId) {
+    const startedAt = performance.now();
+    const target = this.store.getGitWorktree(worktreeId);
+    const main = this.store.listGitWorktrees(repositoryId).find((worktree) => worktree.isMain);
+    if (!target || target.repositoryId !== repositoryId || target.isMain || !main) {
+      throw new Error("The Task Worktree or repository main Worktree is unavailable.");
+    }
+    const [targetPath, mainPath, status, targetHead, targetBranch, mainHead] = await Promise.all([
+      realpath(target.path),
+      realpath(main.path),
+      this.gitOutput(target.path, ["status", "--porcelain=v1"]),
+      this.gitOutput(target.path, ["rev-parse", "--verify", "HEAD"]),
+      this.gitOutput(target.path, ["rev-parse", "--abbrev-ref", "HEAD"]),
+      this.gitOutput(main.path, ["rev-parse", "--verify", "HEAD"])
+    ]);
+    const counts = await this.gitOutput(main.path, [
+      "rev-list", "--left-right", "--count", `${mainHead.trim()}...${targetHead.trim()}`
+    ]);
+    const [behindMain, aheadOfMain] = counts.trim().split(/\s+/).map((value) => Number(value) || 0);
+    const dirty = Boolean(status.trim());
+    const sessions = this.store.listLogicalSessionsByWorkspaceId(target.worktreeId)
+      .filter((session) => Boolean(this.store.getSession(session.legacySessionId)))
+      .map((session) => ({
+        logicalSessionId: session.logicalSessionId,
+        sessionId: session.legacySessionId,
+        title: session.sessionName,
+        active: true
+      }));
+    const worktree = {
+      ...target,
+      path: targetPath,
+      canonicalPath: targetPath,
+      availability: "available",
+      headOid: targetHead.trim(),
+      branchName: targetBranch.trim() === "HEAD" ? null : targetBranch.trim(),
+      dirty,
+      statusSummary: status.trim(),
+      diffStat: "",
+      mergedIntoMain: aheadOfMain === 0,
+      synchronizedWithMain: !dirty && aheadOfMain === 0 && behindMain === 0,
+      aheadOfMain,
+      behindMain,
+      pendingIntegration: dirty || aheadOfMain > 0,
+      sessions
+    };
+    this.observePerformance({
+      operation: "taskDeletionStatusForWorktree",
+      repositoryId,
+      worktreeId,
+      totalMs: roundedMilliseconds(performance.now() - startedAt)
+    });
+    return {
+      repositoryId,
+      mainWorktreeId: main.worktreeId,
+      mainPath,
+      mainBranch: main.branchName,
+      mainHeadOid: mainHead.trim(),
+      pendingWorktreeCount: worktree.pendingIntegration ? 1 : 0,
+      worktrees: [worktree]
+    };
+  }
+
   async projectStatusForPath(workingDirectory, expectedRepositoryId = null, options = {}) {
     const inspectionLevel = normalizedInspectionLevel(options.inspectionLevel, options.activeWorkspaceId);
     const repositoryKey = expectedRepositoryId || `path:${absolutePath(workingDirectory)}`;

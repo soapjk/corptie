@@ -106,6 +106,12 @@ test("Provider bootstrap accepts external Provider factories without knowing the
     "codex-app-server",
     "external.provider"
   ]);
+  assert.equal(
+    registry.get("codex-app-server").descriptor.capabilities.includes(
+      AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE
+    ),
+    true
+  );
 });
 
 test("Codex runtime bootstrap keeps a failed Session sendable for binding recovery", () => {
@@ -166,6 +172,7 @@ function recordingCodexOperations() {
     resumeSession: () => ({}),
     stabilizeRecoverySession: () => ({ durable: true }),
     prepareExecution: () => ({}),
+    probeBinding: () => ({ ready: true }),
     deleteSession: () => true,
     restartSession: () => ({}),
     renameSession: () => ({}),

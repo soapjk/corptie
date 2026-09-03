@@ -214,8 +214,30 @@ export class SessionApplicationService {
     );
   }
 
+  // Readiness belongs to the concrete Session binding, not to its owning Task
+  // or to the Provider process as a whole. Every adapter must implement the
+  // same probe contract using its own authoritative protocol operation.
+  async probeBindingReadiness(sessionId, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE,
+      reference,
+      context
+    );
+  }
+
   async deleteSession(sessionId, context = {}) {
     return this.#deleteSession(sessionId, context, false);
+  }
+
+  // A Task owns its associated Session resources. Deleting that Task must not
+  // leave the local ownership graph permanently blocked because an external
+  // Provider is unavailable or its delete operation times out. Provider
+  // cleanup is still attempted first and its result is returned for audit,
+  // while the product binding is retired regardless of Provider availability.
+  async deleteSessionForTaskDeletion(sessionId, context = {}) {
+    return this.#deleteSession(sessionId, context, true);
   }
 
   async #ensureRequiredDomains(context) {

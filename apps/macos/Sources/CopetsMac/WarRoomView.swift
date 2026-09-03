@@ -163,11 +163,13 @@ struct WarRoomView: View {
                         retryItem: presentation.task
                     )
                 },
-                onDelete: { force, branch in
+                onDelete: { force, branch, deleteWorktree, artifactDisposition in
                     enqueueDeletion(
                         presentation.task,
                         force: force,
-                        confirmedBranchName: branch
+                        confirmedBranchName: branch,
+                        deleteWorktree: deleteWorktree,
+                        artifactDisposition: artifactDisposition
                     )
                 }
             )
@@ -237,7 +239,7 @@ struct WarRoomView: View {
                 sidebarEmptyState(L10n("No Objectives"))
             } else {
                 ForEach(client.objectives) { objective in
-                    Label(objective.name, systemImage: "target")
+                    objectiveSidebarLabel(objective)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .tag(objective.id)
@@ -280,6 +282,21 @@ struct WarRoomView: View {
         }
         .sheet(isPresented: $isCreatingObjective) {
             ObjectiveCreateView()
+        }
+    }
+
+    private func objectiveSidebarLabel(_ objective: Objective) -> some View {
+        HStack(spacing: 8) {
+            if let avatarPath = objective.avatarPath, !avatarPath.isEmpty {
+                AnimatedAvatarImage(path: avatarPath)
+                    .frame(width: 20, height: 20)
+                    .clipShape(Circle())
+            } else {
+                Image(systemName: "target")
+                    .frame(width: 20, height: 20)
+            }
+            Text(objective.name)
+                .lineLimit(1)
         }
     }
 
@@ -463,23 +480,25 @@ struct WarRoomView: View {
     private func enqueueDeletion(
         _ task: CorptieTask,
         force: Bool,
-        confirmedBranchName: String?
+        confirmedBranchName: String?,
+        deleteWorktree: Bool,
+        artifactDisposition: CorptieTaskArtifactDisposition
     ) {
         guard !deletingCorptieTaskIds.contains(task.id) else { return }
 
         // 用户确认后立即收起模态窗口。清理在后台 Task 中继续，控制台仅展示非阻塞状态。
         deletionPresentation = nil
-        deletingCorptieTaskIds.insert(task.id)
-        deletionNotice = CorptieTaskDeletionNotice(
-            phase: .deleting,
-            message: L10nFormat("正在后台删除 CorptieTask“%@”…", task.title)
-        )
-
-        Task {
+        BackgroundTaskCenter.shared.start(
+            id: "task.deletion.\(task.id)",
+            title: L10nFormat("删除 CorptieTask：%@", task.title)
+        ) {
+            deletingCorptieTaskIds.insert(task.id)
             let deleted = await client.deleteCorptieTask(
                 taskId: task.id,
                 force: force,
-                confirmedBranchName: confirmedBranchName
+                confirmedBranchName: confirmedBranchName,
+                deleteWorktree: deleteWorktree,
+                artifactDisposition: artifactDisposition
             )
             deletingCorptieTaskIds.remove(task.id)
 
@@ -487,17 +506,9 @@ struct WarRoomView: View {
                 tasks.removeAll { $0.id == task.id }
                 if selectedCorptieTaskId == task.id { selectedCorptieTaskId = nil }
                 tasksReloadToken &+= 1
-                deletionNotice = CorptieTaskDeletionNotice(
-                    phase: .success,
-                    message: L10nFormat("CorptieTask“%@”已删除。", task.title)
-                )
-            } else {
-                deletionNotice = CorptieTaskDeletionNotice(
-                    phase: .failure,
-                    message: client.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。"),
-                    retryItem: task
-                )
+                return .success(L10nFormat("CorptieTask“%@”已删除。", task.title))
             }
+            return .failure(client.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。"))
         }
     }
 
@@ -1226,8 +1237,13 @@ struct CorptieTaskDetailView: View {
                         showDeletion = false
                         deletionFeedback = L10n("Merge the Task Worktree into the target branch before deleting it.")
                     },
-                    onDelete: { force, branch in
-                        deleteTask(force: force, confirmedBranchName: branch)
+                    onDelete: { force, branch, deleteWorktree, artifactDisposition in
+                        deleteTask(
+                            force: force,
+                            confirmedBranchName: branch,
+                            deleteWorktree: deleteWorktree,
+                            artifactDisposition: artifactDisposition
+                        )
                     }
                 )
             }
@@ -1602,23 +1618,33 @@ struct CorptieTaskDetailView: View {
         }
     }
 
-    private func deleteTask(force: Bool, confirmedBranchName: String?) {
+    private func deleteTask(
+        force: Bool,
+        confirmedBranchName: String?,
+        deleteWorktree: Bool,
+        artifactDisposition: CorptieTaskArtifactDisposition
+    ) {
         guard !isDeletingCorptieTask else { return }
         showDeletion = false
-        isDeletingCorptieTask = true
-        Task {
+        BackgroundTaskCenter.shared.start(
+            id: "task.deletion.\(task.id)",
+            title: L10nFormat("删除 CorptieTask：%@", task.title)
+        ) {
+            isDeletingCorptieTask = true
             let deleted = await client.deleteCorptieTask(
                 taskId: task.id,
                 force: force,
-                confirmedBranchName: confirmedBranchName
+                confirmedBranchName: confirmedBranchName,
+                deleteWorktree: deleteWorktree,
+                artifactDisposition: artifactDisposition
             )
             isDeletingCorptieTask = false
             if deleted {
                 await client.refreshObjectives()
                 onRequestReload()
-            } else {
-                deletionFeedback = client.errorMessage ?? L10n("Unable to delete Task.")
+                return .success(L10nFormat("CorptieTask“%@”已删除。", task.title))
             }
+            return .failure(client.errorMessage ?? L10n("Unable to delete Task."))
         }
     }
 
@@ -1990,11 +2016,23 @@ struct CorptieTaskDeletionConfirmationView: View {
     let plan: CorptieTaskDeletionPlan
     let onCancel: () -> Void
     let onMergeFirst: () -> Void
-    let onDelete: (_ force: Bool, _ branch: String?) -> Void
+    let onDelete: (
+        _ force: Bool,
+        _ branch: String?,
+        _ deleteWorktree: Bool,
+        _ artifactDisposition: CorptieTaskArtifactDisposition
+    ) -> Void
 
     @State private var showForceConfirmation = false
     @State private var confirmedBranch = ""
     @State private var acknowledgesDataLoss = false
+    @State private var deleteWorktree = true
+    @State private var artifactDisposition: CorptieTaskArtifactDisposition = .delete
+
+    private var artifacts: [CorptieTaskDeletionArtifact] { plan.artifacts ?? [] }
+    private var effectiveBlockers: [CorptieTaskDeletionRisk] {
+        deleteWorktree ? plan.blockers : plan.blockers.filter { $0.code == "START_IN_PROGRESS" }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2008,7 +2046,7 @@ struct CorptieTaskDeletionConfirmationView: View {
             Text(task.title).font(.headline)
 
             Text(L10nFormat(
-                "删除此 CorptieTask 将永久删除其所有专属数据，包括 %d 个关联会话及完整会话历史。此操作无法撤销。",
+                "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。",
                 plan.associatedSessionCount
             ))
             .font(.callout.weight(.semibold))
@@ -2022,15 +2060,35 @@ struct CorptieTaskDeletionConfirmationView: View {
                 }
                 .padding(10)
                 .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+                Toggle(L10n("删除关联的 Worktree 和分支"), isOn: $deleteWorktree)
             } else {
                 Text(L10n("此 CorptieTask 没有关联专属 Worktree；不会执行 Worktree 或分支清理。"))
                     .font(.callout).foregroundStyle(.secondary)
             }
 
-            if !plan.blockers.isEmpty {
-                riskList(title: L10n("当前无法安全删除"), risks: plan.blockers, color: .red)
+            if !artifacts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L10nFormat("Artifact 处理（%d 个）", artifacts.count))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Picker(L10n("Artifact 处理"), selection: $artifactDisposition) {
+                        Text(L10n("删除")).tag(CorptieTaskArtifactDisposition.delete)
+                        Text(L10n("移入 Objective 层级")).tag(CorptieTaskArtifactDisposition.objective)
+                        Text(L10n("留在原地")).tag(CorptieTaskArtifactDisposition.retain)
+                    }
+                    .pickerStyle(.radioGroup)
+                    ForEach(artifacts.prefix(5)) { artifact in
+                        Text(artifact.title).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(10)
+                .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
             }
-            if !plan.risks.isEmpty {
+
+            if !effectiveBlockers.isEmpty {
+                riskList(title: L10n("当前无法安全删除"), risks: effectiveBlockers, color: .red)
+            }
+            if deleteWorktree, !plan.risks.isEmpty {
                 riskList(title: L10n("可能丢失的内容"), risks: plan.risks, color: .orange)
             }
 
@@ -2045,21 +2103,30 @@ struct CorptieTaskDeletionConfirmationView: View {
             HStack {
                 Spacer()
                 Button(L10n("取消"), role: .cancel, action: onCancel)
-                if !showForceConfirmation, !plan.risks.isEmpty, plan.blockers.isEmpty {
+                if !showForceConfirmation, deleteWorktree, !plan.risks.isEmpty, effectiveBlockers.isEmpty {
                     Button(L10n("先合并"), action: onMergeFirst)
                     Button(L10n("强制删除"), role: .destructive) { showForceConfirmation = true }
                 } else if showForceConfirmation {
                     Button(L10n("确认强制删除"), role: .destructive) {
-                        onDelete(true, confirmedBranch)
+                        onDelete(true, confirmedBranch, deleteWorktree, artifactDisposition)
                     }
                     .disabled(!acknowledgesDataLoss || confirmedBranch != plan.worktree?.branchName)
-                } else if plan.blockers.isEmpty {
-                    Button(L10n("确认删除"), role: .destructive) { onDelete(false, nil) }
+                } else if effectiveBlockers.isEmpty {
+                    Button(L10n("确认删除"), role: .destructive) {
+                        onDelete(false, nil, deleteWorktree, artifactDisposition)
+                    }
                 }
             }
         }
         .padding(20)
         .frame(width: 520)
+        .onChange(of: deleteWorktree) { _, enabled in
+            if !enabled {
+                showForceConfirmation = false
+                confirmedBranch = ""
+                acknowledgesDataLoss = false
+            }
+        }
     }
 
     private func riskList(title: String, risks: [CorptieTaskDeletionRisk], color: Color) -> some View {

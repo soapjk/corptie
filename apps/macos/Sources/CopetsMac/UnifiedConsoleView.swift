@@ -190,8 +190,14 @@ struct UnifiedConsoleView: View {
                         presentation.plan.worktree?.branchName ?? ""
                     )
                 },
-                onDelete: { force, branch in
-                    deleteTask(presentation.task, force: force, confirmedBranchName: branch)
+                onDelete: { force, branch, deleteWorktree, artifactDisposition in
+                    deleteTask(
+                        presentation.task,
+                        force: force,
+                        confirmedBranchName: branch,
+                        deleteWorktree: deleteWorktree,
+                        artifactDisposition: artifactDisposition
+                    )
                 }
             )
         }
@@ -332,6 +338,7 @@ struct UnifiedConsoleView: View {
                             } label: {
                                 consoleRailIcon(
                                     text: objectiveInitials(objective.name),
+                                    avatarPath: objective.avatarPath,
                                     label: objective.name,
                                     isSelected: selectedObjectiveId == objective.id,
                                     hasUnread: unreadSummary.objectiveIDs.contains(objective.id)
@@ -392,6 +399,7 @@ struct UnifiedConsoleView: View {
     private func consoleRailIcon(
         systemImage: String? = nil,
         text: String? = nil,
+        avatarPath: String? = nil,
         label: String,
         isSelected: Bool,
         hasUnread: Bool
@@ -400,7 +408,11 @@ struct UnifiedConsoleView: View {
             Circle()
                 .fill(Color(nsColor: .controlBackgroundColor))
                 .frame(width: 42, height: 42)
-            if let systemImage {
+            if let avatarPath, !avatarPath.isEmpty {
+                AnimatedAvatarImage(path: avatarPath)
+                    .frame(width: 42, height: 42)
+                    .clipShape(Circle())
+            } else if let systemImage {
                 Image(systemName: systemImage)
                     .font(.system(size: 16, weight: .semibold))
             } else {
@@ -638,6 +650,13 @@ struct UnifiedConsoleView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if let session, isSessionUnread(session) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel(L10n("Unread Session"))
+                        .help(L10n("Unread Session"))
+                }
             }
             .padding(.vertical, 4)
             .contentShape(Rectangle())
@@ -696,16 +715,23 @@ struct UnifiedConsoleView: View {
     private func deleteTask(
         _ task: CorptieTask,
         force: Bool,
-        confirmedBranchName: String?
+        confirmedBranchName: String?,
+        deleteWorktree: Bool,
+        artifactDisposition: CorptieTaskArtifactDisposition
     ) {
         guard !pendingTaskDeletionIds.contains(task.id) else { return }
         taskDeletionPresentation = nil
-        pendingTaskDeletionIds.insert(task.id)
-        Task {
+        BackgroundTaskCenter.shared.start(
+            id: "task.deletion.\(task.id)",
+            title: L10nFormat("删除 CorptieTask：%@", task.title)
+        ) {
+            pendingTaskDeletionIds.insert(task.id)
             let deleted = await entityClient.deleteCorptieTask(
                 taskId: task.id,
                 force: force,
-                confirmedBranchName: confirmedBranchName
+                confirmedBranchName: confirmedBranchName,
+                deleteWorktree: deleteWorktree,
+                artifactDisposition: artifactDisposition
             )
             pendingTaskDeletionIds.remove(task.id)
             if deleted {
@@ -713,9 +739,9 @@ struct UnifiedConsoleView: View {
                     selectedTaskId = nil
                     selectDefaultContentForCurrentSpace()
                 }
-            } else {
-                taskDeletionError = entityClient.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。")
+                return .success(L10nFormat("CorptieTask“%@”已删除。", task.title))
             }
+            return .failure(entityClient.errorMessage ?? L10n("删除失败；资源状态已保留，可修复后安全重试。"))
         }
     }
 

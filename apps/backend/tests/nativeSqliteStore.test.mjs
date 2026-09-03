@@ -127,6 +127,73 @@ test("Session tables do not own avatar columns while Agents still do", async () 
   }
 });
 
+test("deleting a Logical Session tombstones its route when startup audit retains it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-logical-session-delete-audit-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "session:delete-audit", title: "Delete audit", agent: "Codex",
+      provider: "codex-app-server", status: "complete"
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:delete-audit",
+      legacySessionId: "session:delete-audit",
+      providerThreadId: "thread:delete-audit",
+      providerId: "codex-app-server",
+      providerSessionId: "provider-session:delete-audit",
+      bindingId: "binding:delete-audit",
+      boundCwd: "/tmp/delete-audit",
+      sessionName: "Delete audit"
+    });
+    const agent = store.createAgent({ id: "agent:delete-audit", name: "Delete audit" });
+    store.createObjective({
+      id: "objective:delete-audit", name: "Delete audit",
+      contributorAgentIds: [agent.agentId]
+    });
+    store.createTask({
+      id: "task:delete-audit", objectiveId: "objective:delete-audit",
+      title: "Delete audit", mainAgentId: agent.agentId
+    });
+    store.db.run(
+      `INSERT INTO git_repositories (repository_id, common_git_dir, discovered_at, last_validated_at)
+       VALUES ('repository:missing','/tmp/delete-audit.git','2026-09-02T00:00:00.000Z','2026-09-02T00:00:00.000Z')`
+    );
+    store.db.run(
+      `INSERT INTO work_session_startup_operations (
+        startup_operation_id, objective_id, task_id, assignee_agent_id,
+        expected_task_version, provider_id, repository_id, source_session_id, idempotency_key,
+        request_fingerprint, state, logical_session_id, legacy_session_id,
+        correlation_id, allocated_at, ready_at, updated_at
+      ) VALUES (
+        'startup:delete-audit','objective:delete-audit','task:delete-audit','agent:delete-audit',
+        1,'codex-app-server','repository:missing','logical:source','start:delete-audit','fingerprint',
+        'ready','logical:delete-audit','session:delete-audit','correlation:delete-audit',
+        '2026-09-02T00:00:00.000Z','2026-09-02T00:00:01.000Z','2026-09-02T00:00:01.000Z'
+      )`
+    );
+
+    assert.equal(store.deleteLogicalSessionByLegacySessionId("session:delete-audit"), true);
+    assert.equal(store.getLogicalSession("logical:delete-audit"), null);
+    assert.equal(store.getLogicalSessionByLegacySessionId("session:delete-audit"), null);
+    assert.ok(store.selectOne(
+      "SELECT deleted_at FROM logical_sessions WHERE logical_session_id='logical:delete-audit'"
+    ).deleted_at);
+    assert.equal(store.selectOne(
+      "SELECT state FROM provider_thread_bindings WHERE provider_thread_id='thread:delete-audit'"
+    ).state, "invalid");
+    assert.equal(store.selectOne(
+      "SELECT COUNT(*) AS count FROM work_session_startup_operations WHERE startup_operation_id='startup:delete-audit'"
+    ).count, 1);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("legacy Objective acceptance criteria migrate to the evolving ideal state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-objective-ideal-state-"));
   const dbPath = join(directory, "corptie.sqlite");

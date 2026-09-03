@@ -304,12 +304,18 @@ final class EntityAPIClient: ObservableObject {
     func deleteCorptieTask(
         taskId: String,
         force: Bool = false,
-        confirmedBranchName: String? = nil
+        confirmedBranchName: String? = nil,
+        deleteWorktree: Bool = true,
+        artifactDisposition: CorptieTaskArtifactDisposition = .delete
     ) async -> Bool {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/actions/delete"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        var body: [String: Any] = ["mode": force ? "force" : "safe"]
+        var body: [String: Any] = [
+            "mode": force ? "force" : "safe",
+            "deleteWorktree": deleteWorktree,
+            "artifactDisposition": artifactDisposition.rawValue
+        ]
         if force {
             body["acknowledgeDataLoss"] = true
             body["confirmedBranchName"] = confirmedBranchName ?? ""
@@ -1097,7 +1103,7 @@ final class EntityAPIClient: ObservableObject {
     // 创建 Objective：POST /objectives { name, ... } → 直接返回 objective
     @discardableResult
     func createObjective(id: String? = nil, name: String, description: String? = nil, idealState: String? = nil,
-                         priority: String? = nil, tags: [String] = [],
+                         avatarPath: String? = nil, priority: String? = nil, tags: [String] = [],
                          workspaceIds: [String] = [], relatedObjectiveIds: [String] = [],
                          contributorAgentIds: [String] = []) async -> Objective? {
         var request = URLRequest(url: baseURL.appending(path: "objectives"))
@@ -1107,11 +1113,34 @@ final class EntityAPIClient: ObservableObject {
         if let id, !id.isEmpty { body["id"] = id }
         if let description { body["description"] = description }
         if let idealState { body["idealState"] = idealState }
+        if let avatarPath, !avatarPath.isEmpty { body["avatarPath"] = avatarPath }
         if let priority { body["priority"] = priority }
         if !tags.isEmpty { body["tags"] = tags }
         if !workspaceIds.isEmpty { body["workspaceIds"] = workspaceIds }
         if !relatedObjectiveIds.isEmpty { body["relatedObjectiveIds"] = relatedObjectiveIds }
         if !contributorAgentIds.isEmpty { body["contributorAgentIds"] = contributorAgentIds }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        if let objective = await performEntityMutation(request, as: Objective.self) {
+            await refreshObjectives()
+            return objective
+        }
+        return nil
+    }
+
+    @discardableResult
+    func setObjectiveAvatar(objectiveId: String, sourcePath: String) async -> Objective? {
+        await patchObjectiveAvatar(objectiveId: objectiveId, body: ["avatarPath": sourcePath])
+    }
+
+    @discardableResult
+    func clearObjectiveAvatar(objectiveId: String) async -> Objective? {
+        await patchObjectiveAvatar(objectiveId: objectiveId, body: ["avatarPath": NSNull()])
+    }
+
+    private func patchObjectiveAvatar(objectiveId: String, body: [String: Any]) async -> Objective? {
+        var request = URLRequest(url: baseURL.appending(path: "objectives/\(objectiveId)"))
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         if let objective = await performEntityMutation(request, as: Objective.self) {
             await refreshObjectives()

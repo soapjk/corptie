@@ -165,12 +165,15 @@ struct BackgroundTaskStatusBar: View {
                 Text(record.title)
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                     .layoutPriority(1)
 
                 if center.records.count > 1 {
                     Text("+\(center.records.count - 1)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
 
                 if record.state == .failed {
@@ -195,7 +198,7 @@ struct BackgroundTaskStatusBar: View {
                     .help(L10n("关闭"))
                 }
             }
-            .frame(maxWidth: 220, alignment: .trailing)
+            .fixedSize(horizontal: true, vertical: false)
             .help("\(record.title)\n\(record.detail)")
             .accessibilityElement(children: .combine)
             .accessibilityLabel(record.title)

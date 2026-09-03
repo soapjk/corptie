@@ -46,9 +46,35 @@ export async function clearAgentAvatar(agentId, options = {}) {
   return existed;
 }
 
+export async function saveObjectiveAvatar(objectiveId, sourcePath, options = {}) {
+  return saveManagedAvatar("objectives", objectiveId, sourcePath, options);
+}
+
+export async function clearObjectiveAvatar(objectiveId, options = {}) {
+  return clearManagedAvatarFiles("objectives", objectiveId, options);
+}
+
 async function clearAgentAvatarFiles(agentId, options = {}) {
+  return clearManagedAvatarFiles("agents", agentId, options);
+}
+
+async function saveManagedAvatar(kind, entityId, sourcePath, options = {}) {
   const { avatarsRoot } = resolveAgentAvatarsRoot(options);
-  const targetDir = join(avatarsRoot, "agents", String(agentId));
+  const source = resolve(String(sourcePath ?? ""));
+  if (!source) throw new Error("Avatar source path is required.");
+  const ext = (extname(source) || ".png").toLowerCase();
+  const safeExt = AVATAR_EXTENSIONS.includes(ext) ? ext : ".png";
+  const targetDir = join(avatarsRoot, kind, String(entityId));
+  await mkdir(targetDir, { recursive: true, mode: 0o700 });
+  await clearManagedAvatarFiles(kind, entityId, options);
+  const target = join(targetDir, `avatar${safeExt}`);
+  await copyFile(source, target);
+  return target;
+}
+
+async function clearManagedAvatarFiles(kind, entityId, options = {}) {
+  const { avatarsRoot } = resolveAgentAvatarsRoot(options);
+  const targetDir = join(avatarsRoot, kind, String(entityId));
   const entries = await readdir(targetDir).catch(() => []);
   for (const entry of entries) {
     await rm(join(targetDir, entry), { force: true });

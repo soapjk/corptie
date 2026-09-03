@@ -165,17 +165,26 @@ final class BackendClient: ObservableObject {
     var selectedCanSendNow: Bool {
         if !isOnline { return false }
         if workspaceRecoveryStatus?.blocksSessionInput == true { return false }
+        if let id = selectedSession?.id, bindingVerificationSessionIDs.contains(id) { return false }
         if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.canSend ?? false }
         return selectedSession?.isReady ?? false
     }
 
     var selectedIsReady: Bool {
         if !isOnline { return false }
+        if let id = selectedSession?.id, bindingVerificationSessionIDs.contains(id) { return false }
         if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.isReady ?? false }
         return selectedSession?.isReady ?? false
     }
 
     var selectedNotReadyReason: SessionNotReadyReason? {
+        if let id = selectedSession?.id, bindingVerificationSessionIDs.contains(id) {
+            return SessionNotReadyReason(
+                code: "BINDING_RUNTIME_VERIFYING",
+                message: L10n("The Provider Session binding is being verified."),
+                retryable: true
+            )
+        }
         if viewingHistoricalThreadId != nil { return selectedHistoricalDetail?.notReadyReason }
         return selectedSession?.notReadyReason ?? selectedDetail?.notReadyReason
     }
@@ -204,6 +213,7 @@ final class BackendClient: ObservableObject {
     @Published private(set) var isLoadingDetail = false
     @Published private(set) var selectedTimelineLoadError: String?
     @Published private(set) var earlierHistoryLoadStateBySessionID: [String: EarlierHistoryLoadState] = [:]
+    @Published private(set) var bindingVerificationSessionIDs = Set<String>()
     private(set) var isSendingMessage: Bool {
         get { sessionCommandController.isSendingMessage }
         set { sessionCommandController.isSendingMessage = newValue }
@@ -2027,6 +2037,9 @@ final class BackendClient: ObservableObject {
                 return
             }
             Task { [weak self] in
+                await self?.verifyProviderBinding(for: session, expectedSelectionGeneration: generation)
+            }
+            Task { [weak self] in
                 await self?.loadScheduledTasks(for: session, expectedSelectionGeneration: generation)
             }
             // Every supplementary request starts after local selection and
@@ -2058,6 +2071,29 @@ final class BackendClient: ObservableObject {
                 }
             }
         }
+    }
+
+    private func verifyProviderBinding(
+        for session: TaskSession,
+        expectedSelectionGeneration: UInt64
+    ) async {
+        bindingVerificationSessionIDs.insert(session.id)
+        defer { bindingVerificationSessionIDs.remove(session.id) }
+        do {
+            var request = URLRequest(
+                url: baseURL.appending(path: "sessions/\(session.id)/actions/probe-binding")
+            )
+            request.httpMethod = "POST"
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try Self.requireSuccess(response, data: data)
+            await AppStateSyncController.shared.refreshSnapshot()
+        } catch {
+            // The Backend records the authoritative unavailable reason before
+            // returning. Refresh that projection instead of inventing a
+            // client-only Provider status from the transport error.
+            await AppStateSyncController.shared.refreshSnapshot()
+        }
+        guard sessionSelectionController.generation == expectedSelectionGeneration else { return }
     }
 
     func reloadSelectedSessionMessages() async {

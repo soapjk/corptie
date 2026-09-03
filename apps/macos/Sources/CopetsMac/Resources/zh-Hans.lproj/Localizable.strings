@@ -113,6 +113,7 @@
 "Session Recovery Required" = "需要会话恢复";
 "Corptie is reconnecting the existing Provider Thread. No new Thread or context rebuild is being created." = "Corptie 正在重连已有的 Provider Thread，不会创建新 Thread，也不会重建上下文。";
 "The Provider process is starting. This does not rebuild this Session or replace its Provider Thread." = "Provider 进程正在启动，不会重建此会话，也不会替换它的 Provider Thread。";
+"The Provider Session binding is being verified." = "正在验证 Provider 会话是否可用…";
 "The existing Provider Thread was preserved, but its Tool schema proof is no longer trusted. Start Session Recovery explicitly to replace it." = "已有 Provider Thread 已被保留，但其 Tool schema 证明已不可信。需要显式启动会话恢复后才会替换它。";
 "The existing Provider Thread could not be reconnected and was preserved. Start Session Recovery explicitly to replace it." = "已有 Provider Thread 无法重连并已被保留。需要显式启动会话恢复后才会替换它。";
 "Session will restart after the current run finishes" = "当前运行结束后将重启会话";
@@ -1338,3 +1339,10 @@
 "Rebuild Workspace" = "重建工作区";
 "Workspace rebuilt" = "工作区已重建";
 "This Session is unavailable because its Workspace is missing. Rebuild the Workspace to continue." = "此会话因工作区丢失而不可用。请重建工作区后继续。";
+"删除关联的 Worktree 和分支" = "删除关联的 Worktree 和分支";
+"Artifact 处理（%d 个）" = "Artifact 处理（%d 个）";
+"Artifact 处理" = "Artifact 处理";
+"移入 Objective 层级" = "移入 Objective 层级";
+"留在原地" = "留在原地";
+"删除 CorptieTask：%@" = "删除 CorptieTask：%@";
+"删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。" = "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。";

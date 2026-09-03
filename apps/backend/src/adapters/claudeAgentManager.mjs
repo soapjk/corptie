@@ -570,6 +570,20 @@ export class ClaudeAgentManager {
     return this.toSessionSummary(session);
   }
 
+  async probeBinding(id) {
+    await this.reconnect(id, { startQuery: false });
+    const session = this.get(id);
+    if (!session) {
+      const error = new Error("Claude Provider Session was not found.");
+      error.code = "PROVIDER_SESSION_UNAVAILABLE";
+      throw error;
+    }
+    // Starting the SDK query is Claude's concrete resume/readiness boundary.
+    // It performs no Turn and consumes no user message.
+    await this.ensureQueryStarted(session);
+    return { ready: true, providerSessionId: id };
+  }
+
   respondToChoice(id, input = {}) {
     const session = this.get(id);
     if (!session) {
