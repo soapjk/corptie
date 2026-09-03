@@ -87,6 +87,32 @@ test("message creation is idempotent and a conflicting Delivery key is explicit"
   }
 });
 
+test("message image references persist in Timeline metadata without storing image bytes", async () => {
+  const { directory, store } = await fixture();
+  try {
+    const image = {
+      managedPath: "chat-resources/sessions/session_one/images/image.png",
+      originalPath: "/Users/example/Desktop/image.png"
+    };
+    store.createUserMessageDelivery({
+      deliveryId: "delivery:image",
+      messageId: "message:image",
+      sessionId: "session:one",
+      binding,
+      agentId: "agent:one",
+      text: "",
+      content: { text: "", images: [image] }
+    });
+
+    const item = store.getSessionItem("session:one", "message:image");
+    assert.deepEqual(item.images, [image]);
+    assert.equal(JSON.stringify(item).includes("data:image"), false);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Delivery state updates increment only the message row Timeline and preserve audit fields", async () => {
   const { directory, store } = await fixture();
   try {

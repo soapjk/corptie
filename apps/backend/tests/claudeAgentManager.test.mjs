@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { ClaudeAgentManager } from "../src/adapters/claudeAgentManager.mjs";
 
@@ -101,6 +104,34 @@ test("Claude sends resolved Session context without exposing it as the visible u
 
   assert.equal(session.items.at(-1).text, "Fix the bug");
   assert.equal(providerMessage.message.content[0].text, "[[CORPTIE_CONTEXT_V1:17]]Reference contextFix the bug");
+});
+
+test("Claude sends a managed image as an SDK image block", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-claude-image-"));
+  try {
+    const path = join(directory, "image.png");
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    await writeFile(path, bytes);
+    const manager = new ClaudeAgentManager();
+    manager.start({ id: "claude-image" });
+    const session = manager.get("claude-image");
+    manager.ensureQueryStarted = async () => {};
+    let providerMessage = null;
+    manager.enqueueInput = (_session, message) => { providerMessage = message; };
+
+    await manager.send("claude-image", {
+      text: "",
+      images: [{ absolutePath: path, mimeType: "image/png" }]
+    });
+
+    assert.deepEqual(providerMessage.message.content, [{
+      type: "image",
+      source: { type: "base64", media_type: "image/png", data: bytes.toString("base64") }
+    }]);
+    assert.equal(session.items.at(-1).type, "userMessage");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("Claude emits Provider-neutral turn and incremental item events without writing product projections", async () => {

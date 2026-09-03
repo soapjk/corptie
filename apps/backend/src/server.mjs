@@ -79,6 +79,11 @@ import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
 import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
+import { ChatResourceService } from "./application/chatResourceService.mjs";
+import {
+  conversationMessageText,
+  normalizeConversationMessage
+} from "./application/conversationMessage.mjs";
 import { migrateStoreOffMainThread } from "./store/storeMigrationRunner.mjs";
 import { TimelineReadPool } from "./store/timelineReadPool.mjs";
 import { BenchmarkControlPlane } from "./benchmark/controlPlane.mjs";
@@ -387,6 +392,7 @@ const taskCompletionService = new TaskCompletionService({
   }
 });
 const artifactService = new ArtifactService({ store });
+const chatResourceService = new ChatResourceService({ store });
 let benchmarkControlPlane = null;
 const dataRootMigrationCoordinator = new DataRootMigrationCoordinator({
   store,
@@ -1180,7 +1186,7 @@ const sessionApplicationService = new SessionApplicationService({
     }
     let memoryContext = null;
     if (session?.agentId) {
-      const recall = await memoryRecallService.turn(messageContext.message, {
+      const recall = await memoryRecallService.turn(conversationMessageText(messageContext.message), {
         sessionId: session.id,
         agentId: session.agentId,
         workId: session.workId ?? null,
@@ -4579,6 +4585,19 @@ function handleCodexAppServerNotificationSafely(message) {
   const threadId = message?.params?.threadId ?? null;
   const logical = threadId ? store.getLogicalSessionByProviderThreadId(threadId) : null;
   const sessionId = logical?.legacySessionId ?? (threadId ? `codex:${threadId}` : null);
+  if (method === "turn/completed" && threadId && sessionId) {
+    const pendingImages = codexRuntime.liveItemsForThread(threadId).filter((item) =>
+      item?.type === "imageView"
+      && typeof item.text === "string"
+      && item.text.trim()
+      && (!Array.isArray(item.images) || item.images.length === 0)
+    );
+    if (pendingImages.length > 0) {
+      void materializeCodexTurnImages({ threadId, sessionId, items: pendingImages })
+        .finally(() => handleCodexAppServerNotificationSafely(message));
+      return;
+    }
+  }
   if (sessionId) {
     sessionStateDiagnostics.record(sessionId, "providerReceived", {
       providerId: "codex-app-server",
@@ -4608,6 +4627,30 @@ function handleCodexAppServerNotificationSafely(message) {
         ? store.getAgentSessionBindingByProviderSession("codex-app-server", threadId)
         : null;
       if (binding) store.markProviderBindingCursorDegraded(binding, now());
+    }
+  }
+}
+
+async function materializeCodexTurnImages({ threadId, sessionId, items }) {
+  const reference = requireSessionReference(sessionId);
+  for (const item of items) {
+    try {
+      const imported = await chatResourceService.importImage(reference, {
+        sourcePath: item.text,
+        preserveOriginal: false
+      });
+      codexRuntime.attachManagedImagesToLiveItem(threadId, item.id, [{
+        managedPath: imported.managedPath,
+        originalPath: null
+      }]);
+    } catch (error) {
+      console.warn(`[chat-image] could not materialize Provider image session=${sessionId} path=${item.text} code=${error?.code ?? "unknown"}`);
+      // Mark the attempt so the terminal notification proceeds and the UI can
+      // render a missing-image placeholder instead of retrying forever.
+      codexRuntime.attachManagedImagesToLiveItem(threadId, item.id, [{
+        managedPath: chatResourceService.missingImagePath(reference, item.id),
+        originalPath: null
+      }]);
     }
   }
 }
@@ -6313,6 +6356,7 @@ function agentWorkTimelineItem(task, sessionId, queuePosition = null) {
         ? "System Event"
         : (task.source?.type === "feishu" ? "Feishu" : "User"),
     text: task.text,
+    images: task.source?.messageContent?.images ?? [],
     status: task.status,
     userMessageStatus,
     queuePosition: Number(queuePosition) > 0 ? Number(queuePosition) : null,
@@ -6567,15 +6611,20 @@ async function readCodexProviderSessionUsage(reference) {
   return live ?? null;
 }
 
-async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desktop" }, options = {}) {
-  const value = typeof text === "string" ? text.trim() : "";
-  if (!value) {
-    const error = new Error("Message text is required.");
-    error.code = "INVALID_MESSAGE";
-    throw error;
-  }
+async function sendUnifiedSessionMessage(sessionId, input, source = { type: "desktop" }, options = {}) {
+  const message = normalizeConversationMessage(input);
+  const value = message.text;
   const reference = requireSessionReference(sessionId);
   assertSessionRecoveryMessageBoundary(reference);
+  if (message.images.length > 0 && !agentProviderRegistry.supports(
+    reference.providerId,
+    AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND_IMAGE
+  )) {
+    const error = new Error("This Agent Provider does not support image messages.");
+    error.code = "PROVIDER_CAPABILITY_UNSUPPORTED";
+    error.statusCode = 409;
+    throw error;
+  }
   if (options.agentTask) assertAgentWorkSessionReference(options.agentTask, reference);
   const routedSessionId = reference.sessionId;
   const publicSessionId = reference.logicalSessionId ?? routedSessionId;
@@ -6585,7 +6634,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     { sessionId: publicSessionId }
   );
 
-  const confirmationReply = collaborationConfirmationReply(value);
+  const confirmationReply = message.images.length === 0 ? collaborationConfirmationReply(value) : null;
   const pendingChannelRequest = confirmationReply
     ? sessionChannelService.pendingRequestForSession(publicSessionId)
     : null;
@@ -6634,7 +6683,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
     }
   }
 
-  if (isClearCommand(value)) {
+  if (message.images.length === 0 && isClearCommand(value)) {
     const result = await sessionApplicationService.clearConversation(sessionId, { before, source });
     if (result?.cleared === true) return result;
     store.clearItems(routedSessionId);
@@ -6658,7 +6707,7 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   }
 
   if (options.fromAgentWorkQueue !== true) {
-    return enqueueUserAgentWork(before, value, source, latencyTrace, reference);
+    return enqueueUserAgentWork(before, message, source, latencyTrace, reference);
   }
   if (sessionHasActiveRun(before) || store.listUnsettledSessionTurns(routedSessionId).length > 0) {
     const error = new Error("Target Session became busy before queued work started.");
@@ -6681,14 +6730,18 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
   });
   let result;
   try {
-    result = await sessionApplicationService.sendMessage(sessionId, value, {
+    result = await sessionApplicationService.sendMessage(
+      sessionId,
+      await resolvedConversationMessage(reference, message),
+      {
       before,
       latencyTrace,
       options,
       source,
       submit: options.submit,
       idempotencyKey: deliveryId
-    });
+      }
+    );
   } catch (error) {
     if (delivery) {
       const status = providerDeliveryFailureStatus(error);
@@ -6860,7 +6913,23 @@ async function clearCodexAppServerSession(sessionId, session, source = { type: "
   }
 }
 
-function enqueueUserAgentWork(session, text, source, latencyTrace = null, reference = null) {
+async function resolvedConversationMessage(reference, input) {
+  const message = normalizeConversationMessage(input);
+  const images = [];
+  for (const image of message.images) {
+    const stored = await chatResourceService.readImage(reference, image.managedPath);
+    images.push({
+      ...image,
+      absolutePath: stored.path,
+      mimeType: stored.mimeType,
+      byteLength: stored.byteLength
+    });
+  }
+  return { text: message.text, images };
+}
+
+function enqueueUserAgentWork(session, input, source, latencyTrace = null, reference = null) {
+  const message = normalizeConversationMessage(input);
   const agent = collaborationCore.getAgentForSession(session.id) ?? ensureCollaborationAgentForSession(session);
   if (!agent) {
     const error = new Error("Session does not have an Agent identity.");
@@ -6884,6 +6953,7 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null, refere
     ...source,
     messageId,
     deliveryId,
+    messageContent: message,
     ...(latencyTrace ? { latencyTrace } : {})
   };
   const created = store.createUserMessageDelivery({
@@ -6892,7 +6962,8 @@ function enqueueUserAgentWork(session, text, source, latencyTrace = null, refere
     sessionId: session.id,
     binding,
     agentId: agent.agentId,
-    text,
+    text: message.text,
+    content: message,
     title: source.type === "feishu" ? "Feishu" : "User",
     source: persistedSource,
     createdAt: now()
@@ -7285,11 +7356,16 @@ async function drainAgentWorkSession(sessionId) {
       turnId = delivered.targetTurnId;
     } else {
       workspaceContinuationCoordinator.assertWorkTarget(claimed);
-      const response = await sendUnifiedSessionMessage(claimed.sessionId, claimed.text, claimed.source, {
-        fromAgentWorkQueue: true,
-        agentTask: claimed,
-        latencyTrace
-      });
+      const response = await sendUnifiedSessionMessage(
+        claimed.sessionId,
+        claimed.source?.messageContent ?? claimed.text,
+        claimed.source,
+        {
+          fromAgentWorkQueue: true,
+          agentTask: claimed,
+          latencyTrace
+        }
+      );
       turnId = response.result?.turn?.id ?? response.result?.turnId ?? null;
     }
     if (store.getAgentTask(claimed.taskId)?.status === "running") {
@@ -9658,7 +9734,7 @@ function route(request, response) {
         logSessionMessageLatency(latencyTrace, "server_request_parsed");
         return sendUnifiedSessionMessage(
           sessionId,
-          typeof input.content === "string" ? input.content : input.text,
+          input,
           userMessageCommandSource(input),
           { ...input, latencyTrace }
         );
@@ -9666,6 +9742,45 @@ function route(request, response) {
       .then((result) => sendJson(response, 202, result))
       .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
     return;
+  }
+
+  const sessionImagesMatch = url.pathname.match(/^\/sessions\/([^/]+)\/images$/);
+  if (sessionImagesMatch) {
+    const sessionId = decodeURIComponent(sessionImagesMatch[1]);
+    if (request.method === "POST") {
+      readJson(request)
+        .then((input) => chatResourceService.importImage(requireSessionReference(sessionId), input))
+        .then((image) => sendJson(response, 201, { image }))
+        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+      return;
+    }
+    if (request.method === "GET") {
+      Promise.resolve()
+        .then(() => chatResourceService.readImage(
+          requireSessionReference(sessionId),
+          url.searchParams.get("path")
+        ))
+        .then((image) => {
+          response.writeHead(200, {
+            "content-type": image.mimeType,
+            "content-length": image.byteLength,
+            "cache-control": "private, max-age=31536000, immutable"
+          });
+          response.end(image.data);
+        })
+        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+      return;
+    }
+    if (request.method === "DELETE") {
+      readJson(request)
+        .then((input) => chatResourceService.removeUnsentImage(
+          requireSessionReference(sessionId),
+          input.managedPath
+        ))
+        .then((result) => sendJson(response, 200, result))
+        .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+      return;
+    }
   }
 
   const sessionInterruptMatch = url.pathname.match(/^\/sessions\/([^/]+)\/interrupt$/);
@@ -11079,6 +11194,7 @@ console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
 // File traversal, orphan audits, FTS rebuilds, and usage reconciliation are
 // maintenance and must never delay the loopback listener.
 await artifactService.initialize({ performMaintenance: false });
+await chatResourceService.initialize();
 const collaborationMigration = collaborationCore.initialize();
 if (collaborationMigration.status === "applied") {
   console.log(`[collaboration-migration] id=${collaborationMigration.migrationId} migratedTasks=${collaborationMigration.migratedTaskCount}`);

@@ -3580,8 +3580,7 @@ struct DetailView: View {
                         ?? backendClient.lastError
                         ?? L10n("No detail is available for this task."),
                     retry: {
-                        guard let selectedSession else { return }
-                        Task { await backendClient.loadSessionMessages(selectedSession) }
+                        Task { await backendClient.reloadSelectedSessionMessages() }
                     }
                 )
             case .empty:
@@ -3829,8 +3828,19 @@ struct DetailView: View {
         let isCollaboration: Bool
         let collaborationRoute: NativeCollaborationRoutePresentation?
         let actions: [AppKitChatTimelineRow.Action]
+        var images: [ChatTimelineImage] = []
         switch entry.kind {
         case .message(let item):
+            images = (item.images ?? []).map { image in
+                ChatTimelineImage(
+                    managedPath: image.managedPath,
+                    displayURL: backendClient.chatImageURL(
+                        sessionID: sessionId,
+                        managedPath: image.managedPath
+                    ),
+                    originalPath: image.originalPath
+                )
+            }
             let collaboration = nativeCollaborationCardPresentation(
                 for: item,
                 currentSessionTitle: displayedDetail?.title ?? backendClient.selectedSession?.title
@@ -3862,6 +3872,18 @@ struct DetailView: View {
             isCollaboration = collaboration != nil
             collaborationRoute = collaboration?.route
         case .process(let turnId, let items):
+            images = items.flatMap { item in
+                (item.images ?? []).map { image in
+                    ChatTimelineImage(
+                        managedPath: image.managedPath,
+                        displayURL: backendClient.chatImageURL(
+                            sessionID: sessionId,
+                            managedPath: image.managedPath
+                        ),
+                        originalPath: image.originalPath
+                    )
+                }
+            }
             let expanded = expandedTurnIds.contains(turnId)
             let processStepsText = items.map(nativeProcessStepText).joined(separator: "\n\n")
             rawStatusText = expanded ? processRawStatusText(for: items) : ""
@@ -3901,7 +3923,8 @@ struct DetailView: View {
             processState: processState,
             showsHeader: showsHeader,
             hoverTimestamp: hoverTimestamp,
-            actions: actions
+            actions: actions,
+            images: images
         )
     }
 
@@ -4569,6 +4592,7 @@ struct DetailView: View {
     private func itemSignature(_ item: CodexThreadItem) -> String {
         let text = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let presentationText = item.presentationText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let imageSignature = (item.images ?? []).map(\.managedPath).joined(separator: ",")
         let collaborationSignature = [
             item.collaborationProcessingStatus ?? "",
             item.collaborationSenderName ?? "",
@@ -4582,7 +4606,7 @@ struct DetailView: View {
             item.collaborationRelation ?? "",
             item.collaborationRouteStatus ?? "",
             item.collaborationRoutingVersion.map(String.init) ?? ""
-        ].joined(separator: ":")
+        ].joined(separator: ":") + ":" + imageSignature
         return [
             item.id,
             item.type,
@@ -5660,6 +5684,7 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
     let rawMetadata = item.rawMetadataJSON ?? ""
     let rawMetadataCount = String(rawMetadata.count)
     let rawMetadataSuffix = String(rawMetadata.suffix(96))
+    let imageSignature = (item.images ?? []).map(\.managedPath).joined(separator: ",")
     let collaborationSignature = [
         item.collaborationProcessingStatus ?? "",
         item.collaborationSenderName ?? "",
@@ -5684,6 +5709,7 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.processStartedAt ?? "",
         item.processEndedAt ?? "",
         item.presentationRole ?? "",
+        imageSignature,
         collaborationSignature,
         "\(text.count)",
         String(text.suffix(96)),
@@ -9820,6 +9846,8 @@ struct MessageComposer: View {
     @State private var hasSendableText: Bool
     @State private var isShowingScheduleSheet = false
     @State private var scheduleSubmission: ComposerDraftBuffer.Submission?
+    @State private var attachedImages: [ChatImageReference] = []
+    @State private var isImportingImages = false
 
     init(
         sessionId: String,
@@ -9836,7 +9864,45 @@ struct MessageComposer: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            HStack(spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
+                if !attachedImages.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 7) {
+                            ForEach(attachedImages) { image in
+                                ComposerImageChip(
+                                    imageURL: backendClient.chatImageURL(
+                                        sessionID: sessionId,
+                                        managedPath: image.managedPath
+                                    ),
+                                    onRemove: { removeAttachedImage(image) }
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
+                    }
+                    .frame(height: 62)
+                }
+
+                HStack(spacing: 2) {
+                Button(action: chooseImages) {
+                    Group {
+                        if isImportingImages {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                    }
+                    .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
+                .help(L10n("Attach images"))
+                .padding(.leading, 4)
+
                 ComposerInputTextView(
                     controller: editorController,
                     placeholder: "Send a instruction",
@@ -9852,6 +9918,7 @@ struct MessageComposer: View {
                             inputHeight = nextHeight
                         }
                     },
+                    onPasteImages: importImagesFromPasteboard,
                     onSubmit: send
                 )
                     .frame(minWidth: 0, maxWidth: .infinity)
@@ -9923,6 +9990,7 @@ struct MessageComposer: View {
                 .help(L10n("创建定时消息"))
                 .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
                 .padding(.trailing, 4)
+                }
             }
             .background(
                 isLiquidGlass ? Color.white : Color(nsColor: .textBackgroundColor),
@@ -9942,6 +10010,9 @@ struct MessageComposer: View {
                 radius: isLiquidGlass ? 8 : 0,
                 y: isLiquidGlass ? 3 : 0
             )
+            .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
+                importDroppedImages(providers)
+            }
 
             if allowsModelSwitch, canSwitchModel {
                 CodexModelMenu(maxWidth: modelMenuMaxWidth)
@@ -9976,7 +10047,13 @@ struct MessageComposer: View {
     }
 
     private func sendCurrentDraft() {
-        guard let submission = editorController.submission() else {
+        guard let submission = editorController.submission()
+                ?? (!attachedImages.isEmpty
+                    ? ComposerDraftBuffer.Submission(
+                        text: editorController.draft.text,
+                        revision: editorController.draft.revision
+                    )
+                    : nil) else {
             return
         }
         send(submission)
@@ -9997,10 +10074,12 @@ struct MessageComposer: View {
               !backendClient.isSendingMessage else {
             return
         }
-        let didStartSending = backendClient.sendMessage(submission.text, to: session, onFailure: {
+        let submittedImages = attachedImages
+        let didStartSending = backendClient.sendMessage(submission.text, to: session, images: submittedImages, onFailure: {
             if editorController.restoreAfterFailedSubmission(submission) {
                 hasSendableText = true
             }
+            attachedImages = submittedImages
         })
         guard didStartSending else {
             return
@@ -10009,6 +10088,7 @@ struct MessageComposer: View {
             hasSendableText = false
             inputHeight = ComposerInputLayout.minimumHeight
         }
+        attachedImages = []
     }
 
     private var isRunningTurn: Bool {
@@ -10016,7 +10096,7 @@ struct MessageComposer: View {
     }
 
     private var isSendDisabled: Bool {
-        return !hasSendableText
+        return (!hasSendableText && attachedImages.isEmpty)
             || backendClient.isSendingMessage
             || !canSend
     }
@@ -10025,6 +10105,103 @@ struct MessageComposer: View {
         session?.actions?.switchModel.available
             ?? session?.capabilities?.canSwitchModel
             ?? (session?.agent == "Codex" ? true : false)
+    }
+
+    private var canAttachImages: Bool {
+        session?.capabilities?.canSendImages == true
+    }
+
+    private func chooseImages() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK else { return }
+        importImageFiles(Array(panel.urls.prefix(max(0, 8 - attachedImages.count))), preserveOriginal: true)
+    }
+
+    private func importImagesFromPasteboard() -> Bool {
+        let pasteboard = NSPasteboard.general
+        let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [UTType.image.identifier]
+        ]) as? [URL]) ?? []
+        if !urls.isEmpty {
+            importImageFiles(urls, preserveOriginal: true)
+            return true
+        }
+        guard let image = NSImage(pasteboard: pasteboard),
+              let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return false }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corptie-paste-\(UUID().uuidString).png")
+        do {
+            try png.write(to: url, options: .atomic)
+            importImageFiles([url], preserveOriginal: false, cleanupAfterImport: true)
+            return true
+        } catch {
+            backendClient.presentChatImageError(error)
+            return false
+        }
+    }
+
+    private func importDroppedImages(_ providers: [NSItemProvider]) -> Bool {
+        let capacity = max(0, 8 - attachedImages.count)
+        let candidates = Array(providers.prefix(capacity))
+        guard !candidates.isEmpty else { return false }
+        for provider in candidates {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    let url = (item as? Data).flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
+                        ?? item as? URL
+                    guard let url else { return }
+                    Task { @MainActor in importImageFiles([url], preserveOriginal: true) }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    guard let data else { return }
+                    let url = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("corptie-drop-\(UUID().uuidString).image")
+                    guard (try? data.write(to: url, options: .atomic)) != nil else { return }
+                    Task { @MainActor in
+                        importImageFiles([url], preserveOriginal: false, cleanupAfterImport: true)
+                    }
+                }
+            }
+        }
+        return true
+    }
+
+    private func importImageFiles(
+        _ urls: [URL],
+        preserveOriginal: Bool,
+        cleanupAfterImport: Bool = false
+    ) {
+        guard let session, !urls.isEmpty else { return }
+        isImportingImages = true
+        Task {
+            defer { isImportingImages = false }
+            for url in urls.prefix(max(0, 8 - attachedImages.count)) {
+                do {
+                    let image = try await backendClient.importChatImage(
+                        at: url,
+                        to: session,
+                        preserveOriginal: preserveOriginal
+                    )
+                    if !attachedImages.contains(image) { attachedImages.append(image) }
+                } catch {
+                    backendClient.presentChatImageError(error)
+                }
+                if cleanupAfterImport { try? FileManager.default.removeItem(at: url) }
+            }
+        }
+    }
+
+    private func removeAttachedImage(_ image: ChatImageReference) {
+        attachedImages.removeAll { $0.id == image.id }
+        guard let session else { return }
+        Task { await backendClient.removeUnsentChatImage(image, from: session) }
     }
 
     private var session: TaskSession? {
@@ -10058,6 +10235,37 @@ enum ComposerInputLayout {
 
     static func resolvedHeight(for contentHeight: CGFloat) -> CGFloat {
         min(maximumHeight, max(minimumHeight, ceil(contentHeight)))
+    }
+}
+
+private struct ComposerImageChip: View {
+    let imageURL: URL?
+    let onRemove: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            AsyncImage(url: imageURL) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Image(systemName: phase.error == nil ? "photo" : "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 48, height: 48)
+            .background(Color.black.opacity(0.04))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, .black.opacity(0.66))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 5, y: -5)
+            .help(L10n("Remove image"))
+        }
+        .padding(.trailing, 3)
     }
 }
 
@@ -10350,6 +10558,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
     var onFocusChange: (Bool) -> Void = { _ in }
     var onSendableTextChange: (Bool) -> Void = { _ in }
     var onContentHeightChange: (CGFloat) -> Void = { _ in }
+    var onPasteImages: () -> Bool = { false }
     let onSubmit: (ComposerDraftBuffer.Submission) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -10382,6 +10591,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
         textView.string = controller.draft.text
         textView.onFocusChange = onFocusChange
         textView.onSubmit = context.coordinator.submit
+        textView.onPasteImages = onPasteImages
 
         scrollView.documentView = textView
         controller.attach(textView)
@@ -10408,6 +10618,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 0, height: textInsetHeight)
         textView.onFocusChange = onFocusChange
         textView.onSubmit = context.coordinator.submit
+        textView.onPasteImages = onPasteImages
         controller.attach(textView)
         DispatchQueue.main.async {
             context.coordinator.reportContentHeight(of: textView)
@@ -10503,6 +10714,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
 
     final class ComposerSubmitTextView: NSTextView {
         var onSubmit: (() -> Void)?
+        var onPasteImages: (() -> Bool)?
         var onFocusChange: ((Bool) -> Void)?
         var placeholder = "" {
             didSet {
@@ -10522,6 +10734,11 @@ private struct ComposerInputTextView: NSViewRepresentable {
                 return
             }
             super.keyDown(with: event)
+        }
+
+        override func paste(_ sender: Any?) {
+            if onPasteImages?() == true { return }
+            super.paste(sender)
         }
 
         override func becomeFirstResponder() -> Bool {

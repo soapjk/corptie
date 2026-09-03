@@ -477,17 +477,11 @@ export class CodexAppServerClient {
     }, options.requestTimeoutMs ?? this.requestTimeoutMs);
   }
 
-  async startTurn(threadId, text, options = {}) {
+  async startTurn(threadId, message, options = {}) {
     await this.initialize();
     const result = await this.request("turn/start", {
       threadId,
-      input: [
-        {
-          type: "text",
-          text,
-          text_elements: []
-        }
-      ],
+      input: codexTurnInput(message),
       additionalContext: options.additionalContext ?? undefined,
       cwd: options.cwd ?? undefined,
       approvalPolicy: options.approvalPolicy ?? undefined,
@@ -825,6 +819,22 @@ export class CodexAppServerClient {
     ];
   }
 
+  attachManagedImagesToLiveItem(threadId, itemId, images) {
+    const items = this.liveItemsByThread.get(threadId);
+    const item = items?.get(itemId);
+    if (!item || !Array.isArray(images) || images.length === 0) return false;
+    let metadata = {};
+    try {
+      metadata = item.rawMetadataJSON ? JSON.parse(item.rawMetadataJSON) : {};
+    } catch {}
+    items.set(itemId, {
+      ...item,
+      images,
+      rawMetadataJSON: JSON.stringify({ ...metadata, images })
+    });
+    return true;
+  }
+
   tokenUsageForThread(threadId) {
     return this.tokenUsageByThread.get(threadId) ?? null;
   }
@@ -1149,6 +1159,26 @@ export class CodexAppServerClient {
   }
 }
 
+export function codexTurnInput(message) {
+  if (typeof message === "string") {
+    return [{ type: "text", text: message, text_elements: [] }];
+  }
+  const text = typeof message?.text === "string" ? message.text.trim() : "";
+  const images = Array.isArray(message?.images) ? message.images : [];
+  return [
+    ...(text ? [{ type: "text", text, text_elements: [] }] : []),
+    ...images.map((image) => {
+      const path = typeof image?.absolutePath === "string" ? image.absolutePath.trim() : "";
+      if (!path) {
+        const error = new Error("Codex image input requires a resolved local path.");
+        error.code = "CHAT_IMAGE_MISSING";
+        throw error;
+      }
+      return { type: "localImage", path };
+    })
+  ];
+}
+
 function recoveryStabilizationError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -1458,6 +1488,9 @@ function mapThreadItem(turn, item) {
       kind: fileChangeKind(change.kind),
       diff: change.diff ?? ""
     }));
+  }
+  if (Array.isArray(item.images) && item.images.length > 0) {
+    mapped.images = item.images;
   }
   return mapped;
 }

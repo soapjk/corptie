@@ -31,7 +31,15 @@ export class SessionBindingReadinessProbe {
     const existing = this.inFlight.get(key);
     if (existing) return existing;
 
-    this.#set(reference, bindingId, VERIFYING);
+    // Every dispatch still probes the concrete Provider binding. Once this
+    // exact binding has been verified ready, keep that last known presentation
+    // state while the repeated safety probe runs; publishing VERIFYING here
+    // briefly replaces the macOS composer with its read-only state after every
+    // message. A missing, changed, or previously failed binding still exposes
+    // VERIFYING until the probe settles.
+    if (this.readiness(logicalSessionId, bindingId) !== null) {
+      this.#set(reference, bindingId, VERIFYING);
+    }
     const operation = this.#verify(reference, bindingId).finally(() => {
       if (this.inFlight.get(key) === operation) this.inFlight.delete(key);
     });
@@ -81,6 +89,8 @@ export class SessionBindingReadinessProbe {
 
   #set(reference, bindingId, readiness) {
     const logicalSessionId = reference.logicalSessionId ?? reference.sessionId;
+    const current = this.states.get(logicalSessionId);
+    if (current?.bindingId === bindingId && current.readiness === readiness) return;
     this.states.set(logicalSessionId, Object.freeze({
       sessionId: reference.sessionId,
       providerId: reference.providerId,

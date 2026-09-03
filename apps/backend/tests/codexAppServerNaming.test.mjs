@@ -4,10 +4,24 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import {
   CodexAppServerClient,
+  codexTurnInput,
   codexPreDispatchRecoveryError,
   codexResponseError,
   mapCodexThreadToSession
 } from "../src/adapters/codexAppServer.mjs";
+
+test("Codex turns carry text and managed local images through the declared input contract", () => {
+  assert.deepEqual(codexTurnInput({
+    text: "inspect this",
+    images: [{ absolutePath: "/tmp/managed.png" }]
+  }), [
+    { type: "text", text: "inspect this", text_elements: [] },
+    { type: "localImage", path: "/tmp/managed.png" }
+  ]);
+  assert.deepEqual(codexTurnInput({ text: "", images: [{ absolutePath: "/tmp/only.png" }] }), [
+    { type: "localImage", path: "/tmp/only.png" }
+  ]);
+});
 import { schemaHash } from "../src/application/hostToolCatalog.mjs";
 
 function persistedToolProof(threadId, definitions, kind = "thread_start_accepted") {
@@ -949,4 +963,21 @@ test("turn completion settles every live item in that turn without touching anot
   assert.equal(byId.get("answer-a").turnStatus, "completed");
   assert.equal(byId.get("answer-a").presentationRole, "final_answer");
   assert.equal(byId.get("commentary-b").turnStatus, "inProgress");
+});
+
+test("managed Provider images remain in durable live-item metadata", () => {
+  const client = new CodexAppServerClient();
+  client.captureLiveItem({
+    method: "item/completed",
+    params: {
+      threadId: "thread-image",
+      turnId: "turn-image",
+      item: { id: "image-one", type: "imageView", path: "/tmp/generated.png" }
+    }
+  });
+  const images = [{ managedPath: "chat-resources/sessions/one/images/generated.png", originalPath: null }];
+  assert.equal(client.attachManagedImagesToLiveItem("thread-image", "image-one", images), true);
+  const item = client.liveItemsForThread("thread-image")[0];
+  assert.deepEqual(item.images, images);
+  assert.deepEqual(JSON.parse(item.rawMetadataJSON).images, images);
 });

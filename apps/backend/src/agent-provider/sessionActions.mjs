@@ -24,7 +24,17 @@ export function withSessionActions(session, providerOrDescriptor) {
       sessionActionAvailability(action, session, providerOrDescriptor, capability)
     ])
   );
-  return { ...session, actions };
+  return {
+    ...session,
+    capabilities: {
+      ...(session.capabilities ?? {}),
+      canSendImages: providerSupports(
+        providerOrDescriptor,
+        AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND_IMAGE
+      )
+    },
+    actions
+  };
 }
 
 export function withResolvedSessionActions(session, registry) {
