@@ -8,7 +8,6 @@ private let tabIdentifiers = [
     "main-tab.sessions",
     "main-tab.automations",
     "main-tab.worktrees",
-    "main-tab.sessionDSH",
     "main-tab.agents",
 ]
 

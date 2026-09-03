@@ -10,12 +10,71 @@ enum TwoPaneLayoutMetrics {
     static let cardCornerRadius: CGFloat = 12
 }
 
+enum MainWindowLayoutMetrics {
+    static let titlebarHeight: CGFloat = 32
+    static let tabItemWidth: CGFloat = 42
+    static let tabBarHeight: CGFloat = 26
+    static let taskSurfaceWidth: CGFloat = 220
+    static let titlebarTrailingInset: CGFloat = 12
+
+    static var tabBarWidth: CGFloat {
+        CGFloat(AppTab.allCases.count) * tabItemWidth
+    }
+}
+
+enum MainWindowPageLayoutMetrics {
+    static let outerPadding: CGFloat = 6
+    static let columnSpacing: CGFloat = 6
+    static let cardCornerRadius: CGFloat = 10
+    static let cardShadowRadius: CGFloat = 5
+
+    static var halfColumnSpacing: CGFloat { columnSpacing / 2 }
+}
+
+private struct MainWindowPageCardModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .clipShape(
+                RoundedRectangle(
+                    cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
+                    style: .continuous
+                )
+            )
+            .background(
+                .regularMaterial,
+                in: RoundedRectangle(
+                    cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
+                    style: .continuous
+                )
+                .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
+            }
+            .shadow(
+                color: Color.black.opacity(0.045),
+                radius: MainWindowPageLayoutMetrics.cardShadowRadius,
+                x: 0,
+                y: 1
+            )
+    }
+}
+
+extension View {
+    func mainWindowPageCard() -> some View {
+        modifier(MainWindowPageCardModifier())
+    }
+}
+
 // 顶层 Tab 枚举。会话已经并入统一控制台，不再保留独立 Sessions 入口。
 enum AppTab: String, CaseIterable, Identifiable {
     case console
     case automations
     case worktrees
-    case sessionDSH
     case agents
 
     var id: String { rawValue }
@@ -26,8 +85,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .console: 0
         case .automations: 1
         case .worktrees: 2
-        case .sessionDSH: 3
-        case .agents: 4
+        case .agents: 3
         }
     }
 
@@ -36,7 +94,6 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .console: L10n("Console")
         case .automations: L10n("Automations")
         case .worktrees: L10n("Worktrees")
-        case .sessionDSH: L10n("Session DSH")
         case .agents: L10n("Agents")
         }
     }
@@ -46,7 +103,6 @@ enum AppTab: String, CaseIterable, Identifiable {
         case .console: "square.grid.2x2"
         case .automations: "bolt.badge.clock"
         case .worktrees: "arrow.triangle.branch"
-        case .sessionDSH: "globe"
         case .agents: "person.2"
         }
     }
@@ -335,8 +391,6 @@ private struct MainTabPageHost: NSViewRepresentable {
                 root = AnyView(AutomationsView())
             case .worktrees:
                 root = AnyView(WorktreeManagementView())
-            case .sessionDSH:
-                root = AnyView(SessionDSHView())
             case .agents:
                 root = AnyView(AgentManagementView())
             }
@@ -382,10 +436,10 @@ struct UnderlineTabBar: View {
                 ) {
                     select(tab)
                 }
-                .frame(width: 42)
+                .frame(width: MainWindowLayoutMetrics.tabItemWidth)
             }
         }
-        .frame(height: 30)
+        .frame(height: MainWindowLayoutMetrics.tabBarHeight)
         .contentShape(Rectangle())
         .background {
             Capsule()
@@ -439,6 +493,7 @@ private struct UnderlineTabButton: View {
         }
         .buttonStyle(.plain)
         .help(tab.title)
+        .accessibilityLabel(tab.title)
         .accessibilityIdentifier("main-tab.\(tab.rawValue)")
         .accessibilityValue(isSelected ? "selected" : "not-selected")
         .animation(.easeInOut(duration: 0.15), value: isSelected)
@@ -447,28 +502,20 @@ private struct UnderlineTabButton: View {
 
 // MARK: - 主窗口独立渲染表面
 
-/// The heavyweight page surface. A transparent 30-point layout reservation
-/// preserves the existing page origin while title-bar controls render in
-/// independent, constant-size hosting surfaces owned by AppKit.
+/// The heavyweight page surface starts at AppKit's native title-bar safe area;
+/// no second spacer row is reserved below the compact title-bar controls.
 struct MainWindowContentView: View {
     @StateObject private var router = AppTabRouter.shared
     @StateObject private var selectionState = AppTabRouter.shared.selectionState
     @EnvironmentObject private var resizeState: MainWindowResizeState
 
     var body: some View {
-        VStack(spacing: 0) {
-            Color.clear
-                .frame(height: 30)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-
-            MainTabPageHost(
-                selection: selectionState.selectedTab,
-                router: router,
-                resizeState: resizeState
-            )
-            .clipped()
-        }
+        MainTabPageHost(
+            selection: selectionState.selectedTab,
+            router: router,
+            resizeState: resizeState
+        )
+        .clipped()
         .environmentObject(router)
         .transaction { transaction in
             if resizeState.isLiveResize {
@@ -483,12 +530,8 @@ struct MainWindowContentView: View {
 /// edge-anchored controls outside the coalesced main content prevents their
 /// glyphs and frames from stretching and snapping at root layout commits.
 struct MainWindowFixedChromeView: View {
-    @StateObject private var router = AppTabRouter.shared
-    @StateObject private var selectionState = AppTabRouter.shared.selectionState
-
     var body: some View {
         MainWindowChromeControls(
-            sidebarState: router.sidebarState(for: selectionState.selectedTab),
             openSettings: { AppDelegate.shared?.openSettings() }
         )
     }
@@ -513,14 +556,12 @@ struct MainWindowTabBarSurfaceView: View {
 struct MainWindowTaskSurfaceView: View {
     var body: some View {
         MainWindowBackgroundTaskOverlay()
-            .frame(width: 220, alignment: .trailing)
+            .frame(width: MainWindowLayoutMetrics.taskSurfaceWidth, alignment: .trailing)
     }
 }
 
-/// Isolates the two toggle publications from the resident tab page hierarchy.
-/// Only this small header subtree and the selected tab observe either change.
+/// Keeps fixed window actions isolated from the resident tab page hierarchy.
 private struct MainWindowChromeControls: View {
-    @ObservedObject var sidebarState: TabSidebarState
     @ObservedObject private var windowState = MainWindowPresentationState.shared
     let openSettings: () -> Void
 
@@ -539,9 +580,6 @@ private struct MainWindowChromeControls: View {
             .accessibilityLabel(L10n("Always on Top"))
             .accessibilityValue(L10n(windowState.isPinned ? "On" : "Off"))
             .accessibilityIdentifier("main-window.pin")
-
-            MainWindowSidebarToggleButton(sidebarState: sidebarState)
-                .frame(width: 24, height: 22)
 
             Button(action: openSettings) {
                 chromeIcon(systemName: "gearshape", isActive: false)

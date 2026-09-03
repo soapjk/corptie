@@ -519,7 +519,6 @@
 /* Shared navigation and entity vocabulary */
 "Console" = "Console";
 "Sessions" = "Sessions";
-"Session DSH" = "Session DSH";
 "Agents" = "Agents";
 "Work" = "Work";
 "Description" = "Description";

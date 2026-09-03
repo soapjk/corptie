@@ -28,12 +28,19 @@ struct WorktreeManagementView: View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
             repositoryColumn
                 .navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 360)
+                .mainWindowPageCard()
+                .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
         } content: {
             worktreeColumn
                 .navigationSplitViewColumnWidth(min: 320, ideal: 390, max: 520)
+                .mainWindowPageCard()
+                .padding(.horizontal, MainWindowPageLayoutMetrics.halfColumnSpacing)
         } detail: {
             detailColumn
+                .mainWindowPageCard()
+                .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
         }
+        .padding(MainWindowPageLayoutMetrics.outerPadding)
         .toolbar(removing: .sidebarToggle)
         .task(id: worktreeReloadTrigger) {
             guard backendClient.isOnline else {
@@ -252,9 +259,10 @@ struct WorktreeManagementView: View {
 
     @ViewBuilder
     private var detailColumn: some View {
-        if let worktree = client.selectedWorktree {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+        Group {
+            if let worktree = client.selectedWorktree {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 5) {
                             Label(worktree.branchName ?? L10n("Detached HEAD"), systemImage: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
@@ -392,16 +400,18 @@ struct WorktreeManagementView: View {
                     if let projectStatus = client.projectStatus {
                         developmentServiceSection(projectStatus)
                     }
+                    }
+                    .padding(24)
+                    .frame(maxWidth: 760, alignment: .leading)
                 }
-                .padding(24)
-                .frame(maxWidth: 760, alignment: .leading)
+            } else if client.detail != nil {
+                ContentUnavailableView(L10n("Select a Worktree"), systemImage: "arrow.triangle.branch")
+            } else {
+                ContentUnavailableView(L10n("Worktree details unavailable"), systemImage: "exclamationmark.triangle")
             }
-            .accessibilityIdentifier("worktree.detail.column")
-        } else if client.detail != nil {
-            ContentUnavailableView(L10n("Select a Worktree"), systemImage: "arrow.triangle.branch")
-        } else {
-            ContentUnavailableView(L10n("Worktree details unavailable"), systemImage: "exclamationmark.triangle")
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .accessibilityIdentifier("worktree.detail.column")
     }
 
     private func worktreeActions(_ project: ManagedGitProject) -> some View {

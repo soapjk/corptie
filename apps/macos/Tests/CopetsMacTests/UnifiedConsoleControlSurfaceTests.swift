@@ -4,6 +4,55 @@ import Testing
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
+    func consoleUsesCompactConsistentOuterAndColumnSpacing() throws {
+        #expect(MainWindowPageLayoutMetrics.outerPadding == 6)
+        #expect(MainWindowPageLayoutMetrics.columnSpacing == 6)
+        #expect(MainWindowPageLayoutMetrics.cardCornerRadius == 10)
+
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(source.contains(".padding(.leading, MainWindowPageLayoutMetrics.outerPadding)"))
+        #expect(source.contains(".padding(.vertical, MainWindowPageLayoutMetrics.outerPadding)"))
+        #expect(source.components(
+            separatedBy: "HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing)"
+        ).count - 1 == 2)
+        #expect(source.components(
+            separatedBy: ".padding(MainWindowPageLayoutMetrics.outerPadding)"
+        ).count - 1 == 2)
+    }
+
+    @Test
+    func automationAndWorktreePagesShareCompactCardGeometry() throws {
+        let automation = try source(named: "AutomationsView.swift")
+        let worktree = try source(named: "WorktreeManagementView.swift")
+
+        #expect(automation.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
+        #expect(automation.components(separatedBy: ".mainWindowPageCard()").count - 1 == 2)
+        #expect(automation.contains("MainWindowPageLayoutMetrics.halfColumnSpacing"))
+
+        #expect(worktree.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
+        #expect(worktree.components(separatedBy: ".mainWindowPageCard()").count - 1 == 3)
+        #expect(worktree.components(
+            separatedBy: "MainWindowPageLayoutMetrics.halfColumnSpacing"
+        ).count - 1 == 3)
+    }
+
+    @Test
+    func messageComposerStaysVisuallyStableWhileSubmissionIsGuarded() throws {
+        let source = try source(named: "FloatingRootView.swift")
+        let start = try #require(source.range(of: "struct MessageComposer: View"))
+        let end = try #require(source.range(
+            of: "enum ComposerInputLayout",
+            range: start.upperBound..<source.endIndex
+        ))
+        let composer = source[start.lowerBound..<end.lowerBound]
+
+        #expect(composer.contains(".disabled(false)"))
+        #expect(composer.contains("|| backendClient.isSendingMessage"))
+        #expect(composer.contains("!backendClient.isSendingMessage else"))
+        #expect(!composer.contains(".opacity(!backendClient.selectedCanSendNow"))
+    }
+
+    @Test
     func workRailAndTaskToolbarExposeTheCorrectCreationFlows() throws {
         let unifiedSource = try source(named: "UnifiedConsoleView.swift")
 
@@ -199,6 +248,26 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!row.contains("L10n(\"Not started\")"))
         #expect(!row.contains("Text(session == nil"))
         #expect(!row.contains("Text(task.lifecycleState)"))
+    }
+
+    @Test
+    func workChatUsesTheSameSingleLineVisualContractAsTaskRows() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "private func workChatRow("))
+        let rowEnd = try #require(source.range(
+            of: "private func taskRow(",
+            range: rowStart.lowerBound..<source.endIndex
+        ))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+
+        #expect(source.contains("workChatRow(row)"))
+        #expect(!source.contains("sessionRow(row, subtitle: L10n(\"Work discussion\"))"))
+        #expect(row.contains("HStack(spacing: 9)"))
+        #expect(row.contains(".frame(width: 7, height: 7)"))
+        #expect(row.contains(".font(.system(size: 12, weight: .semibold))"))
+        #expect(row.contains(".lineLimit(1)"))
+        #expect(row.contains("RoundedRectangle(cornerRadius: 5, style: .continuous)"))
+        #expect(row.contains("SessionContextMenuContent("))
     }
 
     @Test
