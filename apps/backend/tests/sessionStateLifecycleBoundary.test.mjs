@@ -66,6 +66,13 @@ test("Codex binding readiness preserves a live empty thread until its first Turn
   const body = source.slice(begin, end);
   assert.match(body, /codexRuntime\.ensureThreadResumed\(threadId/);
   assert.doesNotMatch(body, /bindingReadinessProbe[\s\S]*codexRuntime\.resumeThread/);
+
+  const probeBegin = source.indexOf("async function probeCodexProviderBinding");
+  const probeEnd = source.indexOf("function resolvePreparedWorkspaceRoute", probeBegin);
+  const probeBody = source.slice(probeBegin, probeEnd);
+  assert.match(probeBody, /codexRuntime\.ensureThreadResumed\(reference\.providerSessionId/);
+  assert.doesNotMatch(probeBody, /toolHostService|collaborationThreadOptionsForSession|prepareCodexProviderExecution/,
+    "an existence probe must not be blocked by Tool catalog refresh");
 });
 
 test("Worker initial prompts drain only after the authoritative ready receipt commit", async () => {
