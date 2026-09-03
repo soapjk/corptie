@@ -112,7 +112,7 @@ export class SessionApplicationService {
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {}),
       sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
-      objectiveId: context.objectiveId ?? null,
+      workId: context.workId ?? null,
       taskId: context.taskId ?? null
     };
     try {
@@ -158,7 +158,7 @@ export class SessionApplicationService {
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId ?? null,
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
-      objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
+      workId: storedSession?.workId ?? context.workId ?? null,
       taskId: storedSession?.taskId ?? context.taskId ?? null,
       ...(reference.bindingId ?? reference.providerBindingId
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
@@ -192,7 +192,7 @@ export class SessionApplicationService {
       actorId,
       purpose: "session",
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
-      objectiveId: storedSession?.objectiveId ?? context.objectiveId ?? null,
+      workId: storedSession?.workId ?? context.workId ?? null,
       taskId: storedSession?.taskId ?? context.taskId ?? null,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId ?? null,

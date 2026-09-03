@@ -1,5 +1,5 @@
 const FORCEABLE_RISKS = new Set(["UNCOMMITTED_CHANGES", "UNTRACKED_FILES", "NOT_MERGED_INTO_MAIN"]);
-const ARTIFACT_DISPOSITIONS = new Set(["delete", "objective", "retain"]);
+const ARTIFACT_DISPOSITIONS = new Set(["delete", "work", "retain"]);
 
 export class TaskDeletionService {
   constructor(options = {}) {

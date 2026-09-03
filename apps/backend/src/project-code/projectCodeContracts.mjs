@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 export const PROJECT_CODE_SCHEMA_ARTIFACT = Object.freeze({
   artifactId: "artifact:ee9b734f-799d-41b6-804f-9868697de511",
   version: 1,
-  contentHash: "a288feb13a2c784e1267d4c40b44e1a0204c530c8f0b9910f0d9f2f52a9ccc76",
+  contentHash: "d706d828e697618d69a65b7c1fcae9fa95f41e2c70237cc60802a0e91f0c2e15",
   relation: "implementation_spec"
 });
 
@@ -34,7 +34,7 @@ export const CLEANUP_RECEIPT_ARTIFACT = Object.freeze({
 export const TOOLSET_VALIDATION_ARTIFACT = Object.freeze({
   artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
   version: 1,
-  contentHash: "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669",
+  contentHash: "55d976162448d8519a3d7805502921ee3474fb665fd2b17d8582e3949ae98888",
   schemaVersion: 3
 });
 

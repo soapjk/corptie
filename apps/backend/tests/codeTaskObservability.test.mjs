@@ -518,11 +518,11 @@ async function fixture(options = {}) {
 }
 
 function authority({ turnExecutionId = "turn_execution:one", runId, source = false } = {}) {
-  const identity = { objectiveId: "objective:one", taskId: "task:one", logicalSessionId: "session:one",
+  const identity = { workId: "work:one", taskId: "task:one", logicalSessionId: "session:one",
     providerBindingId: "binding:one", bindingGeneration: 2, repositoryId: "repository:one", worktreeId: "worktree:one", turnId: "turn:one" };
   const value = { identity,
     startupBindingReceipt: { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", receiptHash: "a".repeat(64),
-      objectiveId: identity.objectiveId, taskId: identity.taskId, logicalSessionId: identity.logicalSessionId,
+      workId: identity.workId, taskId: identity.taskId, logicalSessionId: identity.logicalSessionId,
       providerBindingId: identity.providerBindingId,
       bindingGeneration: identity.bindingGeneration, repositoryId: identity.repositoryId, worktreeId: identity.worktreeId,
       sourceCommitOid: "commit:one", sourceTreeOid: "tree:one" },

@@ -68,7 +68,7 @@ export class ScheduledSessionTaskService {
       taskId: resolvedInput.taskId ?? `scheduled_task:${randomUUID()}`,
       creatorType: actor.type,
       creatorId: actor.id,
-      objectiveId: scope.objectiveId ?? null,
+      workId: scope.workId ?? null,
       environment: this.environment,
       createdAt: now.toISOString()
     });

@@ -1,23 +1,22 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
-export function buildWorkSessionContext({ session, task, objective, artifactIndex = null, startupReceipt = null } = {}) {
+export function buildWorkSessionContext({ session, task, work, artifactIndex = null, startupReceipt = null } = {}) {
   if (!session || session.sessionKind !== "worker" || !task) return null;
-  if (session.taskId !== task.id || session.objectiveId !== task.objective_id) {
+  if (session.taskId !== task.id || session.workId !== task.work_id) {
     const error = new Error("Worker Session context does not match its bound Task.");
     error.code = "WORK_SESSION_BINDING_MISMATCH";
     throw error;
   }
-  if (objective && objective.id !== task.objective_id) {
-    const error = new Error("Worker Session context does not match its bound Objective.");
+  if (work && work.id !== task.work_id) {
+    const error = new Error("Worker Session context does not match its bound Work.");
     error.code = "WORK_SESSION_BINDING_MISMATCH";
     throw error;
   }
   if (startupReceipt && (startupReceipt.schemaVersion !== 2
     || startupReceipt.status !== "ready"
     || startupReceipt.taskId !== task.id
-    || startupReceipt.objectiveId !== task.objective_id
-    || startupReceipt.repositoryId !== task.main_workspace_id
+    || startupReceipt.workId !== task.work_id
     || !validReceiptHash(startupReceipt)
     || (session.external?.cwd
       && resolve(session.external.cwd) !== resolve(startupReceipt.canonicalWorktreePath)))) {
@@ -27,7 +26,7 @@ export function buildWorkSessionContext({ session, task, objective, artifactInde
   }
 
   const lines = [
-    `<corptie_work_session_binding session_id="${xml(session.id)}" task_id="${xml(task.id)}" objective_id="${xml(task.objective_id)}">`,
+    `<corptie_work_session_binding session_id="${xml(session.id)}" task_id="${xml(task.id)}" work_id="${xml(task.work_id)}">`,
     "This is the authoritative Task binding for execution ownership, evidence, and lifecycle operations in this Worker Session.",
     "Handle requests within the bound Task scope normally.",
     "A direct user request may extend beyond the Task title, description, or acceptance criteria. Continue handling that request when it is otherwise allowed. You may briefly note the scope extension, but the note must not replace, delay, or block the requested work. Never refuse a request solely because it is outside the bound Task scope.",
@@ -37,15 +36,15 @@ export function buildWorkSessionContext({ session, task, objective, artifactInde
     startupReceipt
       ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} generation=${startupReceipt.bindingGeneration} repository=${text(startupReceipt.repositoryId)} worktree=${text(startupReceipt.worktreeId)} receiptHash=${text(startupReceipt.receiptHash)}`
       : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",
-    "Use corptie_artifact_create for durable documents. Choose scope=objective for shared Objective resources or scope=task for this Task's private resources; always supply a stable idempotency_key.",
-    "Every Work Session in this Objective may read and manage Objective-scoped Artifacts. Artifacts owned by another Task are readable but immutable here; this Task's Artifacts remain manageable.",
-    "Use kind, category_path, tags, aliases, and keywords so later Sessions can locate the document through the Objective Artifact index and full-text search.",
+    "Use corptie_artifact_create for durable documents. Choose scope=work for shared Work resources or scope=task for this Task's private resources; always supply a stable idempotency_key.",
+    "Every Work Session in this Work may read and manage Work-scoped Artifacts. Artifacts owned by another Task are readable but immutable here; this Task's Artifacts remain manageable.",
+    "Use kind, category_path, tags, aliases, and keywords so later Sessions can locate the document through the Work Artifact index and full-text search.",
     "",
     `Task title: ${text(task.title)}`,
     task.description ? `Task description:\n${text(task.description)}` : "",
     task.acceptance_criteria ? `Task acceptance criteria:\n${text(task.acceptance_criteria)}` : "",
-    objective?.name ? `Parent Objective: ${text(objective.name)}` : "",
-    objective?.idealState ? `Objective ideal state:\n${text(objective.idealState)}` : "",
+    work?.name ? `Parent Work: ${text(work.name)}` : "",
+    work?.profile ? `Work profile: ${text(work.profile)}` : "",
     artifactIndex?.items?.length ? [
       "Authorized Artifact index (metadata only; bodies must be read on demand):",
       JSON.stringify({ artifacts: artifactIndex.items, omittedCount: artifactIndex.omittedCount ?? 0 }),

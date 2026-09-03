@@ -46,12 +46,12 @@ export async function clearAgentAvatar(agentId, options = {}) {
   return existed;
 }
 
-export async function saveObjectiveAvatar(objectiveId, sourcePath, options = {}) {
-  return saveManagedAvatar("objectives", objectiveId, sourcePath, options);
+export async function saveWorkAvatar(workId, sourcePath, options = {}) {
+  return saveManagedAvatar("works", workId, sourcePath, options);
 }
 
-export async function clearObjectiveAvatar(objectiveId, options = {}) {
-  return clearManagedAvatarFiles("objectives", objectiveId, options);
+export async function clearWorkAvatar(workId, options = {}) {
+  return clearManagedAvatarFiles("works", workId, options);
 }
 
 async function clearAgentAvatarFiles(agentId, options = {}) {

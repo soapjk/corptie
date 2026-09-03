@@ -22,7 +22,7 @@ export class ProjectCodeSnapshotApplicationService {
       receiptId: snapshot.receipt.receiptId,
       receiptType: "RepositorySourceSnapshotReceipt",
       logicalSessionId: context.sessionContext.logicalSessionId,
-      objectiveId: context.sessionContext.objectiveId,
+      workId: context.sessionContext.workId,
       taskId: context.sessionContext.taskId,
       repositoryId: snapshot.receipt.repositoryId,
       worktreeId: snapshot.receipt.worktreeId,
@@ -44,13 +44,13 @@ export class ProjectCodeSnapshotApplicationService {
     if (!logical?.activeBinding || !session || !task
       || startupReceipt.worktreeId !== logical.activeBinding.worktreeId
       || startupReceipt.canonicalWorktreePath !== logical.activeBinding.boundCwd
-      || startupReceipt.objectiveId !== ownership.objectiveId
+      || startupReceipt.workId !== ownership.workId
       || startupReceipt.taskId !== ownership.taskId) {
       throw contractError("STARTUP_BINDING_STALE", "Snapshot request does not match the active authoritative Worker Session route.");
     }
     return {
       startupReceipt,
-      sessionContext: { objectiveId: ownership.objectiveId, taskId: ownership.taskId, logicalSessionId: id },
+      sessionContext: { workId: ownership.workId, taskId: ownership.taskId, logicalSessionId: id },
       binding: {
         repositoryId: startupReceipt.repositoryId,
         worktreeId: startupReceipt.worktreeId,

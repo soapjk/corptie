@@ -8,17 +8,17 @@ function workerContext() {
       id: "session:strict",
       sessionKind: "worker",
       taskId: "task:strict",
-      objectiveId: "objective:quality"
+      workId: "work:quality"
     },
     task: {
       id: "task:strict",
-      objective_id: "objective:quality",
+      work_id: "work:quality",
       title: "Strict association validation",
       description: "Reject invalid bindings.",
       acceptance_criteria: "No partial writes."
     },
-    objective: {
-      id: "objective:quality",
+    work: {
+      id: "work:quality",
       name: "Improve reliability",
       idealState: "Every provider path remains neutral as the system evolves."
     }
@@ -32,11 +32,11 @@ test("Worker Session context preserves normal handling for in-scope requests", (
   assert.match(context.prompt, /Handle requests within the bound Task scope normally/);
   assert.match(context.prompt, /Strict association validation/);
   assert.match(context.prompt, /No partial writes/);
-  assert.match(context.prompt, /Objective ideal state/);
+  assert.match(context.prompt, /Work ideal state/);
   assert.match(context.prompt, /Every provider path remains neutral/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
   assert.match(context.prompt, /corptie_artifact_create/);
-  assert.match(context.prompt, /scope=objective/);
+  assert.match(context.prompt, /scope=work/);
   assert.match(context.prompt, /another Task are readable but immutable/);
 });
 
@@ -58,23 +58,23 @@ test("Worker Session context retains safety, permission, and lifecycle constrain
   assert.match(context.prompt, /does not rebind this Session or authorize lifecycle operations on a different Task/);
 });
 
-test("Worker Session context includes its bound Task and Objective details", () => {
+test("Worker Session context includes its bound Task and Work details", () => {
   const context = buildWorkSessionContext({
     session: {
       id: "session:strict",
       sessionKind: "worker",
       taskId: "task:strict",
-      objectiveId: "objective:quality"
+      workId: "work:quality"
     },
     task: {
       id: "task:strict",
-      objective_id: "objective:quality",
+      work_id: "work:quality",
       title: "Strict association validation",
       description: "Reject invalid bindings.",
       acceptance_criteria: "No partial writes."
     },
-    objective: {
-      id: "objective:quality",
+    work: {
+      id: "work:quality",
       name: "Improve reliability",
       idealState: "Every provider path remains neutral as the system evolves."
     }
@@ -82,7 +82,7 @@ test("Worker Session context includes its bound Task and Objective details", () 
 
   assert.match(context.prompt, /Strict association validation/);
   assert.match(context.prompt, /No partial writes/);
-  assert.match(context.prompt, /Objective ideal state/);
+  assert.match(context.prompt, /Work ideal state/);
   assert.match(context.prompt, /Every provider path remains neutral/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);
   assert.match(context.prompt, /corptie_artifact_create/);
@@ -97,11 +97,11 @@ test("Worker Session context rejects a mismatched Task", () => {
         id: "session:strict",
         sessionKind: "worker",
         taskId: "task:strict",
-        objectiveId: "objective:quality"
+        workId: "work:quality"
       },
       task: {
         id: "task:other",
-        objective_id: "objective:quality",
+        work_id: "work:quality",
         title: "Another task"
       }
     }),

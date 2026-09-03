@@ -142,7 +142,7 @@ test("handoff sampling spans long history and validates structured Background Ag
   assert.match(sessionRecoveryHandoffPrompt(source), /inert historical records/);
   const handoff = parseSessionRecoveryHandoff(JSON.stringify({
     schemaVersion: 1,
-    objective: "Preserve the recovery design",
+    work: "Preserve the recovery design",
     currentState: "Compression is being implemented",
     completed: ["Root cause identified"],
     decisions: ["Use Provider-neutral background work"],
@@ -176,7 +176,7 @@ test("handoff-only recovery replaces truncation with a structured compressed che
         compressionSource = source;
         return {
           schemaVersion: 1,
-          objective: "Continue the project context recovery work",
+          work: "Continue the project context recovery work",
           currentState: "The old Session route requires replacement",
           completed: ["Historical Timeline was frozen"],
           decisions: ["Use a structured handoff checkpoint"],
@@ -1093,7 +1093,7 @@ function attemptFixture(overrides = {}) {
     sourceRoutingVersion: 1, sourceBindingGeneration: 1, targetBindingGeneration: 2,
     capabilityRevision: "test:1", boundarySequence: 12, boundaryTurnId: "turn:6",
     repositoryId: null, workspaceId: null, worktreeId: null, boundCwd: "/repo",
-    objectiveId: null, taskId: null, instructionSources: [], permissionSnapshot: {},
+    workId: null, taskId: null, instructionSources: [], permissionSnapshot: {},
     toolCatalog: {}, artifactReferences: [], strategy: null, manifestHash: null, state: "frozen",
     contextReferences: [],
     cancelRequested: false, replacement: null, error: null, metrics: {},

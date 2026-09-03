@@ -34,8 +34,8 @@ export class WorkSessionStartApplicationService {
     }
     const task = this.store.getTask(command.taskId);
     if (!task) throw startContractError("TASK_NOT_FOUND", "Task was not found.");
-    if (!source.session?.objectiveId || source.session.objectiveId !== task.objective_id) {
-      throw startContractError("TASK_OUTSIDE_OBJECTIVE", "Task is outside the source Session Objective scope.");
+    if (!source.session?.workId || source.session.workId !== task.work_id) {
+      throw startContractError("TASK_OUTSIDE_WORK", "Task is outside the source Session Work scope.");
     }
     const existing = this.store.selectOne(
       `SELECT expected_task_version FROM work_session_startup_operations
@@ -50,22 +50,26 @@ export class WorkSessionStartApplicationService {
         `Expected Task version ${command.expectedTaskVersion}, current version is ${task.resource_version ?? 1}.`
       );
     }
-    const objective = this.store.getObjective(task.objective_id);
-    if (!objective) throw startContractError("TASK_OUTSIDE_OBJECTIVE", "Task Objective was not found.");
+    const work = this.store.getWork(task.work_id);
+    if (!work) throw startContractError("TASK_OUTSIDE_WORK", "Task Work was not found.");
     const agent = this.store.getAgent(command.assigneeAgentId);
     if (!agent) throw startContractError("AGENT_NOT_FOUND", "Assignee Agent was not found.");
-    if (!(objective.contributorAgentIds ?? []).includes(command.assigneeAgentId)) {
-      throw startContractError("AGENT_OUTSIDE_OBJECTIVE", "Assignee Agent is not an Objective contributor.");
+    if (!(work.contributorAgentIds ?? []).includes(command.assigneeAgentId)) {
+      throw startContractError("AGENT_OUTSIDE_WORK", "Assignee Agent is not an Work contributor.");
     }
     if (agent.role !== "independentContributor") {
       throw startContractError("AGENT_NOT_INDEPENDENT_CONTRIBUTOR", "Assignee Agent must be an Independent Contributor.");
     }
-    const repositoryId = task.main_workspace_id;
-    if (!repositoryId || !this.store.getGitRepository(repositoryId)) {
-      throw startContractError("WORKSPACE_NOT_FOUND", "Task Repository was not found.");
+    const workspaceContext = this.store.getTaskWorkspaceContext(task);
+    const repositoryId = workspaceContext?.repository?.id;
+    if (!workspaceContext?.workspace) {
+      throw startContractError("WORKSPACE_NOT_FOUND", "Work Workspace was not found.");
     }
-    if (!(objective.workspaceIds ?? []).includes(repositoryId)) {
-      throw startContractError("WORKSPACE_OUTSIDE_OBJECTIVE", "Task Repository is outside the Objective.");
+    if (!repositoryId) {
+      throw startContractError(
+        "WORKSPACE_CAPABILITY_UNAVAILABLE",
+        "Work Workspace does not provide the Git capability required by this execution strategy."
+      );
     }
     const providerId = this.resolveProviderId(command.providerId);
     if (!providerId) {
@@ -89,7 +93,7 @@ export class WorkSessionStartApplicationService {
     return Object.freeze({
       ...command,
       providerId,
-      objectiveId: task.objective_id,
+      workId: task.work_id,
       repositoryId,
       taskTitle: task.title
     });

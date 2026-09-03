@@ -9,7 +9,7 @@ import {
   serializedUtf8Bytes
 } from "../src/application/artifactContextBudgetPolicy.mjs";
 import { ArtifactReadCoordinator } from "../src/application/artifactReadCoordinator.mjs";
-import { ObjectiveChatContextService } from "../src/application/objectiveChatContextService.mjs";
+import { WorkChatContextService } from "../src/application/workChatContextService.mjs";
 
 test("Artifact summaries and indexes enforce code-point, token, byte, item, and stable omission limits", () => {
   const summary = boundArtifactSummary("😀中a".repeat(600));
@@ -66,38 +66,38 @@ test("Artifact index packing remains bounded and fast for the 80-item worst case
   assert.ok(samples[Math.floor(samples.length * 0.95)] < 10, `p95=${samples[Math.floor(samples.length * 0.95)]}ms`);
 });
 
-test("Objective snapshot remains valid JSON within dual hard budgets at 80 Tasks and Artifacts", () => {
-  const objective = {
-    id: "objective:1", name: "目标".repeat(600), description: "😀说明".repeat(2_000),
-    idealState: "理想状态".repeat(1_000), status: "active", priority: "high",
-    targetDate: null, tags: Array.from({ length: 100 }, (_, index) => `tag-${index}`),
-    workspaceIds: Array.from({ length: 100 }, (_, index) => `repository:${index}`),
+test("Work snapshot remains valid JSON within dual hard budgets at 80 Tasks and Artifacts", () => {
+  const work = {
+    id: "work:1", name: "目标".repeat(600), description: "😀说明".repeat(2_000),
+    status: "active", profile: "general",
+    tags: Array.from({ length: 100 }, (_, index) => `tag-${index}`),
+    workspaceId: "workspace:1",
     contributorAgentIds: Array.from({ length: 100 }, (_, index) => `agent:${index}`)
   };
   const tasks = Array.from({ length: 80 }, (_, index) => ({
     id: `task:${String(index).padStart(3, "0")}`, title: "工作".repeat(100),
     description: "描述😀".repeat(500), acceptance_criteria: "标准".repeat(500),
-    priority: "medium", status: "in_progress", main_workspace_id: null,
+    priority: "medium", status: "in_progress",
     main_agent_id: null, current_session_id: null
   }));
-  const agents = new Map(objective.contributorAgentIds.map((agentId) => [agentId, {
+  const agents = new Map(work.contributorAgentIds.map((agentId) => [agentId, {
     agentId, name: "Agent", role: "Worker", description: "description".repeat(200)
   }]));
   const artifacts = Array.from({ length: 80 }, (_, index) => ({
     artifactId: `artifact:${index}`, title: "Artifact", summary: "摘要😀".repeat(100),
-    summaryTruncated: true, summaryOriginalBytes: 10_000, visibility: "objective_private",
+    summaryTruncated: true, summaryOriginalBytes: 10_000, visibility: "work_private",
     pinnedVersion: 1, contentHash: "a".repeat(64), byteLength: 100_000,
     mimeType: "text/markdown", required: index < 4, relations: ["implementation_spec"],
     referenceIds: [`artifact_reference:${index}`], pendingUpdate: null
   }));
   const store = {
-    getObjective: () => objective,
-    listTasksByObjective: () => tasks,
-    resolveWorkspacePath: (id) => `/Volumes/T9/${id}/${"p".repeat(2_000)}`,
+    getWork: () => work,
+    listTasksByWork: () => tasks,
+    resolveWorkspaceRoot: (id) => `/Volumes/T9/${id}/${"p".repeat(2_000)}`,
     getAgent: (id) => agents.get(id),
-    getObjectiveChatSession: () => ({ id: "session:objective", sessionKind: "objectiveChat", objectiveId: objective.id })
+    getWorkChatSession: () => ({ id: "session:work", sessionKind: "workChat", workId: work.id })
   };
-  const service = new ObjectiveChatContextService({
+  const service = new WorkChatContextService({
     store,
     artifactService: { indexForSession: () => ({ items: artifacts, omittedArtifactCount: 0, omissionReasons: {} }) }
   });
@@ -105,7 +105,7 @@ test("Objective snapshot remains valid JSON within dual hard budgets at 80 Tasks
   let result;
   for (let index = 0; index < 100; index += 1) {
     const started = performance.now();
-    result = service.build(objective.id);
+    result = service.build(work.id);
     samples.push(performance.now() - started);
   }
   samples.sort((left, right) => left - right);
@@ -113,7 +113,7 @@ test("Objective snapshot remains valid JSON within dual hard budgets at 80 Tasks
   assert.ok(result.estimatedTokens <= 8_192);
   assert.ok(result.counts.tasks <= 80);
   assert.ok(result.counts.artifacts <= 80);
-  assert.doesNotThrow(() => JSON.parse(result.prompt.split("Objective snapshot:\n")[1]));
+  assert.doesNotThrow(() => JSON.parse(result.prompt.split("Work snapshot:\n")[1]));
   assert.ok(samples[Math.ceil(samples.length * 0.95) - 1] < 20, `p95=${samples[Math.ceil(samples.length * 0.95) - 1]}ms`);
 });
 

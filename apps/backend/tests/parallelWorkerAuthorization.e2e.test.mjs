@@ -12,24 +12,24 @@ test("same Agent parallel Workers authorize only exact Session/Task bindings and
   try {
     await store.initialize();
     const agent = store.createAgent({ name: "Shared Worker", provider: "codex-app-server" });
-    store.createObjective({ id: "objective:parallel", name: "Parallel", contributorAgentIds: [agent.agentId] });
+    store.createWork({ id: "work:parallel", name: "Parallel", contributorAgentIds: [agent.agentId] });
     for (const suffix of ["a", "b"]) {
       store.createTask({
-        id: `task:${suffix}`, objectiveId: "objective:parallel",
+        id: `task:${suffix}`, workId: "work:parallel",
         title: `Work ${suffix}`, mainAgentId: agent.agentId
       });
       store.upsertSession({
         id: `session:${suffix}`, title: `Session ${suffix}`, provider: "codex-app-server",
         status: "running", sessionKind: "worker", agentId: agent.agentId,
-        objectiveId: "objective:parallel", taskId: `task:${suffix}`
+        workId: "work:parallel", taskId: `task:${suffix}`
       });
-      store.bindSessionToTask(`session:${suffix}`, `task:${suffix}`, "objective:parallel");
+      store.bindSessionToTask(`session:${suffix}`, `task:${suffix}`, "work:parallel");
     }
     const service = new ArtifactService({ store, contentRoot: join(directory, "artifacts") });
     await service.initialize();
     const context = (suffix) => ({
       actorId: agent.agentId, sessionId: `session:${suffix}`,
-      objectiveId: "objective:parallel", taskId: `task:${suffix}`
+      workId: "work:parallel", taskId: `task:${suffix}`
     });
     const artifactA = await service.create(context("a"), {
       title: "A only", content: "a", idempotencyKey: "artifact-a"

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { presentTaskAcceptance } from "../src/application/taskAcceptance.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -14,13 +14,13 @@ async function fixture() {
   const configPath = join(directory, "config.json");
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
-  const entities = new ObjectiveApplicationService({ store });
-  const objective = entities.createObjective({ id: "objective:completion", name: "Completion" });
+  const entities = new WorkApplicationService({ store });
+  const work = entities.createWork({ id: "work:completion", name: "Completion" });
   const task = entities.createTask({
-    id: "task:completion", objectiveId: objective.id,
+    id: "task:completion", workId: work.id,
     title: "Ship completion authorization", lifecycleState: "in_progress"
   });
-  return { directory, dbPath, configPath, store, entities, objective, task };
+  return { directory, dbPath, configPath, store, entities, work, task };
 }
 
 function uiIntentInput(task, suffix = "one") {
@@ -98,7 +98,7 @@ test("stale UI snapshots, cross-target receipts, expiration, and nonce replay fa
   const f = await fixture();
   try {
     const other = f.entities.createTask({
-      id: "task:other", objectiveId: f.objective.id, title: "Other target", lifecycleState: "in_progress"
+      id: "task:other", workId: f.work.id, title: "Other target", lifecycleState: "in_progress"
     });
     const service = new TaskCompletionService({ store: f.store });
     assert.throws(
@@ -215,13 +215,13 @@ test("completion audit is queryable and completion metadata is omitted without a
     assert.equal(service.getAuditOperation(result.operation.operationId).taskId, f.task.id);
 
     const legacy = f.entities.createTask({
-      id: "task:legacy", objectiveId: f.objective.id, title: "Historical completion", lifecycleState: "in_progress"
+      id: "task:legacy", workId: f.work.id, title: "Historical completion", lifecycleState: "in_progress"
     });
     f.store.db.run(
       `INSERT INTO task_completion_authorizations
-       (operation_id, task_id, objective_id, source_type, nonce, validated_at)
+       (operation_id, task_id, work_id, source_type, nonce, validated_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      ["legacy-fixture", legacy.id, f.objective.id, "direct_macos_ui_action", "fixture", new Date().toISOString()]
+      ["legacy-fixture", legacy.id, f.work.id, "direct_macos_ui_action", "fixture", new Date().toISOString()]
     );
     f.store.db.run(
       "UPDATE tasks SET lifecycle_state='done', completion_operation_id='legacy-fixture', completion_source_type='direct_macos_ui_action' WHERE id=?",
@@ -246,7 +246,7 @@ async function sessionFixture(source = { type: "desktop" }, text = "请将 Task 
   f.store.upsertSession({
     id: "provider-session:completion", title: "Worker", agent: "Completion Agent",
     agentId: "agent:completion", provider: "provider:test", status: "running", sessionKind: "worker",
-    objectiveId: f.objective.id, taskId: f.task.id
+    workId: f.work.id, taskId: f.task.id
   });
   const logical = f.store.createLogicalSessionRoute({
     logicalSessionId: "session:logical-completion", legacySessionId: "provider-session:completion",
@@ -268,7 +268,7 @@ async function sessionFixture(source = { type: "desktop" }, text = "请将 Task 
 function sessionCompletionInput(f, overrides = {}) {
   return {
     targetTaskId: f.task.id,
-    objectiveId: f.objective.id,
+    workId: f.work.id,
     logicalSessionId: f.logical.logicalSessionId,
     userMessageEventId: f.event.eventId,
     userMessageSequence: f.event.sequence,
@@ -321,7 +321,7 @@ for (const [label, source, expected, category] of [
   });
 }
 
-test("assistant judgment, wrong turn, missing intent, ambiguous target, Provider id, and cross Objective all reject", async () => {
+test("assistant judgment, wrong turn, missing intent, ambiguous target, Provider id, and cross Work all reject", async () => {
   const cases = [
     { text: "I think the task is done", overrides: {}, code: "USER_MESSAGE_COMPLETION_INTENT_MISSING" },
     { text: "请不要将 Task task:completion 标记完成", overrides: {}, code: "USER_MESSAGE_COMPLETION_INTENT_MISSING" },
@@ -329,7 +329,7 @@ test("assistant judgment, wrong turn, missing intent, ambiguous target, Provider
     { text: "请完成另一个 Task", overrides: {}, code: "USER_MESSAGE_TARGET_AMBIGUOUS" },
     { overrides: { turnId: "turn:wrong" }, code: "USER_MESSAGE_TURN_MISMATCH" },
     { overrides: { logicalSessionId: "provider-session:completion" }, code: "LOGICAL_SESSION_MISMATCH" },
-    { overrides: { objectiveId: "objective:other" }, code: "TASK_OBJECTIVE_MISMATCH" }
+    { overrides: { workId: "work:other" }, code: "TASK_WORK_MISMATCH" }
   ];
   for (const [index, item] of cases.entries()) {
     const f = await sessionFixture({ type: "desktop" }, item.text);

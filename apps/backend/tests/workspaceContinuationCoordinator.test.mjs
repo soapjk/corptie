@@ -145,7 +145,7 @@ function coordinatorFixture() {
     logicalSessionId: "logical:one",
     sessionId: "session:one",
     taskId: "task:one",
-    objectiveId: "objective:one",
+    workId: "work:one",
     agentId: "agent:one"
   };
   const work = new Map();

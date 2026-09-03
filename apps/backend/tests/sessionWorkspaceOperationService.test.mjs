@@ -51,9 +51,16 @@ async function fixture() {
 function addRepository(store, id) {
   const suffix = id.split(":").at(-1);
   const timestamp = new Date().toISOString();
+  const workspace = store.createWorkspace({
+    workspaceId: `workspace:${suffix}`,
+    kind: "linkedLocal",
+    ownership: "userManaged",
+    rootPath: `/repo/${suffix}`,
+    canonicalRootPath: `/repo/${suffix}`
+  });
   store.db.run(
-    "INSERT INTO git_repositories (repository_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?)",
-    [id, `/git/${suffix}`, timestamp, timestamp]
+    "INSERT INTO git_repositories (repository_id, workspace_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?, ?)",
+    [id, workspace.workspaceId, `/git/${suffix}`, timestamp, timestamp]
   );
   store.db.run(
     `INSERT INTO git_worktrees (
@@ -62,19 +69,20 @@ function addRepository(store, id) {
     ) VALUES (?, ?, ?, ?, ?, 1, 'available', 0, 0, 0, 'inventory:1', ?)`,
     [`worktree:${suffix}`, id, `/repo/${suffix}`, `/repo/${suffix}`, `/git/${suffix}/worktrees/main`, timestamp]
   );
+  return workspace.workspaceId;
 }
 
 function addScopedSession(f, suffix, options = {}) {
   const agent = f.store.createAgent({ id: `agent:${suffix}`, name: `Agent ${suffix}`, role: "independentContributor" });
   const repositoryId = `repository:${suffix}`;
-  addRepository(f.store, repositoryId);
-  const objective = f.store.createObjective({
-    id: `objective:${suffix}`,
-    name: `Objective ${suffix}`,
+  const workspaceId = addRepository(f.store, repositoryId);
+  const work = f.store.createWork({
+    id: `work:${suffix}`,
+    name: `Work ${suffix}`,
     contributorAgentIds: options.contributor === false ? [] : [agent.agentId],
-    workspaceIds: options.workspace === false ? [] : [repositoryId]
+    workspaceId
   });
-  const task = f.store.createTask({ objectiveId: objective.id, title: `Work ${suffix}` });
+  const task = f.store.createTask({ workId: work.id, title: `Work ${suffix}` });
   const providerSessionId = `provider:${suffix}`;
   const logicalSessionId = `logical:${suffix}`;
   f.store.createSession({
@@ -82,7 +90,7 @@ function addScopedSession(f, suffix, options = {}) {
     title: `Session ${suffix}`,
     agentId: agent.agentId,
     sessionKind: "worker",
-    objectiveId: objective.id,
+    workId: work.id,
     taskId: task.id
   });
   f.store.createLogicalSessionRoute({
@@ -101,16 +109,16 @@ function addScopedSession(f, suffix, options = {}) {
   f.core.bindSession({ agentId: agent.agentId, sessionId: providerSessionId });
   return {
     agentId: agent.agentId,
-    objectiveId: objective.id,
+    workId: work.id,
     taskId: task.id,
     providerSessionId,
     logicalSessionId,
     repositoryId,
-    metadata: { sessionId: providerSessionId, objectiveId: objective.id, taskId: task.id }
+    metadata: { sessionId: providerSessionId, workId: work.id, taskId: task.id }
   };
 }
 
-test("two Sessions in different Objectives create Workspaces with exact source context and repository isolation", async () => {
+test("two Sessions in different Works create Workspaces with exact source context and repository isolation", async () => {
   const f = await fixture();
   try {
     const one = addScopedSession(f, "one");
@@ -123,20 +131,20 @@ test("two Sessions in different Objectives create Workspaces with exact source c
       target_path: "/targets/two", branch: "feature/two", idempotency_key: "create:two"
     });
 
-    assert.equal(first.sourceContext.objectiveId, one.objectiveId);
+    assert.equal(first.sourceContext.workId, one.workId);
     assert.equal(first.sourceContext.sourceSessionId, one.logicalSessionId);
     assert.equal(first.sourceContext.repositoryId, one.repositoryId);
-    assert.equal(second.sourceContext.objectiveId, two.objectiveId);
+    assert.equal(second.sourceContext.workId, two.workId);
     assert.equal(second.sourceContext.sourceSessionId, two.logicalSessionId);
     assert.deepEqual(f.creates.map((call) => call.sessionId), [one.providerSessionId, two.providerSessionId]);
     assert.deepEqual((await f.service.listWorkspaces(one.metadata, one.agentId)).workspaces.map((item) => item.repositoryId), [one.repositoryId]);
     assert.deepEqual((await f.service.listWorkspaces(two.metadata, two.agentId)).workspaces.map((item) => item.repositoryId), [two.repositoryId]);
     assert.equal(f.audit.filter((entry) => entry.event === "workspace_creation_succeeded").length, 2);
     assert.deepEqual(
-      f.store.selectAll("SELECT objective_id, source_session_id, status FROM workspace_creation_requests ORDER BY objective_id"),
+      f.store.selectAll("SELECT work_id, source_session_id, status FROM workspace_creation_requests ORDER BY work_id"),
       [
-        { objective_id: one.objectiveId, source_session_id: one.providerSessionId, status: "succeeded" },
-        { objective_id: two.objectiveId, source_session_id: two.providerSessionId, status: "succeeded" }
+        { work_id: one.workId, source_session_id: one.providerSessionId, status: "succeeded" },
+        { work_id: two.workId, source_session_id: two.providerSessionId, status: "succeeded" }
       ]
     );
   } finally {
@@ -145,7 +153,7 @@ test("two Sessions in different Objectives create Workspaces with exact source c
   }
 });
 
-test("regression: both legacy Agent-current-session lookups fail even though each source Session has a valid Objective route", async () => {
+test("regression: both legacy Agent-current-session lookups fail even though each source Session has a valid Work route", async () => {
   const f = await fixture();
   try {
     const one = addScopedSession(f, "one");
@@ -178,15 +186,15 @@ test("regression: both legacy Agent-current-session lookups fail even though eac
     const second = await f.service.createWorktree(two.metadata, two.agentId, {
       target_path: "/targets/regression-two", idempotency_key: "regression:two"
     });
-    assert.equal(first.sourceContext.objectiveId, one.objectiveId);
-    assert.equal(second.sourceContext.objectiveId, two.objectiveId);
+    assert.equal(first.sourceContext.workId, one.workId);
+    assert.equal(second.sourceContext.workId, two.workId);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
   }
 });
 
-test("Workspace creation rejects missing, mismatched, and unauthorized Objective context with a failure stage", async () => {
+test("Workspace creation rejects missing, mismatched, and unauthorized Work context with a failure stage", async () => {
   const f = await fixture();
   try {
     const scoped = addScopedSession(f, "one");
@@ -195,17 +203,19 @@ test("Workspace creation rejects missing, mismatched, and unauthorized Objective
       { code: "WORKSPACE_SESSION_CONTEXT_REQUIRED", stage: "context_validation" }
     );
     await assert.rejects(
-      () => f.service.createWorktree({ ...scoped.metadata, objectiveId: "objective:other" }, scoped.agentId, { target_path: "/targets/mismatch" }),
-      { code: "WORKSPACE_OBJECTIVE_CONTEXT_MISMATCH", stage: "context_validation" }
+      () => f.service.createWorktree({ ...scoped.metadata, workId: "work:other" }, scoped.agentId, { target_path: "/targets/mismatch" }),
+      { code: "WORKSPACE_WORK_CONTEXT_MISMATCH", stage: "context_validation" }
     );
     await assert.rejects(
       () => f.service.createWorktree(scoped.metadata, "agent:other", { target_path: "/targets/forbidden" }),
       { code: "WORKSPACE_ACTOR_FORBIDDEN", stage: "authorization" }
     );
-    f.store.updateObjective(scoped.objectiveId, { workspaceIds: [] });
+    // Simulate stale authorization data below the product write boundary; public
+    // Work updates correctly reject removing the final contributor.
+    f.store.db.run("DELETE FROM work_contributors WHERE work_id=?", [scoped.workId]);
     await assert.rejects(
       () => f.service.createWorktree(scoped.metadata, scoped.agentId, { target_path: "/targets/outside" }),
-      { code: "WORKSPACE_OBJECTIVE_ACCESS_DENIED", stage: "authorization" }
+      { code: "WORKSPACE_WORK_ACCESS_DENIED", stage: "authorization" }
     );
     assert.deepEqual(
       f.audit.filter((entry) => entry.event === "workspace_creation_rejected").map((entry) => entry.failureStage),
@@ -236,12 +246,12 @@ test("identical Workspace retries replay the persisted result while conflicting 
       { code: "WORKSPACE_IDEMPOTENCY_CONFLICT", stage: "idempotency" }
     );
     assert.equal(f.audit.some((entry) => entry.event === "workspace_creation_replayed"), true);
-    f.store.deleteObjective(scoped.objectiveId);
-    assert.equal(f.store.getObjective(scoped.objectiveId), null);
+    f.store.deleteWork(scoped.workId);
+    assert.equal(f.store.getWork(scoped.workId), null);
     assert.equal(
-      f.store.selectOne("SELECT objective_id FROM workspace_creation_requests WHERE operation_id=?", [created.request.operationId]).objective_id,
-      scoped.objectiveId,
-      "audit identity is retained without owning or blocking Objective lifecycle"
+      f.store.selectOne("SELECT work_id FROM workspace_creation_requests WHERE operation_id=?", [created.request.operationId]).work_id,
+      scoped.workId,
+      "audit identity is retained without owning or blocking Work lifecycle"
     );
   } finally {
     await f.store.close();

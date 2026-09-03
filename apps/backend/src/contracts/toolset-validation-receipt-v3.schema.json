@@ -63,7 +63,7 @@
       "additionalProperties": false,
       "required": [
         "logicalSessionId",
-        "objectiveId",
+        "workId",
         "taskId",
         "repositoryId",
         "worktreeId",
@@ -75,9 +75,9 @@
           "minLength": 1,
           "maxLength": 512
         },
-        "objectiveId": {
+        "workId": {
           "type": "string",
-          "pattern": "^objective:[0-9a-f-]+$"
+          "pattern": "^work:[0-9a-f-]+$"
         },
         "taskId": {
           "type": "string",

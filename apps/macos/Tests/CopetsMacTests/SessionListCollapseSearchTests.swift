@@ -94,7 +94,7 @@ struct SessionSelectionResolutionTests {
     func returnsNilWhenCategoryHasNoSessions() {
         #expect(
             resolvedSessionSelection(
-                category: .objective,
+                category: .work,
                 rows: [makeRow("worker-a", kind: .worker)],
                 selectedSessionId: nil,
                 lastSelectedId: nil

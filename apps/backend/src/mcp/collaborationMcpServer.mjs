@@ -13,7 +13,7 @@ async function main() {
     sessionScope: {
       sessionId: required(process.env.CORPTIE_SESSION_ID, "CORPTIE_SESSION_ID"),
       providerBindingId: required(process.env.CORPTIE_PROVIDER_BINDING_ID, "CORPTIE_PROVIDER_BINDING_ID"),
-      objectiveId: process.env.CORPTIE_OBJECTIVE_ID,
+      workId: process.env.CORPTIE_WORK_ID,
       taskId: process.env.CORPTIE_TASK_ID
     }
   });

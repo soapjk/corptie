@@ -9,7 +9,7 @@ import {
   startupContextHash
 } from "../src/application/workSessionStartupCoordinator.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 const COMMIT = "a".repeat(40);
@@ -20,13 +20,14 @@ async function fixture(overrides = {}) {
   const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
   const core = new CollaborationCore(store);
-  const objectiveService = new ObjectiveApplicationService({ store });
+  const workService = new WorkApplicationService({ store });
   const agent = store.createAgent({ id: "agent:worker", name: "Worker", role: "independentContributor" });
   const worktreePath = join(directory, "worktrees", "one");
   const now = new Date().toISOString();
+  store.createWorkspace({ workspaceId: "workspace:one", kind: "linkedLocal", ownership: "userManaged", rootPath: join(directory, "repo") });
   store.db.run(
-    "INSERT INTO git_repositories (repository_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?)",
-    ["repository:one", join(directory, "repo", ".git"), now, now]
+    "INSERT INTO git_repositories (repository_id, workspace_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?, ?)",
+    ["repository:one", "workspace:one", join(directory, "repo", ".git"), now, now]
   );
   store.db.run(
     `INSERT INTO git_worktrees (worktree_id, repository_id, path, canonical_path, git_dir, is_main,
@@ -35,17 +36,17 @@ async function fixture(overrides = {}) {
       'refs/heads/task/one', 'task/one', 0, 'inventory:one', ?, '{}')`,
     [worktreePath, worktreePath, join(directory, "repo", ".git", "worktrees", "one"), COMMIT, now]
   );
-  const objective = objectiveService.createObjective({
-    id: "objective:one", name: "Objective", contributorAgentIds: [agent.agentId],
-    workspaceIds: ["repository:one"]
+  const work = workService.createWork({
+    id: "work:one", name: "Work", contributorAgentIds: [agent.agentId],
+    workspaceId: "workspace:one"
   });
-  const task = objectiveService.createTask({
-    id: "task:one", objectiveId: objective.id, title: "Authoritative startup",
-    mainAgentId: agent.agentId, mainWorkspaceId: "repository:one"
+  const task = workService.createTask({
+    id: "task:one", workId: work.id, title: "Authoritative startup",
+    mainAgentId: agent.agentId
   });
   store.createSession({
     id: "provider:source", title: "Source", provider: "codex-app-server",
-    agentId: agent.agentId, sessionKind: "objectiveChat", objectiveId: objective.id,
+    agentId: agent.agentId, sessionKind: "workChat", workId: work.id,
     cwd: directory
   });
   store.createLogicalSessionRoute({
@@ -68,7 +69,7 @@ async function fixture(overrides = {}) {
     const id = `provider:worker:${calls.create}`;
     store.createSession({
       id, title: task.title, provider: providerId, agentId: agent.agentId,
-      sessionKind: "worker", objectiveId: objective.id, taskId: task.id,
+      sessionKind: "worker", workId: work.id, taskId: task.id,
       cwd: workspace.canonicalWorktreePath, deferTaskProjection: true
     });
     store.createLogicalSessionRoute({
@@ -101,7 +102,7 @@ async function fixture(overrides = {}) {
     store,
     leaseOwner: overrides.leaseOwner ?? "test-worker",
     authorizeStart: async (input) => ({
-      ...input, objectiveId: objective.id, repositoryId: task.main_workspace_id,
+      ...input, workId: work.id, repositoryId: "repository:one",
       taskTitle: task.title
     }),
     prepareWorktree: async (input) => {
@@ -169,7 +170,7 @@ test("commits a complete hash-verifiable StartupBindingReceipt before first Turn
     assert.equal(result.status, "ready");
     assert.equal(result.receipt.schemaVersion, 2);
     assert.equal(result.receipt.status, "ready");
-    assert.equal(result.receipt.objectiveId, "objective:one");
+    assert.equal(result.receipt.workId, "work:one");
     assert.equal(result.receipt.logicalSessionId, "session:worker:1");
     assert.equal(result.receipt.repositoryId, "repository:one");
     assert.equal(result.receipt.worktreeId, "worktree:one");
@@ -480,11 +481,11 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
     const allocation = { ...f.allocation, createdByStartupOperationId: operationId };
     f.store.db.run(
       `INSERT INTO work_session_startup_operations (
-        startup_operation_id, objective_id, task_id, assignee_agent_id, expected_task_version, provider_id,
+        startup_operation_id, work_id, task_id, assignee_agent_id, expected_task_version, provider_id,
         repository_id, source_session_id, idempotency_key, request_fingerprint, source, state, worktree_id,
         allocation_json, lease_owner, lease_expires_at, correlation_id, allocated_at,
         worktree_prepared_at, updated_at, resource_version
-      ) VALUES (?, 'objective:one', 'task:one', 'agent:worker', 1, 'codex-app-server',
+      ) VALUES (?, 'work:one', 'task:one', 'agent:worker', 1, 'codex-app-server',
         'repository:one', 'session:source', 'start:crashed', 'fingerprint', 'test', 'worktree_prepared',
         'worktree:one', ?, 'dead-process', '2026-08-30T00:00:00.001Z', 'correlation:crash', ?, ?, ?, 2)`,
       [operationId, JSON.stringify(allocation), now, now, now]
@@ -502,7 +503,7 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
       leaseOwner: "recovery-worker",
       clock: () => "2026-08-30T00:01:00.000Z",
       authorizeStart: async (value) => ({
-        ...value, objectiveId: "objective:one", repositoryId: "repository:one",
+        ...value, workId: "work:one", repositoryId: "repository:one",
         taskTitle: "Authoritative startup"
       }),
       prepareWorktree: async () => { throw new Error("must reuse committed allocation"); },
@@ -512,7 +513,7 @@ test("backend reopen recovers an expired worktree_prepared lease without duplica
           created += 1;
           reopened.createSession({
             id: "provider:recovered", title: "Recovered", provider: providerId,
-            agentId: "agent:worker", sessionKind: "worker", objectiveId: "objective:one",
+            agentId: "agent:worker", sessionKind: "worker", workId: "work:one",
             taskId: "task:one", cwd: workspace.canonicalWorktreePath, deferTaskProjection: true
           });
           reopened.createLogicalSessionRoute({

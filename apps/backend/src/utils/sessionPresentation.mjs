@@ -13,7 +13,7 @@ export function mergeStoredSessionPresentation(session, stored) {
     title: nonEmptyText(stored.title) || session.title,
     agentId: nonEmptyText(stored.agentId) || session.agentId || null,
     sessionKind: stored.sessionKind ?? session.sessionKind ?? "legacy",
-    objectiveId: nonEmptyText(stored.objectiveId) || session.objectiveId || null,
+    workId: nonEmptyText(stored.workId) || session.workId || null,
     taskId: nonEmptyText(stored.taskId) || session.taskId || null,
     archived: stored.archived,
     pinned: stored.pinned,

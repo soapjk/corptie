@@ -24,15 +24,15 @@ async function fixture() {
   });
   core.registerAgent({ agentId: "agent-a", name: "Agent A" });
   core.registerAgent({ agentId: "agent-b", name: "Agent B" });
-  const objective = store.createObjective({
-    id: "objective:collaboration-fixture",
+  const work = store.createWork({
+    id: "work:collaboration-fixture",
     name: "Collaboration Fixture",
     contributorAgentIds: ["agent-a", "agent-b"]
   });
   let taskOrdinal = 0;
   const createWorkerOwnership = (agentId, title) => store.createTask({
     id: `task:collaboration-fixture:${++taskOrdinal}`,
-    objectiveId: objective.id,
+    workId: work.id,
     title,
     mainAgentId: agentId
   });
@@ -46,7 +46,7 @@ async function fixture() {
       title,
       agentId,
       sessionKind: "worker",
-      objectiveId: objective.id,
+      workId: work.id,
       taskId: task.id,
       cwd: directory
     });
@@ -63,7 +63,7 @@ async function fixture() {
   core.bindSession({ agentId: "agent-a", sessionId: "codex:thread-a" });
   core.bindSession({ agentId: "agent-b", sessionId: "codex:thread-b" });
   core.registerService({ serviceId: "service-b", name: "Service B", ownerAgentId: "agent-b", status: "running" });
-  return { directory, store, core, objective, createWorkerOwnership };
+  return { directory, store, core, work, createWorkerOwnership };
 }
 
 function createRequest(core, suffix = "1") {
@@ -162,7 +162,7 @@ test("a result reply uses the established Session channel without recipient rero
     const otherTask = value.createWorkerOwnership("agent-b", "Other B Session");
     value.store.createSession({
       id: "codex:thread-b-other", title: "Other B Session", agentId: "agent-b",
-      sessionKind: "worker", objectiveId: value.objective.id,
+      sessionKind: "worker", workId: value.work.id,
       taskId: otherTask.id, cwd: value.directory
     });
     value.store.createLogicalSessionRoute({
@@ -222,7 +222,7 @@ test("concurrent tasks preserve independent reply Session endpoints", async () =
     const secondTask = value.createWorkerOwnership("agent-a", "Agent A Session 2");
     value.store.createSession({
       id: "codex:thread-a-2", title: "Agent A Session 2", agentId: "agent-a",
-      sessionKind: "worker", objectiveId: value.objective.id,
+      sessionKind: "worker", workId: value.work.id,
       taskId: secondTask.id, cwd: value.directory
     });
     value.store.createLogicalSessionRoute({
@@ -412,8 +412,8 @@ test("task c4471174 historical Session snapshots and reversed envelope keep dire
     recipientSessionId: "session:recipient-current",
     initiatorNameAtSend: "Historical Initiator Session",
     recipientNameAtSend: "Recipient Worker Session",
-    sourceObjectiveId: "objective:source",
-    targetObjectiveId: "objective:target",
+    sourceWorkId: "work:source",
+    targetWorkId: "work:target",
     routingVersion: 7
   };
   const forward = collaborationMessagePresentationRoute({
@@ -427,8 +427,8 @@ test("task c4471174 historical Session snapshots and reversed envelope keep dire
         resources: {
           sourceAgentId: "agent:initiator",
           targetAgentId: "agent:recipient",
-          sourceObjectiveId: "objective:source",
-          targetObjectiveId: "objective:target"
+          sourceWorkId: "work:source",
+          targetWorkId: "work:target"
         }
       }
     }
@@ -436,8 +436,8 @@ test("task c4471174 historical Session snapshots and reversed envelope keep dire
   assert.deepEqual(forward, {
     senderAgentId: "agent:initiator",
     recipientAgentId: "agent:recipient",
-    sourceObjectiveId: "objective:source",
-    targetObjectiveId: "objective:target",
+    sourceWorkId: "work:source",
+    targetWorkId: "work:target",
     sourceSessionId: "session:historical-initiator",
     targetSessionId: "session:recipient-current",
     sourceSessionTitle: "Historical Initiator Session",
@@ -453,16 +453,16 @@ test("task c4471174 historical Session snapshots and reversed envelope keep dire
         resources: {
           sourceAgentId: "agent:recipient",
           targetAgentId: "agent:initiator",
-          sourceObjectiveId: "objective:target",
-          targetObjectiveId: "objective:source"
+          sourceWorkId: "work:target",
+          targetWorkId: "work:source"
         }
       }
     }
   });
   assert.equal(reversed.senderAgentId, "agent:recipient");
   assert.equal(reversed.recipientAgentId, "agent:initiator");
-  assert.equal(reversed.sourceObjectiveId, "objective:target");
-  assert.equal(reversed.targetObjectiveId, "objective:source");
+  assert.equal(reversed.sourceWorkId, "work:target");
+  assert.equal(reversed.targetWorkId, "work:source");
   assert.equal(reversed.sourceSessionTitle, "Recipient Worker Session");
   assert.equal(reversed.targetSessionTitle, "Historical Initiator Session");
 });
@@ -557,7 +557,7 @@ test("delivery preflight fails closed instead of rerouting a v3 task when its ta
       title: "Replacement",
       agentId: "agent-b",
       sessionKind: "worker",
-      objectiveId: task.targetObjectiveId,
+      workId: task.targetWorkId,
       taskId: task.targetTaskId,
       cwd: value.directory
     });

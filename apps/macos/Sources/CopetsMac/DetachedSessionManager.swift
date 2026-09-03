@@ -1156,18 +1156,18 @@ private struct DetachedCollaborationConfirmationCard: View {
                     } else {
                         confirmationField("目标 CorptieTask", value: pendingTargetCorptieTask)
                     }
-                    if confirmation.sourceObjectiveId != nil {
-                        confirmationField("来源 Objective", value: readableName(
-                            confirmation.sourceObjectiveName,
-                            id: confirmation.sourceObjectiveId,
-                            fallback: L10n("来源 Objective")
+                    if confirmation.sourceWorkId != nil {
+                        confirmationField("来源 Work", value: readableName(
+                            confirmation.sourceWorkName,
+                            id: confirmation.sourceWorkId,
+                            fallback: L10n("来源 Work")
                         ))
                     }
-                    if confirmation.targetObjectiveId != nil {
-                        confirmationField("目标 Objective", value: readableName(
-                            confirmation.targetObjectiveName,
-                            id: confirmation.targetObjectiveId,
-                            fallback: L10n("目标 Objective")
+                    if confirmation.targetWorkId != nil {
+                        confirmationField("目标 Work", value: readableName(
+                            confirmation.targetWorkName,
+                            id: confirmation.targetWorkId,
+                            fallback: L10n("目标 Work")
                         ))
                     }
                     confirmationField("消息", value: confirmation.summary)
@@ -1229,7 +1229,7 @@ private struct DetachedCollaborationConfirmationCard: View {
         let lowercased = value.lowercased()
         guard value != normalizedID,
               !lowercased.hasPrefix("session:"),
-              !lowercased.hasPrefix("objective:"),
+              !lowercased.hasPrefix("work:"),
               !lowercased.hasPrefix("task:") else { return fallback }
         return value
     }
@@ -1241,7 +1241,7 @@ private struct DetachedCollaborationConfirmationCard: View {
             fallback: L10n("未命名协作任务")
         )
         guard confirmation.recipientCorptieTaskId == nil else { return title }
-        return "\(title) · \(L10n("确认后在目标 Objective 下新建"))"
+        return "\(title) · \(L10n("确认后在目标 Work 下新建"))"
     }
 }
 

@@ -5826,7 +5826,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		const goalRefValueSchema = object({ ref: goalRefSchema });
 		object({
 			sessionId: string(),
-			objective: string().min(1),
+			work: string().min(1),
 			maxGoalRounds: number().int().positive().optional()
 		});
 		/** goal.create response value. */
@@ -5834,9 +5834,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		object({
 			sessionId: string(),
 			ref: goalRefSchema,
-			objective: string().min(1).optional(),
+			work: string().min(1).optional(),
 			maxGoalRounds: number().int().positive().optional()
-		}).refine((value) => value.objective !== void 0 || value.maxGoalRounds !== void 0, { message: "goal.edit requires objective or maxGoalRounds" });
+		}).refine((value) => value.work !== void 0 || value.maxGoalRounds !== void 0, { message: "goal.edit requires work or maxGoalRounds" });
 		/** goal.edit response value. */
 		const goalEditValueSchema = goalRefValueSchema;
 		object({
@@ -8232,7 +8232,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 							{
 								name: "goal",
 								description: "set or view the goal for a long-running task",
-								input: { hint: "<objective>" }
+								input: { hint: "<work>" }
 							},
 							{
 								name: "permission",
@@ -8319,11 +8319,11 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 								source: { kind: "user" }
 							}
 						});
-						const objective = args.trim();
+						const work = args.trim();
 						const current = backscanGoal(logOf(id));
 						let text;
-						if (objective === "") text = current === null ? "No goal is set. Usage: /goal <objective>" : `Current goal: ${current.goal.objective}`;
-						else if (current !== null && current.goal.phase !== "complete") text = `A goal already exists (${current.goal.objective}). Clear it first.`;
+						if (work === "") text = current === null ? "No goal is set. Usage: /goal <work>" : `Current goal: ${current.goal.work}`;
+						else if (current !== null && current.goal.phase !== "complete") text = `A goal already exists (${current.goal.work}). Clear it first.`;
 						else text = `Goal created: ${appendGoalChange(id, {
 							kind: "goal/change",
 							version: 1,
@@ -8331,14 +8331,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 							goal: {
 								id: `fx-goal-${logOf(id).length}`,
 								revision: 1,
-								objective,
+								work,
 								phase: "active",
 								maxGoalRounds: 256
 							},
 							roundsStarted: 0,
 							createdAt: Date.now(),
 							updatedAt: Date.now()
-						}).goal.objective}`;
+						}).goal.work}`;
 						const result = {
 							kind: "success",
 							text
@@ -8428,7 +8428,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						goal: {
 							id: `fx-goal-${logOf(id).length}`,
 							revision: 1,
-							objective: request.objective,
+							work: request.work,
 							phase: "active",
 							maxGoalRounds: request.maxGoalRounds ?? 256
 						},
@@ -8448,7 +8448,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					return mutateGoal(id, ref, (current) => ({
 						...current.goal,
 						revision: current.goal.revision + 1,
-						...request.objective === void 0 ? {} : { objective: request.objective },
+						...request.work === void 0 ? {} : { work: request.work },
 						...request.maxGoalRounds === void 0 ? {} : { maxGoalRounds: request.maxGoalRounds }
 					}));
 				},
@@ -9608,14 +9608,14 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 					} },
 					goals: {
 						create: (request) => legacyGoalResponse(request, mapGoalResult(goalRemotes.create(request.payload.sessionId, {
-							objective: request.payload.objective,
+							work: request.payload.work,
 							...request.payload.maxGoalRounds === void 0 ? {} : { maxGoalRounds: request.payload.maxGoalRounds }
 						}), (value) => ({ ref: {
 							id: value.ref.id,
 							revision: value.ref.revision
 						} }))),
 						edit: (request) => legacyGoalResponse(request, goalRefResult(goalRemotes.edit(request.payload.sessionId, request.payload.ref, {
-							...request.payload.objective === void 0 ? {} : { objective: request.payload.objective },
+							...request.payload.work === void 0 ? {} : { work: request.payload.work },
 							...request.payload.maxGoalRounds === void 0 ? {} : { maxGoalRounds: request.payload.maxGoalRounds }
 						}))),
 						pause: (request) => legacyGoalResponse(request, goalRefResult(goalRemotes.pause(request.payload.sessionId, request.payload.ref))),
@@ -9838,7 +9838,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 						case "commands/list": return Promise.resolve(commandRemotes.list(sessionId));
 						case "commands/execute": return Promise.resolve(commandRemotes.execute(sessionId, args.line));
 						case "goals/create": return Promise.resolve(goalRemotes.create(sessionId, {
-							objective: args.request?.objective,
+							work: args.request?.work,
 							...args.request?.maxGoalRounds === void 0 ? {} : { maxGoalRounds: args.request.maxGoalRounds }
 						}));
 						case "goals/edit": return Promise.resolve(goalRemotes.edit(sessionId, args.ref, args.request ?? {}));

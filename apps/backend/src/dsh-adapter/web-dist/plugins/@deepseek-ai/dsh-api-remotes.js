@@ -4390,7 +4390,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"createdAt": number().readonly(),
 			"updatedAt": number().readonly(),
 			"activation": union([literal("armed"), literal("disarmed")]).readonly(),
-			"objective": string().readonly(),
+			"work": string().readonly(),
 			"phase": union([
 				literal("active"),
 				literal("paused"),
@@ -4407,7 +4407,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 		});
 		const _deepseek_ai_dsh_goal_goals_create_parameter_0$schema = intersection(string(), unknown());
 		const _deepseek_ai_dsh_goal_goals_create_parameter_1$schema = object({
-			"objective": string().readonly(),
+			"work": string().readonly(),
 			"maxGoalRounds": number().readonly().optional()
 		});
 		const _deepseek_ai_dsh_goal_goals_create_result$schema = object({ "ref": object({
@@ -4420,7 +4420,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"revision": number().readonly()
 		});
 		const _deepseek_ai_dsh_goal_goals_edit_parameter_2$schema = object({
-			"objective": string().readonly().optional(),
+			"work": string().readonly().optional(),
 			"maxGoalRounds": number().readonly().optional()
 		});
 		const _deepseek_ai_dsh_goal_goals_edit_result$schema = object({
@@ -4428,7 +4428,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"createdAt": number().readonly(),
 			"updatedAt": number().readonly(),
 			"activation": union([literal("armed"), literal("disarmed")]).readonly(),
-			"objective": string().readonly(),
+			"work": string().readonly(),
 			"phase": union([
 				literal("active"),
 				literal("paused"),
@@ -4453,7 +4453,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"createdAt": number().readonly(),
 			"updatedAt": number().readonly(),
 			"activation": union([literal("armed"), literal("disarmed")]).readonly(),
-			"objective": string().readonly(),
+			"work": string().readonly(),
 			"phase": union([
 				literal("active"),
 				literal("paused"),
@@ -4478,7 +4478,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
 			"createdAt": number().readonly(),
 			"updatedAt": number().readonly(),
 			"activation": union([literal("armed"), literal("disarmed")]).readonly(),
-			"objective": string().readonly(),
+			"work": string().readonly(),
 			"phase": union([
 				literal("active"),
 				literal("paused"),

@@ -19,7 +19,7 @@ struct DataRootSettingsTests {
             "history":[{"phase":"preflight","at":"2026-08-28T00:00:00.000Z"}],
             "receipt":{
               "databaseIntegrity":"ok",
-              "keyRecordCounts":{"objectives":2,"tasks":3,"sessions":4,"artifact_versions":5},
+              "keyRecordCounts":{"works":2,"tasks":3,"sessions":4,"artifact_versions":5},
               "artifactCount":5,
               "artifactBytes":128,
               "verifiedFileCount":9,

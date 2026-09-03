@@ -200,7 +200,7 @@ export function presentTaskAcceptance(task) {
   const completed = task.lifecycle_state === "done";
   return {
     id: task.id,
-    objectiveId: task.objective_id,
+    workId: task.work_id,
     title: task.title,
     description: task.description,
     goal: task.goal,
@@ -208,7 +208,6 @@ export function presentTaskAcceptance(task) {
     verificationCriteria: task.verification_criteria,
     priority: task.priority,
     lifecycleState: task.lifecycle_state,
-    mainWorkspaceId: task.main_workspace_id ?? null,
     mainAgentId: task.main_agent_id ?? null,
     currentSessionId: task.current_session_id ?? null,
     executionStatus: task.execution_status,

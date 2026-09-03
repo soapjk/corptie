@@ -8,7 +8,7 @@ export function persistProviderSessionProjection(store, session, {
   providerId,
   agentId = null,
   sessionKind = null,
-  objectiveId = null,
+  workId = null,
   taskId = null
 } = {}) {
   if (!store?.db || !session?.id) return null;
@@ -18,7 +18,7 @@ export function persistProviderSessionProjection(store, session, {
   }
   const resolvedSessionKind = inferSessionKind({
     sessionKind: suppliedSessionKind,
-    objectiveId: objectiveId ?? session.objectiveId,
+    workId: workId ?? session.workId,
     taskId: taskId ?? session.taskId
   });
   if (!isProductSessionKind(resolvedSessionKind)) {
@@ -34,7 +34,7 @@ export function persistProviderSessionProjection(store, session, {
     command: session.external?.source ?? providerId ?? null,
     agentId: agentId ?? session.agentId ?? null,
     sessionKind: resolvedSessionKind,
-    objectiveId: objectiveId ?? session.objectiveId ?? null,
+    workId: workId ?? session.workId ?? null,
     taskId: taskId ?? session.taskId ?? null
   });
   return store.getSession(session.id);

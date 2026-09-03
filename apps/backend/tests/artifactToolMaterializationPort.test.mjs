@@ -31,7 +31,7 @@ test("Artifact dynamic tools assert the canonical name before dispatch", async (
     actorId: "agent:1",
     metadata: {
       logicalSessionId: "logical:1", sessionId: "product-session:1",
-      sessionKind: "worker", objectiveId: "objective:1"
+      sessionKind: "worker", workId: "work:1"
     },
     arguments: {}
   }, { toolMaterializationPort: port });
@@ -51,12 +51,12 @@ test("Artifact public materialization boundary contains no binding, catalog, or 
   assert.doesNotMatch(`${dynamicTools}\n${sessionService}`, /\b(?:codex|claude|openclacky)\b/i);
 });
 
-test("Artifact role requirements keep Worker eager and Objective Chat on-demand", () => {
+test("Artifact role requirements keep Worker eager and Work Chat on-demand", () => {
   const worker = ArtifactDomainRequirements.forSessionRole({ sessionKind: "worker" });
-  const objective = ArtifactDomainRequirements.forSessionRole({
-    sessionKind: "objectiveChat", roleCapabilities: ["artifact:manage"]
+  const work = ArtifactDomainRequirements.forSessionRole({
+    sessionKind: "workChat", roleCapabilities: ["artifact:manage"]
   });
   assert.deepEqual(worker.requiredBeforeFirstTurn.map((item) => item.domainId), ["artifacts"]);
-  assert.deepEqual(objective.requiredBeforeFirstTurn, []);
-  assert.deepEqual(objective.onDemandDomains.map((item) => item.domainId), ["artifacts"]);
+  assert.deepEqual(work.requiredBeforeFirstTurn, []);
+  assert.deepEqual(work.onDemandDomains.map((item) => item.domainId), ["artifacts"]);
 });

@@ -30,10 +30,9 @@ import {
 } from "../utils/platformAssistantIdentity.mjs";
 import {
   associationError,
-  assertRepositoryId,
-  validateObjectiveInput,
+  validateWorkInput,
   validateTaskInput
-} from "../domain/objectiveTaskValidation.mjs";
+} from "../domain/workTaskValidation.mjs";
 import {
   assertManualSessionArchiveAllowed,
   resolveSessionArchiveState
@@ -637,7 +636,7 @@ export class CorptieStore {
     );
     if (!table || this.selectAll("PRAGMA foreign_key_list(workspace_creation_requests)").length === 0) return;
     // Audit rows retain the identities observed at request time. They must not
-    // own or block deletion of live Agent/Session/Objective/Workspace records.
+    // own or block deletion of live Agent/Session/Work/Workspace records.
     this.db.run("PRAGMA foreign_keys = OFF");
     this.db.run("BEGIN IMMEDIATE");
     try {
@@ -649,7 +648,7 @@ export class CorptieStore {
           actor_agent_id TEXT NOT NULL,
           source_session_id TEXT NOT NULL,
           logical_session_id TEXT NOT NULL,
-          objective_id TEXT NOT NULL,
+          work_id TEXT NOT NULL,
           task_id TEXT,
           repository_id TEXT NOT NULL,
           target_path TEXT NOT NULL,
@@ -671,7 +670,7 @@ export class CorptieStore {
       this.db.run("DROP TABLE workspace_creation_requests");
       this.db.run("ALTER TABLE workspace_creation_requests_audit_v1 RENAME TO workspace_creation_requests");
       this.db.run(`CREATE INDEX idx_workspace_creation_requests_context
-        ON workspace_creation_requests(objective_id, source_session_id, created_at DESC)`);
+        ON workspace_creation_requests(work_id, source_session_id, created_at DESC)`);
       this.db.run("COMMIT");
     } catch (error) {
       this.db.run("ROLLBACK");
@@ -718,7 +717,7 @@ export class CorptieStore {
           process_state_json TEXT,
           creator_type TEXT NOT NULL,
           creator_id TEXT NOT NULL,
-          objective_id TEXT,
+          work_id TEXT,
           environment TEXT NOT NULL,
           pending_scheduled_for TEXT,
           lease_owner TEXT,
@@ -736,14 +735,14 @@ export class CorptieStore {
           paused_at TEXT,
           cancelled_at TEXT,
           completed_at TEXT,
-          FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+          FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE SET NULL
         )
       `);
       this.db.run(`
         INSERT INTO scheduled_session_tasks_condition_v1 (
           task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at,
           interval_seconds, timezone, status, missed_policy, process_spec_json,
-          process_state_json, creator_type, creator_id, objective_id, environment,
+          process_state_json, creator_type, creator_id, work_id, environment,
           pending_scheduled_for, lease_owner, lease_expires_at, retry_count, max_retries,
           last_run_id, last_run_status, last_error_code, last_error_message, last_run_at,
           resource_version, created_at, updated_at, paused_at, cancelled_at, completed_at
@@ -751,7 +750,7 @@ export class CorptieStore {
         SELECT
           task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at,
           interval_seconds, timezone, status, missed_policy, process_spec_json,
-          process_state_json, creator_type, creator_id, objective_id, environment,
+          process_state_json, creator_type, creator_id, work_id, environment,
           pending_scheduled_for, lease_owner, lease_expires_at, retry_count, max_retries,
           last_run_id, last_run_status, last_error_code, last_error_message, last_run_at,
           resource_version, created_at, updated_at, paused_at, cancelled_at, completed_at
@@ -822,7 +821,7 @@ export class CorptieStore {
           status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'completed', 'expired', 'error')),
           missed_policy TEXT NOT NULL DEFAULT 'coalesce_once' CHECK (missed_policy IN ('coalesce_once', 'skip')),
           condition_spec_json TEXT, condition_state_json TEXT, process_spec_json TEXT, process_state_json TEXT,
-          creator_type TEXT NOT NULL, creator_id TEXT NOT NULL, objective_id TEXT, environment TEXT NOT NULL,
+          creator_type TEXT NOT NULL, creator_id TEXT NOT NULL, work_id TEXT, environment TEXT NOT NULL,
           pending_scheduled_for TEXT, lease_owner TEXT, lease_expires_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0,
           max_retries INTEGER NOT NULL DEFAULT 5, last_run_id TEXT, last_run_status TEXT,
           last_error_code TEXT, last_error_message TEXT, last_run_at TEXT,
@@ -832,14 +831,14 @@ export class CorptieStore {
           policy_spec_json TEXT NOT NULL DEFAULT '{}', risk_json TEXT NOT NULL DEFAULT '{}',
           max_concurrent_runs INTEGER NOT NULL DEFAULT 1, timeout_seconds INTEGER NOT NULL DEFAULT 3600,
           backpressure_limit INTEGER NOT NULL DEFAULT 100, expires_at TEXT NOT NULL,
-          FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+          FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE SET NULL
         )
       `);
       this.db.run(`
         INSERT INTO scheduled_session_tasks_expiration_v1 (
           task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at, interval_seconds,
           timezone, status, missed_policy, condition_spec_json, condition_state_json, process_spec_json,
-          process_state_json, creator_type, creator_id, objective_id, environment, pending_scheduled_for,
+          process_state_json, creator_type, creator_id, work_id, environment, pending_scheduled_for,
           lease_owner, lease_expires_at, retry_count, max_retries, last_run_id, last_run_status,
           last_error_code, last_error_message, last_run_at, resource_version, created_at, updated_at,
           paused_at, cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json,
@@ -853,7 +852,7 @@ export class CorptieStore {
           CASE status WHEN 'failed' THEN 'error' WHEN 'cancelled' THEN 'cancelled'
             WHEN 'paused' THEN 'cancelled' WHEN 'completed' THEN 'completed' ELSE 'active' END,
           missed_policy, condition_spec_json, condition_state_json, process_spec_json, process_state_json,
-          creator_type, creator_id, objective_id, environment, pending_scheduled_for, lease_owner,
+          creator_type, creator_id, work_id, environment, pending_scheduled_for, lease_owner,
           lease_expires_at, retry_count, max_retries, last_run_id, last_run_status, last_error_code,
           last_error_message, last_run_at, resource_version, created_at, updated_at, paused_at,
           cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json, actions_json,
@@ -899,7 +898,7 @@ export class CorptieStore {
           status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled', 'completed', 'expired', 'error')),
           missed_policy TEXT NOT NULL DEFAULT 'coalesce_once' CHECK (missed_policy IN ('coalesce_once', 'skip')),
           condition_spec_json TEXT, condition_state_json TEXT, process_spec_json TEXT, process_state_json TEXT,
-          creator_type TEXT NOT NULL, creator_id TEXT NOT NULL, objective_id TEXT, environment TEXT NOT NULL,
+          creator_type TEXT NOT NULL, creator_id TEXT NOT NULL, work_id TEXT, environment TEXT NOT NULL,
           pending_scheduled_for TEXT, lease_owner TEXT, lease_expires_at TEXT, retry_count INTEGER NOT NULL DEFAULT 0,
           max_retries INTEGER NOT NULL DEFAULT 5, last_run_id TEXT, last_run_status TEXT,
           last_error_code TEXT, last_error_message TEXT, last_run_at TEXT,
@@ -909,14 +908,14 @@ export class CorptieStore {
           policy_spec_json TEXT NOT NULL DEFAULT '{}', risk_json TEXT NOT NULL DEFAULT '{}',
           max_concurrent_runs INTEGER NOT NULL DEFAULT 1, timeout_seconds INTEGER NOT NULL DEFAULT 3600,
           backpressure_limit INTEGER NOT NULL DEFAULT 100, expires_at TEXT NOT NULL,
-          FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+          FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE SET NULL
         )
       `);
       this.db.run(`
         INSERT INTO scheduled_session_tasks_completed_v1 (
           task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at, interval_seconds,
           timezone, status, missed_policy, condition_spec_json, condition_state_json, process_spec_json,
-          process_state_json, creator_type, creator_id, objective_id, environment, pending_scheduled_for,
+          process_state_json, creator_type, creator_id, work_id, environment, pending_scheduled_for,
           lease_owner, lease_expires_at, retry_count, max_retries, last_run_id, last_run_status,
           last_error_code, last_error_message, last_run_at, resource_version, created_at, updated_at,
           paused_at, cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json,
@@ -926,7 +925,7 @@ export class CorptieStore {
         SELECT
           task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at, interval_seconds,
           timezone, status, missed_policy, condition_spec_json, condition_state_json, process_spec_json,
-          process_state_json, creator_type, creator_id, objective_id, environment, pending_scheduled_for,
+          process_state_json, creator_type, creator_id, work_id, environment, pending_scheduled_for,
           lease_owner, lease_expires_at, retry_count, max_retries, last_run_id, last_run_status,
           last_error_code, last_error_message, last_run_at, resource_version, created_at, updated_at,
           paused_at, cancelled_at, completed_at, name, trigger_spec_json, condition_specs_json,
@@ -1019,7 +1018,7 @@ export class CorptieStore {
          WHERE m.owner_type = 'task'
            AND (
              wi.id IS NULL OR wi.current_session_id IS NULL OR s.id IS NULL
-             OR s.task_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id
+             OR s.task_id IS NOT wi.id OR s.work_id IS NOT wi.work_id
            )`,
         [appliedAt]
       );
@@ -1068,6 +1067,19 @@ export class CorptieStore {
 
   migrate() {
     this.db.run("PRAGMA foreign_keys = ON");
+    const existingWorkColumns = this.selectAll("PRAGMA table_info(works)");
+    if (existingWorkColumns.length > 0
+      && (
+        !existingWorkColumns.some((column) => column.name === "workspace_id")
+        || existingWorkColumns.some((column) => column.name === "contributor_agent_ids_json")
+        || this.selectAll("PRAGMA table_info(tasks)").some((column) => column.name === "main_workspace_id")
+      )) {
+      const error = new Error(
+        "WORK_DOMAIN_RESET_REQUIRED: this database predates the normalized Work schema and must be reset explicitly."
+      );
+      error.code = "WORK_DOMAIN_RESET_REQUIRED";
+      throw error;
+    }
     migrateTaskDomainV1(this.db);
     this.migrateSessionLogsForeignKey();
     const hadSessionReadReceipts = Boolean(this.selectOne(
@@ -1366,8 +1378,8 @@ export class CorptieStore {
         context_id TEXT NOT NULL,
         parent_task_id TEXT,
         protocol_version TEXT NOT NULL DEFAULT '3.0',
-        source_objective_id TEXT,
-        target_objective_id TEXT,
+        source_work_id TEXT,
+        target_work_id TEXT,
         source_task_id TEXT,
         target_task_id TEXT,
         initiator_agent_id TEXT NOT NULL,
@@ -1387,8 +1399,8 @@ export class CorptieStore {
         completed_at TEXT,
         FOREIGN KEY (context_id) REFERENCES collaboration_contexts(context_id) ON DELETE RESTRICT,
         FOREIGN KEY (parent_task_id) REFERENCES collaboration_requests(task_id) ON DELETE SET NULL,
-        FOREIGN KEY (source_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
-        FOREIGN KEY (target_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (source_work_id) REFERENCES works(id) ON DELETE RESTRICT,
+        FOREIGN KEY (target_work_id) REFERENCES works(id) ON DELETE RESTRICT,
         FOREIGN KEY (source_task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
         FOREIGN KEY (target_task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
         FOREIGN KEY (initiator_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
@@ -1437,8 +1449,8 @@ export class CorptieStore {
         message_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
         protocol_version TEXT NOT NULL DEFAULT '3.0',
-        source_objective_id TEXT,
-        target_objective_id TEXT,
+        source_work_id TEXT,
+        target_work_id TEXT,
         source_task_id TEXT,
         target_task_id TEXT,
         sender_agent_id TEXT NOT NULL,
@@ -1453,8 +1465,8 @@ export class CorptieStore {
         idempotency_key TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (task_id) REFERENCES collaboration_requests(task_id) ON DELETE CASCADE,
-        FOREIGN KEY (source_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
-        FOREIGN KEY (target_objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (source_work_id) REFERENCES works(id) ON DELETE RESTRICT,
+        FOREIGN KEY (target_work_id) REFERENCES works(id) ON DELETE RESTRICT,
         FOREIGN KEY (source_task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
         FOREIGN KEY (target_task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
         FOREIGN KEY (sender_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
@@ -1723,7 +1735,7 @@ export class CorptieStore {
         process_state_json TEXT,
         creator_type TEXT NOT NULL,
         creator_id TEXT NOT NULL,
-        objective_id TEXT,
+        work_id TEXT,
         environment TEXT NOT NULL,
         pending_scheduled_for TEXT,
         lease_owner TEXT,
@@ -1741,7 +1753,7 @@ export class CorptieStore {
         paused_at TEXT,
         cancelled_at TEXT,
         completed_at TEXT,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE SET NULL
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE SET NULL
       );
 
       CREATE INDEX IF NOT EXISTS idx_scheduled_session_tasks_due
@@ -1819,11 +1831,24 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_collaboration_events_task
       ON collaboration_events(task_id, sequence ASC);
 
+      CREATE TABLE IF NOT EXISTS workspaces (
+        workspace_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('managedLocal', 'linkedLocal', 'cloud')),
+        ownership TEXT NOT NULL CHECK (ownership IN ('corptieManaged', 'userManaged', 'externalManaged')),
+        root_path TEXT,
+        canonical_root_path TEXT UNIQUE,
+        status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('pending', 'ready', 'unavailable')),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS git_repositories (
         repository_id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL UNIQUE,
         common_git_dir TEXT NOT NULL UNIQUE,
         discovered_at TEXT NOT NULL,
-        last_validated_at TEXT NOT NULL
+        last_validated_at TEXT NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE CASCADE
       );
 
       CREATE TABLE IF NOT EXISTS git_worktrees (
@@ -1883,7 +1908,7 @@ export class CorptieStore {
         actor_agent_id TEXT NOT NULL,
         source_session_id TEXT NOT NULL,
         logical_session_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT,
         repository_id TEXT NOT NULL,
         target_path TEXT NOT NULL,
@@ -1899,7 +1924,7 @@ export class CorptieStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_workspace_creation_requests_context
-      ON workspace_creation_requests(objective_id, source_session_id, created_at DESC);
+      ON workspace_creation_requests(work_id, source_session_id, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS session_name_aliases (
         alias_key TEXT PRIMARY KEY,
@@ -2018,23 +2043,39 @@ export class CorptieStore {
       ON workspace_transitions(logical_session_id, created_at DESC);
     `);
 
-    // --- 实体层：Objective / Task / 依赖 DAG（净新增，见 15 Phase 1） ---
+    // --- 实体层：Work / Task / 依赖 DAG（净新增，见 15 Phase 1） ---
     this.db.run(`
-      CREATE TABLE IF NOT EXISTS objectives (
+      CREATE TABLE IF NOT EXISTS works (
         id TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL UNIQUE,
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
-        ideal_state TEXT NOT NULL DEFAULT '',
         avatar_path TEXT,
-        status TEXT NOT NULL DEFAULT 'active',
-        budget_config TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+        profile TEXT NOT NULL DEFAULT 'general' CHECK (profile IN ('general', 'software', 'office', 'data', 'design')),
+        tags_json TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE RESTRICT
       );
+
+      CREATE TABLE IF NOT EXISTS work_contributors (
+        work_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'contributor' CHECK (role IN ('contributor')),
+        is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (work_id, agent_id),
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_work_contributors_one_primary
+      ON work_contributors(work_id) WHERE is_primary = 1;
 
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         acceptance_criteria TEXT NOT NULL DEFAULT '',
@@ -2042,7 +2083,6 @@ export class CorptieStore {
         verification_criteria TEXT NOT NULL DEFAULT '',
         priority TEXT NOT NULL DEFAULT 'medium',
         lifecycle_state TEXT NOT NULL DEFAULT 'todo',
-        main_workspace_id TEXT,
         main_agent_id TEXT,
         execution_status TEXT NOT NULL DEFAULT 'idle',
         acceptance_assessment_json TEXT NOT NULL DEFAULT '{}',
@@ -2050,7 +2090,8 @@ export class CorptieStore {
         revision INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
+        FOREIGN KEY (main_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT
       );
 
       CREATE TABLE IF NOT EXISTS task_snapshots (
@@ -2081,7 +2122,7 @@ export class CorptieStore {
         receipt_id TEXT PRIMARY KEY,
         token_hash TEXT NOT NULL UNIQUE,
         task_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         source_type TEXT NOT NULL CHECK (source_type IN (
           'direct_macos_ui_action', 'direct_session_user_instruction'
         )),
@@ -2099,7 +2140,7 @@ export class CorptieStore {
         consumed_at TEXT,
         metadata_json TEXT NOT NULL DEFAULT '{}',
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE RESTRICT
       );
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_task_completion_intent_request
@@ -2108,18 +2149,18 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS task_completion_authorizations (
         operation_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         source_type TEXT NOT NULL,
         nonce TEXT NOT NULL UNIQUE,
         validated_at TEXT NOT NULL,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE RESTRICT
       );
 
       CREATE TABLE IF NOT EXISTS task_completion_operations (
         operation_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         result TEXT NOT NULL CHECK (result IN ('succeeded', 'rejected')),
         source_type TEXT NOT NULL,
         logical_session_id TEXT,
@@ -2136,7 +2177,7 @@ export class CorptieStore {
         details_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE RESTRICT
       );
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_task_completion_idempotency
@@ -2147,7 +2188,7 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS task_cancellation_operations (
         operation_id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         source_type TEXT NOT NULL,
         actor_session_id TEXT,
         authority_type TEXT NOT NULL,
@@ -2160,7 +2201,7 @@ export class CorptieStore {
         canceled_at TEXT NOT NULL,
         created_at TEXT NOT NULL,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE RESTRICT
       );
 
       CREATE UNIQUE INDEX IF NOT EXISTS idx_task_cancellation_idempotency
@@ -2189,7 +2230,7 @@ export class CorptieStore {
 
       CREATE TABLE IF NOT EXISTS work_session_startup_operations (
         startup_operation_id TEXT PRIMARY KEY,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
         assignee_agent_id TEXT NOT NULL,
         expected_task_version INTEGER NOT NULL,
@@ -2235,7 +2276,7 @@ export class CorptieStore {
         UNIQUE (task_id, idempotency_key),
         CHECK ((state='ready' AND ready_at IS NOT NULL) OR (state<>'ready' AND ready_at IS NULL)),
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE RESTRICT,
         FOREIGN KEY (assignee_agent_id) REFERENCES agents(agent_id) ON DELETE RESTRICT,
         FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE RESTRICT,
         FOREIGN KEY (worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE RESTRICT,
@@ -2253,7 +2294,7 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS work_session_startup_bindings (
         provider_binding_id TEXT PRIMARY KEY,
         startup_operation_id TEXT NOT NULL UNIQUE,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
         logical_session_id TEXT NOT NULL,
         repository_id TEXT NOT NULL,
@@ -2286,7 +2327,7 @@ export class CorptieStore {
           OR (head_kind='detached' AND branch IS NULL AND detached_commit_oid IS NOT NULL)),
         FOREIGN KEY (startup_operation_id) REFERENCES work_session_startup_operations(startup_operation_id) ON DELETE RESTRICT,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE RESTRICT,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE RESTRICT,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE RESTRICT,
         FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE RESTRICT,
         FOREIGN KEY (worktree_id) REFERENCES git_worktrees(worktree_id) ON DELETE RESTRICT
       );
@@ -2368,13 +2409,13 @@ export class CorptieStore {
 
       CREATE TABLE IF NOT EXISTS artifacts (
         artifact_id TEXT PRIMARY KEY,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         title TEXT NOT NULL,
         summary TEXT NOT NULL DEFAULT '',
         visibility TEXT NOT NULL CHECK (visibility IN (
-          'objective_private', 'task_private', 'session_private', 'repository_tracked'
+          'work_private', 'task_private', 'session_private', 'repository_tracked'
         )),
-        scope TEXT NOT NULL DEFAULT 'objective',
+        scope TEXT NOT NULL DEFAULT 'work',
         kind TEXT NOT NULL DEFAULT 'other',
         category_path TEXT NOT NULL DEFAULT '',
         tags_json TEXT NOT NULL DEFAULT '[]',
@@ -2392,14 +2433,14 @@ export class CorptieStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         resource_version INTEGER NOT NULL DEFAULT 1,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
         FOREIGN KEY (bound_task_id) REFERENCES tasks(id) ON DELETE RESTRICT
       );
 
-      CREATE INDEX IF NOT EXISTS idx_artifacts_objective
-      ON artifacts(objective_id, status, updated_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_artifacts_objective_page
-      ON artifacts(objective_id, updated_at DESC, artifact_id);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_work
+      ON artifacts(work_id, status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_artifacts_work_page
+      ON artifacts(work_id, updated_at DESC, artifact_id);
 
       CREATE TABLE IF NOT EXISTS artifact_versions (
         artifact_id TEXT NOT NULL,
@@ -2434,7 +2475,7 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS artifact_references (
         reference_id TEXT PRIMARY KEY,
         artifact_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT,
         session_id TEXT,
         relation TEXT NOT NULL CHECK (relation IN (
@@ -2454,7 +2495,7 @@ export class CorptieStore {
         revocation_reason TEXT,
         resource_version INTEGER NOT NULL DEFAULT 1,
         FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
         FOREIGN KEY (artifact_id, pinned_version)
           REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT
@@ -2463,15 +2504,15 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_artifact_references_task
       ON artifact_references(task_id, revoked_at, required, relation);
 
-      CREATE INDEX IF NOT EXISTS idx_artifact_references_objective_task
-      ON artifact_references(objective_id, task_id, revoked_at);
+      CREATE INDEX IF NOT EXISTS idx_artifact_references_work_task
+      ON artifact_references(work_id, task_id, revoked_at);
 
-      CREATE INDEX IF NOT EXISTS idx_artifact_references_objective_session
-      ON artifact_references(objective_id, session_id, revoked_at);
+      CREATE INDEX IF NOT EXISTS idx_artifact_references_work_session
+      ON artifact_references(work_id, session_id, revoked_at);
 
       CREATE TABLE IF NOT EXISTS task_file_references (
         reference_id TEXT PRIMARY KEY,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
         canonical_path TEXT NOT NULL,
         workspace_root TEXT NOT NULL,
@@ -2486,7 +2527,7 @@ export class CorptieStore {
         authorized_by_actor_id TEXT NOT NULL,
         authorized_by_session_id TEXT NOT NULL,
         authorized_at TEXT NOT NULL,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
         UNIQUE (task_id, canonical_path)
       );
@@ -2496,7 +2537,7 @@ export class CorptieStore {
 
       CREATE TABLE IF NOT EXISTS artifact_worker_create_operations (
         session_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         request_fingerprint TEXT NOT NULL,
@@ -2507,18 +2548,18 @@ export class CorptieStore {
         UNIQUE (artifact_id),
         UNIQUE (reference_id),
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
         FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
         FOREIGN KEY (reference_id) REFERENCES artifact_references(reference_id) ON DELETE CASCADE
       );
 
       CREATE INDEX IF NOT EXISTS idx_artifact_worker_create_scope
-      ON artifact_worker_create_operations(objective_id, task_id, created_at DESC);
+      ON artifact_worker_create_operations(work_id, task_id, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS artifact_worker_publish_operations (
         actor_scope_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         request_fingerprint TEXT NOT NULL,
@@ -2530,19 +2571,19 @@ export class CorptieStore {
         created_at TEXT NOT NULL,
         PRIMARY KEY (actor_scope_id, idempotency_key),
         UNIQUE (artifact_id, version),
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
         FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
         FOREIGN KEY (artifact_id, version) REFERENCES artifact_versions(artifact_id, version) ON DELETE RESTRICT,
         FOREIGN KEY (reference_id) REFERENCES artifact_references(reference_id) ON DELETE RESTRICT
       );
 
       CREATE INDEX IF NOT EXISTS idx_artifact_worker_publish_scope
-      ON artifact_worker_publish_operations(objective_id, task_id, artifact_id, created_at DESC);
+      ON artifact_worker_publish_operations(work_id, task_id, artifact_id, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS artifact_audit_events (
         audit_id TEXT PRIMARY KEY,
         artifact_id TEXT,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         action TEXT NOT NULL,
         actor_id TEXT NOT NULL,
         session_id TEXT,
@@ -2552,11 +2593,11 @@ export class CorptieStore {
         details_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE
       );
 
-      CREATE INDEX IF NOT EXISTS idx_artifact_audit_objective
-      ON artifact_audit_events(objective_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_artifact_audit_work
+      ON artifact_audit_events(work_id, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS artifact_content_operations (
         operation_id TEXT PRIMARY KEY,
@@ -2620,13 +2661,13 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_artifact_read_receipts_boundary
       ON artifact_read_receipts(logical_session_id, artifact_id, version, content_hash, byte_offset, byte_length);
 
-      CREATE INDEX IF NOT EXISTS idx_tasks_objective_id ON tasks(objective_id);
+      CREATE INDEX IF NOT EXISTS idx_tasks_work_id ON tasks(work_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_lifecycle_state ON tasks(lifecycle_state);
 
       CREATE TABLE IF NOT EXISTS project_integration_runs (
         id TEXT PRIMARY KEY,
         repository_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         status TEXT NOT NULL,
         main_head_before TEXT NOT NULL,
         main_head_after TEXT,
@@ -2642,7 +2683,7 @@ export class CorptieStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_project_integration_runs_scope
-      ON project_integration_runs(repository_id, objective_id, created_at DESC);
+      ON project_integration_runs(repository_id, work_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_project_integration_runs_recent
       ON project_integration_runs(created_at DESC, id DESC);
 
@@ -2683,7 +2724,7 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_worktree_integration_jobs_repository
       ON worktree_integration_jobs(repository_id, created_at DESC);
 
-      CREATE TABLE IF NOT EXISTS objective_task_association_audit (
+      CREATE TABLE IF NOT EXISTS work_task_association_audit (
         audit_id TEXT PRIMARY KEY,
         entity_type TEXT NOT NULL,
         entity_id TEXT NOT NULL,
@@ -2697,15 +2738,15 @@ export class CorptieStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_entity_association_audit_status
-      ON objective_task_association_audit(status, entity_type, entity_id);
+      ON work_task_association_audit(status, entity_type, entity_id);
 
       CREATE TABLE IF NOT EXISTS session_association_repair_audit (
         audit_id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
         anomaly_code TEXT NOT NULL,
-        previous_objective_id TEXT,
+        previous_work_id TEXT,
         previous_task_id TEXT,
-        repaired_objective_id TEXT NOT NULL,
+        repaired_work_id TEXT NOT NULL,
         repaired_task_id TEXT NOT NULL,
         source_operation_id TEXT NOT NULL,
         repaired_by TEXT NOT NULL,
@@ -2717,7 +2758,7 @@ export class CorptieStore {
       ON session_association_repair_audit(session_id, repaired_at DESC);
     `);
 
-    // --- 三层记忆（13：Objective/Task 工作记忆 + Agent 进化记忆） ---
+    // --- 三层记忆（13：Work/Task 工作记忆 + Agent 进化记忆） ---
     this.db.run(`
       CREATE TABLE IF NOT EXISTS memories (
         id TEXT PRIMARY KEY,
@@ -2766,18 +2807,18 @@ export class CorptieStore {
         session_id TEXT NOT NULL,
         idempotency_key TEXT NOT NULL,
         request_fingerprint TEXT NOT NULL,
-        objective_id TEXT,
+        work_id TEXT,
         memory_id TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (session_id, idempotency_key),
         UNIQUE (memory_id),
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-        FOREIGN KEY (objective_id) REFERENCES objectives(id) ON DELETE CASCADE,
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
         FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
       );
 
-      CREATE INDEX IF NOT EXISTS idx_memory_remember_operations_objective
-      ON memory_remember_operations(objective_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_memory_remember_operations_work
+      ON memory_remember_operations(work_id, created_at DESC);
 
       CREATE TABLE IF NOT EXISTS memory_audit (
         id TEXT PRIMARY KEY,
@@ -2878,7 +2919,7 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS collaboration_sessions (
         id TEXT PRIMARY KEY,
         requester_session_id TEXT,
-        requester_objective_id TEXT,
+        requester_work_id TEXT,
         requester_task_id TEXT,
         mode TEXT NOT NULL,
         request_json TEXT NOT NULL DEFAULT '{}',
@@ -2915,7 +2956,7 @@ export class CorptieStore {
         id TEXT PRIMARY KEY,
         session_id TEXT,
         task_id TEXT,
-        objective_id TEXT,
+        work_id TEXT,
         agent_id TEXT,
         intent_hash TEXT NOT NULL,
         result_json TEXT NOT NULL DEFAULT '{}',
@@ -2945,7 +2986,7 @@ export class CorptieStore {
         ON hub_intent_cache(agent_id, intent_hash);
     `);
 
-    this.ensureColumn("sessions", "objective_id", "TEXT");
+    this.ensureColumn("sessions", "work_id", "TEXT");
     this.ensureColumn("sessions", "task_id", "TEXT");
     this.ensureColumn("sessions", "session_kind", "TEXT NOT NULL DEFAULT 'legacy'");
     this.ensureColumn("sessions", "agent_id", "TEXT");
@@ -2957,22 +2998,6 @@ export class CorptieStore {
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("agents", "work_dir", "TEXT");
     this.ensureColumn("agents", "avatar_path", "TEXT");
-    this.ensureColumn("objectives", "priority", "TEXT");
-    this.ensureColumn("objectives", "ideal_state", "TEXT NOT NULL DEFAULT ''");
-    this.ensureColumn("objectives", "avatar_path", "TEXT");
-    const objectiveColumns = this.selectAll("PRAGMA table_info(objectives)");
-    if (objectiveColumns.some((entry) => entry.name === "acceptance_criteria")) {
-      this.db.run(
-        `UPDATE objectives SET ideal_state = acceptance_criteria
-         WHERE ideal_state = '' AND acceptance_criteria <> ''`
-      );
-      this.dropColumnIfExists("objectives", "acceptance_criteria");
-    }
-    this.ensureColumn("objectives", "target_date", "TEXT");
-    this.ensureColumn("objectives", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
-    this.ensureColumn("objectives", "workspace_ids_json", "TEXT NOT NULL DEFAULT '[]'");
-    this.ensureColumn("objectives", "related_objective_ids_json", "TEXT NOT NULL DEFAULT '[]'");
-    this.ensureColumn("objectives", "contributor_agent_ids_json", "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn("tasks", "current_session_id", "TEXT");
     this.ensureColumn("tasks", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("tasks", "goal", "TEXT NOT NULL DEFAULT ''");
@@ -2999,9 +3024,9 @@ export class CorptieStore {
         id DESC
       )
       WHERE COALESCE(deletion_status, '') <> 'deleted'`);
-    this.db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_objective_browse_page
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_work_browse_page
       ON tasks(
-        objective_id,
+        work_id,
         CASE WHEN lifecycle_state = 'done' THEN 1 ELSE 0 END,
         updated_at DESC,
         id DESC
@@ -3016,7 +3041,7 @@ export class CorptieStore {
       BEFORE UPDATE ON task_snapshots BEGIN SELECT RAISE(ABORT, 'TASK_SNAPSHOT_IMMUTABLE'); END`);
     this.db.run(`CREATE TRIGGER IF NOT EXISTS task_snapshots_immutable_delete
       BEFORE DELETE ON task_snapshots BEGIN SELECT RAISE(ABORT, 'TASK_SNAPSHOT_IMMUTABLE'); END`);
-    this.ensureColumn("artifacts", "scope", "TEXT NOT NULL DEFAULT 'objective'");
+    this.ensureColumn("artifacts", "scope", "TEXT NOT NULL DEFAULT 'work'");
     this.ensureColumn("artifacts", "kind", "TEXT NOT NULL DEFAULT 'other'");
     this.ensureColumn("artifacts", "category_path", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("artifacts", "tags_json", "TEXT NOT NULL DEFAULT '[]'");
@@ -3026,13 +3051,13 @@ export class CorptieStore {
       this.db.run(`UPDATE artifacts SET scope=CASE
         WHEN visibility='task_private' THEN 'task'
         WHEN visibility='session_private' THEN 'session'
-        ELSE 'objective' END`);
+        ELSE 'work' END`);
     });
-    this.db.run(`CREATE INDEX IF NOT EXISTS idx_artifacts_objective_taxonomy
-      ON artifacts(objective_id, scope, kind, category_path, status, updated_at DESC)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_artifacts_work_taxonomy
+      ON artifacts(work_id, scope, kind, category_path, status, updated_at DESC)`);
     this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS artifact_search_fts USING fts5(
       artifact_id UNINDEXED,
-      objective_id UNINDEXED,
+      work_id UNINDEXED,
       title,
       summary,
       kind,
@@ -3121,7 +3146,7 @@ export class CorptieStore {
          SELECT 1 FROM task_completion_authorizations authorization
          WHERE authorization.operation_id = NEW.completion_operation_id
            AND authorization.task_id = NEW.id
-           AND authorization.objective_id = NEW.objective_id
+           AND authorization.work_id = NEW.work_id
        )
       BEGIN
         SELECT RAISE(ABORT, 'TASK_COMPLETION_INTENT_REQUIRED');
@@ -3188,13 +3213,13 @@ export class CorptieStore {
     this.ensureColumn("collaboration_requests", "initiator_binding_id", "TEXT");
     this.ensureColumn("collaboration_requests", "recipient_binding_id", "TEXT");
     this.ensureColumn("collaboration_requests", "protocol_version", "TEXT NOT NULL DEFAULT '1.0'");
-    this.ensureColumn("collaboration_requests", "source_objective_id", "TEXT");
-    this.ensureColumn("collaboration_requests", "target_objective_id", "TEXT");
+    this.ensureColumn("collaboration_requests", "source_work_id", "TEXT");
+    this.ensureColumn("collaboration_requests", "target_work_id", "TEXT");
     this.ensureColumn("collaboration_requests", "source_task_id", "TEXT");
     this.ensureColumn("collaboration_requests", "target_task_id", "TEXT");
     this.ensureColumn("collaboration_messages", "protocol_version", "TEXT NOT NULL DEFAULT '1.0'");
-    this.ensureColumn("collaboration_messages", "source_objective_id", "TEXT");
-    this.ensureColumn("collaboration_messages", "target_objective_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "source_work_id", "TEXT");
+    this.ensureColumn("collaboration_messages", "target_work_id", "TEXT");
     this.ensureColumn("collaboration_messages", "source_task_id", "TEXT");
     this.ensureColumn("collaboration_messages", "target_task_id", "TEXT");
     this.ensureColumn("collaboration_messages", "payload_json", "TEXT NOT NULL DEFAULT '{}'");
@@ -3219,8 +3244,8 @@ export class CorptieStore {
       ON collaboration_requests(initiator_session_id, status, updated_at DESC)`);
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_deliveries_session
       ON collaboration_deliveries(recipient_session_id, status, next_attempt_at, created_at ASC)`);
-    this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_requests_objective_task
-      ON collaboration_requests(source_objective_id, target_objective_id, target_task_id, updated_at DESC)`);
+    this.db.run(`CREATE INDEX IF NOT EXISTS idx_collaboration_requests_work_task
+      ON collaboration_requests(source_work_id, target_work_id, target_task_id, updated_at DESC)`);
     this.ensureColumn("collaboration_request_confirmations", "initiator_session_id", "TEXT");
     this.ensureColumn("collaboration_request_confirmations", "recipient_session_id", "TEXT");
     this.ensureColumn("collaboration_request_confirmations", "initiator_name_at_send", "TEXT");
@@ -3297,83 +3322,107 @@ export class CorptieStore {
     this.db.run(`UPDATE sessions SET session_kind = 'worker'
       WHERE task_id IS NOT NULL AND TRIM(task_id) <> ''
         AND (session_kind IS NULL OR TRIM(session_kind) = ''
-          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))`);
-    this.db.run(`UPDATE sessions SET session_kind = 'objectiveChat'
-      WHERE objective_id IS NOT NULL AND TRIM(objective_id) <> ''
+          OR session_kind NOT IN ('assistantChat', 'workChat', 'worker'))`);
+    this.db.run(`UPDATE sessions SET session_kind = 'workChat'
+      WHERE work_id IS NOT NULL AND TRIM(work_id) <> ''
         AND (task_id IS NULL OR TRIM(task_id) = '')
         AND (session_kind IS NULL OR TRIM(session_kind) = ''
-          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))`);
-    // Objective discussion is a one-to-one association. Preserve the oldest
+          OR session_kind NOT IN ('assistantChat', 'workChat', 'worker'))`);
+    // Work discussion is a one-to-one association. Preserve the oldest
     // discussion as canonical and retain historical duplicates as ordinary,
     // unbound chats before installing the durable uniqueness guard.
     this.db.run(`UPDATE sessions AS duplicate
-      SET objective_id = NULL, session_kind = 'assistantChat'
-      WHERE duplicate.session_kind = 'objectiveChat'
+      SET work_id = NULL, session_kind = 'assistantChat'
+      WHERE duplicate.session_kind = 'workChat'
         AND duplicate.deleted_at IS NULL
-        AND duplicate.objective_id IS NOT NULL
-        AND TRIM(duplicate.objective_id) <> ''
+        AND duplicate.work_id IS NOT NULL
+        AND TRIM(duplicate.work_id) <> ''
         AND EXISTS (
           SELECT 1 FROM sessions AS canonical
-          WHERE canonical.session_kind = 'objectiveChat'
+          WHERE canonical.session_kind = 'workChat'
             AND canonical.deleted_at IS NULL
-            AND canonical.objective_id = duplicate.objective_id
+            AND canonical.work_id = duplicate.work_id
             AND (
               canonical.created_at < duplicate.created_at
               OR (canonical.created_at = duplicate.created_at AND canonical.id < duplicate.id)
             )
         )`);
-    this.runDataMigrationOnce("sessions-active-objective-chat-index-v1", () => {
-      this.db.run("DROP INDEX IF EXISTS idx_sessions_objective_chat");
-      this.db.run(`CREATE UNIQUE INDEX idx_sessions_objective_chat
-        ON sessions(objective_id)
-        WHERE session_kind = 'objectiveChat'
-          AND objective_id IS NOT NULL
+    this.runDataMigrationOnce("sessions-active-work-chat-index-v1", () => {
+      this.db.run("DROP INDEX IF EXISTS idx_sessions_work_chat");
+      this.db.run(`CREATE UNIQUE INDEX idx_sessions_work_chat
+        ON sessions(work_id)
+        WHERE session_kind = 'workChat'
+          AND work_id IS NOT NULL
           AND deleted_at IS NULL`);
     });
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
       WHERE (session_kind IS NULL OR TRIM(session_kind) = ''
-          OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker'))
+          OR session_kind NOT IN ('assistantChat', 'workChat', 'worker'))
         AND EXISTS (SELECT 1 FROM agents
           WHERE agents.agent_id = sessions.agent_id AND agents.role = 'assistant')`);
     this.db.run(`UPDATE sessions SET session_kind = 'legacy'
       WHERE session_kind IS NULL OR TRIM(session_kind) = ''
-        OR session_kind NOT IN ('assistantChat', 'objectiveChat', 'worker', 'legacy')`);
+        OR session_kind NOT IN ('assistantChat', 'workChat', 'worker', 'legacy')`);
     this.db.run("DROP TRIGGER IF EXISTS sessions_worker_association_insert_guard");
     this.db.run("DROP TRIGGER IF EXISTS sessions_worker_association_update_guard");
+    this.db.run("DROP TRIGGER IF EXISTS sessions_work_chat_association_insert_guard");
+    this.db.run("DROP TRIGGER IF EXISTS sessions_work_chat_association_update_guard");
     this.db.run(`CREATE TRIGGER sessions_worker_association_insert_guard
       BEFORE INSERT ON sessions
       WHEN NEW.session_kind = 'worker'
       BEGIN
         SELECT CASE
-          WHEN NEW.objective_id IS NULL OR TRIM(NEW.objective_id) = ''
+          WHEN NEW.work_id IS NULL OR TRIM(NEW.work_id) = ''
             OR NEW.task_id IS NULL OR TRIM(NEW.task_id) = ''
           THEN RAISE(ABORT, 'WORKER_SESSION_ASSOCIATION_REQUIRED')
           WHEN NOT EXISTS (
             SELECT 1 FROM tasks wi
-            JOIN objectives o ON o.id = wi.objective_id
-            WHERE wi.id = NEW.task_id AND wi.objective_id = NEW.objective_id
+            JOIN works o ON o.id = wi.work_id
+            WHERE wi.id = NEW.task_id AND wi.work_id = NEW.work_id
           )
-          THEN RAISE(ABORT, 'SESSION_TASK_OBJECTIVE_MISMATCH')
+          THEN RAISE(ABORT, 'SESSION_TASK_WORK_MISMATCH')
         END;
       END`);
     this.db.run(`CREATE TRIGGER sessions_worker_association_update_guard
-      BEFORE UPDATE OF session_kind, objective_id, task_id ON sessions
+      BEFORE UPDATE OF session_kind, work_id, task_id ON sessions
       WHEN NEW.session_kind = 'worker' AND (
         OLD.session_kind IS NOT NEW.session_kind
-        OR OLD.objective_id IS NOT NEW.objective_id
+        OR OLD.work_id IS NOT NEW.work_id
         OR OLD.task_id IS NOT NEW.task_id
       )
       BEGIN
         SELECT CASE
-          WHEN NEW.objective_id IS NULL OR TRIM(NEW.objective_id) = ''
+          WHEN NEW.work_id IS NULL OR TRIM(NEW.work_id) = ''
             OR NEW.task_id IS NULL OR TRIM(NEW.task_id) = ''
           THEN RAISE(ABORT, 'WORKER_SESSION_ASSOCIATION_REQUIRED')
           WHEN NOT EXISTS (
             SELECT 1 FROM tasks wi
-            JOIN objectives o ON o.id = wi.objective_id
-            WHERE wi.id = NEW.task_id AND wi.objective_id = NEW.objective_id
+            JOIN works o ON o.id = wi.work_id
+            WHERE wi.id = NEW.task_id AND wi.work_id = NEW.work_id
           )
-          THEN RAISE(ABORT, 'SESSION_TASK_OBJECTIVE_MISMATCH')
+          THEN RAISE(ABORT, 'SESSION_TASK_WORK_MISMATCH')
+        END;
+      END`);
+    this.db.run(`CREATE TRIGGER sessions_work_chat_association_insert_guard
+      BEFORE INSERT ON sessions
+      WHEN NEW.session_kind = 'workChat'
+      BEGIN
+        SELECT CASE
+          WHEN NEW.work_id IS NULL OR TRIM(NEW.work_id) = '' OR NEW.task_id IS NOT NULL
+          THEN RAISE(ABORT, 'WORK_CHAT_ASSOCIATION_INVALID')
+          WHEN NOT EXISTS (SELECT 1 FROM works WHERE id = NEW.work_id)
+          THEN RAISE(ABORT, 'WORK_CHAT_WORK_NOT_FOUND')
+        END;
+      END`);
+    this.db.run(`CREATE TRIGGER sessions_work_chat_association_update_guard
+      BEFORE UPDATE OF session_kind, work_id, task_id ON sessions
+      WHEN NEW.session_kind = 'workChat'
+      BEGIN
+        SELECT CASE
+          WHEN NEW.work_id IS NULL OR TRIM(NEW.work_id) = '' OR NEW.task_id IS NOT NULL
+          THEN RAISE(ABORT, 'WORK_CHAT_ASSOCIATION_INVALID')
+          WHEN NOT EXISTS (SELECT 1 FROM works WHERE id = NEW.work_id)
+          THEN RAISE(ABORT, 'WORK_CHAT_WORK_NOT_FOUND')
         END;
       END`);
     this.ensureColumn("workspace_transitions", "continuation_error", "TEXT");
@@ -3477,7 +3526,6 @@ export class CorptieStore {
     this.dropColumnIfExists("agents", "provider");
     this.ensureAssistantAgent();
     this.migrateAssistantWorkDirs();
-    this.auditObjectiveTaskAssociations({ migrate: true });
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_assistant_work_dir
       ON agents(work_dir COLLATE NOCASE)
       WHERE role = 'assistant' AND work_dir IS NOT NULL AND TRIM(work_dir) <> ''`);
@@ -3525,7 +3573,7 @@ export class CorptieStore {
         receipt_id TEXT PRIMARY KEY,
         receipt_type TEXT NOT NULL CHECK (receipt_type IN ('RepositorySourceSnapshotReceipt', 'SearchReceipt', 'ToolsetValidationReceipt')),
         logical_session_id TEXT NOT NULL,
-        objective_id TEXT NOT NULL,
+        work_id TEXT NOT NULL,
         task_id TEXT NOT NULL,
         repository_id TEXT NOT NULL,
         worktree_id TEXT NOT NULL,
@@ -3554,10 +3602,10 @@ export class CorptieStore {
     if (existing && existing.receipt_hash !== receipt.receiptHash) throw new Error("PROJECT_CODE_RECEIPT_IMMUTABLE");
     if (!existing) this.db.run(
       `INSERT INTO project_code_receipts (
-        receipt_id, receipt_type, logical_session_id, objective_id, task_id,
+        receipt_id, receipt_type, logical_session_id, work_id, task_id,
         repository_id, worktree_id, source_fingerprint, receipt_hash, receipt_json, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [input.receiptId, input.receiptType, input.logicalSessionId, input.objectiveId, input.taskId,
+      [input.receiptId, input.receiptType, input.logicalSessionId, input.workId, input.taskId,
         input.repositoryId, input.worktreeId, input.sourceFingerprint, input.receiptHash,
         JSON.stringify(receipt), input.createdAt]
     );
@@ -3585,7 +3633,7 @@ export class CorptieStore {
     return row ? {
       receiptType: row.receipt_type,
       logicalSessionId: row.logical_session_id,
-      objectiveId: row.objective_id,
+      workId: row.work_id,
       taskId: row.task_id,
       repositoryId: row.repository_id,
       worktreeId: row.worktree_id,
@@ -3654,7 +3702,7 @@ export class CorptieStore {
     const tracked = [
       ["sessions", "session", "id"],
       ["tasks", "task", "id"],
-      ["objectives", "objective", "id"],
+      ["works", "work", "id"],
       ["agents", "agent", "agent_id"],
       ["skill_registry", "skill", "skill_id"],
       ["git_repositories", "repository", "repository_id"],
@@ -3672,7 +3720,7 @@ export class CorptieStore {
       sessions: [
         "id", "title", "agent", "provider", "command", "args_json", "cwd", "status",
         "progress", "summary", "accent", "created_at", "updated_at", "archived", "pinned",
-        "sort_order", "active_choice_json", "raw_json", "objective_id", "task_id",
+        "sort_order", "active_choice_json", "raw_json", "work_id", "task_id",
         "session_kind", "agent_id", "archive_dependency_version", "deleted_at"
       ],
       agents: [
@@ -4174,13 +4222,13 @@ export class CorptieStore {
 
   stateConsistencyIssues() {
     return this.selectAll(`
-      SELECT 'worker_session_objective_missing' AS code, s.id AS entity_id,
+      SELECT 'worker_session_work_missing' AS code, s.id AS entity_id,
              s.task_id AS reference_id
       FROM sessions s
       WHERE s.deleted_at IS NULL AND s.session_kind='worker'
-        AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+        AND (s.work_id IS NULL OR TRIM(s.work_id)='')
       UNION ALL
-      SELECT 'worker_session_task_missing', s.id, s.objective_id
+      SELECT 'worker_session_task_missing', s.id, s.work_id
       FROM sessions s
       WHERE s.deleted_at IS NULL AND s.session_kind='worker'
         AND (s.task_id IS NULL OR TRIM(s.task_id)='')
@@ -4195,17 +4243,17 @@ export class CorptieStore {
       FROM tasks wi
       JOIN sessions s ON s.id = wi.current_session_id
       WHERE s.deleted_at IS NOT NULL
-        OR s.task_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id
+        OR s.task_id IS NOT wi.id OR s.work_id IS NOT wi.work_id
       UNION ALL
       SELECT 'session_task_missing', s.id, s.task_id
       FROM sessions s
       LEFT JOIN tasks wi ON wi.id = s.task_id
       WHERE s.deleted_at IS NULL AND s.task_id IS NOT NULL AND wi.id IS NULL
       UNION ALL
-      SELECT 'session_objective_mismatch', s.id, s.task_id
+      SELECT 'session_work_mismatch', s.id, s.task_id
       FROM sessions s
       JOIN tasks wi ON wi.id = s.task_id
-      WHERE s.deleted_at IS NULL AND s.objective_id IS NOT wi.objective_id
+      WHERE s.deleted_at IS NULL AND s.work_id IS NOT wi.work_id
       UNION ALL
       SELECT 'memory_task_association_mismatch', m.id, m.task_id
       FROM memories m
@@ -4218,7 +4266,7 @@ export class CorptieStore {
       LEFT JOIN sessions s ON s.id = m.source_session_id
       LEFT JOIN tasks wi ON wi.id = m.task_id
       WHERE m.owner_type = 'task'
-        AND (s.id IS NULL OR s.task_id IS NOT wi.id OR s.objective_id IS NOT wi.objective_id)
+        AND (s.id IS NULL OR s.task_id IS NOT wi.id OR s.work_id IS NOT wi.work_id)
       UNION ALL
       SELECT 'integration_conflict_task_missing', r.id, r.conflict_task_id
       FROM project_integration_runs r
@@ -4969,7 +5017,7 @@ export class CorptieStore {
     }
     const observedAt = snapshot.observedAt || new Date().toISOString();
     const existingRepo = this.selectOne(
-      "SELECT common_git_dir FROM git_repositories WHERE repository_id = ?",
+      "SELECT workspace_id, common_git_dir FROM git_repositories WHERE repository_id = ?",
       [repository.id]
     );
     const existingWorktrees = this.selectAll(
@@ -4988,6 +5036,27 @@ export class CorptieStore {
     }
     this.db.run("BEGIN IMMEDIATE");
     try {
+      const rootPath = snapshot.worktrees?.find((entry) => entry.isMain)?.canonicalPath
+        ?? snapshot.worktrees?.find((entry) => entry.isMain)?.path
+        ?? repository.commonGitDirCanonicalPath.replace(/\/\.git$/, "");
+      const existingWorkspace = this.selectOne(
+        "SELECT workspace_id FROM workspaces WHERE canonical_root_path = ?",
+        [rootPath]
+      );
+      const workspaceId = existingRepo?.workspace_id
+        ?? existingWorkspace?.workspace_id
+        ?? workspaceIdForRepository(repository.id);
+      this.db.run(
+        `INSERT INTO workspaces (
+          workspace_id, kind, ownership, root_path, canonical_root_path, status, created_at, updated_at
+        ) VALUES (?, 'linkedLocal', 'userManaged', ?, ?, 'ready', ?, ?)
+        ON CONFLICT(workspace_id) DO UPDATE SET
+          root_path=excluded.root_path,
+          canonical_root_path=excluded.canonical_root_path,
+          status='ready',
+          updated_at=excluded.updated_at`,
+        [workspaceId, rootPath, rootPath, observedAt, observedAt]
+      );
       // Change-detection: the frontend polls workspace status every few seconds,
       // and each poll previously rewrote `last_validated_at` with a fresh
       // timestamp, bumping the state_sync_clock revision via the git_repositories
@@ -4998,13 +5067,15 @@ export class CorptieStore {
       if (!existingRepo || existingRepo.common_git_dir !== repository.commonGitDirCanonicalPath) {
         this.db.run(
           `INSERT INTO git_repositories (
-            repository_id, common_git_dir, discovered_at, last_validated_at
-          ) VALUES (?, ?, ?, ?)
+            repository_id, workspace_id, common_git_dir, discovered_at, last_validated_at
+          ) VALUES (?, ?, ?, ?, ?)
           ON CONFLICT(repository_id) DO UPDATE SET
+            workspace_id=excluded.workspace_id,
             common_git_dir=excluded.common_git_dir,
             last_validated_at=excluded.last_validated_at`,
           [
             repository.id,
+            workspaceId,
             repository.commonGitDirCanonicalPath,
             repository.discoveredAt || observedAt,
             repository.lastValidatedAt || observedAt
@@ -5091,7 +5162,6 @@ export class CorptieStore {
       throw error;
     }
     this.scheduleSave();
-    this.auditObjectiveTaskAssociations({ migrate: true });
     return this.listGitWorktrees(repository.id);
   }
 
@@ -5106,12 +5176,56 @@ export class CorptieStore {
       }
       return {
         id: row.repository_id,
+        workspaceId: row.workspace_id,
         path,
         name: name || row.repository_id,
         discoveredAt: row.discovered_at,
         lastValidatedAt: row.last_validated_at
       };
     });
+  }
+
+  createWorkspace(input = {}) {
+    const workspaceId = input.workspaceId ?? `workspace:${randomUUID()}`;
+    const kind = input.kind ?? "managedLocal";
+    const ownership = input.ownership ?? "corptieManaged";
+    const status = input.status ?? (input.rootPath ? "ready" : "pending");
+    const rootPath = input.rootPath ? resolve(input.rootPath) : null;
+    const canonicalRootPath = input.canonicalRootPath
+      ? resolve(input.canonicalRootPath)
+      : rootPath;
+    const now = createdAtFromOrNow();
+    this.db.run(
+      `INSERT INTO workspaces (
+        workspace_id, kind, ownership, root_path, canonical_root_path, status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [workspaceId, kind, ownership, rootPath, canonicalRootPath, status, now, now]
+    );
+    this.scheduleSave();
+    return this.getWorkspace(workspaceId);
+  }
+
+  listWorkspaces() {
+    return this.selectAll("SELECT * FROM workspaces ORDER BY created_at DESC").map(workspaceFromRow);
+  }
+
+  getWorkspace(workspaceId) {
+    const row = this.selectOne("SELECT * FROM workspaces WHERE workspace_id = ?", [workspaceId]);
+    return row ? workspaceFromRow(row) : null;
+  }
+
+  getGitRepositoryForWorkspace(workspaceId) {
+    const row = this.selectOne(
+      "SELECT repository_id FROM git_repositories WHERE workspace_id = ?",
+      [workspaceId]
+    );
+    return row ? this.getGitRepository(row.repository_id) : null;
+  }
+
+  resolveWorkspaceRoot(workspaceId) {
+    const workspace = this.getWorkspace(workspaceId);
+    if (!workspace) return null;
+    return workspace.canonicalRootPath ?? workspace.rootPath ?? null;
   }
 
   getGitRepository(repositoryId) {
@@ -5121,6 +5235,7 @@ export class CorptieStore {
     );
     return row ? {
       id: row.repository_id,
+      workspaceId: row.workspace_id,
       commonGitDirCanonicalPath: row.common_git_dir,
       discoveredAt: row.discovered_at,
       lastValidatedAt: row.last_validated_at
@@ -5957,7 +6072,7 @@ export class CorptieStore {
         workspaceId: logical.activeWorkspaceId ?? null,
         worktreeId: binding.worktreeId ?? null,
         boundCwd: binding.boundCwd,
-        objectiveId: workBinding.objectiveId ?? session.objectiveId ?? null,
+        workId: workBinding.workId ?? session.workId ?? null,
         taskId: workBinding.taskId ?? session.taskId ?? null,
         instructionSources: binding.instructionSources ?? [],
         permissionSnapshot: binding.permissionSnapshot ?? {},
@@ -7089,8 +7204,8 @@ export class CorptieStore {
       error.code = "WORK_SESSION_BINDING_STALE";
       throw error;
     }
-    if (session.objectiveId !== task.objective_id) {
-      const error = new Error(`Worker Session ${session.id} and Task ${task.id} have different Objectives.`);
+    if (session.workId !== task.work_id) {
+      const error = new Error(`Worker Session ${session.id} and Task ${task.id} have different Works.`);
       error.code = "WORK_SESSION_BINDING_INVALID";
       throw error;
     }
@@ -7103,35 +7218,35 @@ export class CorptieStore {
       logicalSessionId,
       sessionId: session.id,
       taskId: task.id,
-      objectiveId: task.objective_id,
+      workId: task.work_id,
       agentId: task.main_agent_id ?? session.agentId ?? null
     };
   }
 
   upsertSession(session) {
     const persistedAssociation = this.selectOne(
-      "SELECT objective_id, task_id, session_kind, deleted_at FROM sessions WHERE id = ?",
+      "SELECT work_id, task_id, session_kind, deleted_at FROM sessions WHERE id = ?",
       [session.id]
     );
     // Provider discovery can race with, or arrive late after, local deletion.
     // A Provider projection must never resurrect a deliberately deleted actor.
     if (persistedAssociation?.deleted_at) return false;
     const suppliedSessionKind = session.sessionKind == null
-      ? inferSessionKind({ objectiveId: session.objectiveId, taskId: session.taskId })
+      ? inferSessionKind({ workId: session.workId, taskId: session.taskId })
       : assertExplicitSessionKind(session.sessionKind, { allowLegacy: true });
     const effectiveSessionKind = suppliedSessionKind === "legacy"
       ? persistedAssociation?.session_kind ?? "legacy"
       : suppliedSessionKind;
-    const effectiveObjectiveId = effectiveSessionKind === "worker"
-      ? session.objectiveId ?? persistedAssociation?.objective_id ?? null
-      : session.objectiveId ?? null;
+    const effectiveWorkId = effectiveSessionKind === "worker"
+      ? session.workId ?? persistedAssociation?.work_id ?? null
+      : session.workId ?? null;
     const effectiveTaskId = effectiveSessionKind === "worker"
       ? session.taskId ?? persistedAssociation?.task_id ?? null
       : session.taskId ?? null;
     this.assertSessionAssociation({
       sessionId: session.id,
       sessionKind: effectiveSessionKind,
-      objectiveId: effectiveObjectiveId,
+      workId: effectiveWorkId,
       taskId: effectiveTaskId
     });
     const summary = toSessionSummary(session);
@@ -7154,7 +7269,7 @@ export class CorptieStore {
       Number.isFinite(session.sortOrder) ? session.sortOrder : this.nextTopSortOrder(session.archived === true),
       serializeActiveChoicePrompt(summary.suggestedOptions, summary.summary, session.activeChoicePrompt),
       JSON.stringify(toRawStatus(session)),
-      effectiveObjectiveId,
+      effectiveWorkId,
       effectiveTaskId,
       effectiveSessionKind,
       session.agentId ?? null
@@ -7167,7 +7282,7 @@ export class CorptieStore {
     const existing = this.selectOne(
       `SELECT title, agent, provider, command, args_json, cwd, status, progress,
               summary, accent, created_at, updated_at, archived, pinned, sort_order,
-              active_choice_json, raw_json, objective_id, task_id, session_kind, agent_id
+              active_choice_json, raw_json, work_id, task_id, session_kind, agent_id
        FROM sessions WHERE id = ?`,
       [session.id]
     );
@@ -7177,14 +7292,14 @@ export class CorptieStore {
       // a semantic UPDATE even though the visible Session is unchanged.
       values[11] = existing.created_at;
       if (!Number.isFinite(session.sortOrder)) values[15] = existing.sort_order;
-      if (session.objectiveId == null) values[18] = existing.objective_id;
+      if (session.workId == null) values[18] = existing.work_id;
       if (session.taskId == null) values[19] = existing.task_id;
       if (values[20] === SESSION_KIND.legacy) values[20] = existing.session_kind;
       if (session.agentId == null) values[21] = existing.agent_id;
       const columns = [
         "title", "agent", "provider", "command", "args_json", "cwd", "status", "progress",
         "summary", "accent", "created_at", "updated_at", "archived", "pinned", "sort_order",
-        "active_choice_json", "raw_json", "objective_id", "task_id", "session_kind", "agent_id"
+        "active_choice_json", "raw_json", "work_id", "task_id", "session_kind", "agent_id"
       ];
       let changed = false;
       for (let i = 0; i < columns.length; i++) {
@@ -7208,7 +7323,7 @@ export class CorptieStore {
 
     this.db.run(
       `INSERT INTO sessions (
-        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, active_choice_json, raw_json, objective_id, task_id, session_kind, agent_id
+        id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent, created_at, updated_at, archived, pinned, sort_order, active_choice_json, raw_json, work_id, task_id, session_kind, agent_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
@@ -7227,7 +7342,7 @@ export class CorptieStore {
         sort_order=excluded.sort_order,
         active_choice_json=excluded.active_choice_json,
         raw_json=excluded.raw_json,
-        objective_id=COALESCE(excluded.objective_id, sessions.objective_id),
+        work_id=COALESCE(excluded.work_id, sessions.work_id),
         task_id=COALESCE(excluded.task_id, sessions.task_id),
         agent_id=COALESCE(excluded.agent_id, sessions.agent_id),
         session_kind=CASE
@@ -7240,8 +7355,8 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
-  // 将已有 Session 归属到某个 Task（及其 Objective），只更新归属两列，不覆盖其它字段。
-  bindSessionToTask(sessionId, taskId, objectiveId) {
+  // 将已有 Session 归属到某个 Task（及其 Work），只更新归属两列，不覆盖其它字段。
+  bindSessionToTask(sessionId, taskId, workId) {
     const session = this.getSession(sessionId);
     if (!session) {
       const error = new Error(`Session not found: ${sessionId}`);
@@ -7256,18 +7371,18 @@ export class CorptieStore {
       error.code = "TASK_NOT_FOUND";
       throw error;
     }
-    if (!taskId || !objectiveId || task.objective_id !== objectiveId) {
-      const error = new Error(`Worker Session ${sessionId} must use the Objective owned by Task ${taskId ?? "<missing>"}.`);
+    if (!taskId || !workId || task.work_id !== workId) {
+      const error = new Error(`Worker Session ${sessionId} must use the Work owned by Task ${taskId ?? "<missing>"}.`);
       error.name = "SessionAssociationError";
-      error.code = "SESSION_TASK_OBJECTIVE_MISMATCH";
+      error.code = "SESSION_TASK_WORK_MISMATCH";
       throw error;
     }
     const timestamp = createdAtFromOrNow();
     this.db.run("BEGIN IMMEDIATE");
     try {
       this.db.run(
-        `UPDATE sessions SET objective_id = ?, task_id = ?, session_kind = 'worker', updated_at = ? WHERE id = ?`,
-        [objectiveId ?? null, taskId ?? null, timestamp, sessionId]
+        `UPDATE sessions SET work_id = ?, task_id = ?, session_kind = 'worker', updated_at = ? WHERE id = ?`,
+        [workId ?? null, taskId ?? null, timestamp, sessionId]
       );
       // 1:1 语义：task 记录当前活跃 session（换 Agent/重来时覆盖为新的）
       if (taskId) {
@@ -7285,10 +7400,10 @@ export class CorptieStore {
     return this.getSession(sessionId);
   }
 
-  assertSessionAssociation({ sessionId, sessionKind, objectiveId, taskId }) {
+  assertSessionAssociation({ sessionId, sessionKind, workId, taskId }) {
     if (sessionKind !== "worker") return;
-    if (!objectiveId || !taskId) {
-      const error = new Error(`Worker Session ${sessionId ?? "<unknown>"} requires objectiveId and taskId.`);
+    if (!workId || !taskId) {
+      const error = new Error(`Worker Session ${sessionId ?? "<unknown>"} requires workId and taskId.`);
       error.name = "SessionAssociationError";
       error.code = "WORKER_SESSION_ASSOCIATION_REQUIRED";
       throw error;
@@ -7300,67 +7415,67 @@ export class CorptieStore {
       error.code = "SESSION_TASK_NOT_FOUND";
       throw error;
     }
-    if (task.objective_id !== objectiveId || !this.getObjective(objectiveId)) {
-      const error = new Error(`Worker Session ${sessionId ?? "<unknown>"} Objective does not match Task ${taskId}.`);
+    if (task.work_id !== workId || !this.getWork(workId)) {
+      const error = new Error(`Worker Session ${sessionId ?? "<unknown>"} Work does not match Task ${taskId}.`);
       error.name = "SessionAssociationError";
-      error.code = "SESSION_TASK_OBJECTIVE_MISMATCH";
+      error.code = "SESSION_TASK_WORK_MISMATCH";
       throw error;
     }
   }
 
   sessionAssociationIssues() {
     return this.selectAll(`
-      SELECT 'worker_objective_missing' AS code, s.id AS session_id,
-             s.objective_id, s.task_id, s.session_kind, s.title
+      SELECT 'worker_work_missing' AS code, s.id AS session_id,
+             s.work_id, s.task_id, s.session_kind, s.title
       FROM sessions s
       WHERE s.deleted_at IS NULL AND s.session_kind='worker'
-        AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+        AND (s.work_id IS NULL OR TRIM(s.work_id)='')
       UNION ALL
-      SELECT 'worker_task_missing', s.id, s.objective_id, s.task_id, s.session_kind, s.title
+      SELECT 'worker_task_missing', s.id, s.work_id, s.task_id, s.session_kind, s.title
       FROM sessions s
       WHERE s.deleted_at IS NULL AND s.session_kind='worker'
         AND (s.task_id IS NULL OR TRIM(s.task_id)='')
       UNION ALL
-      SELECT 'session_objective_not_found', s.id, s.objective_id, s.task_id, s.session_kind, s.title
-      FROM sessions s LEFT JOIN objectives o ON o.id=s.objective_id
-      WHERE s.deleted_at IS NULL AND s.objective_id IS NOT NULL AND TRIM(s.objective_id)<>'' AND o.id IS NULL
+      SELECT 'session_work_not_found', s.id, s.work_id, s.task_id, s.session_kind, s.title
+      FROM sessions s LEFT JOIN works o ON o.id=s.work_id
+      WHERE s.deleted_at IS NULL AND s.work_id IS NOT NULL AND TRIM(s.work_id)<>'' AND o.id IS NULL
       UNION ALL
-      SELECT 'session_task_not_found', s.id, s.objective_id, s.task_id, s.session_kind, s.title
+      SELECT 'session_task_not_found', s.id, s.work_id, s.task_id, s.session_kind, s.title
       FROM sessions s LEFT JOIN tasks wi ON wi.id=s.task_id
       WHERE s.deleted_at IS NULL AND s.task_id IS NOT NULL AND TRIM(s.task_id)<>'' AND wi.id IS NULL
       UNION ALL
-      SELECT 'session_task_objective_mismatch', s.id, s.objective_id, s.task_id, s.session_kind, s.title
+      SELECT 'session_task_work_mismatch', s.id, s.work_id, s.task_id, s.session_kind, s.title
       FROM sessions s JOIN tasks wi ON wi.id=s.task_id
-      WHERE s.deleted_at IS NULL AND s.objective_id IS NOT wi.objective_id
+      WHERE s.deleted_at IS NULL AND s.work_id IS NOT wi.work_id
       UNION ALL
-      SELECT 'bound_session_kind_not_worker', s.id, s.objective_id, s.task_id, s.session_kind, s.title
+      SELECT 'bound_session_kind_not_worker', s.id, s.work_id, s.task_id, s.session_kind, s.title
       FROM sessions s
       WHERE s.deleted_at IS NULL AND s.task_id IS NOT NULL
         AND TRIM(s.task_id)<>'' AND s.session_kind<>'worker'
       UNION ALL
-      SELECT 'objective_chat_objective_missing', s.id, s.objective_id, s.task_id, s.session_kind, s.title
+      SELECT 'work_chat_work_missing', s.id, s.work_id, s.task_id, s.session_kind, s.title
       FROM sessions s
-      WHERE s.deleted_at IS NULL AND s.session_kind='objectiveChat'
-        AND (s.objective_id IS NULL OR TRIM(s.objective_id)='')
+      WHERE s.deleted_at IS NULL AND s.session_kind='workChat'
+        AND (s.work_id IS NULL OR TRIM(s.work_id)='')
       UNION ALL
-      SELECT 'objective_chat_has_task', s.id, s.objective_id, s.task_id, s.session_kind, s.title
+      SELECT 'work_chat_has_task', s.id, s.work_id, s.task_id, s.session_kind, s.title
       FROM sessions s
-      WHERE s.deleted_at IS NULL AND s.session_kind='objectiveChat'
+      WHERE s.deleted_at IS NULL AND s.session_kind='workChat'
         AND s.task_id IS NOT NULL AND TRIM(s.task_id)<>''
       UNION ALL
-      SELECT 'task_current_session_not_found', wi.current_session_id, wi.objective_id, wi.id, NULL, wi.title
+      SELECT 'task_current_session_not_found', wi.current_session_id, wi.work_id, wi.id, NULL, wi.title
       FROM tasks wi LEFT JOIN sessions s ON s.id=wi.current_session_id AND s.deleted_at IS NULL
       WHERE wi.current_session_id IS NOT NULL AND TRIM(wi.current_session_id)<>'' AND s.id IS NULL
       UNION ALL
-      SELECT 'task_current_session_binding_mismatch', wi.current_session_id, wi.objective_id, wi.id, s.session_kind, wi.title
+      SELECT 'task_current_session_binding_mismatch', wi.current_session_id, wi.work_id, wi.id, s.session_kind, wi.title
       FROM tasks wi JOIN sessions s ON s.id=wi.current_session_id
       WHERE s.deleted_at IS NOT NULL OR s.task_id IS NOT wi.id
-        OR s.objective_id IS NOT wi.objective_id OR s.session_kind<>'worker'
+        OR s.work_id IS NOT wi.work_id OR s.session_kind<>'worker'
       ORDER BY code, session_id
     `).map((row) => ({
       code: row.code,
       sessionId: row.session_id,
-      objectiveId: row.objective_id ?? null,
+      workId: row.work_id ?? null,
       taskId: row.task_id ?? null,
       sessionKind: row.session_kind ?? null,
       title: row.title
@@ -7388,7 +7503,7 @@ export class CorptieStore {
     ).map((row) => row.id);
   }
 
-  finalizeConflictResolutionLaunch({ sessionId, taskId, objectiveId, agentId, integrationRunId }) {
+  finalizeConflictResolutionLaunch({ sessionId, taskId, workId, agentId, integrationRunId }) {
     if (!this.getSession(sessionId)) {
       const error = new Error(`Session not found: ${sessionId}`);
       error.code = "SESSION_NOT_FOUND";
@@ -7400,9 +7515,9 @@ export class CorptieStore {
       error.code = "TASK_NOT_FOUND";
       throw error;
     }
-    if (!this.getObjective(objectiveId) || task.objective_id !== objectiveId) {
-      const error = new Error(`Objective does not match Task: ${objectiveId}`);
-      error.code = "OBJECTIVE_MISMATCH";
+    if (!this.getWork(workId) || task.work_id !== workId) {
+      const error = new Error(`Work does not match Task: ${workId}`);
+      error.code = "WORK_MISMATCH";
       throw error;
     }
     if (!this.getAgent(agentId)) {
@@ -7418,8 +7533,8 @@ export class CorptieStore {
     const timestamp = createdAtFromOrNow();
     this.runInTransaction(() => {
       this.db.run(
-        `UPDATE sessions SET objective_id=?, task_id=?, session_kind='worker', agent_id=?, updated_at=? WHERE id=?`,
-        [objectiveId, taskId, agentId, timestamp, sessionId]
+        `UPDATE sessions SET work_id=?, task_id=?, session_kind='worker', agent_id=?, updated_at=? WHERE id=?`,
+        [workId, taskId, agentId, timestamp, sessionId]
       );
       this.db.run(
         `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status='running',
@@ -7436,11 +7551,11 @@ export class CorptieStore {
          FROM tasks wi
          JOIN sessions s ON s.id = wi.current_session_id
          JOIN project_integration_runs r ON r.id = ?
-         WHERE wi.id = ? AND wi.objective_id = ? AND wi.main_agent_id = ?
-           AND s.id = ? AND s.task_id = wi.id AND s.objective_id = wi.objective_id
+         WHERE wi.id = ? AND wi.work_id = ? AND wi.main_agent_id = ?
+           AND s.id = ? AND s.task_id = wi.id AND s.work_id = wi.work_id
            AND s.agent_id = wi.main_agent_id
            AND r.conflict_task_id = wi.id AND r.conflict_session_id = s.id`,
-        [integrationRunId, taskId, objectiveId, agentId, sessionId]
+        [integrationRunId, taskId, workId, agentId, sessionId]
       );
       if (!finalized) {
         const error = new Error("Conflict-resolution launch violated state invariants.");
@@ -7456,22 +7571,22 @@ export class CorptieStore {
     };
   }
 
-  bindSessionToObjective(sessionId, objectiveId) {
+  bindSessionToWork(sessionId, workId) {
     if (!this.getSession(sessionId)) {
       const error = new Error(`Session not found: ${sessionId}`);
       error.code = "SESSION_NOT_FOUND";
       throw error;
     }
-    if (!this.getObjective(objectiveId)) {
-      const error = new Error(`Objective not found: ${objectiveId}`);
-      error.code = "OBJECTIVE_NOT_FOUND";
+    if (!this.getWork(workId)) {
+      const error = new Error(`Work not found: ${workId}`);
+      error.code = "WORK_NOT_FOUND";
       throw error;
     }
-    const existing = this.getObjectiveChatSession(objectiveId);
+    const existing = this.getWorkChatSession(workId);
     if (existing && existing.id !== sessionId) return existing;
     this.db.run(
-      "UPDATE sessions SET objective_id = ?, task_id = NULL, session_kind = 'objectiveChat', updated_at = ? WHERE id = ?",
-      [objectiveId, createdAtFromOrNow(), sessionId]
+      "UPDATE sessions SET work_id = ?, task_id = NULL, session_kind = 'workChat', updated_at = ? WHERE id = ?",
+      [workId, createdAtFromOrNow(), sessionId]
     );
     this.scheduleSave();
     return this.getSession(sessionId);
@@ -7583,13 +7698,13 @@ export class CorptieStore {
     const id = input.id ?? `session:${randomUUID()}`;
     const now = createdAtFromOrNow();
     const sessionKind = input.sessionKind == null
-      ? inferSessionKind({ objectiveId: input.objectiveId, taskId: input.taskId })
+      ? inferSessionKind({ workId: input.workId, taskId: input.taskId })
       : assertExplicitSessionKind(input.sessionKind);
     this.db.run(
       `INSERT INTO sessions (
         id, title, agent, provider, command, args_json, cwd, status, progress, summary, accent,
         created_at, updated_at, archived, pinned, sort_order, active_choice_json, raw_json,
-        objective_id, task_id, session_kind, agent_id
+        work_id, task_id, session_kind, agent_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
@@ -7610,7 +7725,7 @@ export class CorptieStore {
         input.sortOrder ?? null,
         input.activeChoiceJson ?? null,
         JSON.stringify(input.raw ?? {}),
-        input.objectiveId ?? null,
+        input.workId ?? null,
         input.taskId ?? null,
         input.taskId ? SESSION_KIND.worker : sessionKind,
         input.agentId ?? null
@@ -7900,7 +8015,7 @@ export class CorptieStore {
         task_id, logical_session_id, message_json, schedule_type, run_at, next_run_at,
         interval_seconds, timezone, status, missed_policy, condition_spec_json,
         condition_state_json, process_spec_json, process_state_json,
-        creator_type, creator_id, objective_id, environment,
+        creator_type, creator_id, work_id, environment,
         max_retries, name, trigger_spec_json, condition_specs_json, actions_json,
         policy_spec_json, risk_json, max_concurrent_runs, timeout_seconds, backpressure_limit, expires_at,
         created_at, updated_at
@@ -7921,7 +8036,7 @@ export class CorptieStore {
         input.processState ? JSON.stringify(input.processState) : null,
         input.creatorType,
         input.creatorId,
-        input.objectiveId ?? null,
+        input.workId ?? null,
         input.environment,
         input.maxRetries ?? 5,
         input.name ?? null,
@@ -8516,20 +8631,20 @@ export class CorptieStore {
     return rows.map((row) => this.rowToSession(row));
   }
 
-  listSessionsByObjective(objectiveId) {
+  listSessionsByWork(workId) {
     const rows = this.selectAll(
-      `${sessionProjectionSelectSQL()} WHERE sessions.objective_id = ? AND sessions.deleted_at IS NULL ORDER BY sessions.created_at ASC`,
-      [objectiveId]
+      `${sessionProjectionSelectSQL()} WHERE sessions.work_id = ? AND sessions.deleted_at IS NULL ORDER BY sessions.created_at ASC`,
+      [workId]
     );
     return rows.map((row) => this.rowToSession(row));
   }
 
-  getObjectiveChatSession(objectiveId) {
+  getWorkChatSession(workId) {
     const row = this.selectOne(
       `SELECT * FROM sessions
-       WHERE objective_id = ? AND session_kind = 'objectiveChat' AND deleted_at IS NULL
+       WHERE work_id = ? AND session_kind = 'workChat' AND deleted_at IS NULL
        ORDER BY created_at ASC, id ASC LIMIT 1`,
-      [objectiveId]
+      [workId]
     );
     return row ? this.rowToSession(row) : null;
   }
@@ -10574,195 +10689,83 @@ export class CorptieStore {
         throw error;
       }
     }
+    const assignedWork = this.selectOne(
+      "SELECT work_id FROM work_contributors WHERE agent_id = ? LIMIT 1",
+      [agentId]
+    );
+    if (assignedWork) {
+      const error = new Error(`Agent is still assigned to Work ${assignedWork.work_id}.`);
+      error.code = "AGENT_ASSIGNED_TO_WORK";
+      error.statusCode = 409;
+      throw error;
+    }
     this.db.run(`DELETE FROM agents WHERE agent_id = ?`, [agentId]);
     this.scheduleSave();
     return true;
   }
 
-  // ===== 实体层：Objective / Task / 依赖 DAG（15 Phase 1，净新增）=====
+  // ===== 实体层：Work / Task / 依赖 DAG（15 Phase 1，净新增）=====
 
-  auditObjectiveTaskAssociations(options = {}) {
-    const migrate = options.migrate !== false;
+  auditWorkTaskAssociations() {
     const auditedAt = createdAtFromOrNow();
     this.runInTransaction(() => {
-      // Unresolved rows describe the current state and are recomputed. Migrated rows are retained as an audit trail.
-      this.db.run("DELETE FROM objective_task_association_audit WHERE status = 'unresolved'");
+      this.db.run("DELETE FROM work_task_association_audit WHERE status = 'unresolved'");
 
-      const objectives = this.selectAll(
-        `SELECT id, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json
-         FROM objectives ORDER BY id ASC`
-      );
-      for (const row of objectives) {
-        let workspaceIds;
-        try {
-          workspaceIds = JSON.parse(row.workspace_ids_json ?? "[]");
-        } catch {
-          workspaceIds = null;
-        }
-        if (!Array.isArray(workspaceIds)) {
+      for (const work of this.listWorks()) {
+        if (!this.getWorkspace(work.workspaceId)) {
           this.recordAssociationAudit({
-            entityType: "objective", entityId: row.id, field: "workspaceIds",
-            receivedValue: row.workspace_ids_json, status: "unresolved", reason: "invalid_json_type", auditedAt
+            entityType: "work", entityId: work.id, field: "workspaceId",
+            receivedValue: work.workspaceId, status: "unresolved",
+            reason: "workspace_not_found", auditedAt
           });
-          continue;
         }
-
-        let changed = false;
-        const migratedWorkspaceIds = [];
-        for (const workspaceId of workspaceIds) {
-          if (typeof workspaceId !== "string") {
-            this.recordAssociationAudit({
-              entityType: "objective", entityId: row.id, field: "workspaceIds",
-              receivedValue: workspaceId, status: "unresolved", reason: "invalid_id_type", auditedAt
-            });
-            migratedWorkspaceIds.push(workspaceId);
-            continue;
-          }
-          if (workspaceId.startsWith("worktree:")) {
-            const worktree = this.getGitWorktree(workspaceId);
-            if (worktree?.repositoryId && this.getGitRepository(worktree.repositoryId)) {
-              migratedWorkspaceIds.push(worktree.repositoryId);
-              changed = true;
-              this.recordAssociationAudit({
-                entityType: "objective", entityId: row.id, field: "workspaceIds",
-                receivedValue: workspaceId, status: "migrated", reason: "worktree_resolved",
-                migratedValue: worktree.repositoryId, auditedAt
-              });
-            } else {
-              migratedWorkspaceIds.push(workspaceId);
-              this.recordAssociationAudit({
-                entityType: "objective", entityId: row.id, field: "workspaceIds",
-                receivedValue: workspaceId, status: "unresolved", reason: "worktree_not_registered", auditedAt
-              });
-            }
-            continue;
-          }
-          migratedWorkspaceIds.push(workspaceId);
-          if (!workspaceId.startsWith("repository:") || !this.getGitRepository(workspaceId)) {
-            this.recordAssociationAudit({
-              entityType: "objective", entityId: row.id, field: "workspaceIds",
-              receivedValue: workspaceId, status: "unresolved", reason: "repository_not_registered", auditedAt
-            });
-          }
+        if (work.contributorAgentIds.length === 0) {
+          this.recordAssociationAudit({
+            entityType: "work", entityId: work.id, field: "contributorAgentIds",
+            receivedValue: null, status: "unresolved",
+            reason: "contributor_required", auditedAt
+          });
         }
-        const deduped = [...new Set(migratedWorkspaceIds)];
-        if (migrate && (changed || deduped.length !== workspaceIds.length)) {
-          this.db.run(
-            "UPDATE objectives SET workspace_ids_json = ?, updated_at = ? WHERE id = ?",
-            [JSON.stringify(deduped), auditedAt, row.id]
-          );
-        }
-
-        for (const [field, rawJson, resourceType] of [
-          ["relatedObjectiveIds", row.related_objective_ids_json, "objective"],
-          ["contributorAgentIds", row.contributor_agent_ids_json, "agent"]
-        ]) {
-          let ids;
-          try {
-            ids = JSON.parse(rawJson ?? "[]");
-          } catch {
-            ids = null;
-          }
-          if (!Array.isArray(ids)) {
+        for (const agentId of work.contributorAgentIds) {
+          const agent = this.getAgent(agentId);
+          if (agent?.role !== "independentContributor") {
             this.recordAssociationAudit({
-              entityType: "objective", entityId: row.id, field,
-              receivedValue: rawJson, status: "unresolved", reason: "invalid_json_type", auditedAt
+              entityType: "work", entityId: work.id, field: "contributorAgentIds",
+              receivedValue: agentId, status: "unresolved",
+              reason: !agent ? "agent_not_found" : "agent_not_assignable", auditedAt
             });
-            continue;
-          }
-          for (const id of ids) {
-            if (typeof id !== "string" || !id.trim()) {
-              this.recordAssociationAudit({
-                entityType: "objective", entityId: row.id, field,
-                receivedValue: id, status: "unresolved", reason: "invalid_id_type", auditedAt
-              });
-              continue;
-            }
-            const resource = resourceType === "objective" ? this.getObjective(id) : this.getAgent(id);
-            const assignable = resourceType !== "agent" || resource?.role === "independentContributor";
-            if (!resource || !assignable || (resourceType === "objective" && id === row.id)) {
-              this.recordAssociationAudit({
-                entityType: "objective", entityId: row.id, field,
-                receivedValue: id, status: "unresolved",
-                reason: !resource ? `${resourceType}_not_found` : resourceType === "agent" ? "agent_not_assignable" : "self_relation",
-                auditedAt
-              });
-            }
           }
         }
       }
 
-      const tasks = this.selectAll(
-        `SELECT id, objective_id, main_workspace_id, main_agent_id FROM tasks ORDER BY id ASC`
-      );
-      for (const row of tasks) {
-        const objective = this.getObjective(row.objective_id);
-        if (!objective) {
+      for (const task of this.listTasks()) {
+        const work = this.getWork(task.work_id);
+        if (!work) {
           this.recordAssociationAudit({
-            entityType: "task", entityId: row.id, field: "objectiveId",
-            receivedValue: row.objective_id, status: "unresolved", reason: "objective_not_found", auditedAt
+            entityType: "task", entityId: task.id, field: "workId",
+            receivedValue: task.work_id, status: "unresolved",
+            reason: "work_not_found", auditedAt
           });
           continue;
         }
-
-        const workspaceId = row.main_workspace_id;
-        if (workspaceId?.startsWith("worktree:")) {
-          const worktree = this.getGitWorktree(workspaceId);
-          const repositoryId = worktree?.repositoryId;
-          if (repositoryId && this.getGitRepository(repositoryId) && objective.workspaceIds.includes(repositoryId)) {
-            if (migrate) {
-              this.db.run(
-                "UPDATE tasks SET main_workspace_id = ?, updated_at = ? WHERE id = ?",
-                [repositoryId, auditedAt, row.id]
-              );
-            }
-            this.recordAssociationAudit({
-              entityType: "task", entityId: row.id, field: "mainWorkspaceId",
-              receivedValue: workspaceId, status: "migrated", reason: "worktree_resolved_in_objective_scope",
-              migratedValue: repositoryId, auditedAt
-            });
-          } else {
-            this.recordAssociationAudit({
-              entityType: "task", entityId: row.id, field: "mainWorkspaceId",
-              receivedValue: workspaceId, status: "unresolved",
-              reason: repositoryId ? "repository_outside_objective_scope" : "worktree_not_registered", auditedAt
-            });
-          }
-        } else if (workspaceId && (
-          !workspaceId.startsWith("repository:") || !this.getGitRepository(workspaceId) || !objective.workspaceIds.includes(workspaceId)
-        )) {
+        if (task.main_agent_id && !work.contributorAgentIds.includes(task.main_agent_id)) {
           this.recordAssociationAudit({
-            entityType: "task", entityId: row.id, field: "mainWorkspaceId",
-            receivedValue: workspaceId, status: "unresolved", reason: "repository_invalid_or_outside_objective_scope", auditedAt
+            entityType: "task", entityId: task.id, field: "mainAgentId",
+            receivedValue: task.main_agent_id, status: "unresolved",
+            reason: "agent_outside_work_scope", auditedAt
           });
-        }
-
-        if (row.main_agent_id) {
-          const agent = this.getAgent(row.main_agent_id);
-          const valid = agent?.role === "independentContributor"
-            && objective.contributorAgentIds.includes(row.main_agent_id);
-          if (!valid) {
-            this.recordAssociationAudit({
-              entityType: "task", entityId: row.id, field: "mainAgentId",
-              receivedValue: row.main_agent_id, status: "unresolved",
-              reason: !agent ? "agent_not_found" : agent.role !== "independentContributor"
-                ? "agent_not_assignable" : "agent_outside_objective_scope",
-              auditedAt
-            });
-          }
         }
       }
     });
-    return this.listObjectiveTaskAssociationAudit();
+    return this.listWorkTaskAssociationAudit();
   }
-
   recordAssociationAudit(input) {
     const receivedValue = input.receivedValue == null
       ? null
       : typeof input.receivedValue === "string" ? input.receivedValue : JSON.stringify(input.receivedValue);
     const auditId = [input.entityType, input.entityId, input.field, receivedValue ?? "<null>"].join("|");
     this.db.run(
-      `INSERT INTO objective_task_association_audit (
+      `INSERT INTO work_task_association_audit (
          audit_id, entity_type, entity_id, field, received_value, status, reason,
          migrated_value, first_audited_at, last_audited_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -10778,15 +10781,15 @@ export class CorptieStore {
     );
   }
 
-  listObjectiveTaskAssociationAudit(options = {}) {
+  listWorkTaskAssociationAudit(options = {}) {
     const rows = options.status
       ? this.selectAll(
-        `SELECT * FROM objective_task_association_audit WHERE status = ?
+        `SELECT * FROM work_task_association_audit WHERE status = ?
          ORDER BY entity_type, entity_id, field, received_value`,
         [options.status]
       )
       : this.selectAll(
-        `SELECT * FROM objective_task_association_audit
+        `SELECT * FROM work_task_association_audit
          ORDER BY status, entity_type, entity_id, field, received_value`
       );
     return rows.map((row) => ({
@@ -10803,78 +10806,158 @@ export class CorptieStore {
     }));
   }
 
-  createObjective(input = {}) {
-    const normalized = validateObjectiveInput(input, "create");
-    const id = normalized.id ?? `objective:${randomUUID()}`;
-    this.assertObjectiveAssociations(normalized, { objectiveId: id });
+  createWork(input = {}) {
+    const normalized = validateWorkInput(input, "create");
+    const id = normalized.id ?? `work:${randomUUID()}`;
+    for (const [index, agentId] of normalized.contributorAgentIds.entries()) {
+      this.assertAssignableAgent(agentId, `contributorAgentIds[${index}]`);
+    }
+    const workspace = normalized.workspaceId
+      ? this.getWorkspace(normalized.workspaceId)
+      : this.createWorkspace();
+    if (!workspace) {
+      throw associationError(
+        "WORKSPACE_NOT_FOUND", "workspaceId", "existing Workspace ID", normalized.workspaceId,
+        `Workspace not found: ${normalized.workspaceId}`
+      );
+    }
+    const inputWithWorkspace = { ...normalized, workspaceId: workspace.workspaceId };
+    this.assertWorkAssociations(inputWithWorkspace, { workId: id });
     const now = createdAtFromOrNow();
-    this.db.run(
-      `INSERT INTO objectives (id, name, description, ideal_state, avatar_path, status, budget_config, priority, target_date, tags_json, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    this.runInTransaction(() => {
+      this.db.run(
+        `INSERT INTO works (
+          id, workspace_id, name, description, avatar_path, status, profile,
+          tags_json, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          workspace.workspaceId,
+          normalized.name,
+          normalized.description ?? "",
+          normalized.avatarPath ?? null,
+          normalized.status ?? "active",
+          normalized.profile ?? "general",
+          JSON.stringify(normalized.tags ?? []),
+          now,
+          now,
+        ]
+      );
+      this.replaceWorkContributors(
         id,
-        normalized.name,
-        normalized.description ?? "",
-        normalized.idealState ?? "",
-        normalized.avatarPath ?? null,
-        normalized.status ?? "active",
-        JSON.stringify(normalized.budgetConfig ?? {}),
-        normalized.priority ?? null,
-        normalized.targetDate ?? null,
-        JSON.stringify(normalized.tags ?? []),
-        JSON.stringify(normalized.workspaceIds ?? []),
-        JSON.stringify(normalized.relatedObjectiveIds ?? []),
-        JSON.stringify(normalized.contributorAgentIds ?? []),
-        now,
-        now,
-      ]
-    );
+        normalized.contributorAgentIds,
+        normalized.primaryAgentId ?? normalized.contributorAgentIds[0],
+        now
+      );
+    });
     this.scheduleSave();
-    return this.getObjective(id);
+    return this.getWork(id);
   }
 
-  listObjectives() {
-    return this.selectAll(`SELECT * FROM objectives ORDER BY created_at DESC`).map(objectiveFromRow);
+  listWorks() {
+    return this.selectAll(`SELECT * FROM works ORDER BY created_at DESC`)
+      .map((row) => workFromRow(row, this.listWorkContributors(row.id)));
   }
 
-  getObjective(id) {
-    const row = this.selectOne(`SELECT * FROM objectives WHERE id = ?`, [id]);
-    return row ? objectiveFromRow(row) : null;
+  getWork(id) {
+    const row = this.selectOne(`SELECT * FROM works WHERE id = ?`, [id]);
+    return row ? workFromRow(row, this.listWorkContributors(id)) : null;
   }
 
-  updateObjective(id, patch = {}) {
-    const current = this.getObjective(id);
+  listWorkContributors(workId) {
+    return this.selectAll(
+      `SELECT work_id, agent_id, role, is_primary, created_at
+       FROM work_contributors
+       WHERE work_id = ?
+       ORDER BY is_primary DESC, created_at ASC, agent_id ASC`,
+      [workId]
+    ).map((row) => ({
+      workId: row.work_id,
+      agentId: row.agent_id,
+      role: row.role,
+      isPrimary: row.is_primary === 1,
+      createdAt: row.created_at
+    }));
+  }
+
+  replaceWorkContributors(workId, agentIds, primaryAgentId, timestamp = createdAtFromOrNow()) {
+    const uniqueAgentIds = [...new Set(agentIds ?? [])];
+    if (uniqueAgentIds.length === 0) {
+      throw associationError(
+        "WORK_CONTRIBUTOR_REQUIRED", "contributorAgentIds", "at least one assignable Agent ID", agentIds,
+        "A Work requires at least one contributor Agent."
+      );
+    }
+    const primary = primaryAgentId && uniqueAgentIds.includes(primaryAgentId)
+      ? primaryAgentId
+      : uniqueAgentIds[0];
+    this.db.run("DELETE FROM work_contributors WHERE work_id = ?", [workId]);
+    for (const agentId of uniqueAgentIds) {
+      this.db.run(
+        `INSERT INTO work_contributors (work_id, agent_id, role, is_primary, created_at)
+         VALUES (?, ?, 'contributor', ?, ?)`,
+        [workId, agentId, agentId === primary ? 1 : 0, timestamp]
+      );
+    }
+  }
+
+  updateWork(id, patch = {}) {
+    const current = this.getWork(id);
     if (!current) return null;
-    const normalized = validateObjectiveInput(patch, "update");
-    const prospective = { ...current, ...normalized };
-    this.assertObjectiveAssociations(prospective, { objectiveId: id, validateTaskScope: true });
+    const normalized = validateWorkInput(patch, "update");
+    const prospectiveContributorIds = normalized.contributorAgentIds ?? current.contributorAgentIds;
+    const prospectivePrimaryAgentId = Object.prototype.hasOwnProperty.call(normalized, "primaryAgentId")
+      ? normalized.primaryAgentId
+      : prospectiveContributorIds.includes(current.primaryAgentId)
+        ? current.primaryAgentId
+        : prospectiveContributorIds[0] ?? null;
+    const prospective = {
+      ...current,
+      ...normalized,
+      contributorAgentIds: prospectiveContributorIds,
+      primaryAgentId: prospectivePrimaryAgentId
+    };
+    this.assertWorkAssociations(prospective, { workId: id, validateTaskScope: true });
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
-    this.db.run(
-      `UPDATE objectives SET name=?, description=?, ideal_state=?, avatar_path=?, status=?, budget_config=?, priority=?, target_date=?, tags_json=?, workspace_ids_json=?, related_objective_ids_json=?, contributor_agent_ids_json=?, updated_at=? WHERE id=?`,
-      [
-        has("name") ? normalized.name : current.name,
-        has("description") ? normalized.description : current.description,
-        has("idealState") ? normalized.idealState : current.idealState,
-        has("avatarPath") ? normalized.avatarPath : current.avatarPath,
-        has("status") ? normalized.status : current.status,
-        has("budgetConfig") ? JSON.stringify(normalized.budgetConfig) : JSON.stringify(current.budgetConfig ?? {}),
-        has("priority") ? normalized.priority : current.priority,
-        has("targetDate") ? normalized.targetDate : current.targetDate,
-        has("tags") ? JSON.stringify(normalized.tags) : JSON.stringify(current.tags ?? []),
-        has("workspaceIds") ? JSON.stringify(normalized.workspaceIds) : JSON.stringify(current.workspaceIds ?? []),
-        has("relatedObjectiveIds") ? JSON.stringify(normalized.relatedObjectiveIds) : JSON.stringify(current.relatedObjectiveIds ?? []),
-        has("contributorAgentIds") ? JSON.stringify(normalized.contributorAgentIds) : JSON.stringify(current.contributorAgentIds ?? []),
-        createdAtFromOrNow(),
-        id,
-      ]
-    );
+    const now = createdAtFromOrNow();
+    this.runInTransaction(() => {
+      this.db.run(
+        `UPDATE works SET name=?, description=?, avatar_path=?, status=?, profile=?, tags_json=?, updated_at=? WHERE id=?`,
+        [
+          has("name") ? normalized.name : current.name,
+          has("description") ? normalized.description : current.description,
+          has("avatarPath") ? normalized.avatarPath : current.avatarPath,
+          has("status") ? normalized.status : current.status,
+          has("profile") ? normalized.profile : current.profile,
+          has("tags") ? JSON.stringify(normalized.tags) : JSON.stringify(current.tags ?? []),
+          now,
+          id,
+        ]
+      );
+      if (has("contributorAgentIds") || has("primaryAgentId")) {
+        const contributorAgentIds = has("contributorAgentIds")
+          ? normalized.contributorAgentIds
+          : current.contributorAgentIds;
+        const primaryAgentId = prospectivePrimaryAgentId;
+        this.replaceWorkContributors(id, contributorAgentIds, primaryAgentId, now);
+      }
+    });
     this.scheduleSave();
-    return this.getObjective(id);
+    return this.getWork(id);
   }
 
-  deleteObjective(id) {
-    this.db.run(`DELETE FROM objectives WHERE id = ?`, [id]);
+  deleteWork(id) {
+    const work = this.getWork(id);
+    if (!work) return false;
+    const workspace = this.getWorkspace(work.workspaceId);
+    this.runInTransaction(() => {
+      this.db.run(`DELETE FROM works WHERE id = ?`, [id]);
+      if (workspace?.ownership === "corptieManaged") {
+        this.db.run("DELETE FROM workspaces WHERE workspace_id = ?", [workspace.workspaceId]);
+      }
+    });
     this.scheduleSave();
+    return true;
   }
 
   createTask(input = {}, creationOrigin = {}) {
@@ -10885,26 +10968,25 @@ export class CorptieStore {
       error.statusCode = 403;
       throw error;
     }
-    const objective = this.getObjective(normalized.objectiveId);
-    if (!objective) {
+    const work = this.getWork(normalized.workId);
+    if (!work) {
       throw associationError(
-        "OBJECTIVE_NOT_FOUND", "objectiveId", "existing Objective ID", normalized.objectiveId,
-        `Objective not found: ${normalized.objectiveId}`
+        "WORK_NOT_FOUND", "workId", "existing Work ID", normalized.workId,
+        `Work not found: ${normalized.workId}`
       );
     }
-    this.assertTaskAssociations(normalized, objective);
+    this.assertTaskAssociations(normalized, work);
     const id = normalized.id ?? `task:${randomUUID()}`;
     const now = createdAtFromOrNow();
     const origin = normalizeTaskCreationOrigin(creationOrigin);
     this.runInTransaction(() => {
       this.db.run(
-        `INSERT INTO tasks (id, objective_id, title, description, goal, acceptance_criteria,
-          verification_criteria, priority, lifecycle_state, main_workspace_id,
-          main_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO tasks (id, work_id, title, description, goal, acceptance_criteria,
+          verification_criteria, priority, lifecycle_state, main_agent_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
-          normalized.objectiveId,
+          normalized.workId,
           normalized.title,
           normalized.description ?? "",
           normalized.goal ?? "",
@@ -10912,7 +10994,6 @@ export class CorptieStore {
           normalized.verificationCriteria ?? "",
           normalized.priority ?? "medium",
           normalized.lifecycleState ?? "todo",
-          normalized.mainWorkspaceId ?? null,
           normalized.mainAgentId ?? null,
           now,
           now,
@@ -10957,18 +11038,18 @@ export class CorptieStore {
     );
   }
 
-  listTasksByObjective(objectiveId) {
+  listTasksByWork(workId) {
     return this.selectAll(
       `SELECT * FROM tasks
-       WHERE objective_id = ? AND COALESCE(deletion_status, '') <> 'deleted'
+       WHERE work_id = ? AND COALESCE(deletion_status, '') <> 'deleted'
        ORDER BY created_at ASC`,
-      [objectiveId]
+      [workId]
     );
   }
 
   listTaskPage(options = {}) {
-    const objectiveId = typeof options.objectiveId === "string" && options.objectiveId
-      ? options.objectiveId
+    const workId = typeof options.workId === "string" && options.workId
+      ? options.workId
       : null;
     const includeCompleted = options.includeCompleted !== false;
     const limit = Math.max(1, Math.min(100, Number(options.limit) || 50));
@@ -10981,7 +11062,7 @@ export class CorptieStore {
       `SELECT tasks.*, ${completionRankSQL} AS completion_rank
        FROM tasks
        WHERE COALESCE(tasks.deletion_status, '') <> 'deleted'
-         ${objectiveId ? "AND tasks.objective_id = ?" : ""}
+         ${workId ? "AND tasks.work_id = ?" : ""}
          ${includeCompleted ? "" : "AND tasks.lifecycle_state <> 'done'"}
          ${hasCursor ? `AND (
            ${completionRankSQL} > ?
@@ -10991,7 +11072,7 @@ export class CorptieStore {
        ORDER BY completion_rank ASC, tasks.updated_at DESC, tasks.id DESC
        LIMIT ?`,
       [
-        ...(objectiveId ? [objectiveId] : []),
+        ...(workId ? [workId] : []),
         ...(hasCursor ? [
           cursor.completionRank,
           cursor.completionRank, cursor.updatedAt,
@@ -11018,13 +11099,13 @@ export class CorptieStore {
   createArtifactMetadata(input) {
     this.db.run(
       `INSERT INTO artifacts (
-         artifact_id, objective_id, title, summary, visibility, scope, kind,
+         artifact_id, work_id, title, summary, visibility, scope, kind,
          category_path, tags_json, aliases_json, keywords_json, bound_task_id,
          bound_session_id, repository_locator, source_session_id, source_event_id,
          created_by_actor_id, created_at, updated_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.artifactId, input.objectiveId, input.title, input.summary ?? "", input.visibility,
+        input.artifactId, input.workId, input.title, input.summary ?? "", input.visibility,
         input.scope ?? artifactScopeForVisibility(input.visibility), input.kind ?? "other",
         input.categoryPath ?? "", JSON.stringify(input.tags ?? []),
         JSON.stringify(input.aliases ?? []), JSON.stringify(input.keywords ?? []),
@@ -11049,20 +11130,20 @@ export class CorptieStore {
     ).map(artifactFromRow);
   }
 
-  listArtifactsByObjective(objectiveId, { includeRevoked = false, limit = null, offset = 0 } = {}) {
+  listArtifactsByWork(workId, { includeRevoked = false, limit = null, offset = 0 } = {}) {
     const pagination = limit == null ? "" : "LIMIT ? OFFSET ?";
     return this.selectAll(
-      `SELECT * FROM artifacts WHERE objective_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}
+      `SELECT * FROM artifacts WHERE work_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}
        ORDER BY updated_at DESC, artifact_id ${pagination}`,
-      limit == null ? [objectiveId] : [objectiveId, limit, offset]
+      limit == null ? [workId] : [workId, limit, offset]
     ).map(artifactFromRow);
   }
 
-  countArtifactsByObjective(objectiveId, { includeRevoked = false } = {}) {
+  countArtifactsByWork(workId, { includeRevoked = false } = {}) {
     return Number(this.selectOne(
       `SELECT COUNT(*) AS count FROM artifacts
-       WHERE objective_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}`,
-      [objectiveId]
+       WHERE work_id = ? ${includeRevoked ? "" : "AND status <> 'revoked'"}`,
+      [workId]
     )?.count ?? 0);
   }
 
@@ -11167,11 +11248,11 @@ export class CorptieStore {
     this.db.run("DELETE FROM artifact_search_fts WHERE artifact_id = ?", [input.artifactId]);
     this.db.run(
       `INSERT INTO artifact_search_fts (
-        artifact_id, objective_id, title, summary, kind, category_path,
+        artifact_id, work_id, title, summary, kind, category_path,
         tags, aliases, keywords, body
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.artifactId, input.objectiveId, input.title ?? "", input.summary ?? "",
+        input.artifactId, input.workId, input.title ?? "", input.summary ?? "",
         input.kind ?? "other", input.categoryPath ?? "",
         (input.tags ?? []).join(" "), (input.aliases ?? []).join(" "),
         (input.keywords ?? []).join(" "), input.body == null ? (existing?.body ?? "") : input.body
@@ -11179,7 +11260,7 @@ export class CorptieStore {
     );
   }
 
-  searchArtifactDocuments(objectiveId, query, limit = 50) {
+  searchArtifactDocuments(workId, query, limit = 50) {
     const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
     const normalized = String(query ?? "").trim();
     if (!normalized) return [];
@@ -11191,9 +11272,9 @@ export class CorptieStore {
         ranked = this.selectAll(
           `SELECT artifact_id, bm25(artifact_search_fts, 0, 0, 10, 6, 4, 4, 5, 7, 5, 1) AS score
            FROM artifact_search_fts
-           WHERE objective_id = ? AND artifact_search_fts MATCH ?
+           WHERE work_id = ? AND artifact_search_fts MATCH ?
            ORDER BY score ASC LIMIT ?`,
-          [objectiveId, terms.join(" OR "), boundedLimit]
+          [workId, terms.join(" OR "), boundedLimit]
         );
       } catch {
         ranked = [];
@@ -11202,11 +11283,11 @@ export class CorptieStore {
     const seen = new Set(ranked.map((row) => row.artifact_id));
     const fallback = this.selectAll(
       `SELECT artifact_id, 1000 AS score FROM artifact_search_fts
-       WHERE objective_id = ? AND LOWER(
+       WHERE work_id = ? AND LOWER(
          title || ' ' || summary || ' ' || kind || ' ' || category_path || ' '
          || tags || ' ' || aliases || ' ' || keywords || ' ' || body
        ) LIKE LOWER(?) LIMIT ?`,
-      [objectiveId, `%${normalized}%`, boundedLimit]
+      [workId, `%${normalized}%`, boundedLimit]
     ).filter((row) => !seen.has(row.artifact_id));
     return [...ranked, ...fallback].slice(0, boundedLimit).map((row) => ({
       artifactId: row.artifact_id,
@@ -11249,11 +11330,11 @@ export class CorptieStore {
   createArtifactReference(input) {
     this.db.run(
       `INSERT INTO artifact_references (
-         reference_id, artifact_id, objective_id, task_id, session_id, relation, required,
+         reference_id, artifact_id, work_id, task_id, session_id, relation, required,
          version_policy, pinned_version, pinned_hash, authorized_by_actor_id, authorized_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.referenceId, input.artifactId, input.objectiveId, input.taskId ?? null,
+        input.referenceId, input.artifactId, input.workId, input.taskId ?? null,
         input.sessionId ?? null, input.relation, input.required, input.versionPolicy,
         input.pinnedVersion, input.pinnedHash, input.actorId, input.authorizedAt
       ]
@@ -11272,11 +11353,11 @@ export class CorptieStore {
   createArtifactWorkerCreateOperation(input) {
     this.db.run(
       `INSERT INTO artifact_worker_create_operations (
-         session_id, objective_id, task_id, idempotency_key, request_fingerprint,
+         session_id, work_id, task_id, idempotency_key, request_fingerprint,
          artifact_id, reference_id, created_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.sessionId, input.objectiveId, input.taskId, input.idempotencyKey,
+        input.sessionId, input.workId, input.taskId, input.idempotencyKey,
         input.requestFingerprint, input.artifactId, input.referenceId, input.createdAt
       ]
     );
@@ -11294,11 +11375,11 @@ export class CorptieStore {
   createArtifactWorkerPublishOperation(input) {
     this.db.run(
       `INSERT INTO artifact_worker_publish_operations (
-         actor_scope_id, objective_id, task_id, idempotency_key, request_fingerprint,
+         actor_scope_id, work_id, task_id, idempotency_key, request_fingerprint,
          artifact_id, reference_id, version, content_hash, operation_status, created_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.actorScopeId, input.objectiveId, input.taskId, input.idempotencyKey,
+        input.actorScopeId, input.workId, input.taskId, input.idempotencyKey,
         input.requestFingerprint, input.artifactId, input.referenceId, input.version,
         input.contentHash, input.operationStatus ?? "completed", input.createdAt
       ]
@@ -11328,12 +11409,12 @@ export class CorptieStore {
   createTaskFileReference(input) {
     this.db.run(
       `INSERT INTO task_file_references (
-         reference_id, objective_id, task_id, canonical_path, workspace_root,
+         reference_id, work_id, task_id, canonical_path, workspace_root,
          display_name, relation, required, byte_length, modified_at,
          authorized_by_actor_id, authorized_by_session_id, authorized_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.referenceId, input.objectiveId, input.taskId, input.canonicalPath,
+        input.referenceId, input.workId, input.taskId, input.canonicalPath,
         input.workspaceRoot, input.displayName, input.relation, input.required,
         input.byteLength, input.modifiedAt, input.actorId, input.sessionId, input.authorizedAt
       ]
@@ -11383,22 +11464,22 @@ export class CorptieStore {
   appendArtifactAudit(input) {
     this.db.run(
       `INSERT INTO artifact_audit_events (
-         audit_id, artifact_id, objective_id, action, actor_id, session_id, task_id,
+         audit_id, artifact_id, work_id, action, actor_id, session_id, task_id,
          from_version, to_version, details_json, created_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.auditId, input.artifactId ?? null, input.objectiveId, input.action, input.actorId,
+        input.auditId, input.artifactId ?? null, input.workId, input.action, input.actorId,
         input.sessionId ?? null, input.taskId ?? null, input.fromVersion ?? null,
         input.toVersion ?? null, JSON.stringify(input.details ?? {}), input.createdAt
       ]
     );
   }
 
-  listArtifactAudit(objectiveId, artifactId = null) {
+  listArtifactAudit(workId, artifactId = null) {
     return this.selectAll(
-      `SELECT * FROM artifact_audit_events WHERE objective_id = ? ${artifactId ? "AND artifact_id = ?" : ""}
+      `SELECT * FROM artifact_audit_events WHERE work_id = ? ${artifactId ? "AND artifact_id = ?" : ""}
        ORDER BY created_at DESC`,
-      artifactId ? [objectiveId, artifactId] : [objectiveId]
+      artifactId ? [workId, artifactId] : [workId]
     ).map(artifactAuditFromRow);
   }
 
@@ -11595,10 +11676,10 @@ export class CorptieStore {
     this.runInTransaction(() => {
       this.db.run(
         `INSERT INTO project_integration_runs (
-           id, repository_id, objective_id, status, main_head_before,
+           id, repository_id, work_id, status, main_head_before,
            main_head_after, error, created_at, updated_at, completed_at
          ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)`,
-        [id, input.repositoryId, input.objectiveId, input.status ?? "running", input.mainHeadBefore, timestamp, timestamp]
+        [id, input.repositoryId, input.workId, input.status ?? "running", input.mainHeadBefore, timestamp, timestamp]
       );
       for (const [index, item] of (input.items ?? []).entries()) {
         this.db.run(
@@ -11643,12 +11724,12 @@ export class CorptieStore {
     return rows.map((row) => this.getProjectIntegrationRun(row.id));
   }
 
-  getLatestProjectIntegrationRun(repositoryId, objectiveId) {
+  getLatestProjectIntegrationRun(repositoryId, workId) {
     const row = this.selectOne(
       `SELECT * FROM project_integration_runs
-       WHERE repository_id = ? AND objective_id = ?
+       WHERE repository_id = ? AND work_id = ?
        ORDER BY created_at DESC LIMIT 1`,
-      [repositoryId, objectiveId]
+      [repositoryId, workId]
     );
     return row ? this.getProjectIntegrationRun(row.id) : null;
   }
@@ -11794,6 +11875,16 @@ export class CorptieStore {
     );
   }
 
+  getTaskWorkspaceContext(taskOrId) {
+    const task = typeof taskOrId === "string" ? this.getTask(taskOrId) : taskOrId;
+    if (!task) return null;
+    const work = this.getWork(task.work_id ?? task.workId);
+    if (!work) return { task, work: null, workspace: null, repository: null };
+    const workspace = this.getWorkspace(work.workspaceId);
+    const repository = workspace ? this.getGitRepositoryForWorkspace(workspace.workspaceId) : null;
+    return { task, work, workspace, repository };
+  }
+
   // 按当前活跃 session 反查其绑定的实体 Task（session 落定时推进状态用）。
   getTaskBySessionId(sessionId) {
     return this.selectOne(
@@ -11826,12 +11917,12 @@ export class CorptieStore {
   createTaskCompletionIntent(input) {
     this.db.run(
       `INSERT INTO task_completion_intents (
-        receipt_id, token_hash, task_id, objective_id, source_type,
+        receipt_id, token_hash, task_id, work_id, source_type,
         logical_session_id, user_message_event_id, user_message_sequence, turn_id,
         interaction_id, ui_surface, request_id, nonce, issued_at, expires_at, metadata_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.receiptId, input.tokenHash, input.taskId, input.objectiveId, input.sourceType,
+        input.receiptId, input.tokenHash, input.taskId, input.workId, input.sourceType,
         input.logicalSessionId ?? null, input.userMessageEventId ?? null,
         input.userMessageSequence ?? null, input.turnId ?? null, input.interactionId ?? null,
         input.uiSurface ?? null, input.requestId, input.nonce, input.issuedAt, input.expiresAt,
@@ -11910,7 +12001,7 @@ export class CorptieStore {
     return this.recordRejectedTaskCompletion({
       operationId,
       taskId: task.id,
-      objectiveId: task.objective_id,
+      workId: task.work_id,
       result: "rejected",
       sourceType: "non_direct_request",
       callSurface,
@@ -11936,9 +12027,9 @@ export class CorptieStore {
         return { operation: existing, task: this.getTask(existing.taskId), idempotentReplay: true };
       }
       const task = this.getTask(input.taskId);
-      if (!task || task.objective_id !== input.objectiveId) {
-        const error = new Error("Completion target no longer matches its Objective.");
-        error.code = "TASK_OBJECTIVE_MISMATCH";
+      if (!task || task.work_id !== input.workId) {
+        const error = new Error("Completion target no longer matches its Work.");
+        error.code = "TASK_WORK_MISMATCH";
         throw error;
       }
       const completed = task.lifecycle_state === "done";
@@ -11949,7 +12040,7 @@ export class CorptieStore {
       }
       if (input.receiptId) {
         const intent = this.getTaskCompletionIntent(input.receiptId);
-        if (!intent || intent.taskId !== input.taskId || intent.objectiveId !== input.objectiveId) {
+        if (!intent || intent.taskId !== input.taskId || intent.workId !== input.workId) {
           const error = new Error("Completion intent target mismatch.");
           error.code = "COMPLETION_INTENT_TARGET_MISMATCH";
           throw error;
@@ -11968,9 +12059,9 @@ export class CorptieStore {
       }
       this.db.run(
         `INSERT INTO task_completion_authorizations
-         (operation_id, task_id, objective_id, source_type, nonce, validated_at)
+         (operation_id, task_id, work_id, source_type, nonce, validated_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        [input.operationId, input.taskId, input.objectiveId, input.sourceType, input.nonce, input.createdAt]
+        [input.operationId, input.taskId, input.workId, input.sourceType, input.nonce, input.createdAt]
       );
       this.db.run(
         `UPDATE tasks SET lifecycle_state='done', completion_operation_id=?, completion_source_type=?,
@@ -11995,13 +12086,13 @@ export class CorptieStore {
   #insertTaskCompletionOperation(input) {
     this.db.run(
       `INSERT INTO task_completion_operations (
-        operation_id, task_id, objective_id, result, source_type,
+        operation_id, task_id, work_id, result, source_type,
         logical_session_id, user_message_event_id, user_message_sequence, turn_id,
         ui_receipt_id, ui_interaction_id, call_surface, request_id, idempotency_key,
         nonce, error_code, details_json, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        input.operationId, input.taskId, input.objectiveId, input.result, input.sourceType,
+        input.operationId, input.taskId, input.workId, input.result, input.sourceType,
         input.logicalSessionId ?? null, input.userMessageEventId ?? null,
         input.userMessageSequence ?? null, input.turnId ?? null, input.receiptId ?? null,
         input.interactionId ?? null, input.callSurface, input.requestId, input.idempotencyKey,
@@ -12038,7 +12129,6 @@ export class CorptieStore {
       verificationCriteria: current.verification_criteria,
       priority: current.priority,
       lifecycleState: current.lifecycle_state,
-      mainWorkspaceId: current.main_workspace_id,
       mainAgentId: current.main_agent_id,
       ...normalized
     };
@@ -12048,18 +12138,18 @@ export class CorptieStore {
       error.statusCode = 403;
       throw error;
     }
-    const objective = this.getObjective(current.objective_id);
-    if (!objective) {
+    const work = this.getWork(current.work_id);
+    if (!work) {
       throw associationError(
-        "OBJECTIVE_NOT_FOUND", "objectiveId", "existing Objective ID", current.objective_id,
-        `Objective not found: ${current.objective_id}`
+        "WORK_NOT_FOUND", "workId", "existing Work ID", current.work_id,
+        `Work not found: ${current.work_id}`
       );
     }
-    this.assertTaskAssociations(prospective, objective);
+    this.assertTaskAssociations(prospective, work);
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
       `UPDATE tasks SET title=?, description=?, goal=?, acceptance_criteria=?, verification_criteria=?,
-        priority=?, lifecycle_state=?, main_workspace_id=?, main_agent_id=?,
+        priority=?, lifecycle_state=?, main_agent_id=?,
         execution_status=?, acceptance_assessment_json=?, resource_version=resource_version+1,
         updated_at=? WHERE id=?`,
       [
@@ -12070,7 +12160,6 @@ export class CorptieStore {
         has("verificationCriteria") ? normalized.verificationCriteria : current.verification_criteria,
         has("priority") ? normalized.priority : current.priority,
         has("lifecycleState") ? normalized.lifecycleState : current.lifecycle_state,
-        has("mainWorkspaceId") ? normalized.mainWorkspaceId : current.main_workspace_id,
         has("mainAgentId") ? normalized.mainAgentId : current.main_agent_id,
         Object.prototype.hasOwnProperty.call(internalPatch, "executionStatus")
           ? internalPatch.executionStatus
@@ -12182,53 +12271,42 @@ export class CorptieStore {
     });
   }
 
-  assertObjectiveAssociations(input, options = {}) {
-    const objectiveId = options.objectiveId ?? input.id ?? null;
-    const workspaceIds = input.workspaceIds ?? [];
+  assertWorkAssociations(input, options = {}) {
+    const workId = options.workId ?? input.id ?? null;
+    const workspaceId = input.workspaceId ?? null;
     const contributorAgentIds = input.contributorAgentIds ?? [];
-    for (const [index, repositoryId] of workspaceIds.entries()) {
-      const field = `workspaceIds[${index}]`;
-      assertRepositoryId(repositoryId, field);
-      if (!this.getGitRepository(repositoryId)) {
-        throw associationError(
-          "WORKSPACE_NOT_FOUND", field, "registered repository: ID", repositoryId,
-          `Repository not found: ${repositoryId}`
-        );
-      }
+    if (!workspaceId || !this.getWorkspace(workspaceId)) {
+      throw associationError(
+        "WORKSPACE_NOT_FOUND", "workspaceId", "existing Workspace ID", workspaceId,
+        `Workspace not found: ${workspaceId}`
+      );
     }
-    for (const [index, relatedId] of (input.relatedObjectiveIds ?? []).entries()) {
-      const field = `relatedObjectiveIds[${index}]`;
-      if (relatedId === objectiveId) {
-        throw associationError(
-          "ASSOCIATION_INTEGRITY_ERROR", field, "another existing Objective ID", relatedId,
-          "An Objective cannot relate to itself."
-        );
-      }
-      if (!this.getObjective(relatedId)) {
-        throw associationError(
-          "OBJECTIVE_NOT_FOUND", field, "existing Objective ID", relatedId,
-          `Objective not found: ${relatedId}`
-        );
-      }
+    const workspaceOwner = this.selectOne(
+      "SELECT id FROM works WHERE workspace_id = ? AND id <> ? LIMIT 1",
+      [workspaceId, workId]
+    );
+    if (workspaceOwner) {
+      throw associationError(
+        "WORKSPACE_ALREADY_BOUND", "workspaceId", "unbound Workspace ID", workspaceId,
+        `Workspace is already bound to Work ${workspaceOwner.id}.`
+      );
     }
     for (const [index, agentId] of contributorAgentIds.entries()) {
       this.assertAssignableAgent(agentId, `contributorAgentIds[${index}]`);
     }
+    if (input.primaryAgentId && !contributorAgentIds.includes(input.primaryAgentId)) {
+      throw associationError(
+        "PRIMARY_AGENT_OUTSIDE_WORK", "primaryAgentId", "Agent in Work contributors",
+        input.primaryAgentId, "Work primaryAgentId must identify one of its contributors."
+      );
+    }
 
-    if (!options.validateTaskScope || !objectiveId) return;
-    const workspaceScope = new Set(workspaceIds);
+    if (!options.validateTaskScope || !workId) return;
     const agentScope = new Set(contributorAgentIds);
-    for (const task of this.listTasksByObjective(objectiveId)) {
-      if (task.main_workspace_id && !workspaceScope.has(task.main_workspace_id)) {
-        throw associationError(
-          "OBJECTIVE_SCOPE_CONFLICT", "workspaceIds", "must include every Task mainWorkspaceId",
-          task.main_workspace_id,
-          `Workspace is still assigned to Task ${task.id}.`
-        );
-      }
+    for (const task of this.listTasksByWork(workId)) {
       if (task.main_agent_id && !agentScope.has(task.main_agent_id)) {
         throw associationError(
-          "OBJECTIVE_SCOPE_CONFLICT", "contributorAgentIds", "must include every Task mainAgentId",
+          "WORK_SCOPE_CONFLICT", "contributorAgentIds", "must include every Task mainAgentId",
           task.main_agent_id,
           `Agent is still assigned to Task ${task.id}.`
         );
@@ -12236,30 +12314,14 @@ export class CorptieStore {
     }
   }
 
-  assertTaskAssociations(input, objective) {
-    if (input.mainWorkspaceId) {
-      assertRepositoryId(input.mainWorkspaceId, "mainWorkspaceId");
-      if (!this.getGitRepository(input.mainWorkspaceId)) {
-        throw associationError(
-          "WORKSPACE_NOT_FOUND", "mainWorkspaceId", "registered repository: ID", input.mainWorkspaceId,
-          `Repository not found: ${input.mainWorkspaceId}`
-        );
-      }
-      if (!(objective.workspaceIds ?? []).includes(input.mainWorkspaceId)) {
-        throw associationError(
-          "ASSOCIATION_OUT_OF_SCOPE", "mainWorkspaceId", "repository in owning Objective.workspaceIds",
-          input.mainWorkspaceId,
-          "Task mainWorkspaceId is outside its Objective workspace scope."
-        );
-      }
-    }
+  assertTaskAssociations(input, work) {
     if (input.mainAgentId) {
       this.assertAssignableAgent(input.mainAgentId, "mainAgentId");
-      if (!(objective.contributorAgentIds ?? []).includes(input.mainAgentId)) {
+      if (!(work.contributorAgentIds ?? []).includes(input.mainAgentId)) {
         throw associationError(
-          "ASSOCIATION_OUT_OF_SCOPE", "mainAgentId", "Agent in owning Objective.contributorAgentIds",
+          "ASSOCIATION_OUT_OF_SCOPE", "mainAgentId", "Agent in owning Work.contributorAgentIds",
           input.mainAgentId,
-          "Task mainAgentId is outside its Objective contributor scope."
+          "Task mainAgentId is outside its Work contributor scope."
         );
       }
     }
@@ -12355,7 +12417,7 @@ export class CorptieStore {
       // preserving the minimum parent identity required by those receipts.
       this.db.run(
         `UPDATE tasks SET deletion_status='deleted', deletion_error=NULL,
-           current_session_id=NULL, main_workspace_id=NULL, main_agent_id=NULL,
+           current_session_id=NULL, main_agent_id=NULL,
            resource_version=resource_version+1, updated_at=? WHERE id=?`,
         [createdAtFromOrNow(), id]
       );
@@ -12396,7 +12458,7 @@ export class CorptieStore {
     );
   }
 
-  // ===== 三层记忆（13：Objective/Task 工作记忆 + Agent 进化记忆）=====
+  // ===== 三层记忆（13：Work/Task 工作记忆 + Agent 进化记忆）=====
 
   createMemory(input = {}) {
     const association = this.validateMemoryAssociation(input);
@@ -12476,10 +12538,10 @@ export class CorptieStore {
     const createdAt = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO memory_remember_operations (
-        session_id, idempotency_key, request_fingerprint, objective_id, memory_id, created_at
+        session_id, idempotency_key, request_fingerprint, work_id, memory_id, created_at
       ) VALUES (?, ?, ?, ?, ?, ?)`,
       [input.sessionId, input.idempotencyKey, input.requestFingerprint,
-        input.objectiveId ?? null, input.memoryId, createdAt]
+        input.workId ?? null, input.memoryId, createdAt]
     );
     this.scheduleSave();
     return this.getMemoryRememberOperation(input.sessionId, input.idempotencyKey);
@@ -12522,7 +12584,7 @@ export class CorptieStore {
     const sourceSessionId = typeof input.sourceSessionId === "string" ? input.sourceSessionId.trim() : "";
     const sourceSession = sourceSessionId ? this.getSession(sourceSessionId) : null;
     if (!sourceSession || sourceSession.taskId !== task.id
-      || sourceSession.objectiveId !== task.objective_id) {
+      || sourceSession.workId !== task.work_id) {
       throw memoryAssociationError(
         "INVALID_MEMORY_SOURCE_SESSION",
         "Task memory requires a bound Worker Session for that Task as its source."
@@ -12969,14 +13031,14 @@ export class CorptieStore {
     const id = input.id ?? `collab:${randomUUID()}`;
     this.db.run(
       `INSERT INTO collaboration_sessions (
-        id, requester_session_id, requester_objective_id, requester_task_id,
+        id, requester_session_id, requester_work_id, requester_task_id,
         mode, request_json, candidate_entry_type, candidate_entry_id,
         status, result_json, created_at, closed_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.requesterSessionId ?? null,
-        input.requesterObjectiveId ?? null,
+        input.requesterWorkId ?? null,
         input.requesterTaskId ?? null,
         input.mode,
         JSON.stringify(input.request ?? {}),
@@ -13048,16 +13110,16 @@ export class CorptieStore {
 
   // ===== 统一检索 hub（12：去抖缓存 + 活跃工具集）=====
 
-  cacheHubIntent({ sessionId, taskId, objectiveId, agentId, intentHash, result }) {
+  cacheHubIntent({ sessionId, taskId, workId, agentId, intentHash, result }) {
     const id = `hub_cache:${randomUUID()}`;
     this.db.run(
-      `INSERT INTO hub_intent_cache (id, session_id, task_id, objective_id, agent_id, intent_hash, result_json, created_at)
+      `INSERT INTO hub_intent_cache (id, session_id, task_id, work_id, agent_id, intent_hash, result_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         sessionId ?? null,
         taskId ?? null,
-        objectiveId ?? null,
+        workId ?? null,
         agentId ?? null,
         intentHash,
         JSON.stringify(result ?? {}),
@@ -13285,7 +13347,7 @@ export class CorptieStore {
       );
     const sessionKind = inferSessionKind({
       sessionKind: row.session_kind,
-      objectiveId: row.objective_id,
+      workId: row.work_id,
       taskId: row.task_id,
       agentRole: agentIdentity?.role
     });
@@ -13322,7 +13384,7 @@ export class CorptieStore {
       archiveReason: archiveState.reason,
       pinned: Boolean(row.pinned),
       sortOrder: Number(row.sort_order ?? 0),
-      objectiveId: row.objective_id ?? null,
+      workId: row.work_id ?? null,
       taskId: row.task_id ?? null,
       capabilities: {
         ...normalizedStoredProviderCapabilities(row.provider, displayStatus, rawStatus.capabilities),
@@ -13724,7 +13786,7 @@ function scheduledSessionTaskFromRow(row) {
     processState: parseJson(row.process_state_json, null),
     creatorType: row.creator_type,
     creatorId: row.creator_id,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     environment: row.environment,
     pendingScheduledFor: row.pending_scheduled_for,
     leaseOwner: row.lease_owner,
@@ -13825,7 +13887,7 @@ function projectIntegrationRunFromRow(row, items = []) {
   return {
     id: row.id,
     repositoryId: row.repository_id,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     status: row.status,
     mainHeadBefore: row.main_head_before,
     mainHeadAfter: row.main_head_after ?? null,
@@ -13964,30 +14026,44 @@ function normalizedLegacyHistoryItems(input) {
   });
 }
 
-function objectiveFromRow(row) {
+function workFromRow(row, contributors = []) {
   return {
     id: row.id,
+    workspaceId: row.workspace_id,
     name: row.name,
     description: row.description ?? "",
-    idealState: row.ideal_state ?? "",
     avatarPath: row.avatar_path ?? null,
     status: row.status,
-    priority: row.priority ?? null,
-    targetDate: row.target_date ?? null,
+    profile: row.profile ?? "general",
     tags: parseJson(row.tags_json, []),
-    workspaceIds: parseJson(row.workspace_ids_json, []),
-    relatedObjectiveIds: parseJson(row.related_objective_ids_json, []),
-    contributorAgentIds: parseJson(row.contributor_agent_ids_json, []),
-    budgetConfig: parseJson(row.budget_config, {}),
+    contributorAgentIds: contributors.map((item) => item.agentId),
+    primaryAgentId: contributors.find((item) => item.isPrimary)?.agentId ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
 
+function workspaceFromRow(row) {
+  return {
+    workspaceId: row.workspace_id,
+    kind: row.kind,
+    ownership: row.ownership,
+    rootPath: row.root_path ?? null,
+    canonicalRootPath: row.canonical_root_path ?? null,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function workspaceIdForRepository(repositoryId) {
+  return `workspace:${createHash("sha256").update(repositoryId).digest("hex").slice(0, 24)}`;
+}
+
 function artifactFromRow(row) {
   return {
     artifactId: row.artifact_id,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     title: row.title,
     summary: row.summary ?? "",
     visibility: row.visibility,
@@ -14015,7 +14091,7 @@ function artifactFromRow(row) {
 function artifactScopeForVisibility(visibility) {
   if (visibility === "task_private") return "task";
   if (visibility === "session_private") return "session";
-  return "objective";
+  return "work";
 }
 
 function artifactVersionFromRow(row) {
@@ -14039,7 +14115,7 @@ function artifactReferenceFromRow(row) {
   return {
     referenceId: row.reference_id,
     artifactId: row.artifact_id,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     taskId: row.task_id ?? null,
     sessionId: row.session_id ?? null,
     relation: row.relation,
@@ -14061,7 +14137,7 @@ function artifactReferenceFromRow(row) {
 function taskFileReferenceFromRow(row) {
   return {
     referenceId: row.reference_id,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     taskId: row.task_id,
     path: row.canonical_path,
     workspaceRoot: row.workspace_root,
@@ -14080,7 +14156,7 @@ function artifactAuditFromRow(row) {
   return {
     auditId: row.audit_id,
     artifactId: row.artifact_id ?? null,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     action: row.action,
     actorId: row.actor_id,
     sessionId: row.session_id ?? null,
@@ -14808,7 +14884,7 @@ function taskCompletionIntentFromRow(row) {
     receiptId: row.receipt_id,
     tokenHash: row.token_hash,
     taskId: row.task_id,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     sourceType: row.source_type,
     logicalSessionId: row.logical_session_id ?? null,
     userMessageEventId: row.user_message_event_id ?? null,
@@ -14856,7 +14932,7 @@ function taskCompletionOperationFromRow(row) {
   return {
     operationId: row.operation_id,
     taskId: row.task_id,
-    objectiveId: row.objective_id,
+    workId: row.work_id,
     result: row.result,
     sourceType: row.source_type,
     logicalSessionId: row.logical_session_id ?? null,

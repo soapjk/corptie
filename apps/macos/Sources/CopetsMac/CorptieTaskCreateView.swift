@@ -13,7 +13,6 @@ enum CorptieTaskCreateFormPolicy {
     static func validationMessage(
         title: String,
         detail: String,
-        workspaceId: String?,
         agentId: String?
     ) -> String? {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -21,9 +20,6 @@ enum CorptieTaskCreateFormPolicy {
         }
         if detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return L10n("请输入 Task 描述。")
-        }
-        if workspaceId == nil {
-            return L10n("请选择 Workspace。")
         }
         if agentId == nil {
             return L10n("请选择负责该 CorptieTask 的 Agent。")
@@ -50,8 +46,7 @@ struct CorptieTaskCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
-    let objectiveId: String
-    let workspaceIds: [String]
+    let workId: String
     let contributorAgentIds: [String]
     let onCreated: (CorptieTask) -> Void
 
@@ -59,7 +54,6 @@ struct CorptieTaskCreateView: View {
     @State private var detail = ""
     @State private var acceptanceCriteria = ""
     @State private var priority = "medium"
-    @State private var workspaceId: String?
     @State private var selectedAgentId: String?
     @State private var selectedProviderId = ""
     @State private var creationId = "task:\(UUID().uuidString.lowercased())"
@@ -110,8 +104,6 @@ struct CorptieTaskCreateView: View {
                     .padding(6)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
             }
-
-            WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
 
             agentSection
 
@@ -169,7 +161,6 @@ struct CorptieTaskCreateView: View {
         CorptieTaskCreateFormPolicy.validationMessage(
             title: title,
             detail: detail,
-            workspaceId: workspaceId,
             agentId: selectedAgentId
         )
     }
@@ -192,7 +183,7 @@ struct CorptieTaskCreateView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if availableAgents.isEmpty {
-                Text(L10n("当前 Objective 没有可用的 Independent Contributor Agent。"))
+                Text(L10n("当前 Work 没有可用的 Independent Contributor Agent。"))
                     .font(.caption)
                     .foregroundStyle(.red)
             } else if selectedAgentId == nil {
@@ -252,11 +243,10 @@ struct CorptieTaskCreateView: View {
 
         submissionError = nil
         let requestId = creationId
-        let requestObjectiveId = objectiveId
+        let requestWorkId = workId
         let requestTitle = trimmedTitle
         let requestDetail = trimmedDetail
         let requestAcceptanceCriteria = acceptanceCriteria
-        let requestWorkspaceId = workspaceId
         let requestPriority = priority
         let providerId = selectedProviderId
         let started = BackgroundTaskCenter.shared.start(
@@ -270,11 +260,10 @@ struct CorptieTaskCreateView: View {
                 created = await PerfStopwatch.measure("CorptieTask.create.persistRequest") {
                     await client.createCorptieTask(
                         id: requestId,
-                        objectiveId: requestObjectiveId,
+                        workId: requestWorkId,
                         title: requestTitle,
                         description: requestDetail,
                         acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
-                        mainWorkspaceId: requestWorkspaceId,
                         mainAgentId: selectedAgentId,
                         priority: requestPriority
                     )

@@ -26,7 +26,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const startupFields = new Set([
-  "schemaVersion", "status", "startupOperationId", "objectiveId", "taskId", "logicalSessionId",
+  "schemaVersion", "status", "startupOperationId", "workId", "taskId", "logicalSessionId",
   "repositoryId", "worktreeId", "canonicalWorktreePath", "headIdentity", "providerBindingId",
   "bindingGeneration", "sourceCommitOid", "sourceTreeOid", "baseRef", "repositoryInventoryVersion",
   "workspaceResourceVersion", "resourceVersion", "providerContextHash", "toolContractHash",
@@ -103,7 +103,7 @@ export class RepositorySourceSnapshotBuilder {
       resourceVersion: 1,
       artifactRef: snapshotArtifactRef(),
       startupBindingRef: startupBindingRef(input.startupReceipt),
-      objectiveId: input.startupReceipt.objectiveId,
+      workId: input.startupReceipt.workId,
       taskId: input.startupReceipt.taskId,
       logicalSessionId: input.startupReceipt.logicalSessionId,
       repositoryId: input.startupReceipt.repositoryId,
@@ -364,7 +364,7 @@ function declarationFor(path, declarations = []) {
 
 function inferLanguage(path) {
   const extension = path.includes(".") ? path.slice(path.lastIndexOf(".") + 1).toLowerCase() : "";
-  return ({ swift: "swift", m: "objective-c", mm: "objective-cpp", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "typescript", jsx: "javascript", py: "python", rs: "rust", go: "go", java: "java", kt: "kotlin", c: "c", h: "c", cpp: "cpp", cc: "cpp", json: "json", md: "markdown" })[extension] ?? "text";
+  return ({ swift: "swift", m: "work-c", mm: "work-cpp", js: "javascript", mjs: "javascript", cjs: "javascript", ts: "typescript", tsx: "typescript", jsx: "javascript", py: "python", rs: "rust", go: "go", java: "java", kt: "kotlin", c: "c", h: "c", cpp: "cpp", cc: "cpp", json: "json", md: "markdown" })[extension] ?? "text";
 }
 
 function assertExactStartupShape(receipt) {
@@ -389,7 +389,7 @@ function assertStartupAuthority(receipt, binding, sessionContext) {
   if (receipt.schemaVersion !== 2 || receipt.status !== "ready" || receipt.error !== null) {
     throw contractError("STARTUP_BINDING_MISMATCH", "Startup binding is not an approved ready schemaVersion 2 receipt.");
   }
-  for (const field of ["objectiveId", "taskId", "logicalSessionId"]) {
+  for (const field of ["workId", "taskId", "logicalSessionId"]) {
     if (receipt[field] !== sessionContext?.[field]) {
       throw contractError("STARTUP_BINDING_MISMATCH", `Startup ${field} does not match the authenticated Session binding.`);
     }

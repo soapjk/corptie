@@ -1,7 +1,7 @@
 export function handleArtifactHttpRequest({ request, response, url, service, requestTimeoutMs = 5_000 }) {
   const path = url.pathname;
   const isArtifactApi = path === "/artifacts" || path.startsWith("/artifacts/")
-    || /^\/objectives\/[^/]+\/artifacts(?:\/(?:backup|restore))?$/.test(path)
+    || /^\/works\/[^/]+\/artifacts(?:\/(?:backup|restore))?$/.test(path)
     || /^\/tasks\/[^/]+\/artifacts(?:\/[^/]+\/publish)?$/.test(path);
   if (!isArtifactApi) return false;
 
@@ -12,32 +12,32 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
     });
   }, requestTimeoutMs);
   Promise.resolve().then(async () => {
-    const objectiveBackup = path.match(/^\/objectives\/([^/]+)\/artifacts\/backup$/);
-    if (request.method === "POST" && objectiveBackup) {
-      const objectiveId = decodeURIComponent(objectiveBackup[1]);
+    const workBackup = path.match(/^\/works\/([^/]+)\/artifacts\/backup$/);
+    if (request.method === "POST" && workBackup) {
+      const workId = decodeURIComponent(workBackup[1]);
       const input = await readJson(request);
-      return sendJson(response, 200, await service.backupObjective(localContext(objectiveId), {
+      return sendJson(response, 200, await service.backupWork(localContext(workId), {
         destinationPath: input.destinationPath, confirmed: input.confirmed
       }));
     }
-    const objectiveRestore = path.match(/^\/objectives\/([^/]+)\/artifacts\/restore$/);
-    if (request.method === "POST" && objectiveRestore) {
-      const objectiveId = decodeURIComponent(objectiveRestore[1]);
+    const workRestore = path.match(/^\/works\/([^/]+)\/artifacts\/restore$/);
+    if (request.method === "POST" && workRestore) {
+      const workId = decodeURIComponent(workRestore[1]);
       const input = await readJson(request);
-      return sendJson(response, 200, await service.restoreObjective(localContext(objectiveId), {
+      return sendJson(response, 200, await service.restoreWork(localContext(workId), {
         sourcePath: input.sourcePath, confirmed: input.confirmed
       }));
     }
-    const objectiveList = path.match(/^\/objectives\/([^/]+)\/artifacts$/);
-    if (objectiveList) {
-      const objectiveId = decodeURIComponent(objectiveList[1]);
-      const context = localContext(objectiveId);
+    const workList = path.match(/^\/works\/([^/]+)\/artifacts$/);
+    if (workList) {
+      const workId = decodeURIComponent(workList[1]);
+      const context = localContext(workId);
       if (request.method === "GET") {
         const includeRevoked = url.searchParams.get("includeRevoked") === "true";
         const limit = boundedQueryInteger(url, "limit", 1, 200, 100);
         const offset = boundedQueryInteger(url, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
         const artifacts = service.list(context, { includeRevoked, limit, offset });
-        const totalCount = service.store.countArtifactsByObjective(objectiveId, { includeRevoked });
+        const totalCount = service.store.countArtifactsByWork(workId, { includeRevoked });
         const nextOffset = offset + artifacts.length < totalCount ? offset + artifacts.length : null;
         return sendJson(response, 200, { artifacts, totalCount, nextOffset });
       }
@@ -55,7 +55,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       const taskId = decodeURIComponent(taskList[1]);
       const task = service.store.getTask(taskId);
       if (!task) throw httpError("ARTIFACT_TASK_NOT_FOUND", "Task not found.", 404);
-      const context = localContext(task.objective_id);
+      const context = localContext(task.work_id);
       const limit = boundedQueryInteger(url, "limit", 1, 200, 100);
       const offset = boundedQueryInteger(url, "offset", 0, Number.MAX_SAFE_INTEGER, 0);
       const artifacts = service.listForTask(context, taskId, { limit, offset });
@@ -72,7 +72,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       if (!task) throw httpError("ARTIFACT_TASK_NOT_FOUND", "Task not found.", 404);
       const input = await readJson(request);
       return sendJson(response, 201, await service.publishAndRepin(
-        localContext(task.objective_id), artifactId,
+        localContext(task.work_id), artifactId,
         { ...mapInput(input), taskId, referenceId: input.referenceId,
           expectedResourceVersion: input.expectedResourceVersion,
           expectedPinnedVersion: input.expectedPinnedVersion,
@@ -86,7 +86,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       const artifactId = decodeURIComponent(artifactMatch[1]);
       const artifact = service.store.getArtifact(artifactId);
       if (!artifact) throw httpError("ARTIFACT_NOT_FOUND", "Artifact not found.", 404);
-      const context = localContext(artifact.objectiveId);
+      const context = localContext(artifact.workId);
       if (request.method === "GET") {
         return sendJson(response, 200, await service.get(context, artifactId, {
           version: numberParam(url, "version"), contentHash: url.searchParams.get("contentHash"),
@@ -109,7 +109,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
     if (request.method === "POST" && versionsMatch) {
       const artifactId = decodeURIComponent(versionsMatch[1]);
       const artifact = requiredArtifact(service, artifactId);
-      return sendJson(response, 201, await service.publishVersion(localContext(artifact.objectiveId), artifactId, mapInput(await readJson(request))));
+      return sendJson(response, 201, await service.publishVersion(localContext(artifact.workId), artifactId, mapInput(await readJson(request))));
     }
 
     const referencesMatch = path.match(/^\/artifacts\/([^/]+)\/references$/);
@@ -117,7 +117,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       const artifactId = decodeURIComponent(referencesMatch[1]);
       const artifact = requiredArtifact(service, artifactId);
       const input = await readJson(request);
-      return sendJson(response, 201, service.createReference(localContext(artifact.objectiveId), artifactId, {
+      return sendJson(response, 201, service.createReference(localContext(artifact.workId), artifactId, {
         taskId: input.taskId, sessionId: input.sessionId, relation: input.relation,
         required: input.required, versionPolicy: input.versionPolicy, version: input.version
       }));
@@ -129,7 +129,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       const reference = service.store.getArtifactReference(referenceId);
       if (!reference) throw httpError("ARTIFACT_REFERENCE_NOT_FOUND", "Artifact reference not found.", 404);
       const input = await readJson(request);
-      return sendJson(response, 200, service.revokeReference(localContext(reference.objectiveId), referenceId, input.reason));
+      return sendJson(response, 200, service.revokeReference(localContext(reference.workId), referenceId, input.reason));
     }
 
     const acknowledgeMatch = path.match(/^\/artifacts\/references\/([^/]+)\/acknowledge-update$/);
@@ -139,7 +139,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       if (!reference) throw httpError("ARTIFACT_REFERENCE_NOT_FOUND", "Artifact reference not found.", 404);
       const input = await readJson(request);
       if (input.confirmed !== true) throw httpError("ARTIFACT_CONFIRMATION_REQUIRED", "Acknowledging a version impact requires explicit confirmation.", 409);
-      return sendJson(response, 200, service.acknowledgePendingReference(localContext(reference.objectiveId), referenceId));
+      return sendJson(response, 200, service.acknowledgePendingReference(localContext(reference.workId), referenceId));
     }
 
     const integrityMatch = path.match(/^\/artifacts\/([^/]+)\/integrity$/);
@@ -152,7 +152,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       const artifactId = decodeURIComponent(localFileMatch[1]);
       const artifact = requiredArtifact(service, artifactId);
       return sendJson(response, 200, await service.localFile(
-        localContext(artifact.objectiveId),
+        localContext(artifact.workId),
         artifactId,
         {
           version: numberParam(url, "version"),
@@ -167,7 +167,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
       const artifactId = decodeURIComponent(exportMatch[1]);
       const artifact = requiredArtifact(service, artifactId);
       const input = await readJson(request);
-      return sendJson(response, 200, await service.exportArtifact(localContext(artifact.objectiveId), artifactId, {
+      return sendJson(response, 200, await service.exportArtifact(localContext(artifact.workId), artifactId, {
         destinationPath: input.destinationPath, version: input.version,
         contentHash: input.contentHash, referenceId: input.referenceId, confirmed: input.confirmed,
         confirmedRepositoryWrite: input.confirmedRepositoryWrite, confirmedOverwrite: input.confirmedOverwrite
@@ -180,7 +180,7 @@ export function handleArtifactHttpRequest({ request, response, url, service, req
   return true;
 }
 
-function localContext(objectiveId) { return { kind: "local_user", actorId: "macos-local-user", objectiveId }; }
+function localContext(workId) { return { kind: "local_user", actorId: "macos-local-user", workId }; }
 function requiredArtifact(service, artifactId) { const artifact = service.store.getArtifact(artifactId); if (!artifact) throw httpError("ARTIFACT_NOT_FOUND", "Artifact not found.", 404); return artifact; }
 function mapInput(input) {
   return {

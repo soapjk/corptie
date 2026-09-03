@@ -21,21 +21,21 @@ async function createStore() {
 }
 
 function createStartedExecution(store, {
-  objectiveId = "o1",
+  workId = "o1",
   taskId = "wi1",
   sessionId = "s1",
   agentId = "a1"
 } = {}) {
-  if (!store.getObjective(objectiveId)) {
-    store.createObjective({ id: objectiveId, name: objectiveId });
+  if (!store.getWork(workId)) {
+    store.createWork({ id: workId, name: workId });
   }
-  store.createTask({ id: taskId, objectiveId, title: taskId });
+  store.createTask({ id: taskId, workId, title: taskId });
   store.createSession({
     id: sessionId,
     title: sessionId,
     provider: "codex-app-server",
     status: "running",
-    objectiveId,
+    workId,
     taskId,
     agentId
   });
@@ -80,7 +80,7 @@ test("MemoryExtractor 提取 + 分类 + kind→owner 分流", async () => {
 
     const extractor = new MemoryExtractor({ store });
     const memories = await extractor.extractFromSession("s1", {
-      objectiveId: "o1",
+      workId: "o1",
       taskId: "wi1",
       agentId: "a1"
     });
@@ -110,7 +110,7 @@ test("two Sessions can append memories to one Agent concurrently without lost wr
   try {
     for (const [index, sessionId] of ["s1", "s2"].entries()) {
       createStartedExecution(store, {
-        objectiveId: `o${index + 1}`,
+        workId: `o${index + 1}`,
         taskId: `wi${index + 1}`,
         sessionId,
         agentId: "agent:shared"
@@ -154,12 +154,12 @@ test("two Sessions can append memories to one Agent concurrently without lost wr
 
 test("ownerForKind 归属规则", () => {
   assert.deepEqual(ownerForKind("procedure", { agentId: "a" }), { ownerType: "agent", ownerId: "a" });
-  assert.deepEqual(ownerForKind("fact", { taskId: "w", objectiveId: "o" }), {
+  assert.deepEqual(ownerForKind("fact", { taskId: "w", workId: "o" }), {
     ownerType: "task",
     ownerId: "w"
   });
-  assert.deepEqual(ownerForKind("lesson", { objectiveId: "o" }), {
-    ownerType: "objective",
+  assert.deepEqual(ownerForKind("lesson", { workId: "o" }), {
+    ownerType: "work",
     ownerId: "o"
   });
 });
@@ -173,9 +173,9 @@ test("defaultClassify 类型映射", () => {
 
 test("ownerForKind 缺失 agentId 时能力类返回 null（不再写 owner_id=null）", () => {
   // 能力类记忆必须归属到 Agent；缺失 agentId → null
-  assert.equal(ownerForKind("procedure", { objectiveId: "o", taskId: "w" }), null);
+  assert.equal(ownerForKind("procedure", { workId: "o", taskId: "w" }), null);
   assert.equal(ownerForKind("skill", {}), null);
-  // 非能力类缺失 task/objective/agent → null
+  // 非能力类缺失 task/work/agent → null
   assert.equal(ownerForKind("lesson", {}), null);
 });
 
@@ -188,7 +188,7 @@ test("extractFromSession 缺失 agentId 时跳过能力类事件（不撞 NOT NU
 
     const extractor = new MemoryExtractor({ store });
     // scope 无 agentId：procedure（能力类）应被跳过，summary（fact）落到 task
-    const memories = await extractor.extractFromSession("s1", { objectiveId: "o1", taskId: "wi1" });
+    const memories = await extractor.extractFromSession("s1", { workId: "o1", taskId: "wi1" });
     assert.equal(memories.length, 1);
     assert.equal(memories[0].kind, "fact");
     assert.equal(memories[0].owner_type, "task");

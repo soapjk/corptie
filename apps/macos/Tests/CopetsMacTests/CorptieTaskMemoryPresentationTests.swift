@@ -68,7 +68,7 @@ struct CorptieTaskMemoryPresentationTests {
         #expect(MemoryOriginLayer.classify(try memory(source: "promoted", trust: "trusted", status: "active")) == .agentDurable)
         #expect(MemoryOriginLayer.classify(try memory(source: "pre_compaction", trust: "trusted", status: "active")) == .systemManaged)
         #expect(MemoryOriginLayer.classify(try memory(source: "user", trust: "trusted", status: "active", revokedAt: "2026-08-24T00:00:00Z")) == .inactive)
-        #expect(MemoryScopeLayer.allCases.map(\.rawValue) == ["task", "objective", "agent"])
+        #expect(MemoryScopeLayer.allCases.map(\.rawValue) == ["task", "work", "agent"])
     }
 
     private func memory(

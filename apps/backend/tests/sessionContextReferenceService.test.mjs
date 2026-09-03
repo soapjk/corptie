@@ -12,8 +12,8 @@ async function fixture() {
   await store.initialize();
   store.createSession({ id: "assistant-session", title: "Assistant", sessionKind: "assistantChat", status: "complete" });
   store.createSession({ id: "referenced-session", title: "Research", sessionKind: "assistantChat", status: "complete", summary: "Stored preview" });
-  const objective = store.createObjective({ id: "objective-a", name: "Ship context", description: "Build references", idealState: "Every Provider shares reliable context" });
-  store.createTask({ id: "task-a", objectiveId: objective.id, title: "Implement resolver", description: "Resolve structured context" });
+  const work = store.createWork({ id: "work-a", name: "Ship context", description: "Build references", idealState: "Every Provider shares reliable context" });
+  store.createTask({ id: "task-a", workId: work.id, title: "Implement resolver", description: "Resolve structured context" });
   const agent = store.createAgent({ name: "Researcher", description: "Finds primary sources", role: "independentContributor", capabilities: ["research"] });
   const localPath = join(directory, "reference.md");
   await writeFile(localPath, "# Local reference\nUse the shared Provider contract.");
@@ -36,7 +36,7 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
     const inputs = [
       { targetType: "localFile", locator: value.localPath },
       { targetType: "webURL", locator: "https://example.com/reference" },
-      { targetType: "objective", targetId: "objective-a" },
+      { targetType: "work", targetId: "work-a" },
       { targetType: "task", targetId: "task-a" },
       { targetType: "agent", targetId: value.agent.agentId },
       { targetType: "session", targetId: "referenced-session" }
@@ -44,12 +44,12 @@ test("Assistant Sessions persist and resolve Provider-neutral context references
     for (const input of inputs) await value.service.create("assistant-session", input);
 
     assert.deepEqual(value.service.list("assistant-session").map((reference) => reference.targetType).sort(), [
-      "agent", "localFile", "objective", "session", "task", "webURL"
+      "agent", "localFile", "work", "session", "task", "webURL"
     ]);
     const resolved = await value.service.resolve("assistant-session", { characterBudget: 20_000 });
     assert.match(resolved.prompt, /Local reference/);
     assert.match(resolved.prompt, /Web reference body/);
-    assert.match(resolved.prompt, /Objective: Ship context/);
+    assert.match(resolved.prompt, /Work: Ship context/);
     assert.match(resolved.prompt, /Ideal state: Every Provider shares reliable context/);
     assert.match(resolved.prompt, /Task: Implement resolver/);
     assert.match(resolved.prompt, /Agent: Researcher/);
@@ -67,19 +67,19 @@ test("context references reject non-Assistant owners, self references, and dupli
   try {
     value.store.createSession({
       id: "worker", title: "Worker", sessionKind: "worker", status: "complete",
-      objectiveId: "objective-a", taskId: "task-a"
+      workId: "work-a", taskId: "task-a"
     });
     await assert.rejects(
-      value.service.create("worker", { targetType: "objective", targetId: "objective-a" }),
+      value.service.create("worker", { targetType: "work", targetId: "work-a" }),
       { code: "CONTEXT_REFERENCES_REQUIRE_ASSISTANT" }
     );
     await assert.rejects(
       value.service.create("assistant-session", { targetType: "session", targetId: "assistant-session" }),
       { code: "CONTEXT_REFERENCE_CYCLE" }
     );
-    await value.service.create("assistant-session", { targetType: "objective", targetId: "objective-a" });
+    await value.service.create("assistant-session", { targetType: "work", targetId: "work-a" });
     await assert.rejects(
-      value.service.create("assistant-session", { targetType: "objective", targetId: "objective-a" }),
+      value.service.create("assistant-session", { targetType: "work", targetId: "work-a" }),
       { code: "CONTEXT_REFERENCE_DUPLICATE" }
     );
   } finally {
@@ -92,7 +92,7 @@ test("context resolution obeys a total budget and disabled references are omitte
   const value = await fixture();
   try {
     const first = await value.service.create("assistant-session", { targetType: "localFile", locator: value.localPath });
-    const second = await value.service.create("assistant-session", { targetType: "objective", targetId: "objective-a" });
+    const second = await value.service.create("assistant-session", { targetType: "work", targetId: "work-a" });
     value.service.update("assistant-session", second.referenceId, { enabled: false });
     const resolved = await value.service.resolve("assistant-session", { characterBudget: 180 });
     assert.equal(resolved.documents.some((document) => document.referenceId === second.referenceId), false);

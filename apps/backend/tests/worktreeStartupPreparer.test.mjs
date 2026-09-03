@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 import { WorktreeStartupPreparer } from "../src/application/worktreeStartupPreparer.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { createGitWorkspaceSnapshot } from "../src/utils/gitWorktreeInventory.mjs";
 
@@ -37,12 +37,14 @@ async function fixture({ detached = false } = {}) {
   store.upsertGitWorkspaceSnapshot(snapshot);
   const repositoryId = snapshot.repository.id;
   const agent = store.createAgent({ id: "agent:worker", name: "Worker", role: "independentContributor" });
-  const objectiveService = new ObjectiveApplicationService({ store });
-  const objective = objectiveService.createObjective({
-    id: "objective:one", name: "Objective", workspaceIds: [repositoryId], contributorAgentIds: [agent.agentId]
+  const workService = new WorkApplicationService({ store });
+  const work = workService.createWork({
+    id: "work:one", name: "Work",
+    workspaceId: store.getGitRepository(repositoryId).workspaceId,
+    contributorAgentIds: [agent.agentId]
   });
-  const task = objectiveService.createTask({
-    id: "task:one", objectiveId: objective.id, title: "Prepare", mainWorkspaceId: repositoryId,
+  const task = workService.createTask({
+    id: "task:one", workId: work.id, title: "Prepare",
     mainAgentId: agent.agentId
   });
   const preparer = new WorktreeStartupPreparer({

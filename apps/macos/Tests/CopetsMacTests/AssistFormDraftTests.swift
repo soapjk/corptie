@@ -17,7 +17,7 @@ final class AssistFormDraftTests: XCTestCase {
         )
         XCTAssertTrue(
             FormAssistOverwritePolicy.hasMeaningfulExistingContent(
-                formType: .objective,
+                formType: .work,
                 values: ["name": "现有目标", "description": ""]
             )
         )
@@ -40,7 +40,7 @@ final class AssistFormDraftTests: XCTestCase {
         )
     }
 
-    func testDecodesCompleteAgentAndObjectiveDrafts() throws {
+    func testDecodesCompleteAgentAndWorkDrafts() throws {
         let agentData = Data(#"""
         {
           "formType": "agent",
@@ -53,9 +53,9 @@ final class AssistFormDraftTests: XCTestCase {
           }
         }
         """#.utf8)
-        let objectiveData = Data(#"""
+        let workData = Data(#"""
         {
-          "formType": "objective",
+          "formType": "work",
           "fields": {
             "name": "统一创建页辅助填写",
             "description": "统一三个实体创建页的生成体验。",
@@ -67,12 +67,12 @@ final class AssistFormDraftTests: XCTestCase {
         """#.utf8)
 
         let agentDraft = try JSONDecoder().decode(AssistFormDraft.self, from: agentData)
-        let objectiveDraft = try JSONDecoder().decode(AssistFormDraft.self, from: objectiveData)
+        let workDraft = try JSONDecoder().decode(AssistFormDraft.self, from: workData)
 
         XCTAssertEqual(agentDraft.formType, AssistFormType.agent.rawValue)
         XCTAssertEqual(agentDraft.fields["role"], "independentContributor")
-        XCTAssertEqual(objectiveDraft.formType, AssistFormType.objective.rawValue)
-        XCTAssertNil(objectiveDraft.fields["targetDate"])
+        XCTAssertEqual(workDraft.formType, AssistFormType.work.rawValue)
+        XCTAssertNil(workDraft.fields["targetDate"])
     }
 
     func testDecodesCompleteCorptieTaskDraft() throws {

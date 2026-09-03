@@ -197,7 +197,7 @@ export class WorkSessionStartupCoordinator {
           if (!session) {
             session = await this.providerWorkSessionPort.createSession({
               ...this.#inputFor(operation),
-              objectiveId: context.objectiveId,
+              workId: context.workId,
               repositoryId: context.repositoryId,
               taskTitle: context.taskTitle,
               workspace: allocation,
@@ -268,12 +268,16 @@ export class WorkSessionStartupCoordinator {
     const { taskId, assigneeAgentId, expectedTaskVersion, idempotencyKey, sourceSessionId } = command;
     const task = this.store.getTask(taskId);
     if (!task) throw coded("START_REFERENCE_INVALID", "Task was not found.", 404, false);
-    const objectiveId = namespaced(task.objective_id, "objective:", "objectiveId");
-    const repositoryId = namespaced(task.main_workspace_id, "repository:", "repositoryId");
+    const workId = namespaced(task.work_id, "work:", "workId");
+    const repositoryId = namespaced(
+      this.store.getTaskWorkspaceContext(task)?.repository?.id,
+      "repository:",
+      "repositoryId"
+    );
     const providerId = command.providerId;
     const normalized = {
       sourceSessionId,
-      objectiveId,
+      workId,
       taskId,
       assigneeAgentId,
       expectedTaskVersion,
@@ -310,12 +314,12 @@ export class WorkSessionStartupCoordinator {
       const correlationId = `startup-correlation:${randomUUID()}`;
       this.store.db.run(
         `INSERT INTO work_session_startup_operations (
-          startup_operation_id, objective_id, task_id, assignee_agent_id, expected_task_version, provider_id,
+          startup_operation_id, work_id, task_id, assignee_agent_id, expected_task_version, provider_id,
           repository_id, source_session_id,
           idempotency_key, request_fingerprint, source, requested_title, state,
           lease_owner, lease_expires_at, correlation_id, allocated_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, 'allocated', ?, ?, ?, ?, ?)`,
-        [operationId, objectiveId, taskId, assigneeAgentId, expectedTaskVersion, providerId,
+        [operationId, workId, taskId, assigneeAgentId, expectedTaskVersion, providerId,
           repositoryId, sourceSessionId, idempotencyKey, fingerprint,
           normalized.title, this.leaseOwner,
           expiresAt(now, this.leaseTtlMs), correlationId, now, now]
@@ -354,7 +358,7 @@ export class WorkSessionStartupCoordinator {
     const persisted = this.store.getSession(session.id);
     const logical = this.store.getLogicalSessionByLegacySessionId(session.id);
     const boundCwd = logical?.activeBinding?.boundCwd ? canonicalPath(logical.activeBinding.boundCwd) : null;
-    if (!persisted || persisted.objectiveId !== operation.objective_id
+    if (!persisted || persisted.workId !== operation.work_id
       || persisted.taskId !== operation.task_id || persisted.sessionKind !== "worker"
       || !logical?.logicalSessionId || boundCwd !== allocation.canonicalWorktreePath) {
       throw coded("START_SESSION_BIND_FAILED", "Persisted logical Session does not match the authoritative Task/Worktree identity.", 409, true);
@@ -379,13 +383,13 @@ export class WorkSessionStartupCoordinator {
       const now = this.clock();
       this.store.db.run(
         `INSERT INTO work_session_startup_bindings (
-          provider_binding_id, startup_operation_id, objective_id, task_id, logical_session_id,
+          provider_binding_id, startup_operation_id, work_id, task_id, logical_session_id,
           repository_id, worktree_id, canonical_worktree_path, head_kind, branch,
           detached_commit_oid, base_ref, source_commit_oid, source_tree_oid,
           repository_inventory_version, workspace_resource_version, binding_generation, status,
           provider_id, provider_context_hash, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'binding', ?, ?, ?)`,
-        [providerBindingId, operation.startup_operation_id, operation.objective_id, operation.task_id,
+        [providerBindingId, operation.startup_operation_id, operation.work_id, operation.task_id,
           operation.logical_session_id, allocation.repositoryId, allocation.worktreeId,
           allocation.canonicalWorktreePath, allocation.headIdentity.kind,
           allocation.headIdentity.kind === "branch" ? allocation.headIdentity.branch : null,
@@ -435,7 +439,7 @@ export class WorkSessionStartupCoordinator {
     return {
       schemaVersion: 2,
       startupOperationId: operation.startup_operation_id,
-      objectiveId: operation.objective_id,
+      workId: operation.work_id,
       taskId: operation.task_id,
       logicalSessionId: operation.logical_session_id ?? null,
       repositoryId: allocation.repositoryId,
@@ -511,8 +515,8 @@ export class WorkSessionStartupCoordinator {
     const logical = this.#verifiedLogicalSession(operation, session, allocation);
     const task = this.store.getTask(operation.task_id);
     const inventory = this.store.getGitWorktree(allocation.worktreeId);
-    if (!task || task.objective_id !== operation.objective_id
-      || task.main_workspace_id !== allocation.repositoryId
+    if (!task || task.work_id !== operation.work_id
+      || this.store.getTaskWorkspaceContext(task)?.repository?.id !== allocation.repositoryId
       || !inventory || inventory.repositoryId !== allocation.repositoryId
       || canonicalPath(inventory.canonicalPath || inventory.path) !== allocation.canonicalWorktreePath
       || binding.status !== "binding" || binding.binding_generation !== operation.binding_generation
@@ -528,7 +532,7 @@ export class WorkSessionStartupCoordinator {
       schemaVersion: 2,
       status: "ready",
       startupOperationId: operation.startup_operation_id,
-      objectiveId: operation.objective_id,
+      workId: operation.work_id,
       taskId: operation.task_id,
       logicalSessionId: logical.logicalSessionId,
       repositoryId: allocation.repositoryId,

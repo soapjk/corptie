@@ -150,12 +150,12 @@ test("deleting a Logical Session tombstones its route when startup audit retains
       sessionName: "Delete audit"
     });
     const agent = store.createAgent({ id: "agent:delete-audit", name: "Delete audit" });
-    store.createObjective({
-      id: "objective:delete-audit", name: "Delete audit",
+    store.createWork({
+      id: "work:delete-audit", name: "Delete audit",
       contributorAgentIds: [agent.agentId]
     });
     store.createTask({
-      id: "task:delete-audit", objectiveId: "objective:delete-audit",
+      id: "task:delete-audit", workId: "work:delete-audit",
       title: "Delete audit", mainAgentId: agent.agentId
     });
     store.db.run(
@@ -164,12 +164,12 @@ test("deleting a Logical Session tombstones its route when startup audit retains
     );
     store.db.run(
       `INSERT INTO work_session_startup_operations (
-        startup_operation_id, objective_id, task_id, assignee_agent_id,
+        startup_operation_id, work_id, task_id, assignee_agent_id,
         expected_task_version, provider_id, repository_id, source_session_id, idempotency_key,
         request_fingerprint, state, logical_session_id, legacy_session_id,
         correlation_id, allocated_at, ready_at, updated_at
       ) VALUES (
-        'startup:delete-audit','objective:delete-audit','task:delete-audit','agent:delete-audit',
+        'startup:delete-audit','work:delete-audit','task:delete-audit','agent:delete-audit',
         1,'codex-app-server','repository:missing','logical:source','start:delete-audit','fingerprint',
         'ready','logical:delete-audit','session:delete-audit','correlation:delete-audit',
         '2026-09-02T00:00:00.000Z','2026-09-02T00:00:01.000Z','2026-09-02T00:00:01.000Z'
@@ -194,30 +194,30 @@ test("deleting a Logical Session tombstones its route when startup audit retains
   }
 });
 
-test("legacy Objective acceptance criteria migrate to the evolving ideal state", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "corptie-objective-ideal-state-"));
+test("legacy Work acceptance criteria migrate to the evolving ideal state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-work-ideal-state-"));
   const dbPath = join(directory, "corptie.sqlite");
   const configPath = join(directory, "config.json");
   const initialStore = new CorptieStore({ dbPath, configPath });
   try {
     await initialStore.initialize();
-    initialStore.createObjective({ id: "objective:legacy", name: "Long-lived objective" });
+    initialStore.createWork({ id: "work:legacy", name: "Long-lived work" });
     await initialStore.close();
 
     const legacyDatabase = new DatabaseSync(dbPath);
-    legacyDatabase.exec("ALTER TABLE objectives RENAME COLUMN ideal_state TO acceptance_criteria");
+    legacyDatabase.exec("ALTER TABLE works RENAME COLUMN ideal_state TO acceptance_criteria");
     legacyDatabase.prepare(
-      "UPDATE objectives SET acceptance_criteria = ? WHERE id = ?"
-    ).run("The system continuously becomes easier to evolve.", "objective:legacy");
+      "UPDATE works SET acceptance_criteria = ? WHERE id = ?"
+    ).run("The system continuously becomes easier to evolve.", "work:legacy");
     legacyDatabase.close();
 
     const migratedStore = new CorptieStore({ dbPath, configPath });
     await migratedStore.initialize();
     assert.equal(
-      migratedStore.getObjective("objective:legacy").idealState,
+      migratedStore.getWork("work:legacy").idealState,
       "The system continuously becomes easier to evolve."
     );
-    const columns = migratedStore.selectAll("PRAGMA table_info(objectives)").map((column) => column.name);
+    const columns = migratedStore.selectAll("PRAGMA table_info(works)").map((column) => column.name);
     assert.equal(columns.includes("ideal_state"), true);
     assert.equal(columns.includes("acceptance_criteria"), false);
     await migratedStore.close();
@@ -1208,11 +1208,11 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
   });
   try {
     await store.initialize();
-    store.createObjective({ id: "objective:conflict", name: "Resolve conflict" });
+    store.createWork({ id: "work:conflict", name: "Resolve conflict" });
     store.createAgent({ id: "agent:conflict", name: "Conflict Agent", role: "independentContributor" });
     store.createTask({
       id: "task:conflict",
-      objectiveId: "objective:conflict",
+      workId: "work:conflict",
       title: "Resolve merge conflict"
     });
     store.upsertSession({
@@ -1225,7 +1225,7 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
     store.createProjectIntegrationRun({
       id: "integration:conflict",
       repositoryId: "repository:test",
-      objectiveId: "objective:conflict",
+      workId: "work:conflict",
       mainHeadBefore: "abc123",
       status: "conflicted"
     });
@@ -1234,12 +1234,12 @@ test("conflict-resolution launch finalizes all visible bindings in one transacti
     const finalized = store.finalizeConflictResolutionLaunch({
       sessionId: "session:conflict",
       taskId: "task:conflict",
-      objectiveId: "objective:conflict",
+      workId: "work:conflict",
       agentId: "agent:conflict",
       integrationRunId: "integration:conflict"
     });
     assert.equal(finalized.session.taskId, "task:conflict");
-    assert.equal(finalized.session.objectiveId, "objective:conflict");
+    assert.equal(finalized.session.workId, "work:conflict");
     assert.equal(finalized.task.current_session_id, "session:conflict");
     assert.equal(finalized.integrationRun.conflictSessionId, "session:conflict");
     assert.deepEqual(store.stateConsistencyIssues(), []);
@@ -1315,16 +1315,16 @@ test("Session kind persists explicitly and Task binding classifies worker sessio
       provider: "codex-app-server",
       status: "complete"
     });
-    store.createObjective({ id: "objective:1", name: "Objective" });
-    store.createTask({ id: "task:1", objectiveId: "objective:1", title: "Work item" });
-    store.bindSessionToTask("worker-session", "task:1", "objective:1");
+    store.createWork({ id: "work:1", name: "Work" });
+    store.createTask({ id: "task:1", workId: "work:1", title: "Work item" });
+    store.bindSessionToTask("worker-session", "task:1", "work:1");
     const worker = store.getSession("worker-session");
     assert.equal(worker.sessionKind, "worker");
     assert.equal(worker.taskId, "task:1");
     assert.equal(store.getTask("task:1").current_session_id, "worker-session");
 
     assert.throws(
-      () => store.bindSessionToTask("missing-session", "task:1", "objective:1"),
+      () => store.bindSessionToTask("missing-session", "task:1", "work:1"),
       (error) => error?.code === "SESSION_NOT_FOUND"
     );
     assert.equal(store.getTask("task:1").current_session_id, "worker-session");
@@ -1349,9 +1349,9 @@ test("workspace route replacement preserves the stable Work Session and Task own
       provider: "codex-app-server",
       status: "complete"
     });
-    store.createObjective({ id: "objective:one", name: "Objective" });
-    store.createTask({ id: "task:one", objectiveId: "objective:one", title: "Work item" });
-    store.bindSessionToTask("worker-session", "task:one", "objective:one");
+    store.createWork({ id: "work:one", name: "Work" });
+    store.createTask({ id: "task:one", workId: "work:one", title: "Work item" });
+    store.bindSessionToTask("worker-session", "task:one", "work:one");
     store.createLogicalSessionRoute({
       logicalSessionId: "logical:worker",
       legacySessionId: "worker-session",
@@ -1426,13 +1426,13 @@ test("retiring a Worktree preserves the Work Session while making its workspace 
       status: "complete",
       rawStatus: { capabilities: { canSend: true, canInterrupt: true } }
     });
-    store.createObjective({ id: "objective:retired", name: "Objective" });
+    store.createWork({ id: "work:retired", name: "Work" });
     store.createTask({
       id: "task:retired",
-      objectiveId: "objective:retired",
+      workId: "work:retired",
       title: "Completed item"
     });
-    store.bindSessionToTask("worker-session:retired", "task:retired", "objective:retired");
+    store.bindSessionToTask("worker-session:retired", "task:retired", "work:retired");
     store.createLogicalSessionRoute({
       logicalSessionId: "logical:retired",
       legacySessionId: "worker-session:retired",
@@ -1787,8 +1787,21 @@ test("Git workspace snapshots persist stable repository and worktree identities"
 
   try {
     await store.initialize();
+    const plainWorkspace = store.createWorkspace({
+      workspaceId: "workspace:plain-first",
+      kind: "linkedLocal",
+      ownership: "userManaged",
+      rootPath: "/repo",
+      canonicalRootPath: "/repo"
+    });
     const persisted = store.upsertGitWorkspaceSnapshot(snapshot);
-    assert.deepEqual(store.getGitRepository("repository:abc"), snapshot.repository);
+    const registeredRepository = store.getGitRepository("repository:abc");
+    assert.deepEqual(
+      { ...registeredRepository, workspaceId: undefined },
+      { ...snapshot.repository, workspaceId: undefined }
+    );
+    assert.equal(registeredRepository.workspaceId, plainWorkspace.workspaceId);
+    assert.equal(store.getWorkspace(registeredRepository.workspaceId).rootPath, "/repo");
     assert.equal(persisted.length, 1);
     assert.equal(persisted[0].worktreeId, "worktree:main");
     assert.equal(persisted[0].branchName, "main");
@@ -1846,24 +1859,25 @@ test("a recreated Worktree releases ownership held by a terminal startup operati
   try {
     await store.initialize();
     store.upsertGitWorkspaceSnapshot(snapshot("inventory-1", [main, worker]));
+    const registeredRepository = store.getGitRepository(repository.id);
     const agent = store.createAgent({ id: "agent:worker", name: "Worker" });
-    store.createObjective({
-      id: "objective:one", name: "One",
-      workspaceIds: [repository.id], contributorAgentIds: [agent.agentId]
+    store.createWork({
+      id: "work:one", name: "One",
+      workspaceId: registeredRepository.workspaceId, contributorAgentIds: [agent.agentId]
     });
     store.createTask({
-      id: "task:one", objectiveId: "objective:one", title: "One",
-      mainWorkspaceId: repository.id, mainAgentId: agent.agentId
+      id: "task:one", workId: "work:one", title: "One",
+      mainAgentId: agent.agentId
     });
     store.db.run(
       "UPDATE git_worktrees SET dedicated=1, created_by_startup_operation_id='startup:failed' WHERE worktree_id='worktree:worker'"
     );
     store.db.run(
       `INSERT INTO work_session_startup_operations (
-        startup_operation_id, objective_id, task_id, assignee_agent_id, expected_task_version, provider_id,
+        startup_operation_id, work_id, task_id, assignee_agent_id, expected_task_version, provider_id,
         repository_id, source_session_id, idempotency_key, request_fingerprint, state, worktree_id,
         correlation_id, allocated_at, failed_at, updated_at
-      ) VALUES ('startup:failed','objective:one','task:one','agent:worker',1,'test-provider',
+      ) VALUES ('startup:failed','work:one','task:one','agent:worker',1,'test-provider',
         'repository:recreated','session:source','start:failed','fingerprint','failed_compensated','worktree:worker',
         'correlation:failed','2026-08-30T00:00:00.000Z','2026-08-30T00:00:01.000Z','2026-08-30T00:00:01.000Z')`
     );
@@ -1896,7 +1910,7 @@ test("unchanged Git workspace snapshots skip SQLite writes, audit, and dirty not
     let dirtyCount = 0;
     let auditCount = 0;
     store.setStateDirtyListener(() => { dirtyCount += 1; });
-    store.auditObjectiveTaskAssociations = () => { auditCount += 1; };
+    store.auditWorkTaskAssociations = () => { auditCount += 1; };
     const repeated = {
       ...snapshot,
       observedAt: "2099-01-01T00:00:00.000Z",

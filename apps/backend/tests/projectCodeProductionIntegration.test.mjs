@@ -37,7 +37,7 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
   const metadata = {
     logicalSessionId: fixture.sessionContext.logicalSessionId,
     sessionKind: "worker",
-    objectiveId: fixture.sessionContext.objectiveId,
+    workId: fixture.sessionContext.workId,
     taskId: fixture.sessionContext.taskId
   };
   try {

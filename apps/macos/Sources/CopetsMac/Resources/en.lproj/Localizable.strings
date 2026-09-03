@@ -20,7 +20,7 @@
 "Simplified Chinese" = "Simplified Chinese";
 "Archived sessions are hidden from the main screen until you restore them." = "Archived sessions are hidden from the main screen until you restore them.";
 "Sessions you archive will appear here and can be restored at any time." = "Assistant Sessions you archive will appear here and can be restored at any time.";
-"Group by Objective" = "Group by Objective";
+"Group by Work" = "Group by Work";
 "All" = "All";
 "No Grouping" = "No Grouping";
 "Work Session Grouping" = "Work Session Grouping";
@@ -120,14 +120,14 @@
 "Project Worktrees" = "Project Worktrees";
 "Clean Up Merged (%d)" = "Clean Up Merged (%d)";
 "Integrate Completed (%d)" = "Integrate Completed (%d)";
-"Serially merge every completed Worktree in this Objective into main" = "Serially merge every completed Worktree in this Objective into main";
+"Serially merge every completed Worktree in this Work into main" = "Serially merge every completed Worktree in this Work into main";
 "Resolve the current Integration Run conflicts before starting another one" = "Resolve the current Integration Run conflicts before starting another one";
 "Integrate all completed Worktrees?" = "Integrate all completed Worktrees?";
 "Start Serial Integration" = "Start Serial Integration";
 "Worktree integration is already running." = "Worktree integration is already running.";
 "Select a Session before starting Worktree integration." = "Select a Session before starting Worktree integration.";
 "The selected Session is not attached to a repository workspace." = "The selected Session is not attached to a repository workspace.";
-"The selected Session is not attached to an Objective." = "The selected Session is not attached to an Objective.";
+"The selected Session is not attached to an Work." = "The selected Session is not attached to an Work.";
 "Integrated %d Worktrees; %d have conflicts; %d failed" = "Integrated %d Worktrees; %d have conflicts; %d failed";
 "Integration finished with %d failed Worktrees. Review the failure details below." = "Integration finished with %d failed Worktrees. Review the failure details below.";
 "No completed Worktrees are eligible for integration. Complete the CorptieTask, stop its active Session, and commit its local changes before trying again." = "No completed Worktrees are eligible for integration. Complete the CorptieTask, stop its active Session, and commit its local changes before trying again.";
@@ -146,15 +146,15 @@
 "%d Worktrees require conflict resolution" = "%d Worktrees require conflict resolution";
 "Resolve Conflicts…" = "Resolve Conflicts…";
 "Open Conflict CorptieTask" = "Open Conflict CorptieTask";
-"Add an IC Agent to this Objective before creating the resolution CorptieTask" = "Add an IC Agent to this Objective before creating the resolution CorptieTask";
+"Add an IC Agent to this Work before creating the resolution CorptieTask" = "Add an IC Agent to this Work before creating the resolution CorptieTask";
 "Create and immediately start a CorptieTask to resolve these merge conflicts" = "Create and immediately start a CorptieTask to resolve these merge conflicts";
 "Create Conflict-Resolution CorptieTask" = "Create Conflict-Resolution CorptieTask";
-"This CorptieTask will be created under Objective %@ and start immediately." = "This CorptieTask will be created under Objective %@ and start immediately.";
+"This CorptieTask will be created under Work %@ and start immediately." = "This CorptieTask will be created under Work %@ and start immediately.";
 "This operation creates one dedicated CorptieTask to resolve the merge conflicts in the following %d branches and merge the result into main:" = "This operation creates one dedicated CorptieTask to resolve the merge conflicts in the following %d branches and merge the result into main:";
 "CorptieTask title" = "CorptieTask title";
 "Resolve completed Worktree merge conflicts" = "Resolve completed Worktree merge conflicts";
 "After confirmation, Corptie will bind this CorptieTask to Agent %@ and start its Work Session in a dedicated Integration Worktree." = "After confirmation, Corptie will bind this CorptieTask to Agent %@ and start its Work Session in a dedicated Integration Worktree.";
-"This Objective has no available IC Agent." = "This Objective has no available IC Agent.";
+"This Work has no available IC Agent." = "This Work has no available IC Agent.";
 "Create and Start CorptieTask" = "Create and Start CorptieTask";
 "Connecting to the server…" = "Connecting to the server…";
 "Click to copy Session title" = "Click to copy Session title";
@@ -380,7 +380,7 @@
 "Tibo forecast: %@" = "Tibo forecast: %@";
 "Tibo forecast: No upcoming reset announcement" = "Tibo forecast: No upcoming reset announcement";
 
-/* Console, Sessions, Objective, CorptieTask, and Agent surfaces */
+/* Console, Sessions, Work, CorptieTask, and Agent surfaces */
 "\u63A7\u5236\u53F0" = "Console";
 "\u8BBE\u7F6E" = "Settings";
 "\u6682\u65E0\u4F1A\u8BDD" = "No Sessions";
@@ -417,8 +417,8 @@
 "\u641C\u7D22 Agent \u540D\u79F0" = "Search Agent names";
 "\u65B0\u5EFA Agent" = "New Agent";
 "\u5B8C\u6210" = "Done";
-"\u521B\u5EFA Objective" = "Create Objective";
-"\u76EE\u6807\u540D\u79F0" = "Objective name";
+"\u521B\u5EFA Work" = "Create Work";
+"\u76EE\u6807\u540D\u79F0" = "Work name";
 "\u4F18\u5148\u7EA7" = "Priority";
 "\u672A\u8BBE\u7F6E" = "Not Set";
 "\u4F4E" = "Low";
@@ -455,7 +455,7 @@
 "\u5F00\u59CB\u65B0\u4F1A\u8BDD" = "Start New Session";
 "\u6253\u5F00\u8BE6\u60C5" = "Open Details";
 "Workspace\uFF08Git \u4ED3\u5E93\uFF09" = "Workspace (Git Repository)";
-"\u6240\u5C5E Objective \u5C1A\u672A\u6302\u9760\u4ED3\u5E93\uFF0C\u8BF7\u5148\u5728 Objective \u4E2D\u6DFB\u52A0" = "This Objective has no linked repository. Add one to the Objective first.";
+"\u6240\u5C5E Work \u5C1A\u672A\u6302\u9760\u4ED3\u5E93\uFF0C\u8BF7\u5148\u5728 Work \u4E2D\u6DFB\u52A0" = "This Work has no linked repository. Add one to the Work first.";
 "\u672A\u9009\u62E9" = "Not Selected";
 "\u7ED1\u5B9A Workspace" = "Bind Workspace";
 "\u4FDD\u5B58" = "Save";
@@ -472,12 +472,12 @@
 "\u540D\u79F0" = "Name";
 "\u65E0" = "None";
 "\u6E05\u9664\u5934\u50CF" = "Clear Avatar";
-"\u7F16\u8F91 Objective" = "Edit Objective";
+"\u7F16\u8F91 Work" = "Edit Work";
 "\u5DF2\u4FDD\u5B58" = "Saved";
-"\u5220\u9664 Objective" = "Delete Objective";
+"\u5220\u9664 Work" = "Delete Work";
 "\u7F16\u8F91" = "Edit";
-"\u901A\u8FC7\u52A9\u624B\u5BF9\u8BDD\u6216\u5FEB\u6377\u8F93\u5165\u521B\u5EFA\u7B2C\u4E00\u4E2A\u76EE\u6807" = "Create your first Objective through an Assistant conversation or quick input";
-"\u9009\u62E9\u76EE\u6807" = "Select an Objective";
+"\u901A\u8FC7\u52A9\u624B\u5BF9\u8BDD\u6216\u5FEB\u6377\u8F93\u5165\u521B\u5EFA\u7B2C\u4E00\u4E2A\u76EE\u6807" = "Create your first Work through an Assistant conversation or quick input";
+"\u9009\u62E9\u76EE\u6807" = "Select an Work";
 "\u9009\u62E9\u5DE5\u4F5C\u9879" = "Select a CorptieTask";
 "\u6267\u884C\u5931\u8D25" = "Execution Failed";
 "\u597D" = "OK";
@@ -487,7 +487,7 @@
 "负责 Agent" = "Responsible Agent";
 "请选择 Agent" = "Select an Agent";
 "请选择负责该 CorptieTask 的 Agent。" = "Select the Agent responsible for this CorptieTask.";
-"当前 Objective 没有可用的 Independent Contributor Agent。" = "This Objective has no available Independent Contributor Agent.";
+"当前 Work 没有可用的 Independent Contributor Agent。" = "This Work has no available Independent Contributor Agent.";
 "仅创建不执行" = "Create Without Running";
 "创建后立即执行" = "Create and Run";
 "重试执行" = "Retry Execution";
@@ -521,14 +521,14 @@
 "Sessions" = "Sessions";
 "Session DSH" = "Session DSH";
 "Agents" = "Agents";
-"Objective" = "Objective";
+"Work" = "Work";
 "Description" = "Description";
 "Acceptance Criteria" = "Acceptance Criteria";
 "Not Started" = "Not Started";
 "In Progress" = "In Progress";
 "Completed" = "Completed";
-"No Objective" = "No Objective";
-"Unknown Objective" = "Unknown Objective";
+"No Work" = "No Work";
+"Unknown Work" = "Unknown Work";
 "Awaiting Completion Approval" = "Awaiting Completion Approval";
 "Assistant" = "Assistant";
 "Independent Contributor" = "Independent Contributor";
@@ -538,7 +538,7 @@
 "Inactive" = "Inactive";
 "Hide Sidebar" = "Hide Sidebar";
 "Show Sidebar" = "Show Sidebar";
-"No Objectives" = "No Objectives";
+"No Works" = "No Works";
 "New %@" = "New %@";
 "No Workspace Bound" = "No Workspace Bound";
 "No Content" = "No Content";
@@ -618,10 +618,10 @@
 "保留当前内容" = "Keep Current Content";
 "已恢复生成前的表单内容。" = "Restored the form content from before generation.";
 "Worker" = "Worker";
-"Objective Session" = "Objective Session";
+"Work Session" = "Work Session";
 "Session Type" = "Session Type";
 "No Sessions in This Category" = "No sessions in this category";
-"Create an Assistant, Objective, or Worker Session" = "Create an Assistant, Objective, or Worker Session";
+"Create an Assistant, Work, or Worker Session" = "Create an Assistant, Work, or Worker Session";
 "讨论" = "Discuss";
 "自动验收已通过" = "Automated Acceptance Passed";
 "人工验收未通过" = "Manual Acceptance Rejected";
@@ -653,7 +653,7 @@
 "Unable to restore CorptieTask execution" = "Unable to restore CorptieTask execution";
 "Restore this completed CorptieTask to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session." = "Restore this completed CorptieTask to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session.";
 "All" = "All";
-"New Objective" = "New Objective";
+"New Work" = "New Work";
 "初始化 Git 仓库？" = "Initialize Git Repository?";
 "初始化并添加" = "Initialize and Add";
 "“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？" = "“%@” is not a Git repository. Initialize a Git repository in this folder?";
@@ -725,7 +725,7 @@
 "目标 Session" = "Target Session";
 "消息" = "Message";
 "目标 CorptieTask" = "Target CorptieTask";
-"确认后在目标 Objective 下新建" = "Create under the target Objective after confirmation";
+"确认后在目标 Work 下新建" = "Create under the target Work after confirmation";
 "跨会话协作" = "Cross-session collaboration";
 "Cross-session collaboration message from %@" = "Cross-session collaboration message from %@";
 "Sessions and resources" = "Sessions and resources";
@@ -881,7 +881,7 @@
 "Push committed branch changes to GitHub. Uncommitted files are not included." = "Push committed branch changes to GitHub. Uncommitted files are not included.";
 "Push this local branch to the configured GitHub repository and set its upstream branch if needed." = "Push this local branch to the configured GitHub repository and set its upstream branch if needed.";
 "CorptieTask Memory" = "CorptieTask Memory";
-"Objective Memory" = "Objective Memory";
+"Work Memory" = "Work Memory";
 "Agent Long-term Memory" = "Agent Long-term Memory";
 "Kept by me" = "Kept by me";
 "Suggested by Agent" = "Suggested by Agent";
@@ -895,15 +895,15 @@
 "Preserved for audit but excluded from normal recall." = "Preserved for audit but excluded from normal recall.";
 "Layered Memory Inspector" = "Layered Memory Inspector";
 "Structured Memory" = "Structured Memory";
-"CorptieTask → Objective → Agent is the recall priority. Memories are grouped by both scope and origin." = "CorptieTask → Objective → Agent is the recall priority. Memories are grouped by both scope and origin.";
-"Only this Agent's long-term layer is managed here. Objective and CorptieTask memories remain in their own context pages." = "Only this Agent's long-term layer is managed here. Objective and CorptieTask memories remain in their own context pages.";
-"Only this Agent's structured long-term layer is managed here. Objective, CorptieTask, and runtime file memories remain separate." = "Only this Agent's structured long-term layer is managed here. Objective, CorptieTask, and runtime file memories remain separate.";
-"Shared Objective context. CorptieTask-local and Agent long-term memories are managed separately." = "Shared Objective context. CorptieTask-local and Agent long-term memories are managed separately.";
+"CorptieTask → Work → Agent is the recall priority. Memories are grouped by both scope and origin." = "CorptieTask → Work → Agent is the recall priority. Memories are grouped by both scope and origin.";
+"Only this Agent's long-term layer is managed here. Work and CorptieTask memories remain in their own context pages." = "Only this Agent's long-term layer is managed here. Work and CorptieTask memories remain in their own context pages.";
+"Only this Agent's structured long-term layer is managed here. Work, CorptieTask, and runtime file memories remain separate." = "Only this Agent's structured long-term layer is managed here. Work, CorptieTask, and runtime file memories remain separate.";
+"Shared Work context. CorptieTask-local and Agent long-term memories are managed separately." = "Shared Work context. CorptieTask-local and Agent long-term memories are managed separately.";
 "The most specific task-local layer and the first layer considered during recall." = "The most specific task-local layer and the first layer considered during recall.";
 "Structured Memory for the selected owner." = "Structured Memory for the selected owner.";
 "Add Memory" = "Add Memory";
 "Add structured Memory" = "Add structured Memory";
-"Choose the narrowest scope that should be affected. CorptieTask is local, Objective is shared by the objective, and Agent is long-term." = "Choose the narrowest scope that should be affected. CorptieTask is local, Objective is shared by the objective, and Agent is long-term.";
+"Choose the narrowest scope that should be affected. CorptieTask is local, Work is shared by the work, and Agent is long-term." = "Choose the narrowest scope that should be affected. CorptieTask is local, Work is shared by the work, and Agent is long-term.";
 "Memory layer" = "Memory layer";
 "Owner" = "Owner";
 "Keep Memory" = "Keep Memory";
@@ -955,7 +955,7 @@
 "删除关联的 Worktree 和分支" = "Delete the associated Worktree and branch";
 "Artifact 处理（%d 个）" = "Artifact handling (%d)";
 "Artifact 处理" = "Artifact handling";
-"移入 Objective 层级" = "Move to Objective level";
+"移入 Work 层级" = "Move to Work level";
 "留在原地" = "Leave in place";
 "删除 CorptieTask：%@" = "Delete CorptieTask: %@";
 "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。" = "Deleting this CorptieTask permanently deletes %d associated Session(s) and their complete conversation history. The Worktree and Artifacts will be handled according to the options below. This cannot be undone.";

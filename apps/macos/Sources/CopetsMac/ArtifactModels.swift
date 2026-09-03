@@ -1,17 +1,17 @@
 import Foundation
 
 enum ArtifactVisibility: String, Codable, CaseIterable, Identifiable, Sendable {
-    case objectivePrivate = "objective_private"
+    case workPrivate = "work_private"
     case taskPrivate = "task_private"
     case sessionPrivate = "session_private"
     case repositoryTracked = "repository_tracked"
     var id: String { rawValue }
 }
 
-struct ObjectiveArtifact: Identifiable, Codable, Hashable, Sendable {
+struct WorkArtifact: Identifiable, Codable, Hashable, Sendable {
     var id: String { artifactId }
     let artifactId: String
-    let objectiveId: String
+    let workId: String
     let title: String
     let summary: String
     let visibility: ArtifactVisibility
@@ -35,11 +35,11 @@ struct ObjectiveArtifact: Identifiable, Codable, Hashable, Sendable {
 
 enum ArtifactCollectionLoadState: Equatable, Sendable {
     case idle
-    case loading(previousValue: [ObjectiveArtifact]?)
-    case loaded([ObjectiveArtifact])
-    case failed(message: String, previousValue: [ObjectiveArtifact]?)
+    case loading(previousValue: [WorkArtifact]?)
+    case loaded([WorkArtifact])
+    case failed(message: String, previousValue: [WorkArtifact]?)
 
-    var value: [ObjectiveArtifact]? {
+    var value: [WorkArtifact]? {
         switch self {
         case .idle: nil
         case .loading(let previous), .failed(_, let previous): previous
@@ -68,7 +68,7 @@ struct ArtifactReference: Identifiable, Codable, Hashable, Sendable {
     var id: String { referenceId }
     let referenceId: String
     let artifactId: String
-    let objectiveId: String
+    let workId: String
     let taskId: String?
     let sessionId: String?
     let relation: String
@@ -90,7 +90,7 @@ struct ArtifactAuditEvent: Identifiable, Codable, Hashable, Sendable {
     var id: String { auditId }
     let auditId: String
     let artifactId: String?
-    let objectiveId: String
+    let workId: String
     let action: String
     let actorId: String
     let sessionId: String?
@@ -101,7 +101,7 @@ struct ArtifactAuditEvent: Identifiable, Codable, Hashable, Sendable {
 }
 
 struct ArtifactListEnvelope: Codable, Sendable {
-    let artifacts: [ObjectiveArtifact]
+    let artifacts: [WorkArtifact]
     let totalCount: Int?
     let nextOffset: Int?
 }
@@ -149,12 +149,12 @@ struct ArtifactImportReceipt: Codable, Sendable {
 }
 
 struct ArtifactImportEnvelope: Codable, Sendable {
-    let artifact: ObjectiveArtifact
+    let artifact: WorkArtifact
     let receipt: ArtifactImportReceipt
 }
 
 struct ArtifactPublicationEnvelope: Codable, Sendable {
-    let artifact: ObjectiveArtifact
+    let artifact: WorkArtifact
     let version: ArtifactVersion
     let reference: ArtifactReference?
     let operationStatus: String?

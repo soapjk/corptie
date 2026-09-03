@@ -48,7 +48,7 @@ export class TaskCompletionService {
       receiptId,
       tokenHash: sha256(token),
       taskId: task.id,
-      objectiveId: task.objective_id,
+      workId: task.work_id,
       sourceType: "direct_macos_ui_action",
       interactionId,
       uiSurface,
@@ -82,7 +82,7 @@ export class TaskCompletionService {
       intent = this.store.getTaskCompletionIntentByTokenHash(sha256(token));
       if (!intent) throw completionError("COMPLETION_INTENT_INVALID", "Completion intent token is invalid.", 403);
       if (token !== `${intent.receiptId}.${intent.nonce}`) throw completionError("COMPLETION_INTENT_INVALID", "Completion intent token is invalid.", 403);
-      if (intent.sourceType !== sourceType || intent.taskId !== task.id || intent.objectiveId !== task.objective_id) {
+      if (intent.sourceType !== sourceType || intent.taskId !== task.id || intent.workId !== task.work_id) {
         throw completionError("COMPLETION_INTENT_TARGET_MISMATCH", "Completion intent does not match this Task.", 403);
       }
       if (intent.requestId !== requestId) throw completionError("COMPLETION_INTENT_REQUEST_MISMATCH", "Completion request does not match its intent.", 403);
@@ -111,12 +111,12 @@ export class TaskCompletionService {
     let idempotencyKey = optionalText(input.idempotencyKey) ?? fallbackAttemptId;
     let requestId = optionalText(input.requestId) ?? fallbackAttemptId;
     try {
-      const objectiveId = required(input.objectiveId, "OBJECTIVE_ID_REQUIRED", "objectiveId is required.");
+      const workId = required(input.workId, "WORK_ID_REQUIRED", "workId is required.");
       idempotencyKey = required(input.idempotencyKey, "COMPLETION_IDEMPOTENCY_KEY_REQUIRED", "idempotencyKey is required.");
       requestId = required(input.requestId, "COMPLETION_REQUEST_ID_REQUIRED", "requestId is required.");
       const existing = this.store.getTaskCompletionOperationByIdempotency(sourceType, idempotencyKey);
       if (existing) return this.#replay(existing, taskId, requestId);
-      if (task.objective_id !== objectiveId) throw completionError("TASK_OBJECTIVE_MISMATCH", "Task does not belong to the supplied Objective.", 403);
+      if (task.work_id !== workId) throw completionError("TASK_WORK_MISMATCH", "Task does not belong to the supplied Work.", 403);
       const logicalSessionId = required(input.logicalSessionId, "LOGICAL_SESSION_ID_REQUIRED", "logicalSessionId is required.");
       if (!metadata.logicalSessionId || metadata.logicalSessionId !== logicalSessionId) {
         throw completionError("LOGICAL_SESSION_MISMATCH", "The authenticated logical Session does not match the completion evidence.", 403);
@@ -198,7 +198,7 @@ export class TaskCompletionService {
     return {
       operationId: `completion_operation:${randomUUID()}`,
       createdAt: this.now().toISOString(),
-      ...(task ? { taskId: task.id, objectiveId: task.objective_id } : {}),
+      ...(task ? { taskId: task.id, workId: task.work_id } : {}),
       ...(input.nonce ? { auditNonce: sha256(input.nonce) } : {}),
       ...rest
     };
@@ -208,7 +208,7 @@ export class TaskCompletionService {
     if (!input.task || !input.idempotencyKey || !input.requestId) return;
     try {
       this.store.recordRejectedTaskCompletion(this.#operationInput({
-        taskId: input.task.id, objectiveId: input.task.objective_id,
+        taskId: input.task.id, workId: input.task.work_id,
         sourceType: input.sourceType, idempotencyKey: input.idempotencyKey,
         requestId: input.requestId, nonce: input.nonce ?? null,
         logicalSessionId: input.logicalSessionId ?? null,
@@ -229,7 +229,7 @@ function presentReceipt(intent) {
     receiptId: intent.receiptId,
     intentToken: `${intent.receiptId}.${intent.nonce}`,
     taskId: intent.taskId,
-    objectiveId: intent.objectiveId,
+    workId: intent.workId,
     interactionId: intent.interactionId,
     uiSurface: intent.uiSurface,
     issuedAt: intent.issuedAt,
@@ -266,8 +266,8 @@ function directUserEventRejection(event) {
 
 function sessionCanOperate(session, task) {
   if (!session || session.deletedAt) return false;
-  if (session.sessionKind === "worker") return session.taskId === task.id && session.objectiveId === task.objective_id;
-  return session.sessionKind === "objectiveChat" && session.objectiveId === task.objective_id;
+  if (session.sessionKind === "worker") return session.taskId === task.id && session.workId === task.work_id;
+  return session.sessionKind === "workChat" && session.workId === task.work_id;
 }
 
 function containsCompletionIntent(text) {

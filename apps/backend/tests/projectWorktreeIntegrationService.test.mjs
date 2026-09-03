@@ -12,20 +12,20 @@ import {
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 function fixture() {
-  const objective = {
-    id: "objective:1",
-    name: "Objective",
-    workspaceIds: ["repository:1"],
+  const work = {
+    id: "work:1",
+    name: "Work",
+    workspaceId: "workspace:1",
     contributorAgentIds: ["agent:1"]
   };
   const tasks = [
     {
-      id: "task:1", objective_id: objective.id, title: "First",
+      id: "task:1", work_id: work.id, title: "First",
       current_session_id: "session:1", execution_status: "completed", status: "in_progress",
       updated_at: "2026-08-18T01:00:00.000Z"
     },
     {
-      id: "task:2", objective_id: objective.id, title: "Second",
+      id: "task:2", work_id: work.id, title: "Second",
       current_session_id: "session:2", execution_status: "completed", status: "in_progress",
       updated_at: "2026-08-18T02:00:00.000Z"
     }
@@ -36,8 +36,9 @@ function fixture() {
   ]);
   const runs = new Map();
   const store = {
-    getObjective: (id) => id === objective.id ? objective : null,
-    listTasksByObjective: (id) => id === objective.id ? tasks : [],
+    getWork: (id) => id === work.id ? work : null,
+    getGitRepositoryForWorkspace: (id) => id === work.workspaceId ? { id: "repository:1" } : null,
+    listTasksByWork: (id) => id === work.id ? tasks : [],
     getSession: (id) => sessions.get(id) ?? null,
     getLogicalSessionByLegacySessionId: (id) => sessions.has(id)
       ? { logicalSessionId: `logical:${id}`, archived: false, activeBinding: { state: "active" } }
@@ -48,7 +49,7 @@ function fixture() {
     getTask: (id) => tasks.find((item) => item.id === id) ?? null,
     createProjectIntegrationRun(input) {
       const run = {
-        id: "integration:1", repositoryId: input.repositoryId, objectiveId: input.objectiveId,
+        id: "integration:1", repositoryId: input.repositoryId, workId: input.workId,
         status: "running", mainHeadBefore: input.mainHeadBefore, mainHeadAfter: null,
         conflictTaskId: null, conflictSessionId: null,
         integrationWorktreeId: null, integrationWorktreePath: null, integrationBranch: null,
@@ -128,7 +129,7 @@ test("integration run presenter supplies the complete client wire contract", () 
   );
 });
 
-test("status exposes completed Objective Worktrees and scoped contributor Agents", async () => {
+test("status exposes completed Work Worktrees and scoped contributor Agents", async () => {
   const { store, inspection } = fixture();
   const service = new ProjectWorktreeIntegrationService({
     store,
@@ -138,7 +139,7 @@ test("status exposes completed Objective Worktrees and scoped contributor Agents
     createAndLaunchConflictTask: async () => ({})
   });
 
-  const status = await service.status("repository:1", "objective:1");
+  const status = await service.status("repository:1", "work:1");
 
   assert.deepEqual(status.eligibleWorktrees.map((item) => item.worktreeId), ["wt:1", "wt:2"]);
   assert.deepEqual(status.eligibleAgents.map((agent) => agent.agentId), ["agent:1"]);
@@ -167,7 +168,7 @@ test("one-click integration serially merges clean Worktrees and records conflict
     createAndLaunchConflictTask: async () => ({})
   });
 
-  const result = await service.integrateCompleted("repository:1", "objective:1");
+  const result = await service.integrateCompleted("repository:1", "work:1");
 
   assert.deepEqual(attempts, ["wt:1", "wt:2"]);
   assert.equal(result.latestRun.status, "conflicts_detected");
@@ -179,7 +180,7 @@ test("one-click integration serially merges clean Worktrees and records conflict
     ["apps/backend/src/server.mjs"]
   );
   await assert.rejects(
-    () => service.integrateCompleted("repository:1", "objective:1"),
+    () => service.integrateCompleted("repository:1", "work:1"),
     (error) => error?.code === "UNRESOLVED_INTEGRATION_CONFLICTS"
   );
 });
@@ -200,7 +201,7 @@ test("one-click integration completes every eligible Worktree and updates the fi
     createAndLaunchConflictTask: async () => ({})
   });
 
-  const result = await service.integrateCompleted("repository:1", "objective:1");
+  const result = await service.integrateCompleted("repository:1", "work:1");
 
   assert.deepEqual(attempts, ["wt:1", "wt:2"]);
   assert.equal(result.latestRun.status, "integrated");
@@ -233,10 +234,10 @@ test("one-click integration rejects a concurrent duplicate while the first run c
     createAndLaunchConflictTask: async () => ({})
   });
 
-  const first = service.integrateCompleted("repository:1", "objective:1");
+  const first = service.integrateCompleted("repository:1", "work:1");
   await firstMergeStarted;
   await assert.rejects(
-    () => service.integrateCompleted("repository:1", "objective:1"),
+    () => service.integrateCompleted("repository:1", "work:1"),
     (error) => error?.code === "INTEGRATION_ALREADY_RUNNING" && error?.statusCode === 409
   );
   unblockFirstMerge();
@@ -256,7 +257,7 @@ test("conflict parser and counters keep Git conflicts separate from other failur
   ]), { total: 5, integrated: 2, conflicts: 1, failed: 1, pending: 1 });
 });
 
-test("conflict resolution creates one Objective Task in a dedicated Integration Worktree and reuses it", async () => {
+test("conflict resolution creates one Work Task in a dedicated Integration Worktree and reuses it", async () => {
   const { store, state, inspection, tasks, sessions } = fixture();
   let workspaceCreations = 0;
   let launches = 0;
@@ -280,7 +281,7 @@ test("conflict resolution creates one Objective Task in a dedicated Integration 
       launchInput = input;
       const task = {
         id: "task:resolution",
-        objective_id: "objective:1",
+        work_id: "work:1",
         title: input.title
       };
       const session = {
@@ -293,17 +294,17 @@ test("conflict resolution creates one Objective Task in a dedicated Integration 
       return { task, session };
     }
   });
-  const integrated = await service.integrateCompleted("repository:1", "objective:1");
+  const integrated = await service.integrateCompleted("repository:1", "work:1");
 
   const created = await service.createConflictTask(
     "repository:1",
-    "objective:1",
+    "work:1",
     integrated.latestRun.id,
     { agentId: "agent:1" }
   );
   const reused = await service.createConflictTask(
     "repository:1",
-    "objective:1",
+    "work:1",
     integrated.latestRun.id,
     { agentId: "agent:1" }
   );
@@ -315,7 +316,7 @@ test("conflict resolution creates one Objective Task in a dedicated Integration 
   assert.equal(created.run.status, "conflict_resolution_running");
   assert.equal(created.run.integrationWorktreePath, "/repo-integration");
   assert.equal(created.run.conflictTaskId, "task:resolution");
-  assert.equal(launchInput.objective.id, "objective:1");
+  assert.equal(launchInput.work.id, "work:1");
   assert.equal(launchInput.agent.agentId, "agent:1");
   assert.equal(launchInput.workspace.path, "/repo-integration");
   assert.match(launchInput.prompt, /不得推送远端/);
@@ -329,7 +330,7 @@ test("conflict resolution creates one Objective Task in a dedicated Integration 
   for (const worktree of state.worktrees.filter((item) => !item.isMain)) {
     worktree.mergedIntoMain = true;
   }
-  const reconciled = await service.status("repository:1", "objective:1");
+  const reconciled = await service.status("repository:1", "work:1");
   assert.equal(reconciled.latestRun.status, "integrated");
   assert.deepEqual(reconciled.latestRun.counts, {
     total: 2, integrated: 2, conflicts: 0, failed: 0, pending: 0
@@ -343,7 +344,7 @@ test("Integration Runs and per-Worktree results persist in the Corptie store", a
     await store.initialize();
     const run = store.createProjectIntegrationRun({
       repositoryId: "repository:1",
-      objectiveId: "objective:1",
+      workId: "work:1",
       mainHeadBefore: "main:1",
       items: [{
         worktreeId: "wt:1",
@@ -363,7 +364,7 @@ test("Integration Runs and per-Worktree results persist in the Corptie store", a
       completedAt: "2026-08-18T03:00:00.000Z"
     });
 
-    const saved = store.getLatestProjectIntegrationRun("repository:1", "objective:1");
+    const saved = store.getLatestProjectIntegrationRun("repository:1", "work:1");
     assert.equal(saved.status, "conflicts_detected");
     assert.deepEqual(saved.items[0].conflictFiles, ["server.mjs"]);
     assert.equal(saved.items[0].error, "merge conflict");

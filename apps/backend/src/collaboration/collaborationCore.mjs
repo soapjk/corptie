@@ -12,7 +12,7 @@ const TASK_INPUT_FIELDS = new Set([
   "maxIterations", "idempotencyKey", "messageIdempotencyKey", "parentTaskId", "contextId",
   "contextTitle", "contextMetadata", "messageId", "deliveryId", "sourceSessionId", "sourceTurnId",
   "initiatorSessionId", "recipientSessionId", "initiatorNameAtSend", "recipientNameAtSend",
-  "sourceObjectiveId", "targetObjectiveId", "sourceTaskId", "targetTaskId",
+  "sourceWorkId", "targetWorkId", "sourceTaskId", "targetTaskId",
   "routingVersion", "routeStatus", "initiatorBindingId", "recipientBindingId", "routingIntent",
   "presentation"
 ]);
@@ -368,7 +368,7 @@ export class CollaborationCore {
       const task = this.#ensureCollaborationTask({
         requestedTaskId: input.targetTaskId ?? scope.targetTaskId,
         taskId,
-        targetObjectiveId: scope.targetObjectiveId,
+        targetWorkId: scope.targetWorkId,
         recipientAgentId: recipient.agentId,
         title,
         summary,
@@ -384,7 +384,7 @@ export class CollaborationCore {
       this.store.db.run(
         `INSERT INTO collaboration_requests (
           task_id, context_id, parent_task_id, protocol_version,
-          source_objective_id, target_objective_id, source_task_id, target_task_id,
+          source_work_id, target_work_id, source_task_id, target_task_id,
           initiator_agent_id, recipient_agent_id, service_id,
           type, status, iteration, max_iterations, title, summary, acceptance_criteria_json,
           idempotency_key, created_at, updated_at, completed_at,
@@ -394,7 +394,7 @@ export class CollaborationCore {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'pending', 'pending', ?, ?)`,
         [
           taskId, contextId, optionalText(input.parentTaskId), COLLABORATION_PROTOCOL_VERSION,
-          scope.sourceObjectiveId, scope.targetObjectiveId, scope.sourceTaskId, task.id,
+          scope.sourceWorkId, scope.targetWorkId, scope.sourceTaskId, task.id,
           initiator.agentId, recipient.agentId, service?.serviceId ?? null, taskType,
           maxIterations, title, summary, JSON.stringify(acceptanceCriteria), idempotencyKey, timestamp, timestamp,
           initiatorSessionId,
@@ -430,8 +430,8 @@ export class CollaborationCore {
         taskId,
         senderAgentId: initiator.agentId,
         recipientAgentId: recipient.agentId,
-        sourceObjectiveId: scope.sourceObjectiveId,
-        targetObjectiveId: scope.targetObjectiveId,
+        sourceWorkId: scope.sourceWorkId,
+        targetWorkId: scope.targetWorkId,
         sourceTaskId: scope.sourceTaskId,
         targetTaskId: task.id,
         messageType: taskType,
@@ -448,8 +448,8 @@ export class CollaborationCore {
         status: "proposed",
         messageId,
         recipientAgentId: recipient.agentId,
-        sourceObjectiveId: scope.sourceObjectiveId,
-        targetObjectiveId: scope.targetObjectiveId,
+        sourceWorkId: scope.sourceWorkId,
+        targetWorkId: scope.targetWorkId,
         targetTaskId: task.id
       }, timestamp, initiatorSessionId);
     });
@@ -472,14 +472,14 @@ export class CollaborationCore {
     if (input.parentTaskId) this.#requireTask(input.parentTaskId);
     const scope = this.#resolveTaskScope(input, initiator, recipient);
     if (input.targetTaskId) {
-      this.#validateRequestedTask(input.targetTaskId, scope.targetObjectiveId, recipient.agentId);
+      this.#validateRequestedTask(input.targetTaskId, scope.targetWorkId, recipient.agentId);
     }
     const initiatorSessionId = input.initiatorSessionId ?? initiator.sessionId;
     const recipientSessionId = this.#initialRecipientSessionId(input, recipient);
     const initiatorSession = sessionPresentationSnapshot(this.store, initiatorSessionId);
     const recipientSession = sessionPresentationSnapshot(this.store, recipientSessionId);
-    const sourceObjective = this.store.getObjective(scope.sourceObjectiveId);
-    const targetObjective = this.store.getObjective(scope.targetObjectiveId);
+    const sourceWork = this.store.getWork(scope.sourceWorkId);
+    const targetWork = this.store.getWork(scope.targetWorkId);
     const request = {
       ...input,
       initiatorAgentId: initiator.agentId,
@@ -489,8 +489,8 @@ export class CollaborationCore {
       initiatorNameAtSend: input.initiatorNameAtSend ?? initiatorSession?.title ?? initiator.sessionName,
       recipientNameAtSend: input.recipientNameAtSend ?? recipientSession?.title
         ?? (recipientSessionId ? recipient.sessionName : null),
-      sourceObjectiveId: scope.sourceObjectiveId,
-      targetObjectiveId: scope.targetObjectiveId,
+      sourceWorkId: scope.sourceWorkId,
+      targetWorkId: scope.targetWorkId,
       sourceTaskId: scope.sourceTaskId,
       routingVersion: scope.routingVersion,
       routeStatus: scope.routeStatus,
@@ -505,8 +505,8 @@ export class CollaborationCore {
     request.presentation = {
       initiatorAgentName: initiator.name,
       recipientAgentName: recipient.name,
-      sourceObjective: { id: scope.sourceObjectiveId, name: sourceObjective?.name ?? scope.sourceObjectiveId },
-      targetObjective: { id: scope.targetObjectiveId, name: targetObjective?.name ?? scope.targetObjectiveId },
+      sourceWork: { id: scope.sourceWorkId, name: sourceWork?.name ?? scope.sourceWorkId },
+      targetWork: { id: scope.targetWorkId, name: targetWork?.name ?? scope.targetWorkId },
       initiatorSession,
       recipientSession,
       routingIntent: optionalText(input.routingIntent)
@@ -726,8 +726,8 @@ export class CollaborationCore {
       throw domainError("RECIPIENT_SESSION_AGENT_MISMATCH", "The replacement Session is not bound to the collaboration recipient Agent.");
     }
     const route = this.#routeForSession(recipientSessionId);
-    if (route?.objectiveId !== task.targetObjectiveId) {
-      throw domainError("TARGET_OBJECTIVE_MISMATCH", "The replacement Session does not belong to the collaboration target Objective.");
+    if (route?.workId !== task.targetWorkId) {
+      throw domainError("TARGET_WORK_MISMATCH", "The replacement Session does not belong to the collaboration target Work.");
     }
     const stableSessionId = this.#stableSessionIdentity(recipientSessionId);
     const timestamp = this.clock();
@@ -1056,8 +1056,8 @@ export class CollaborationCore {
     const row = this.store.selectOne(
       `SELECT d.*, m.task_id, m.sender_agent_id, m.sender_session_id, m.recipient_session_id AS message_recipient_session_id,
               m.message_type, m.body,
-              m.protocol_version, m.source_objective_id AS message_source_objective_id,
-              m.target_objective_id AS message_target_objective_id,
+              m.protocol_version, m.source_work_id AS message_source_work_id,
+              m.target_work_id AS message_target_work_id,
               m.source_task_id AS message_source_task_id, m.target_task_id AS message_target_task_id,
               m.evidence_json, m.payload_json, m.error_json, m.resource_version, m.created_at AS message_created_at,
               t.context_id, t.service_id, t.type AS task_type, t.status AS task_status,
@@ -1065,7 +1065,7 @@ export class CollaborationCore {
               t.initiator_session_id, t.recipient_session_id AS task_recipient_session_id,
               t.initiator_name_at_send, t.recipient_name_at_send,
               t.routing_version, t.route_status, t.routing_intent,
-              t.source_objective_id, t.target_objective_id, t.source_task_id, t.target_task_id,
+              t.source_work_id, t.target_work_id, t.source_task_id, t.target_task_id,
               t.iteration, t.max_iterations, t.title, t.summary,
               t.acceptance_criteria_json, a.name AS sender_agent_name,
               s.name AS service_name
@@ -1100,8 +1100,8 @@ export class CollaborationCore {
           recipientAgentId: row.recipient_agent_id,
           senderSessionId: row.sender_session_id,
           recipientSessionId: row.message_recipient_session_id,
-          sourceObjectiveId: row.message_source_objective_id,
-          targetObjectiveId: row.message_target_objective_id,
+          sourceWorkId: row.message_source_work_id,
+          targetWorkId: row.message_target_work_id,
           sourceTaskId: row.message_source_task_id,
           targetTaskId: row.message_target_task_id,
           payload: parseJson(row.payload_json, {
@@ -1123,8 +1123,8 @@ export class CollaborationCore {
         recipientSessionId: row.task_recipient_session_id || null,
         initiatorNameAtSend: row.initiator_name_at_send || null,
         recipientNameAtSend: row.recipient_name_at_send || null,
-        sourceObjectiveId: row.source_objective_id,
-        targetObjectiveId: row.target_objective_id,
+        sourceWorkId: row.source_work_id,
+        targetWorkId: row.target_work_id,
         sourceTaskId: row.source_task_id || null,
         taskId: row.task_id,
         serviceId: row.service_id || null,
@@ -1557,7 +1557,7 @@ export class CollaborationCore {
     const timestamp = input.timestamp ?? this.clock();
     const taskScope = this.store.selectOne(
       `SELECT initiator_agent_id, recipient_agent_id, initiator_session_id, recipient_session_id,
-              source_objective_id, target_objective_id, source_task_id, target_task_id
+              source_work_id, target_work_id, source_task_id, target_task_id
        FROM collaboration_requests WHERE task_id = ?`,
       [input.taskId]
     );
@@ -1571,10 +1571,10 @@ export class CollaborationCore {
     if (!senderSessionId || !recipientSessionId || senderSessionId === recipientSessionId) {
       throw domainError("DISTINCT_SESSIONS_REQUIRED", "Every collaboration message requires two explicit, distinct Sessions.");
     }
-    const sourceObjectiveId = input.sourceObjectiveId
-      ?? (sendsForward ? taskScope?.source_objective_id : taskScope?.target_objective_id);
-    const targetObjectiveId = input.targetObjectiveId
-      ?? (sendsForward ? taskScope?.target_objective_id : taskScope?.source_objective_id);
+    const sourceWorkId = input.sourceWorkId
+      ?? (sendsForward ? taskScope?.source_work_id : taskScope?.target_work_id);
+    const targetWorkId = input.targetWorkId
+      ?? (sendsForward ? taskScope?.target_work_id : taskScope?.source_work_id);
     const sourceTaskId = input.sourceTaskId ?? taskScope?.source_task_id ?? null;
     const targetTaskId = input.targetTaskId ?? taskScope?.target_task_id;
     const payload = {
@@ -1590,8 +1590,8 @@ export class CollaborationCore {
       recipientAgentId: input.recipientAgentId,
       senderSessionId,
       recipientSessionId,
-      sourceObjectiveId,
-      targetObjectiveId,
+      sourceWorkId,
+      targetWorkId,
       sourceTaskId,
       targetTaskId,
       payload,
@@ -1600,13 +1600,13 @@ export class CollaborationCore {
     });
     this.store.db.run(
       `INSERT INTO collaboration_messages (
-        message_id, task_id, protocol_version, source_objective_id, target_objective_id,
+        message_id, task_id, protocol_version, source_work_id, target_work_id,
         source_task_id, target_task_id, sender_agent_id, recipient_agent_id,
         sender_session_id, recipient_session_id, message_type, body,
         evidence_json, payload_json, error_json, resource_version, idempotency_key, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        messageId, input.taskId, envelope.version, sourceObjectiveId, targetObjectiveId,
+        messageId, input.taskId, envelope.version, sourceWorkId, targetWorkId,
         sourceTaskId, targetTaskId, input.senderAgentId, input.recipientAgentId,
         senderSessionId, recipientSessionId, input.messageType,
         payload.body, JSON.stringify(payload.evidence), JSON.stringify(payload),
@@ -1712,29 +1712,29 @@ export class CollaborationCore {
   #resolveTaskScope(input, initiator, recipient) {
     const initiatorRoute = this.#routeForSession(input.initiatorSessionId);
     const recipientRoute = this.#routeForSession(input.recipientSessionId);
-    const sourceObjectiveId = initiatorRoute?.objectiveId ?? this.#resolveObjectiveForAgent(
-      initiator, optionalText(input.sourceObjectiveId), "sourceObjectiveId"
+    const sourceWorkId = initiatorRoute?.workId ?? this.#resolveWorkForAgent(
+      initiator, optionalText(input.sourceWorkId), "sourceWorkId"
     );
-    const targetObjectiveId = recipientRoute?.objectiveId ?? this.#resolveObjectiveForAgent(
-      recipient, optionalText(input.targetObjectiveId), "targetObjectiveId"
+    const targetWorkId = recipientRoute?.workId ?? this.#resolveWorkForAgent(
+      recipient, optionalText(input.targetWorkId), "targetWorkId"
     );
-    if (input.sourceObjectiveId && input.sourceObjectiveId !== sourceObjectiveId) {
-      throw domainError("SOURCE_OBJECTIVE_SPOOFED", "sourceObjectiveId is derived from the authenticated source Session.");
+    if (input.sourceWorkId && input.sourceWorkId !== sourceWorkId) {
+      throw domainError("SOURCE_WORK_SPOOFED", "sourceWorkId is derived from the authenticated source Session.");
     }
-    if (input.targetObjectiveId && input.targetObjectiveId !== targetObjectiveId) {
-      throw domainError("TARGET_OBJECTIVE_MISMATCH", "targetObjectiveId does not match the selected recipient Session.");
+    if (input.targetWorkId && input.targetWorkId !== targetWorkId) {
+      throw domainError("TARGET_WORK_MISMATCH", "targetWorkId does not match the selected recipient Session.");
     }
     const sourceTaskId = optionalText(input.sourceTaskId);
     if (sourceTaskId) {
       const task = this.store.getTask(sourceTaskId);
       if (!task) throw domainError("TASK_NOT_FOUND", `Task ${sourceTaskId} was not found.`);
-      if (task.objective_id !== sourceObjectiveId) {
-        throw domainError("TASK_OBJECTIVE_MISMATCH", "The source Task does not belong to the source Objective.");
+      if (task.work_id !== sourceWorkId) {
+        throw domainError("TASK_WORK_MISMATCH", "The source Task does not belong to the source Work.");
       }
     }
     return {
-      sourceObjectiveId,
-      targetObjectiveId,
+      sourceWorkId,
+      targetWorkId,
       sourceTaskId,
       routingVersion: recipientRoute?.routingVersion ?? null,
       routeStatus: recipientRoute?.routeStatus ?? "unresolved",
@@ -1784,7 +1784,7 @@ export class CollaborationCore {
     if (!session) throw domainError("SESSION_NOT_FOUND", `Session ${normalized} was not found.`);
     const binding = logical?.activeBinding ?? null;
     return {
-      objectiveId: session.objectiveId ?? null,
+      workId: session.workId ?? null,
       taskId: session.taskId ?? null,
       routingVersion: logical?.routingVersion ?? null,
       bindingId: binding?.bindingId ?? null,
@@ -1792,56 +1792,55 @@ export class CollaborationCore {
     };
   }
 
-  #resolveObjectiveForAgent(agent, requestedObjectiveId, field) {
+  #resolveWorkForAgent(agent, requestedWorkId, field) {
     const session = agent.currentSessionId ? this.store.getSession(agent.currentSessionId) : null;
-    const sessionObjectiveId = session?.objectiveId ?? session?.objective_id ?? null;
-    const objectiveId = requestedObjectiveId ?? sessionObjectiveId;
-    if (!objectiveId) return this.#ensureCompatibilityObjective(agent).id;
-    const objective = this.store.getObjective(objectiveId);
-    if (!objective) throw domainError("OBJECTIVE_NOT_FOUND", `${field} ${objectiveId} was not found.`);
-    const contributorIds = objective.contributorAgentIds ?? objective.contributor_agent_ids ?? [];
-    const ownsTask = this.store.listTasksByObjective(objectiveId)
+    const sessionWorkId = session?.workId ?? session?.work_id ?? null;
+    const workId = requestedWorkId ?? sessionWorkId;
+    if (!workId) return this.#ensureCompatibilityWork(agent).id;
+    const work = this.store.getWork(workId);
+    if (!work) throw domainError("WORK_NOT_FOUND", `${field} ${workId} was not found.`);
+    const contributorIds = work.contributorAgentIds ?? work.contributor_agent_ids ?? [];
+    const ownsTask = this.store.listTasksByWork(workId)
       .some((task) => task.main_agent_id === agent.agentId);
-    if (sessionObjectiveId !== objectiveId && !contributorIds.includes(agent.agentId) && !ownsTask) {
-      throw domainError("OBJECTIVE_AGENT_NOT_AUTHORIZED", `Agent ${agent.agentId} is not assigned to Objective ${objectiveId}.`);
+    if (sessionWorkId !== workId && !contributorIds.includes(agent.agentId) && !ownsTask) {
+      throw domainError("WORK_AGENT_NOT_AUTHORIZED", `Agent ${agent.agentId} is not assigned to Work ${workId}.`);
     }
-    if (sessionObjectiveId === objectiveId && this.#isAssignableContributor(agent)) {
-      this.#ensureObjectiveContributor(objectiveId, agent.agentId);
+    if (sessionWorkId === workId && this.#isAssignableContributor(agent)) {
+      this.#ensureWorkContributor(workId, agent.agentId);
     }
-    return objectiveId;
+    return workId;
   }
 
   #isAssignableContributor(agent) {
     return agent.role === "independentContributor";
   }
 
-  #ensureCompatibilityObjective(agent) {
-    const id = `objective:collaboration:${encodeURIComponent(agent.agentId)}`;
-    return this.store.getObjective(id) ?? this.store.createObjective({
+  #ensureCompatibilityWork(agent) {
+    const id = `work:collaboration:${encodeURIComponent(agent.agentId)}`;
+    return this.store.getWork(id) ?? this.store.createWork({
       id,
       name: `${agent.name} collaboration boundary`,
-      description: "Compatibility Objective created for collaboration from an unscoped legacy Session.",
-      idealState: "All peer requests execute and close through explicit Tasks.",
+      description: "Compatibility Work created for collaboration from an unscoped legacy Session.",
       status: "active",
       tags: ["system:collaboration-compatibility"],
       contributorAgentIds: this.#isAssignableContributor(agent) ? [agent.agentId] : []
     });
   }
 
-  #ensureObjectiveContributor(objectiveId, agentId) {
-    const objective = this.store.getObjective(objectiveId);
-    if (!objective) throw domainError("OBJECTIVE_NOT_FOUND", `Objective ${objectiveId} was not found.`);
-    if (objective.contributorAgentIds.includes(agentId)) return objective;
-    return this.store.updateObjective(objectiveId, {
-      contributorAgentIds: [...objective.contributorAgentIds, agentId]
+  #ensureWorkContributor(workId, agentId) {
+    const work = this.store.getWork(workId);
+    if (!work) throw domainError("WORK_NOT_FOUND", `Work ${workId} was not found.`);
+    if (work.contributorAgentIds.includes(agentId)) return work;
+    return this.store.updateWork(workId, {
+      contributorAgentIds: [...work.contributorAgentIds, agentId]
     });
   }
 
-  #validateRequestedTask(taskId, targetObjectiveId, recipientAgentId) {
+  #validateRequestedTask(taskId, targetWorkId, recipientAgentId) {
     const task = this.store.getTask(taskId);
     if (!task) throw domainError("TASK_NOT_FOUND", `Task ${taskId} was not found.`);
-    if (task.objective_id !== targetObjectiveId) {
-      throw domainError("TASK_OBJECTIVE_MISMATCH", "The collaboration Task must belong to the target Objective.");
+    if (task.work_id !== targetWorkId) {
+      throw domainError("TASK_WORK_MISMATCH", "The collaboration Task must belong to the target Work.");
     }
     if (recipientAgentId && task.main_agent_id && task.main_agent_id !== recipientAgentId) {
       throw domainError("TASK_AGENT_MISMATCH", `Task ${taskId} is assigned to another Agent.`);
@@ -1856,7 +1855,7 @@ export class CollaborationCore {
     if (input.requestedTaskId) {
       const existing = this.#validateRequestedTask(
         input.requestedTaskId,
-        input.targetObjectiveId,
+        input.targetWorkId,
         input.recipientAgentId
       );
       if (input.recipientAgentId && !existing.main_agent_id) {
@@ -1867,20 +1866,14 @@ export class CollaborationCore {
     const id = `task:collaboration:${input.taskId}`;
     return this.store.getTask(id) ?? this.store.createTask({
       id,
-      objectiveId: input.targetObjectiveId,
+      workId: input.targetWorkId,
       title: input.title,
       description: input.summary,
       acceptanceCriteria: input.acceptanceCriteria.map((entry) => `- ${entry}`).join("\n"),
       priority: "medium",
       lifecycleState: input.lifecycleState ?? "todo",
-      mainWorkspaceId: this.#defaultCollaborationWorkspace(input.targetObjectiveId),
       mainAgentId: input.recipientAgentId
     });
-  }
-
-  #defaultCollaborationWorkspace(objectiveId) {
-    const objective = this.store.getObjective(objectiveId);
-    return (objective?.workspaceIds ?? []).find((repositoryId) => this.store.getGitRepository(repositoryId)) ?? null;
   }
 
   #syncTaskStatus(productTaskId, collaborationTaskId, taskStatus, timestamp) {
@@ -1900,7 +1893,7 @@ export class CollaborationCore {
   }
 
   #migrateLegacyCollaborationRequests() {
-    const migrationId = "collaboration-objective-task-v2";
+    const migrationId = "collaboration-work-task-v2";
     if (!this.store.db) {
       return { status: "deferred", migrationId, migratedTaskCount: 0 };
     }
@@ -1912,29 +1905,29 @@ export class CollaborationCore {
     }
     const rows = this.store.selectAll(
       `SELECT * FROM collaboration_requests
-       WHERE protocol_version = '1.0' OR source_objective_id IS NULL OR target_objective_id IS NULL OR target_task_id IS NULL`
+       WHERE protocol_version = '1.0' OR source_work_id IS NULL OR target_work_id IS NULL OR target_task_id IS NULL`
     );
     return this.store.runInTransaction(() => {
       for (const row of rows) {
         const initiator = this.#requireAgent(row.initiator_agent_id);
         const recipient = this.#requireAgent(row.recipient_agent_id);
-        const sourceObjectiveId = this.#objectiveForSession(row.initiator_session_id)
-          ?? this.#ensureCompatibilityObjective(initiator).id;
-        let targetObjectiveId = this.#objectiveForSession(row.recipient_session_id)
-          ?? this.#ensureCompatibilityObjective(recipient).id;
-        if (targetObjectiveId === sourceObjectiveId) {
-          targetObjectiveId = this.#ensureCompatibilityObjective(recipient).id;
+        const sourceWorkId = this.#workForSession(row.initiator_session_id)
+          ?? this.#ensureCompatibilityWork(initiator).id;
+        let targetWorkId = this.#workForSession(row.recipient_session_id)
+          ?? this.#ensureCompatibilityWork(recipient).id;
+        if (targetWorkId === sourceWorkId) {
+          targetWorkId = this.#ensureCompatibilityWork(recipient).id;
         }
         if (this.#isAssignableContributor(initiator)) {
-          this.#ensureObjectiveContributor(sourceObjectiveId, initiator.agentId);
+          this.#ensureWorkContributor(sourceWorkId, initiator.agentId);
         }
         if (this.#isAssignableContributor(recipient)) {
-          this.#ensureObjectiveContributor(targetObjectiveId, recipient.agentId);
+          this.#ensureWorkContributor(targetWorkId, recipient.agentId);
         }
         const task = this.#ensureCollaborationTask({
           requestedTaskId: row.target_task_id,
           taskId: row.task_id,
-          targetObjectiveId,
+          targetWorkId,
           recipientAgentId: this.#isAssignableContributor(recipient) ? recipient.agentId : null,
           title: row.title,
           summary: row.summary,
@@ -1945,9 +1938,9 @@ export class CollaborationCore {
           lifecycleState: "todo"
         });
         this.store.db.run(
-          `UPDATE collaboration_requests SET protocol_version = ?, source_objective_id = ?,
-           target_objective_id = ?, target_task_id = ? WHERE task_id = ?`,
-          ["2.0", sourceObjectiveId, targetObjectiveId, task.id, row.task_id]
+          `UPDATE collaboration_requests SET protocol_version = ?, source_work_id = ?,
+           target_work_id = ?, target_task_id = ? WHERE task_id = ?`,
+          ["2.0", sourceWorkId, targetWorkId, task.id, row.task_id]
         );
         const messages = this.store.selectAll(
           "SELECT * FROM collaboration_messages WHERE task_id = ? ORDER BY created_at, message_id",
@@ -1955,19 +1948,19 @@ export class CollaborationCore {
         );
         for (const message of messages) {
           const forward = message.sender_agent_id === row.initiator_agent_id;
-          const messageSourceObjectiveId = forward ? sourceObjectiveId : targetObjectiveId;
-          const messageTargetObjectiveId = forward ? targetObjectiveId : sourceObjectiveId;
+          const messageSourceWorkId = forward ? sourceWorkId : targetWorkId;
+          const messageTargetWorkId = forward ? targetWorkId : sourceWorkId;
           const payload = {
             body: message.body,
             evidence: parseJson(message.evidence_json, []),
             resourceVersion: message.resource_version || null
           };
           this.store.db.run(
-            `UPDATE collaboration_messages SET protocol_version = ?, source_objective_id = ?,
-             target_objective_id = ?, source_task_id = ?, target_task_id = ?, payload_json = ?, error_json = ?
+            `UPDATE collaboration_messages SET protocol_version = ?, source_work_id = ?,
+             target_work_id = ?, source_task_id = ?, target_task_id = ?, payload_json = ?, error_json = ?
              WHERE message_id = ?`,
             [
-              "2.0", messageSourceObjectiveId, messageTargetObjectiveId,
+              "2.0", messageSourceWorkId, messageTargetWorkId,
               row.source_task_id || null, task.id, JSON.stringify(payload),
               message.error_json, message.message_id
             ]
@@ -2021,13 +2014,13 @@ export class CollaborationCore {
     if (this.store.db.getRowsModified() > 0) this.store.scheduleSave();
   }
 
-  #objectiveForSession(sessionId) {
+  #workForSession(sessionId) {
     if (!sessionId) return null;
     const logical = this.store.getLogicalSession(sessionId);
     const session = this.store.getSession(sessionId)
       ?? (logical?.legacySessionId ? this.store.getSession(logical.legacySessionId) : null);
-    const objectiveId = session?.objectiveId ?? session?.objective_id ?? null;
-    return objectiveId && this.store.getObjective(objectiveId) ? objectiveId : null;
+    const workId = session?.workId ?? session?.work_id ?? null;
+    return workId && this.store.getWork(workId) ? workId : null;
   }
 
   #assertActor(task, actorAgentId, role, actorSessionId = null) {
@@ -2100,9 +2093,9 @@ function agentFromRow(row, store, sessionReference = null) {
   const selectedProviderSessionId = logical?.legacySessionId ?? selectedSessionId;
   const selectedSession = selectedProviderSessionId ? store.getSession(selectedProviderSessionId) : null;
   const currentSession = row.current_session_id ? store.getSession(row.current_session_id) : null;
-  const objectiveIds = store.listObjectives()
-    .filter((objective) => (objective.contributorAgentIds ?? []).includes(row.agent_id))
-    .map((objective) => objective.id);
+  const workIds = store.listWorks()
+    .filter((work) => (work.contributorAgentIds ?? []).includes(row.agent_id))
+    .map((work) => work.id);
   return {
     agentId: row.agent_id,
     name: row.name,
@@ -2116,9 +2109,9 @@ function agentFromRow(row, store, sessionReference = null) {
     status: "available",
     capabilities: parseJson(row.capabilities_json, []),
     currentSessionId: row.current_session_id || null,
-    currentObjectiveId: currentSession?.objectiveId ?? null,
+    currentWorkId: currentSession?.workId ?? null,
     currentTaskId: currentSession?.taskId ?? null,
-    objectiveIds,
+    workIds,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -2141,8 +2134,8 @@ function serviceFromRow(row) {
 }
 
 function taskFromRow(row, store = null) {
-  const sourceObjective = store?.getObjective(row.source_objective_id);
-  const targetObjective = store?.getObjective(row.target_objective_id);
+  const sourceWork = store?.getWork(row.source_work_id);
+  const targetWork = store?.getWork(row.target_work_id);
   const sourceTask = row.source_task_id ? store?.getTask(row.source_task_id) : null;
   const targetTask = row.target_task_id ? store?.getTask(row.target_task_id) : null;
   return {
@@ -2150,10 +2143,10 @@ function taskFromRow(row, store = null) {
     contextId: row.context_id,
     parentTaskId: row.parent_task_id || null,
     protocolVersion: row.protocol_version,
-    sourceObjectiveId: row.source_objective_id,
-    sourceObjectiveName: sourceObjective?.name ?? null,
-    targetObjectiveId: row.target_objective_id,
-    targetObjectiveName: targetObjective?.name ?? null,
+    sourceWorkId: row.source_work_id,
+    sourceWorkName: sourceWork?.name ?? null,
+    targetWorkId: row.target_work_id,
+    targetWorkName: targetWork?.name ?? null,
     sourceTaskId: row.source_task_id || null,
     sourceTaskTitle: sourceTask?.title ?? null,
     targetTaskId: row.target_task_id || null,
@@ -2201,8 +2194,8 @@ function messageFromRow(row) {
     recipientAgentId: row.recipient_agent_id,
     senderSessionId: row.sender_session_id,
     recipientSessionId: row.recipient_session_id,
-    sourceObjectiveId: row.source_objective_id,
-    targetObjectiveId: row.target_objective_id,
+    sourceWorkId: row.source_work_id,
+    targetWorkId: row.target_work_id,
     sourceTaskId: row.source_task_id,
     targetTaskId: row.target_task_id,
     payload,
@@ -2309,10 +2302,10 @@ function taskConfirmationFromRow(row, core) {
     recipientSessionTitle: presentation.recipientSession?.title || row.recipient_name_at_send || null,
     recipientSessionKind: presentation.recipientSession?.sessionKind || null,
     recipientTaskId: presentation.recipientSession?.taskId || request.targetTaskId || null,
-    sourceObjectiveId: presentation.sourceObjective?.id || request.sourceObjectiveId || null,
-    sourceObjectiveName: presentation.sourceObjective?.name || request.sourceObjectiveId || null,
-    targetObjectiveId: presentation.targetObjective?.id || request.targetObjectiveId || null,
-    targetObjectiveName: presentation.targetObjective?.name || request.targetObjectiveId || null,
+    sourceWorkId: presentation.sourceWork?.id || request.sourceWorkId || null,
+    sourceWorkName: presentation.sourceWork?.name || request.sourceWorkId || null,
+    targetWorkId: presentation.targetWork?.id || request.targetWorkId || null,
+    targetWorkName: presentation.targetWork?.name || request.targetWorkId || null,
     sourceSessionId: row.source_session_id || null,
     sourceTurnId: row.source_turn_id || null,
     request,

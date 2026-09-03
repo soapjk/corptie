@@ -287,7 +287,7 @@ struct MainWindowResizeLayoutTests {
 @MainActor
 final class MainWindowTitlebarDispatchTests: XCTestCase {
     // AppKit fixtures are retained through bundle teardown for the same reason
-    // as ApplicationTerminationUITests: Objective-C invalid-object checking can
+    // as ApplicationTerminationUITests: Work-C invalid-object checking can
     // otherwise over-release a window after Swift Testing's autorelease pool.
     private static var retainedWindows: [NSWindow] = []
 

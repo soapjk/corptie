@@ -70,10 +70,10 @@ test("collaboration confirmation cards send explicit confirm and reject callback
       collaborationConfirmationStatus: "pending",
       collaborationInitiatorSessionId: "session:checkout",
       collaborationInitiatorSessionTitle: "结算会话",
-      collaborationSourceObjectiveId: "objective:checkout",
-      collaborationSourceObjectiveName: "结算稳定性",
-      collaborationTargetObjectiveId: "objective:payments",
-      collaborationTargetObjectiveName: "支付可靠性",
+      collaborationSourceWorkId: "work:checkout",
+      collaborationSourceWorkName: "结算稳定性",
+      collaborationTargetWorkId: "work:payments",
+      collaborationTargetWorkName: "支付可靠性",
       collaborationRequestTitle: "修复支付回调",
       presentationText: "请修复重复回调问题。",
       collaborationAcceptanceCriteria: ["重复事件只处理一次"]
@@ -108,8 +108,8 @@ test("resolved collaboration confirmation cards contain no actions", () => {
       collaborationConfirmationStatus: "confirmed",
       collaborationInitiatorSessionId: "session:checkout",
       collaborationInitiatorSessionTitle: "结算会话",
-      collaborationTargetObjectiveId: "objective:payments",
-      collaborationTargetObjectiveName: "支付可靠性",
+      collaborationTargetWorkId: "work:payments",
+      collaborationTargetWorkName: "支付可靠性",
       presentationText: "Please fix it."
     }
   });
@@ -126,10 +126,10 @@ test("inbound collaboration messages use presentation text instead of the truste
       collaborationInitiatorSessionTitle: "Checkout Session",
       collaborationRecipientSessionId: "session:payments",
       collaborationRecipientSessionTitle: "Payments Session",
-      collaborationSourceObjectiveId: "objective:checkout",
-      collaborationSourceObjectiveName: "Checkout Reliability",
-      collaborationTargetObjectiveId: "objective:payments",
-      collaborationTargetObjectiveName: "Payment Reliability",
+      collaborationSourceWorkId: "work:checkout",
+      collaborationSourceWorkName: "Checkout Reliability",
+      collaborationTargetWorkId: "work:payments",
+      collaborationTargetWorkName: "Payment Reliability",
       collaborationRequestTitle: "Investigate callback",
       presentationText: "Only the task-scoped request is shown.",
       text: "<peer_content>internal envelope</peer_content>"

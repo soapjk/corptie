@@ -86,13 +86,12 @@ struct CorptieTaskCardStatusTests {
 private func makeCorptieTask(currentSessionId: String?, executionStatus: String?) -> CorptieTask {
     CorptieTask(
         id: "task:one",
-        objectiveId: "objective:one",
+        workId: "work:one",
         title: "CorptieTask",
         description: "",
         acceptanceCriteria: "",
         priority: "medium",
         lifecycleState: "in_progress",
-        mainWorkspaceId: nil,
         mainAgentId: "agent:one",
         currentSessionId: currentSessionId,
         executionStatus: executionStatus,
@@ -114,7 +113,7 @@ private func makeCorptieTaskSession(
         agent: "Agent",
         agentId: "agent:one",
         sessionKind: .worker,
-        objectiveId: "objective:one",
+        workId: "work:one",
         taskId: "task:one",
         status: status,
         progress: status == .running ? 0.5 : 1,

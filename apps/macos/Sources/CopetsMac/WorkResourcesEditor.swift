@@ -1,30 +1,26 @@
 import SwiftUI
 import AppKit
 
-// Objective 挂靠资源编辑器（Workspace / 关联 Objective / Contributor Agent）。
-// 创建页（ObjectiveCreateView）与详情编辑页（ObjectiveDetailView）复用。
+// Work 资源编辑器（唯一 Workspace / Contributor Agent）。
+// 创建页（WorkCreateView）与详情编辑页（WorkDetailView）复用。
 //
-// - Workspace：已选列表 + 加号（NSOpenPanel 选目录 → 后端 detect 注册）
-// - 关联 Objective：多选列表
+// - Workspace：已选列表 + 加号（普通目录可直接使用，Git 是可选能力）
 // - Contributor Agent：已分配列表 + 加号（AgentPickerView 弹窗，可搜索/新建/选择已有）
-struct ObjectiveResourcesEditor: View {
+struct WorkResourcesEditor: View {
     @ObservedObject private var client = EntityAPIClient.shared
 
-    @Binding var workspaceIds: Set<String>
-    @Binding var relatedObjectiveIds: Set<String>
+    @Binding var workspaceId: String?
     @Binding var contributorAgentIds: Set<String>
-    /// 编辑场景传入当前 Objective id，用于从「关联 Objective」候选中排除自己；创建场景为 nil。
-    var excludeObjectiveId: String?
+    var workspaceEditable = true
 
     @State private var showAgentPicker = false
     @State private var workspaceError: String?
-    @State private var pendingGitInitializationURL: URL?
+    @State private var pendingWorkspaceRegistration: WorkspaceRegistrationEnvelope?
     @State private var showGitInitializationConfirmation = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             workspaceSection
-            relatedObjectiveSection
             agentSection
         }
         .sheet(isPresented: $showAgentPicker) {
@@ -41,22 +37,28 @@ struct ObjectiveResourcesEditor: View {
         .confirmationDialog(
             L10n("初始化 Git 仓库？"),
             isPresented: $showGitInitializationConfirmation,
-            presenting: pendingGitInitializationURL
-        ) { url in
-            Button(L10n("初始化并添加")) {
-                pendingGitInitializationURL = nil
-                Task { await initializeAndAddWorkspace(at: url) }
+            presenting: pendingWorkspaceRegistration
+        ) { registration in
+            Button(L10n("直接使用，不启用 Git")) {
+                workspaceId = registration.workspace.workspaceId
+                pendingWorkspaceRegistration = nil
+            }
+            Button(L10n("初始化 Git 后使用")) {
+                let path = registration.workspace.canonicalRootPath
+                pendingWorkspaceRegistration = nil
+                Task { await initializeAndAddWorkspace(at: path) }
             }
             Button(L10n("取消"), role: .cancel) {
-                pendingGitInitializationURL = nil
+                pendingWorkspaceRegistration = nil
             }
-        } message: { url in
-            Text(L10nFormat("“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？", url.path))
+        } message: { registration in
+            Text(L10nFormat("“%@”不是 Git 仓库。办公类 Work 可以直接使用；需要代码版本管理时也可以现在初始化 Git。", registration.workspace.rootPath))
         }
         .onAppear {
             Task {
+                await client.refreshWorkspaces()
                 await client.refreshRepositories()
-                if client.objectives.isEmpty { await client.refreshObjectives() }
+                if client.works.isEmpty { await client.refreshWorks() }
                 if client.agents.isEmpty { await client.refreshAgents() }
             }
         }
@@ -67,31 +69,38 @@ struct ObjectiveResourcesEditor: View {
     private var workspaceSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(L10n("Workspace（Git 仓库）"))
+                Text(L10n("文件空间（Workspace）"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(action: chooseWorkspace) {
-                    Image(systemName: "plus.circle")
+                if workspaceEditable {
+                    Button(action: chooseWorkspace) {
+                        Image(systemName: "plus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help(L10n("选择 Workspace"))
                 }
-                .buttonStyle(.borderless)
-                .help(L10n("添加 Git 仓库"))
             }
-            if selectedRepositories.isEmpty && unresolvedWorkspaceIds.isEmpty {
-                Text(L10n("尚未选择仓库"))
+            if selectedRepository == nil && workspaceId == nil {
+                Text(L10n("尚未选择文件空间"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 2)
             } else {
                 VStack(alignment: .leading, spacing: 2) {
-                    ForEach(selectedRepositories) { repo in
-                        resourceRow(label: repo.name, icon: "shippingbox") {
-                            workspaceIds.remove(repo.id)
+                    if let repo = selectedRepository {
+                        if workspaceEditable {
+                            resourceRow(label: repo.name, icon: "shippingbox") { workspaceId = nil }
+                        } else {
+                            Label(repo.name, systemImage: "shippingbox")
                         }
                     }
-                    ForEach(unresolvedWorkspaceIds, id: \.self) { id in
-                        resourceRow(label: id, icon: "exclamationmark.triangle") {
-                            workspaceIds.remove(id)
+                    if selectedRepository == nil, let id = workspaceId {
+                        let label = selectedWorkspace?.rootPath ?? id
+                        if workspaceEditable {
+                            resourceRow(label: label, icon: "folder") { workspaceId = nil }
+                        } else {
+                            Label(label, systemImage: "folder")
                         }
                     }
                 }
@@ -99,13 +108,12 @@ struct ObjectiveResourcesEditor: View {
         }
     }
 
-    private var selectedRepositories: [GitRepository] {
-        client.repositories.filter { workspaceIds.contains($0.id) }
+    private var selectedRepository: GitRepository? {
+        client.repositories.first { $0.workspaceId == workspaceId }
     }
 
-    private var unresolvedWorkspaceIds: [String] {
-        let registered = Set(client.repositories.map(\.id))
-        return workspaceIds.filter { !registered.contains($0) }.sorted()
+    private var selectedWorkspace: WorkspaceResource? {
+        client.workspaces.first { $0.workspaceId == workspaceId }
     }
 
     private func chooseWorkspace() {
@@ -113,15 +121,25 @@ struct ObjectiveResourcesEditor: View {
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
-        panel.message = "选择要挂靠的 Git 仓库目录"
+        panel.message = "选择 Work 使用的文件夹"
         panel.prompt = "添加"
         if panel.runModal() == .OK, let url = panel.url {
             Task {
-                switch await client.registerRepository(path: url.path) {
-                case .success(let repo):
-                    workspaceIds.insert(repo.id)
-                case .notGitRepository:
-                    pendingGitInitializationURL = url
+                switch await client.registerWorkspace(path: url.path) {
+                case .success(let registration) where registration.gitCapability == "ready":
+                    await acceptWorkspace(registration.workspace)
+                case .success(let registration):
+                    await client.refreshWorks()
+                    if let owner = client.works.first(where: {
+                        $0.workspaceId == registration.workspace.workspaceId
+                    }) {
+                        workspaceError = L10nFormat(
+                            "该文件夹已属于 Work“%@”。每个 Workspace 只能绑定一个 Work，请选择其他文件夹。",
+                            owner.name
+                        )
+                        return
+                    }
+                    pendingWorkspaceRegistration = registration
                     showGitInitializationConfirmation = true
                 case .failure(let message):
                     workspaceError = message
@@ -130,31 +148,25 @@ struct ObjectiveResourcesEditor: View {
         }
     }
 
-    private func initializeAndAddWorkspace(at url: URL) async {
-        switch await client.registerRepository(path: url.path, initializeIfNeeded: true) {
-        case .success(let repo):
-            workspaceIds.insert(repo.id)
-        case .notGitRepository:
-            workspaceError = L10n("Git 初始化完成后仍无法识别所选文件夹。")
+    private func initializeAndAddWorkspace(at path: String) async {
+        switch await client.registerWorkspace(path: path, initializeGit: true) {
+        case .success(let registration):
+            await acceptWorkspace(registration.workspace)
         case .failure(let message):
             workspaceError = message
         }
     }
 
-    // MARK: - 关联 Objective（多选）
-
-    private var relatedObjectiveSection: some View {
-        MultiSelectSection(
-            title: "关联 Objective",
-            options: relatedCandidates.map { ResourceOption(id: $0.id, label: $0.name, icon: "target") },
-            selection: $relatedObjectiveIds,
-            emptyText: "暂无其他 Objective 可关联"
-        )
-    }
-
-    private var relatedCandidates: [Objective] {
-        guard let excludeObjectiveId else { return client.objectives }
-        return client.objectives.filter { $0.id != excludeObjectiveId }
+    private func acceptWorkspace(_ workspace: WorkspaceResource) async {
+        await client.refreshWorks()
+        if let owner = client.works.first(where: { $0.workspaceId == workspace.workspaceId }) {
+            workspaceError = L10nFormat(
+                "该文件夹已属于 Work“%@”。每个 Workspace 只能绑定一个 Work，请选择其他文件夹。",
+                owner.name
+            )
+            return
+        }
+        workspaceId = workspace.workspaceId
     }
 
     // MARK: - Contributor Agent
@@ -220,7 +232,7 @@ struct ObjectiveResourcesEditor: View {
     }
 }
 
-// 单个可多选资源条目（关联 Objective 多选用）
+// 单个可多选资源条目（关联 Work 多选用）
 private struct ResourceOption: Identifiable {
     let id: String
     let label: String

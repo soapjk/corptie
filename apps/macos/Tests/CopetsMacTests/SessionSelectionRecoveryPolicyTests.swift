@@ -41,7 +41,7 @@ struct SessionSelectionRecoveryPolicyTests {
     }
 
     @Test func fallsBackToTheFirstAccessibleSessionWhenHistoryIsStale() {
-        let first = makeRecoverySession(id: "session:first", taskID: nil, kind: .objectiveChat)
+        let first = makeRecoverySession(id: "session:first", taskID: nil, kind: .workChat)
         let second = makeRecoverySession(id: "session:second", taskID: nil, kind: .assistantChat)
 
         #expect(SessionSelectionRecoveryPolicy.recoverySessionID(
@@ -55,13 +55,12 @@ struct SessionSelectionRecoveryPolicyTests {
 private func makeRecoveryCorptieTask(id: String, lifecycleState: String) -> CorptieTask {
     CorptieTask(
         id: id,
-        objectiveId: "objective:one",
+        workId: "work:one",
         title: id,
         description: "Description",
         acceptanceCriteria: "Criteria",
         priority: "medium",
         lifecycleState: lifecycleState,
-        mainWorkspaceId: nil,
         mainAgentId: "agent:one",
         currentSessionId: nil,
         executionStatus: "idle",
@@ -84,7 +83,7 @@ private func makeRecoverySession(
         agent: "Agent",
         agentId: "agent:one",
         sessionKind: kind,
-        objectiveId: "objective:one",
+        workId: "work:one",
         taskId: taskID,
         status: .complete,
         progress: 1,

@@ -3,7 +3,7 @@ export const ARTIFACT_DOMAIN_ID = "artifacts";
 export class ArtifactDomainRequirements {
   static forSessionRole({ sessionKind, roleCapabilities = [], taskContract = null } = {}) {
     const canManage = roleCapabilities.includes("artifact:manage")
-      || roleCapabilities.includes("objective:manage_artifacts");
+      || roleCapabilities.includes("work:manage_artifacts");
     if (sessionKind === "worker") {
       return Object.freeze({
         requiredBeforeFirstTurn: Object.freeze([Object.freeze({
@@ -16,13 +16,13 @@ export class ArtifactDomainRequirements {
         onDemandDomains: Object.freeze([])
       });
     }
-    if (sessionKind === "objectiveChat" && canManage) {
+    if (sessionKind === "workChat" && canManage) {
       return Object.freeze({
         requiredBeforeFirstTurn: Object.freeze([]),
         onDemandDomains: Object.freeze([Object.freeze({
           domainId: ARTIFACT_DOMAIN_ID,
           minimumDomainVersion: 2,
-          reason: "Objective Artifact management requested through Tool Host search/load"
+          reason: "Work Artifact management requested through Tool Host search/load"
         })])
       });
     }
