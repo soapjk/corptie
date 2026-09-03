@@ -65,6 +65,12 @@ enum MainWindowLevelPolicy {
     }
 }
 
+enum MainWindowActivationPolicy {
+    static func shouldPresentMainWindow(detachedChatWindowIsKey: Bool) -> Bool {
+        !detachedChatWindowIsKey
+    }
+}
+
 enum MainWindowInitialLayout {
     static let idealContentSize = NSSize(width: 1_480, height: 900)
     static let minimumContentSize = NSSize(width: 980, height: 620)
@@ -825,7 +831,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        presentMainWindowAfterActivation()
+        // AppKit delivers didBecomeActive before the inactive window's first
+        // click has finished establishing its key window. Defer one main-loop
+        // turn so clicking a detached chat keeps that panel in front instead
+        // of racing the main window for focus.
+        DispatchQueue.main.async { [weak self] in
+            guard NSApp.isActive,
+                  MainWindowActivationPolicy.shouldPresentMainWindow(
+                    detachedChatWindowIsKey: DetachedChatWindowManager.shared.hasKeyWindow
+                  ) else { return }
+            self?.presentMainWindowAfterActivation()
+        }
         // Reconcile list state on foregrounding and replace any stream that was
         // silently stalled while the app was inactive.
         AppStateSyncController.shared.recoverAfterActivation()
