@@ -166,6 +166,14 @@ struct MacOSAppIconShape: Shape {
     }
 }
 
+enum ObjectiveAvatarGeometry {
+    static let visualScale: CGFloat = 0.86
+
+    static func displaySize(for layoutSize: CGFloat) -> CGFloat {
+        max(0, floor(layoutSize * visualScale))
+    }
+}
+
 struct ObjectiveAvatarView: View {
     let objectiveID: String
     let name: String
@@ -173,6 +181,7 @@ struct ObjectiveAvatarView: View {
     let size: CGFloat
 
     var body: some View {
+        let displaySize = ObjectiveAvatarGeometry.displaySize(for: size)
         ZStack {
             if let avatarPath, !avatarPath.isEmpty {
                 AnimatedAvatarImage(path: avatarPath)
@@ -190,19 +199,20 @@ struct ObjectiveAvatarView: View {
                             colors: [Color.white.opacity(0.26), Color.clear],
                             center: .topLeading,
                             startRadius: 0,
-                            endRadius: size * 0.78
+                            endRadius: displaySize * 0.78
                         )
                     )
                 Text(DefaultAvatarInitials.make(from: name, fallback: "?"))
-                    .font(.system(size: max(8, size * 0.29), weight: .bold, design: .rounded))
+                    .font(.system(size: max(8, displaySize * 0.29), weight: .bold, design: .rounded))
                     .foregroundStyle(Color.white)
                     .shadow(color: Color.black.opacity(0.24), radius: 1, y: 1)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
             }
         }
-        .frame(width: size, height: size)
+        .frame(width: displaySize, height: displaySize)
         .clipShape(MacOSAppIconShape())
+        .frame(width: size, height: size)
     }
 }
 
