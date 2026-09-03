@@ -68,7 +68,7 @@ export class SessionChannelService {
       body,
       messageKind: normalizeMessageKind(input.messageKind),
       inReplyToMessageId: optionalText(input.inReplyToMessageId),
-      targetObjectiveId: optionalText(input.targetObjectiveId),
+      targetWorkId: optionalText(input.targetWorkId),
       sessionAgentId: optionalText(input.sessionAgentId),
       taskId: optionalText(input.taskId),
       title: optionalText(input.title),
@@ -497,7 +497,7 @@ export class SessionChannelService {
     const session = logical.legacySessionId ? this.store.getSession(logical.legacySessionId) : null;
     return {
       sessionId: logical.logicalSessionId,
-      objectiveId: session?.objectiveId ?? null,
+      workId: session?.workId ?? null,
       taskId: session?.taskId ?? null,
       agentId: session?.agentId ?? this.collaborationCore.getAgentForSession(logical.logicalSessionId)?.agentId ?? null,
       repositoryId: logical.repositoryId ?? null,
@@ -606,7 +606,7 @@ function sameChannelRequest(existing, input, recipientSessionId) {
     && stored.body === requiredText(input.body, "body")
     && stored.messageKind === normalizeMessageKind(input.messageKind)
     && (stored.inReplyToMessageId ?? null) === optionalText(input.inReplyToMessageId)
-    && (stored.targetObjectiveId ?? null) === optionalText(input.targetObjectiveId)
+    && (stored.targetWorkId ?? null) === optionalText(input.targetWorkId)
     && (stored.sessionAgentId ?? null) === optionalText(input.sessionAgentId)
     && (stored.taskId ?? null) === optionalText(input.taskId)
     && (stored.title ?? null) === optionalText(input.title)

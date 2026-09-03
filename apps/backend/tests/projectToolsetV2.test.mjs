@@ -269,15 +269,15 @@ test("production Ports keep descriptors single-use, consume coordinator receipts
   const cleanup = await port.cleanup({ runId: run.runId }, session);
   assert.equal((await port.getCleanupReceipt({ runId: run.runId, receiptHash: cleanup.receiptHash })).receiptHash, cleanup.receiptHash);
 
-  const authority = { ...session, objectiveId: "objective:one", capabilityClass: "full_required" };
+  const authority = { ...session, workId: "work:one", capabilityClass: "full_required" };
   const authorization = new ProjectToolsetAuthorizationPort({ resolveAuthority: async () => authority });
   assert.equal((await authorization.assertProjectToolsetAccess(authority)).capabilityClass, "full_required");
   await assert.rejects(() => authorization.assertProjectToolsetAccess({ ...authority, capabilityClass: "run_isolation_only" }), { code: "TOOLSET_PERMISSION_DENIED" });
 });
 
 test("authoritative resolver binds Session, Startup, Snapshot and Toolset pointer without client identity", async () => {
-  const authority = { logicalSessionId: "logical:one", objectiveId: "objective:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb" };
-  const startupReceipt = { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", logicalSessionId: authority.logicalSessionId, objectiveId: authority.objectiveId, taskId: authority.taskId, repositoryId: authority.repositoryId, worktreeId: authority.worktreeId, receiptHash: "2".repeat(64), resourceVersion: 3 };
+  const authority = { logicalSessionId: "logical:one", workId: "work:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb" };
+  const startupReceipt = { schemaVersion: 2, status: "ready", startupOperationId: "startup:one", logicalSessionId: authority.logicalSessionId, workId: authority.workId, taskId: authority.taskId, repositoryId: authority.repositoryId, worktreeId: authority.worktreeId, receiptHash: "2".repeat(64), resourceVersion: 3 };
   const snapshot = { ...snapshotRef("1".repeat(64)), ...authority, startupBindingRef: startupRef() };
   const receipt = makeReceiptShape();
   const resolver = new ProjectToolsetAuthorityResolver({
@@ -310,14 +310,14 @@ function makePorts() {
     validationReceiptStore: { async put(value) { receipts.set(value.receiptId, structuredClone(value)); } },
     validationCacheStore: { async get(key) { return structuredClone(cache.get(key) ?? null); }, async put(key, value) { cache.set(key, structuredClone(value)); }, async invalidate(key) { cache.delete(key); } },
     repositorySourceSnapshotPort: { async get(ref) { return { ...structuredClone(ref), stale: false }; } },
-    startupBindingReceiptReader: { async get(ref) { return { schemaVersion: 2, status: "ready", startupOperationId: ref.startupOperationId, logicalSessionId: "logical:one", objectiveId: "objective:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", receiptHash: ref.startupReceiptHash }; } },
+    startupBindingReceiptReader: { async get(ref) { return { schemaVersion: 2, status: "ready", startupOperationId: ref.startupOperationId, logicalSessionId: "logical:one", workId: "work:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", receiptHash: ref.startupReceiptHash }; } },
     validationPlanPort: { async register({ validationPlanIdentity: identity }) { return { testPlanId: `test_plan:${identity.slice(4, 20)}`, schemaVersion: 1 }; } },
     commandDescriptorPort: { async register(input) { return { descriptorId: `command:${input.action.id}`, schemaVersion: 1 }; } },
     runIsolationPort
   };
 }
 
-function makeInput(projectRoot, declaration) { return { logicalSessionId: "logical:one", objectiveId: "objective:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", projectRoot, idempotencyKey: "one", capabilityClass: "run_isolation_only", startupBindingRef: startupRef(), startupBindingReceiptRef: startupReceiptRef(), repositorySourceSnapshotReceiptRef: snapshotRef("1".repeat(64)), projectFacts: {}, declaration }; }
+function makeInput(projectRoot, declaration) { return { logicalSessionId: "logical:one", workId: "work:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", projectRoot, idempotencyKey: "one", capabilityClass: "run_isolation_only", startupBindingRef: startupRef(), startupBindingReceiptRef: startupReceiptRef(), repositorySourceSnapshotReceiptRef: snapshotRef("1".repeat(64)), projectFacts: {}, declaration }; }
 function startupRef() { return { artifactId: STARTUP_CONTRACT.artifactId, artifactVersion: 1, artifactContentHash: STARTUP_CONTRACT.contentHash, startupOperationId: "startup:one", startupReceiptHash: "2".repeat(64) }; }
 function startupReceiptRef() { return { startupOperationId: "startup:one", receiptHash: "2".repeat(64), schemaVersion: 2, resourceVersion: 1, artifactRef: { artifactId: STARTUP_CONTRACT.artifactId, version: 1, contentHash: STARTUP_CONTRACT.contentHash, relation: "implementation_spec", receiptType: "StartupBindingReceipt", schemaVersion: 2 } }; }
 function snapshotRef(fingerprint) { return { receiptId: "snapshot:one", receiptHash: "3".repeat(64), sourceFingerprint: fingerprint, schemaVersion: 1, resourceVersion: 1, artifactRef: { artifactId: "artifact:aaaaaaaa-1111-4111-8111-111111111111", version: 1, contentHash: "a".repeat(64), relation: "implementation_spec", receiptType: "RepositorySourceSnapshotReceipt", schemaVersion: 1 } }; }
@@ -327,7 +327,7 @@ function monotonicClock() { let n = 0; return () => new Date(Date.UTC(2026, 7, 3
 function businessError(code) { return { code, message: "Validation outcome is unknown.", retryable: false, details: { actionId: null, assertionId: null, phase: "validate" } }; }
 function makeReceiptShape() {
   const run = receiptRef("Run", "run:one", 1); const cleanup = receiptRef("Cleanup", "run:one", 2); const startedAt = "2026-08-30T00:00:00.000Z"; const finishedAt = "2026-08-30T00:00:01.000Z";
-  const receipt = { receiptId: "toolset_validation_receipt:one", receiptHash: "0".repeat(64), schemaVersion: 3, resourceVersion: 1, artifactRef: { artifactId: TOOLSET_RECEIPT_SCHEMA.artifactId, version: 1, contentHash: TOOLSET_RECEIPT_SCHEMA.contentHash, relation: "implementation_spec", receiptType: "ToolsetValidationReceipt", schemaVersion: 3 }, identity: { logicalSessionId: "logical:one", objectiveId: "objective:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", startupBindingRef: startupRef() }, snapshotRef: snapshotRef("1".repeat(64)), toolsetVersion: `ptv1:${"5".repeat(64)}`, validationPlanIdentity: `vp1:${"6".repeat(64)}`, validationCacheKey: `tvck1:${"7".repeat(64)}`, actionReceipts: [{ id: "build", kind: "build", ordinal: 0, executionDisposition: "executed", outcome: "passed", runReceiptRef: run, cleanupReceiptRef: cleanup, startedAt, finishedAt, evidenceHash: "8".repeat(64), error: null }], assertionReceipts: [{ id: "exit", actionId: "build", assertionType: "exit_code", outcome: "passed", startedAt, finishedAt, evidenceHash: "9".repeat(64), error: null }], cacheDisposition: "stored", outcome: "passed", startedAt, finishedAt, expiresAt: null, error: null };
+  const receipt = { receiptId: "toolset_validation_receipt:one", receiptHash: "0".repeat(64), schemaVersion: 3, resourceVersion: 1, artifactRef: { artifactId: TOOLSET_RECEIPT_SCHEMA.artifactId, version: 1, contentHash: TOOLSET_RECEIPT_SCHEMA.contentHash, relation: "implementation_spec", receiptType: "ToolsetValidationReceipt", schemaVersion: 3 }, identity: { logicalSessionId: "logical:one", workId: "work:one", taskId: "task:one", repositoryId: "repository:aa", worktreeId: "worktree:bb", startupBindingRef: startupRef() }, snapshotRef: snapshotRef("1".repeat(64)), toolsetVersion: `ptv1:${"5".repeat(64)}`, validationPlanIdentity: `vp1:${"6".repeat(64)}`, validationCacheKey: `tvck1:${"7".repeat(64)}`, actionReceipts: [{ id: "build", kind: "build", ordinal: 0, executionDisposition: "executed", outcome: "passed", runReceiptRef: run, cleanupReceiptRef: cleanup, startedAt, finishedAt, evidenceHash: "8".repeat(64), error: null }], assertionReceipts: [{ id: "exit", actionId: "build", assertionType: "exit_code", outcome: "passed", startedAt, finishedAt, evidenceHash: "9".repeat(64), error: null }], cacheDisposition: "stored", outcome: "passed", startedAt, finishedAt, expiresAt: null, error: null };
   receipt.receiptHash = validationReceiptHash(receipt); return receipt;
 }
 

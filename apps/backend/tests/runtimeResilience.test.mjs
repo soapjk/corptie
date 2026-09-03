@@ -24,8 +24,8 @@ test("collaboration MCP environment preserves authenticated Session scope", () =
     metadata: {
       sessionId: "codex:thread-one",
       providerBindingId: "binding:thread-one",
-      sessionKind: "objectiveChat",
-      objectiveId: "objective:one",
+      sessionKind: "workChat",
+      workId: "work:one",
       taskId: null
     }
   }), {
@@ -34,11 +34,11 @@ test("collaboration MCP environment preserves authenticated Session scope", () =
     CORPTIE_ENV: "production",
     CORPTIE_SESSION_ID: "codex:thread-one",
     CORPTIE_PROVIDER_BINDING_ID: "binding:thread-one",
-    CORPTIE_SESSION_KIND: "objectiveChat",
-    CORPTIE_OBJECTIVE_ID: "objective:one",
+    CORPTIE_SESSION_KIND: "workChat",
+    CORPTIE_WORK_ID: "work:one",
     CORPTIE_TASK_ID: "",
-    CORPTIE_OBJECTIVE_CHAT_ID: "objective:one",
-    CORPTIE_OBJECTIVE_CHAT_SESSION_ID: "codex:thread-one"
+    CORPTIE_WORK_CHAT_ID: "work:one",
+    CORPTIE_WORK_CHAT_SESSION_ID: "codex:thread-one"
   });
 });
 

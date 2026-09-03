@@ -18,7 +18,7 @@ const ARTIFACT_VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
 export class SessionCollaborationService {
   constructor(options = {}) {
     this.store = options.store;
-    this.objectiveService = options.objectiveService;
+    this.workService = options.workService;
     this.artifactService = options.artifactService ?? null;
     this.collaborationCore = options.collaborationCore;
     this.workSessionStartApplicationService = options.workSessionStartApplicationService;
@@ -26,9 +26,9 @@ export class SessionCollaborationService {
     this.onRoutingEvent = options.onRoutingEvent ?? ((event, details) => {
       console.info(`[collaboration-routing] event=${event} ${JSON.stringify(details)}`);
     });
-    if (!this.store || !this.objectiveService || !this.collaborationCore
+    if (!this.store || !this.workService || !this.collaborationCore
       || typeof this.workSessionStartApplicationService?.start !== "function" || !this.defaultProviderId) {
-      throw new TypeError("SessionCollaborationService requires store, objectiveService, collaborationCore, and WorkSessionStartApplicationService.");
+      throw new TypeError("SessionCollaborationService requires store, workService, collaborationCore, and WorkSessionStartApplicationService.");
     }
   }
 
@@ -37,7 +37,7 @@ export class SessionCollaborationService {
       mutation: false,
       validateContext: options.validateContext === true
     });
-    const canCreate = scope.session.sessionKind === "objectiveChat"
+    const canCreate = scope.session.sessionKind === "workChat"
       || (scope.session.sessionKind === "worker" && Boolean(scope.session.taskId));
     const requestDenial = this.#collaborationRequestDenial(scope);
     return {
@@ -45,7 +45,7 @@ export class SessionCollaborationService {
       sourceSessionId: scope.logicalSessionId,
       providerSessionId: scope.session.id,
       sessionKind: scope.session.sessionKind,
-      objectiveId: scope.session.objectiveId,
+      workId: scope.session.workId,
       taskId: scope.session.taskId,
       actions: ["sessions.discover", "sessions.get", "tasks.list", "tasks.get", "tasks.result",
         ...(!requestDenial ? ["collaboration.request"] : []), ...(canCreate
@@ -62,7 +62,7 @@ export class SessionCollaborationService {
     const visible = this.#visibleSessions(scope, filters);
     return visible
       .filter((session) => !filters.agentId || session.agentId === filters.agentId)
-      .filter((session) => !filters.objectiveId || session.objectiveId === filters.objectiveId)
+      .filter((session) => !filters.workId || session.workId === filters.workId)
       .filter((session) => !filters.taskId || session.taskId === filters.taskId)
       .filter((session) => !filters.sessionKind || session.sessionKind === filters.sessionKind)
       .map((session) => this.#sessionDescriptor(session, scope));
@@ -72,7 +72,7 @@ export class SessionCollaborationService {
     const scope = this.#scope(metadata, actorId, { mutation: false });
     const target = this.#resolveSession(sessionId);
     if (!target) {
-      throw coded("SESSION_NOT_VISIBLE", "The target Session is outside the authenticated Objective/Agent scope.");
+      throw coded("SESSION_NOT_VISIBLE", "The target Session is outside the authenticated Work/Agent scope.");
     }
     if (!this.#isVisibleSession(scope, target, { explicitPeerLookup: true })) {
       const eligibility = collaborationSessionEligibility(this.store, target);
@@ -84,38 +84,36 @@ export class SessionCollaborationService {
           409
         );
       }
-      throw coded("SESSION_NOT_VISIBLE", "The target Session is outside the authenticated Objective/Agent scope.");
+      throw coded("SESSION_NOT_VISIBLE", "The target Session is outside the authenticated Work/Agent scope.");
     }
     return this.#sessionDescriptor(target, scope);
   }
 
   listTasks(metadata, actorId) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
-    if (!scope.session.objectiveId) return [];
-    return this.objectiveService.listTasksByObjective(scope.session.objectiveId)
+    if (!scope.session.workId) return [];
+    return this.workService.listTasksByWork(scope.session.workId)
       .filter((item) => this.#canReadTask(scope, item))
       .map((item) => this.#presentTask(item));
   }
 
   getTask(metadata, actorId, taskId) {
     const scope = this.#scope(metadata, actorId, { mutation: false });
-    const item = this.objectiveService.getTask(required(taskId, "task_id"));
+    const item = this.workService.getTask(required(taskId, "task_id"));
     if (!this.#canReadTask(scope, item)) throw coded("TASK_OUTSIDE_SCOPE", "Task is outside the authenticated Session scope.");
     return this.#presentTask(item);
   }
 
   createTask(metadata, actorId, input = {}) {
-    assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId", "mainWorkspaceId",
+    assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId",
       "artifactReference", "fileReference", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const kind = scope.session.sessionKind;
-    if (!scope.session.objectiveId || !["objectiveChat", "worker"].includes(kind)) {
-      throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Objective Chat or Worker Session is required to create a collaboration Task.");
+    if (!scope.session.workId || !["workChat", "worker"].includes(kind)) {
+      throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Work Chat or Worker Session is required to create a collaboration Task.");
     }
     const targetAgentId = optional(input.agentId);
-    if (targetAgentId) this.#requireContributor(scope.session.objectiveId, targetAgentId);
-    const workspaceId = optional(input.mainWorkspaceId);
-    if (workspaceId) this.#requireWorkspace(scope.session.objectiveId, workspaceId);
+    if (targetAgentId) this.#requireContributor(scope.session.workId, targetAgentId);
     const idempotencyKey = required(input.idempotencyKey, "idempotency_key");
     if (input.artifactReference != null && input.fileReference != null) {
       throw coded("TASK_REFERENCE_CONFLICT", "Choose either artifactReference or fileReference, not both.", 400);
@@ -126,7 +124,7 @@ export class SessionCollaborationService {
       [scope.logicalSessionId, idempotencyKey]
     );
     if (prior) {
-      if (prior.title !== required(input.title, "title") || prior.objective_id !== scope.session.objectiveId
+      if (prior.title !== required(input.title, "title") || prior.work_id !== scope.session.workId
         || (prior.creation_reference_fingerprint ?? null) !== creationReferenceFingerprint) {
         throw coded("IDEMPOTENCY_CONFLICT", "The idempotency key is already associated with different Task input.", 409);
       }
@@ -142,14 +140,13 @@ export class SessionCollaborationService {
     if (!TASK_PRIORITIES.includes(priority)) throw coded("INVALID_PRIORITY", `Unsupported Task priority: ${priority}`);
     let item;
     this.store.runInTransaction(() => {
-      item = this.objectiveService.createTask({
-        objectiveId: scope.session.objectiveId,
+      item = this.workService.createTask({
+        workId: scope.session.workId,
         title: required(input.title, "title"),
         description: input.description ?? "",
         acceptanceCriteria: input.acceptanceCriteria ?? "",
         priority,
         lifecycleState: "todo",
-        mainWorkspaceId: workspaceId,
         mainAgentId: targetAgentId
       }, {
         creationOrigin: {
@@ -167,7 +164,7 @@ export class SessionCollaborationService {
       if (artifactReference) this.artifactService.createPreparedTaskReference(artifactReference, item.id);
       if (fileReference) this.store.createTaskFileReference({
         referenceId: `task_file_reference:${randomUUID()}`,
-        objectiveId: scope.session.objectiveId,
+        workId: scope.session.workId,
         taskId: item.id,
         ...fileReference,
         actorId: scope.logicalSessionId,
@@ -187,7 +184,7 @@ export class SessionCollaborationService {
     return this.artifactService.prepareTaskCreationReference({
       actorId: scope.agent.agentId,
       sessionId: scope.session.id,
-      objectiveId: scope.session.objectiveId,
+      workId: scope.session.workId,
       taskId: scope.session.taskId
     }, required(input.artifactId, "artifact_reference.artifact_id"), input);
   }
@@ -265,10 +262,10 @@ export class SessionCollaborationService {
   shareArtifact(metadata, actorId, input = {}) {
     assertKnown(input, ["taskId", "artifactId", "relation", "required", "versionPolicy", "version"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
-    if (!scope.session.objectiveId || !["objectiveChat", "worker"].includes(scope.session.sessionKind)) {
-      throw coded("ARTIFACT_SHARE_FORBIDDEN", "A bound Objective Chat or Worker Session is required to share an Artifact.", 403);
+    if (!scope.session.workId || !["workChat", "worker"].includes(scope.session.sessionKind)) {
+      throw coded("ARTIFACT_SHARE_FORBIDDEN", "A bound Work Chat or Worker Session is required to share an Artifact.", 403);
     }
-    const target = this.objectiveService.getTask(required(input.taskId, "task_id"));
+    const target = this.workService.getTask(required(input.taskId, "task_id"));
     if (!this.#canReadTask(scope, target)) {
       throw coded("TASK_OUTSIDE_SCOPE", "The target Task is outside the authenticated Session scope.", 403);
     }
@@ -355,12 +352,12 @@ export class SessionCollaborationService {
     const bound = this.collaborationCore.getAgentForSession(session.id);
     if (!bound || bound.agentId !== actorId) throw coded("SOURCE_SESSION_ACTOR_MISMATCH", "Authenticated Agent does not own the source Session.");
     const logical = this.store.getLogicalSession(sourceId) ?? this.store.getLogicalSessionByLegacySessionId(session.id);
-    const claimedObjectiveId = optional(metadata?.objectiveId);
+    const claimedWorkId = optional(metadata?.workId);
     const claimedTaskId = optional(metadata?.taskId);
-    if ((options.mutation || options.validateContext) && claimedObjectiveId && claimedObjectiveId !== session.objectiveId) {
+    if ((options.mutation || options.validateContext) && claimedWorkId && claimedWorkId !== session.workId) {
       throw coded(
         "COLLABORATION_CONTEXT_MISMATCH",
-        `Runtime Objective ${claimedObjectiveId} does not match authenticated Session ${logical?.logicalSessionId ?? session.id} bound Objective ${session.objectiveId ?? "none"}. Refresh the Session route before retrying.`,
+        `Runtime Work ${claimedWorkId} does not match authenticated Session ${logical?.logicalSessionId ?? session.id} bound Work ${session.workId ?? "none"}. Refresh the Session route before retrying.`,
         409
       );
     }
@@ -378,13 +375,13 @@ export class SessionCollaborationService {
   }
 
   #collaborationRequestDenial(scope) {
-    if (!scope.session.objectiveId || !["objectiveChat", "worker"].includes(scope.session.sessionKind)) {
+    if (!scope.session.workId || !["workChat", "worker"].includes(scope.session.sessionKind)) {
       return {
         code: "COLLABORATION_REQUEST_FORBIDDEN",
-        reason: "collaboration.request requires an Objective Chat or Worker Session bound to an Objective."
+        reason: "collaboration.request requires an Work Chat or Worker Session bound to an Work."
       };
     }
-    if (scope.session.sessionKind === "objectiveChat") return null;
+    if (scope.session.sessionKind === "workChat") return null;
     if (!scope.session.taskId) {
       return {
         code: "COLLABORATION_REQUEST_FORBIDDEN",
@@ -392,10 +389,10 @@ export class SessionCollaborationService {
       };
     }
     const task = this.store.getTask(scope.session.taskId);
-    if (!task || task.objective_id !== scope.session.objectiveId) {
+    if (!task || task.work_id !== scope.session.workId) {
       return {
         code: "COLLABORATION_REQUEST_FORBIDDEN",
-        reason: `The Worker Session parent Task ${scope.session.taskId} is missing or outside its bound Objective.`
+        reason: `The Worker Session parent Task ${scope.session.taskId} is missing or outside its bound Work.`
       };
     }
     if (task.lifecycle_state === "done") {
@@ -408,17 +405,17 @@ export class SessionCollaborationService {
   }
 
   #visibleSessions(scope, filters = {}) {
-    if (scope.session.objectiveId) {
-      const own = this.store.listSessionsByObjective(scope.session.objectiveId)
+    if (scope.session.workId) {
+      const own = this.store.listSessionsByWork(scope.session.workId)
         .filter((session) => this.#isVisibleSession(scope, session));
-      if (!filters.agentId && !filters.objectiveId) return own;
-      const peerCandidates = filters.objectiveId
-        ? this.store.listSessionsByObjective(filters.objectiveId)
+      if (!filters.agentId && !filters.workId) return own;
+      const peerCandidates = filters.workId
+        ? this.store.listSessionsByWork(filters.workId)
         : this.store.listSessionsByAgent(filters.agentId);
       const peer = peerCandidates
-        .filter((session) => session.objectiveId !== scope.session.objectiveId)
+        .filter((session) => session.workId !== scope.session.workId)
         .filter((session) => !filters.agentId || session.agentId === filters.agentId)
-        .filter((session) => !filters.objectiveId || session.objectiveId === filters.objectiveId)
+        .filter((session) => !filters.workId || session.workId === filters.workId)
         .filter((session) => this.#isVisibleSession(scope, session, { explicitPeerLookup: true }));
       return uniqueSessions([...own, ...peer]);
     }
@@ -428,18 +425,18 @@ export class SessionCollaborationService {
   #isVisibleSession(scope, session, options = {}) {
     const agentId = session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId;
     if (!agentId) return false;
-    if (scope.session.objectiveId && session.objectiveId === scope.session.objectiveId) {
-      const objective = this.objectiveService.getObjective(scope.session.objectiveId);
-      return agentId === scope.agent.agentId || (objective.contributorAgentIds ?? []).includes(agentId);
+    if (scope.session.workId && session.workId === scope.session.workId) {
+      const work = this.workService.getWork(scope.session.workId);
+      return agentId === scope.agent.agentId || (work.contributorAgentIds ?? []).includes(agentId);
     }
-    if (!scope.session.objectiveId) return agentId === scope.agent.agentId;
+    if (!scope.session.workId) return agentId === scope.agent.agentId;
     if (!options.explicitPeerLookup
-      || !session.objectiveId
+      || !session.workId
       || (session.archived && !options.includeArchived)) return false;
-    const objective = this.store.getObjective(session.objectiveId);
-    if (!objective) return false;
+    const work = this.store.getWork(session.workId);
+    if (!work) return false;
     const assignedTask = session.taskId ? this.store.getTask(session.taskId) : null;
-    const agentAuthorized = (objective.contributorAgentIds ?? []).includes(agentId)
+    const agentAuthorized = (work.contributorAgentIds ?? []).includes(agentId)
       || assignedTask?.main_agent_id === agentId;
     if (!agentAuthorized) return false;
     const logical = this.store.getLogicalSession(session.logicalSessionId)
@@ -452,33 +449,33 @@ export class SessionCollaborationService {
       ?? this.store.getLogicalSessionByLegacySessionId(session.id);
     const binding = logical?.activeBinding ?? null;
     const agentId = session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId ?? null;
-    const sameObjective = Boolean(scope.session.objectiveId && session.objectiveId === scope.session.objectiveId);
-    const peerObjective = Boolean(scope.session.objectiveId && session.objectiveId && !sameObjective);
+    const sameWork = Boolean(scope.session.workId && session.workId === scope.session.workId);
+    const peerWork = Boolean(scope.session.workId && session.workId && !sameWork);
     const eligibility = collaborationSessionEligibility(this.store, session);
     return {
       sessionId: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id,
-      providerSessionId: peerObjective ? null : session.id,
+      providerSessionId: peerWork ? null : session.id,
       agentId,
       sessionKind: session.sessionKind,
-      objectiveId: session.objectiveId,
+      workId: session.workId,
       taskId: session.taskId,
       lifecycle: session.archived ? "archived" : session.status,
       routeStatus: binding?.state ?? (logical ? "unresolved" : "legacy_unresolved"),
       active: eligibility.active,
       routingRejectionReasons: eligibility.reasons,
       superseded: binding?.state === "superseded",
-      routingVersion: peerObjective ? null : logical?.routingVersion ?? null,
-      bindingId: peerObjective ? null : binding?.bindingId ?? null,
-      providerId: peerObjective ? null : binding?.providerId ?? session.external?.provider ?? null,
-      visibilityScope: peerObjective ? "peer_objective" : "current_scope",
-      workspace: peerObjective ? { repositoryId: null, worktreeId: null, path: null } : {
+      routingVersion: peerWork ? null : logical?.routingVersion ?? null,
+      bindingId: peerWork ? null : binding?.bindingId ?? null,
+      providerId: peerWork ? null : binding?.providerId ?? session.external?.provider ?? null,
+      visibilityScope: peerWork ? "peer_work" : "current_scope",
+      workspace: peerWork ? { repositoryId: null, worktreeId: null, path: null } : {
         repositoryId: logical?.repositoryId ?? null,
         worktreeId: logical?.activeWorkspaceId ?? null,
         path: binding?.boundCwd ?? session.external?.cwd ?? null
       },
-      collaborationCapabilities: sameObjective || (!scope.session.objectiveId && agentId === scope.agent.agentId)
+      collaborationCapabilities: sameWork || (!scope.session.workId && agentId === scope.agent.agentId)
         ? ["receive_task", "receive_message", "deliver_artifact"]
-        : peerObjective ? ["receive_task"] : []
+        : peerWork ? ["receive_task"] : []
     };
   }
 
@@ -500,23 +497,20 @@ export class SessionCollaborationService {
     }
 
     const request = channelRequest.request ?? {};
-    const targetObjectiveId = required(request.targetObjectiveId, "target_objective_id");
-    const agent = this.#requireContributor(targetObjectiveId, required(request.sessionAgentId, "session_agent_id"));
-    const objective = this.objectiveService.getObjective(targetObjectiveId);
+    const targetWorkId = required(request.targetWorkId, "target_work_id");
+    const agent = this.#requireContributor(targetWorkId, required(request.sessionAgentId, "session_agent_id"));
+    const work = this.workService.getWork(targetWorkId);
     const taskId = request.taskId ?? `task:channel:${channelRequest.requestId}`;
     let task = this.store.getTask(taskId);
     if (!task) {
-      const repositoryId = (objective.workspaceIds ?? [])
-        .find((candidate) => this.store.getGitRepository(candidate)) ?? null;
-      task = this.objectiveService.createTask({
+      task = this.workService.createTask({
         id: taskId,
-        objectiveId: targetObjectiveId,
+        workId: targetWorkId,
         title: optional(request.title) ?? "Session Channel",
         description: request.summary ?? request.body ?? "",
         acceptanceCriteria: "",
         priority: "medium",
         lifecycleState: "todo",
-        mainWorkspaceId: repositoryId,
         mainAgentId: agent.agentId
       }, {
         creationOrigin: {
@@ -527,8 +521,8 @@ export class SessionCollaborationService {
         }
       });
     }
-    if (task.objective_id !== targetObjectiveId || task.main_agent_id !== agent.agentId) {
-      throw coded("CHANNEL_TARGET_RESOURCE_MISMATCH", "The prepared Task does not match the target Objective and Agent resource.", 409);
+    if (task.work_id !== targetWorkId || task.main_agent_id !== agent.agentId) {
+      throw coded("CHANNEL_TARGET_RESOURCE_MISMATCH", "The prepared Task does not match the target Work and Agent resource.", 409);
     }
     let session = task.current_session_id ? this.#resolveSession(task.current_session_id) : null;
     let eligibility = session ? collaborationSessionEligibility(this.store, session) : null;
@@ -563,7 +557,7 @@ export class SessionCollaborationService {
     if (confirmation.recipientSessionId) {
       const target = collaborationTargetEligibility(this.store, {
         taskId: request.targetTaskId ?? confirmation.recipientTaskId,
-        targetObjectiveId: request.targetObjectiveId ?? confirmation.targetObjectiveId,
+        targetWorkId: request.targetWorkId ?? confirmation.targetWorkId,
         recipientAgentId: request.sessionAgentId
           ?? request.recipientAgentId
           ?? confirmation.recipientAgentId
@@ -581,24 +575,21 @@ export class SessionCollaborationService {
       };
     }
 
-    const targetObjectiveId = required(request.targetObjectiveId, "target_objective_id");
+    const targetWorkId = required(request.targetWorkId, "target_work_id");
     const agentResourceId = required(request.sessionAgentId ?? request.recipientAgentId, "session_agent_id");
-    const agent = this.#requireContributor(targetObjectiveId, agentResourceId);
-    const objective = this.objectiveService.getObjective(targetObjectiveId);
+    const agent = this.#requireContributor(targetWorkId, agentResourceId);
+    const work = this.workService.getWork(targetWorkId);
     const taskId = request.targetTaskId ?? `task:collaboration:${confirmation.confirmationId}`;
     let task = this.store.getTask(taskId);
     if (!task) {
-      const repositoryId = (objective.workspaceIds ?? [])
-        .find((candidate) => this.store.getGitRepository(candidate)) ?? null;
-      task = this.objectiveService.createTask({
+      task = this.workService.createTask({
         id: taskId,
-        objectiveId: targetObjectiveId,
+        workId: targetWorkId,
         title: required(request.title, "title"),
         description: required(request.summary, "summary"),
         acceptanceCriteria: (request.acceptanceCriteria ?? []).map((entry) => `- ${entry}`).join("\n"),
         priority: "medium",
         lifecycleState: "todo",
-        mainWorkspaceId: repositoryId,
         mainAgentId: agent.agentId
       }, {
         creationOrigin: {
@@ -614,12 +605,12 @@ export class SessionCollaborationService {
           `collaboration-confirmation:${confirmation.confirmationId}`, task.id]
       );
     }
-    if (task.objective_id !== targetObjectiveId || task.main_agent_id !== agent.agentId) {
-      throw coded("COLLABORATION_TARGET_RESOURCE_MISMATCH", "The prepared Task does not match the target Objective and Agent resource.", 409);
+    if (task.work_id !== targetWorkId || task.main_agent_id !== agent.agentId) {
+      throw coded("COLLABORATION_TARGET_RESOURCE_MISMATCH", "The prepared Task does not match the target Work and Agent resource.", 409);
     }
     const targetContext = {
       taskId: task.id,
-      targetObjectiveId,
+      targetWorkId,
       recipientAgentId: agent.agentId
     };
     const existing = task.current_session_id
@@ -655,8 +646,8 @@ export class SessionCollaborationService {
     if (!task.targetTaskId) {
       throw coded("COLLABORATION_TARGET_TASK_REQUIRED", `Collaboration request ${task.taskId} has no target Task.`);
     }
-    if (!task.targetObjectiveId) {
-      throw coded("COLLABORATION_TARGET_OBJECTIVE_REQUIRED", `Collaboration Task ${task.taskId} has no target Objective.`);
+    if (!task.targetWorkId) {
+      throw coded("COLLABORATION_TARGET_WORK_REQUIRED", `Collaboration Task ${task.taskId} has no target Work.`);
     }
     if (!task.recipientAgentId) {
       throw coded("COLLABORATION_RECIPIENT_AGENT_REQUIRED", `Collaboration Task ${task.taskId} has no recipient Agent.`);
@@ -665,10 +656,10 @@ export class SessionCollaborationService {
     if (!targetTask) {
       throw coded("COLLABORATION_TARGET_TASK_NOT_FOUND", `Target Task ${task.targetTaskId} was not found.`);
     }
-    if (targetTask.objective_id !== task.targetObjectiveId) {
+    if (targetTask.work_id !== task.targetWorkId) {
       throw coded(
-        "COLLABORATION_TARGET_TASK_OBJECTIVE_MISMATCH",
-        `Target Task ${task.targetTaskId} belongs to ${targetTask.objective_id}, not target Objective ${task.targetObjectiveId}.`
+        "COLLABORATION_TARGET_TASK_WORK_MISMATCH",
+        `Target Task ${task.targetTaskId} belongs to ${targetTask.work_id}, not target Work ${task.targetWorkId}.`
       );
     }
     if (targetTask.main_agent_id && targetTask.main_agent_id !== task.recipientAgentId) {
@@ -696,7 +687,7 @@ export class SessionCollaborationService {
       );
     }
 
-    const sessions = this.store.listSessionsByObjective(task.targetObjectiveId)
+    const sessions = this.store.listSessionsByWork(task.targetWorkId)
       .filter((session) => (session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId) === task.recipientAgentId);
     const evaluated = sessions.map((session) => ({
       session,
@@ -705,7 +696,7 @@ export class SessionCollaborationService {
     this.onRoutingEvent("candidates_filtered", {
       taskId: task.taskId,
       recipientAgentId: task.recipientAgentId,
-      targetObjectiveId: task.targetObjectiveId,
+      targetWorkId: task.targetWorkId,
       candidates: evaluated.map(({ session, eligibility }) => ({
         sessionId: eligibility.logicalSessionId ?? session.id,
         sessionKind: session.sessionKind,
@@ -734,21 +725,7 @@ export class SessionCollaborationService {
       };
     }
 
-    let productTask = targetTask;
-    if (!productTask.main_workspace_id) {
-      const objective = this.store.getObjective(task.targetObjectiveId);
-      const repositoryId = (objective?.workspaceIds ?? [])
-        .find((candidate) => this.store.getGitRepository(candidate));
-      if (repositoryId) {
-        productTask = this.store.updateTask(productTask.id, { mainWorkspaceId: repositoryId });
-        this.onRoutingEvent("task_workspace_selected", {
-          taskId: task.taskId,
-          taskId: productTask.id,
-          repositoryId,
-          source: "target_objective"
-        });
-      }
-    }
+    const productTask = targetTask;
     const agent = this.store.getAgent(task.recipientAgentId);
     if (!agent) throw coded("AGENT_NOT_FOUND", `Agent not found: ${task.recipientAgentId}`);
     this.onRoutingEvent("task_session_creation_started", {
@@ -812,8 +789,8 @@ export class SessionCollaborationService {
   }
 
   #canReadTask(scope, item) {
-    if (!scope.session.objectiveId || item.objective_id !== scope.session.objectiveId) return false;
-    if (scope.session.sessionKind === "objectiveChat") return true;
+    if (!scope.session.workId || item.work_id !== scope.session.workId) return false;
+    if (scope.session.sessionKind === "workChat") return true;
     if (scope.session.sessionKind !== "worker") return false;
     if (item.id === scope.session.taskId) return true;
     if (item.created_by_session_id === scope.logicalSessionId) return true;
@@ -821,26 +798,26 @@ export class SessionCollaborationService {
       || this.store.listTaskDependents(item.id).some((edge) => edge.task_id === scope.session.taskId);
   }
 
-  #requireContributor(objectiveId, agentId) {
+  #requireContributor(workId, agentId) {
     const agent = this.store.getAgent(agentId);
     if (!agent) throw coded("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
-    const objective = this.objectiveService.getObjective(objectiveId);
-    if (agent.role !== "independentContributor" || !(objective.contributorAgentIds ?? []).includes(agentId)) {
-      throw coded("AGENT_OUTSIDE_OBJECTIVE", "Target Agent must be an Independent Contributor attached to the authenticated Objective.");
+    const work = this.workService.getWork(workId);
+    if (agent.role !== "independentContributor" || !(work.contributorAgentIds ?? []).includes(agentId)) {
+      throw coded("AGENT_OUTSIDE_WORK", "Target Agent must be an Independent Contributor attached to the authenticated Work.");
     }
     return agent;
   }
 
-  #requireWorkspace(objectiveId, workspaceId) {
-    const objective = this.objectiveService.getObjective(objectiveId);
-    if (!(objective.workspaceIds ?? []).includes(workspaceId) || !this.store.getGitRepository(workspaceId)) {
-      throw coded("WORKSPACE_OUTSIDE_OBJECTIVE", "Workspace must be a registered repository: ID attached to the authenticated Objective.");
+  #requireWorkspace(workId, workspaceId) {
+    const work = this.workService.getWork(workId);
+    if (this.store.getGitRepositoryForWorkspace(work.workspaceId)?.id !== workspaceId) {
+      throw coded("WORKSPACE_OUTSIDE_WORK", "Workspace must be a registered repository: ID attached to the authenticated Work.");
     }
   }
 
   #relate(taskId, targetTaskId, relationship) {
-    if (relationship === "blocks") return this.objectiveService.addDependency(targetTaskId, taskId, relationship);
-    return this.objectiveService.addDependency(taskId, targetTaskId, relationship);
+    if (relationship === "blocks") return this.workService.addDependency(targetTaskId, taskId, relationship);
+    return this.workService.addDependency(taskId, targetTaskId, relationship);
   }
 
   #startReceipt(item, session, executionStatus, idempotentReplay, idempotencyKey = null) {
@@ -851,7 +828,7 @@ export class SessionCollaborationService {
       phase: executionStatus === "running" ? "started" : "created",
       task: item,
       session: session ? this.#sessionDescriptor(session, {
-        session: { objectiveId: item.objective_id }, agent: agent ?? { agentId: session.agentId }
+        session: { workId: item.work_id }, agent: agent ?? { agentId: session.agentId }
       }) : null,
       agent: agent ? { agentId: agent.agentId, name: agent.name } : null,
       providerBinding: logical?.activeBinding ?? null,
@@ -871,7 +848,7 @@ export function resolveRecipientSession(service, metadata, actorId, input = {}) 
       explicit = service.getSession(metadata, actorId, input.recipientSessionId);
     } catch (error) {
       if (error.code === "RECIPIENT_SESSION_UNAVAILABLE"
-        && optional(input.targetObjectiveId)
+        && optional(input.targetWorkId)
         && optional(input.sessionAgentId)) {
         return null;
       }
@@ -885,14 +862,14 @@ export function resolveRecipientSession(service, metadata, actorId, input = {}) 
   }
   const intent = optional(input.routingIntent);
   if (!intent) {
-    throw coded("ROUTING_INTENT_REQUIRED", "When only an Agent is specified, routing_intent must be existing_task_session, create_dedicated_session, or best_available. Objective Chat is not a collaboration delivery target.");
+    throw coded("ROUTING_INTENT_REQUIRED", "When only an Agent is specified, routing_intent must be existing_task_session, create_dedicated_session, or best_available. Work Chat is not a collaboration delivery target.");
   }
   if (!ROUTING_INTENTS.has(intent)) {
-    throw coded("INVALID_ROUTING_INTENT", `Unsupported collaboration routing intent: ${intent}. Objective Chat is not a collaboration delivery target.`);
+    throw coded("INVALID_ROUTING_INTENT", `Unsupported collaboration routing intent: ${intent}. Work Chat is not a collaboration delivery target.`);
   }
   const candidates = service.discoverSessions(metadata, actorId, {
     agentId: input.recipientAgentId,
-    objectiveId: input.targetObjectiveId
+    workId: input.targetWorkId
   });
   if (intent === "create_dedicated_session" || !input.taskId) return null;
   return candidates.find((item) => item.active
@@ -942,7 +919,7 @@ function collaborationTargetEligibility(store, collaborationTask, sessionOrId) {
   if (!collaborationTask?.taskId) reasons.push("task_missing");
   else if (!productTask) reasons.push("task_not_found");
   if (productTask && eligibility.session?.sessionKind === "worker") {
-    if (productTask.objective_id !== collaborationTask.targetObjectiveId) reasons.push("task_objective_mismatch");
+    if (productTask.work_id !== collaborationTask.targetWorkId) reasons.push("task_work_mismatch");
     if (productTask.main_agent_id && productTask.main_agent_id !== collaborationTask.recipientAgentId) {
       reasons.push("task_agent_mismatch");
     }

@@ -15,8 +15,8 @@ function envelope(overrides = {}) {
     recipientAgentId: "agent:b",
     senderSessionId: "session:a",
     recipientSessionId: "session:b",
-    sourceObjectiveId: "objective:a",
-    targetObjectiveId: "objective:b",
+    sourceWorkId: "work:a",
+    targetWorkId: "work:b",
     sourceTaskId: "task:source",
     targetTaskId: "task:target",
     payload: { body: "Implement the requested change.", evidence: [], resourceVersion: "v1" },
@@ -34,8 +34,8 @@ test("protocol v3 makes Sessions the actors and keeps other entities as resource
   assert.deepEqual(value.resources, {
     sourceAgentId: "agent:a",
     targetAgentId: "agent:b",
-    sourceObjectiveId: "objective:a",
-    targetObjectiveId: "objective:b",
+    sourceWorkId: "work:a",
+    targetWorkId: "work:b",
     sourceTaskId: "task:source",
     targetTaskId: "task:target"
   });

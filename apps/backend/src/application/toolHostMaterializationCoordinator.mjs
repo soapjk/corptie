@@ -532,7 +532,7 @@ export class ToolHostMaterializationCoordinator {
       throw toolError("SESSION_BINDING_TOMBSTONED", "The Session binding is no longer active.", 410);
     }
     if (binding.sessionKind === "worker") {
-      if (!binding.sessionId || !binding.objectiveId || !binding.taskId) {
+      if (!binding.sessionId || !binding.workId || !binding.taskId) {
         throw toolError("ACTOR_NOT_BOUND", "Worker Session binding is incomplete.", 403);
       }
       const authorizedByStartup = binding.taskSessionAuthorization === "startup"
@@ -617,7 +617,7 @@ export function authorizationScopeFingerprint(binding) {
     logicalSessionId: binding.logicalSessionId,
     sessionId: binding.sessionId ?? null,
     sessionKind: binding.sessionKind,
-    objectiveId: binding.objectiveId ?? null,
+    workId: binding.workId ?? null,
     taskId: binding.taskId ?? null,
     currentTaskSessionId: binding.currentTaskSessionId ?? null,
     taskSessionAuthorization: binding.taskSessionAuthorization ?? null,
@@ -676,7 +676,7 @@ function catalogContext(binding) {
       logicalSessionId: binding.logicalSessionId,
       sessionId: binding.sessionId ?? null,
       sessionKind: binding.sessionKind,
-      objectiveId: binding.objectiveId ?? null,
+      workId: binding.workId ?? null,
       taskId: binding.taskId ?? null,
       providerBindingId: binding.providerBindingId
     }

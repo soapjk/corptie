@@ -21,7 +21,6 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         let message = CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
             detail: "Implement the feature",
-            workspaceId: "repository:one",
             agentId: nil
         )
 
@@ -32,7 +31,6 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         XCTAssertNil(CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
             detail: "Implement the feature",
-            workspaceId: "repository:one",
             agentId: "agent:one"
         ))
     }
@@ -42,7 +40,6 @@ final class CorptieTaskCreateFormTests: XCTestCase {
             CorptieTaskCreateFormPolicy.validationMessage(
                 title: "",
                 detail: "Implement the feature",
-                workspaceId: "repository:one",
                 agentId: "agent:one"
             ),
             L10n("请输入 Task 标题。")

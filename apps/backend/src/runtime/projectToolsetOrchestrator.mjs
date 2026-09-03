@@ -42,13 +42,13 @@ export class ProjectToolsetOrchestrator {
     validateInput(input);
     const authority = await this.authorization.assertProjectToolsetAccess({
       logicalSessionId: input.logicalSessionId,
-      objectiveId: input.objectiveId,
+      workId: input.workId,
       taskId: input.taskId,
       repositoryId: input.repositoryId,
       worktreeId: input.worktreeId,
       capabilityClass: input.capabilityClass
     });
-    for (const field of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId", "capabilityClass"]) {
+    for (const field of ["logicalSessionId", "workId", "taskId", "repositoryId", "worktreeId", "capabilityClass"]) {
       if (authority?.[field] !== input[field]) throw contractError("TOOLSET_PERMISSION_DENIED", "Session authority does not match the requested Toolset resources.");
     }
     const key = `${input.repositoryId}\0${input.worktreeId}`;
@@ -118,7 +118,7 @@ export class ProjectToolsetOrchestrator {
       await this.declarations.stageGenerated(input.projectRoot, version, generatedConfigManifest);
 
       operation = await this.#transition(operation, "validate", { toolsetVersion: version, validationPlanIdentity: identity, validationCacheKey: cacheKey });
-      const context = { logicalSessionId: input.logicalSessionId, objectiveId: input.objectiveId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, snapshotRef, startupBindingReceiptRef: input.startupBindingReceiptRef, toolsetVersion: version, validationPlanIdentity: identity, validationPolicyVersion: this.validationPolicyVersion };
+      const context = { logicalSessionId: input.logicalSessionId, workId: input.workId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, snapshotRef, startupBindingReceiptRef: input.startupBindingReceiptRef, toolsetVersion: version, validationPlanIdentity: identity, validationPolicyVersion: this.validationPolicyVersion };
       const cached = await this.cache.get(cacheKey);
       if (cached && !cached.corrupt) {
         try {
@@ -229,7 +229,7 @@ export class ProjectToolsetOrchestrator {
     const receipt = {
       receiptId: `toolset_validation_receipt:${this.idFactory().replaceAll("-", "_")}`, receiptHash: "0".repeat(64), schemaVersion: 3, resourceVersion: 1,
       artifactRef: { artifactId: TOOLSET_RECEIPT_SCHEMA.artifactId, version: TOOLSET_RECEIPT_SCHEMA.version, contentHash: TOOLSET_RECEIPT_SCHEMA.contentHash, relation: "implementation_spec", receiptType: "ToolsetValidationReceipt", schemaVersion: 3 },
-      identity: { logicalSessionId: input.logicalSessionId, objectiveId: input.objectiveId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, startupBindingRef: input.startupBindingRef },
+      identity: { logicalSessionId: input.logicalSessionId, workId: input.workId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, startupBindingRef: input.startupBindingRef },
       snapshotRef, toolsetVersion: version, validationPlanIdentity: planIdentity, validationCacheKey: cacheKey, actionReceipts, assertionReceipts,
       cacheDisposition: passed ? "stored" : "rejected", outcome: passed ? "passed" : actionReceipts.at(-1)?.outcome ?? "unknown", startedAt, finishedAt: this.now(), expiresAt: input.expiresAt ?? null,
       error: passed ? null : actionReceipts.at(-1)?.error ?? businessError("TOOLSET_OUTCOME_UNKNOWN", null, "validate")
@@ -280,14 +280,14 @@ export function createValidationPlan(declaration, capabilityClass, dependencyMan
 }
 
 function validateCandidate(candidate) { if (!candidate || Object.keys(candidate).some((key) => !["schemaVersion", "adapter", "configuration"].includes(key)) || candidate.schemaVersion !== 1 || typeof candidate.adapter !== "string" || !candidate.adapter) throw contractError("TOOLSET_DECLARATION_INVALID", "Generated candidate is invalid."); }
-function validateInput(input) { for (const key of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId", "projectRoot", "idempotencyKey", "capabilityClass"]) if (typeof input?.[key] !== "string" || !input[key]) throw contractError("TOOLSET_PERMISSION_DENIED", "Authenticated Toolset identity is incomplete."); if (!CAPABILITY_CLASSES.includes(input.capabilityClass) || !input.startupBindingRef || !input.startupBindingReceiptRef || !input.repositorySourceSnapshotReceiptRef) throw contractError("TOOLSET_BACKGROUND_CAPABILITY_UNAVAILABLE", "Resolved Startup and Snapshot authorities are required."); }
+function validateInput(input) { for (const key of ["logicalSessionId", "workId", "taskId", "repositoryId", "worktreeId", "projectRoot", "idempotencyKey", "capabilityClass"]) if (typeof input?.[key] !== "string" || !input[key]) throw contractError("TOOLSET_PERMISSION_DENIED", "Authenticated Toolset identity is incomplete."); if (!CAPABILITY_CLASSES.includes(input.capabilityClass) || !input.startupBindingRef || !input.startupBindingReceiptRef || !input.repositorySourceSnapshotReceiptRef) throw contractError("TOOLSET_BACKGROUND_CAPABILITY_UNAVAILABLE", "Resolved Startup and Snapshot authorities are required."); }
 function requestHash(input) { const { recovery: _ignored, ...stable } = input; return sha256(canonicalJson(stable)); }
 function hasGeneration(value) { return value === "restricted_project_toolset_generation" || value === "full_required"; }
 function businessError(code, actionId, phase) { return { code, message: "Project Toolset validation did not complete successfully.", retryable: ["TOOLSET_CLEANUP_UNKNOWN", "TOOLSET_RUN_PREPARE_FAILED"].includes(code), details: { actionId, assertionId: null, phase } }; }
 function requiredPort(options, name) { if (!options?.[name]) throw new TypeError(`ProjectToolsetOrchestrator requires ${name}.`); return options[name]; }
 function clone(value) { return value === undefined ? undefined : structuredClone(value); }
 function authenticatedSession(input) { return Object.freeze({ logicalSessionId: input.logicalSessionId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId }); }
-function authoritativeIdentity(input) { return Object.freeze({ logicalSessionId: input.logicalSessionId, objectiveId: input.objectiveId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId }); }
+function authoritativeIdentity(input) { return Object.freeze({ logicalSessionId: input.logicalSessionId, workId: input.workId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId }); }
 function runContext(input, snapshotRef) { return { logicalSessionId: input.logicalSessionId, taskId: input.taskId, repositoryId: input.repositoryId, worktreeId: input.worktreeId, snapshotRef, startupBindingReceiptRef: input.startupBindingReceiptRef }; }
 function snapshotMatches(expected, actual) {
   if (!actual) return false;

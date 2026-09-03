@@ -49,7 +49,7 @@ test("HTTP migration enters maintenance, requests host restart, and reconnects o
     assert.equal(migrated.dataRootMigration.phase, "restartRequired");
     assert.equal(migrated.dataRootMigration.restartRequired, true);
 
-    const rejected = await debugFetch(backend, `http://127.0.0.1:${port}/objectives`, { method: "POST" });
+    const rejected = await debugFetch(backend, `http://127.0.0.1:${port}/works`, { method: "POST" });
     assert.equal(rejected.status, 503);
     assert.equal((await rejected.json()).code, "DATA_ROOT_MAINTENANCE_MODE");
 

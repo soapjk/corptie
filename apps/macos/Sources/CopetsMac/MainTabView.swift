@@ -689,7 +689,7 @@ private struct MainWindowBackgroundTaskOverlay: View {
     var body: some View {
         Group {
             if !backendClient.isOnline,
-               entityClient.objectivesLoadError != nil,
+               entityClient.worksLoadError != nil,
                !backgroundTasks.records.contains(where: {
                    $0.id == BackgroundTaskCenter.backendConnectionTaskID
                        && $0.state != .succeeded

@@ -50,7 +50,7 @@ export function handleCollaborationHttpRequest({
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Session discovery is unavailable.", 503);
         return sendJson(response, 200, { sessions: sessionCollaborationService.discoverSessions(sessionMetadata, actorAgentId, {
           agentId: url.searchParams.get("agentId") || undefined,
-          objectiveId: url.searchParams.get("objectiveId") || undefined,
+          workId: url.searchParams.get("workId") || undefined,
           taskId: url.searchParams.get("taskId") || undefined,
           sessionKind: url.searchParams.get("sessionKind") || undefined
         }) });
@@ -309,10 +309,10 @@ export function handleCollaborationHttpRequest({
           recipientSessionId = resolveRecipientSession(sessionCollaborationService, sessionMetadata, actorAgentId, {
             ...input, recipientSessionId
           }).sessionId;
-        } else if (!input.targetObjectiveId || !input.sessionAgentId) {
+        } else if (!input.targetWorkId || !input.sessionAgentId) {
           throw apiError(
             "SESSION_CREATION_RESOURCES_REQUIRED",
-            "Supply an exact recipient Session, or targetObjectiveId plus sessionAgentId so Corptie can create the target Task and Session.",
+            "Supply an exact recipient Session, or targetWorkId plus sessionAgentId so Corptie can create the target Task and Session.",
             400
           );
         }
@@ -378,12 +378,12 @@ export function handleCollaborationHttpRequest({
             recipientSession ? "SESSION_RESOURCE_OWNER_NOT_FOUND" : "SESSION_CREATION_RESOURCES_REQUIRED",
             input.recipientSessionName
               ? `No active Session is named ${input.recipientSessionName}.`
-              : "Supply an exact recipientSessionId, or targetObjectiveId plus sessionAgentId so Corptie can create the target Task and Session before creating the task.",
+              : "Supply an exact recipientSessionId, or targetWorkId plus sessionAgentId so Corptie can create the target Task and Session before creating the task.",
             404
           );
         }
-        if (!recipientSession && !String(input.targetObjectiveId ?? "").trim()) {
-          throw apiError("TARGET_OBJECTIVE_REQUIRED", "targetObjectiveId is required when Corptie must create a target Task and Session.", 400);
+        if (!recipientSession && !String(input.targetWorkId ?? "").trim()) {
+          throw apiError("TARGET_WORK_REQUIRED", "targetWorkId is required when Corptie must create a target Task and Session.", 400);
         }
         const actor = core.getAgent(actorAgentId);
         const sourceLogical = core.store.getLogicalSession(sessionMetadata.sessionId);
@@ -400,7 +400,7 @@ export function handleCollaborationHttpRequest({
           ...input,
           parentTaskId: parentTask?.taskId ?? undefined,
           contextId: parentTask?.contextId ?? undefined,
-          sourceObjectiveId: sourceCapabilities.objectiveId ?? undefined,
+          sourceWorkId: sourceCapabilities.workId ?? undefined,
           sourceTaskId: sourceCapabilities.taskId ?? undefined,
           targetTaskId: input.targetTaskId ?? recipientSessionDescriptor?.taskId ?? undefined,
           sessionAgentId: input.sessionAgentId ?? undefined,
@@ -496,7 +496,7 @@ function safeCollaborationErrorMessage(error) {
 function memoryMetadata(request) {
   return {
     sessionId: headerText(request, "x-corptie-session-id"),
-    objectiveId: headerText(request, "x-corptie-objective-id"),
+    workId: headerText(request, "x-corptie-work-id"),
     taskId: headerText(request, "x-corptie-task-id")
   };
 }
@@ -507,14 +507,14 @@ function withAuthoritativeBinding(agent, capabilities) {
     sessionId: capabilities.sourceSessionId,
     providerSessionId: capabilities.providerSessionId,
     currentSessionId: capabilities.sourceSessionId,
-    currentObjectiveId: capabilities.objectiveId,
+    currentWorkId: capabilities.workId,
     currentTaskId: capabilities.taskId,
     runtimeBinding: {
       authoritative: true,
       sessionId: capabilities.sourceSessionId,
       providerSessionId: capabilities.providerSessionId,
       sessionKind: capabilities.sessionKind,
-      objectiveId: capabilities.objectiveId,
+      workId: capabilities.workId,
       taskId: capabilities.taskId
     }
   };
@@ -726,8 +726,8 @@ function compactTaskForActor(task, actorAgentId, actorSessionId = null, core = n
   const compact = {
     taskId: task.taskId,
     protocolVersion: task.protocolVersion,
-    sourceObjectiveId: task.sourceObjectiveId,
-    targetObjectiveId: task.targetObjectiveId,
+    sourceWorkId: task.sourceWorkId,
+    targetWorkId: task.targetWorkId,
     sourceTaskId: task.sourceTaskId,
     taskId: task.taskId,
     initiatorSessionId: task.initiatorSessionId,
@@ -801,9 +801,9 @@ function availableActions(task, role) {
 }
 
 function statusForCode(code) {
-  if (["AGENT_NOT_FOUND", "SERVICE_NOT_FOUND", "TASK_NOT_FOUND", "DELIVERY_NOT_FOUND", "OBJECTIVE_NOT_FOUND", "TASK_NOT_FOUND"].includes(code)) return 404;
-  if (["ACTOR_NOT_AUTHORIZED", "SERVICE_OWNER_REQUIRED", "RECIPIENT_NOT_SERVICE_OWNER", "OBJECTIVE_AGENT_NOT_AUTHORIZED", "MEMORY_SESSION_SCOPE_REQUIRED", "MEMORY_SCOPE_FORBIDDEN"].includes(code)) return 403;
-  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "MEMORY_IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK", "OBJECTIVE_BOUNDARY_REQUIRED", "TASK_OBJECTIVE_MISMATCH", "TASK_AGENT_MISMATCH", "TASK_TERMINAL", "RESOURCE_VERSION_CONFLICT"].includes(code)) return 409;
+  if (["AGENT_NOT_FOUND", "SERVICE_NOT_FOUND", "TASK_NOT_FOUND", "DELIVERY_NOT_FOUND", "WORK_NOT_FOUND", "TASK_NOT_FOUND"].includes(code)) return 404;
+  if (["ACTOR_NOT_AUTHORIZED", "SERVICE_OWNER_REQUIRED", "RECIPIENT_NOT_SERVICE_OWNER", "WORK_AGENT_NOT_AUTHORIZED", "MEMORY_SESSION_SCOPE_REQUIRED", "MEMORY_SCOPE_FORBIDDEN"].includes(code)) return 403;
+  if (["INVALID_TASK_TRANSITION", "TASK_TERMINAL", "IDEMPOTENCY_CONFLICT", "MEMORY_IDEMPOTENCY_CONFLICT", "QUESTION_FOLLOWUP_REQUIRES_NEW_TASK", "WORK_BOUNDARY_REQUIRED", "TASK_WORK_MISMATCH", "TASK_AGENT_MISMATCH", "TASK_TERMINAL", "RESOURCE_VERSION_CONFLICT"].includes(code)) return 409;
   if (["MEMORY_PERSISTENCE_FAILED", "MEMORY_IDEMPOTENCY_RECORD_INVALID"].includes(code)) return 500;
   return 400;
 }

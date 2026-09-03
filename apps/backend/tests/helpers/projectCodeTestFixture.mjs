@@ -37,7 +37,7 @@ export async function createProjectCodeFixture(options = {}) {
     git(directory, ["rev-parse", "HEAD"]), git(directory, ["rev-parse", "HEAD^{tree}"])
   ]);
   const sessionContext = {
-    objectiveId: "objective:11111111-1111-1111-1111-111111111111", taskId: "task:test", logicalSessionId: "logical:test"
+    workId: "work:11111111-1111-1111-1111-111111111111", taskId: "task:test", logicalSessionId: "logical:test"
   };
   const binding = {
     repositoryId: identity.repositoryId,
@@ -90,14 +90,14 @@ export function toolsetReceiptFor(snapshot, overrides = {}) {
     artifactRef: {
       artifactId: "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3",
       version: 1,
-      contentHash: "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669",
+      contentHash: "55d976162448d8519a3d7805502921ee3474fb665fd2b17d8582e3949ae98888",
       relation: "implementation_spec",
       receiptType: "ToolsetValidationReceipt",
       schemaVersion: 3
     },
     identity: {
       logicalSessionId: "logical:test",
-      objectiveId: snapshot.receipt.objectiveId,
+      workId: snapshot.receipt.workId,
       taskId: "task:test",
       repositoryId: snapshot.receipt.repositoryId,
       worktreeId: snapshot.receipt.worktreeId,

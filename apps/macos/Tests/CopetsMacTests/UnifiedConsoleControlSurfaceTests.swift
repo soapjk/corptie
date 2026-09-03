@@ -4,17 +4,17 @@ import Testing
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
-    func objectiveRailAndTaskToolbarExposeTheCorrectCreationFlows() throws {
+    func workRailAndTaskToolbarExposeTheCorrectCreationFlows() throws {
         let unifiedSource = try source(named: "UnifiedConsoleView.swift")
 
         #expect(unifiedSource.contains("floatingCreationMenu"))
-        #expect(unifiedSource.contains("isCreatingObjective = true"))
-        #expect(unifiedSource.contains("ObjectiveCreateView()"))
+        #expect(unifiedSource.contains("isCreatingWork = true"))
+        #expect(unifiedSource.contains("WorkCreateView()"))
         #expect(unifiedSource.contains("isCreatingTask = true"))
         #expect(unifiedSource.contains("CorptieTaskCreateView("))
         #expect(unifiedSource.contains("Button(L10n(\"New Assistant Session\")"))
         #expect(unifiedSource.contains("Button(L10n(\"New Task\")"))
-        #expect(unifiedSource.contains("Button(L10n(\"New Objective\")"))
+        #expect(unifiedSource.contains("Button(L10n(\"New Work\")"))
         #expect(unifiedSource.contains(".overlay(alignment: .bottomTrailing)"))
         #expect(unifiedSource.contains("FloatingCreationButtonGlassModifier"))
         #expect(!unifiedSource.contains("Completed Tasks remain available until archived."))
@@ -27,8 +27,8 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func objectiveCreationRequiresAnAgentAndDoesNotOfferATargetDate() throws {
-        let createSource = try source(named: "ObjectiveCreateView.swift")
+    func workCreationRequiresAnAgentAndDoesNotOfferATargetDate() throws {
+        let createSource = try source(named: "WorkCreateView.swift")
 
         #expect(createSource.contains("|| contributorAgentIds.isEmpty"))
         #expect(createSource.contains("guard !trimmed.isEmpty, !contributorAgentIds.isEmpty"))
@@ -37,17 +37,25 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(createSource.contains("avatarPath: requestAvatarSourcePath"))
         #expect(!createSource.contains("targetDate"))
         #expect(!createSource.contains("DatePicker("))
+        #expect(!createSource.contains("工作类型"))
+        #expect(!createSource.contains("requestProfile"))
 
-        let detailSource = try source(named: "ObjectiveDetailView.swift")
-        #expect(detailSource.contains("client.setObjectiveAvatar"))
-        #expect(detailSource.contains("client.clearObjectiveAvatar"))
+        let resourcesSource = try source(named: "WorkResourcesEditor.swift")
+        #expect(resourcesSource.contains("每个 Workspace 只能绑定一个 Work"))
+        #expect(resourcesSource.contains("client.works.first(where:"))
+
+        let detailSource = try source(named: "WorkDetailView.swift")
+        #expect(detailSource.contains("client.setWorkAvatar"))
+        #expect(detailSource.contains("client.clearWorkAvatar"))
         #expect(!detailSource.contains("hasTargetDate"))
         #expect(!detailSource.contains("targetDate:"))
         #expect(!detailSource.contains("DatePicker("))
         #expect(!detailSource.contains("设置目标日期"))
+        #expect(!detailSource.contains("工作类型"))
+        #expect(!detailSource.contains("profile: profile"))
 
         let consoleSource = try source(named: "UnifiedConsoleView.swift")
-        #expect(consoleSource.contains("avatarPath: objective.avatarPath"))
+        #expect(consoleSource.contains("avatarPath: work.avatarPath"))
         #expect(consoleSource.contains("AnimatedAvatarImage(path: avatarPath)"))
     }
 
@@ -69,16 +77,16 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func objectiveAndTaskColumnsShareOneNavigationCard() throws {
+    func workAndTaskColumnsShareOneNavigationCard() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let cardStart = try #require(source.range(of: "private var consoleNavigationCard: some View"))
         let cardEnd = try #require(source.range(
-            of: "private var objectiveRail: some View",
+            of: "private var workRail: some View",
             range: cardStart.lowerBound..<source.endIndex
         ))
         let card = source[cardStart.lowerBound..<cardEnd.lowerBound]
 
-        #expect(card.contains("objectiveRail"))
+        #expect(card.contains("workRail"))
         #expect(card.contains("unifiedTaskSidebar"))
         #expect(card.contains("RoundedRectangle("))
         #expect(card.contains(".regularMaterial"))
@@ -100,11 +108,11 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func selectedObjectiveUsesADiscordStyleEdgePill() throws {
+    func selectedWorkUsesADiscordStyleEdgePill() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let iconStart = try #require(source.range(of: "private func consoleRailIcon("))
         let iconEnd = try #require(source.range(
-            of: "private func objectiveInitials",
+            of: "private func workInitials",
             range: iconStart.lowerBound..<source.endIndex
         ))
         let icon = source[iconStart.lowerBound..<iconEnd.lowerBound]
@@ -117,27 +125,27 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(icon.contains("height: isSelected ? 24 : 8"))
         #expect(icon.contains(".padding(.leading, 2)"))
         #expect(!source.contains("CurvedSidebarLinkHighlight"))
-        #expect(!source.contains("ConnectedObjectiveBodyShape"))
+        #expect(!source.contains("ConnectedWorkBodyShape"))
     }
 
     @Test
-    func objectiveRailAggregatesUnreadSessionsByOwner() throws {
+    func workRailAggregatesUnreadSessionsByOwner() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
 
-        #expect(source.contains("struct ObjectiveRailUnreadSummary: Equatable"))
+        #expect(source.contains("struct WorkRailUnreadSummary: Equatable"))
         #expect(source.contains("session.resolvedSessionKind == .assistantChat"))
-        #expect(source.contains("objectiveIDs.insert(objectiveID)"))
+        #expect(source.contains("workIDs.insert(workID)"))
         #expect(source.contains("session.archived != true"))
         #expect(source.contains("unreadSummary.hasUnreadAssistantSessions"))
-        #expect(source.contains("unreadSummary.objectiveIDs.contains(objective.id)"))
+        #expect(source.contains("unreadSummary.workIDs.contains(work.id)"))
     }
 
     @Test
-    func selectedObjectiveDoesNotRestyleItsAvatar() throws {
+    func selectedWorkDoesNotRestyleItsAvatar() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let iconStart = try #require(source.range(of: "private func consoleRailIcon("))
         let iconEnd = try #require(source.range(
-            of: "private func objectiveInitials",
+            of: "private func workInitials",
             range: iconStart.lowerBound..<source.endIndex
         ))
         let icon = source[iconStart.lowerBound..<iconEnd.lowerBound]
@@ -151,14 +159,14 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func objectiveRailScrollsWithoutIndicatorsAndKeepsSelectionVisible() throws {
+    func workRailScrollsWithoutIndicatorsAndKeepsSelectionVisible() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
 
         #expect(source.contains("ScrollView(.vertical, showsIndicators: false)"))
-        #expect(source.contains("private var objectiveRailScrollMask: some View"))
-        #expect(source.contains("proxy.scrollTo(selectedObjectiveId, anchor: .center)"))
+        #expect(source.contains("private var workRailScrollMask: some View"))
+        #expect(source.contains("proxy.scrollTo(selectedWorkId, anchor: .center)"))
         #expect(source.contains(".padding(.vertical, 10)"))
-        #expect(!source.contains("ObjectiveRailItemFramePreferenceKey"))
+        #expect(!source.contains("WorkRailItemFramePreferenceKey"))
     }
 
     @Test

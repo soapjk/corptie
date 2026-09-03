@@ -14,11 +14,11 @@ export const DEPENDENCY_CONTRACT_MANIFEST = Object.freeze({
     fixed("run", "main", "artifact:44d797ea-cab1-47c8-a82b-e3d7649f5089", "35d7b3764d748ca3bda44685da8ef37b7cf24bc4bec17bea63794cae41e62069", { CleanupReceipt: 4, RunReceipt: 6 }),
     fixed("run", "schema", "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f", "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951", { CleanupReceipt: 4, RunReceipt: 6 }),
     fixed("search", "main", "artifact:9671df72-6df3-49b1-87b2-3876db741fcb", "78e8df0a419772f57d7cb20c34006d8cd6d00ea63b5216cdd075bbff4daf37be", { CleanupReceipt: 4, RepositorySourceSnapshotReceipt: 1, RunReceipt: 6, SearchReceipt: 1, StartupBindingReceipt: 2, ToolsetValidationReceipt: 3 }),
-    fixed("search", "schema", "artifact:ee9b734f-799d-41b6-804f-9868697de511", "a288feb13a2c784e1267d4c40b44e1a0204c530c8f0b9910f0d9f2f52a9ccc76", { CleanupReceipt: 4, RepositorySourceSnapshotReceipt: 1, RunReceipt: 6, SearchReceipt: 1, StartupBindingReceipt: 2, ToolsetValidationReceipt: 3 }),
+    fixed("search", "schema", "artifact:ee9b734f-799d-41b6-804f-9868697de511", "d706d828e697618d69a65b7c1fcae9fa95f41e2c70237cc60802a0e91f0c2e15", { CleanupReceipt: 4, RepositorySourceSnapshotReceipt: 1, RunReceipt: 6, SearchReceipt: 1, StartupBindingReceipt: 2, ToolsetValidationReceipt: 3 }),
     fixed("startup", "main", "artifact:7f26689a-5b9a-4b32-ad86-ad93c0be2949", "472b8c34180f2c1e7f7b59d7e2c8fc620ec515971a56e5f8ecae6fe69a0aced2", { StartupBindingReceipt: 2 }),
     fixed("tool_host", "main", "artifact:35124de1-6e91-4f08-84ee-4ddd8aa51e8d", "8fa384d00f92fca6ceddb53abc12f7ccf60f82f510fba6a55beaaeec5f00ba5e"),
     fixed("toolset", "main", "artifact:f7dd23d2-1f18-4177-9fa5-87970385974a", "8cbbb4a96d0acec3f0d0a1dfaa7806bba6d135ddf84a1d4aa32c84e298a70147", { ToolsetValidationReceipt: 3 }),
-    fixed("toolset", "schema", "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3", "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669", { ToolsetValidationReceipt: 3 })
+    fixed("toolset", "schema", "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3", "55d976162448d8519a3d7805502921ee3474fb665fd2b17d8582e3949ae98888", { ToolsetValidationReceipt: 3 })
   ].sort((a, b) => asciiCompare(a.stage, b.stage) || asciiCompare(a.role, b.role)))
 });
 
@@ -37,13 +37,13 @@ const profiles = {
   },
   StartupBindingReceipt: {
     stage: "startup", producer: "startup-binding", schemaVersion: 2,
-    fields: ["schemaVersion", "status", "startupOperationId", "objectiveId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "canonicalWorktreePath", "headIdentity", "providerBindingId", "bindingGeneration", "sourceCommitOid", "sourceTreeOid", "baseRef", "repositoryInventoryVersion", "workspaceResourceVersion", "resourceVersion", "providerContextHash", "toolContractHash", "instructionSourcesHash", "phaseTimestamps", "compensation", "error", "receiptHash"],
-    required: ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "startupOperationId", "receiptHash"], forbidden: ["catalogVersion", "toolsetVersion", "sourceFingerprint", "runId", "observationId"]
+    fields: ["schemaVersion", "status", "startupOperationId", "workId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "canonicalWorktreePath", "headIdentity", "providerBindingId", "bindingGeneration", "sourceCommitOid", "sourceTreeOid", "baseRef", "repositoryInventoryVersion", "workspaceResourceVersion", "resourceVersion", "providerContextHash", "toolContractHash", "instructionSourcesHash", "phaseTimestamps", "compensation", "error", "receiptHash"],
+    required: ["workId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "startupOperationId", "receiptHash"], forbidden: ["catalogVersion", "toolsetVersion", "sourceFingerprint", "runId", "observationId"]
   },
   RepositorySourceSnapshotReceipt: {
     stage: "snapshot", producer: "repository-source-snapshot", schemaVersion: 1,
-    fields: ["receiptId", "schemaVersion", "resourceVersion", "artifactRef", "startupBindingRef", "objectiveId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "sourceCommitOid", "sourceTreeOid", "dirtyOverlayRef", "ignoreConfigRevisionRef", "scopeRootHash", "sourceFingerprint", "createdAt", "receiptHash"],
-    required: ["objectiveId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "receiptId", "sourceFingerprint", "receiptHash"], forbidden: ["catalogVersion", "toolsetVersion", "runId", "observationId", "queryHash", "indexVersion", "resultSummary"]
+    fields: ["receiptId", "schemaVersion", "resourceVersion", "artifactRef", "startupBindingRef", "workId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "sourceCommitOid", "sourceTreeOid", "dirtyOverlayRef", "ignoreConfigRevisionRef", "scopeRootHash", "sourceFingerprint", "createdAt", "receiptHash"],
+    required: ["workId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "receiptId", "sourceFingerprint", "receiptHash"], forbidden: ["catalogVersion", "toolsetVersion", "runId", "observationId", "queryHash", "indexVersion", "resultSummary"]
   },
   ToolsetValidationReceipt: {
     stage: "toolset", producer: "project-toolset", schemaVersion: 3,
@@ -53,7 +53,7 @@ const profiles = {
   RunReceipt: {
     stage: "run", producer: "run-isolation", schemaVersion: 6,
     fields: ["schemaVersion", "receiptId", "receiptHash", "runId", "mode", "logicalSessionId", "taskId", "repositoryId", "worktreeId", "sourceFingerprint", "startupBindingReceiptRef", "repositorySourceSnapshotReceiptRef", "toolsetValidationReceiptPointer", "state", "outcome", "runContextHash", "dataRootBindingId", "processLeaseRefs", "portLeaseRefs", "dataLeaseRef", "credentialLeaseRefs", "fencingToken", "resourceVersion", "eventRefs", "metricsRef", "readyAt", "startedAt", "stoppedAt", "completedAt", "error"],
-    required: ["logicalSessionId", "taskId", "runId", "receiptId", "receiptHash", "sourceFingerprint", "startupBindingReceiptRef", "repositorySourceSnapshotReceiptRef"], forbidden: ["objectiveId", "catalogVersion", "observationId"]
+    required: ["logicalSessionId", "taskId", "runId", "receiptId", "receiptHash", "sourceFingerprint", "startupBindingReceiptRef", "repositorySourceSnapshotReceiptRef"], forbidden: ["workId", "catalogVersion", "observationId"]
   },
   CleanupReceipt: {
     stage: "cleanup", producer: "run-isolation", schemaVersion: 4,
@@ -157,14 +157,14 @@ export function receiptIdentitySubset(type, value) {
   switch (type) {
     case "ToolHostAppliedReceipt": return pick(value, ["providerBindingId", "appliedCatalogVersion", "receiptId"]);
     case "ArtifactPinnedRead": return pick(value, ["artifactId", "version", "contentHash", "readReceiptId"]);
-    case "StartupBindingReceipt": return pick(value, ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "startupOperationId", "receiptHash"]);
-    case "RepositorySourceSnapshotReceipt": return pick(value, ["objectiveId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "receiptId", "sourceFingerprint", "receiptHash"]);
-    case "ToolsetValidationReceipt": return { ...pick(value.identity, ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]), snapshotReceiptId: value.snapshotRef?.receiptId, sourceFingerprint: value.snapshotRef?.sourceFingerprint, ...pick(value, ["toolsetVersion", "validationPlanIdentity", "receiptId", "receiptHash"]) };
+    case "StartupBindingReceipt": return pick(value, ["workId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "startupOperationId", "receiptHash"]);
+    case "RepositorySourceSnapshotReceipt": return pick(value, ["workId", "taskId", "logicalSessionId", "repositoryId", "worktreeId", "receiptId", "sourceFingerprint", "receiptHash"]);
+    case "ToolsetValidationReceipt": return { ...pick(value.identity, ["logicalSessionId", "workId", "taskId", "repositoryId", "worktreeId"]), snapshotReceiptId: value.snapshotRef?.receiptId, sourceFingerprint: value.snapshotRef?.sourceFingerprint, ...pick(value, ["toolsetVersion", "validationPlanIdentity", "receiptId", "receiptHash"]) };
     case "RunReceipt": return pick(value, ["logicalSessionId", "taskId", "repositoryId", "worktreeId", "runId", "receiptId", "receiptHash", "sourceFingerprint"]);
     case "CleanupReceipt": return pick(value, ["runId", "logicalSessionId", "taskId", "repositoryId", "worktreeId", "sourceFingerprint", "receiptId", "receiptHash", "outcome"]);
     case "SearchReceipt": return { ...pick(value, ["receiptId", "receiptHash", "sourceFingerprint", "runId", "queryHash", "scopeHash", "indexVersion", "outcome"]), snapshotReceiptId: value.snapshotReceiptRef?.receiptId, toolsetReceiptId: value.toolsetValidationReceiptRef?.receiptId };
-    case "Observation": return { observationId: value.observationId, ...pick(value.identity, ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId"]), runId: value.runId };
-    case "ObservationExport": return { ...pick(value.identity, ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId"]), ...pick(value.versions, ["catalogVersion", "toolsetVersion", "sourceFingerprint"]), summaryHash: value.summaryHash };
+    case "Observation": return { observationId: value.observationId, ...pick(value.identity, ["workId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId"]), runId: value.runId };
+    case "ObservationExport": return { ...pick(value.identity, ["workId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId"]), ...pick(value.versions, ["catalogVersion", "toolsetVersion", "sourceFingerprint"]), summaryHash: value.summaryHash };
     default: throw benchmarkError("BENCHMARK_RECEIPT_SCHEMA_INVALID", "Unknown receipt type.", "envelope");
   }
 }
@@ -177,12 +177,12 @@ function validateSemantics(type, value, options) {
   }
   if (type === "ToolsetValidationReceipt" && value.expiresAt && Date.parse(value.expiresAt) <= (options.now ?? Date.now())) throw benchmarkError("BENCHMARK_RECEIPT_STALE", "Toolset receipt is stale.", "toolset");
   if (type === "ToolsetValidationReceipt") {
-    closedNested(value.identity, ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId", "startupBindingRef"], "Toolset identity");
+    closedNested(value.identity, ["logicalSessionId", "workId", "taskId", "repositoryId", "worktreeId", "startupBindingRef"], "Toolset identity");
     closedNested(value.snapshotRef, ["receiptId", "receiptHash", "sourceFingerprint", "schemaVersion", "resourceVersion", "artifactRef"], "Toolset snapshotRef");
   }
   if (type === "RunReceipt" && value.toolsetValidationReceiptPointer != null) closedNested(value.toolsetValidationReceiptPointer, ["receiptId", "receiptHash", "resourceVersion", "toolsetVersion", "validationPlanIdentity", "sourceFingerprint"], "Run Toolset pointer");
   if (type === "Observation") {
-    closedNested(value.identity, ["objectiveId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"], "Observation identity");
+    closedNested(value.identity, ["workId", "taskId", "logicalSessionId", "providerBindingId", "bindingGeneration", "repositoryId", "worktreeId", "turnId"], "Observation identity");
     closedNested(value.versions, ["catalogVersion", "desiredMaterializationVersion", "appliedMaterializationVersion", "toolsetVersion", "sourceFingerprint", "providerCapabilityRevision"], "Observation versions");
   }
   if (type === "ObservationExport") {

@@ -11,15 +11,15 @@ const RELATION_ORDER = new Map([
 ].map((value, index) => [value, index]));
 
 export function buildArtifactContextIndex({ store, session, policy = new ArtifactContextBudgetPolicy(), limits = null } = {}) {
-  const objectiveId = session?.objectiveId ?? session?.objective_id ?? null;
+  const workId = session?.workId ?? session?.work_id ?? null;
   const sessionKind = session?.sessionKind ?? session?.session_kind ?? null;
   const sessionId = session?.id ?? null;
   const taskId = session?.taskId ?? session?.task_id ?? null;
-  if (!store || !objectiveId || !sessionId || !["worker", "objectiveChat"].includes(sessionKind)) {
+  if (!store || !workId || !sessionId || !["worker", "workChat"].includes(sessionKind)) {
     return emptyIndex(sessionKind);
   }
   const references = store.listArtifactReferences({ includeRevoked: false }).filter((reference) =>
-    reference.objectiveId === objectiveId
+    reference.workId === workId
     && ((reference.sessionId && reference.sessionId === sessionId)
       || (sessionKind === "worker" && reference.taskId && reference.taskId === taskId))
   );
@@ -30,11 +30,11 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
     byArtifact.set(reference.artifactId, group);
   }
   const candidates = [];
-  for (const artifact of store.listArtifactsByObjective(objectiveId)) {
+  for (const artifact of store.listArtifactsByWork(workId)) {
     const artifactId = artifact.artifactId;
     if (artifact.scope === "session" && artifact.boundSessionId !== sessionId) continue;
     const activeReferences = byArtifact.get(artifactId) ?? [];
-    if (!artifact || artifact.objectiveId !== objectiveId || artifact.status === "revoked") continue;
+    if (!artifact || artifact.workId !== workId || artifact.status === "revoked") continue;
     const pin = activeReferences.length > 0
       ? canonicalPin(activeReferences)
       : { pinnedVersion: artifact.approvedVersion ?? artifact.currentVersion, pinnedHash: null };
@@ -62,9 +62,9 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
       referenceIds: activeReferences.map((reference) => reference.referenceId).sort(),
       access: {
         read: true,
-        write: sessionKind === "objectiveChat" || artifact.scope === "objective"
+        write: sessionKind === "workChat" || artifact.scope === "work"
           || (artifact.scope === "task" && artifact.boundTaskId === taskId),
-        delete: sessionKind === "objectiveChat" || artifact.scope === "objective"
+        delete: sessionKind === "workChat" || artifact.scope === "work"
           || (artifact.scope === "task" && artifact.boundTaskId === taskId)
       },
       pendingUpdate: pending,
@@ -72,7 +72,7 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
         reference.authorizedAt > latest ? reference.authorizedAt : latest, "")
     });
   }
-  const section = sessionKind === "worker" ? "workerArtifactIndex" : "objectiveArtifactIndex";
+  const section = sessionKind === "worker" ? "workerArtifactIndex" : "workArtifactIndex";
   candidates.sort(artifactIndexOrder);
   const packed = policy.measureAndPack({
     section,
@@ -121,7 +121,7 @@ function canonicalPending(references) {
 function relationRank(value) { return RELATION_ORDER.get(value) ?? Number.MAX_SAFE_INTEGER; }
 
 function emptyIndex(sessionKind) {
-  const section = sessionKind === "objectiveChat" ? "objectiveArtifactIndex" : "workerArtifactIndex";
+  const section = sessionKind === "workChat" ? "workArtifactIndex" : "workerArtifactIndex";
   const limits = ARTIFACT_CONTEXT_DEFAULT_LIMITS[section];
   return Object.freeze({
     policyRevision: ARTIFACT_CONTEXT_POLICY_REVISION,

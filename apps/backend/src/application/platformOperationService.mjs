@@ -5,7 +5,7 @@ import { stableJson } from "./platformConfirmationService.mjs";
 
 const PLATFORM_OPERATIONS = Object.freeze({
   corptie_platform_agents_manage: ["list", "get", "create", "update", "delete"],
-  corptie_platform_objectives_manage: ["list", "get", "create", "update", "delete"],
+  corptie_platform_works_manage: ["list", "get", "create", "update", "delete"],
   corptie_platform_tasks_manage: ["list", "get", "create", "update", "delete", "dependencies", "add_dependency", "remove_dependency"],
   corptie_platform_sessions_manage: ["list", "get", "create", "send", "interrupt", "resume", "disconnect", "rename", "archive", "pin", "delete", "clear", "restart", "respond_to_approval", "manage_turn_changes", "list_models", "read_account_usage", "read_session_usage", "switch_model", "switch_reasoning", "update_permissions"],
   corptie_platform_artifacts_manage: ["list", "get", "search", "create", "update_metadata", "import", "publish", "reference", "revoke_reference", "acknowledge_reference", "change_visibility", "supersede", "revoke", "restore_artifact", "verify_integrity", "export", "backup", "restore"],
@@ -14,8 +14,8 @@ const PLATFORM_OPERATIONS = Object.freeze({
 
 const PLATFORM_DOMAIN_COVERAGE = Object.freeze([
   { domain: "Agent", tool: "corptie_platform_agents_manage", boundary: "Store Agent resource service" },
-  { domain: "Objective", tool: "corptie_platform_objectives_manage", boundary: "ObjectiveApplicationService" },
-  { domain: "Task", tool: "corptie_platform_tasks_manage", boundary: "ObjectiveApplicationService" },
+  { domain: "Work", tool: "corptie_platform_works_manage", boundary: "WorkApplicationService" },
+  { domain: "Task", tool: "corptie_platform_tasks_manage", boundary: "WorkApplicationService" },
   { domain: "Session", tool: "corptie_platform_sessions_manage", boundary: "SessionApplicationService / AgentProviderRegistry" },
   { domain: "Artifact", tool: "corptie_platform_artifacts_manage", boundary: "ArtifactService" },
   { domain: "Collaboration", tool: "corptie_platform_collaboration_manage", boundary: "CollaborationCore and shared Session lifecycle" },
@@ -34,7 +34,7 @@ const CONFIRMED_ARTIFACT_ACTIONS = new Set(["change_visibility", "supersede", "r
 export class PlatformOperationService {
   constructor(options = {}) {
     Object.assign(this, {
-      store: options.store, objectiveService: options.objectiveService, sessionService: options.sessionService,
+      store: options.store, workService: options.workService, sessionService: options.sessionService,
       artifactService: options.artifactService, collaborationCore: options.collaborationCore,
       confirmationService: options.confirmationService,
       sessionRuntimeReleaseService: options.sessionRuntimeReleaseService ?? null,
@@ -42,7 +42,7 @@ export class PlatformOperationService {
       createSession: options.createSession, onEntityChanged: options.onEntityChanged ?? null,
       idFactory: options.idFactory ?? randomUUID, clock: options.clock ?? (() => new Date().toISOString())
     });
-    if (!this.store || !this.objectiveService || !this.sessionService) throw new TypeError("PlatformOperationService requires store, objectiveService, and sessionService.");
+    if (!this.store || !this.workService || !this.sessionService) throw new TypeError("PlatformOperationService requires store, workService, and sessionService.");
     if (typeof this.createSession !== "function") throw new TypeError("PlatformOperationService requires createSession().");
   }
 
@@ -71,7 +71,7 @@ export class PlatformOperationService {
     switch (input.tool) {
       case "corptie_platform_capabilities": result = this.capabilities(); break;
       case "corptie_platform_agents_manage": result = await this.#agents(args); break;
-      case "corptie_platform_objectives_manage": result = await this.#objectives(args); break;
+      case "corptie_platform_works_manage": result = await this.#works(args); break;
       case "corptie_platform_tasks_manage": result = await this.#tasks(args); break;
       case "corptie_platform_sessions_manage": result = await this.#sessions(args, binding); break;
       case "corptie_platform_artifacts_manage": result = await this.#artifacts(args, binding, input.tool); break;
@@ -102,29 +102,29 @@ export class PlatformOperationService {
     }
   }
 
-  #objectives(args) {
-    assertKnown(args, ["action", "objective_id", "name", "patch", "idempotency_key"]);
+  #works(args) {
+    assertKnown(args, ["action", "work_id", "name", "patch", "idempotency_key"]);
     switch (required(args.action, "action")) {
-      case "list": return this.objectiveService.listObjectives();
-      case "get": return this.objectiveService.getObjective(required(args.objective_id, "objective_id"));
-      case "create": return this.objectiveService.createObjective({ ...(args.patch ?? {}), name: required(args.name, "name") });
-      case "update": return this.objectiveService.updateObjective(required(args.objective_id, "objective_id"), args.patch ?? {});
-      case "delete": this.objectiveService.deleteObjective(required(args.objective_id, "objective_id")); return { deleted: true };
-      default: throw unsupported("Objective", args.action);
+      case "list": return this.workService.listWorks();
+      case "get": return this.workService.getWork(required(args.work_id, "work_id"));
+      case "create": return this.workService.createWork({ ...(args.patch ?? {}), name: required(args.name, "name") });
+      case "update": return this.workService.updateWork(required(args.work_id, "work_id"), args.patch ?? {});
+      case "delete": this.workService.deleteWork(required(args.work_id, "work_id")); return { deleted: true };
+      default: throw unsupported("Work", args.action);
     }
   }
 
   #tasks(args) {
-    assertKnown(args, ["action", "task_id", "target_task_id", "objective_id", "title", "dependency_type", "patch", "idempotency_key"]);
+    assertKnown(args, ["action", "task_id", "target_task_id", "work_id", "title", "dependency_type", "patch", "idempotency_key"]);
     switch (required(args.action, "action")) {
-      case "list": return args.objective_id ? this.objectiveService.listTasksByObjective(args.objective_id) : this.objectiveService.listTasks();
-      case "get": return this.objectiveService.getTask(required(args.task_id, "task_id"));
-      case "create": return this.objectiveService.createTask({ ...(args.patch ?? {}), objectiveId: required(args.objective_id, "objective_id"), title: required(args.title, "title") });
-      case "update": return this.objectiveService.updateTask(required(args.task_id, "task_id"), args.patch ?? {});
-      case "delete": this.objectiveService.deleteTask(required(args.task_id, "task_id")); return { deleted: true };
-      case "dependencies": return this.objectiveService.listDependencies(required(args.task_id, "task_id"));
-      case "add_dependency": return this.objectiveService.addDependency(required(args.task_id, "task_id"), required(args.target_task_id, "target_task_id"), args.dependency_type ?? "depends_on");
-      case "remove_dependency": this.objectiveService.removeDependency(required(args.task_id, "task_id"), required(args.target_task_id, "target_task_id")); return { removed: true };
+      case "list": return args.work_id ? this.workService.listTasksByWork(args.work_id) : this.workService.listTasks();
+      case "get": return this.workService.getTask(required(args.task_id, "task_id"));
+      case "create": return this.workService.createTask({ ...(args.patch ?? {}), workId: required(args.work_id, "work_id"), title: required(args.title, "title") });
+      case "update": return this.workService.updateTask(required(args.task_id, "task_id"), args.patch ?? {});
+      case "delete": this.workService.deleteTask(required(args.task_id, "task_id")); return { deleted: true };
+      case "dependencies": return this.workService.listDependencies(required(args.task_id, "task_id"));
+      case "add_dependency": return this.workService.addDependency(required(args.task_id, "task_id"), required(args.target_task_id, "target_task_id"), args.dependency_type ?? "depends_on");
+      case "remove_dependency": this.workService.removeDependency(required(args.task_id, "task_id"), required(args.target_task_id, "target_task_id")); return { removed: true };
       default: throw unsupported("Task", args.action);
     }
   }
@@ -180,10 +180,10 @@ export class PlatformOperationService {
   }
 
   async #artifacts(args, binding, tool) {
-    assertKnown(args, ["action", "objective_id", "artifact_id", "reference_id", "title", "summary", "content", "query", "limit", "offset", "version", "visibility", "scope", "kind", "category_path", "tags", "aliases", "keywords", "kinds", "category_prefix", "bound_task_id", "bound_session_id", "repository_locator", "mime_type", "approval_status", "task_id", "session_id", "relation", "required", "version_policy", "reason", "source_path", "destination_path", "confirmation_id", "confirmed_repository_write", "confirmed_overwrite", "include_revoked", "idempotency_key"]);
+    assertKnown(args, ["action", "work_id", "artifact_id", "reference_id", "title", "summary", "content", "query", "limit", "offset", "version", "visibility", "scope", "kind", "category_path", "tags", "aliases", "keywords", "kinds", "category_prefix", "bound_task_id", "bound_session_id", "repository_locator", "mime_type", "approval_status", "task_id", "session_id", "relation", "required", "version_policy", "reason", "source_path", "destination_path", "confirmation_id", "confirmed_repository_write", "confirmed_overwrite", "include_revoked", "idempotency_key"]);
     if (!this.artifactService) throw coded("PLATFORM_ARTIFACTS_UNAVAILABLE", "Artifact platform service is unavailable.");
-    const objectiveId = required(args.objective_id, "objective_id");
-    const context = { kind: "platform_admin", actorId: binding.agent.agentId, sessionId: binding.actorSessionId, objectiveId };
+    const workId = required(args.work_id, "work_id");
+    const context = { kind: "platform_admin", actorId: binding.agent.agentId, sessionId: binding.actorSessionId, workId };
     const action = required(args.action, "action");
     if (CONFIRMED_ARTIFACT_ACTIONS.has(action) || (action === "create" && args.visibility === "repository_tracked")) {
       if (!this.confirmationService) throw coded("PLATFORM_CONFIRMATION_UNAVAILABLE", "Server confirmation service is unavailable.");
@@ -204,26 +204,26 @@ export class PlatformOperationService {
       case "supersede": return this.artifactService.supersede(context, required(args.artifact_id, "artifact_id"));
       case "revoke": return this.artifactService.revokeArtifact(context, required(args.artifact_id, "artifact_id"), required(args.reason, "reason"));
       case "restore_artifact": return this.artifactService.restoreArtifact(context, required(args.artifact_id, "artifact_id"));
-      case "verify_integrity": { const artifact = this.store.getArtifact(required(args.artifact_id, "artifact_id")); if (!artifact || artifact.objectiveId !== objectiveId) throw coded("ARTIFACT_NOT_FOUND", "Artifact not found in the selected Objective."); return this.artifactService.verifyIntegrity(artifact.artifactId); }
+      case "verify_integrity": { const artifact = this.store.getArtifact(required(args.artifact_id, "artifact_id")); if (!artifact || artifact.workId !== workId) throw coded("ARTIFACT_NOT_FOUND", "Artifact not found in the selected Work."); return this.artifactService.verifyIntegrity(artifact.artifactId); }
       case "export": assertAbsolute(args.destination_path, "destination_path"); return this.artifactService.exportArtifact(context, required(args.artifact_id, "artifact_id"), { version: args.version, destinationPath: args.destination_path, confirmed: true, confirmedRepositoryWrite: args.confirmed_repository_write === true, confirmedOverwrite: args.confirmed_overwrite === true });
-      case "backup": assertAbsolute(args.destination_path, "destination_path"); return this.artifactService.backupObjective(context, { destinationPath: args.destination_path, confirmed: true });
-      case "restore": assertAbsolute(args.source_path, "source_path"); return this.artifactService.restoreObjective(context, { sourcePath: args.source_path, confirmed: true });
+      case "backup": assertAbsolute(args.destination_path, "destination_path"); return this.artifactService.backupWork(context, { destinationPath: args.destination_path, confirmed: true });
+      case "restore": assertAbsolute(args.source_path, "source_path"); return this.artifactService.restoreWork(context, { sourcePath: args.source_path, confirmed: true });
       default: throw unsupported("Artifact", action);
     }
   }
 
   async #collaboration(args, binding) {
-    assertKnown(args, ["action", "session_id", "objective_id", "agent_id", "task_id", "resource_version", "title", "description", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations", "idempotency_key"]);
+    assertKnown(args, ["action", "session_id", "work_id", "agent_id", "task_id", "resource_version", "title", "description", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations", "idempotency_key"]);
     if (!this.collaborationCore) throw coded("PLATFORM_COLLABORATION_UNAVAILABLE", "Collaboration platform service is unavailable.");
     switch (required(args.action, "action")) {
-      case "discover_sessions": return { sessions: this.store.listSessions().filter((session) => !session.deletedAt).filter((session) => !args.objective_id || session.objectiveId === args.objective_id).filter((session) => !args.agent_id || session.agentId === args.agent_id).map((session) => sessionDescriptor(this.store, session)) };
+      case "discover_sessions": return { sessions: this.store.listSessions().filter((session) => !session.deletedAt).filter((session) => !args.work_id || session.workId === args.work_id).filter((session) => !args.agent_id || session.agentId === args.agent_id).map((session) => sessionDescriptor(this.store, session)) };
       case "get_session": return sessionDescriptor(this.store, found(resolveSession(this.store, required(args.session_id, "session_id")), "SESSION_NOT_FOUND"));
       case "create_task": {
-        const objectiveId = required(args.objective_id, "objective_id");
-        found(this.store.getObjective(objectiveId), "OBJECTIVE_NOT_FOUND");
+        const workId = required(args.work_id, "work_id");
+        found(this.store.getWork(workId), "WORK_NOT_FOUND");
         if (args.agent_id) found(this.store.getAgent(args.agent_id), "AGENT_NOT_FOUND");
         return this.store.runInTransaction(() => {
-          const item = this.objectiveService.createTask({ objectiveId, title: required(args.title, "title"), description: args.description ?? "", acceptanceCriteria: array(args.acceptance_criteria).join("\n"), priority: args.priority ?? "medium", mainAgentId: optional(args.agent_id) });
+          const item = this.workService.createTask({ workId, title: required(args.title, "title"), description: args.description ?? "", acceptanceCriteria: array(args.acceptance_criteria).join("\n"), priority: args.priority ?? "medium", mainAgentId: optional(args.agent_id) });
           this.store.db.run("UPDATE tasks SET created_by_session_id=?, idempotency_key=? WHERE id=?", [binding.actorSessionId, required(args.idempotency_key, "idempotency_key"), item.id]);
           return this.store.getTask(item.id);
         });
@@ -247,7 +247,7 @@ export class PlatformOperationService {
         if (!recipientAgent) throw coded("SESSION_RESOURCE_OWNER_NOT_FOUND", "Recipient Session has no bound Agent resource.");
         const sourceLogical = this.store.getLogicalSessionByLegacySessionId(binding.actorSessionId);
         const recipientLogical = this.store.getLogicalSessionByLegacySessionId(recipientSession.id);
-        return { confirmation: this.collaborationCore.proposeTask({ initiatorAgentId: binding.agent.agentId, initiatorSessionId: sourceLogical?.logicalSessionId ?? binding.actorSessionId, sourceSessionId: binding.actorSessionId, recipientAgentId: recipientAgent.agentId, recipientSessionId: recipientLogical?.logicalSessionId ?? recipientSession.id, targetObjectiveId: recipientSession.objectiveId ?? undefined, taskId: recipientSession.taskId ?? undefined, type: args.type ?? "change_request", title: required(args.title, "title"), summary: required(args.summary, "summary"), acceptanceCriteria: array(args.acceptance_criteria), maxIterations: args.max_iterations ?? 3, idempotencyKey: required(args.idempotency_key, "idempotency_key") }) };
+        return { confirmation: this.collaborationCore.proposeTask({ initiatorAgentId: binding.agent.agentId, initiatorSessionId: sourceLogical?.logicalSessionId ?? binding.actorSessionId, sourceSessionId: binding.actorSessionId, recipientAgentId: recipientAgent.agentId, recipientSessionId: recipientLogical?.logicalSessionId ?? recipientSession.id, targetWorkId: recipientSession.workId ?? undefined, taskId: recipientSession.taskId ?? undefined, type: args.type ?? "change_request", title: required(args.title, "title"), summary: required(args.summary, "summary"), acceptanceCriteria: array(args.acceptance_criteria), maxIterations: args.max_iterations ?? 3, idempotencyKey: required(args.idempotency_key, "idempotency_key") }) };
       }
       default: throw unsupported("Collaboration", args.action);
     }
@@ -258,19 +258,19 @@ export class PlatformOperationService {
 }
 
 function artifactCreateInput(args, confirmedRepositoryTracked) { return { title: args.title, summary: args.summary, content: args.content, visibility: args.visibility, scope: args.scope, kind: args.kind, categoryPath: args.category_path, tags: args.tags, aliases: args.aliases, keywords: args.keywords, boundTaskId: args.bound_task_id, boundSessionId: args.bound_session_id, repositoryLocator: args.repository_locator, confirmedRepositoryTracked, mimeType: args.mime_type, approvalStatus: args.approval_status }; }
-function sessionDescriptor(store, session) { const logical = store.getLogicalSessionByLegacySessionId(session.id); return { sessionId: logical?.logicalSessionId ?? session.id, providerSessionId: session.id, agentId: session.agentId ?? null, objectiveId: session.objectiveId ?? null, taskId: session.taskId ?? null, sessionKind: session.sessionKind, status: session.status, activeBinding: logical?.activeBinding ?? null }; }
+function sessionDescriptor(store, session) { const logical = store.getLogicalSessionByLegacySessionId(session.id); return { sessionId: logical?.logicalSessionId ?? session.id, providerSessionId: session.id, agentId: session.agentId ?? null, workId: session.workId ?? null, taskId: session.taskId ?? null, sessionKind: session.sessionKind, status: session.status, activeBinding: logical?.activeBinding ?? null }; }
 function resolveSession(store, id) { return store.getSession(id) ?? store.getSession(store.getLogicalSession(id)?.legacySessionId); }
 function receiptTarget(tool, args, result) {
-  const type = tool.includes("artifacts") ? "Artifact" : tool.includes("collaboration") ? "Collaboration" : tool.includes("sessions") ? "Session" : tool.includes("tasks") ? "Task" : tool.includes("objectives") ? "Objective" : tool.includes("agents") ? "Agent" : "Platform";
+  const type = tool.includes("artifacts") ? "Artifact" : tool.includes("collaboration") ? "Collaboration" : tool.includes("sessions") ? "Session" : tool.includes("tasks") ? "Task" : tool.includes("works") ? "Work" : tool.includes("agents") ? "Agent" : "Platform";
   const createdId = result?.artifact?.artifactId ?? result?.artifactId ?? result?.task?.id
     ?? result?.confirmation?.confirmationId ?? result?.agentId ?? result?.id ?? null;
   const requestedId = type === "Artifact"
-    ? (args.artifact_id ?? args.reference_id ?? args.objective_id)
+    ? (args.artifact_id ?? args.reference_id ?? args.work_id)
     : type === "Session" ? args.session_id
       : type === "Task" ? args.task_id
-        : type === "Objective" ? args.objective_id
+        : type === "Work" ? args.work_id
           : type === "Agent" ? args.agent_id
-            : (args.session_id ?? args.task_id ?? args.objective_id);
+            : (args.session_id ?? args.task_id ?? args.work_id);
   const version = result?.resourceVersion ?? result?.resource_version ?? result?.version?.version ?? null;
   return { type, id: createdId ?? requestedId ?? null, version };
 }

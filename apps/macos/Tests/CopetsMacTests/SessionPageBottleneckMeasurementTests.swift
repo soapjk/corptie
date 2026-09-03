@@ -276,7 +276,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
                 rows: rows,
                 agents: [],
                 tasks: [],
-                objectives: [],
+                works: [],
                 category: .assistant
             )
         }
@@ -284,7 +284,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
             rows: rows,
             agents: [],
             tasks: [],
-            objectives: [],
+            works: [],
             category: .assistant
         )
 
@@ -304,7 +304,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
                 rows: filtered,
                 agents: [],
                 tasks: [],
-                objectives: [],
+                works: [],
                 category: .assistant
             )
         }
@@ -320,7 +320,7 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
             entityRevision: 3,
             category: .assistant,
             workerScope: .active,
-            workerGroupingMode: .objective,
+            workerGroupingMode: .work,
             searchText: ""
         )
         var builds = 0

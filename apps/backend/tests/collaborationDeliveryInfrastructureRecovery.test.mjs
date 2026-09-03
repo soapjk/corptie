@@ -22,20 +22,20 @@ async function fixture() {
   });
   core.registerAgent({ agentId: "agent-a", name: "Agent A" });
   core.registerAgent({ agentId: "agent-b", name: "Agent B" });
-  const objective = store.createObjective({
-    id: "objective:recovery",
+  const work = store.createWork({
+    id: "work:recovery",
     name: "Recovery",
     contributorAgentIds: ["agent-a", "agent-b"]
   });
   const sourceTask = store.createTask({
     id: "task:source",
-    objectiveId: objective.id,
+    workId: work.id,
     title: "Source",
     mainAgentId: "agent-a"
   });
   const targetTask = store.createTask({
     id: "task:target",
-    objectiveId: objective.id,
+    workId: work.id,
     title: "Target",
     mainAgentId: "agent-b"
   });
@@ -48,7 +48,7 @@ async function fixture() {
       title: providerSessionId,
       agentId,
       sessionKind: "worker",
-      objectiveId: objective.id,
+      workId: work.id,
       taskId,
       cwd: directory
     });

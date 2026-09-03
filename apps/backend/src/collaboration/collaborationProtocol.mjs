@@ -33,8 +33,8 @@ export function createCollaborationEnvelope(input) {
     resources: {
       sourceAgentId: input.senderAgentId,
       targetAgentId: input.recipientAgentId,
-      sourceObjectiveId: input.sourceObjectiveId,
-      targetObjectiveId: input.targetObjectiveId,
+      sourceWorkId: input.sourceWorkId,
+      targetWorkId: input.targetWorkId,
       sourceTaskId: input.sourceTaskId ?? null,
       targetTaskId: input.targetTaskId
     },
@@ -67,13 +67,13 @@ export function validateCollaborationEnvelope(input) {
   }
   record(input.resources, "resources");
   exactFields(input.resources, "resources", [
-    "sourceAgentId", "targetAgentId", "sourceObjectiveId", "targetObjectiveId",
+    "sourceAgentId", "targetAgentId", "sourceWorkId", "targetWorkId",
     "sourceTaskId", "targetTaskId"
   ]);
   text(input.resources.sourceAgentId, "resources.sourceAgentId");
   text(input.resources.targetAgentId, "resources.targetAgentId");
-  text(input.resources.sourceObjectiveId, "resources.sourceObjectiveId");
-  text(input.resources.targetObjectiveId, "resources.targetObjectiveId");
+  text(input.resources.sourceWorkId, "resources.sourceWorkId");
+  text(input.resources.targetWorkId, "resources.targetWorkId");
   nullableText(input.resources.sourceTaskId, "resources.sourceTaskId");
   text(input.resources.targetTaskId, "resources.targetTaskId");
   record(input.payload, "payload");

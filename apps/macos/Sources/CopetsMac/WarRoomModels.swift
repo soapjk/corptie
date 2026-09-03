@@ -3,35 +3,62 @@ import CryptoKit
 
 // 统一控制台数据模型，对齐后端 entityHttpApi 的 canonical camelCase DTO。
 
-struct Objective: Identifiable, Codable, Hashable {
+struct Work: Identifiable, Codable, Hashable {
     let id: String
+    let workspaceId: String
     var name: String
     var description: String
-    var idealState: String
     var avatarPath: String? = nil
     var status: String
-    var priority: String?
-    var targetDate: String?
+    var profile: String
     var tags: [String]
-    var workspaceIds: [String]
-    var relatedObjectiveIds: [String]
     var contributorAgentIds: [String]
+    var primaryAgentId: String? = nil
     var createdAt: String
     var updatedAt: String
 }
 
-// 挂靠资源：Git 仓库（Objective 涉及修改的 Workspace）
+// 挂靠资源：Git 仓库（Work 涉及修改的 Workspace）
 struct GitRepository: Identifiable, Codable, Hashable {
     let id: String
+    let workspaceId: String
     let path: String
     let name: String
     var discoveredAt: String?
     var lastValidatedAt: String?
 }
 
+struct WorkspaceResource: Identifiable, Codable, Hashable {
+    let workspaceId: String
+    let kind: String
+    let ownership: String
+    let rootPath: String
+    let canonicalRootPath: String
+    let status: String
+    var createdAt: String?
+    var updatedAt: String?
+
+    var id: String { workspaceId }
+}
+
+struct WorkspaceRegistrationEnvelope: Decodable, Hashable {
+    let workspace: WorkspaceResource
+    let repository: GitRepository?
+    let gitCapability: String
+}
+
+struct WorkspaceListEnvelope: Decodable {
+    let workspaces: [WorkspaceResource]
+}
+
+func repositoryIDs(for work: Work?, in repositories: [GitRepository]) -> [String] {
+    guard let work else { return [] }
+    return repositories.filter { $0.workspaceId == work.workspaceId }.map(\.id)
+}
+
 struct CorptieTask: Identifiable, Codable, Hashable {
     let id: String
-    var objectiveId: String
+    var workId: String
     var title: String
     var description: String
     var goal: String = ""
@@ -39,7 +66,6 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var verificationCriteria: String = ""
     var priority: String
     var lifecycleState: String
-    var mainWorkspaceId: String?
     var mainAgentId: String?
     var currentSessionId: String?
     var executionStatus: String?
@@ -101,7 +127,7 @@ struct CorptieTaskCompletionIntentReceipt: Codable, Hashable {
     let receiptId: String
     let intentToken: String
     let taskId: String
-    let objectiveId: String
+    let workId: String
     let interactionId: String
     let uiSurface: String
     let issuedAt: String
@@ -112,7 +138,7 @@ struct CorptieTaskCompletionIntentReceipt: Codable, Hashable {
 struct CorptieTaskCompletionOperation: Codable, Hashable {
     let operationId: String
     let taskId: String
-    let objectiveId: String
+    let workId: String
     let result: String
     let sourceType: String
     let requestId: String
@@ -131,7 +157,7 @@ struct CorptieTaskCompletionEnvelope: Codable {
 /// value and never re-derives a target from navigation or current selection.
 struct CorptieTaskCompletionSubmission: Equatable {
     let taskId: String
-    let objectiveId: String
+    let workId: String
     let displayedTitle: String
     let receipt: CorptieTaskCompletionIntentReceipt
     let requestId: String
@@ -144,12 +170,12 @@ struct CorptieTaskCompletionSubmission: Equatable {
         idempotencyKey: String
     ) -> CorptieTaskCompletionSubmission? {
         guard receipt.taskId == task.id,
-              receipt.objectiveId == task.objectiveId,
+              receipt.workId == task.workId,
               !requestId.isEmpty,
               !idempotencyKey.isEmpty else { return nil }
         return CorptieTaskCompletionSubmission(
             taskId: task.id,
-            objectiveId: task.objectiveId,
+            workId: task.workId,
             displayedTitle: task.title,
             receipt: receipt,
             requestId: requestId,
@@ -230,7 +256,7 @@ struct CorptieTaskDeletionArtifact: Codable, Equatable, Identifiable {
 
 enum CorptieTaskArtifactDisposition: String, CaseIterable, Identifiable {
     case delete
-    case objective
+    case work
     case retain
 
     var id: String { rawValue }
@@ -252,9 +278,9 @@ struct CorptieTaskDeletionResult: Decodable {
     let taskId: String
 }
 
-// 后端响应 envelope：GET /objectives → { objectives: [...] }；GET /tasks → { tasks: [...] }
-struct ObjectiveListEnvelope: Codable {
-    let objectives: [Objective]
+// 后端响应 envelope：GET /works → { works: [...] }；GET /tasks → { tasks: [...] }
+struct WorkListEnvelope: Codable {
+    let works: [Work]
 }
 
 struct CorptieTaskListEnvelope: Codable {
@@ -337,7 +363,7 @@ struct StartupBindingReceipt: Codable, Hashable {
     let schemaVersion: Int
     let status: String
     let startupOperationId: String
-    let objectiveId: String
+    let workId: String
     let taskId: String
     let logicalSessionId: String
     let repositoryId: String
@@ -361,7 +387,7 @@ struct StartupBindingReceipt: Codable, Hashable {
     let receiptHash: String
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case schemaVersion, status, startupOperationId, objectiveId, taskId, logicalSessionId
+        case schemaVersion, status, startupOperationId, workId, taskId, logicalSessionId
         case repositoryId, worktreeId, canonicalWorktreePath, headIdentity, providerBindingId
         case bindingGeneration, sourceCommitOid, sourceTreeOid, baseRef, repositoryInventoryVersion
         case workspaceResourceVersion, resourceVersion, providerContextHash, toolContractHash
@@ -381,7 +407,7 @@ struct StartupBindingReceipt: Codable, Hashable {
             )
         }
         startupOperationId = try container.decode(String.self, forKey: .startupOperationId)
-        objectiveId = try container.decode(String.self, forKey: .objectiveId)
+        workId = try container.decode(String.self, forKey: .workId)
         taskId = try container.decode(String.self, forKey: .taskId)
         logicalSessionId = try container.decode(String.self, forKey: .logicalSessionId)
         repositoryId = try container.decode(String.self, forKey: .repositoryId)
@@ -410,7 +436,7 @@ struct StartupBindingReceipt: Codable, Hashable {
         error = try container.decodeIfPresent(String.self, forKey: .error)
         receiptHash = try container.decode(String.self, forKey: .receiptHash)
         guard error == nil, bindingGeneration > 0, workspaceResourceVersion > 0, resourceVersion > 0,
-              startupOperationId.hasPrefix("startup:"), objectiveId.hasPrefix("objective:"),
+              startupOperationId.hasPrefix("startup:"), workId.hasPrefix("work:"),
               taskId.hasPrefix("task:"), repositoryId.hasPrefix("repository:"),
               worktreeId.hasPrefix("worktree:"), providerBindingId.hasPrefix("startup-binding:"),
               logicalSessionId.hasPrefix("session:") || logicalSessionId.hasPrefix("logical:"),
@@ -433,7 +459,7 @@ struct StartupBindingReceipt: Codable, Hashable {
         try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(status, forKey: .status)
         try container.encode(startupOperationId, forKey: .startupOperationId)
-        try container.encode(objectiveId, forKey: .objectiveId)
+        try container.encode(workId, forKey: .workId)
         try container.encode(taskId, forKey: .taskId)
         try container.encode(logicalSessionId, forKey: .logicalSessionId)
         try container.encode(repositoryId, forKey: .repositoryId)
@@ -664,6 +690,11 @@ struct EntityErrorEnvelope: Codable {
 enum RepositoryRegistrationResult {
     case success(GitRepository)
     case notGitRepository
+    case failure(String)
+}
+
+enum WorkspaceRegistrationResult {
+    case success(WorkspaceRegistrationEnvelope)
     case failure(String)
 }
 

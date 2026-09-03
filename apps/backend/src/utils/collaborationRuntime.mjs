@@ -22,12 +22,12 @@ export function collaborationMcpEnvironment({
     CORPTIE_SESSION_ID: metadata?.sessionId ?? "",
     CORPTIE_PROVIDER_BINDING_ID: metadata?.providerBindingId ?? "",
     CORPTIE_SESSION_KIND: metadata?.sessionKind ?? "",
-    CORPTIE_OBJECTIVE_ID: metadata?.objectiveId ?? "",
+    CORPTIE_WORK_ID: metadata?.workId ?? "",
     CORPTIE_TASK_ID: metadata?.taskId ?? "",
-    ...(metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId
+    ...(metadata?.sessionKind === "workChat" && metadata?.workId
       ? {
-          CORPTIE_OBJECTIVE_CHAT_ID: metadata.objectiveId,
-          CORPTIE_OBJECTIVE_CHAT_SESSION_ID: metadata.sessionId ?? ""
+          CORPTIE_WORK_CHAT_ID: metadata.workId,
+          CORPTIE_WORK_CHAT_SESSION_ID: metadata.sessionId ?? ""
         }
       : {})
   };

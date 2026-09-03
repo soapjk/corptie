@@ -1,50 +1,43 @@
 import SwiftUI
 
-// Objective 详情/编辑页（模块 C 升级）：完整编辑所有字段 + 三挂靠资源（Workspace / 关联 Objective / Contributor Agent）。
-// 侧栏 Objective 右键「编辑」打开此 sheet；创建后的资源挂靠也可在此修改。
+// Work 详情/编辑页。Workspace 是创建后不可换绑的唯一资源。
 
-struct ObjectiveDetailView: View {
+struct WorkDetailView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @Environment(\.dismiss) private var dismiss
-    let objective: Objective
+    let work: Work
 
     @State private var name: String
     @State private var detail: String
-    @State private var idealState: String
-    @State private var priority: String?
     @State private var tagsText: String
     @State private var showAdvanced = false
-    @State private var workspaceIds = Set<String>()
-    @State private var relatedObjectiveIds = Set<String>()
+    @State private var workspaceId: String?
     @State private var contributorAgentIds = Set<String>()
     @State private var showDeleteConfirm = false
     @State private var assistAgentId: String?
 
-    init(objective: Objective) {
-        self.objective = objective
-        _name = State(initialValue: objective.name)
-        _detail = State(initialValue: objective.description)
-        _idealState = State(initialValue: objective.idealState)
-        _priority = State(initialValue: objective.priority)
-        _tagsText = State(initialValue: objective.tags.joined(separator: ", "))
-        _workspaceIds = State(initialValue: Set(objective.workspaceIds))
-        _relatedObjectiveIds = State(initialValue: Set(objective.relatedObjectiveIds))
-        _contributorAgentIds = State(initialValue: Set(objective.contributorAgentIds))
+    init(work: Work) {
+        self.work = work
+        _name = State(initialValue: work.name)
+        _detail = State(initialValue: work.description)
+        _tagsText = State(initialValue: work.tags.joined(separator: ", "))
+        _workspaceId = State(initialValue: work.workspaceId)
+        _contributorAgentIds = State(initialValue: Set(work.contributorAgentIds))
     }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(L10n("编辑 Objective"))
+                    Text(L10n("编辑 Work"))
                         .font(.title3.bold())
 
                     HStack(spacing: 12) {
-                        objectiveAvatar
+                        workAvatar
                         Button(L10n("选择头像")) { chooseAvatar() }
                         if currentAvatarPath != nil {
                             Button(L10n("清除头像")) {
-                                Task { await client.clearObjectiveAvatar(objectiveId: objective.id) }
+                                Task { await client.clearWorkAvatar(workId: work.id) }
                             }
                         }
                     }
@@ -63,51 +56,23 @@ struct ObjectiveDetailView: View {
                     } trailing: {
                         AgentAssistButton(fieldLabel: "描述", text: $detail, selectedAgentId: $assistAgentId, context: "目标名称：\(name)")
                     }
-                    field(L10n("理想状态")) {
-                        TextEditor(text: $idealState)
-                            .font(.body)
-                            .frame(height: 70)
-                            .scrollContentBackground(.hidden)
-                            .padding(6)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
-                    } trailing: {
-                        AgentAssistButton(fieldLabel: "理想状态", text: $idealState, selectedAgentId: $assistAgentId, context: "目标名称：\(name)；描述：\(detail)")
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n("优先级"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker("", selection: $priority) {
-                            Text(L10n("未设置")).tag(String?.none)
-                            Text(L10n("低")).tag(String?.some("low"))
-                            Text(L10n("中")).tag(String?.some("medium"))
-                            Text(L10n("高")).tag(String?.some("high"))
-                            Text(L10n("紧急")).tag(String?.some("urgent"))
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 160, alignment: .leading)
-                    }
-
                     Divider()
 
-                    ObjectiveResourcesEditor(
-                        workspaceIds: $workspaceIds,
-                        relatedObjectiveIds: $relatedObjectiveIds,
+                    WorkResourcesEditor(
+                        workspaceId: $workspaceId,
                         contributorAgentIds: $contributorAgentIds,
-                        excludeObjectiveId: objective.id
+                        workspaceEditable: false
                     )
 
-                    DisclosureGroup(L10n("Objective Memories")) {
-                        MemoryManagementView(scope: .owner(type: "objective", id: objective.id))
+                    DisclosureGroup(L10n("Work Memories")) {
+                        MemoryManagementView(scope: .owner(type: "work", id: work.id))
                             .frame(height: 300)
                             .padding(.top, 8)
                     }
 
                     Divider()
 
-                    ArtifactSectionView(objectiveId: objective.id, taskId: nil)
+                    ArtifactSectionView(workId: work.id, taskId: nil)
 
                     DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
@@ -141,14 +106,14 @@ struct ObjectiveDetailView: View {
             .padding(16)
         }
         .frame(width: 620, height: 680)
-        .alert(L10n("删除 Objective"), isPresented: $showDeleteConfirm) {
+        .alert(L10n("删除 Work"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
-                Task { await client.deleteObjective(objectiveId: objective.id) }
+                Task { await client.deleteWork(workId: work.id) }
                 dismiss()
             }
             Button(L10n("取消"), role: .cancel) {}
         } message: {
-            Text(L10nFormat("Delete “%@”? All of its CorptieTasks will be deleted. This action cannot be undone.", objective.name))
+            Text(L10nFormat("Delete “%@”? All of its CorptieTasks will be deleted. This action cannot be undone.", work.name))
         }
     }
 
@@ -162,35 +127,31 @@ struct ObjectiveDetailView: View {
             .filter { !$0.isEmpty }
 
         Task {
-            let updatedObjective = await client.updateObjective(
-                objectiveId: objective.id,
+            let updatedWork = await client.updateWork(
+                workId: work.id,
                 name: trimmed,
                 description: detail,
-                idealState: idealState,
-                priority: priority ?? "",
                 tags: tags,
-                workspaceIds: Array(workspaceIds),
-                relatedObjectiveIds: Array(relatedObjectiveIds),
                 contributorAgentIds: Array(contributorAgentIds)
             )
-            if updatedObjective != nil {
+            if updatedWork != nil {
                 dismiss()
             }
         }
     }
 
     private var currentAvatarPath: String? {
-        client.objectives.first(where: { $0.id == objective.id })?.avatarPath ?? objective.avatarPath
+        client.works.first(where: { $0.id == work.id })?.avatarPath ?? work.avatarPath
     }
 
-    private var objectiveAvatar: some View {
+    private var workAvatar: some View {
         Group {
             if let path = currentAvatarPath, !path.isEmpty {
                 AnimatedAvatarImage(path: path)
             } else {
                 DefaultInitialAvatarView(
                     familySeed: name,
-                    variationSeed: objective.id,
+                    variationSeed: work.id,
                     initials: DefaultAvatarInitials.make(from: name),
                     size: 52
                 )
@@ -207,7 +168,7 @@ struct ObjectiveDetailView: View {
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
         if panel.runModal() == .OK, let url = panel.url {
-            Task { await client.setObjectiveAvatar(objectiveId: objective.id, sourcePath: url.path) }
+            Task { await client.setWorkAvatar(workId: work.id, sourcePath: url.path) }
         }
     }
 

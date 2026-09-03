@@ -4,13 +4,13 @@ import Testing
 
 struct CorptieTaskCompletionSubmissionTests {
     @Test func frozenSubmissionDoesNotFollowLaterSelectionOrViewReuse() throws {
-        let first = try task(id: "task:first", objectiveId: "objective:one", title: "First")
-        let second = try task(id: "task:second", objectiveId: "objective:one", title: "Second")
+        let first = try task(id: "task:first", workId: "work:one", title: "First")
+        let second = try task(id: "task:second", workId: "work:one", title: "Second")
         let receipt = CorptieTaskCompletionIntentReceipt(
             receiptId: "receipt:first",
             intentToken: "opaque:first",
             taskId: first.id,
-            objectiveId: first.objectiveId,
+            workId: first.workId,
             interactionId: "click:first",
             uiSurface: "task_completion_confirmation",
             issuedAt: "2026-08-29T00:00:00Z",
@@ -34,12 +34,12 @@ struct CorptieTaskCompletionSubmissionTests {
     }
 
     @Test func staleOrCrossCorptieTaskReceiptCannotBeFrozen() throws {
-        let target = try task(id: "task:target", objectiveId: "objective:one", title: "Target")
+        let target = try task(id: "task:target", workId: "work:one", title: "Target")
         let crossReceipt = CorptieTaskCompletionIntentReceipt(
             receiptId: "receipt:other",
             intentToken: "opaque:other",
             taskId: "task:other",
-            objectiveId: target.objectiveId,
+            workId: target.workId,
             interactionId: "click:other",
             uiSurface: "task_edit_status_confirmation",
             issuedAt: "2026-08-29T00:00:00Z",
@@ -56,10 +56,10 @@ struct CorptieTaskCompletionSubmissionTests {
     }
 
     @Test func retryRetainsExactlyTheSameImmutableCapability() throws {
-        let target = try task(id: "task:retry", objectiveId: "objective:one", title: "Retry")
+        let target = try task(id: "task:retry", workId: "work:one", title: "Retry")
         let receipt = CorptieTaskCompletionIntentReceipt(
             receiptId: "receipt:retry", intentToken: "opaque:retry",
-            taskId: target.id, objectiveId: target.objectiveId,
+            taskId: target.id, workId: target.workId,
             interactionId: "click:retry", uiSurface: "task_completion_confirmation",
             issuedAt: "2026-08-29T00:00:00Z", expiresAt: "2026-08-29T00:05:00Z",
             purpose: "task_completion"
@@ -73,10 +73,10 @@ struct CorptieTaskCompletionSubmissionTests {
     }
 }
 
-private func task(id: String, objectiveId: String, title: String) throws -> CorptieTask {
+private func task(id: String, workId: String, title: String) throws -> CorptieTask {
     let data = try JSONSerialization.data(withJSONObject: [
         "id": id,
-        "objectiveId": objectiveId,
+        "workId": workId,
         "title": title,
         "description": "",
         "goal": "",
@@ -86,7 +86,6 @@ private func task(id: String, objectiveId: String, title: String) throws -> Corp
         "lifecycleState": "in_progress",
         "resourceVersion": 1,
         "revision": 1,
-        "mainWorkspaceId": NSNull(),
         "mainAgentId": NSNull(),
         "currentSessionId": NSNull(),
         "executionStatus": "idle",

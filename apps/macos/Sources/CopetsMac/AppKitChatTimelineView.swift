@@ -687,10 +687,10 @@ struct NativeCollaborationRoutePresentation: Hashable {
     let routeLabel: String
     let sourceLabel: String
     let sourceSession: String
-    let sourceObjective: String
+    let sourceWork: String
     let targetLabel: String
     let targetName: String
-    let targetObjective: String
+    let targetWork: String
 }
 
 struct AppKitChatTimelinePosition: Codable, Equatable, Sendable {
@@ -1932,7 +1932,7 @@ final class NativeCollaborationRouteSummaryView: NSView {
         self.presentation = presentation
         setAccessibilityElement(true)
         setAccessibilityLabel(
-            "\(presentation.routeLabel)。\(presentation.sourceLabel)：\(presentation.sourceSession)，\(presentation.sourceObjective)。\(presentation.targetLabel)：\(presentation.targetName)，\(presentation.targetObjective)"
+            "\(presentation.routeLabel)。\(presentation.sourceLabel)：\(presentation.sourceSession)，\(presentation.sourceWork)。\(presentation.targetLabel)：\(presentation.targetName)，\(presentation.targetWork)"
         )
         needsDisplay = true
     }
@@ -1970,14 +1970,14 @@ final class NativeCollaborationRouteSummaryView: NSView {
             sourceRect,
             caption: presentation.sourceLabel,
             primary: presentation.sourceSession,
-            secondary: presentation.sourceObjective,
+            secondary: presentation.sourceWork,
             accent: .systemBlue
         )
         drawPanel(
             targetRect,
             caption: presentation.targetLabel,
             primary: presentation.targetName,
-            secondary: presentation.targetObjective,
+            secondary: presentation.targetWork,
             accent: accent
         )
 

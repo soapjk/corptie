@@ -1,6 +1,6 @@
 export const SESSION_KIND = Object.freeze({
   assistantChat: "assistantChat",
-  objectiveChat: "objectiveChat",
+  workChat: "workChat",
   worker: "worker",
   legacy: "legacy"
 });
@@ -8,7 +8,7 @@ export const SESSION_KIND = Object.freeze({
 const validSessionKinds = new Set(Object.values(SESSION_KIND));
 const productSessionKinds = new Set([
   SESSION_KIND.assistantChat,
-  SESSION_KIND.objectiveChat,
+  SESSION_KIND.workChat,
   SESSION_KIND.worker
 ]);
 
@@ -36,11 +36,11 @@ export function assertExplicitSessionKind(value, { allowLegacy = false, field = 
   return normalized;
 }
 
-export function inferSessionKind({ sessionKind, objectiveId, taskId, agentRole } = {}) {
+export function inferSessionKind({ sessionKind, workId, taskId, agentRole } = {}) {
   const normalized = normalizeSessionKind(sessionKind);
   if (normalized !== SESSION_KIND.legacy) return normalized;
   if (typeof taskId === "string" && taskId.trim()) return SESSION_KIND.worker;
-  if (typeof objectiveId === "string" && objectiveId.trim()) return SESSION_KIND.objectiveChat;
+  if (typeof workId === "string" && workId.trim()) return SESSION_KIND.workChat;
   if (agentRole === "assistant") return SESSION_KIND.assistantChat;
   return SESSION_KIND.legacy;
 }

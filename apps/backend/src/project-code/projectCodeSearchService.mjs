@@ -582,7 +582,7 @@ function evidenceRefs(snapshot, layers) {
 }
 
 function assertReceiptIdentity(receipt, session) {
-  for (const field of ["objectiveId", "taskId", "logicalSessionId"]) {
+  for (const field of ["workId", "taskId", "logicalSessionId"]) {
     if (receipt[field] !== session?.[field]) throw contractError("SNAPSHOT_CONTRACT_MISMATCH", `Snapshot ${field} does not match the authenticated Session.`);
   }
 }

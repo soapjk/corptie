@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 
 export const OBSERVABILITY_DEPENDENCY_PINS = Object.freeze([
   pin("startup_binding_receipt", "approved_fixed", "artifact:7f26689a-5b9a-4b32-ad86-ad93c0be2949", 1, "472b8c34180f2c1e7f7b59d7e2c8fc620ec515971a56e5f8ecae6fe69a0aced2"),
-  pin("search_snapshot_schema", "approved_fixed", "artifact:ee9b734f-799d-41b6-804f-9868697de511", 1, "a288feb13a2c784e1267d4c40b44e1a0204c530c8f0b9910f0d9f2f52a9ccc76"),
-  pin("toolset_receipt_schema", "approved_fixed", "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3", 1, "6d96157deeb6d675a572478247312650a8eba8bb58f54568fd3aa25af8013669"),
+  pin("search_snapshot_schema", "approved_fixed", "artifact:ee9b734f-799d-41b6-804f-9868697de511", 1, "d706d828e697618d69a65b7c1fcae9fa95f41e2c70237cc60802a0e91f0c2e15"),
+  pin("toolset_receipt_schema", "approved_fixed", "artifact:ed9a09d9-d2b1-4446-9a34-4ef491570ef3", 1, "55d976162448d8519a3d7805502921ee3474fb665fd2b17d8582e3949ae98888"),
   pin("run_isolation_receipts", "approved_fixed", "artifact:42cd149b-e230-4347-b4ff-b816c18cf25f", 1, "b64fab56fdce275b29a99dd63f1ecd84a95419d3e0c8a4e752ebdf91e5321951")
 ]);
 

@@ -15,9 +15,9 @@ const id = (prefix, description) => ({
 
 export const repositoryIdSchema = id("repository", "Registered logical Workspace repository: ID; filesystem paths are not accepted.");
 export const agentIdSchema = id("agent", "Stable Agent identity and authorization principal (agent: ID).");
-export const taskIdSchema = id("task", "Stable Task identity (task: ID) within its owning Objective.");
+export const taskIdSchema = id("task", "Stable Task identity (task: ID) within its owning Work.");
 export const sessionIdSchema = id("session", "Stable logical Session identity (session: ID), not a Provider thread id.");
-export const objectiveIdSchema = id("objective", "Stable Objective identity (objective: ID).");
+export const workIdSchema = id("work", "Stable Work identity (work: ID).");
 
 export const taskFieldsSchema = Object.freeze({
   description: { type: "string", description: "Detailed Task scope and constraints." },
@@ -29,7 +29,6 @@ export const taskFieldsSchema = Object.freeze({
   verification_criteria: { type: "string", description: "Evidence required to verify the current Task revision." },
   priority: { type: "string", enum: [...TASK_PRIORITIES] },
   lifecycle_state: { type: "string", enum: [...TASK_LIFECYCLE_STATES] },
-  main_workspace_id: { ...repositoryIdSchema, type: ["string", "null"] },
   main_agent_id: { ...agentIdSchema, type: ["string", "null"] }
 });
 
@@ -43,7 +42,6 @@ export const taskPatchSchema = Object.freeze({
     verificationCriteria: taskFieldsSchema.verification_criteria,
     priority: { type: "string", enum: [...TASK_PRIORITIES] },
     lifecycleState: { type: "string", enum: [...TASK_LIFECYCLE_STATES] },
-    mainWorkspaceId: { type: ["string", "null"], description: repositoryIdSchema.description },
     mainAgentId: { type: ["string", "null"], description: agentIdSchema.description }
   },
   additionalProperties: false

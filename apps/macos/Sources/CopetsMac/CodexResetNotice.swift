@@ -257,7 +257,7 @@ final class CodexResetSystemNotificationManager {
 
     private static func deliverDevelopmentNotification(_ notification: CodexResetSystemNotification) {
         // SwiftPM's direct Development executable is not an application bundle;
-        // UNUserNotificationCenter raises an Objective-C exception before Swift
+        // UNUserNotificationCenter raises an Work-C exception before Swift
         // can catch it. AppleScript still delivers a normal local macOS banner
         // and keeps the repository-prescribed direct Development launch usable.
         let process = Process()

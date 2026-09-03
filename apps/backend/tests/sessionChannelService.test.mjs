@@ -6,7 +6,7 @@ import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
 
 async function fixture() {
@@ -19,19 +19,19 @@ async function fixture() {
   const core = new CollaborationCore(store);
   core.registerAgent({ agentId: "agent:a", name: "Agent A" });
   core.registerAgent({ agentId: "agent:b", name: "Agent B" });
-  const objective = store.createObjective({
-    id: "objective:channel", name: "Channel", contributorAgentIds: ["agent:a", "agent:b"]
+  const work = store.createWork({
+    id: "work:channel", name: "Channel", contributorAgentIds: ["agent:a", "agent:b"]
   });
   for (const endpoint of [
     { provider: "provider:a", logical: "session:a", agent: "agent:a", item: "task:a" },
     { provider: "provider:b", logical: "session:b", agent: "agent:b", item: "task:b" }
   ]) {
     store.createTask({
-      id: endpoint.item, objectiveId: objective.id, title: endpoint.item, mainAgentId: endpoint.agent
+      id: endpoint.item, workId: work.id, title: endpoint.item, mainAgentId: endpoint.agent
     }, { originType: "direct_user" });
     store.createSession({
       id: endpoint.provider, title: endpoint.provider, agentId: endpoint.agent,
-      sessionKind: "worker", objectiveId: objective.id, taskId: endpoint.item, cwd: directory
+      sessionKind: "worker", workId: work.id, taskId: endpoint.item, cwd: directory
     });
     store.createLogicalSessionRoute({
       logicalSessionId: endpoint.logical,
@@ -139,7 +139,7 @@ test("Task creation origin is immutable provenance and does not create hierarchy
   try {
     const item = value.store.createTask({
       id: "task:independent",
-      objectiveId: "objective:channel",
+      workId: "work:channel",
       title: "Independent"
     }, {
       originType: "session",
@@ -165,11 +165,11 @@ test("Task creation origin is immutable provenance and does not create hierarchy
 test("one authorization can provision the missing Task and Session before activating the Channel", async () => {
   const value = await fixture();
   try {
-    const objectiveService = new ObjectiveApplicationService({ store: value.store });
+    const workService = new WorkApplicationService({ store: value.store });
     const launches = [];
     const provisioning = new SessionCollaborationService({
       store: value.store,
-      objectiveService,
+      workService,
       collaborationCore: value.service.collaborationCore,
       defaultProviderId: "test-provider",
       workSessionStartApplicationService: { start: async (command) => {
@@ -178,7 +178,7 @@ test("one authorization can provision the missing Task and Session before activa
         launches.push({ taskId: task.id, agentId: agent.agentId });
         value.store.createSession({
           id: "provider:created", title: "Created peer", agentId: agent.agentId,
-          sessionKind: "worker", objectiveId: task.objective_id, taskId: task.id,
+          sessionKind: "worker", workId: task.work_id, taskId: task.id,
           cwd: value.directory
         });
         value.store.createLogicalSessionRoute({
@@ -187,13 +187,13 @@ test("one authorization can provision the missing Task and Session before activa
           providerId: "test-provider", boundCwd: value.directory, sessionName: "Created peer"
         });
         value.service.collaborationCore.bindSession({ agentId: agent.agentId, sessionId: "provider:created" });
-        value.store.bindSessionToTask("provider:created", task.id, task.objective_id);
+        value.store.bindSessionToTask("provider:created", task.id, task.work_id);
         return { session: value.store.getSession("provider:created") };
       } }
     });
     const pending = value.service.requestChannel({
       requestingSessionId: "session:a",
-      targetObjectiveId: "objective:channel",
+      targetWorkId: "work:channel",
       sessionAgentId: "agent:b",
       title: "Long-lived peer",
       body: "Please join this Channel.",

@@ -81,7 +81,7 @@ export function forkSession(store, sessionId, atSeq, { newSessionId } = {}) {
     sessionKind: sourceSession?.sessionKind,
     provider: sourceSession?.provider,
     status: "running",
-    objectiveId: sourceSession?.objectiveId,
+    workId: sourceSession?.workId,
     taskId: sourceSession?.taskId
   });
 

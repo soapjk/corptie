@@ -37,7 +37,7 @@ async function fixture(options = {}) {
     logicalSessionId: "logical:one", providerBindingId: "binding:one",
     providerId: "fake", providerSessionId: "thread:one", routingVersion: 1,
     state: "active", isCurrent: true, tombstoned: false,
-    sessionId: "session:one", sessionKind: "objectiveChat", objectiveId: "objective:one",
+    sessionId: "session:one", sessionKind: "workChat", workId: "work:one",
     taskId: null, currentTaskSessionId: null, authorizationRevision: 1
   };
   let applyCount = 0;

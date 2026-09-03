@@ -7,7 +7,7 @@ import test from "node:test";
 
 import { WorkSessionStartApplicationService } from "../src/application/workSessionStartApplicationService.mjs";
 import { WorkSessionStartupCoordinator } from "../src/application/workSessionStartupCoordinator.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { handleCollaborationHttpRequest } from "../src/collaboration/collaborationHttpApi.mjs";
@@ -29,15 +29,18 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
   try {
     await store.initialize();
     const core = new CollaborationCore(store);
-    const objectiveService = new ObjectiveApplicationService({ store });
+    const workService = new WorkApplicationService({ store });
     const agent = store.createAgent({
       id: "agent:worker", name: "Worker", role: "independentContributor"
     });
     const now = new Date().toISOString();
     const worktreePath = join(directory, "worktree");
+    store.createWorkspace({
+      workspaceId: "workspace:one", kind: "linkedLocal", ownership: "userManaged", rootPath: directory
+    });
     store.db.run(
-      "INSERT INTO git_repositories (repository_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?)",
-      ["repository:one", join(directory, ".git"), now, now]
+      "INSERT INTO git_repositories (repository_id, workspace_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?, ?)",
+      ["repository:one", "workspace:one", join(directory, ".git"), now, now]
     );
     store.db.run(
       `INSERT INTO git_worktrees (worktree_id, repository_id, path, canonical_path, git_dir,
@@ -46,19 +49,19 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
        'refs/heads/task/one','task/one',0,'inventory:one',?,'{}')`,
       [worktreePath, worktreePath, join(directory, ".git", "worktrees", "one"), COMMIT, now]
     );
-    const objective = objectiveService.createObjective({
-      id: "objective:one", name: "Objective", contributorAgentIds: [agent.agentId],
-      workspaceIds: ["repository:one"]
+    const work = workService.createWork({
+      id: "work:one", name: "Work", contributorAgentIds: [agent.agentId],
+      workspaceId: "workspace:one"
     });
     store.createSession({
-      id: "provider:source", title: "Objective Chat", provider: "test-provider",
-      agentId: agent.agentId, sessionKind: "objectiveChat", objectiveId: objective.id,
+      id: "provider:source", title: "Work Chat", provider: "test-provider",
+      agentId: agent.agentId, sessionKind: "workChat", workId: work.id,
       cwd: directory
     });
     store.createLogicalSessionRoute({
       logicalSessionId: "session:source", legacySessionId: "provider:source",
       providerThreadId: "thread:source", providerSessionId: "provider:source",
-      providerId: "test-provider", boundCwd: directory, sessionName: "Objective Chat"
+      providerId: "test-provider", boundCwd: directory, sessionName: "Work Chat"
     });
     core.bindSession({ agentId: agent.agentId, sessionId: "provider:source" });
 
@@ -81,7 +84,7 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
           calls.create += 1;
           store.createSession({
             id: "provider:worker", title: "Worker", provider: providerId,
-            agentId: assigneeAgentId, sessionKind: "worker", objectiveId: objective.id,
+            agentId: assigneeAgentId, sessionKind: "worker", workId: work.id,
             taskId, cwd: workspace.canonicalWorktreePath, deferTaskProjection: true
           });
           store.createLogicalSessionRoute({
@@ -131,7 +134,7 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
       store, coordinator, providerRegistry, resolveProviderId: (value) => value
     });
     const collaborationService = new SessionCollaborationService({
-      store, objectiveService, collaborationCore: core,
+      store, workService, collaborationCore: core,
       workSessionStartApplicationService: applicationService,
       defaultProviderId: "test-provider"
     });
@@ -149,12 +152,11 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
     const client = new CollaborationHttpClient({
       baseUrl: `http://127.0.0.1:${address.port}`,
       agentId: agent.agentId,
-      sessionScope: { sessionId: "session:source", objectiveId: objective.id }
+      sessionScope: { sessionId: "session:source", workId: work.id }
     });
     const created = await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
       title: "Production wiring",
       agent_id: agent.agentId,
-      main_workspace_id: "repository:one",
       idempotency_key: "create:one"
     });
     const started = await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_start", {

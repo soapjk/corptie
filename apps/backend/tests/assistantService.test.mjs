@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { AssistantService, createAssistantIntentResolver } from "../src/application/assistantService.mjs";
 
 async function createStore() {
@@ -20,16 +20,16 @@ async function createStore() {
 test("assistant.chat 建目标（规则版意图识别）", async () => {
   const { store, directory } = await createStore();
   try {
-    const objectiveService = new ObjectiveApplicationService({ store });
-    const assistant = new AssistantService({ store, objectiveService });
+    const workService = new WorkApplicationService({ store });
+    const assistant = new AssistantService({ store, workService });
 
     const result = await assistant.chat("建目标 重构 Corptie");
     assert.equal(result.messages.length, 2);
     assert.equal(result.messages[0].role, "user");
     const receipt = result.messages[1];
     assert.equal(receipt.kind, "receipt");
-    assert.equal(receipt.data.type, "objective");
-    assert.equal(receipt.data.objective.name, "重构 Corptie");
+    assert.equal(receipt.data.type, "work");
+    assert.equal(receipt.data.work.name, "重构 Corptie");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -39,15 +39,15 @@ test("assistant.chat 建目标（规则版意图识别）", async () => {
 test("assistant.chat 建工作项（无目标时自动建默认目标）", async () => {
   const { store, directory } = await createStore();
   try {
-    const objectiveService = new ObjectiveApplicationService({ store });
-    const assistant = new AssistantService({ store, objectiveService });
+    const workService = new WorkApplicationService({ store });
+    const assistant = new AssistantService({ store, workService });
 
     const result = await assistant.chat("建工作项 拆巨文件");
     const receipt = result.messages[1];
     assert.equal(receipt.kind, "receipt");
     assert.equal(receipt.data.type, "task");
     assert.equal(receipt.data.task.title, "拆巨文件");
-    assert.equal(receipt.data.objective.name, "默认目标");
+    assert.equal(receipt.data.work.name, "默认目标");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -57,8 +57,8 @@ test("assistant.chat 建工作项（无目标时自动建默认目标）", async
 test("assistant.chat 查记忆 + 兜底回复", async () => {
   const { store, directory } = await createStore();
   try {
-    const objectiveService = new ObjectiveApplicationService({ store });
-    const assistant = new AssistantService({ store, objectiveService });
+    const workService = new WorkApplicationService({ store });
+    const assistant = new AssistantService({ store, workService });
 
     const memory = await assistant.chat("查记忆");
     assert.equal(memory.messages[1].kind, "memory");
@@ -75,12 +75,12 @@ test("assistant.chat 查记忆 + 兜底回复", async () => {
 test("intentResolver 注入：LLM 识别意图生效", async () => {
   const { store, directory } = await createStore();
   try {
-    const objectiveService = new ObjectiveApplicationService({ store });
-    const mockLLM = async () => ({ tool: "objective.create", args: { name: "LLM 识别的目标" } });
-    const assistant = new AssistantService({ store, objectiveService, intentResolver: mockLLM });
+    const workService = new WorkApplicationService({ store });
+    const mockLLM = async () => ({ tool: "work.create", args: { name: "LLM 识别的目标" } });
+    const assistant = new AssistantService({ store, workService, intentResolver: mockLLM });
 
     const result = await assistant.chat("随便说点什么");
-    assert.equal(result.messages[1].data.objective.name, "LLM 识别的目标");
+    assert.equal(result.messages[1].data.work.name, "LLM 识别的目标");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -90,14 +90,14 @@ test("intentResolver 注入：LLM 识别意图生效", async () => {
 test("intentResolver 失败回退规则版", async () => {
   const { store, directory } = await createStore();
   try {
-    const objectiveService = new ObjectiveApplicationService({ store });
+    const workService = new WorkApplicationService({ store });
     const failingLLM = async () => {
       throw new Error("boom");
     };
-    const assistant = new AssistantService({ store, objectiveService, intentResolver: failingLLM });
+    const assistant = new AssistantService({ store, workService, intentResolver: failingLLM });
 
     const result = await assistant.chat("建目标 回退测试");
-    assert.equal(result.messages[1].data.objective.name, "回退测试");
+    assert.equal(result.messages[1].data.work.name, "回退测试");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

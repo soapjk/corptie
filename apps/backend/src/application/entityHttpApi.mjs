@@ -1,17 +1,20 @@
-// 实体层 + hub 的 HTTP API（15 Phase 1-3 落地：objective/task/memory/hub 路由）。
+// 实体层 + hub 的 HTTP API（15 Phase 1-3 落地：work/task/memory/hub 路由）。
 // 自包含（sendJson/readJson/apiError 本地定义，不依赖 server.mjs），与 collaborationHttpApi 同风格。
 
-import { registerGitRepository as registerGitRepositoryDefault } from "./gitRepositoryRegistrationService.mjs";
+import {
+  registerGitRepository as registerGitRepositoryDefault,
+  registerWorkspace as registerWorkspaceDefault
+} from "./gitRepositoryRegistrationService.mjs";
 import {
   saveAgentAvatar,
   clearAgentAvatar,
-  saveObjectiveAvatar,
-  clearObjectiveAvatar
+  saveWorkAvatar,
+  clearWorkAvatar
 } from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
 import { presentMemory } from "./memoryOperationService.mjs";
-import { validateObjectiveInput } from "../domain/objectiveTaskValidation.mjs";
+import { validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 
@@ -68,7 +71,7 @@ export function handleEntityHttpRequest({
   request,
   response,
   url,
-  objectiveService,
+  workService,
   hubService,
   router,
   memoryExtractor,
@@ -79,8 +82,8 @@ export function handleEntityHttpRequest({
   getTaskStartup,
   getSessionStartupBinding,
   launchAgentSession,
-  launchObjectiveChatSession,
-  ensureObjectiveChatSession,
+  launchWorkChatSession,
+  ensureWorkChatSession,
   createSession,
   backgroundAgentService,
   skillRegistryService,
@@ -96,8 +99,9 @@ export function handleEntityHttpRequest({
   observeTaskPerformance = () => {},
   observeFormAssistPerformance = () => {},
   registerGitRepository = registerGitRepositoryDefault,
-  saveObjectiveAvatarFile = saveObjectiveAvatar,
-  clearObjectiveAvatarFile = clearObjectiveAvatar,
+  registerWorkspace = registerWorkspaceDefault,
+  saveWorkAvatarFile = saveWorkAvatar,
+  clearWorkAvatarFile = clearWorkAvatar,
   auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
 }) {
   const path = url.pathname;
@@ -121,7 +125,7 @@ export function handleEntityHttpRequest({
       statusReason: unavailable && typeof availability?.reason === "string"
         ? availability.reason.trim() || null
         : null,
-      skillIds: objectiveService.store.listRegistrySkillIdsForAgent(agent.agentId),
+      skillIds: workService.store.listRegistrySkillIdsForAgent(agent.agentId),
       suggestedSessionTitle
     };
   };
@@ -129,16 +133,17 @@ export function handleEntityHttpRequest({
     .map((id) => String(id).trim()).filter(Boolean))];
   const validateSkillIds = (value) => {
     const skillIds = normalizeSkillIds(value);
-    const missing = skillIds.filter((id) => !objectiveService.store.getRegistrySkill(id));
+    const missing = skillIds.filter((id) => !workService.store.getRegistrySkill(id));
     if (missing.length > 0) throw apiError("SKILL_NOT_FOUND", `Skill not found: ${missing.join(", ")}`, 404);
     return skillIds;
   };
 
   const isEntityApi =
-    path === "/objectives" || path.startsWith("/objectives/") ||
+    path === "/works" || path.startsWith("/works/") ||
     path === "/tasks" || path.startsWith("/tasks/") ||
     path.startsWith("/task-completion-operations/") ||
     path === "/repositories" || path === "/repositories/detect" ||
+    path === "/workspaces" || path === "/workspaces/detect" || path.startsWith("/workspaces/") ||
     path === "/memories" || path.startsWith("/memories/") || path === "/memory-audit" ||
     path.startsWith("/memory-audit/") || path === "/memory-recall-audit" || path === "/memory-recall" ||
     path === "/agents" || path.startsWith("/agents/") ||
@@ -304,7 +309,7 @@ export function handleEntityHttpRequest({
 
       // ---- Agent ----
       if (request.method === "GET" && path === "/agents") {
-        return sendJson(response, 200, { agents: objectiveService.store.listAgents().map(presentAgent) });
+        return sendJson(response, 200, { agents: workService.store.listAgents().map(presentAgent) });
       }
       if (request.method === "POST" && path === "/agents") {
         const input = await readJson(request);
@@ -347,7 +352,7 @@ export function handleEntityHttpRequest({
           }
         };
         try {
-          const result = objectiveService.store.createAgentWithRegistrySkillsIdempotently(
+          const result = workService.store.createAgentWithRegistrySkillsIdempotently(
             agentInput,
             skillIds,
             { idempotencyKey, requestHash, requestId, deviceId }
@@ -382,13 +387,13 @@ export function handleEntityHttpRequest({
       if (agentSessionsMatch) {
         const id = decodeURIComponent(agentSessionsMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByAgent(id) });
+          return sendJson(response, 200, { sessions: workService.store.listSessionsByAgent(id) });
         }
         // 自由对话：仅凭 Assistant Agent 开聊（可选标题/首条提示），不绑定工作项。
         // 工作目录由该 Agent 独占的 work_dir 托管（仅同一 Assistant 的会话共享），
         // 客户端无需也不应传 cwd。
         if (request.method === "POST") {
-          const agent = objectiveService.store.getAgent(id);
+          const agent = workService.store.getAgent(id);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
           if (agent.role !== "assistant") {
             throw apiError("AGENT_NOT_ASSISTANT", "只有 Assistant 类型的 Agent 才能创建自由会话。", 400);
@@ -414,7 +419,7 @@ export function handleEntityHttpRequest({
       if (agentMatch) {
         const id = decodeURIComponent(agentMatch[1]);
         if (request.method === "GET") {
-          const agent = objectiveService.store.getAgent(id);
+          const agent = workService.store.getAgent(id);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
           return sendJson(response, 200, {
             agent: presentAgent(agent)
@@ -439,12 +444,12 @@ export function handleEntityHttpRequest({
               input.avatarPath = null;
             }
           }
-          const agent = objectiveService.store.updateAgentWithRegistrySkills(id, input, skillIds);
+          const agent = workService.store.updateAgentWithRegistrySkills(id, input, skillIds);
           onEntityChanged?.("AgentChanged", { action: "updated", entity: agent });
-          return sendJson(response, 200, { agent: presentAgent(objectiveService.store.getAgent(id) ?? agent) });
+          return sendJson(response, 200, { agent: presentAgent(workService.store.getAgent(id) ?? agent) });
         }
         if (request.method === "DELETE") {
-          objectiveService.store.deleteAgent(id);
+          workService.store.deleteAgent(id);
           onEntityChanged?.("AgentChanged", { action: "deleted", entity: { agentId: id } });
           return sendJson(response, 200, { ok: true });
         }
@@ -578,9 +583,27 @@ export function handleEntityHttpRequest({
         }
       }
 
-      // ---- Objective ----
+      // ---- Work ----
+      if (request.method === "GET" && path === "/workspaces") {
+        return sendJson(response, 200, { workspaces: workService.store.listWorkspaces() });
+      }
+      if (request.method === "POST" && path === "/workspaces/detect") {
+        const input = await readJson(request);
+        rejectUnknownFields(input, new Set(["dirPath", "initializeGit"]));
+        const dirPath = String(input.dirPath ?? "").trim();
+        if (!dirPath) throw apiError("INVALID_INPUT", "dirPath is required.", 400);
+        if (input.initializeGit != null && typeof input.initializeGit !== "boolean") {
+          throw apiError("INVALID_INPUT", "initializeGit must be a boolean.", 400);
+        }
+        const result = await registerWorkspace({
+          dirPath,
+          initializeGit: input.initializeGit === true,
+          store: workService.store
+        });
+        return sendJson(response, 200, result);
+      }
       if (request.method === "GET" && path === "/repositories") {
-        return sendJson(response, 200, { repositories: objectiveService.store.listGitRepositories() });
+        return sendJson(response, 200, { repositories: workService.store.listGitRepositories() });
       }
       // 手动注册一个 Git 仓库（用户在文件浏览器里选目录后调用）
       if (request.method === "POST" && path === "/repositories/detect") {
@@ -594,79 +617,79 @@ export function handleEntityHttpRequest({
         const repository = await registerGitRepository({
           dirPath,
           initializeIfNeeded: input.initializeIfNeeded === true,
-          store: objectiveService.store
+          store: workService.store
         });
         return sendJson(response, 201, { repository });
       }
-      if (request.method === "GET" && path === "/objectives") {
-        return sendJson(response, 200, { objectives: objectiveService.listObjectives() });
+      if (request.method === "GET" && path === "/works") {
+        return sendJson(response, 200, { works: workService.listWorks() });
       }
-      if (request.method === "POST" && path === "/objectives") {
+      if (request.method === "POST" && path === "/works") {
         const input = await readJson(request);
-        const normalized = validateObjectiveInput(input, "create");
+        const normalized = validateWorkInput(input, "create");
         if (!normalized.contributorAgentIds?.length) {
           throw apiError(
-            "OBJECTIVE_CONTRIBUTOR_REQUIRED",
-            "创建 Objective 时必须至少选择一个 Contributor Agent。",
+            "WORK_CONTRIBUTOR_REQUIRED",
+            "创建 Work 时必须至少选择一个 Contributor Agent。",
             400
           );
         }
-        if (typeof ensureObjectiveChatSession !== "function") {
-          throw apiError("CAPABILITY_UNAVAILABLE", "Objective Chat creation is unavailable.", 503);
+        if (typeof ensureWorkChatSession !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "Work Chat creation is unavailable.", 503);
         }
         const hasAvatar = Object.prototype.hasOwnProperty.call(normalized, "avatarPath");
         const sourceAvatarPath = normalized.avatarPath;
         delete normalized.avatarPath;
-        const previous = normalized.id ? objectiveService.store.getObjective(normalized.id) : null;
-        let objective = objectiveService.createObjective(normalized);
+        const previous = normalized.id ? workService.store.getWork(normalized.id) : null;
+        let work = workService.createWork(normalized);
         try {
           if (hasAvatar && sourceAvatarPath) {
-            const managedPath = await saveObjectiveAvatarFile(objective.id, sourceAvatarPath, {
+            const managedPath = await saveWorkAvatarFile(work.id, sourceAvatarPath, {
               environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
             });
-            objective = objectiveService.updateObjective(objective.id, { avatarPath: managedPath });
+            work = workService.updateWork(work.id, { avatarPath: managedPath });
           }
-          await ensureObjectiveChatSession(objective);
+          await ensureWorkChatSession(work);
         } catch (error) {
-          if (!previous && !objectiveService.store.getObjectiveChatSession(objective.id)) {
-            await clearObjectiveAvatarFile(objective.id, {
+          if (!previous && !workService.store.getWorkChatSession(work.id)) {
+            await clearWorkAvatarFile(work.id, {
               environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
             });
-            objectiveService.deleteObjective(objective.id);
+            workService.deleteWork(work.id);
           }
           throw error;
         }
-        return sendJson(response, 201, objective);
+        return sendJson(response, 201, work);
       }
 
-      const objectiveSessionsMatch = path.match(/^\/objectives\/([^/]+)\/sessions$/);
-      if (objectiveSessionsMatch) {
-        const id = decodeURIComponent(objectiveSessionsMatch[1]);
-        const objective = objectiveService.getObjective(id);
+      const workSessionsMatch = path.match(/^\/works\/([^/]+)\/sessions$/);
+      if (workSessionsMatch) {
+        const id = decodeURIComponent(workSessionsMatch[1]);
+        const work = workService.getWork(id);
         if (request.method === "GET") {
-          return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByObjective(id) });
+          return sendJson(response, 200, { sessions: workService.store.listSessionsByWork(id) });
         }
         if (request.method === "POST") {
-          if (typeof launchObjectiveChatSession !== "function") {
-            throw apiError("INTERNAL", "launchObjectiveChatSession is not configured.", 500);
+          if (typeof launchWorkChatSession !== "function") {
+            throw apiError("INTERNAL", "launchWorkChatSession is not configured.", 500);
           }
           const input = await readJson(request);
           rejectSessionAvatarInput(input);
           const agentId = String(input.agentId ?? "").trim();
           if (!agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
-          const agent = objectiveService.store.getAgent(agentId);
+          const agent = workService.store.getAgent(agentId);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
-          if (!objective.contributorAgentIds.includes(agent.agentId)) {
-            throw apiError("AGENT_OUTSIDE_OBJECTIVE", "只有挂载在当前 Objective 下的 Agent 才能创建 Objective Chat Session。", 403);
+          if (!work.contributorAgentIds.includes(agent.agentId)) {
+            throw apiError("AGENT_OUTSIDE_WORK", "只有挂载在当前 Work 下的 Agent 才能创建 Work Chat Session。", 403);
           }
           const providerId = requiredProviderId(input);
-          const existingSession = objectiveService.store.getObjectiveChatSession(id);
+          const existingSession = workService.store.getWorkChatSession(id);
           if (existingSession) {
             return sendJson(response, 200, { session: existingSession, created: false });
           }
-          const session = await launchObjectiveChatSession({
+          const session = await launchWorkChatSession({
             agent,
-            objective,
+            work,
             providerId,
             title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
             prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
@@ -675,51 +698,51 @@ export function handleEntityHttpRequest({
         }
       }
 
-      const objectiveMatch = path.match(/^\/objectives\/([^/]+)$/);
-      if (objectiveMatch) {
-        const id = decodeURIComponent(objectiveMatch[1]);
+      const workMatch = path.match(/^\/works\/([^/]+)$/);
+      if (workMatch) {
+        const id = decodeURIComponent(workMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, objectiveService.getObjective(id));
+          return sendJson(response, 200, workService.getWork(id));
         }
         if (request.method === "PATCH") {
-          objectiveService.getObjective(id);
+          workService.getWork(id);
           const input = await readJson(request);
-          validateObjectiveInput(input, "update");
+          validateWorkInput(input, "update");
           if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
             const sourcePath = typeof input.avatarPath === "string" ? input.avatarPath.trim() : "";
             if (sourcePath) {
-              input.avatarPath = await saveObjectiveAvatarFile(id, sourcePath, {
+              input.avatarPath = await saveWorkAvatarFile(id, sourcePath, {
                 environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
               });
             } else {
-              await clearObjectiveAvatarFile(id, {
+              await clearWorkAvatarFile(id, {
                 environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
               });
               input.avatarPath = null;
             }
           }
-          return sendJson(response, 200, objectiveService.updateObjective(id, input));
+          return sendJson(response, 200, workService.updateWork(id, input));
         }
         if (request.method === "DELETE") {
-          await clearObjectiveAvatarFile(id, {
+          await clearWorkAvatarFile(id, {
             environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
           });
-          objectiveService.deleteObjective(id);
+          workService.deleteWork(id);
           return sendJson(response, 200, { ok: true });
         }
       }
 
-      const objectiveTasksMatch = path.match(/^\/objectives\/([^/]+)\/tasks$/);
-      if (request.method === "GET" && objectiveTasksMatch) {
-        const id = decodeURIComponent(objectiveTasksMatch[1]);
-        const page = objectiveService.store.listTaskPage({
-          objectiveId: id,
+      const workTasksMatch = path.match(/^\/works\/([^/]+)\/tasks$/);
+      if (request.method === "GET" && workTasksMatch) {
+        const id = decodeURIComponent(workTasksMatch[1]);
+        const page = workService.store.listTaskPage({
+          workId: id,
           includeCompleted: url.searchParams.get("includeCompleted") !== "false",
           limit: url.searchParams.get("limit"),
           cursor: decodeTaskCursor(url.searchParams.get("cursor"))
         });
         return sendJson(response, 200, {
-          tasks: page.items.map((item) => presentTaskWithOrigin(objectiveService, item)),
+          tasks: page.items.map((item) => presentTaskWithOrigin(workService, item)),
           hasMore: page.hasMore,
           nextCursor: encodeTaskCursor(page.nextCursor)
         });
@@ -727,13 +750,13 @@ export function handleEntityHttpRequest({
 
       // ---- Task ----
       if (request.method === "GET" && path === "/tasks") {
-        const page = objectiveService.store.listTaskPage({
+        const page = workService.store.listTaskPage({
           includeCompleted: url.searchParams.get("includeCompleted") !== "false",
           limit: url.searchParams.get("limit"),
           cursor: decodeTaskCursor(url.searchParams.get("cursor"))
         });
         return sendJson(response, 200, {
-          tasks: page.items.map((item) => presentTaskWithOrigin(objectiveService, item)),
+          tasks: page.items.map((item) => presentTaskWithOrigin(workService, item)),
           hasMore: page.hasMore,
           nextCursor: encodeTaskCursor(page.nextCursor)
         });
@@ -745,7 +768,7 @@ export function handleEntityHttpRequest({
         timing.taskId = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
         timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         phaseStartedAt = performance.now();
-        const created = presentTaskWithOrigin(objectiveService, objectiveService.createTask(input, {
+        const created = presentTaskWithOrigin(workService, workService.createTask(input, {
           creationOrigin: { originType: "direct_user" }
         }));
         timing.taskId = created.id;
@@ -759,7 +782,7 @@ export function handleEntityHttpRequest({
       if (taskMatch) {
         const id = decodeURIComponent(taskMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, presentTaskWithOrigin(objectiveService, objectiveService.getTask(id)));
+          return sendJson(response, 200, presentTaskWithOrigin(workService, workService.getTask(id)));
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
@@ -770,7 +793,7 @@ export function handleEntityHttpRequest({
           return sendJson(
             response,
             200,
-            presentTaskWithOrigin(objectiveService, objectiveService.updateTask(id, input))
+            presentTaskWithOrigin(workService, workService.updateTask(id, input))
           );
         }
         if (request.method === "DELETE") {
@@ -782,15 +805,15 @@ export function handleEntityHttpRequest({
       const taskSnapshotsMatch = path.match(/^\/tasks\/([^/]+)\/snapshots$/);
       if (request.method === "GET" && taskSnapshotsMatch) {
         const id = decodeURIComponent(taskSnapshotsMatch[1]);
-        return sendJson(response, 200, { snapshots: objectiveService.listTaskSnapshots(id) });
+        return sendJson(response, 200, { snapshots: workService.listTaskSnapshots(id) });
       }
 
       const taskRevisionsMatch = path.match(/^\/tasks\/([^/]+)\/revisions$/);
       if (request.method === "POST" && taskRevisionsMatch) {
         const id = decodeURIComponent(taskRevisionsMatch[1]);
-        const result = objectiveService.reviseTask(id, await readJson(request));
+        const result = workService.reviseTask(id, await readJson(request));
         return sendJson(response, 201, {
-          task: presentTaskWithOrigin(objectiveService, result.task),
+          task: presentTaskWithOrigin(workService, result.task),
           snapshot: result.snapshot
         });
       }
@@ -822,7 +845,7 @@ export function handleEntityHttpRequest({
         return sendJson(
           response,
           200,
-          presentTaskAcceptance(objectiveService.recordAcceptanceAssessment(id, input))
+          presentTaskAcceptance(workService.recordAcceptanceAssessment(id, input))
         );
       }
 
@@ -915,7 +938,7 @@ export function handleEntityHttpRequest({
           response,
           200,
           presentTaskAcceptance(
-            objectiveService.rejectTaskAcceptance(id, input)
+            workService.rejectTaskAcceptance(id, input)
           )
         );
       }
@@ -923,7 +946,7 @@ export function handleEntityHttpRequest({
       const taskSessionsMatch = path.match(/^\/tasks\/([^/]+)\/sessions$/);
       if (request.method === "GET" && taskSessionsMatch) {
         const id = decodeURIComponent(taskSessionsMatch[1]);
-        return sendJson(response, 200, { sessions: objectiveService.store.listSessionsByTask(id) });
+        return sendJson(response, 200, { sessions: workService.store.listSessionsByTask(id) });
       }
 
       const taskStartMatch = path.match(/^\/tasks\/([^/]+)\/start$/);
@@ -979,11 +1002,11 @@ export function handleEntityHttpRequest({
       if (dependencyMatch) {
         const id = decodeURIComponent(dependencyMatch[1]);
         if (request.method === "GET") {
-          return sendJson(response, 200, { dependencies: objectiveService.listDependencies(id) });
+          return sendJson(response, 200, { dependencies: workService.listDependencies(id) });
         }
         if (request.method === "POST") {
           const input = await readJson(request);
-          objectiveService.addDependency(id, input.targetTaskId, input.type);
+          workService.addDependency(id, input.targetTaskId, input.type);
           return sendJson(response, 201, { ok: true });
         }
       }
@@ -1133,7 +1156,7 @@ export function handleEntityHttpRequest({
         const scope = {
           sessionId: url.searchParams.get("sessionId") ?? null,
           agentId: url.searchParams.get("agentId") ?? null,
-          objectiveId: url.searchParams.get("objectiveId") ?? null,
+          workId: url.searchParams.get("workId") ?? null,
           taskId: url.searchParams.get("taskId") ?? null
         };
         validateMemoryRecallScope(hubService.store, scope);
@@ -1171,11 +1194,11 @@ export function handleEntityHttpRequest({
       // 从 Session 事件流提炼记忆（13 主路径）：MemoryExtractor 提取 + kind→owner 分流 + 乐观应用。
       if (request.method === "POST" && path === "/memories/extract") {
         const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["sessionId", "objectiveId", "taskId", "agentId"]));
+        rejectUnknownFields(input, new Set(["sessionId", "workId", "taskId", "agentId"]));
         const sessionId = String(input.sessionId ?? "").trim();
         if (!sessionId) throw apiError("INVALID_INPUT", "sessionId is required.", 400);
         const memories = await memoryExtractor.extractFromSession(sessionId, {
-          objectiveId: input.objectiveId,
+          workId: input.workId,
           taskId: input.taskId,
           agentId: input.agentId
         });
@@ -1186,7 +1209,7 @@ export function handleEntityHttpRequest({
       if (request.method === "GET" && path === "/hub/search") {
         const intent = url.searchParams.get("intent") ?? "";
         const scope = {
-          objectiveId: url.searchParams.get("objectiveId") ?? undefined,
+          workId: url.searchParams.get("workId") ?? undefined,
           taskId: url.searchParams.get("taskId") ?? undefined,
           agentId: url.searchParams.get("agentId") ?? undefined,
           sessionId: url.searchParams.get("sessionId") ?? undefined
@@ -1197,8 +1220,8 @@ export function handleEntityHttpRequest({
       // ---- 协作路由 ----
       if (request.method === "GET" && path === "/collaboration/route") {
         const capabilities = (url.searchParams.get("capabilities") ?? "").split(",").filter(Boolean);
-        const objectiveTags = (url.searchParams.get("objectiveTags") ?? "").split(",").filter(Boolean);
-        const ranked = router.route({ requiredCapabilities: capabilities, objectiveTags });
+        const workTags = (url.searchParams.get("workTags") ?? "").split(",").filter(Boolean);
+        const ranked = router.route({ requiredCapabilities: capabilities, workTags });
         return sendJson(response, 200, { candidates: ranked });
       }
 
@@ -1242,11 +1265,11 @@ function rejectSessionAvatarInput(input) {
 }
 
 function statusForCode(code) {
-  if (["OBJECTIVE_NOT_FOUND", "TASK_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND", "SKILL_NOT_FOUND", "MEMORY_NOT_FOUND"].includes(code)) return 404;
+  if (["WORK_NOT_FOUND", "TASK_NOT_FOUND", "SESSION_NOT_FOUND", "AGENT_NOT_FOUND", "SKILL_NOT_FOUND", "MEMORY_NOT_FOUND"].includes(code)) return 404;
   if (["INTERNAL", "SKILL_CLEANUP_FAILED", "SKILL_DATABASE_DELETE_FAILED"].includes(code)) return 500;
   if ([
     "CYCLE_DETECTED", "AGENT_HAS_RUNNING_SESSIONS", "SKILL_HAS_ACTIVE_SESSIONS", "ASSISTANT_WORKSPACE_CONFLICT",
-    "ASSOCIATION_OUT_OF_SCOPE", "OBJECTIVE_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR",
+    "ASSOCIATION_OUT_OF_SCOPE", "WORK_SCOPE_CONFLICT", "ASSOCIATION_INTEGRITY_ERROR",
     "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_RESOURCE_GONE", "MEMORY_REVOKED", "MEMORY_AUDIT_NOT_ROLLBACKABLE"
   ].includes(code)) return 409;
   if (["SYSTEM_AGENT_PROTECTED", "PLATFORM_ADMIN_REQUIRED", "AGENT_TOOL_FORBIDDEN", "SKILL_DELETE_CONFIRMATION_REQUIRED"].includes(code)) return 403;
@@ -1267,7 +1290,7 @@ function validateMemoryInput(input = {}, store) {
       throw apiError("INVALID_INPUT", `Field "${field}" is required.`, 400);
     }
   }
-  if (!["agent", "objective", "task"].includes(input.ownerType)) {
+  if (!["agent", "work", "task"].includes(input.ownerType)) {
     throw apiError("INVALID_MEMORY_SCOPE", `Unsupported memory ownerType: ${input.ownerType}`, 400);
   }
   if (!["skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"].includes(input.kind)) {
@@ -1300,14 +1323,14 @@ function validateMemoryOwnerReference(store, ownerType, ownerId) {
   if (!normalizedOwnerId) throw apiError("INVALID_INPUT", "ownerId is required.", 400);
   const record = ownerType === "agent"
     ? store.getAgent(normalizedOwnerId)
-    : ownerType === "objective"
-      ? store.getObjective(normalizedOwnerId)
+    : ownerType === "work"
+      ? store.getWork(normalizedOwnerId)
       : ownerType === "task"
         ? store.getTask(normalizedOwnerId)
         : null;
   if (!record) {
     const code = ownerType === "agent" ? "AGENT_NOT_FOUND"
-      : ownerType === "objective" ? "OBJECTIVE_NOT_FOUND"
+      : ownerType === "work" ? "WORK_NOT_FOUND"
         : ownerType === "task" ? "TASK_NOT_FOUND" : "INVALID_MEMORY_SCOPE";
     throw apiError(code, `${ownerType} owner not found: ${normalizedOwnerId}`, code.endsWith("NOT_FOUND") ? 404 : 400);
   }
@@ -1316,18 +1339,18 @@ function validateMemoryOwnerReference(store, ownerType, ownerId) {
 function validateMemoryRecallScope(store, scope) {
   if (!scope.agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
   validateMemoryOwnerReference(store, "agent", scope.agentId);
-  if (scope.objectiveId) validateMemoryOwnerReference(store, "objective", scope.objectiveId);
+  if (scope.workId) validateMemoryOwnerReference(store, "work", scope.workId);
   if (scope.taskId) {
     validateMemoryOwnerReference(store, "task", scope.taskId);
     const task = store.getTask(scope.taskId);
-    if (!scope.objectiveId || task.objective_id !== scope.objectiveId) {
-      throw apiError("MEMORY_SCOPE_MISMATCH", "Task does not belong to the requested Objective.", 400);
+    if (!scope.workId || task.work_id !== scope.workId) {
+      throw apiError("MEMORY_SCOPE_MISMATCH", "Task does not belong to the requested Work.", 400);
     }
   }
   if (scope.sessionId) {
     const session = store.getSession(scope.sessionId);
     if (!session) throw apiError("SESSION_NOT_FOUND", `Session not found: ${scope.sessionId}`, 404);
-    if (session.agentId !== scope.agentId || (scope.objectiveId && session.objectiveId !== scope.objectiveId)
+    if (session.agentId !== scope.agentId || (scope.workId && session.workId !== scope.workId)
       || (scope.taskId && session.taskId !== scope.taskId)) {
       throw apiError("MEMORY_SCOPE_MISMATCH", "Session does not match the requested Memory scope.", 400);
     }
@@ -1409,11 +1432,10 @@ const FORM_DRAFT_SCHEMAS = Object.freeze({
     systemPrompt: "Detailed operating instructions for the Agent",
     capabilities: "Comma-separated capability tags"
   }),
-  objective: Object.freeze({
-    name: "Short objective name",
-    description: "Objective scope and desired outcome",
-    idealState: "Evolving description of the ideal state this Objective continuously moves toward",
-    priority: 'Empty, or exactly one of "low", "medium", "high", "urgent"',
+  work: Object.freeze({
+    name: "Short work name",
+    description: "Work scope and desired outcome",
+    profile: 'Exactly one of "general", "software", "office", "data", or "design"',
     tags: "Comma-separated tags"
   }),
   task: Object.freeze({
@@ -1460,9 +1482,9 @@ function formDraftPrompt(formType, intent, currentValues, schema) {
   return [
     `Draft all fields for the Corptie ${formType} creation form.`,
     "Preserve useful non-empty current values unless the user's request clearly replaces or improves them.",
-    formType === "objective"
+    formType === "work"
       ? "Use the language of the user's request. Keep names concise and describe the ideal state as an evolving direction, not a completion checklist."
-      : "Use the language of the user's request. Keep names concise and acceptance criteria objectively verifiable.",
+      : "Use the language of the user's request. Keep names concise and acceptance criteria workly verifiable.",
     "",
     "Field contract:",
     fieldGuide,
@@ -1519,20 +1541,22 @@ function validateGeneratedFormEnums(fields, schema) {
   if (Object.hasOwn(schema, "role") && !["independentContributor", "assistant"].includes(fields.role)) {
     throw apiError("INVALID_GENERATED_DRAFT", "Generated role is invalid.", 502);
   }
+  if (Object.hasOwn(schema, "profile")
+    && !["general", "software", "office", "data", "design"].includes(fields.profile)) {
+    throw apiError("INVALID_GENERATED_DRAFT", "Generated Work profile is invalid.", 502);
+  }
   if (Object.hasOwn(schema, "priority")) {
-    const allowed = Object.hasOwn(schema, "idealState")
-      ? ["", "low", "medium", "high", "urgent"]
-      : ["low", "medium", "high"];
+    const allowed = ["low", "medium", "high"];
     if (!allowed.includes(fields.priority)) {
       throw apiError("INVALID_GENERATED_DRAFT", "Generated priority is invalid.", 502);
     }
   }
 }
 
-function presentTaskWithOrigin(objectiveService, task) {
+function presentTaskWithOrigin(workService, task) {
   return {
     ...presentTaskAcceptance(task),
-    creationOrigin: objectiveService.store.getTaskCreationOrigin(task.id)
+    creationOrigin: workService.store.getTaskCreationOrigin(task.id)
   };
 }
 

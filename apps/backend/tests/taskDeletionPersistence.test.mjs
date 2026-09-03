@@ -15,8 +15,8 @@ async function fixture() {
   const configPath = join(directory, "config.json");
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
-  store.createObjective({ id: "objective:delete", name: "Deletion" });
-  store.createTask({ id: "task:delete", objectiveId: "objective:delete", title: "Delete me" });
+  store.createWork({ id: "work:delete", name: "Deletion" });
+  store.createTask({ id: "task:delete", workId: "work:delete", title: "Delete me" });
   const changed = [];
   const deletion = new TaskDeletionService({
     store,
@@ -26,9 +26,9 @@ async function fixture() {
     deleteSession: async (sessionId) => store.deleteSession(sessionId),
     handleArtifacts: async ({ artifacts, disposition }) => {
       for (const artifact of artifacts ?? []) {
-        if (disposition === "objective") {
+        if (disposition === "work") {
           store.updateArtifact(artifact.artifactId, {
-            visibility: "objective_private", scope: "objective", boundTaskId: null, boundSessionId: null
+            visibility: "work_private", scope: "work", boundTaskId: null, boundSessionId: null
           });
         } else if (disposition === "delete") {
           store.updateArtifact(artifact.artifactId, {
@@ -66,12 +66,12 @@ test("authorized deletion removes Task from detail and list and remains deleted 
   }
 });
 
-test("a bound Artifact can move to Objective scope while deleting its Task", async () => {
+test("a bound Artifact can move to Work scope while deleting its Task", async () => {
   const f = await fixture();
   try {
     f.store.createArtifactMetadata({
       artifactId: "artifact:blocker",
-      objectiveId: "objective:delete",
+      workId: "work:delete",
       title: "Required evidence",
       visibility: "task_private",
       boundTaskId: "task:delete",
@@ -79,11 +79,11 @@ test("a bound Artifact can move to Objective scope while deleting its Task", asy
       createdAt: "2026-08-26T00:00:00.000Z"
     });
     await f.deletion.delete("task:delete", {
-      mode: "safe", artifactDisposition: "objective"
+      mode: "safe", artifactDisposition: "work"
     }, localUser);
     const artifact = f.store.getArtifact("artifact:blocker");
-    assert.equal(artifact.visibility, "objective_private");
-    assert.equal(artifact.scope, "objective");
+    assert.equal(artifact.visibility, "work_private");
+    assert.equal(artifact.scope, "work");
     assert.equal(artifact.boundTaskId, null);
     assert.equal(f.store.getTask("task:delete"), null);
   } finally {
@@ -96,7 +96,7 @@ test("deletion removes associated Worker Session history instead of detaching it
   const f = await fixture();
   try {
     const agent = f.store.createAgent({ id: "agent:delete", name: "Delete", role: "independentContributor" });
-    f.store.updateObjective("objective:delete", { contributorAgentIds: [agent.agentId] });
+    f.store.updateWork("work:delete", { contributorAgentIds: [agent.agentId] });
     f.store.upsertSession({
       id: "session:delete",
       title: "Delete history",
@@ -105,7 +105,7 @@ test("deletion removes associated Worker Session history instead of detaching it
       provider: "codex-app-server",
       status: "complete",
       sessionKind: "worker",
-      objectiveId: "objective:delete",
+      workId: "work:delete",
       taskId: "task:delete"
     });
     f.store.upsertTimelineItemProjection("session:delete", {
@@ -134,10 +134,10 @@ test("deletion retires a Task while preserving a legacy immutable cancellation a
   const f = await fixture();
   try {
     f.store.db.run(`INSERT INTO task_cancellation_operations (
-      operation_id, task_id, objective_id, source_type, actor_session_id,
+      operation_id, task_id, work_id, source_type, actor_session_id,
       authority_type, authority_id, reason, idempotency_key, input_fingerprint,
       resource_version_before, resource_version_after, canceled_at, created_at
-    ) VALUES ('legacy-cancellation', 'task:delete', 'objective:delete', 'legacy', NULL,
+    ) VALUES ('legacy-cancellation', 'task:delete', 'work:delete', 'legacy', NULL,
       'user', 'user:local-macos', 'Legacy audit', 'legacy-cancellation', 'fingerprint',
       1, 2, '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z')`);
 

@@ -159,13 +159,13 @@ struct SessionCollectionPatchTests {
         let current = makeSession(id: "one")
         let data = Data(
             """
-            {"sessions":[{"id":"one","title":"one","agent":"Codex","objectiveId":"objective:1","taskId":"task:1","status":"complete","progress":1,"summary":"Summary","updatedAt":"2026-08-12T00:00:00Z","accent":"cyan"}]}
+            {"sessions":[{"id":"one","title":"one","agent":"Codex","workId":"work:1","taskId":"task:1","status":"complete","progress":1,"summary":"Summary","updatedAt":"2026-08-12T00:00:00Z","accent":"cyan"}]}
             """.utf8
         )
 
         let result = try await SessionPayloadProcessor().processSnapshot(data: data, current: [current])
 
-        #expect(result.sessions.first?.objectiveId == "objective:1")
+        #expect(result.sessions.first?.workId == "work:1")
         #expect(result.sessions.first?.taskId == "task:1")
         #expect(result.patch.updated.first?.changedFields.contains(.metadata) == true)
     }
@@ -280,7 +280,7 @@ struct SessionCollectionPatchTests {
             rows: [worker, legacy, assistant],
             agents: [],
             tasks: [],
-            objectives: [],
+            works: [],
             category: .assistant
         )
 
@@ -291,12 +291,12 @@ struct SessionCollectionPatchTests {
     }
 
     @Test
-    func objectiveChatIsGroupedSeparatelyFromAssistantAndWorkerSessions() {
-        let objective = SessionRowModel(session: makeSession(
-            id: "objective-chat",
+    func workChatIsGroupedSeparatelyFromAssistantAndWorkerSessions() {
+        let work = SessionRowModel(session: makeSession(
+            id: "work-chat",
             agentId: "assistant",
-            sessionKind: .objectiveChat,
-            objectiveId: "objective:1"
+            sessionKind: .workChat,
+            workId: "work:1"
         ))
         let assistant = SessionRowModel(session: makeSession(
             id: "assistant-chat",
@@ -304,20 +304,20 @@ struct SessionCollectionPatchTests {
             sessionKind: .assistantChat
         ))
         let groups = makeSessionGroups(
-            rows: [objective, assistant],
+            rows: [work, assistant],
             agents: [],
             tasks: [],
-            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
-            category: .objective
+            works: [makeWork(id: "work:1", name: "Sessions UI")],
+            category: .work
         )
 
-        #expect(groups.map(\.key) == ["objective:objective:1"])
+        #expect(groups.map(\.key) == ["work:work:1"])
         #expect(groups.map(\.title) == ["Sessions UI"])
-        #expect(groups[0].rows.map(\.id) == ["objective-chat"])
+        #expect(groups[0].rows.map(\.id) == ["work-chat"])
     }
 
     @Test
-    func activeWorkerSessionsExcludeBackendResolvedCompletedCorptieTasksAndGroupByObjective() {
+    func activeWorkerSessionsExcludeBackendResolvedCompletedCorptieTasksAndGroupByWork() {
         let active = SessionRowModel(session: makeSession(
             id: "active-worker",
             sessionKind: .worker,
@@ -342,18 +342,18 @@ struct SessionCollectionPatchTests {
                 makeCorptieTask(id: "task:active", lifecycleState: "in_progress"),
                 makeCorptieTask(id: "task:completed", lifecycleState: "done")
             ],
-            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
+            works: [makeWork(id: "work:1", name: "Sessions UI")],
             category: .worker
         )
 
-        #expect(groups.map(\.key) == ["worker-objective:objective:1", "worker-objective:__no_objective__"])
-        #expect(groups.map(\.title) == ["Sessions UI", L10n("No Objective")])
+        #expect(groups.map(\.key) == ["worker-work:work:1", "worker-work:__no_work__"])
+        #expect(groups.map(\.title) == ["Sessions UI", L10n("No Work")])
         #expect(groups[0].rows.map(\.id) == ["active-worker"])
         #expect(groups[1].rows.map(\.id) == ["orphaned-worker"])
     }
 
     @Test
-    func ungroupedWorkerSessionsAppearOnceWithoutAnObjectiveHeader() {
+    func ungroupedWorkerSessionsAppearOnceWithoutAnWorkHeader() {
         let first = SessionRowModel(session: makeSession(
             id: "first-worker",
             sessionKind: .worker,
@@ -372,7 +372,7 @@ struct SessionCollectionPatchTests {
                 makeCorptieTask(id: "task:first", lifecycleState: "in_progress"),
                 makeCorptieTask(id: "task:second", lifecycleState: "todo")
             ],
-            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
+            works: [makeWork(id: "work:1", name: "Sessions UI")],
             category: .worker,
             workerGroupingMode: .none
         )
@@ -411,7 +411,7 @@ struct SessionCollectionPatchTests {
                 makeCorptieTask(id: "task:newest", lifecycleState: "in_progress"),
                 makeCorptieTask(id: "task:metadata", lifecycleState: "in_progress")
             ],
-            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
+            works: [makeWork(id: "work:1", name: "Sessions UI")],
             category: .worker,
             workerGroupingMode: .none
         )
@@ -440,7 +440,7 @@ struct SessionCollectionPatchTests {
                 makeCorptieTask(id: "task:active", lifecycleState: "in_progress"),
                 makeCorptieTask(id: "task:completed", lifecycleState: "done")
             ],
-            objectives: [makeObjective(id: "objective:1", name: "Sessions UI")],
+            works: [makeWork(id: "work:1", name: "Sessions UI")],
             category: .worker,
             workerScope: .archived
         )
@@ -453,10 +453,10 @@ struct SessionCollectionPatchTests {
     @Test
     func onlyAssistantSessionsAllowManualArchiveOperations() {
         let assistant = makeSession(id: "assistant", sessionKind: .assistantChat)
-        let objective = makeSession(
-            id: "objective",
-            sessionKind: .objectiveChat,
-            objectiveId: "objective:1"
+        let work = makeSession(
+            id: "work",
+            sessionKind: .workChat,
+            workId: "work:1"
         )
         let worker = makeSession(
             id: "worker",
@@ -465,7 +465,7 @@ struct SessionCollectionPatchTests {
         )
 
         #expect(assistant.allowsManualArchive)
-        #expect(!objective.allowsManualArchive)
+        #expect(!work.allowsManualArchive)
         #expect(!worker.allowsManualArchive)
     }
 
@@ -655,10 +655,10 @@ struct SessionCollectionPatchTests {
             lastAgentMessageSequence: 1,
             archived: true
         )
-        let objective = makeSession(
-            id: "objective",
-            sessionKind: .objectiveChat,
-            objectiveId: "objective:1",
+        let work = makeSession(
+            id: "work",
+            sessionKind: .workChat,
+            workId: "work:1",
             lastAgentMessageSequence: 1
         )
         let assistant = makeSession(
@@ -666,14 +666,14 @@ struct SessionCollectionPatchTests {
             sessionKind: .assistantChat,
             status: .running
         )
-        let sessions = [activeWorker, archivedWorker, objective, assistant]
+        let sessions = [activeWorker, archivedWorker, work, assistant]
         #expect(countUnreadSessions(
             in: sessions,
             category: .worker
         ) == 1)
         #expect(countUnreadSessions(
             in: sessions,
-            category: .objective
+            category: .work
         ) == 1)
         #expect(countUnreadSessions(
             in: sessions,
@@ -684,7 +684,7 @@ struct SessionCollectionPatchTests {
     @Test
     func sessionCategoriesClassifyValidProductSessions() {
         #expect(SessionCategory(session: makeSession(id: "worker", sessionKind: .worker)) == .worker)
-        #expect(SessionCategory(session: makeSession(id: "objective", sessionKind: .objectiveChat)) == .objective)
+        #expect(SessionCategory(session: makeSession(id: "work", sessionKind: .workChat)) == .work)
         #expect(SessionCategory(session: makeSession(id: "assistant", sessionKind: .assistantChat)) == .assistant)
     }
 
@@ -698,7 +698,7 @@ struct SessionCollectionPatchTests {
             rows: rows,
             agents: [],
             tasks: [],
-            objectives: [],
+            works: [],
             category: .assistant
         )
 
@@ -789,7 +789,7 @@ private func makeSession(
     agentId: String? = nil,
     sessionKind: SessionKind? = nil,
     taskId: String? = nil,
-    objectiveId: String? = nil,
+    workId: String? = nil,
     status: TaskStatus = .complete,
     updatedAt: String = "2026-08-12T00:00:00Z",
     lastMessageAt: String? = nil,
@@ -806,7 +806,7 @@ private func makeSession(
         agent: "Codex",
         agentId: agentId,
         sessionKind: sessionKind,
-        objectiveId: objectiveId,
+        workId: workId,
         taskId: taskId,
         status: status,
         progress: 1,
@@ -833,7 +833,7 @@ private func emptyControlPlaneState(sessions: [TaskSession]) -> ControlPlaneStat
     .init(
         sessions: sessions,
         tasks: [],
-        objectives: [],
+        works: [],
         agents: [],
         skills: [],
         repositories: [],
@@ -841,18 +841,15 @@ private func emptyControlPlaneState(sessions: [TaskSession]) -> ControlPlaneStat
     )
 }
 
-private func makeObjective(id: String, name: String) -> Objective {
-    Objective(
+private func makeWork(id: String, name: String) -> Work {
+    Work(
         id: id,
+        workspaceId: "workspace:\(id)",
         name: name,
         description: "",
-        idealState: "",
         status: "active",
-        priority: nil,
-        targetDate: nil,
+        profile: "general",
         tags: [],
-        workspaceIds: [],
-        relatedObjectiveIds: [],
         contributorAgentIds: [],
         createdAt: "2026-08-12T00:00:00Z",
         updatedAt: "2026-08-12T00:00:00Z"
@@ -862,13 +859,12 @@ private func makeObjective(id: String, name: String) -> Objective {
 private func makeCorptieTask(id: String, lifecycleState: String) -> CorptieTask {
     CorptieTask(
         id: id,
-        objectiveId: "objective:1",
+        workId: "work:1",
         title: id,
         description: "",
         acceptanceCriteria: "",
         priority: "medium",
         lifecycleState: lifecycleState,
-        mainWorkspaceId: nil,
         mainAgentId: nil,
         currentSessionId: nil,
         executionStatus: nil,

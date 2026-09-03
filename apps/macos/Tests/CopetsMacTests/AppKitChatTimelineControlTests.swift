@@ -226,10 +226,10 @@ final class AppKitChatTimelineControlTests: XCTestCase {
                 routeLabel: "A new CorptieTask will be created",
                 sourceLabel: "Source",
                 sourceSession: "Session · Platform planning",
-                sourceObjective: "Objective · Platform",
+                sourceWork: "Work · Platform",
                 targetLabel: "Target",
                 targetName: "CorptieTask · Review API",
-                targetObjective: "Objective · macOS"
+                targetWork: "Work · macOS"
             ),
             expandableTurnId: nil,
             isExpanded: false,

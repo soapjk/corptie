@@ -1,6 +1,6 @@
 // 助手对话服务（03 §16.4 / 07 agent.assistant.chat）：自然语言 → 元操作工具调用。
 //
-// 助手复用 owner_type 管理接口（objective.*/task.*/memory.* 等）作为 assistant_tools，
+// 助手复用 owner_type 管理接口（work.*/task.*/memory.* 等）作为 assistant_tools，
 // 把「用户自然语言指令」翻译为这些调用。
 //
 // 意图识别可注入 LLM（intentResolver，function-calling 风格）：
@@ -19,14 +19,14 @@ const ASSISTANT_TOOLS_PROMPT = [
   "You are Corptie's assistant. The user gives a natural-language instruction about managing the Corptie platform.",
   "Decide which tool to call and return ONLY JSON.",
   "Tools:",
-  'objective.create: { "name": string } — create an objective/goal',
-  'task.create: { "title": string, "objectiveId": string? } — create a work item/task',
+  'work.create: { "name": string } — create an work/goal',
+  'task.create: { "title": string, "workId": string? } — create a work item/task',
   'agent.create: { "name": string, "provider": string? } — create an agent',
   'agent.list: {} — list agents',
   'agent.delete: { "name": string } — delete an agent by name',
   'memory.list: {} — list memories',
   'unknown: {} — none of the above',
-  'Return format: { "tool": "objective.create", "args": { "name": "..." } }',
+  'Return format: { "tool": "work.create", "args": { "name": "..." } }',
   'If unclear or unrelated, return { "tool": "unknown", "args": {} }.'
 ].join("\n");
 
@@ -73,9 +73,9 @@ function openAiCompatibleChatCompletionsURL(baseURL) {
 }
 
 export class AssistantService {
-  constructor({ store, objectiveService, intentResolver = null, onEntityChanged = null }) {
+  constructor({ store, workService, intentResolver = null, onEntityChanged = null }) {
     this.store = store;
-    this.objectiveService = objectiveService;
+    this.workService = workService;
     this.intentResolver = intentResolver;
     this.onEntityChanged = onEntityChanged;
   }
@@ -104,8 +104,8 @@ export class AssistantService {
     const text = String(content ?? "").trim();
     if (!text) return { tool: "none", args: {} };
 
-    if (/建|创建|新建/.test(text) && /目标|objective/i.test(text)) {
-      return { tool: "objective.create", args: { name: this.extractName(text) } };
+    if (/建|创建|新建/.test(text) && /目标|work/i.test(text)) {
+      return { tool: "work.create", args: { name: this.extractName(text) } };
     }
     if (/建|创建|新建/.test(text) && /工作项|任务|task|work.?item/i.test(text)) {
       return { tool: "task.create", args: { title: this.extractName(text) } };
@@ -130,7 +130,7 @@ export class AssistantService {
     if (quoted) return quoted;
     const cleaned = String(text ?? "")
       .replace(/^(请|帮我|麻烦|麻烦帮我|请帮我)?\s*/, "")
-      .replace(/^(建|创建|新建|删除|移除)\s*(一个|个|一下)?\s*(目标|工作项|任务|objective|task|agent|智能体|助手)?\s*/i, "")
+      .replace(/^(建|创建|新建|删除|移除)\s*(一个|个|一下)?\s*(目标|工作项|任务|work|task|agent|智能体|助手)?\s*/i, "")
       .replace(/[。.!！？?]+$/, "")
       .trim();
     return cleaned || "未命名";
@@ -139,29 +139,29 @@ export class AssistantService {
   execute(intent, content) {
     const args = intent.args ?? {};
     switch (intent.tool) {
-      case "objective.create": {
-        const objective = this.objectiveService.createObjective({ name: args.name || "未命名" });
+      case "work.create": {
         return [
           { role: "user", content },
           {
             role: "assistant",
-            kind: "receipt",
-            content: `已创建目标「${objective.name}」`,
-            data: { type: "objective", objective }
+            content: "创建 Work 必须先选择至少一个 Contributor Agent。请使用“新建 Work”表单完成创建。"
           }
         ];
       }
       case "task.create": {
-        const objectives = this.objectiveService.listObjectives();
-        const specified = args.objectiveId
-          ? objectives.find((o) => o.id === args.objectiveId)
+        const works = this.workService.listWorks();
+        const specified = args.workId
+          ? works.find((o) => o.id === args.workId)
           : null;
-        let objective = specified ?? objectives[0];
-        if (!objective) {
-          objective = this.objectiveService.createObjective({ name: "默认目标" });
+        let work = specified ?? works[0];
+        if (!work) {
+          return [
+            { role: "user", content },
+            { role: "assistant", content: "还没有可用的 Work。请先新建 Work 并选择 Contributor Agent。" }
+          ];
         }
-        const task = this.objectiveService.createTask({
-          objectiveId: objective.id,
+        const task = this.workService.createTask({
+          workId: work.id,
           title: args.title || "未命名"
         }, {
           creationOrigin: { originType: "direct_user" }
@@ -171,8 +171,8 @@ export class AssistantService {
           {
             role: "assistant",
             kind: "receipt",
-            content: `已在目标「${objective.name}」下创建工作项「${task.title}」`,
-            data: { type: "task", task, objective }
+            content: `已在目标「${work.name}」下创建工作项「${task.title}」`,
+            data: { type: "task", task, work }
           }
         ];
       }

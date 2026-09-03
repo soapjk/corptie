@@ -79,6 +79,7 @@ development-docs/
 **/.github/copilot-instructions.md
 **/.github/instructions/
 /docs/*
+!/docs/domain-model-and-capability-boundaries.md
 !/docs/work-domain-redesign/
 !/docs/work-domain-redesign/**
 # Corptie local Agent configuration

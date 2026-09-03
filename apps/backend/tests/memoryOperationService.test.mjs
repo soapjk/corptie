@@ -20,14 +20,14 @@ async function fixture(options = {}) {
   const core = new CollaborationCore(store);
   const agent = store.createAgent({ name: "Memory Agent", provider: "codex-app-server" });
   const other = store.createAgent({ name: "Other Agent", provider: "claude-sdk" });
-  store.createObjective({
-    id: "objective:bound",
-    name: "Bound Objective",
+  store.createWork({
+    id: "work:bound",
+    name: "Bound Work",
     contributorAgentIds: [agent.agentId]
   });
   store.createTask({
     id: "task:bound",
-    objectiveId: "objective:bound",
+    workId: "work:bound",
     title: "Bound Task",
     mainAgentId: agent.agentId
   });
@@ -38,10 +38,10 @@ async function fixture(options = {}) {
     status: "running",
     sessionKind: "worker",
     agentId: agent.agentId,
-    objectiveId: "objective:bound",
+    workId: "work:bound",
     taskId: "task:bound"
   });
-  store.bindSessionToTask("session:current", "task:bound", "objective:bound");
+  store.bindSessionToTask("session:current", "task:bound", "work:bound");
   core.bindSession({ agentId: agent.agentId, sessionId: "session:current" });
   const hubService = new HubService({ store });
   const service = new MemoryOperationService({
@@ -83,7 +83,7 @@ test("manual remember defaults to the most-specific current Task and preserves p
 
     const nextSessionRecall = await f.hubService.retrieveMemory("summarize changes", {
       agentId: f.agent.agentId,
-      objectiveId: "objective:bound",
+      workId: "work:bound",
       taskId: "task:bound"
     }, { touch: false });
     assert.equal(nextSessionRecall[0].id, remembered.memory.id);
@@ -92,7 +92,7 @@ test("manual remember defaults to the most-specific current Task and preserves p
       hubService: f.hubService
     }).buildAgentContext(f.agent.agentId, {
       intent: "",
-      scope: { objectiveId: "objective:bound", taskId: "task:bound" }
+      scope: { workId: "work:bound", taskId: "task:bound" }
     });
     assert.match(startupContext.instructions, /Always summarize changes concisely/);
   } finally {
@@ -101,15 +101,15 @@ test("manual remember defaults to the most-specific current Task and preserves p
   }
 });
 
-test("remember derives Objective/Task owners and rejects every unbound scope", async () => {
+test("remember derives Work/Task owners and rejects every unbound scope", async () => {
   const f = await fixture();
   try {
-    const objective = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
-      content: "Bound objective decision",
+    const work = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
+      content: "Bound work decision",
       kind: "fact",
-      scope: "objective"
+      scope: "work"
     });
-    assert.equal(objective.memory.ownerId, "objective:bound");
+    assert.equal(work.memory.ownerId, "work:bound");
     const task = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
       content: "Bound work item lesson",
       kind: "lesson",
@@ -130,7 +130,7 @@ test("remember derives Objective/Task owners and rejects every unbound scope", a
       () => f.service.execute({
         actorId: f.other.agentId,
         tool: "corptie_memory_remember",
-        arguments: { content: "escape", kind: "fact", scope: "objective" },
+        arguments: { content: "escape", kind: "fact", scope: "work" },
         metadata: { sessionId: "session:assistant" }
       }),
       { code: "MEMORY_SCOPE_FORBIDDEN" }
@@ -153,16 +153,16 @@ test("remember derives Objective/Task owners and rejects every unbound scope", a
   }
 });
 
-test("five Objective Chat Sessions sharing one Agent route independently and deduplicate retries per Session", async () => {
+test("five Work Chat Sessions sharing one Agent route independently and deduplicate retries per Session", async () => {
   const f = await fixture();
   try {
     const sessions = [];
     for (let index = 1; index <= 5; index += 1) {
-      const objectiveId = `objective:batch-${index}`;
+      const workId = `work:batch-${index}`;
       const sessionId = `session:batch-${index}`;
-      f.store.createObjective({
-        id: objectiveId,
-        name: `Batch Objective ${index}`,
+      f.store.createWork({
+        id: workId,
+        name: `Batch Work ${index}`,
         contributorAgentIds: [f.agent.agentId]
       });
       f.store.upsertSession({
@@ -170,45 +170,45 @@ test("five Objective Chat Sessions sharing one Agent route independently and ded
         title: `Batch Session ${index}`,
         provider: "codex-app-server",
         status: "running",
-        sessionKind: "objectiveChat",
+        sessionKind: "workChat",
         agentId: f.agent.agentId,
-        objectiveId
+        workId
       });
       f.core.bindSession({ agentId: f.agent.agentId, sessionId });
-      sessions.push({ objectiveId, sessionId });
+      sessions.push({ workId, sessionId });
     }
     assert.equal(f.store.getAgent(f.agent.agentId).currentSessionId, "session:batch-5");
 
-    const firstPass = await Promise.all(sessions.map(({ objectiveId, sessionId }) => f.service.execute({
+    const firstPass = await Promise.all(sessions.map(({ workId, sessionId }) => f.service.execute({
       actorId: f.agent.agentId,
       tool: "corptie_memory_remember",
       arguments: {
         content: "Identical durable instruction",
         kind: "procedure",
-        scope: "objective",
+        scope: "work",
         idempotency_key: "same-instruction"
       },
-      metadata: { sessionId, objectiveId }
+      metadata: { sessionId, workId }
     })));
-    assert.deepEqual(firstPass.map((result) => result.memory.ownerId), sessions.map((item) => item.objectiveId));
+    assert.deepEqual(firstPass.map((result) => result.memory.ownerId), sessions.map((item) => item.workId));
     assert.ok(firstPass.every((result) => result.idempotentReplay === false));
 
-    const retries = await Promise.all(sessions.map(({ objectiveId, sessionId }) => f.service.execute({
+    const retries = await Promise.all(sessions.map(({ workId, sessionId }) => f.service.execute({
       actorId: f.agent.agentId,
       tool: "corptie_memory_remember",
       arguments: {
         content: "Identical durable instruction",
         kind: "procedure",
-        scope: "objective",
+        scope: "work",
         idempotency_key: "same-instruction"
       },
-      metadata: { sessionId, objectiveId }
+      metadata: { sessionId, workId }
     })));
     assert.deepEqual(retries.map((result) => result.memory.id), firstPass.map((result) => result.memory.id));
     assert.ok(retries.every((result) => result.idempotentReplay === true));
 
-    for (const { objectiveId, sessionId } of sessions) {
-      const memories = f.store.listMemoriesByOwner("objective", objectiveId);
+    for (const { workId, sessionId } of sessions) {
+      const memories = f.store.listMemoriesByOwner("work", workId);
       assert.equal(memories.length, 1);
       assert.equal(memories[0].source_session_id, sessionId);
       const rememberEvents = f.store.listSessionEvents(sessionId)
@@ -222,53 +222,53 @@ test("five Objective Chat Sessions sharing one Agent route independently and ded
   }
 });
 
-test("remember rejects cross-Objective claims and idempotency conflicts with content-free diagnostics", async () => {
+test("remember rejects cross-Work claims and idempotency conflicts with content-free diagnostics", async () => {
   const diagnostics = [];
   const f = await fixture({ onDiagnostic: (entry) => diagnostics.push(entry) });
   try {
     const created = await call(f.service, f.agent.agentId, "corptie_memory_remember", {
       content: "Sensitive durable正文",
       kind: "fact",
-      scope: "objective",
+      scope: "work",
       idempotency_key: "stable-request"
-    }, { objectiveId: "objective:bound" });
+    }, { workId: "work:bound" });
 
     await assert.rejects(
       () => call(f.service, f.agent.agentId, "corptie_memory_remember", {
         content: "Different sensitive正文",
         kind: "fact",
-        scope: "objective",
+        scope: "work",
         idempotency_key: "stable-request"
-      }, { objectiveId: "objective:bound" }),
+      }, { workId: "work:bound" }),
       (error) => error.code === "MEMORY_IDEMPOTENCY_CONFLICT"
         && error.stage === "idempotency_resolution"
         && error.message.includes("sessionId=session:current")
-        && error.message.includes("objectiveId=objective:bound")
+        && error.message.includes("workId=work:bound")
     );
     await assert.rejects(
       () => call(f.service, f.agent.agentId, "corptie_memory_remember", {
-        content: "Sensitive cross-objective正文",
+        content: "Sensitive cross-work正文",
         kind: "fact",
-        scope: "objective"
-      }, { objectiveId: "objective:other" }),
+        scope: "work"
+      }, { workId: "work:other" }),
       (error) => error.code === "MEMORY_SESSION_SCOPE_REQUIRED"
         && error.stage === "context_resolution"
         && error.message.includes("sessionId=session:current")
-        && error.message.includes("objectiveId=objective:bound")
+        && error.message.includes("workId=work:bound")
     );
 
-    assert.equal(f.store.listMemoriesByOwner("objective", "objective:bound").length, 1);
+    assert.equal(f.store.listMemoriesByOwner("work", "work:bound").length, 1);
     assert.equal(f.store.getMemory(created.memory.id).source_session_id, "session:current");
-    assert.deepEqual(diagnostics.map(({ sessionId, targetObjectiveId, failureStage, errorCode }) => ({
-      sessionId, targetObjectiveId, failureStage, errorCode
+    assert.deepEqual(diagnostics.map(({ sessionId, targetWorkId, failureStage, errorCode }) => ({
+      sessionId, targetWorkId, failureStage, errorCode
     })), [{
       sessionId: "session:current",
-      targetObjectiveId: "objective:bound",
+      targetWorkId: "work:bound",
       failureStage: "idempotency_resolution",
       errorCode: "MEMORY_IDEMPOTENCY_CONFLICT"
     }, {
       sessionId: "session:current",
-      targetObjectiveId: "objective:bound",
+      targetWorkId: "work:bound",
       failureStage: "context_resolution",
       errorCode: "MEMORY_SESSION_SCOPE_REQUIRED"
     }]);
@@ -276,7 +276,7 @@ test("remember rejects cross-Objective claims and idempotency conflicts with con
       .filter((event) => event.type === "memory/remember-failed");
     assert.equal(failureEvents.length, 2);
     const serializedDiagnostics = JSON.stringify({ diagnostics, failureEvents });
-    assert.doesNotMatch(serializedDiagnostics, /Sensitive durable正文|Different sensitive正文|Sensitive cross-objective正文/);
+    assert.doesNotMatch(serializedDiagnostics, /Sensitive durable正文|Different sensitive正文|Sensitive cross-work正文/);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -374,7 +374,7 @@ test("automatic extraction and manual memory use distinct source_type with exact
     });
     const extracted = await new MemoryExtractor({ store: f.store }).extractFromSession("session:current", {
       agentId: f.agent.agentId,
-      objectiveId: "objective:bound",
+      workId: "work:bound",
       taskId: "task:bound"
     });
     assert.equal(extracted[0].source_type, "extracted");

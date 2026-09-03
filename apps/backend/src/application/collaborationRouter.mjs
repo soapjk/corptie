@@ -1,7 +1,7 @@
 // 合作调度中心路由（14）：协作目录注册 + 中央路由打分 + 主动触发检测。
 //
-// 14.6 路由（已决 A：Objective 一级路由）：
-//   score = w1·objective_relevance + w2·capability_match + w3·trust
+// 14.6 路由（已决 A：Work 一级路由）：
+//   score = w1·work_relevance + w2·capability_match + w3·trust
 //         + w4·availability_weight - w5·load_penalty
 // 14.7 主动触发检测（四类，前三默认开、第四默认关）。
 // Delegation/Consultation 执行层复用 collaborationCore 的 collaboration_requests 状态机。
@@ -23,9 +23,9 @@ function overlapRatio(candidateTags, requested) {
   return hit / requested.length;
 }
 
-// 14.6 五项权重（可调；objective 一级权重最高，已决 A）。
+// 14.6 五项权重（可调；work 一级权重最高，已决 A）。
 const ROUTE_WEIGHTS = {
-  objective: 0.4,
+  work: 0.4,
   capability: 0.3,
   trust: 0.15,
   availability: 0.15,
@@ -63,10 +63,10 @@ export class CollaborationRouter {
     });
   }
 
-  registerObjective({ objectiveId, capabilityTags = [], description = "", policy = {} }) {
+  registerWork({ workId, capabilityTags = [], description = "", policy = {} }) {
     return this.store.upsertCollaborator({
-      entryType: "objective",
-      entryId: objectiveId,
+      entryType: "work",
+      entryId: workId,
       capabilityTags,
       description,
       policy
@@ -74,9 +74,9 @@ export class CollaborationRouter {
   }
 
   // 路由：给定协作请求，召回可用 Agent 并按分数降序返回（默认 top-k=3）。
-  // request: { objectiveTags?, requiredCapabilities?, excludeAgentId?, topK? }
+  // request: { workTags?, requiredCapabilities?, excludeAgentId?, topK? }
   route(request = {}) {
-    const { objectiveTags = [], requiredCapabilities = [], excludeAgentId, topK = 3 } = request;
+    const { workTags = [], requiredCapabilities = [], excludeAgentId, topK = 3 } = request;
     return this.store
       .listCollaborators("agent")
       .filter(
@@ -87,19 +87,19 @@ export class CollaborationRouter {
       )
       .map((agent) => ({
         candidate: agent,
-        score: this.scoreAgent(agent, { objectiveTags, requiredCapabilities }),
-        reason: this.buildReason(agent, { objectiveTags, requiredCapabilities })
+        score: this.scoreAgent(agent, { workTags, requiredCapabilities }),
+        reason: this.buildReason(agent, { workTags, requiredCapabilities })
       }))
       .sort((a, b) => b.score - a.score)
       .slice(0, topK);
   }
 
-  // 14.6 五项打分：objective 一级 + capability 二级 + trust + availability - load_penalty
-  scoreAgent(agent, { objectiveTags, requiredCapabilities }) {
+  // 14.6 五项打分：work 一级 + capability 二级 + trust + availability - load_penalty
+  scoreAgent(agent, { workTags, requiredCapabilities }) {
     const tags = parseJsonArray(agent.capability_tags_json);
     const w = this.weights;
 
-    const objectiveScore = overlapRatio(tags, objectiveTags);
+    const workScore = overlapRatio(tags, workTags);
     const capabilityScore = overlapRatio(tags, requiredCapabilities);
     const trust = Number(agent.trust_score ?? 0.5);
 
@@ -111,7 +111,7 @@ export class CollaborationRouter {
     const loadPenalty = Math.min(load * w.loadPenalty, 0.5);
 
     return (
-      w.objective * objectiveScore +
+      w.work * workScore +
       w.capability * capabilityScore +
       w.trust * trust +
       w.availability * availabilityWeight -
@@ -119,12 +119,12 @@ export class CollaborationRouter {
     );
   }
 
-  buildReason(agent, { objectiveTags, requiredCapabilities }) {
+  buildReason(agent, { workTags, requiredCapabilities }) {
     const tags = parseJsonArray(agent.capability_tags_json);
-    const objectiveScore = overlapRatio(tags, objectiveTags);
+    const workScore = overlapRatio(tags, workTags);
     const capabilityScore = overlapRatio(tags, requiredCapabilities);
     return {
-      objective_relevance: objectiveScore,
+      work_relevance: workScore,
       capability_match: capabilityScore,
       trust_score: Number(agent.trust_score ?? 0.5),
       availability: agent.availability,

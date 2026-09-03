@@ -13,11 +13,11 @@ async function fixture() {
   const configPath = join(directory, "config.json");
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
-  store.createObjective({ id: "objective:memory", name: "Memory lifecycle" });
+  store.createWork({ id: "work:memory", name: "Memory lifecycle" });
   for (const taskId of ["task:one", "task:two"]) {
     store.createTask({
       id: taskId,
-      objectiveId: "objective:memory",
+      workId: "work:memory",
       title: taskId
     });
   }
@@ -30,7 +30,7 @@ function start(store, taskId, sessionId) {
     title: sessionId,
     provider: "codex-app-server",
     status: "running",
-    objectiveId: "objective:memory",
+    workId: "work:memory",
     taskId,
     agentId: "agent:memory"
   });

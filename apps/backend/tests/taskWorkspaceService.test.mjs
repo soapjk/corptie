@@ -6,6 +6,14 @@ function createService(overrides = {}) {
   const calls = [];
   const service = new TaskWorkspaceService({
     store: {
+      getTaskWorkspaceContext() {
+        return overrides.workspaceContext === null
+          ? { workspace: null, repository: null }
+          : overrides.workspaceContext ?? {
+            workspace: { workspaceId: "workspace:one" },
+            repository: { id: "repository:one" }
+          };
+      },
       getLogicalSessionByLegacySessionId(sessionId) {
         calls.push(["route", sessionId]);
         return overrides.route ?? null;
@@ -42,8 +50,7 @@ function createService(overrides = {}) {
 }
 
 const task = {
-  id: "task:one",
-  main_workspace_id: "repository:one"
+  id: "task:one"
 };
 
 test("first execution skips management inspection and directly ensures the deterministic Worktree", async () => {
@@ -170,9 +177,9 @@ test("Worktree rebuild failure is stable, actionable, and never falls back to a 
 });
 
 test("missing Workspace remains an explicit 409 business error before Git access", async () => {
-  const { service, calls } = createService();
+  const { service, calls } = createService({ workspaceContext: null });
   await assert.rejects(
-    service.ensure({ task: { id: "task:no-workspace", main_workspace_id: null } }),
+    service.ensure({ task: { id: "task:no-workspace" } }),
     (error) => error.code === "WORKSPACE_REQUIRED" && error.statusCode === 409
   );
   assert.deepEqual(calls, []);

@@ -404,8 +404,8 @@ test("deleting a Session retains an inert tombstone and audit events without all
       agent: "Agent",
       provider: "provider-neutral-fixture",
       status: "complete",
-      objectiveId: "objective:shared",
-      sessionKind: "objectiveChat"
+      workId: "work:shared",
+      sessionKind: "workChat"
     });
     store.appendSessionEvent({
       eventId: "retained-audit-event",
@@ -449,10 +449,10 @@ test("deleting a Session retains an inert tombstone and audit events without all
       agent: "Agent",
       provider: "another-provider",
       status: "complete",
-      objectiveId: "objective:shared",
-      sessionKind: "objectiveChat"
+      workId: "work:shared",
+      sessionKind: "workChat"
     });
-    assert.equal(store.getObjectiveChatSession("objective:shared").id, "session:replacement");
+    assert.equal(store.getWorkChatSession("work:shared").id, "session:replacement");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -469,23 +469,23 @@ test("deleting a Worker Session clears its active Task pointer but retains audit
       provider: "provider-neutral-fixture",
       status: "complete"
     });
-    store.createObjective({ id: "objective:worker", name: "Objective" });
+    store.createWork({ id: "work:worker", name: "Work" });
     store.createTask({
       id: "task:worker",
-      objectiveId: "objective:worker",
+      workId: "work:worker",
       title: "Work item"
     });
-    store.bindSessionToTask("session:worker", "task:worker", "objective:worker");
+    store.bindSessionToTask("session:worker", "task:worker", "work:worker");
     assert.equal(store.getTask("task:worker").current_session_id, "session:worker");
 
     store.deleteSession("session:worker");
 
     assert.equal(store.getTask("task:worker").current_session_id, null);
     const tombstone = store.selectOne(
-      "SELECT objective_id, task_id FROM sessions WHERE id = ?",
+      "SELECT work_id, task_id FROM sessions WHERE id = ?",
       ["session:worker"]
     );
-    assert.equal(tombstone.objective_id, "objective:worker");
+    assert.equal(tombstone.work_id, "work:worker");
     assert.equal(tombstone.task_id, "task:worker");
     assert.deepEqual(store.sessionAssociationIssues(), []);
   } finally {

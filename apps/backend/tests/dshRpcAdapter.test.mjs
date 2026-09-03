@@ -47,15 +47,15 @@ test("DSH Session list marks revision-zero Sessions reusable without detail read
   assert.equal(listed.items[0].blank, true);
 });
 
-test("DSH Session creation inherits an existing Objective Agent instead of inventing identity", async () => {
+test("DSH Session creation reuses the Work's unique Work Chat", async () => {
   const calls = [];
-  const result = await dispatchDshRequest("session.create", { workspaceId: "objective:one" }, {
+  const result = await dispatchDshRequest("session.create", { workspaceId: "work:one" }, {
     store: {
       listSessions: () => [{
         id: "session:existing",
-        objectiveId: "objective:one",
+        workId: "work:one",
         agentId: "agent:one",
-        sessionKind: "objectiveChat",
+        sessionKind: "workChat",
         updatedAt: "2026-08-26T10:00:00Z",
         external: { cwd: "/repo" }
       }]
@@ -65,20 +65,13 @@ test("DSH Session creation inherits an existing Objective Agent instead of inven
       return { id: "session:new" };
     }
   });
-  assert.deepEqual(result, { sessionId: "session:new" });
-  assert.deepEqual(calls, [[
-    { cwd: "/repo", sessionKind: "objectiveChat" },
-    {
-      actorId: "agent:one",
-      objectiveId: "objective:one",
-      sessionKind: "objectiveChat"
-    }
-  ]]);
+  assert.deepEqual(result, { sessionId: "session:existing" });
+  assert.deepEqual(calls, []);
 });
 
-test("DSH Session creation refuses an Objective with no existing Agent binding", async () => {
+test("DSH Session creation refuses an Work with no existing Agent binding", async () => {
   await assert.rejects(
-    dispatchDshRequest("session.create", { workspaceId: "objective:empty" }, {
+    dispatchDshRequest("session.create", { workspaceId: "work:empty" }, {
       store: { listSessions: () => [] },
       createSession: async () => ({ id: "must-not-create" })
     }),
@@ -272,30 +265,30 @@ test("mapSessionList 映射数组", () => {
   assert.equal(items[1].running, true);
 });
 
-// ---- workspace mapper (Objective → WorkspaceView) ----
+// ---- workspace mapper (Work → WorkspaceView) ----
 
-test("mapWorkspaceList 把 Objective 映射为 WorkspaceView，session 按 objectiveId 归组", () => {
-  const objectives = [
-    { id: "objective:o1", name: "目标一", createdAt: "2026-08-16T00:00:00.000Z", updatedAt: "2026-08-16T01:00:00.000Z" },
-    { id: "objective:o2", name: "目标二", createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T01:00:00.000Z" },
+test("mapWorkspaceList 把 Work 映射为 WorkspaceView，session 按 workId 归组", () => {
+  const works = [
+    { id: "work:o1", name: "目标一", createdAt: "2026-08-16T00:00:00.000Z", updatedAt: "2026-08-16T01:00:00.000Z" },
+    { id: "work:o2", name: "目标二", createdAt: "2026-08-15T00:00:00.000Z", updatedAt: "2026-08-15T01:00:00.000Z" },
   ];
   const sessions = [
-    { id: "session:s1", objectiveId: "objective:o1" },
-    { id: "session:s2", objectiveId: "objective:o1" },
-    { id: "session:s3", objectiveId: "objective:o2" },
-    { id: "session:s4", objectiveId: null }, // 未归属 objective 的 session 被忽略
+    { id: "session:s1", workId: "work:o1" },
+    { id: "session:s2", workId: "work:o1" },
+    { id: "session:s3", workId: "work:o2" },
+    { id: "session:s4", workId: null }, // 未归属 work 的 session 被忽略
   ];
-  const activePath = new Map([["objective:o1", "/volumes/T9/projects/a"]]);
+  const activePath = new Map([["work:o1", "/volumes/T9/projects/a"]]);
 
-  const items = mapWorkspaceList(objectives, sessions, activePath);
+  const items = mapWorkspaceList(works, sessions, activePath);
 
   assert.equal(items.length, 2);
-  assert.equal(items[0].workspaceId, "objective:o1");
+  assert.equal(items[0].workspaceId, "work:o1");
   assert.equal(items[0].title, "目标一");
   assert.deepEqual(items[0].sessionIds, ["session:s1", "session:s2"]);
   assert.equal(items[0].path, "/volumes/T9/projects/a");
   assert.equal(items[0].createdAt, "2026-08-16T00:00:00.000Z");
-  assert.equal(items[1].workspaceId, "objective:o2");
+  assert.equal(items[1].workspaceId, "work:o2");
   assert.deepEqual(items[1].sessionIds, ["session:s3"]);
   assert.equal(items[1].path, ""); // 无活跃 task → 空 path
 });

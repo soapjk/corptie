@@ -11,11 +11,11 @@ function database() {
   db.exec("PRAGMA foreign_keys=ON");
   db.exec(`
     CREATE TABLE data_migrations (migration_id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
-    CREATE TABLE objectives (id TEXT PRIMARY KEY);
+    CREATE TABLE works (id TEXT PRIMARY KEY);
     CREATE TABLE sessions (id TEXT PRIMARY KEY, work_item_id TEXT);
     CREATE TABLE work_items (
       id TEXT PRIMARY KEY,
-      objective_id TEXT NOT NULL REFERENCES objectives(id),
+      work_id TEXT NOT NULL REFERENCES works(id),
       title TEXT NOT NULL,
       description TEXT NOT NULL DEFAULT '',
       acceptance_criteria TEXT NOT NULL DEFAULT '',
@@ -32,7 +32,7 @@ function database() {
       id TEXT PRIMARY KEY,
       scope TEXT NOT NULL,
       visibility TEXT NOT NULL CHECK (visibility IN (
-        'objective_private', 'work_item_private', 'session_private', 'repository_tracked'
+        'work_private', 'work_item_private', 'session_private', 'repository_tracked'
       )),
       work_item_id TEXT REFERENCES work_items(id)
     );
@@ -48,11 +48,11 @@ function database() {
       source_work_item_id TEXT REFERENCES work_items(id)
     );
   `);
-  db.prepare("INSERT INTO objectives VALUES (?)").run("objective:1");
+  db.prepare("INSERT INTO works VALUES (?)").run("work:1");
   db.prepare("INSERT INTO sessions(id, work_item_id) VALUES (?, ?)").run("session:1", null);
-  db.prepare(`INSERT INTO work_items(id, objective_id, title, created_at, updated_at)
+  db.prepare(`INSERT INTO work_items(id, work_id, title, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?)`)
-    .run("work_item:1", "objective:1", "Legacy", "2026-09-01", "2026-09-01");
+    .run("work_item:1", "work:1", "Legacy", "2026-09-01", "2026-09-01");
   db.prepare("UPDATE sessions SET work_item_id=? WHERE id=?").run("work_item:1", "session:1");
   db.prepare("INSERT INTO memories VALUES (?, ?, ?, ?)")
     .run("memory:1", "work_item", "work_item:1", "work_item:1");

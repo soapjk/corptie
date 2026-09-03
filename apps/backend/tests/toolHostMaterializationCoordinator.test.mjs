@@ -37,7 +37,7 @@ async function fixture(overrides = {}) {
   const binding = {
     logicalSessionId: "logical:worker", providerBindingId: "binding:worker",
     providerId: "fake", routingVersion: 1, state: "active", isCurrent: true,
-    sessionId: "session:worker", sessionKind: "worker", objectiveId: "objective:one",
+    sessionId: "session:worker", sessionKind: "worker", workId: "work:one",
     taskId: "task:one", currentTaskSessionId: "session:worker",
     agentId: "agent:shared", authorizationRevision: 1
   };

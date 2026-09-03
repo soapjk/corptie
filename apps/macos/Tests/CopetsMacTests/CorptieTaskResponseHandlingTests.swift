@@ -16,7 +16,7 @@ final class CorptieTaskResponseHandlingTests: XCTestCase {
             {
               "tasks": [{
                 "id": "task:one",
-                "objective_id": "objective:one",
+                "work_id": "work:one",
                 "title": "Keep the data visible",
                 "description": "",
                 "goal": "",
@@ -26,7 +26,6 @@ final class CorptieTaskResponseHandlingTests: XCTestCase {
                 "lifecycle_state": "todo",
                 "resource_version": 1,
                 "revision": 1,
-                "main_workspace_id": null,
                 "main_agent_id": null,
                 "current_session_id": null,
                 "execution_status": "idle",
@@ -50,7 +49,7 @@ final class CorptieTaskResponseHandlingTests: XCTestCase {
             {
               "tasks": [{
                 "id": "task:partial",
-                "objective_id": "objective:one",
+                "work_id": "work:one",
                 "title": "Partial start",
                 "description": "",
                 "goal": "",
@@ -60,7 +59,6 @@ final class CorptieTaskResponseHandlingTests: XCTestCase {
                 "lifecycle_state": "todo",
                 "resource_version": 1,
                 "revision": 1,
-                "main_workspace_id": "repository:one",
                 "main_agent_id": "agent:one",
                 "current_session_id": null,
                 "execution_status": "start_failed",
@@ -82,7 +80,7 @@ final class CorptieTaskResponseHandlingTests: XCTestCase {
             {
               "tasks": [{
                 "id": "task:passed",
-                "objective_id": "objective:one",
+                "work_id": "work:one",
                 "title": "Independent states",
                 "description": "",
                 "goal": "",
@@ -92,7 +90,6 @@ final class CorptieTaskResponseHandlingTests: XCTestCase {
                 "lifecycle_state": "in_progress",
                 "resource_version": 1,
                 "revision": 1,
-                "main_workspace_id": null,
                 "main_agent_id": null,
                 "current_session_id": "session:one",
                 "execution_status": "completed",
@@ -137,7 +134,7 @@ final class CorptieTaskResponseHandlingTests: XCTestCase {
             {
               "tasks": [{
                 "id": "task:legacy",
-                "objective_id": "objective:one",
+                "work_id": "work:one",
                 "title": "Legacy",
                 "description": "",
                 "goal": "",

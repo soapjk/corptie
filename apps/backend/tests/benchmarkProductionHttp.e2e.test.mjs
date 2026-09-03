@@ -12,7 +12,7 @@ import { ProviderEventIngestionService } from "../src/application/providerEventI
 import { ProviderNeutralCodeTaskExecutionService } from "../src/application/providerNeutralCodeTaskExecutionService.mjs";
 import { createProjectToolsetProductionComposition } from "../src/application/projectToolsetProductionComposition.mjs";
 import { WorkSessionStartupCoordinator } from "../src/application/workSessionStartupCoordinator.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { BenchmarkControlPlane } from "../src/benchmark/controlPlane.mjs";
 import { DEPENDENCY_MANIFEST_IDENTITY } from "../src/benchmark/contracts.mjs";
 import { handleBenchmarkHttpRequest } from "../src/benchmark/httpApi.mjs";
@@ -31,7 +31,7 @@ import { createProjectCodeFixture } from "./helpers/projectCodeTestFixture.mjs";
 import { fixture as createRunFixture } from "./runIsolationTestHelpers.mjs";
 
 const ROOT = "/Volumes/T9/.corptie/test-tmp";
-const OBJECTIVE_ID = "objective:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+const WORK_ID = "work:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const TASK_ID = "task:cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const AGENT_ID = "agent:dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
@@ -67,7 +67,7 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
   });
   const diagnosticOwnership = store.assertLogicalWorkSessionBinding(startup.receipt.logicalSessionId);
   const diagnosticBinding = store.getLogicalSession(startup.receipt.logicalSessionId).activeBinding;
-  assert.equal(diagnosticOwnership.objectiveId, startup.receipt.objectiveId);
+  assert.equal(diagnosticOwnership.workId, startup.receipt.workId);
   assert.equal(diagnosticOwnership.taskId, startup.receipt.taskId);
   assert.equal(diagnosticBinding.state, "active");
   assert.equal(diagnosticBinding.worktreeId, startup.receipt.worktreeId);
@@ -83,7 +83,7 @@ test("production HTTP composition runs bounded S1 and Search S6 through authorit
   let resolvedPointer;
   try { resolvedPointer = projectToolsetValidationReceiptPointer(activeToolsetReceipt,
     activeToolsetReceipt.snapshotRef.sourceFingerprint, {
-      logicalSessionId: startup.receipt.logicalSessionId, objectiveId: startup.receipt.objectiveId,
+      logicalSessionId: startup.receipt.logicalSessionId, workId: startup.receipt.workId,
       taskId: startup.receipt.taskId, repositoryId: startup.receipt.repositoryId,
       worktreeId: startup.receipt.worktreeId
     }); } catch (error) { assert.fail(JSON.stringify(error.details)); }
@@ -268,29 +268,30 @@ function createProviderExecutionEntry({ store, startup, observability }) {
 }
 
 async function establishWorkSession({ store, source }) {
-  const objectiveService = new ObjectiveApplicationService({ store });
+  const workService = new WorkApplicationService({ store });
   const agent = store.createAgent({ id: AGENT_ID, name: "Benchmark", role: "independentContributor" });
   const now = new Date().toISOString();
-  store.db.run("INSERT INTO git_repositories (repository_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?)",
-    [source.identity.repositoryId, join(source.directory, ".git"), now, now]);
+  store.createWorkspace({ workspaceId: "workspace:benchmark", kind: "linkedLocal", ownership: "userManaged", rootPath: source.directory });
+  store.db.run("INSERT INTO git_repositories (repository_id, workspace_id, common_git_dir, discovered_at, last_validated_at) VALUES (?, ?, ?, ?, ?)",
+    [source.identity.repositoryId, "workspace:benchmark", join(source.directory, ".git"), now, now]);
   store.db.run(`INSERT INTO git_worktrees (worktree_id,repository_id,path,canonical_path,git_dir,is_main,availability,
     head_oid,branch_ref,branch_name,detached,inventory_version,observed_at,raw_json)
     VALUES (?,?,?,?,?,0,'available',?,'refs/heads/master','master',0,'inventory:benchmark',?,'{}')`,
   [source.identity.worktreeId, source.identity.repositoryId, source.directory, source.directory,
     join(source.directory, ".git"), source.commitOid, now]);
-  const objective = objectiveService.createObjective({ id: OBJECTIVE_ID, name: "Benchmark",
-    contributorAgentIds: [agent.agentId], workspaceIds: [source.identity.repositoryId] });
-  const task = objectiveService.createTask({ id: TASK_ID, objectiveId: objective.id,
-    title: "Benchmark production", mainAgentId: agent.agentId, mainWorkspaceId: source.identity.repositoryId });
+  const work = workService.createWork({ id: WORK_ID, name: "Benchmark",
+    contributorAgentIds: [agent.agentId], workspaceId: "workspace:benchmark" });
+  const task = workService.createTask({ id: TASK_ID, workId: work.id,
+    title: "Benchmark production", mainAgentId: agent.agentId });
   store.createSession({ id: "provider:benchmark-source", title: "Benchmark source",
-    provider: "test-provider", agentId: agent.agentId, sessionKind: "objectiveChat",
-    objectiveId: objective.id, cwd: source.directory });
+    provider: "test-provider", agentId: agent.agentId, sessionKind: "workChat",
+    workId: work.id, cwd: source.directory });
   store.createLogicalSessionRoute({ logicalSessionId: "session:benchmark-source",
     legacySessionId: "provider:benchmark-source", providerThreadId: "thread:benchmark-source",
     providerSessionId: "provider:benchmark-source", providerId: "test-provider",
     boundCwd: source.directory, sessionName: "Benchmark source" });
   const coordinator = new WorkSessionStartupCoordinator({ store, leaseOwner: "benchmark-test",
-    authorizeStart: async (command) => ({ ...command, objectiveId: objective.id,
+    authorizeStart: async (command) => ({ ...command, workId: work.id,
       repositoryId: source.identity.repositoryId, taskTitle: task.title }),
     prepareWorktree: async ({ startupOperationId }) => ({ repositoryId: source.identity.repositoryId,
       worktreeId: source.identity.worktreeId, canonicalWorktreePath: source.directory,
@@ -302,7 +303,7 @@ async function establishWorkSession({ store, source }) {
       createSession: async ({ providerBindingId }) => {
         const session = store.createSession({ id: "session:benchmark", title: "Benchmark production",
           provider: "test-provider", agentId: agent.agentId, sessionKind: "worker",
-          objectiveId: objective.id, taskId: task.id, cwd: source.directory,
+          workId: work.id, taskId: task.id, cwd: source.directory,
           deferTaskProjection: true });
         store.createLogicalSessionRoute({ logicalSessionId: "logical:benchmark", legacySessionId: session.id,
           providerThreadId: "thread:benchmark", providerSessionId: "provider-session:benchmark",
