@@ -43,6 +43,16 @@ struct ObjectiveDetailView: View {
                     Text(L10n("编辑 Objective"))
                         .font(.title3.bold())
 
+                    HStack(spacing: 12) {
+                        objectiveAvatar
+                        Button(L10n("选择头像")) { chooseAvatar() }
+                        if currentAvatarPath != nil {
+                            Button(L10n("清除头像")) {
+                                Task { await client.clearObjectiveAvatar(objectiveId: objective.id) }
+                            }
+                        }
+                    }
+
                     field(L10n("名称 *")) {
                         TextField(L10n("目标名称"), text: $name)
                     }
@@ -195,6 +205,38 @@ struct ObjectiveDetailView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.date(from: value)
+    }
+
+    private var currentAvatarPath: String? {
+        client.objectives.first(where: { $0.id == objective.id })?.avatarPath ?? objective.avatarPath
+    }
+
+    private var objectiveAvatar: some View {
+        Group {
+            if let path = currentAvatarPath, !path.isEmpty {
+                AnimatedAvatarImage(path: path)
+            } else {
+                DefaultInitialAvatarView(
+                    familySeed: name,
+                    variationSeed: objective.id,
+                    initials: DefaultAvatarInitials.make(from: name),
+                    size: 52
+                )
+            }
+        }
+        .frame(width: 52, height: 52)
+        .clipShape(Circle())
+    }
+
+    private func chooseAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await client.setObjectiveAvatar(objectiveId: objective.id, sourcePath: url.path) }
+        }
     }
 
     private func field(_ label: String, @ViewBuilder content: () -> some View, @ViewBuilder trailing: () -> some View = { EmptyView() }) -> some View {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,12 +95,22 @@ async function createServices() {
 }
 
 async function callApi({ method, pathname, search = "", body, headers, ...services }) {
+  let requestBody = body;
+  if (method === "POST" && pathname === "/objectives"
+    && !Object.hasOwn(body ?? {}, "contributorAgentIds")) {
+    let contributor = services.store.listAgents().find((agent) => agent.role === "independentContributor");
+    contributor ??= services.store.createAgent({
+      name: "Objective Test Contributor",
+      role: "independentContributor"
+    });
+    requestBody = { ...(body ?? {}), contributorAgentIds: [contributor.agentId] };
+  }
   const requestHeaders = { ...(headers ?? {}) };
   if (method === "POST" && pathname === "/agents"
     && !Object.hasOwn(requestHeaders, "idempotency-key")) {
     requestHeaders["idempotency-key"] = randomUUID();
   }
-  const request = mockRequest(method, pathname, search, body, requestHeaders);
+  const request = mockRequest(method, pathname, search, requestBody, requestHeaders);
   const response = mockResponse();
   const url = new URL(request.url);
   const startWorkSession = services.startWorkSession ?? (services.launchSession
@@ -145,6 +155,26 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     getSessionStartupBinding: services.getSessionStartupBinding,
     launchAgentSession: services.launchAgentSession,
     launchObjectiveChatSession: services.launchObjectiveChatSession,
+    ensureObjectiveChatSession: services.ensureObjectiveChatSession ?? (async (objective) => {
+      const existing = services.store.getObjectiveChatSession(objective.id);
+      if (existing) return existing;
+      const agent = services.store.getAgent(objective.contributorAgentIds[0]);
+      const sessionId = `objective-chat:${objective.id}`;
+      services.store.upsertSession({
+        id: sessionId,
+        title: `${objective.name}_Chat`,
+        agent: agent.name,
+        agentId: agent.agentId,
+        sessionKind: "objectiveChat",
+        objectiveId: objective.id,
+        status: "complete",
+        progress: 1,
+        summary: "",
+        updatedAt: new Date().toISOString(),
+        accent: "cyan"
+      });
+      return services.store.bindSessionToObjective(sessionId, objective.id);
+    }),
     inspectTaskWorktree: services.inspectTaskWorktree,
     reclaimTaskWorktree: services.reclaimTaskWorktree,
     inspectTaskDeletion: services.inspectTaskDeletion,
@@ -156,6 +186,8 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     observeTaskPerformance: services.observeTaskPerformance,
     observeFormAssistPerformance: services.observeFormAssistPerformance,
     registerGitRepository: services.registerGitRepository,
+    saveObjectiveAvatarFile: services.saveObjectiveAvatarFile,
+    clearObjectiveAvatarFile: services.clearObjectiveAvatarFile,
     auditLog: services.auditLog,
     onEntityChanged: services.onEntityChanged
   });
@@ -268,7 +300,10 @@ test("Task deletion endpoints expose preflight and execute only through the safe
     const deleted = await callApi({
       method: "POST",
       pathname: "/tasks/task%3Aone/actions/delete",
-      body: { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one" },
+      body: {
+        mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one",
+        deleteWorktree: true, artifactDisposition: "objective"
+      },
       deleteTaskSafely: async (taskId, input, actor) => {
         calls.push(["delete", taskId, input, actor]);
         return { ok: true, taskId };
@@ -279,7 +314,10 @@ test("Task deletion endpoints expose preflight and execute only through the safe
     assert.equal(deleted.body.ok, true);
     assert.deepEqual(calls, [
       ["inspect", "task:one", { type: "user", id: "user:local-macos" }],
-      ["delete", "task:one", { mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one" }, { type: "user", id: "user:local-macos" }]
+      ["delete", "task:one", {
+        mode: "force", acknowledgeDataLoss: true, confirmedBranchName: "task/one",
+        deleteWorktree: true, artifactDisposition: "objective"
+      }, { type: "user", id: "user:local-macos" }]
     ]);
   } finally {
     await services.store.close();
@@ -670,6 +708,9 @@ test("POST /repositories/detect preserves existing repositories and initializes 
     });
     assert.equal(initializedResult.statusCode, 201);
     assert.equal((await stat(join(plain, ".git"))).isDirectory(), true);
+    assert.equal(await readFile(join(plain, "README.md"), "utf8"), "");
+    const { stdout: commitCount } = await execFileAsync("git", ["-C", plain, "rev-list", "--count", "HEAD"]);
+    assert.equal(commitCount.trim(), "1");
     assert.equal(services.store.listGitRepositories().length, 2);
   } finally {
     await services.store.close();
@@ -767,10 +808,75 @@ test("POST /objectives → 创建，GET /objectives → 列表", async () => {
     const created = await callApi({ method: "POST", pathname: "/objectives", body: { name: "重构 Corptie" }, ...services });
     assert.equal(created.statusCode, 201);
     assert.ok(created.body.id);
+    const chat = services.store.getObjectiveChatSession(created.body.id);
+    assert.ok(chat);
+    assert.equal(chat.title, "重构 Corptie_Chat");
 
     const listed = await callApi({ method: "GET", pathname: "/objectives", ...services });
     assert.equal(listed.statusCode, 200);
     assert.equal(listed.body.objectives.length, 1);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("POST /objectives requires a Contributor Agent before creating Objective or Objective Chat", async () => {
+  const services = await createServices();
+  try {
+    const rejected = await callApi({
+      method: "POST",
+      pathname: "/objectives",
+      body: { name: "没有 Agent 的目标", contributorAgentIds: [] },
+      ...services
+    });
+    assert.equal(rejected.statusCode, 400);
+    assert.equal(rejected.body.code, "OBJECTIVE_CONTRIBUTOR_REQUIRED");
+    assert.equal(services.store.listObjectives().length, 0);
+    assert.equal(services.store.listSessions().length, 0);
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Objective create and edit persist a managed avatar", async () => {
+  const services = await createServices();
+  try {
+    const contributor = services.store.createAgent({ name: "Avatar Owner", role: "independentContributor" });
+    const source = join(services.directory, "objective-avatar.png");
+    const managed = join(services.directory, "managed-objective-avatar.png");
+    await writeFile(source, "avatar-bytes");
+    const created = await callApi({
+      method: "POST",
+      pathname: "/objectives",
+      body: {
+        id: "objective:avatar-test",
+        name: "头像目标",
+        avatarPath: source,
+        contributorAgentIds: [contributor.agentId]
+      },
+      saveObjectiveAvatarFile: async () => {
+        await copyFile(source, managed);
+        return managed;
+      },
+      clearObjectiveAvatarFile: async () => rm(managed, { force: true }),
+      ...services
+    });
+    assert.equal(created.statusCode, 201);
+    assert.notEqual(created.body.avatarPath, source);
+    assert.equal(await readFile(created.body.avatarPath, "utf8"), "avatar-bytes");
+
+    const cleared = await callApi({
+      method: "PATCH",
+      pathname: `/objectives/${created.body.id}`,
+      body: { avatarPath: null },
+      clearObjectiveAvatarFile: async () => rm(managed, { force: true }),
+      ...services
+    });
+    assert.equal(cleared.statusCode, 200);
+    assert.equal(cleared.body.avatarPath, null);
+    await assert.rejects(stat(created.body.avatarPath), { code: "ENOENT" });
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -786,6 +892,9 @@ test("POST 创建接口按客户端 ID 幂等，冲突重放返回 409 而非数
     assert.equal(firstObjective.statusCode, 201);
     assert.equal(retriedObjective.statusCode, 201);
     assert.equal(services.store.listObjectives().length, 1);
+    assert.equal(services.store.listSessionsByObjective(objectiveBody.id).filter(
+      (session) => session.sessionKind === "objectiveChat"
+    ).length, 1);
 
     const conflict = await callApi({
       method: "POST",

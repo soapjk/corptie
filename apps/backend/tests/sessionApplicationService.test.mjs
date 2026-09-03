@@ -17,6 +17,7 @@ function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
   AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
+  AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE,
   AGENT_PROVIDER_CAPABILITIES.MODEL_LIST,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
   AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
@@ -49,6 +50,10 @@ function fixture(capabilities = [
     prepareExecution: async (...args) => {
       calls.push(["prepareExecution", ...args]);
       return { prepared: true };
+    },
+    probeBinding: async (...args) => {
+      calls.push(["probeBinding", ...args]);
+      return { ready: true };
     },
     deleteSession: async (...args) => {
       calls.push(["deleteSession", ...args]);
@@ -183,6 +188,13 @@ test("Session application service prepares execution through the Provider-neutra
   assert.equal(calls[0][1].providerSessionId, "native-a");
   assert.equal(calls[0][2].source, "session-selection");
   assert.equal(calls[0][2].purpose, "session");
+});
+
+test("binding readiness invokes the Provider-neutral concrete probe contract", async () => {
+  const f = fixture();
+  await f.service.probeBindingReadiness("logical-a", { purpose: "binding-readiness-probe" });
+  assert.equal(f.calls.at(-1)[0], "probeBinding");
+  assert.equal(f.calls.at(-1)[1].providerSessionId, "native-a");
 });
 
 test("Session application service resolves context once and passes it through the common Provider contract", async () => {
@@ -531,6 +543,62 @@ test("unusable replacement cleanup removes the local Session even when the Provi
     "removeSessionBinding",
     "legacy-missing",
     "PROVIDER_SESSION_UNAVAILABLE"
+  ]]);
+});
+
+test("Task deletion retires its local Session when Provider deletion times out", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "provider-neutral-timeout",
+    displayName: "Provider Neutral Timeout",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE]
+  }, {
+    deleteSession: async () => {
+      const error = new Error("Provider delete timed out");
+      error.code = "PROVIDER_REQUEST_TIMEOUT";
+      throw error;
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:task-owned",
+      logicalSessionId: "logical:task-owned",
+      providerId: "provider-neutral-timeout",
+      providerSessionId: "native:task-owned"
+    }),
+    removeSessionBinding: async ({ reference, providerError, context }) => {
+      calls.push([
+        "removeSessionBinding",
+        reference.sessionId,
+        providerError.code,
+        context.source,
+        context.taskId
+      ]);
+    }
+  });
+
+  const deleted = await service.deleteSessionForTaskDeletion("logical:task-owned", {
+    source: "task-deletion",
+    taskId: "task:owned"
+  });
+
+  assert.deepEqual(deleted, {
+    ok: true,
+    deleted: true,
+    sessionId: "session:task-owned",
+    logicalSessionId: "logical:task-owned",
+    providerId: "provider-neutral-timeout",
+    providerDeleted: false,
+    providerErrorCode: "PROVIDER_REQUEST_TIMEOUT"
+  });
+  assert.deepEqual(calls, [[
+    "removeSessionBinding",
+    "session:task-owned",
+    "PROVIDER_REQUEST_TIMEOUT",
+    "task-deletion",
+    "task:owned"
   ]]);
 });
 

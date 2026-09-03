@@ -20,6 +20,7 @@ import { SessionApplicationService } from "./agent-provider/sessionApplicationSe
 import { AGENT_PROVIDER_CAPABILITIES } from "./agent-provider/contracts.mjs";
 import { withResolvedSessionActions } from "./agent-provider/sessionActions.mjs";
 import { withSessionReadiness } from "./application/sessionReadiness.mjs";
+import { SessionBindingReadinessProbe } from "./application/sessionBindingReadinessProbe.mjs";
 import { providerDeliveryFailureStatus } from "./application/providerDeliveryStatus.mjs";
 import { SessionStateDiagnostics } from "./application/sessionStateDiagnostics.mjs";
 import { ProjectApplicationService } from "./application/projectApplicationService.mjs";
@@ -319,6 +320,7 @@ let stateSyncPublishTimer = null;
 let timelineChangePublisher = null;
 let mockProgressTimer = null;
 let stateSyncService = null;
+let sessionBindingReadinessProbe = null;
 let backendStoreReady = false;
 const sessionStateDiagnostics = new SessionStateDiagnostics();
 let taskExecutionOrchestrator = null;
@@ -912,6 +914,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     prepareSessionInput: prepareCodexProviderSessionInput,
     createSession: createCodexProviderSession,
     resumeSession: resumeCodexProviderSession,
+    probeBinding: probeCodexProviderBinding,
     prepareExecution: prepareCodexProviderExecution,
     stabilizeRecoverySession: stabilizeCodexRecoverySession,
     deleteSession: deleteCodexProviderSession,
@@ -1649,6 +1652,11 @@ const emptyCodexBindingPreflight = new EmptyProviderBindingPreflight({
     return { recovered: false, bindingId: binding.bindingId };
   }
 });
+sessionBindingReadinessProbe = new SessionBindingReadinessProbe({
+  resolveReference: (sessionId) => sessionApplicationService.referenceFor(sessionId),
+  probe: (sessionId, context) => sessionApplicationService.probeBindingReadiness(sessionId, context),
+  onChanged: (sessionId) => store.touchSessionProjectionDependency(sessionId)
+});
 
 function isUnavailableEmptyBinding(error) {
   return error?.code === "PROVIDER_SESSION_UNAVAILABLE"
@@ -2014,7 +2022,20 @@ const taskDeletionService = new TaskDeletionService({
   store,
   inspectWorktree: (taskId) => inspectTaskWorktree(taskId),
   removeWorktree: (input) => removeTaskDeletionWorktree(input),
-  deleteSession: (sessionId, context) => sessionApplicationService.deleteSession(sessionId, context),
+  deleteSession: async (sessionId, context) => {
+    const result = await sessionApplicationService.deleteSessionForTaskDeletion(sessionId, context);
+    if (result.providerDeleted === false) {
+      console.warn(
+        `[task-deletion] retired local Session after Provider cleanup failed session=${sessionId} provider=${result.providerId} code=${result.providerErrorCode ?? "unknown"}`
+      );
+    }
+    return result;
+  },
+  handleArtifacts: ({ task, disposition, actor }) => artifactService.disposeBoundArtifactsForTaskDeletion({
+    kind: "local_user",
+    actorId: actor?.id,
+    objectiveId: task.objective_id
+  }, task.id, disposition),
   authorize: ({ actor }) => actor?.type === "user" && actor.id === "user:local-macos",
   onChanged: (type, payload) => emitEvent(type, payload)
 });
@@ -2529,6 +2550,9 @@ function setProviderRuntimeReadiness(providerId, readiness) {
   const resolved = agentProviderRegistry.resolveId(providerId) ?? providerId;
   const previous = providerRuntimeReadiness.get(resolved) ?? null;
   if (JSON.stringify(previous) === JSON.stringify(readiness)) return;
+  if (readiness?.state !== "ready") {
+    sessionBindingReadinessProbe?.invalidateProvider(resolved);
+  }
   providerRuntimeReadiness.set(resolved, readiness);
 
   // Runtime readiness is part of the client-visible Session projection even
@@ -2565,12 +2589,21 @@ function decorateSessionForClient(session, options = {}) {
     logicalSession: logical,
     requireActiveBinding: options.requireActiveBinding !== false,
     providerRuntime: providerId ? providerRuntimeReadiness.get(providerId) : null,
-    bindingRuntime: logical?.logicalSessionId
-      ? emptyCodexBindingPreflight.readiness(logical.logicalSessionId)
-      : null,
+    bindingRuntime: bindingRuntimeReadiness(logical, binding),
     toolMaterialization,
     readOnly: options.readOnly === true
   });
+}
+
+function bindingRuntimeReadiness(logical, binding) {
+  if (!logical?.logicalSessionId) return null;
+  const probed = sessionBindingReadinessProbe?.readiness(
+    logical.logicalSessionId,
+    binding?.bindingId ?? binding?.providerThreadId ?? null
+  );
+  return probed === undefined
+    ? emptyCodexBindingPreflight.readiness(logical.logicalSessionId)
+    : probed;
 }
 
 function currentChoiceGeneration(sessionId) {
@@ -5383,18 +5416,18 @@ async function launchObjectiveChatSession({ agent, objective, providerId: reques
   }
   const workspacePaths = objective.workspaceIds.map((id) => store.resolveWorkspacePath(id)).filter(Boolean);
   const cwd = workspacePaths[0] ?? await ensureAgentWorkDir(agent, { environmentName });
-  const openingPrompt = typeof requestedPrompt === "string" && requestedPrompt.trim()
-    ? requestedPrompt.trim()
-    : `Review the current Objective context for ${objective.name} and reply exactly: Ready`;
-  const prompt = agentProviderRegistry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)
-    ? openingPrompt
-    : `${objectiveChatContextService.build(objective.id).prompt}\n\nUser opening message:\n${openingPrompt}`;
+  const openingPrompt = typeof requestedPrompt === "string" ? requestedPrompt.trim() : "";
+  const prompt = openingPrompt
+    ? (agentProviderRegistry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)
+        ? openingPrompt
+        : `${objectiveChatContextService.build(objective.id).prompt}\n\nUser opening message:\n${openingPrompt}`)
+    : undefined;
   const session = await createSessionThroughApplication(
     providerId,
     {
       cwd,
       title,
-      defaultTitle: `${objective.name}_Objective_Chat`,
+      defaultTitle: `${objective.name}_Chat`,
       prompt,
       agent: agent.name,
       sessionKind: "objectiveChat",
@@ -5404,6 +5437,38 @@ async function launchObjectiveChatSession({ agent, objective, providerId: reques
   );
   collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
   return store.bindSessionToObjective(session.id, objective.id);
+}
+
+async function ensureObjectiveChatSession(objective) {
+  const existing = store.getObjectiveChatSession(objective.id);
+  if (existing) return existing;
+  const agent = (objective.contributorAgentIds ?? [])
+    .map((agentId) => store.getAgent(agentId))
+    .find(Boolean);
+  if (!agent) {
+    const error = new Error("创建 Objective Chat 需要至少一个有效的 Contributor Agent。");
+    error.code = "OBJECTIVE_CONTRIBUTOR_REQUIRED";
+    error.statusCode = 400;
+    throw error;
+  }
+  return launchObjectiveChatSession({
+    agent,
+    objective,
+    providerId: agentProviderRegistry.defaultProviderId,
+    title: `${objective.name}_Chat`
+  });
+}
+
+async function reconcileObjectiveChatsAtStartup() {
+  for (const objective of objectiveService.listObjectives()) {
+    if (store.getObjectiveChatSession(objective.id)) continue;
+    try {
+      const session = await ensureObjectiveChatSession(objective);
+      console.log(`[objective-chat] backfilled objective=${objective.id} session=${session.id}`);
+    } catch (error) {
+      console.warn(`[objective-chat] backfill skipped objective=${objective.id} code=${error.code ?? "OBJECTIVE_CHAT_CREATE_FAILED"} error=${error.message}`);
+    }
+  }
 }
 
 async function startPreparedWorkSession({
@@ -5731,7 +5796,7 @@ async function prepareCodexProviderExecution(reference, context = {}) {
   const before = reference.metadata?.session
     ?? store.getSession(sessionId);
   if (!before) throw new Error("Session not found.");
-  if (sessionHasActiveRun(before)) {
+  if (sessionHasActiveRun(before) && context.bindingReadinessProbe !== true) {
     return { prepared: true, alreadyActive: true, durationMs: Date.now() - startedAt };
   }
   const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
@@ -5759,7 +5824,10 @@ async function prepareCodexProviderExecution(reference, context = {}) {
       ?? await collaborationThreadOptionsForSession(sessionId)
   );
   const resumeStartedAt = Date.now();
-  const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
+  const resume = context.bindingReadinessProbe === true
+    ? codexRuntime.resumeThread.bind(codexRuntime)
+    : codexRuntime.ensureThreadResumed.bind(codexRuntime);
+  const resumeResult = await resume(threadId, {
     cwd: activeCwd,
     runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
     ...threadOptions
@@ -5777,6 +5845,13 @@ async function prepareCodexProviderExecution(reference, context = {}) {
   };
   console.info(`[session-execution-preparation] ${JSON.stringify(result)}`);
   return result;
+}
+
+async function probeCodexProviderBinding(reference, context = {}) {
+  return prepareCodexProviderExecution(reference, {
+    ...context,
+    bindingReadinessProbe: true
+  });
 }
 
 function resolvePreparedWorkspaceRoute(logicalRoute, threadId) {
@@ -6503,6 +6578,19 @@ async function sendUnifiedSessionMessage(sessionId, text, source = { type: "desk
       source
     );
     return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
+  }
+
+  // Never infer a concrete Session binding's health from the Provider process
+  // or a persisted `active` row. Every dispatch crosses the Provider-neutral
+  // readiness probe; selection prewarms the same coalesced operation for UI.
+  const bindingVerification = await sessionBindingReadinessProbe.verify(routedSessionId);
+  if (bindingVerification.ready !== true) {
+    const error = new Error(
+      bindingVerification.readiness?.message ?? "The Provider Session is unavailable."
+    );
+    error.code = "SESSION_NOT_READY";
+    error.reason = bindingVerification.readiness?.reasonCode ?? "PROVIDER_SESSION_UNAVAILABLE";
+    throw error;
   }
 
   if (options.fromAgentWorkQueue !== true) {
@@ -8192,7 +8280,6 @@ async function inspectTaskWorktree(taskId) {
     }
     try {
       const project = await projectApplicationService.requireProject(task.main_workspace_id);
-      const status = await gitWorkspaces.projectStatusForPath(project.mainPath, project.id);
       const startup = store.selectOne(
         `SELECT worktree_id FROM work_session_startup_operations
          WHERE task_id=? AND worktree_id IS NOT NULL
@@ -8200,11 +8287,14 @@ async function inspectTaskWorktree(taskId) {
         [task.id]
       );
       const expectedBranch = `task/${String(task.id).includes(":") ? String(task.id).split(":").at(-1) : task.id}`;
-      const worktree = status.worktrees.find((candidate) =>
-        candidate.isMain !== true && (
-          candidate.worktreeId === startup?.worktree_id || candidate.branchName === expectedBranch
+      const knownWorktree = (startup?.worktree_id ? store.getGitWorktree(startup.worktree_id) : null)
+        ?? store.listGitWorktrees(project.id).find((candidate) =>
+          candidate.isMain !== true && candidate.branchName === expectedBranch
         )
-      ) ?? null;
+        ?? null;
+      if (!knownWorktree) return { status: "none", sessionId: null, repositoryId: project.id, worktree: null, canReclaim: false, blocker: null };
+      const status = await gitWorkspaces.taskDeletionStatusForWorktree(project.id, knownWorktree.worktreeId);
+      const worktree = status.worktrees[0] ?? null;
       if (!worktree) return { status: "none", sessionId: null, repositoryId: status.repositoryId, worktree: null, canReclaim: false, blocker: null };
       return {
         status: worktree.availability === "available" ? "available" : "unavailable",
@@ -8236,7 +8326,7 @@ async function inspectTaskWorktree(taskId) {
   }
   let project;
   try {
-    project = await gitWorkspaces.projectStatus(logical.logicalSessionId);
+    project = await gitWorkspaces.taskDeletionStatus(logical.logicalSessionId);
   } catch (error) {
     return {
       status: "unavailable",
@@ -9000,6 +9090,7 @@ function route(request, response) {
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
     launchAgentSession,
     launchObjectiveChatSession,
+    ensureObjectiveChatSession,
     createSession: (input) => {
       const providerId = requestedProviderId(input.providerId ?? input.agent);
       return createSessionThroughApplication(providerId, input, { source: "http" });
@@ -10346,6 +10437,18 @@ function route(request, response) {
     return;
   }
 
+  const sessionBindingProbeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/probe-binding$/);
+  if (request.method === "POST" && sessionBindingProbeMatch) {
+    const rawId = decodeURIComponent(sessionBindingProbeMatch[1]);
+    sessionBindingReadinessProbe.verify(rawId)
+      .then((verification) => sendJson(response, 200, { verification }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code ?? null
+      }));
+    return;
+  }
+
   const sessionResumeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/resume$/);
   if (request.method === "POST" && sessionResumeMatch) {
     const rawId = decodeURIComponent(sessionResumeMatch[1]);
@@ -11061,6 +11164,7 @@ function startBackendRuntime() {
         console.warn(`[worktree-integration] startup recovery failed error=${error?.message ?? error}`);
       }));
     reconcileEntityTasksAtStartup();
+    trackStartupMaintenance(reconcileObjectiveChatsAtStartup());
     scheduledSessionTaskService.start();
     agentWorkQueueInterval = setInterval(() => {
       tickAgentWorkQueue().catch((error) => emitEvent("AgentWorkQueueError", { error: error.message }));

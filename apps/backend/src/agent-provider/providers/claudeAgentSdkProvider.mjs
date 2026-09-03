@@ -38,6 +38,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     capabilities: [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.SESSION_BINDING_PROBE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
       AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RENAME,
@@ -71,6 +72,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     resumeSession: (reference, context = {}) => manager.reconnect(reference.providerSessionId, {
       runtimeOptions: context.toolHost?.providerAttachment
     }),
+    probeBinding: (reference) => manager.probeBinding(reference.providerSessionId),
     deleteSession: (reference) => manager.delete(reference.providerSessionId),
     disconnectSession: (reference) => manager.disconnect(reference.providerSessionId),
     renameSession: (reference, title) => manager.rename(reference.providerSessionId, title),

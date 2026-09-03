@@ -15,6 +15,7 @@ struct ObjectiveCreateView: View {
     @State private var workspaceIds = Set<String>()
     @State private var relatedObjectiveIds = Set<String>()
     @State private var contributorAgentIds = Set<String>()
+    @State private var avatarSourcePath: String?
     @State private var creationId = "objective:\(UUID().uuidString.lowercased())"
 
     var body: some View {
@@ -23,6 +24,14 @@ struct ObjectiveCreateView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(L10n("创建 Objective"))
                         .font(.title3.bold())
+
+                    HStack(spacing: 12) {
+                        objectiveAvatar(path: avatarSourcePath, size: 52)
+                        Button(L10n("选择头像")) { chooseAvatar() }
+                        if avatarSourcePath != nil {
+                            Button(L10n("清除头像")) { avatarSourcePath = nil }
+                        }
+                    }
 
                     FormAssistPanel(
                         formType: .objective,
@@ -84,6 +93,11 @@ struct ObjectiveCreateView: View {
                         contributorAgentIds: $contributorAgentIds,
                         excludeObjectiveId: nil
                     )
+                    if contributorAgentIds.isEmpty {
+                        Text(L10n("请至少选择一个 Contributor Agent；创建 Objective 时会由其中一个 Agent 建立 Objective Chat。"))
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
 
                     DisclosureGroup(L10n("高级选项"), isExpanded: $showAdvanced) {
                         VStack(alignment: .leading, spacing: 12) {
@@ -106,7 +120,10 @@ struct ObjectiveCreateView: View {
                     if create() { dismiss() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(
+                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || contributorAgentIds.isEmpty
+                )
             }
             .padding(16)
         }
@@ -115,7 +132,7 @@ struct ObjectiveCreateView: View {
 
     private func create() -> Bool {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.isEmpty, !contributorAgentIds.isEmpty else { return false }
 
         let tags = tagsText
             .split(separator: ",")
@@ -125,6 +142,7 @@ struct ObjectiveCreateView: View {
         let requestId = creationId
         let requestDetail = detail
         let requestIdealState = idealState
+        let requestAvatarSourcePath = avatarSourcePath
         let requestPriority = priority
         let requestWorkspaceIds = Array(workspaceIds)
         let requestRelatedObjectiveIds = Array(relatedObjectiveIds)
@@ -138,6 +156,7 @@ struct ObjectiveCreateView: View {
                 name: trimmed,
                 description: requestDetail.isEmpty ? nil : requestDetail,
                 idealState: requestIdealState.isEmpty ? nil : requestIdealState,
+                avatarPath: requestAvatarSourcePath,
                 priority: requestPriority,
                 tags: tags,
                 workspaceIds: requestWorkspaceIds,
@@ -149,6 +168,34 @@ struct ObjectiveCreateView: View {
             }
             return .failure(client.errorMessage ?? L10n("Objective 创建失败，可重试。"))
         }
+    }
+
+    private func chooseAvatar() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
+        if panel.runModal() == .OK {
+            avatarSourcePath = panel.url?.path
+        }
+    }
+
+    private func objectiveAvatar(path: String?, size: CGFloat) -> some View {
+        Group {
+            if let path, !path.isEmpty {
+                AnimatedAvatarImage(path: path)
+            } else {
+                DefaultInitialAvatarView(
+                    familySeed: name,
+                    variationSeed: creationId,
+                    initials: DefaultAvatarInitials.make(from: name),
+                    size: size
+                )
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
     }
 
     private func applyGeneratedFields(_ fields: [String: String]) {

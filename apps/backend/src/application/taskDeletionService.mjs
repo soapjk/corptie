@@ -1,4 +1,5 @@
 const FORCEABLE_RISKS = new Set(["UNCOMMITTED_CHANGES", "UNTRACKED_FILES", "NOT_MERGED_INTO_MAIN"]);
+const ARTIFACT_DISPOSITIONS = new Set(["delete", "objective", "retain"]);
 
 export class TaskDeletionService {
   constructor(options = {}) {
@@ -6,6 +7,7 @@ export class TaskDeletionService {
     this.inspectWorktree = options.inspectWorktree;
     this.removeWorktree = options.removeWorktree;
     this.deleteSession = options.deleteSession;
+    this.handleArtifacts = options.handleArtifacts;
     this.authorize = options.authorize;
     this.onChanged = options.onChanged ?? (() => {});
     if (!this.store || typeof this.store.finalizeTaskDeletion !== "function"
@@ -16,7 +18,7 @@ export class TaskDeletionService {
     if (typeof this.authorize !== "function") {
       throw new TypeError("TaskDeletionService requires authorize().");
     }
-    for (const method of ["inspectWorktree", "removeWorktree", "deleteSession"]) {
+    for (const method of ["inspectWorktree", "removeWorktree", "deleteSession", "handleArtifacts"]) {
       if (typeof this[method] !== "function") throw new TypeError(`TaskDeletionService requires ${method}().`);
     }
   }
@@ -27,15 +29,11 @@ export class TaskDeletionService {
     if (await this.authorize({ actor, task: item, operation: "delete" }) !== true) {
       throw coded("TASK_DELETE_FORBIDDEN", "You do not have permission to delete this Task.", 403);
     }
-    const associationBlockers = blockingAssociations(
-      this.store.listTaskDeletionBlockingAssociations(taskId)
-    );
+    const associations = this.store.listTaskDeletionBlockingAssociations(taskId);
+    const artifacts = Array.isArray(associations?.artifacts) ? associations.artifacts : [];
     const associatedSessionCount = this.store.listSessionsByTask(taskId).length;
-    if (associationBlockers.length > 0) {
-      return deletionPlan(item, null, [], associationBlockers, associatedSessionCount);
-    }
     if (item.deletion_worktree_removed_at) {
-      return deletionPlan(item, { status: "removed", worktree: null }, [], [], associatedSessionCount);
+      return deletionPlan(item, { status: "removed", worktree: null }, [], [], associatedSessionCount, artifacts);
     }
     const activeStart = this.store.selectOne(
       `SELECT startup_operation_id FROM work_session_startup_operations WHERE task_id=?
@@ -43,21 +41,29 @@ export class TaskDeletionService {
       [taskId]
     );
     if (activeStart) {
-      return deletionPlan(item, null, [], [{ code: "START_IN_PROGRESS", message: "Task 正在启动。请等待启动完成或先安全取消启动。" }], associatedSessionCount);
+      return deletionPlan(item, null, [], [{ code: "START_IN_PROGRESS", message: "Task 正在启动。请等待启动完成或先安全取消启动。" }], associatedSessionCount, artifacts);
     }
     const inspection = await this.inspectWorktree(taskId);
     const risks = contentRisks(inspection?.worktree);
     const blockers = hardBlockers(inspection);
-    return deletionPlan(item, inspection, risks, blockers, associatedSessionCount);
+    return deletionPlan(item, inspection, risks, blockers, associatedSessionCount, artifacts);
   }
 
   async delete(taskId, input = {}, actor = null) {
     const plan = await this.inspect(taskId, actor);
-    if (plan.blockers.length > 0) {
-      throw coded("TASK_DELETE_BLOCKED", plan.blockers[0].message, 409, { deletion: plan });
+    const deleteWorktree = input.deleteWorktree !== false;
+    const artifactDisposition = input.artifactDisposition ?? "delete";
+    if (!ARTIFACT_DISPOSITIONS.has(artifactDisposition)) {
+      throw coded("TASK_ARTIFACT_DISPOSITION_INVALID", `Unsupported Artifact disposition: ${artifactDisposition}`, 400);
+    }
+    const effectiveBlockers = deleteWorktree
+      ? plan.blockers
+      : plan.blockers.filter((blocker) => blocker.code === "START_IN_PROGRESS");
+    if (effectiveBlockers.length > 0) {
+      throw coded("TASK_DELETE_BLOCKED", effectiveBlockers[0].message, 409, { deletion: plan });
     }
     const force = input.mode === "force";
-    if (plan.risks.length > 0 && !force) {
+    if (deleteWorktree && plan.risks.length > 0 && !force) {
       throw coded(
         "TASK_DELETE_RISK_CONFIRMATION_REQUIRED",
         "Task 的专属 Worktree 含有可能丢失的内容。请先合并，或经过二次确认后强制删除。",
@@ -65,7 +71,7 @@ export class TaskDeletionService {
         { deletion: plan }
       );
     }
-    if (force) this.#assertForceConfirmation(plan, input);
+    if (deleteWorktree && force) this.#assertForceConfirmation(plan, input);
 
     this.store.markTaskDeletion(taskId, "deleting", null);
     let cleanup = null;
@@ -78,7 +84,13 @@ export class TaskDeletionService {
         });
         deletedSessionIds.push(session.id);
       }
-      if (plan.worktree) {
+      const artifactCleanup = await this.handleArtifacts({
+        task: this.store.getTask(taskId),
+        artifacts: plan.artifacts,
+        disposition: artifactDisposition,
+        actor
+      });
+      if (deleteWorktree && plan.worktree) {
         cleanup = await this.removeWorktree({
           taskId,
           inspection: plan.inspection,
@@ -89,7 +101,8 @@ export class TaskDeletionService {
       }
       const resources = {
         ...this.store.finalizeTaskDeletion(taskId),
-        deletedSessionIds
+        deletedSessionIds,
+        artifactCleanup
       };
       this.onChanged("TaskChanged", { action: "deleted", entity: { id: taskId } });
       return { ok: true, taskId, cleanup, resources };
@@ -121,12 +134,18 @@ export class TaskDeletionService {
   }
 }
 
-function deletionPlan(item, inspection, risks, blockers, associatedSessionCount) {
+function deletionPlan(item, inspection, risks, blockers, associatedSessionCount, artifacts = []) {
   return {
     taskId: item.id,
     status: blockers.length > 0 ? "blocked" : (risks.length > 0 ? "risky" : "safe"),
     retryable: true,
     associatedSessionCount,
+    artifacts: artifacts.map((artifact) => ({
+      artifactId: artifact.artifactId,
+      title: artifact.title,
+      visibility: artifact.visibility,
+      status: artifact.status
+    })),
     inspection,
     worktree: inspection?.worktree ? {
       worktreeId: inspection.worktree.worktreeId,
@@ -170,18 +189,6 @@ function hardBlockers(inspection) {
     NO_WORKSPACE_ROUTE: "Task 的 Workspace 路由已失效，无法确认专属资源边界。"
   };
   return [{ code, message: messages[code] ?? inspection.detail ?? "无法确认关联资源可安全删除。" }];
-}
-
-function blockingAssociations(associations = {}) {
-  const artifacts = Array.isArray(associations.artifacts) ? associations.artifacts : [];
-  if (artifacts.length === 0) return [];
-  const preview = artifacts.slice(0, 3).map((artifact) => artifact.title || artifact.artifactId).join("、");
-  const remainder = artifacts.length > 3 ? ` 等 ${artifacts.length} 个` : "";
-  return [{
-    code: "TASK_HAS_BOUND_ARTIFACTS",
-    message: `Task 仍绑定不可随之删除的 Artifact：${preview}${remainder}。请先解除这些 Artifact 的 Task 绑定。`,
-    relatedIds: artifacts.map((artifact) => artifact.artifactId)
-  }];
 }
 
 function coded(code, message, statusCode, extra = {}) {

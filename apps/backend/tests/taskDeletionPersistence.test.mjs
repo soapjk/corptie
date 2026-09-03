@@ -24,6 +24,20 @@ async function fixture() {
     inspectWorktree: async () => ({ status: "none", worktree: null, blocker: null }),
     removeWorktree: async () => assert.fail("metadata-only deletion must not clean a Worktree"),
     deleteSession: async (sessionId) => store.deleteSession(sessionId),
+    handleArtifacts: async ({ artifacts, disposition }) => {
+      for (const artifact of artifacts ?? []) {
+        if (disposition === "objective") {
+          store.updateArtifact(artifact.artifactId, {
+            visibility: "objective_private", scope: "objective", boundTaskId: null, boundSessionId: null
+          });
+        } else if (disposition === "delete") {
+          store.updateArtifact(artifact.artifactId, {
+            status: "revoked", boundTaskId: null, boundSessionId: null
+          });
+        }
+      }
+      return { disposition, artifactIds: (artifacts ?? []).map((artifact) => artifact.artifactId) };
+    },
     onChanged: (type, payload) => changed.push({ type, payload })
   });
   return { directory, dbPath, configPath, store, deletion, changed };
@@ -52,7 +66,7 @@ test("authorized deletion removes Task from detail and list and remains deleted 
   }
 });
 
-test("a retained Artifact produces an actionable blocker and leaves all records unchanged", async () => {
+test("a bound Artifact can move to Objective scope while deleting its Task", async () => {
   const f = await fixture();
   try {
     f.store.createArtifactMetadata({
@@ -64,16 +78,14 @@ test("a retained Artifact produces an actionable blocker and leaves all records 
       actorId: localUser.id,
       createdAt: "2026-08-26T00:00:00.000Z"
     });
-    await assert.rejects(
-      f.deletion.delete("task:delete", { mode: "safe" }, localUser),
-      (error) => error.code === "TASK_DELETE_BLOCKED"
-        && error.statusCode === 409
-        && error.deletion.blockers[0].code === "TASK_HAS_BOUND_ARTIFACTS"
-    );
-    assert.ok(f.store.getTask("task:delete"));
-    assert.ok(f.store.getArtifact("artifact:blocker"));
-    assert.equal(f.store.getTask("task:delete").deletion_status, null);
-    assert.deepEqual(f.changed, []);
+    await f.deletion.delete("task:delete", {
+      mode: "safe", artifactDisposition: "objective"
+    }, localUser);
+    const artifact = f.store.getArtifact("artifact:blocker");
+    assert.equal(artifact.visibility, "objective_private");
+    assert.equal(artifact.scope, "objective");
+    assert.equal(artifact.boundTaskId, null);
+    assert.equal(f.store.getTask("task:delete"), null);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });
@@ -154,4 +166,3 @@ test("deletion retires a Task while preserving a legacy immutable cancellation a
     await rm(f.directory, { recursive: true, force: true });
   }
 });
-

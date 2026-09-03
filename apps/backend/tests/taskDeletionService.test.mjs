@@ -32,7 +32,11 @@ function fixture(options = {}) {
       if (options.removeError) throw options.removeError;
       return { removed: true };
     },
-    deleteSession: async (sessionId) => calls.push(["deleteSession", sessionId])
+    deleteSession: async (sessionId) => calls.push(["deleteSession", sessionId]),
+    handleArtifacts: async (input) => {
+      if ((input.artifacts ?? []).length > 0) calls.push(["artifacts", input.disposition]);
+      return { disposition: input.disposition, artifactIds: (input.artifacts ?? []).map((item) => item.artifactId) };
+    }
   });
   return { service, calls, getItem: () => item };
 }
@@ -179,7 +183,8 @@ test("missing and unauthorized Tasks return explicit errors before inspection or
     authorize: async () => true,
     inspectWorktree: async () => assert.fail("missing Task must not inspect a Worktree"),
     removeWorktree: async () => assert.fail("missing Task must not remove a Worktree"),
-    deleteSession: async () => assert.fail("missing Task must not delete a Session")
+    deleteSession: async () => assert.fail("missing Task must not delete a Session"),
+    handleArtifacts: async () => assert.fail("missing Task must not dispose Artifacts")
   });
   await assert.rejects(missingService.inspect("task:missing"), (error) =>
     error.code === "TASK_NOT_FOUND" && error.statusCode === 404
@@ -193,22 +198,41 @@ test("missing and unauthorized Tasks return explicit errors before inspection or
   assert.deepEqual(unauthorized.calls, []);
 });
 
-test("bound retained Artifacts block deletion before Worktree cleanup or metadata mutation", async () => {
+test("bound Artifacts are exposed in the plan and use the selected deletion disposition", async () => {
   const { service, calls } = fixture({
     associations: {
       artifacts: [{ artifactId: "artifact:one", title: "Acceptance evidence" }]
     },
     inspection: {
       status: "available",
-      worktree: { worktreeId: "worktree:one", branchName: "task/one" }
+      worktree: {
+        worktreeId: "worktree:one", branchName: "task/one", dirty: false,
+        mergedIntoMain: true, aheadOfMain: 0, statusSummary: ""
+      }
     }
   });
   const plan = await service.inspect("task:one");
-  assert.equal(plan.status, "blocked");
-  assert.equal(plan.blockers[0].code, "TASK_HAS_BOUND_ARTIFACTS");
-  assert.match(plan.blockers[0].message, /Acceptance evidence/);
-  await assert.rejects(service.delete("task:one", { mode: "force" }), (error) =>
-    error.code === "TASK_DELETE_BLOCKED" && error.deletion.blockers[0].code === "TASK_HAS_BOUND_ARTIFACTS"
-  );
-  assert.deepEqual(calls, []);
+  assert.equal(plan.status, "safe");
+  assert.deepEqual(plan.artifacts.map((artifact) => artifact.artifactId), ["artifact:one"]);
+  await service.delete("task:one", { mode: "safe", artifactDisposition: "objective" });
+  assert.deepEqual(calls.map(([name]) => name), ["mark", "artifacts", "remove", "removed", "finalize"]);
+  assert.deepEqual(calls.find(([name]) => name === "artifacts"), ["artifacts", "objective"]);
+});
+
+test("retaining a Worktree bypasses Worktree-only risks and cleanup", async () => {
+  const { service, calls } = fixture({
+    inspection: {
+      status: "available", blocker: "UNCOMMITTED_CHANGES", repositoryId: "repository:one",
+      worktree: {
+        worktreeId: "worktree:one", path: "/repo-one", branchName: "task/one",
+        dirty: true, mergedIntoMain: false, aheadOfMain: 2, statusSummary: " M draft.txt"
+      }
+    }
+  });
+  const result = await service.delete("task:one", {
+    mode: "safe", deleteWorktree: false, artifactDisposition: "retain"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls.some(([name]) => name === "remove"), false);
+  assert.equal(calls.some(([name]) => name === "removed"), false);
 });

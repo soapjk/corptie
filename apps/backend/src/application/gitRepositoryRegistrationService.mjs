@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
 
@@ -41,6 +42,22 @@ export async function registerGitRepository({
     }
     try {
       await run("git", ["-C", dirPath, "init"], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024
+      });
+      await writeFile(join(dirPath, "README.md"), "", { flag: "wx" }).catch((error) => {
+        if (error?.code !== "EEXIST") throw error;
+      });
+      await run("git", ["-C", dirPath, "add", "--", "README.md"], {
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024
+      });
+      await run("git", [
+        "-C", dirPath,
+        "-c", "user.name=Corptie",
+        "-c", "user.email=corptie@localhost",
+        "commit", "-m", "Initial commit"
+      ], {
         encoding: "utf8",
         maxBuffer: 1024 * 1024
       });

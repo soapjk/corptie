@@ -1869,6 +1869,7 @@ export class CorptieStore {
         title TEXT,
         pinned INTEGER NOT NULL DEFAULT 0,
         archived INTEGER NOT NULL DEFAULT 0,
+        deleted_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY (repository_id) REFERENCES git_repositories(repository_id) ON DELETE SET NULL,
@@ -2024,6 +2025,7 @@ export class CorptieStore {
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         ideal_state TEXT NOT NULL DEFAULT '',
+        avatar_path TEXT,
         status TEXT NOT NULL DEFAULT 'active',
         budget_config TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
@@ -2957,6 +2959,7 @@ export class CorptieStore {
     this.ensureColumn("agents", "avatar_path", "TEXT");
     this.ensureColumn("objectives", "priority", "TEXT");
     this.ensureColumn("objectives", "ideal_state", "TEXT NOT NULL DEFAULT ''");
+    this.ensureColumn("objectives", "avatar_path", "TEXT");
     const objectiveColumns = this.selectAll("PRAGMA table_info(objectives)");
     if (objectiveColumns.some((entry) => entry.name === "acceptance_criteria")) {
       this.db.run(
@@ -3169,6 +3172,10 @@ export class CorptieStore {
     this.dropColumnIfExists("logical_sessions", "avatar_path");
     this.ensureColumn("logical_sessions", "session_name", "TEXT");
     this.ensureColumn("logical_sessions", "session_name_key", "TEXT");
+    // Logical Session routing is also an audit identity. Startup and recovery
+    // receipts may retain RESTRICT references after the live Session is gone,
+    // so deletion tombstones the route instead of removing that identity.
+    this.ensureColumn("logical_sessions", "deleted_at", "TEXT");
     this.ensureColumn("collaboration_requests", "initiator_session_id", "TEXT");
     this.ensureColumn("collaboration_requests", "recipient_session_id", "TEXT");
     this.ensureColumn("collaboration_requests", "initiator_name_at_send", "TEXT");
@@ -5259,7 +5266,7 @@ export class CorptieStore {
 
   getLogicalSession(logicalSessionId) {
     const row = this.selectOne(
-      "SELECT * FROM logical_sessions WHERE logical_session_id = ?",
+      "SELECT * FROM logical_sessions WHERE logical_session_id = ? AND deleted_at IS NULL",
       [logicalSessionId]
     );
     if (!row) return null;
@@ -5324,11 +5331,31 @@ export class CorptieStore {
 
   deleteLogicalSessionByLegacySessionId(legacySessionId) {
     const row = this.selectOne(
-      "SELECT logical_session_id FROM logical_sessions WHERE legacy_session_id = ?",
+      "SELECT logical_session_id FROM logical_sessions WHERE legacy_session_id = ? AND deleted_at IS NULL",
       [legacySessionId]
     );
     if (!row) return false;
-    this.db.run("DELETE FROM logical_sessions WHERE logical_session_id = ?", [row.logical_session_id]);
+    const timestamp = new Date().toISOString();
+    this.runInTransaction(() => {
+      // Provider bindings and the Logical Session remain as immutable routing
+      // evidence for startup/recovery audit rows. Clearing the active route
+      // makes the tombstone unusable for execution and releases its workspace.
+      this.db.run(
+        `UPDATE provider_thread_bindings
+         SET state=CASE WHEN state='active' THEN 'invalid' ELSE state END, updated_at=?
+         WHERE logical_session_id=?`,
+        [timestamp, row.logical_session_id]
+      );
+      this.db.run("DELETE FROM session_name_aliases WHERE logical_session_id=?", [row.logical_session_id]);
+      this.db.run(
+        `UPDATE logical_sessions
+         SET active_thread_id=NULL, active_workspace_id=NULL,
+             transition_state=NULL, pinned=0, archived=1,
+             session_name_key=NULL, deleted_at=?, updated_at=?
+         WHERE logical_session_id=? AND deleted_at IS NULL`,
+        [timestamp, timestamp, row.logical_session_id]
+      );
+    });
     this.scheduleSave();
     return true;
   }
@@ -10782,13 +10809,14 @@ export class CorptieStore {
     this.assertObjectiveAssociations(normalized, { objectiveId: id });
     const now = createdAtFromOrNow();
     this.db.run(
-      `INSERT INTO objectives (id, name, description, ideal_state, status, budget_config, priority, target_date, tags_json, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO objectives (id, name, description, ideal_state, avatar_path, status, budget_config, priority, target_date, tags_json, workspace_ids_json, related_objective_ids_json, contributor_agent_ids_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         normalized.name,
         normalized.description ?? "",
         normalized.idealState ?? "",
+        normalized.avatarPath ?? null,
         normalized.status ?? "active",
         JSON.stringify(normalized.budgetConfig ?? {}),
         normalized.priority ?? null,
@@ -10822,11 +10850,12 @@ export class CorptieStore {
     this.assertObjectiveAssociations(prospective, { objectiveId: id, validateTaskScope: true });
     const has = (key) => Object.prototype.hasOwnProperty.call(patch, key);
     this.db.run(
-      `UPDATE objectives SET name=?, description=?, ideal_state=?, status=?, budget_config=?, priority=?, target_date=?, tags_json=?, workspace_ids_json=?, related_objective_ids_json=?, contributor_agent_ids_json=?, updated_at=? WHERE id=?`,
+      `UPDATE objectives SET name=?, description=?, ideal_state=?, avatar_path=?, status=?, budget_config=?, priority=?, target_date=?, tags_json=?, workspace_ids_json=?, related_objective_ids_json=?, contributor_agent_ids_json=?, updated_at=? WHERE id=?`,
       [
         has("name") ? normalized.name : current.name,
         has("description") ? normalized.description : current.description,
         has("idealState") ? normalized.idealState : current.idealState,
+        has("avatarPath") ? normalized.avatarPath : current.avatarPath,
         has("status") ? normalized.status : current.status,
         has("budgetConfig") ? JSON.stringify(normalized.budgetConfig) : JSON.stringify(current.budgetConfig ?? {}),
         has("priority") ? normalized.priority : current.priority,
@@ -13941,6 +13970,7 @@ function objectiveFromRow(row) {
     name: row.name,
     description: row.description ?? "",
     idealState: row.ideal_state ?? "",
+    avatarPath: row.avatar_path ?? null,
     status: row.status,
     priority: row.priority ?? null,
     targetDate: row.target_date ?? null,

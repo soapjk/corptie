@@ -2,10 +2,16 @@
 // 自包含（sendJson/readJson/apiError 本地定义，不依赖 server.mjs），与 collaborationHttpApi 同风格。
 
 import { registerGitRepository as registerGitRepositoryDefault } from "./gitRepositoryRegistrationService.mjs";
-import { saveAgentAvatar, clearAgentAvatar } from "../runtime/agentAvatar.mjs";
+import {
+  saveAgentAvatar,
+  clearAgentAvatar,
+  saveObjectiveAvatar,
+  clearObjectiveAvatar
+} from "../runtime/agentAvatar.mjs";
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
 import { presentMemory } from "./memoryOperationService.mjs";
+import { validateObjectiveInput } from "../domain/objectiveTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 
@@ -74,6 +80,7 @@ export function handleEntityHttpRequest({
   getSessionStartupBinding,
   launchAgentSession,
   launchObjectiveChatSession,
+  ensureObjectiveChatSession,
   createSession,
   backgroundAgentService,
   skillRegistryService,
@@ -89,6 +96,8 @@ export function handleEntityHttpRequest({
   observeTaskPerformance = () => {},
   observeFormAssistPerformance = () => {},
   registerGitRepository = registerGitRepositoryDefault,
+  saveObjectiveAvatarFile = saveObjectiveAvatar,
+  clearObjectiveAvatarFile = clearObjectiveAvatar,
   auditLog = (entry) => console.log(`[agent-create] ${JSON.stringify(entry)}`)
 }) {
   const path = url.pathname;
@@ -594,7 +603,40 @@ export function handleEntityHttpRequest({
       }
       if (request.method === "POST" && path === "/objectives") {
         const input = await readJson(request);
-        return sendJson(response, 201, objectiveService.createObjective(input));
+        const normalized = validateObjectiveInput(input, "create");
+        if (!normalized.contributorAgentIds?.length) {
+          throw apiError(
+            "OBJECTIVE_CONTRIBUTOR_REQUIRED",
+            "创建 Objective 时必须至少选择一个 Contributor Agent。",
+            400
+          );
+        }
+        if (typeof ensureObjectiveChatSession !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "Objective Chat creation is unavailable.", 503);
+        }
+        const hasAvatar = Object.prototype.hasOwnProperty.call(normalized, "avatarPath");
+        const sourceAvatarPath = normalized.avatarPath;
+        delete normalized.avatarPath;
+        const previous = normalized.id ? objectiveService.store.getObjective(normalized.id) : null;
+        let objective = objectiveService.createObjective(normalized);
+        try {
+          if (hasAvatar && sourceAvatarPath) {
+            const managedPath = await saveObjectiveAvatarFile(objective.id, sourceAvatarPath, {
+              environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+            });
+            objective = objectiveService.updateObjective(objective.id, { avatarPath: managedPath });
+          }
+          await ensureObjectiveChatSession(objective);
+        } catch (error) {
+          if (!previous && !objectiveService.store.getObjectiveChatSession(objective.id)) {
+            await clearObjectiveAvatarFile(objective.id, {
+              environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+            });
+            objectiveService.deleteObjective(objective.id);
+          }
+          throw error;
+        }
+        return sendJson(response, 201, objective);
       }
 
       const objectiveSessionsMatch = path.match(/^\/objectives\/([^/]+)\/sessions$/);
@@ -640,9 +682,28 @@ export function handleEntityHttpRequest({
           return sendJson(response, 200, objectiveService.getObjective(id));
         }
         if (request.method === "PATCH") {
-          return sendJson(response, 200, objectiveService.updateObjective(id, await readJson(request)));
+          objectiveService.getObjective(id);
+          const input = await readJson(request);
+          validateObjectiveInput(input, "update");
+          if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
+            const sourcePath = typeof input.avatarPath === "string" ? input.avatarPath.trim() : "";
+            if (sourcePath) {
+              input.avatarPath = await saveObjectiveAvatarFile(id, sourcePath, {
+                environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+              });
+            } else {
+              await clearObjectiveAvatarFile(id, {
+                environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+              });
+              input.avatarPath = null;
+            }
+          }
+          return sendJson(response, 200, objectiveService.updateObjective(id, input));
         }
         if (request.method === "DELETE") {
+          await clearObjectiveAvatarFile(id, {
+            environmentName: normalizeEnvironment(process.env.CORPTIE_ENV)
+          });
           objectiveService.deleteObjective(id);
           return sendJson(response, 200, { ok: true });
         }
@@ -746,7 +807,9 @@ export function handleEntityHttpRequest({
       if (request.method === "POST" && deleteTaskMatch) {
         if (typeof deleteTaskSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe Task deletion is unavailable.", 503);
         const input = await readJson(request);
-        rejectUnknownFields(input, new Set(["mode", "acknowledgeDataLoss", "confirmedBranchName"]));
+        rejectUnknownFields(input, new Set([
+          "mode", "acknowledgeDataLoss", "confirmedBranchName", "deleteWorktree", "artifactDisposition"
+        ]));
         return sendJson(response, 200, await deleteTaskSafely(
           decodeURIComponent(deleteTaskMatch[1]), input, localMacUserActor()
         ));

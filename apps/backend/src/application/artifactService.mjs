@@ -1037,6 +1037,40 @@ export class ArtifactService {
     return this.present(updated);
   }
 
+  disposeBoundArtifactsForTaskDeletion(contextInput, taskIdValue, disposition) {
+    const context = this.context(contextInput);
+    const taskId = requiredText(taskIdValue, "taskId");
+    const task = this.store.getTask(taskId);
+    if (!task || task.objective_id !== context.objectiveId) {
+      throw artifactError("ARTIFACT_TASK_NOT_FOUND", "Task not found for Artifact disposal.", 404);
+    }
+    if (!["delete", "objective", "retain"].includes(disposition)) {
+      throw artifactError("TASK_ARTIFACT_DISPOSITION_INVALID", `Unsupported Artifact disposition: ${disposition}`, 400);
+    }
+    const artifacts = this.store.listTaskDeletionBlockingAssociations(taskId).artifacts
+      .map((item) => this.store.getArtifact(item.artifactId))
+      .filter(Boolean);
+    if (disposition === "retain") {
+      return { disposition, artifactIds: artifacts.map((artifact) => artifact.artifactId) };
+    }
+    const updated = [];
+    for (const artifact of artifacts) {
+      const patch = disposition === "delete"
+        ? { status: "revoked", boundTaskId: null, boundSessionId: null, updatedAt: this.clock() }
+        : {
+            visibility: "objective_private", scope: "objective",
+            boundTaskId: null, boundSessionId: null, updatedAt: this.clock()
+          };
+      const next = this.store.updateArtifact(artifact.artifactId, patch);
+      this.#indexArtifact(next);
+      this.#audit(context, artifact.artifactId,
+        disposition === "delete" ? "artifact.revoked" : "artifact.moved_to_objective",
+        { reason: "task_deleted", taskId });
+      updated.push(artifact.artifactId);
+    }
+    return { disposition, artifactIds: updated };
+  }
+
   acknowledgePendingReference(contextInput, referenceId) {
     const context = this.context(contextInput);
     const reference = this.store.getArtifactReference(requiredText(referenceId, "referenceId"));
