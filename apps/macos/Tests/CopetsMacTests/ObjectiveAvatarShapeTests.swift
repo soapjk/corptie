@@ -11,6 +11,14 @@ struct ObjectiveAvatarShapeTests {
     }
 
     @Test
+    func objectiveAvatarShrinksWithinItsExistingLayoutSlot() {
+        #expect(ObjectiveAvatarGeometry.visualScale == 0.86)
+        #expect(ObjectiveAvatarGeometry.displaySize(for: 42) == 36)
+        #expect(ObjectiveAvatarGeometry.displaySize(for: 52) == 44)
+        #expect(ObjectiveAvatarGeometry.displaySize(for: 20) == 17)
+    }
+
+    @Test
     func everyObjectiveSurfaceUsesTheSharedAvatarComponent() throws {
         let sourceRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
