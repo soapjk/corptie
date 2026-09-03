@@ -5,12 +5,11 @@ import Testing
 struct MainTabContentLayoutTests {
     @Test
     func selectedIndexTracksTheStableTabOrder() {
-        #expect(AppTab.allCases == [.console, .automations, .worktrees, .sessionDSH, .agents])
+        #expect(AppTab.allCases == [.console, .automations, .worktrees, .agents])
         #expect(AppTab.console.index == 0)
         #expect(AppTab.automations.index == 1)
         #expect(AppTab.worktrees.index == 2)
-        #expect(AppTab.sessionDSH.index == 3)
-        #expect(AppTab.agents.index == 4)
+        #expect(AppTab.agents.index == 3)
     }
 
     @Test
@@ -178,12 +177,12 @@ struct MainTabContentLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("let hostingView = MainWindowSurfaceContainer("))
-        #expect(contents.contains("chromeSurfaces: MainWindowChromeSurfaces("))
         #expect(contents.contains("rootView: MainWindowContentView()"))
         #expect(contents.contains("let leadingChrome = MainWindowLeadingChromeAccessoryController()"))
+        #expect(contents.contains("let titlebarChrome = MainWindowTitlebarAccessoryController()"))
         #expect(contents.contains("window.addTitlebarAccessoryViewController(leadingChrome)"))
-        #expect(contents.contains("center: centerChrome"))
-        #expect(contents.contains("trailing: trailingChrome"))
+        #expect(contents.contains("window.addTitlebarAccessoryViewController(titlebarChrome)"))
+        #expect(!contents.contains("chromeSurfaces: MainWindowChromeSurfaces("))
         #expect(contents.contains("override func viewWillStartLiveResize()"))
         #expect(contents.contains("override func viewDidEndLiveResize()"))
         #expect(contents.contains("NSWindow.willEnterFullScreenNotification"))
@@ -198,7 +197,7 @@ struct MainTabContentLayoutTests {
         #expect(contents.contains("CATransaction.setDisableActions(true)"))
         #expect(!contents.contains("bitmapImageRepForCachingDisplay"))
         #expect(contents.contains("window.preservesContentDuringLiveResize = true"))
-        #expect(contents.contains("window.contentMinSize = NSSize(width: 980, height: 620)"))
+        #expect(contents.contains("window.contentMinSize = MainWindowInitialLayout.minimumContentSize"))
     }
 
     @Test
@@ -211,6 +210,27 @@ struct MainTabContentLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains(".accessibilityIdentifier(\"main-tab.\\(tab.rawValue)\")"))
+        #expect(contents.contains(".accessibilityLabel(tab.title)"))
         #expect(contents.contains(".accessibilityValue(isSelected ? \"selected\" : \"not-selected\")"))
+    }
+
+    @Test
+    func contentDoesNotReserveASecondRowBelowTheNativeTitlebar() throws {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/MainTabView.swift")
+        let contents = try String(contentsOf: source, encoding: .utf8)
+        let start = try #require(contents.range(of: "struct MainWindowContentView: View"))
+        let end = try #require(contents.range(
+            of: "struct MainWindowFixedChromeView: View",
+            range: start.upperBound..<contents.endIndex
+        ))
+        let contentView = contents[start.lowerBound..<end.lowerBound]
+
+        #expect(contentView.contains("MainTabPageHost("))
+        #expect(!contentView.contains("Color.clear"))
+        #expect(!contentView.contains("contentTopInset"))
     }
 }

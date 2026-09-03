@@ -1103,7 +1103,7 @@ func sessionProviderIdentityLabel(
     return providers.displayName(for: identity) ?? identity
 }
 
-private struct SessionContextMenuContent: View {
+struct SessionContextMenuContent: View {
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
 
@@ -2627,7 +2627,7 @@ private struct PresetButton: View {
     }
 }
 
-private struct RenameSessionSheet: View {
+struct RenameSessionSheet: View {
     @EnvironmentObject private var backendClient: BackendClient
     @State private var title: String
     let session: TaskSession
@@ -3388,6 +3388,8 @@ struct DetailView: View {
     let composerDraftRepository: ComposerDraftRepository
     let initialTimelinePosition: AppKitChatTimelinePosition?
     let onTimelinePositionChange: (AppKitChatTimelinePosition) -> Void
+    let showsHeader: Bool
+    let allowsModelSwitch: Bool
 
     init(
         sessionId: String,
@@ -3395,7 +3397,9 @@ struct DetailView: View {
         composerDraftRepository: ComposerDraftRepository,
         backendClient: BackendClient = .shared,
         initialTimelinePosition: AppKitChatTimelinePosition? = nil,
-        onTimelinePositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in }
+        onTimelinePositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in },
+        showsHeader: Bool = true,
+        allowsModelSwitch: Bool = true
     ) {
         self.sessionId = sessionId
         self.presentationCache = presentationCache
@@ -3406,6 +3410,8 @@ struct DetailView: View {
         )
         self.initialTimelinePosition = initialTimelinePosition
         self.onTimelinePositionChange = onTimelinePositionChange
+        self.showsHeader = showsHeader
+        self.allowsModelSwitch = allowsModelSwitch
         let presentationState = presentationCache.state(for: sessionId)
         _presentationState = ObservedObject(wrappedValue: presentationState)
         let timelineState = SessionTimelineRepository.shared.state(for: sessionId)
@@ -3436,7 +3442,11 @@ struct DetailView: View {
         _displaysLoadingDetail = State(
             initialValue: backendClient.selectedSession?.id == sessionId && backendClient.isLoadingDetail
         )
-        _displayedWorkspaceRecoveryStatus = State(initialValue: backendClient.workspaceRecoveryStatus)
+        _displayedWorkspaceRecoveryStatus = State(
+            initialValue: backendClient.selectedSession?.id == sessionId
+                ? backendClient.workspaceRecoveryStatus
+                : nil
+        )
         PerfStopwatch.event("会话切换.DetailView.init", value: 1)
     }
 
@@ -3453,8 +3463,8 @@ struct DetailView: View {
     }
 
     private var selectedSession: TaskSession? {
-        guard selectionController.selectedSessionID == sessionId else { return nil }
-        return backendClient.selectedSession
+        backendClient.sessions.first(where: { $0.id == sessionId })
+            ?? backendClient.archivedSessions.first(where: { $0.id == sessionId })
     }
 
     private var contentPhase: SessionDetailContentPhase {
@@ -3485,7 +3495,7 @@ struct DetailView: View {
         } else if let recovery = displayedWorkspaceRecoveryStatus,
                   recovery.blocksSessionInput {
             WorkspaceMissingComposer(status: recovery)
-        } else if !backendClient.selectedIsReady {
+        } else if !sessionIsReady {
             ReadOnlyComposer(
                 reason: composerUnavailableReason,
                 isRecovering: backendClient.selectedSession?.transitionState == "sessionRecovery"
@@ -3493,7 +3503,8 @@ struct DetailView: View {
         } else {
             MessageComposer(
                 sessionId: sessionId,
-                draftRepository: composerDraftRepository
+                draftRepository: composerDraftRepository,
+                allowsModelSwitch: allowsModelSwitch
             )
             .id(sessionId)
         }
@@ -3501,7 +3512,9 @@ struct DetailView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            DetailHeaderView()
+            if showsHeader {
+                DetailHeaderView()
+            }
 
             backendConnectionBanner
 
@@ -3567,7 +3580,8 @@ struct DetailView: View {
                         ?? backendClient.lastError
                         ?? L10n("No detail is available for this task."),
                     retry: {
-                        Task { await backendClient.reloadSelectedSessionMessages() }
+                        guard let selectedSession else { return }
+                        Task { await backendClient.loadSessionMessages(selectedSession) }
                     }
                 )
             case .empty:
@@ -3666,14 +3680,25 @@ struct DetailView: View {
     }
 
     private var composerUnavailableReason: String? {
-        if let reason = backendClient.selectedNotReadyReason?.message {
+        if selectionController.selectedSessionID == sessionId,
+           let reason = backendClient.selectedNotReadyReason?.message {
             return reason
         }
-        if backendClient.selectedSession?.transitionState == "sessionRecovery" {
+        if selectedSession?.transitionState == "sessionRecovery" {
             return L10n("Session recovery is in progress. Sending messages is temporarily unavailable.")
         }
         return displayedDetail?.sendUnavailableReason
-            ?? backendClient.selectedSession?.actions?.send.reason
+            ?? selectedSession?.actions?.send.reason
+    }
+
+    private var sessionIsReady: Bool {
+        guard backendClient.isOnline,
+              let selectedSession,
+              !backendClient.bindingVerificationSessionIDs.contains(sessionId) else { return false }
+        if selectionController.selectedSessionID == sessionId {
+            return backendClient.selectedIsReady
+        }
+        return selectedSession.isReady
     }
 
     private func appKitCachedDetailMessages() -> some View {
@@ -5687,7 +5712,6 @@ struct DetailHeaderView: View {
     @State private var sessionTitleCopyFeedbackTask: Task<Void, Never>?
     @State private var didCopyWorkspacePath = false
     @State private var gitHeadState: GitHeadState?
-    @State private var isRenamingSession = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -5808,30 +5832,44 @@ struct DetailHeaderView: View {
                     .help(projectServiceStatusHelp(status))
             }
 
-            if let selectedSession = backendClient.selectedSession {
+            if backendClient.selectedSession != nil {
+                Button {
+                    guard let session = backendClient.selectedSession else { return }
+                    DetachedChatWindowManager.shared.show(session: session)
+                } label: {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(IconButtonStyle())
+                .help(L10n("Open chat in floating window"))
+                .accessibilityLabel(L10n("Open chat in floating window"))
+                .accessibilityIdentifier("session.detail.detach")
+
                 Menu {
-                    SessionContextMenuContent(
-                        session: selectedSession,
-                        isRenaming: $isRenamingSession
-                    )
+                    Button(action: openWorkspaceInVSCode) {
+                        Label(
+                            L10n("Open in Visual Studio Code"),
+                            systemImage: "chevron.left.forwardslash.chevron.right"
+                        )
+                    }
+                    .disabled(workspacePath == nil)
+
+                    Button(action: openWorkspaceInFinder) {
+                        Label(L10n("Open in Finder"), systemImage: "folder")
+                    }
+                    .disabled(workspacePath == nil)
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 13, weight: .semibold))
                         .frame(width: 28, height: 28)
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .fixedSize()
-                .help(L10n("Session actions"))
+                .help(L10n("Open workspace"))
+                .accessibilityLabel(L10n("Open workspace"))
                 .accessibilityIdentifier("session.detail.actions")
-            }
-        }
-        .sheet(isPresented: $isRenamingSession) {
-            if let selectedSession = backendClient.selectedSession {
-                RenameSessionSheet(session: selectedSession) {
-                    isRenamingSession = false
-                }
-                .environmentObject(backendClient)
-                .presentationBackground(.clear)
             }
         }
         .task(id: workspaceRouteIdentity) {
@@ -9774,6 +9812,7 @@ struct MessageComposer: View {
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     let sessionId: String
     let draftRepository: ComposerDraftRepository
+    let allowsModelSwitch: Bool
     @FocusState private var isFocused: Bool
     @State private var composerWidth: CGFloat = 0
     @State private var inputHeight = ComposerInputLayout.minimumHeight
@@ -9782,9 +9821,14 @@ struct MessageComposer: View {
     @State private var isShowingScheduleSheet = false
     @State private var scheduleSubmission: ComposerDraftBuffer.Submission?
 
-    init(sessionId: String, draftRepository: ComposerDraftRepository) {
+    init(
+        sessionId: String,
+        draftRepository: ComposerDraftRepository,
+        allowsModelSwitch: Bool = true
+    ) {
         self.sessionId = sessionId
         self.draftRepository = draftRepository
+        self.allowsModelSwitch = allowsModelSwitch
         let draft = draftRepository.draft(for: sessionId)
         _editorController = State(initialValue: ComposerEditorController(draft: draft))
         _hasSendableText = State(initialValue: draft.hasSendableText)
@@ -9822,7 +9866,8 @@ struct MessageComposer: View {
 
                 if isRunningTurn {
                     Button {
-                        backendClient.interruptSelectedSession()
+                        guard let session else { return }
+                        backendClient.interrupt(session: session)
                     } label: {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 9, weight: .bold))
@@ -9898,7 +9943,7 @@ struct MessageComposer: View {
                 y: isLiquidGlass ? 3 : 0
             )
 
-            if canSwitchModel {
+            if allowsModelSwitch, canSwitchModel {
                 CodexModelMenu(maxWidth: modelMenuMaxWidth)
             }
         }
@@ -9910,15 +9955,16 @@ struct MessageComposer: View {
         .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
             composerWidth = width
         }
-        .opacity(!backendClient.selectedCanSendNow && !isRunningTurn ? 0.55 : 1)
         .task {
+            guard allowsModelSwitch,
+                  backendClient.selectedSession?.id == sessionId else { return }
             let provider = backendClient.selectedSession?.external?.provider ?? "codex-pty"
             if backendClient.codexModels.isEmpty || backendClient.loadedModelProvider != provider {
                 await backendClient.loadModelsForSelectedSession()
             }
         }
         .sheet(isPresented: $isShowingScheduleSheet) {
-            if let session = backendClient.selectedSession, session.id == sessionId {
+            if let session {
                 ScheduledTaskEditorSheet(
                     session: session,
                     initialMessage: scheduleSubmission?.text ?? "",
@@ -9946,11 +9992,12 @@ struct MessageComposer: View {
     }
 
     private func send(_ submission: ComposerDraftBuffer.Submission) {
-        guard backendClient.selectedCanSendNow,
+        guard let session,
+              canSend,
               !backendClient.isSendingMessage else {
             return
         }
-        let didStartSending = backendClient.sendMessage(submission.text, onFailure: {
+        let didStartSending = backendClient.sendMessage(submission.text, to: session, onFailure: {
             if editorController.restoreAfterFailedSubmission(submission) {
                 hasSendableText = true
             }
@@ -9965,19 +10012,36 @@ struct MessageComposer: View {
     }
 
     private var isRunningTurn: Bool {
-        backendClient.selectedCanInterruptNow
+        session?.executionTaskStatus == .running && session?.canInterruptNow == true
     }
 
     private var isSendDisabled: Bool {
         return !hasSendableText
             || backendClient.isSendingMessage
-            || !backendClient.selectedCanSendNow
+            || !canSend
     }
 
     private var canSwitchModel: Bool {
-        backendClient.selectedSession?.actions?.switchModel.available
-            ?? backendClient.selectedSession?.capabilities?.canSwitchModel
-            ?? (backendClient.selectedSession?.agent == "Codex" ? true : false)
+        session?.actions?.switchModel.available
+            ?? session?.capabilities?.canSwitchModel
+            ?? (session?.agent == "Codex" ? true : false)
+    }
+
+    private var session: TaskSession? {
+        backendClient.sessions.first(where: { $0.id == sessionId })
+            ?? backendClient.archivedSessions.first(where: { $0.id == sessionId })
+    }
+
+    private var canSend: Bool {
+        guard backendClient.isOnline,
+              let session,
+              session.isReady,
+              !backendClient.bindingVerificationSessionIDs.contains(sessionId) else { return false }
+        if backendClient.selectedSession?.id == sessionId,
+           backendClient.viewingHistoricalThreadId != nil {
+            return false
+        }
+        return session.actions?.send.available ?? true
     }
 
     private var modelMenuMaxWidth: CGFloat {

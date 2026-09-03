@@ -52,13 +52,18 @@ struct AutomationsView: View {
                     .tag(Optional(item))
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 280)
+            .mainWindowPageCard()
+            .padding(.trailing, MainWindowPageLayoutMetrics.halfColumnSpacing)
         } detail: {
             VStack(spacing: 0) {
                 header
                 Divider()
                 content
             }
+            .mainWindowPageCard()
+            .padding(.leading, MainWindowPageLayoutMetrics.halfColumnSpacing)
         }
+        .padding(MainWindowPageLayoutMetrics.outerPadding)
         .task { await backendClient.loadAutomations() }
         .sheet(item: $editingAutomation) { automation in
             if let session = targetSession(for: automation) {

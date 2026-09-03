@@ -30,13 +30,22 @@ final class BackgroundTaskCenter: ObservableObject {
 
     static let shared = BackgroundTaskCenter()
     static let backendConnectionTaskID = "backend.connection"
+    static let defaultSuccessVisibilityDuration: Duration = .seconds(3)
 
     @Published private(set) var records: [BackgroundTaskRecord] = []
     private var operations: [String: Operation] = [:]
+    private var successfulDismissalTasks: [String: Task<Void, Never>] = [:]
+    private let successVisibilityDuration: Duration
+
+    init(successVisibilityDuration: Duration = defaultSuccessVisibilityDuration) {
+        self.successVisibilityDuration = successVisibilityDuration
+    }
 
     @discardableResult
     func start(id: String, title: String, operation: @escaping Operation) -> Bool {
         guard records.first(where: { $0.id == id }) == nil else { return false }
+        successfulDismissalTasks[id]?.cancel()
+        successfulDismissalTasks[id] = nil
         operations[id] = operation
         records.insert(
             BackgroundTaskRecord(id: id, title: title, state: .running, detail: L10n("正在后台执行…")),
@@ -51,6 +60,8 @@ final class BackgroundTaskCenter: ObservableObject {
         guard let index = records.firstIndex(where: { $0.id == id }),
               records[index].state == .failed,
               operations[id] != nil else { return false }
+        successfulDismissalTasks[id]?.cancel()
+        successfulDismissalTasks[id] = nil
         records[index].state = .running
         records[index].detail = L10n("正在重试…")
         run(id: id)
@@ -59,6 +70,8 @@ final class BackgroundTaskCenter: ObservableObject {
 
     func dismiss(id: String) {
         guard let record = records.first(where: { $0.id == id }), record.state != .running else { return }
+        successfulDismissalTasks[id]?.cancel()
+        successfulDismissalTasks[id] = nil
         records.removeAll(where: { $0.id == id })
         operations[id] = nil
     }
@@ -73,6 +86,7 @@ final class BackgroundTaskCenter: ObservableObject {
         records[index].state = .succeeded
         records[index].detail = detail
         operations[id] = nil
+        scheduleSuccessfulDismissal(id: id)
         return true
     }
 
@@ -88,10 +102,30 @@ final class BackgroundTaskCenter: ObservableObject {
                 self.records[index].state = .succeeded
                 self.records[index].detail = detail
                 self.operations[id] = nil
+                self.scheduleSuccessfulDismissal(id: id)
             case .failure(let detail):
+                self.successfulDismissalTasks[id]?.cancel()
+                self.successfulDismissalTasks[id] = nil
                 self.records[index].state = .failed
                 self.records[index].detail = detail
             }
+        }
+    }
+
+    private func scheduleSuccessfulDismissal(id: String) {
+        successfulDismissalTasks[id]?.cancel()
+        let delay = successVisibilityDuration
+        successfulDismissalTasks[id] = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: delay)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.records.first(where: { $0.id == id })?.state == .succeeded else { return }
+            self.records.removeAll(where: { $0.id == id })
+            self.operations[id] = nil
+            self.successfulDismissalTasks[id] = nil
         }
     }
 }
@@ -154,27 +188,34 @@ final class BackendConnectionStatusOperation {
 }
 
 struct BackgroundTaskStatusBar: View {
+    static let actionHitSize = CGSize(width: 24, height: 22)
+
     @ObservedObject var center: BackgroundTaskCenter
 
     var body: some View {
         if let record = featuredRecord {
-            HStack(spacing: 5) {
-                statusIcon(record.state)
-                    .frame(width: 14, height: 14)
+            HStack(spacing: 4) {
+                HStack(spacing: 5) {
+                    statusIcon(record.state)
+                        .frame(width: 14, height: 14)
 
-                Text(record.title)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(1)
-
-                if center.records.count > 1 {
-                    Text("+\(center.records.count - 1)")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Text(record.title)
+                        .font(.caption.weight(.medium))
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
+                        .layoutPriority(1)
+
+                    if center.records.count > 1 {
+                        Text("+\(center.records.count - 1)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(record.title)
+                .accessibilityValue(record.detail)
 
                 if record.state == .failed {
                     Button {
@@ -182,9 +223,19 @@ struct BackgroundTaskStatusBar: View {
                     } label: {
                         Image(systemName: "arrow.clockwise")
                             .font(.system(size: 11, weight: .medium))
+                            .frame(
+                                width: Self.actionHitSize.width,
+                                height: Self.actionHitSize.height
+                            )
+                            .background(
+                                Color.primary.opacity(0.055),
+                                in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help(L10n("重试"))
+                    .accessibilityLabel(L10n("重试"))
                 }
 
                 if record.state != .running {
@@ -193,16 +244,24 @@ struct BackgroundTaskStatusBar: View {
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .semibold))
+                            .frame(
+                                width: Self.actionHitSize.width,
+                                height: Self.actionHitSize.height
+                            )
+                            .background(
+                                Color.primary.opacity(0.055),
+                                in: Circle()
+                            )
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .help(L10n("关闭"))
+                    .accessibilityLabel(L10n("关闭"))
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
             .help("\(record.title)\n\(record.detail)")
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(record.title)
-            .accessibilityValue(record.detail)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("background-task.\(record.id)")
         }
     }

@@ -850,7 +850,6 @@
 /* Shared navigation and entity vocabulary */
 "Console" = "控制台";
 "Sessions" = "会话";
-"Session DSH" = "会话 DSH";
 "Work" = "目标";
 "Acceptance Criteria" = "验收标准";
 "理想状态" = "理想状态";
