@@ -12,7 +12,7 @@ enum ConsoleNavigationCardWidthPolicy {
     }
 }
 
-// 统一控制台：Objective/Assistant 导航、Task 列、消息列和详情列。
+// 统一控制台：Work/Assistant 导航、Task 列、消息列和详情列。
 //   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，纸面卡片质感）
 //   中 content  — 对话（复用旧版 DetailView，吃满剩余宽度，纸面卡片质感）
 //   详情信息   — 右侧竖列常驻 side panel（固定宽度，无收起按钮，模仿 Rudder IssueDetail 的 rail）
@@ -38,12 +38,12 @@ struct UnifiedConsoleView: View {
     @State private var detailRenderTask: Task<Void, Never>?
     @State private var pendingSelectionTask: Task<Void, Never>?
     @State private var selectedCategory: SessionCategory = .worker
-    /// nil 表示 Assistant 空间；非 nil 表示对应 Objective 的 Task 空间。
-    @State private var selectedObjectiveId: String?
+    /// nil 表示 Assistant 空间；非 nil 表示对应 Work 的 Task 空间。
+    @State private var selectedWorkId: String?
     @State private var selectedTaskId: String?
-    @State private var objectivePendingEdit: Objective?
-    @State private var objectivePendingDeletion: Objective?
-    @State private var objectiveDeletionError: String?
+    @State private var workPendingEdit: Work?
+    @State private var workPendingDeletion: Work?
+    @State private var workDeletionError: String?
     @State private var taskPendingEdit: CorptieTask?
     @State private var taskDeletionPresentation: CorptieTaskDeletionPresentation?
     @State private var taskDeletionError: String?
@@ -53,12 +53,12 @@ struct UnifiedConsoleView: View {
     @AppStorage(
         "sessions.workerGroupingMode",
         store: CorptieAppEnvironment.userDefaults
-    ) private var workerGroupingModeRawValue = WorkerSessionGroupingMode.objective.rawValue
+    ) private var workerGroupingModeRawValue = WorkerSessionGroupingMode.work.rawValue
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
-    /// 「+」新建会话：明确选择 Assistant、Objective 或 Worker Session。
+    /// 「+」新建会话：明确选择 Assistant、Work 或 Worker Session。
     @State private var showNewSessionCreation = false
-    @State private var isCreatingObjective = false
+    @State private var isCreatingWork = false
     @State private var isCreatingTask = false
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
     @State private var collapsedGroupKeys: Set<String> = []
@@ -157,26 +157,24 @@ struct UnifiedConsoleView: View {
                 restoreConsoleContentIfNeeded()
             }
         }
-        .sheet(item: $objectivePendingEdit) { objective in
-            ObjectiveDetailView(objective: objective)
+        .sheet(item: $workPendingEdit) { work in
+            WorkDetailView(work: work)
         }
-        .sheet(isPresented: $isCreatingObjective) {
-            ObjectiveCreateView()
+        .sheet(isPresented: $isCreatingWork) {
+            WorkCreateView()
         }
         .sheet(isPresented: $isCreatingTask) {
-            if let objective = selectedObjective {
+            if let work = selectedWork {
                 CorptieTaskCreateView(
-                    objectiveId: objective.id,
-                    workspaceIds: objective.workspaceIds,
-                    contributorAgentIds: objective.contributorAgentIds
+                    workId: work.id,
+                    contributorAgentIds: work.contributorAgentIds
                 ) { task in
                     selectedTaskId = task.id
                 }
             }
         }
         .sheet(item: $taskPendingEdit) { task in
-            let workspaceIds = entityClient.objectives.first(where: { $0.id == task.objectiveId })?.workspaceIds ?? []
-            CorptieTaskEditView(task: task, workspaceIds: workspaceIds) {}
+            CorptieTaskEditView(task: task) {}
         }
         .sheet(item: $taskDeletionPresentation) { presentation in
             CorptieTaskDeletionConfirmationView(
@@ -201,43 +199,43 @@ struct UnifiedConsoleView: View {
                 }
             )
         }
-        .alert(L10n("删除 Objective"), isPresented: Binding(
-            get: { objectivePendingDeletion != nil },
-            set: { if !$0 { objectivePendingDeletion = nil } }
+        .alert(L10n("删除 Work"), isPresented: Binding(
+            get: { workPendingDeletion != nil },
+            set: { if !$0 { workPendingDeletion = nil } }
         )) {
             Button(L10n("删除"), role: .destructive) {
-                guard let objective = objectivePendingDeletion else { return }
-                objectivePendingDeletion = nil
-                Task { await deleteObjective(objective) }
+                guard let work = workPendingDeletion else { return }
+                workPendingDeletion = nil
+                Task { await deleteWork(work) }
             }
-            Button(L10n("取消"), role: .cancel) { objectivePendingDeletion = nil }
+            Button(L10n("取消"), role: .cancel) { workPendingDeletion = nil }
         } message: {
             Text(L10nFormat(
                 "Delete “%@”? All of its CorptieTasks will be deleted. This action cannot be undone.",
-                objectivePendingDeletion?.name ?? ""
+                workPendingDeletion?.name ?? ""
             ))
         }
         .alert(L10n("操作失败"), isPresented: Binding(
-            get: { objectiveDeletionError != nil || taskDeletionError != nil },
+            get: { workDeletionError != nil || taskDeletionError != nil },
             set: {
                 if !$0 {
-                    objectiveDeletionError = nil
+                    workDeletionError = nil
                     taskDeletionError = nil
                 }
             }
         )) {
             Button(L10n("OK"), role: .cancel) {
-                objectiveDeletionError = nil
+                workDeletionError = nil
                 taskDeletionError = nil
             }
         } message: {
-            Text(objectiveDeletionError ?? taskDeletionError ?? "")
+            Text(workDeletionError ?? taskDeletionError ?? "")
         }
     }
 
     private var consoleNavigationCard: some View {
         HStack(spacing: 0) {
-            objectiveRail
+            workRail
                 .frame(width: 64)
 
             unifiedTaskSidebar
@@ -306,11 +304,11 @@ struct UnifiedConsoleView: View {
                         navigationResizeStartWidth = nil
                     }
             )
-            .help(L10n("Drag to resize the Objective and Task card"))
+            .help(L10n("Drag to resize the Work and Task card"))
     }
 
-    private var objectiveRail: some View {
-        let unreadSummary = ObjectiveRailUnreadSummary(
+    private var workRail: some View {
+        let unreadSummary = WorkRailUnreadSummary(
             sessions: sessionIndexStore.rows.map(\.session)
         )
         return VStack(spacing: 8) {
@@ -320,7 +318,7 @@ struct UnifiedConsoleView: View {
                 consoleRailIcon(
                     systemImage: "sparkles",
                     label: L10n("Assistant"),
-                    isSelected: selectedObjectiveId == nil,
+                    isSelected: selectedWorkId == nil,
                     hasUnread: unreadSummary.hasUnreadAssistantSessions
                 )
             }
@@ -332,39 +330,39 @@ struct UnifiedConsoleView: View {
             ScrollViewReader { scrollProxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     LazyVStack(spacing: 8) {
-                        ForEach(entityClient.objectives) { objective in
+                        ForEach(entityClient.works) { work in
                             Button {
-                                selectObjectiveSpace(objective.id)
+                                selectWorkSpace(work.id)
                             } label: {
                                 consoleRailIcon(
-                                    text: objectiveInitials(objective.name),
-                                    avatarPath: objective.avatarPath,
-                                    label: objective.name,
-                                    isSelected: selectedObjectiveId == objective.id,
-                                    hasUnread: unreadSummary.objectiveIDs.contains(objective.id)
+                                    text: workInitials(work.name),
+                                    avatarPath: work.avatarPath,
+                                    label: work.name,
+                                    isSelected: selectedWorkId == work.id,
+                                    hasUnread: unreadSummary.workIDs.contains(work.id)
                                 )
                                 .contextMenu {
                                     Button(L10n("编辑"), systemImage: "square.and.pencil") {
-                                        objectivePendingEdit = objective
+                                        workPendingEdit = work
                                     }
                                     Divider()
                                     Button(L10n("删除"), systemImage: "trash", role: .destructive) {
-                                        objectivePendingDeletion = objective
+                                        workPendingDeletion = work
                                     }
                                 }
                             }
                             .buttonStyle(.plain)
-                            .id(objective.id)
+                            .id(work.id)
                         }
                     }
                     .padding(.vertical, 10)
                 }
-                .mask(objectiveRailScrollMask)
+                .mask(workRailScrollMask)
                 .onAppear {
-                    scrollSelectedObjectiveIntoView(using: scrollProxy, animated: false)
+                    scrollSelectedWorkIntoView(using: scrollProxy, animated: false)
                 }
-                .onChange(of: selectedObjectiveId) { _, _ in
-                    scrollSelectedObjectiveIntoView(using: scrollProxy, animated: true)
+                .onChange(of: selectedWorkId) { _, _ in
+                    scrollSelectedWorkIntoView(using: scrollProxy, animated: true)
                 }
             }
 
@@ -372,7 +370,7 @@ struct UnifiedConsoleView: View {
         .padding(.vertical, 10)
     }
 
-    private var objectiveRailScrollMask: some View {
+    private var workRailScrollMask: some View {
         VStack(spacing: 0) {
             LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
                 .frame(height: 10)
@@ -382,12 +380,12 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func scrollSelectedObjectiveIntoView(
+    private func scrollSelectedWorkIntoView(
         using proxy: ScrollViewProxy,
         animated: Bool
     ) {
-        guard let selectedObjectiveId else { return }
-        let action = { proxy.scrollTo(selectedObjectiveId, anchor: .center) }
+        guard let selectedWorkId else { return }
+        let action = { proxy.scrollTo(selectedWorkId, anchor: .center) }
         if animated {
             withAnimation(.easeInOut(duration: 0.18), action)
         } else {
@@ -445,7 +443,7 @@ struct UnifiedConsoleView: View {
         .animation(.easeInOut(duration: 0.15), value: hasUnread)
     }
 
-    private func objectiveInitials(_ name: String) -> String {
+    private func workInitials(_ name: String) -> String {
         let compact = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return compact.isEmpty ? "?" : String(compact.prefix(2)).uppercased()
     }
@@ -453,7 +451,7 @@ struct UnifiedConsoleView: View {
     private var unifiedTaskSidebar: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(selectedObjective?.name ?? L10n("Assistant Sessions"))
+                Text(selectedWork?.name ?? L10n("Assistant Sessions"))
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 4)
@@ -467,8 +465,8 @@ struct UnifiedConsoleView: View {
                     .padding(.bottom, 6)
             }
 
-            if let objective = selectedObjective {
-                objectiveTaskList(objective)
+            if let work = selectedWork {
+                workTaskList(work)
             } else {
                 assistantSessionList
             }
@@ -519,9 +517,9 @@ struct UnifiedConsoleView: View {
         .padding(8)
     }
 
-    private var selectedObjective: Objective? {
-        guard let selectedObjectiveId else { return nil }
-        return entityClient.objectives.first { $0.id == selectedObjectiveId }
+    private var selectedWork: Work? {
+        guard let selectedWorkId else { return nil }
+        return entityClient.works.first { $0.id == selectedWorkId }
     }
 
     private var selectedTask: CorptieTask? {
@@ -533,19 +531,19 @@ struct UnifiedConsoleView: View {
         searchFilteredRows.filter { $0.session.resolvedSessionKind == .assistantChat }
     }
 
-    private var objectiveChatRows: [SessionRowModel] {
-        guard let selectedObjectiveId else { return [] }
+    private var workChatRows: [SessionRowModel] {
+        guard let selectedWorkId else { return [] }
         return searchFilteredRows.filter {
-            $0.session.resolvedSessionKind == .objectiveChat
-                && $0.session.objectiveId == selectedObjectiveId
+            $0.session.resolvedSessionKind == .workChat
+                && $0.session.workId == selectedWorkId
         }
     }
 
-    private var visibleObjectiveTasks: [CorptieTask] {
-        guard let selectedObjectiveId else { return [] }
+    private var visibleWorkTasks: [CorptieTask] {
+        guard let selectedWorkId else { return [] }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return entityClient.tasks
-            .filter { $0.objectiveId == selectedObjectiveId && $0.lifecycleState != "done" }
+            .filter { $0.workId == selectedWorkId && $0.lifecycleState != "done" }
             .filter { task in
                 query.isEmpty
                     || task.title.localizedCaseInsensitiveContains(query)
@@ -573,20 +571,20 @@ struct UnifiedConsoleView: View {
     }
 
     @ViewBuilder
-    private func objectiveTaskList(_ objective: Objective) -> some View {
+    private func workTaskList(_ work: Work) -> some View {
         if isShowingWorkerArchive {
-            archivedWorkerSessionList(objective)
+            archivedWorkerSessionList(work)
         } else {
-            activeObjectiveTaskList(objective)
+            activeWorkTaskList(work)
         }
     }
 
-    private func archivedWorkerSessionList(_ objective: Objective) -> some View {
+    private func archivedWorkerSessionList(_ work: Work) -> some View {
         let rows = searchFilteredRows.filter { row in
             guard row.session.resolvedSessionKind == .worker else { return false }
-            if row.session.objectiveId == objective.id { return true }
+            if row.session.workId == work.id { return true }
             guard let taskId = row.session.taskId else { return false }
-            return entityClient.tasks.first(where: { $0.id == taskId })?.objectiveId == objective.id
+            return entityClient.tasks.first(where: { $0.id == taskId })?.workId == work.id
         }
         return List {
             if rows.isEmpty {
@@ -602,25 +600,25 @@ struct UnifiedConsoleView: View {
         .scrollContentBackground(.hidden)
     }
 
-    private func activeObjectiveTaskList(_ objective: Objective) -> some View {
+    private func activeWorkTaskList(_ work: Work) -> some View {
         List {
             Section {
-                if let row = objectiveChatRows.first {
-                    sessionRow(row, subtitle: L10n("Objective discussion"))
+                if let row = workChatRows.first {
+                    sessionRow(row, subtitle: L10n("Work discussion"))
                 } else {
-                    Label(L10n("Start Objective Chat"), systemImage: "scope")
+                    Label(L10n("Start Work Chat"), systemImage: "scope")
                         .foregroundStyle(.secondary)
                 }
             } header: {
-                Text(L10n("Objective Chat"))
+                Text(L10n("Work Chat"))
             }
 
             Section {
-                if visibleObjectiveTasks.isEmpty {
+                if visibleWorkTasks.isEmpty {
                     Text(L10n("No Tasks"))
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(visibleObjectiveTasks) { task in
+                    ForEach(visibleWorkTasks) { task in
                         taskRow(task)
                     }
                 }
@@ -689,13 +687,13 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func deleteObjective(_ objective: Objective) async {
-        guard await entityClient.deleteObjective(objectiveId: objective.id) else {
-            objectiveDeletionError = entityClient.errorMessage ?? L10n("Unable to delete Objective.")
+    private func deleteWork(_ work: Work) async {
+        guard await entityClient.deleteWork(workId: work.id) else {
+            workDeletionError = entityClient.errorMessage ?? L10n("Unable to delete Work.")
             return
         }
-        if selectedObjectiveId == objective.id {
-            selectedObjectiveId = entityClient.objectives.first?.id
+        if selectedWorkId == work.id {
+            selectedWorkId = entityClient.works.first?.id
             selectedTaskId = nil
             selectDefaultContentForCurrentSpace()
         }
@@ -775,41 +773,41 @@ struct UnifiedConsoleView: View {
     }
 
     private func restoreConsoleSpaceIfNeeded() {
-        if let selectedObjectiveId,
-           entityClient.objectives.contains(where: { $0.id == selectedObjectiveId }) {
+        if let selectedWorkId,
+           entityClient.works.contains(where: { $0.id == selectedWorkId }) {
             return
         }
         if let session = backendClient.selectedSession,
            session.resolvedSessionKind != .assistantChat,
-           let objectiveId = session.objectiveId,
-           entityClient.objectives.contains(where: { $0.id == objectiveId }) {
-            selectedObjectiveId = objectiveId
+           let workId = session.workId,
+           entityClient.works.contains(where: { $0.id == workId }) {
+            selectedWorkId = workId
             selectedCategory = SessionCategory(session: session)
             selectedTaskId = session.taskId
             return
         }
-        selectedObjectiveId = entityClient.objectives.first?.id
-        selectedCategory = selectedObjectiveId == nil ? .assistant : .worker
+        selectedWorkId = entityClient.works.first?.id
+        selectedCategory = selectedWorkId == nil ? .assistant : .worker
         selectDefaultContentForCurrentSpace()
     }
 
     private func selectAssistantSpace() {
-        selectedObjectiveId = nil
+        selectedWorkId = nil
         selectedTaskId = nil
         selectedCategory = .assistant
         selectDefaultContentForCurrentSpace()
     }
 
-    private func selectObjectiveSpace(_ objectiveId: String) {
-        guard selectedObjectiveId != objectiveId else { return }
-        selectedObjectiveId = objectiveId
+    private func selectWorkSpace(_ workId: String) {
+        guard selectedWorkId != workId else { return }
+        selectedWorkId = workId
         selectedTaskId = nil
         selectedCategory = .worker
         selectDefaultContentForCurrentSpace()
     }
 
     private func selectDefaultContentForCurrentSpace() {
-        if selectedObjectiveId == nil {
+        if selectedWorkId == nil {
             if let session = assistantSessionRows.first?.session {
                 selectSessionAfterHighlight(session)
             } else {
@@ -817,15 +815,15 @@ struct UnifiedConsoleView: View {
             }
             return
         }
-        if let task = visibleObjectiveTasks.first {
+        if let task = visibleWorkTasks.first {
             selectedTaskId = task.id
             if let session = workerSession(for: task) {
                 selectSessionAfterHighlight(session)
             } else {
                 backendClient.closeDetail()
             }
-        } else if let session = objectiveChatRows.first?.session {
-            selectedCategory = .objective
+        } else if let session = workChatRows.first?.session {
+            selectedCategory = .work
             selectSessionAfterHighlight(session)
         } else {
             backendClient.closeDetail()
@@ -841,10 +839,10 @@ struct UnifiedConsoleView: View {
     }
 
     private func sessionMatchesCurrentConsoleSpace(_ session: TaskSession) -> Bool {
-        if let selectedObjectiveId {
-            return session.objectiveId == selectedObjectiveId
+        if let selectedWorkId {
+            return session.workId == selectedWorkId
                 && (session.resolvedSessionKind == .worker
-                    || session.resolvedSessionKind == .objectiveChat)
+                    || session.resolvedSessionKind == .workChat)
         }
         return session.resolvedSessionKind == .assistantChat
     }
@@ -1014,10 +1012,10 @@ struct UnifiedConsoleView: View {
         // content identity is already correct.
         selectedCategory = SessionCategory(session: session)
         if session.resolvedSessionKind == .assistantChat {
-            selectedObjectiveId = nil
+            selectedWorkId = nil
             selectedTaskId = nil
         } else {
-            selectedObjectiveId = session.objectiveId
+            selectedWorkId = session.workId
             selectedTaskId = session.taskId
         }
         viewportController.hydrate(session.id)
@@ -1138,7 +1136,7 @@ struct UnifiedConsoleView: View {
 
     private var floatingCreationMenu: some View {
         Menu {
-            if selectedObjective == nil {
+            if selectedWork == nil {
                 Button(L10n("New Assistant Session"), systemImage: "bubble.left.and.bubble.right") {
                     showNewSessionCreation = true
                 }
@@ -1150,8 +1148,8 @@ struct UnifiedConsoleView: View {
 
             Divider()
 
-            Button(L10n("New Objective"), systemImage: "scope") {
-                isCreatingObjective = true
+            Button(L10n("New Work"), systemImage: "scope") {
+                isCreatingWork = true
             }
         } label: {
             Image(systemName: "plus")
@@ -1292,10 +1290,10 @@ struct UnifiedConsoleView: View {
     }
 
     private var workerGroupingMode: WorkerSessionGroupingMode {
-        WorkerSessionGroupingMode(rawValue: workerGroupingModeRawValue) ?? .objective
+        WorkerSessionGroupingMode(rawValue: workerGroupingModeRawValue) ?? .work
     }
 
-    /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Objective 分组。
+    /// 一级分类依据 provider-neutral sessionKind；Worker 会话按 Work 分组。
     private var groupedSessions: [SessionGroup] {
         let index = visibleSessionIndexStore
         let key = SessionGroupProjectionKey(
@@ -1312,7 +1310,7 @@ struct UnifiedConsoleView: View {
                 rows: searchFilteredRows,
                 agents: entityClient.agents,
                 tasks: entityClient.tasks,
-                objectives: entityClient.objectives,
+                works: entityClient.works,
                 category: selectedCategory,
                 workerScope: workerSessionScope,
                 workerGroupingMode: workerGroupingMode
@@ -1428,26 +1426,26 @@ struct UnifiedConsoleView: View {
 
 }
 
-struct ObjectiveRailUnreadSummary: Equatable {
+struct WorkRailUnreadSummary: Equatable {
     let hasUnreadAssistantSessions: Bool
-    let objectiveIDs: Set<String>
+    let workIDs: Set<String>
 
     init(sessions: [TaskSession]) {
         var hasUnreadAssistantSessions = false
-        var objectiveIDs = Set<String>()
+        var workIDs = Set<String>()
 
         for session in sessions where isSessionUnread(session)
             && session.hasValidProductClassification
             && session.archived != true {
             if session.resolvedSessionKind == .assistantChat {
                 hasUnreadAssistantSessions = true
-            } else if let objectiveID = session.objectiveId, !objectiveID.isEmpty {
-                objectiveIDs.insert(objectiveID)
+            } else if let workID = session.workId, !workID.isEmpty {
+                workIDs.insert(workID)
             }
         }
 
         self.hasUnreadAssistantSessions = hasUnreadAssistantSessions
-        self.objectiveIDs = objectiveIDs
+        self.workIDs = workIDs
     }
 }
 
@@ -1613,14 +1611,14 @@ enum WorkerSessionScope: Equatable {
 }
 
 enum WorkerSessionGroupingMode: String, CaseIterable, Identifiable {
-    case objective
+    case work
     case none
 
     var id: String { rawValue }
 
     @MainActor var title: String {
         switch self {
-        case .objective: L10n("Group by Objective")
+        case .work: L10n("Group by Work")
         case .none: L10n("All")
         }
     }
@@ -1628,7 +1626,7 @@ enum WorkerSessionGroupingMode: String, CaseIterable, Identifiable {
 
 enum SessionCategory: String, CaseIterable, Identifiable {
     case worker
-    case objective
+    case work
     case assistant
 
     var id: String { rawValue }
@@ -1636,7 +1634,7 @@ enum SessionCategory: String, CaseIterable, Identifiable {
     init(session: TaskSession) {
         switch session.resolvedSessionKind {
         case .worker: self = .worker
-        case .objectiveChat: self = .objective
+        case .workChat: self = .work
         case .assistantChat, .legacy: self = .assistant
         }
     }
@@ -1644,7 +1642,7 @@ enum SessionCategory: String, CaseIterable, Identifiable {
     @MainActor var title: String {
         switch self {
         case .worker: L10n("Worker")
-        case .objective: L10n("Objective")
+        case .work: L10n("Work")
         case .assistant: L10n("Assistant")
         }
     }
@@ -1652,7 +1650,7 @@ enum SessionCategory: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .worker: "hammer"
-        case .objective: "scope"
+        case .work: "scope"
         case .assistant: "sparkles"
         }
     }
@@ -1698,10 +1696,10 @@ func makeSessionGroups(
     rows: [SessionRowModel],
     agents: [Agent],
     tasks: [CorptieTask],
-    objectives: [Objective],
+    works: [Work],
     category: SessionCategory,
     workerScope: WorkerSessionScope = .active,
-    workerGroupingMode: WorkerSessionGroupingMode = .objective
+    workerGroupingMode: WorkerSessionGroupingMode = .work
 ) -> [SessionGroup] {
     // Read each observable row exactly once. Repeated @Published property
     // access inside lazy filter + sort comparators dominated the 2,000-row
@@ -1720,24 +1718,24 @@ func makeSessionGroups(
     }
     let agentsByID = Dictionary(uniqueKeysWithValues: agents.map { ($0.agentId, $0) })
     let tasksByID = Dictionary(uniqueKeysWithValues: tasks.map { ($0.id, $0) })
-    let objectivesByID = Dictionary(uniqueKeysWithValues: objectives.map { ($0.id, $0) })
+    let worksByID = Dictionary(uniqueKeysWithValues: works.map { ($0.id, $0) })
     var assistantOrder: [String] = []
     var assistantRows: [String: [SessionRowModel]] = [:]
-    var objectiveOrder: [String] = []
-    var objectiveTitles: [String: String] = [:]
+    var workOrder: [String] = []
+    var workTitles: [String: String] = [:]
     var visibleWorkerRows: [SessionRowModel] = []
     var workerRows: [String: [SessionRowModel]] = [:]
-    var workerObjectiveKeysByRowID: [String: String] = [:]
-    var objectiveRows: [String: [SessionRowModel]] = [:]
+    var workerWorkKeysByRowID: [String: String] = [:]
+    var workRows: [String: [SessionRowModel]] = [:]
 
-    func registerObjective(_ objectiveID: String?) -> String {
-        let trimmedID = objectiveID?.trimmingCharacters(in: .whitespacesAndNewlines)
+    func registerWork(_ workID: String?) -> String {
+        let trimmedID = workID?.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedID = trimmedID.flatMap { $0.isEmpty ? nil : $0 }
-        let key = normalizedID ?? "__no_objective__"
-        if objectiveTitles[key] == nil {
-            objectiveOrder.append(key)
-            objectiveTitles[key] = normalizedID.flatMap { objectivesByID[$0]?.name }
-                ?? (normalizedID == nil ? L10n("No Objective") : L10n("Unknown Objective"))
+        let key = normalizedID ?? "__no_work__"
+        if workTitles[key] == nil {
+            workOrder.append(key)
+            workTitles[key] = normalizedID.flatMap { worksByID[$0]?.name }
+                ?? (normalizedID == nil ? L10n("No Work") : L10n("Unknown Work"))
         }
         return key
     }
@@ -1750,17 +1748,17 @@ func makeSessionGroups(
             let key = session.agentId ?? "__assistant_unbound__"
             if assistantRows[key] == nil { assistantOrder.append(key) }
             assistantRows[key, default: []].append(row)
-        case .objectiveChat:
-            let objectiveKey = registerObjective(session.objectiveId)
-            objectiveRows[objectiveKey, default: []].append(row)
+        case .workChat:
+            let workKey = registerWork(session.workId)
+            workRows[workKey, default: []].append(row)
         case .worker:
             let task = session.taskId.flatMap { tasksByID[$0] }
             let isArchived = session.archived == true
             guard (workerScope == .archived) == isArchived else { continue }
             visibleWorkerRows.append(row)
-            let objectiveKey = registerObjective(task?.objectiveId ?? session.objectiveId)
-            workerObjectiveKeysByRowID[row.id] = objectiveKey
-            workerRows[objectiveKey, default: []].append(row)
+            let workKey = registerWork(task?.workId ?? session.workId)
+            workerWorkKeysByRowID[row.id] = workKey
+            workerRows[workKey, default: []].append(row)
         case .legacy:
             continue
         }
@@ -1779,9 +1777,9 @@ func makeSessionGroups(
        !visibleWorkerRows.isEmpty {
         let rowSubtitles: [String: String] = Dictionary(
             uniqueKeysWithValues: visibleWorkerRows.compactMap { row -> (String, String)? in
-                guard let objectiveKey = workerObjectiveKeysByRowID[row.id],
-                      let objectiveTitle = objectiveTitles[objectiveKey] else { return nil }
-                return (row.id, objectiveTitle)
+                guard let workKey = workerWorkKeysByRowID[row.id],
+                      let workTitle = workTitles[workKey] else { return nil }
+                return (row.id, workTitle)
             }
         )
         groups.append(SessionGroup(
@@ -1793,21 +1791,21 @@ func makeSessionGroups(
         ))
         return groups
     }
-    for objectiveKey in objectiveOrder {
+    for workKey in workOrder {
         if category == .worker,
-           let rows = workerRows[objectiveKey],
+           let rows = workerRows[workKey],
            !rows.isEmpty {
             groups.append(SessionGroup(
-                key: "worker-objective:\(objectiveKey)",
-                title: objectiveTitles[objectiveKey] ?? L10n("Unknown Objective"),
+                key: "worker-work:\(workKey)",
+                title: workTitles[workKey] ?? L10n("Unknown Work"),
                 rows: rows
             ))
-        } else if category == .objective,
-                  let rows = objectiveRows[objectiveKey],
+        } else if category == .work,
+                  let rows = workRows[workKey],
                   !rows.isEmpty {
             groups.append(SessionGroup(
-                key: "objective:\(objectiveKey)",
-                title: objectiveTitles[objectiveKey] ?? L10n("Unknown Objective"),
+                key: "work:\(workKey)",
+                title: workTitles[workKey] ?? L10n("Unknown Work"),
                 rows: rows
             ))
         }
@@ -2016,7 +2014,7 @@ struct SessionDetailPanel: View {
 
             SessionTurnObservabilityView(sessionId: session.id)
 
-            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .objectiveChat {
+            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .workChat {
                 assistantSection
                 contextReferencesSection
             }
@@ -2089,7 +2087,7 @@ struct SessionDetailPanel: View {
                     Button("本地文件…", systemImage: "doc") { chooseLocalFile() }
                     Button("网页链接…", systemImage: "globe") { contextReferenceAddMode = .webURL }
                     Divider()
-                    Button("Objective…", systemImage: "scope") { contextReferenceAddMode = .objective }
+                    Button("Work…", systemImage: "scope") { contextReferenceAddMode = .work }
                     Button("CorptieTask…", systemImage: "checklist") { contextReferenceAddMode = .task }
                     Button("Agent…", systemImage: "person.2") { contextReferenceAddMode = .agent }
                     Button("其他会话…", systemImage: "bubble.left.and.bubble.right") { contextReferenceAddMode = .session }
@@ -2396,7 +2394,7 @@ struct SessionDetailPanel: View {
 
 private enum ContextReferenceAddMode: String, Identifiable {
     case webURL
-    case objective
+    case work
     case task
     case agent
     case session
@@ -2405,7 +2403,7 @@ private enum ContextReferenceAddMode: String, Identifiable {
     var title: String {
         switch self {
         case .webURL: "添加网页链接"
-        case .objective: "引用 Objective"
+        case .work: "引用 Work"
         case .task: "引用 CorptieTask"
         case .agent: "引用 Agent"
         case .session: "引用其他会话"
@@ -2414,7 +2412,7 @@ private enum ContextReferenceAddMode: String, Identifiable {
     var referenceType: SessionContextReferenceType {
         switch self {
         case .webURL: .webURL
-        case .objective: .objective
+        case .work: .work
         case .task: .task
         case .agent: .agent
         case .session: .session
@@ -2509,7 +2507,7 @@ private struct ContextReferenceAddSheet: View {
         .frame(width: 430, height: mode == .webURL ? 230 : 460)
         .task {
             switch mode {
-            case .objective: await entityClient.refreshObjectives()
+            case .work: await entityClient.refreshWorks()
             case .task:
                 if let loaded = await entityClient.allCorptieTasks() {
                     tasks = loaded
@@ -2522,8 +2520,8 @@ private struct ContextReferenceAddSheet: View {
 
     private var candidates: [ContextReferenceCandidate] {
         switch mode {
-        case .objective:
-            entityClient.objectives.map { .init(id: $0.id, title: $0.name, subtitle: $0.status, systemImage: "scope") }
+        case .work:
+            entityClient.works.map { .init(id: $0.id, title: $0.name, subtitle: $0.status, systemImage: "scope") }
         case .task:
             tasks.map { .init(id: $0.id, title: $0.title, subtitle: $0.lifecycleState, systemImage: "checklist") }
         case .agent:
@@ -2576,7 +2574,7 @@ private extension SessionContextReferenceType {
         switch self {
         case .localFile: "doc"
         case .webURL: "globe"
-        case .objective: "scope"
+        case .work: "scope"
         case .task: "checklist"
         case .agent: "person.2"
         case .session: "bubble.left.and.bubble.right"
@@ -2616,13 +2614,12 @@ private struct SessionCorptieTaskDetailCard: View {
     var body: some View {
         Group {
             if let task {
-                let objective = entityClient.objectives.first { $0.id == task.objectiveId }
+                let work = entityClient.works.first { $0.id == task.workId }
                 CorptieTaskDetailView(
                     task: task,
-                    workspaceIds: objective?.workspaceIds ?? [],
-                    contributorAgentIds: objective?.contributorAgentIds ?? [],
+                    contributorAgentIds: work?.contributorAgentIds ?? [],
                     onRequestReload: {
-                        Task { await entityClient.refreshObjectives() }
+                        Task { await entityClient.refreshWorks() }
                     },
                     showsHeader: showsHeader,
                     embedsInParentScroll: embedsInParentScroll
@@ -2643,8 +2640,8 @@ private struct SessionCorptieTaskDetailCard: View {
         .modifier(DetailRailSurfaceModifier(enabled: decoratesSurface))
         .task(id: taskId) {
             isLoading = true
-            if entityClient.objectives.isEmpty {
-                await entityClient.refreshObjectives()
+            if entityClient.works.isEmpty {
+                await entityClient.refreshWorks()
             }
             if entityClient.repositories.isEmpty {
                 await entityClient.refreshRepositories()

@@ -214,9 +214,9 @@ test("bound Artifacts are exposed in the plan and use the selected deletion disp
   const plan = await service.inspect("task:one");
   assert.equal(plan.status, "safe");
   assert.deepEqual(plan.artifacts.map((artifact) => artifact.artifactId), ["artifact:one"]);
-  await service.delete("task:one", { mode: "safe", artifactDisposition: "objective" });
+  await service.delete("task:one", { mode: "safe", artifactDisposition: "work" });
   assert.deepEqual(calls.map(([name]) => name), ["mark", "artifacts", "remove", "removed", "finalize"]);
-  assert.deepEqual(calls.find(([name]) => name === "artifacts"), ["artifacts", "objective"]);
+  assert.deepEqual(calls.find(([name]) => name === "artifacts"), ["artifacts", "work"]);
 });
 
 test("retaining a Worktree bypasses Worktree-only risks and cleanup", async () => {

@@ -102,7 +102,7 @@ struct StartupBindingReceiptTests {
             "schemaVersion": 2,
             "status": "ready",
             "startupOperationId": "startup:one",
-            "objectiveId": "objective:one",
+            "workId": "work:one",
             "taskId": "task:one",
             "logicalSessionId": "session:one",
             "repositoryId": "repository:one",

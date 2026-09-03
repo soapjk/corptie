@@ -4,7 +4,7 @@ import Foundation
 struct ControlPlaneStatePayload: Decodable, Sendable {
     var sessions: [TaskSession]
     var tasks: [CorptieTask]
-    var objectives: [Objective]
+    var works: [Work]
     var agents: [Agent]
     var skills: [Skill]
     var repositories: [GitRepository]
@@ -19,7 +19,7 @@ struct StateSnapshotEnvelope: Decodable, Sendable {
 struct StateEntityDeletes: Decodable, Sendable {
     var sessions: [String]
     var tasks: [String]
-    var objectives: [String]
+    var works: [String]
     var agents: [String]
     var skills: [String]
     var repositories: [String]
@@ -47,7 +47,7 @@ enum AppStateApplyResult: Equatable {
 struct NormalizedAppState: Equatable {
     var sessions: [String: TaskSession] = [:]
     var tasks: [String: CorptieTask] = [:]
-    var objectives: [String: Objective] = [:]
+    var works: [String: Work] = [:]
     var agents: [String: Agent] = [:]
     var skills: [String: Skill] = [:]
     var repositories: [String: GitRepository] = [:]
@@ -65,7 +65,7 @@ final class AppStateStore: ObservableObject {
             // the sorted result cached so the O(n log n) sort is not repeated
             // for each read against an unchanged state. Only invalidate when the
             // sessions dictionary actually changes — unrelated entity updates
-            // (tasks/objectives/agents…) must not drop the sort cache.
+            // (tasks/works/agents…) must not drop the sort cache.
             if oldValue.sessions != state.sessions {
                 cachedSessions = nil
             }
@@ -88,7 +88,7 @@ final class AppStateStore: ObservableObject {
         return sorted
     }
     var tasks: [CorptieTask] { state.tasks.values.sorted { $0.createdAt < $1.createdAt } }
-    var objectives: [Objective] { state.objectives.values.sorted { $0.createdAt > $1.createdAt } }
+    var works: [Work] { state.works.values.sorted { $0.createdAt > $1.createdAt } }
     var agents: [Agent] { state.agents.values.sorted { $0.createdAt < $1.createdAt } }
     var skills: [Skill] { state.skills.values.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } }
     var repositories: [GitRepository] { state.repositories.values.sorted { $0.name < $1.name } }
@@ -98,7 +98,7 @@ final class AppStateStore: ObservableObject {
 
     func session(_ id: String) -> TaskSession? { state.sessions[id] }
     func task(_ id: String) -> CorptieTask? { state.tasks[id] }
-    func objective(_ id: String) -> Objective? { state.objectives[id] }
+    func work(_ id: String) -> Work? { state.works[id] }
     func agent(_ id: String) -> Agent? { state.agents[id] }
 
     @discardableResult
@@ -138,14 +138,14 @@ final class AppStateStore: ObservableObject {
         var next = state
         Self.upsert(changeSet.upserts.sessions, into: &next.sessions, id: \TaskSession.id)
         Self.upsert(changeSet.upserts.tasks, into: &next.tasks, id: \CorptieTask.id)
-        Self.upsert(changeSet.upserts.objectives, into: &next.objectives, id: \Objective.id)
+        Self.upsert(changeSet.upserts.works, into: &next.works, id: \Work.id)
         Self.upsert(changeSet.upserts.agents, into: &next.agents, id: \Agent.agentId)
         Self.upsert(changeSet.upserts.skills, into: &next.skills, id: \Skill.skillId)
         Self.upsert(changeSet.upserts.repositories, into: &next.repositories, id: \GitRepository.id)
         Self.upsert(changeSet.upserts.integrationRuns, into: &next.integrationRuns, id: \ProjectIntegrationRun.id)
         changeSet.deletes.sessions.forEach { next.sessions[$0] = nil }
         changeSet.deletes.tasks.forEach { next.tasks[$0] = nil }
-        changeSet.deletes.objectives.forEach { next.objectives[$0] = nil }
+        changeSet.deletes.works.forEach { next.works[$0] = nil }
         changeSet.deletes.agents.forEach { next.agents[$0] = nil }
         changeSet.deletes.skills.forEach { next.skills[$0] = nil }
         changeSet.deletes.repositories.forEach { next.repositories[$0] = nil }
@@ -296,9 +296,9 @@ final class AppStateStore: ObservableObject {
         state = next
     }
 
-    func hydrate(objectives: [Objective]) {
+    func hydrate(works: [Work]) {
         var next = state
-        Self.upsert(objectives, into: &next.objectives, id: \Objective.id)
+        Self.upsert(works, into: &next.works, id: \Work.id)
         state = next
     }
 
@@ -318,7 +318,7 @@ final class AppStateStore: ObservableObject {
         NormalizedAppState(
             sessions: Dictionary(uniqueKeysWithValues: payload.sessions.map { ($0.id, $0) }),
             tasks: Dictionary(uniqueKeysWithValues: payload.tasks.map { ($0.id, $0) }),
-            objectives: Dictionary(uniqueKeysWithValues: payload.objectives.map { ($0.id, $0) }),
+            works: Dictionary(uniqueKeysWithValues: payload.works.map { ($0.id, $0) }),
             agents: Dictionary(uniqueKeysWithValues: payload.agents.map { ($0.agentId, $0) }),
             skills: Dictionary(uniqueKeysWithValues: payload.skills.map { ($0.skillId, $0) }),
             repositories: Dictionary(uniqueKeysWithValues: payload.repositories.map { ($0.id, $0) }),

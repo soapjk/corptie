@@ -27,7 +27,7 @@ export function sessionRecoveryHandoffPrompt(source) {
     "Return exactly one JSON object with this schema:",
     JSON.stringify({
       schemaVersion: HANDOFF_SCHEMA_VERSION,
-      objective: "string",
+      work: "string",
       currentState: "string",
       completed: ["string"],
       decisions: ["string"],
@@ -65,7 +65,7 @@ export function normalizeSessionRecoveryHandoff(value) {
     throw invalidHandoff("Recovery handoff must be an object.");
   }
   const allowed = new Set([
-    "schemaVersion", "objective", "currentState", "completed", "decisions",
+    "schemaVersion", "work", "currentState", "completed", "decisions",
     "openItems", "constraints", "importantReferences", "recentIntent"
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) {
@@ -76,7 +76,7 @@ export function normalizeSessionRecoveryHandoff(value) {
   }
   return Object.freeze({
     schemaVersion: HANDOFF_SCHEMA_VERSION,
-    objective: boundedText(value.objective),
+    work: boundedText(value.work),
     currentState: boundedText(value.currentState),
     completed: boundedList(value.completed),
     decisions: boundedList(value.decisions),
@@ -93,7 +93,7 @@ export function deterministicSessionRecoveryHandoff(source) {
   const references = source.entries.filter((entry) => entry.kind === "artifact_reference" && meaningful(entry.content));
   return Object.freeze({
     schemaVersion: HANDOFF_SCHEMA_VERSION,
-    objective: user[0]?.content ?? "The original objective was not recoverable from visible history.",
+    work: user[0]?.content ?? "The original work was not recoverable from visible history.",
     currentState: assistant.at(-1)?.content ?? "No completed status report was recoverable.",
     completed: assistant.slice(-6).map((entry) => entry.content),
     decisions: [],
@@ -110,8 +110,8 @@ export function renderSessionRecoveryHandoff(handoff) {
   return [
     "# Corptie Session Recovery Handoff",
     "",
-    "## Objective",
-    value.objective || "Not established.",
+    "## Work",
+    value.work || "Not established.",
     "",
     "## Current state",
     value.currentState || "Not established.",

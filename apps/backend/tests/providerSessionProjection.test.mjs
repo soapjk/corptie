@@ -63,14 +63,14 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
   try {
     await store.initialize();
     const agent = store.createAgent({ id: "agent:worker", name: "Worker" });
-    const objective = store.createObjective({
-      id: "objective:one",
-      name: "Objective",
+    const work = store.createWork({
+      id: "work:one",
+      name: "Work",
       contributorAgentIds: [agent.agentId]
     });
     const task = store.createTask({
       id: "task:one",
-      objectiveId: objective.id,
+      workId: work.id,
       title: "Work Item",
       mainAgentId: agent.agentId
     });
@@ -83,14 +83,14 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
       providerId: "codex-app-server",
       agentId: agent.agentId,
       sessionKind: "worker",
-      objectiveId: objective.id,
+      workId: work.id,
       taskId: task.id
     });
 
     const stored = store.getSession("codex:created");
     assert.equal(stored.agentId, agent.agentId);
     assert.equal(stored.sessionKind, "worker");
-    assert.equal(stored.objectiveId, objective.id);
+    assert.equal(stored.workId, work.id);
     assert.equal(stored.taskId, task.id);
   } finally {
     await store.close();
@@ -135,14 +135,14 @@ test("Session visibility is a pure local projection with no per-row Binding look
   });
   const sessions = [
     { id: "assistant", sessionKind: "assistantChat" },
-    { id: "objective", sessionKind: "objectiveChat" },
+    { id: "work", sessionKind: "workChat" },
     { id: "worker", sessionKind: "worker" },
     { id: "provider-transport", sessionKind: "legacy" }
   ];
 
   assert.deepEqual(
     visibleStoredSessionProjections(forbiddenStore, sessions).map((session) => session.id),
-    ["assistant", "objective", "worker"]
+    ["assistant", "work", "worker"]
   );
 });
 

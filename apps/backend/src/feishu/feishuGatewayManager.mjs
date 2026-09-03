@@ -1667,15 +1667,15 @@ export function buildCollaborationConfirmationCard({ sessionId, sessionTitle = "
     item?.collaborationRecipientSessionId,
     "目标会话"
   );
-  const sourceObjective = readableCollaborationName(
-    item?.collaborationSourceObjectiveName,
-    item?.collaborationSourceObjectiveId,
-    "来源 Objective"
+  const sourceWork = readableCollaborationName(
+    item?.collaborationSourceWorkName,
+    item?.collaborationSourceWorkId,
+    "来源 Work"
   );
-  const targetObjective = readableCollaborationName(
-    item?.collaborationTargetObjectiveName,
-    item?.collaborationTargetObjectiveId,
-    "目标 Objective"
+  const targetWork = readableCollaborationName(
+    item?.collaborationTargetWorkName,
+    item?.collaborationTargetWorkId,
+    "目标 Work"
   );
   const hasTargetSession = Boolean(optionalText(item?.collaborationRecipientSessionId));
   const taskTitle = optionalText(item?.collaborationRequestTitle);
@@ -1685,7 +1685,7 @@ export function buildCollaborationConfirmationCard({ sessionId, sessionTitle = "
     : [];
   const elements = [
     { tag: "markdown", content: `**来源会话 → 目标会话**\n${escapeCardMarkdown(sourceSession)} → ${escapeCardMarkdown(hasTargetSession ? targetSession : "确认后创建新的 Task 和目标会话")}` },
-    { tag: "markdown", content: `**来源 Objective → 目标 Objective**\n${escapeCardMarkdown(sourceObjective)} → ${escapeCardMarkdown(targetObjective)}` },
+    { tag: "markdown", content: `**来源 Work → 目标 Work**\n${escapeCardMarkdown(sourceWork)} → ${escapeCardMarkdown(targetWork)}` },
     ...(!hasTargetSession && taskTitle ? [{ tag: "markdown", content: `**将创建 Task**\n${escapeCardMarkdown(taskTitle)}` }] : []),
     { tag: "markdown", content: `**消息**\n${escapeCardMarkdown(instruction)}` },
     ...(criteria.length ? [{
@@ -1716,7 +1716,7 @@ export function buildCollaborationConfirmationCard({ sessionId, sessionTitle = "
     title: optionalText(sessionTitle) || "确认发送协作任务",
     subtitle: pending ? "Corptie · 确认发送协作任务" : (confirmed ? "Corptie · 协作任务已发送" : "Corptie · 协作任务已取消"),
     template: pending ? "orange" : (confirmed ? "green" : "grey"),
-    summary: pending ? `确认从 ${sourceSession} 向 ${hasTargetSession ? targetSession : targetObjective} 发起协作` : (confirmed ? "协作任务已确认发送" : "协作任务已取消"),
+    summary: pending ? `确认从 ${sourceSession} 向 ${hasTargetSession ? targetSession : targetWork} 发起协作` : (confirmed ? "协作任务已确认发送" : "协作任务已取消"),
     elements
   });
 }
@@ -1732,15 +1732,15 @@ export function buildCollaborationMessageCard({ sessionTitle = "", item }) {
     item?.collaborationRecipientSessionId,
     "目标会话"
   );
-  const sourceObjective = readableCollaborationName(
-    item?.collaborationSourceObjectiveName,
-    item?.collaborationSourceObjectiveId,
-    "来源 Objective"
+  const sourceWork = readableCollaborationName(
+    item?.collaborationSourceWorkName,
+    item?.collaborationSourceWorkId,
+    "来源 Work"
   );
-  const targetObjective = readableCollaborationName(
-    item?.collaborationTargetObjectiveName,
-    item?.collaborationTargetObjectiveId,
-    "目标 Objective"
+  const targetWork = readableCollaborationName(
+    item?.collaborationTargetWorkName,
+    item?.collaborationTargetWorkId,
+    "目标 Work"
   );
   const taskTitle = optionalText(item?.collaborationRequestTitle);
   const body = optionalText(item?.presentationText) || optionalText(item?.text) || "收到一条跨会话协作消息。";
@@ -1751,7 +1751,7 @@ export function buildCollaborationMessageCard({ sessionTitle = "", item }) {
     summary: taskTitle || plainTextSummary(body),
     elements: [
       { tag: "markdown", content: `**来源会话 → 目标会话**\n${escapeCardMarkdown(sourceSession)} → ${escapeCardMarkdown(targetSession)}` },
-      { tag: "markdown", content: `**来源 Objective → 目标 Objective**\n${escapeCardMarkdown(sourceObjective)} → ${escapeCardMarkdown(targetObjective)}` },
+      { tag: "markdown", content: `**来源 Work → 目标 Work**\n${escapeCardMarkdown(sourceWork)} → ${escapeCardMarkdown(targetWork)}` },
       ...(taskTitle ? [{ tag: "markdown", content: `**任务**\n${escapeCardMarkdown(taskTitle)}` }] : []),
       { tag: "markdown", content: `**消息**\n${escapeCardMarkdown(body)}` }
     ]
@@ -1761,7 +1761,7 @@ export function buildCollaborationMessageCard({ sessionTitle = "", item }) {
 function readableCollaborationName(name, id, fallback) {
   const value = optionalText(name);
   const stableId = optionalText(id);
-  if (!value || value === stableId || /^(session|objective|task):/i.test(value)) return fallback;
+  if (!value || value === stableId || /^(session|work|task):/i.test(value)) return fallback;
   return value;
 }
 

@@ -2,7 +2,7 @@ import SwiftUI
 
 enum AssistFormType: String, Encodable {
     case agent
-    case objective
+    case work
     case task
 }
 
@@ -27,8 +27,8 @@ struct AssistFormDraft: Decodable, Equatable {
         switch formType {
         case AssistFormType.agent.rawValue:
             expected = ["name", "description", "role", "systemPrompt", "capabilities"]
-        case AssistFormType.objective.rawValue:
-            expected = ["name", "description", "idealState", "priority", "tags"]
+        case AssistFormType.work.rawValue:
+            expected = ["name", "description", "profile", "tags"]
         case AssistFormType.task.rawValue:
             expected = ["title", "description", "acceptanceCriteria", "priority"]
         default:
@@ -54,7 +54,7 @@ enum FormAssistOverwritePolicy {
         switch formType {
         case .agent:
             defaults = ["role": "independentContributor"]
-        case .objective:
+        case .work:
             defaults = [:]
         case .task:
             defaults = ["priority": "medium"]

@@ -3,14 +3,14 @@ import SwiftUI
 // 控制台主视图：三栏布局。
 // 净新增独立文件，不碰 FloatingRootView.swift 巨石。
 //
-// 左栏使用原生 Objective Sidebar；中栏平铺 CorptieTask 看板；右栏是独立的详情卡片。
+// 左栏使用原生 Work Sidebar；中栏平铺 CorptieTask 看板；右栏是独立的详情卡片。
 
-enum WarRoomObjectiveScope {
-    static let allSelectionId = "war-room:all-objectives"
+enum WarRoomWorkScope {
+    static let allSelectionId = "war-room:all-works"
 
-    static func restoredSelection(savedId: String?, objectives: [Objective]) -> String {
+    static func restoredSelection(savedId: String?, works: [Work]) -> String {
         if savedId == allSelectionId { return allSelectionId }
-        if let savedId, objectives.contains(where: { $0.id == savedId }) { return savedId }
+        if let savedId, works.contains(where: { $0.id == savedId }) { return savedId }
         return allSelectionId
     }
 }
@@ -20,27 +20,27 @@ struct WarRoomView: View {
     @StateObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
-    @State private var selectedObjectiveId: String?
+    @State private var selectedWorkId: String?
     @State private var selectedCorptieTaskId: String?
     @State private var tasks: [CorptieTask] = []
     @State private var tasksReloadToken = 0
-    @State private var isCreatingObjective = false
-    @State private var objectivePendingEdit: Objective?
-    @State private var objectivePendingDeletion: Objective?
-    @State private var objectiveDeletionError: String?
+    @State private var isCreatingWork = false
+    @State private var workPendingEdit: Work?
+    @State private var workPendingDeletion: Work?
+    @State private var workDeletionError: String?
     @State private var taskPendingEdit: CorptieTask?
     @State private var deletionPresentation: CorptieTaskDeletionPresentation?
     @State private var deletionNotice: CorptieTaskDeletionNotice?
     @State private var inspectingDeletionIds = Set<String>()
     @State private var deletingCorptieTaskIds = Set<String>()
-    /// 记录用户最后选中的 Objective，跨窗口/重启恢复，避免有 Objective 时看板空白。
-    private static let lastSelectedObjectiveKey = "warRoom.lastSelectedObjectiveId"
-    /// 记录用户最后选中的 CorptieTask；与 Objective 一起恢复，重启后直接展示其详情。
+    /// 记录用户最后选中的 Work，跨窗口/重启恢复，避免有 Work 时看板空白。
+    private static let lastSelectedWorkKey = "warRoom.lastSelectedWorkId"
+    /// 记录用户最后选中的 CorptieTask；与 Work 一起恢复，重启后直接展示其详情。
     private static let lastSelectedCorptieTaskKey = "warRoom.lastSelectedTaskId"
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
-            objectiveSidebar
+            workSidebar
                 .toolbar(removing: .sidebarToggle)
                 .navigationSplitViewColumnWidth(
                     min: TwoPaneLayoutMetrics.sidebarWidth,
@@ -52,7 +52,7 @@ struct WarRoomView: View {
         }
         .toolbar(removing: .sidebarToggle)
         .task {
-            await client.refreshObjectives()
+            await client.refreshWorks()
             // CorptieTask 只持久化绑定的 repository id；详情页需要仓库目录将其解析为名称。
             // App 重启后 repositories 缓存为空，若不主动刷新会把有效绑定误显示为“未绑定”。
             if client.repositories.isEmpty {
@@ -60,18 +60,18 @@ struct WarRoomView: View {
             }
         }
         .onAppear {
-            // 切 Tab 会重建视图、@State 重置为 nil，这里恢复上次选中的 Objective。
-            restoreSelectionIfNeeded(client.objectives)
+            // 切 Tab 会重建视图、@State 重置为 nil，这里恢复上次选中的 Work。
+            restoreSelectionIfNeeded(client.works)
         }
-        .task(id: selectedObjectiveId) {
+        .task(id: selectedWorkId) {
             // 选中目标变化时拉取其工作项（三栏共享同一份 tasks）
-            if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId {
+            if selectedWorkId == WarRoomWorkScope.allSelectionId {
                 if let loaded = await client.allCorptieTasks() {
                     tasks = loaded
                 }
-            } else if let objectiveId = selectedObjectiveId,
-               let objective = client.objectives.first(where: { $0.id == objectiveId }) {
-                if let loaded = await client.tasks(for: objective) {
+            } else if let workId = selectedWorkId,
+               let work = client.works.first(where: { $0.id == workId }) {
+                if let loaded = await client.tasks(for: work) {
                     tasks = loaded
                 }
             } else {
@@ -82,25 +82,25 @@ struct WarRoomView: View {
         .task(id: tasksReloadToken) {
             // 执行/换 Agent/保存后强制重新拉取，看板列与「当前执行」才能反映真实状态。
             guard tasksReloadToken != 0 else { return }
-            if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId {
+            if selectedWorkId == WarRoomWorkScope.allSelectionId {
                 if let loaded = await client.allCorptieTasks() {
                     tasks = loaded
                 }
-            } else if let objectiveId = selectedObjectiveId,
-               let objective = client.objectives.first(where: { $0.id == objectiveId }) {
-                if let loaded = await client.tasks(for: objective) {
+            } else if let workId = selectedWorkId,
+               let work = client.works.first(where: { $0.id == workId }) {
+                if let loaded = await client.tasks(for: work) {
                     tasks = loaded
                 }
             }
         }
-        .onChange(of: client.objectives) { _, objectives in
-            // 优先恢复仍存在的 Objective；已删除或无记录时回到“全部”。
-            restoreSelectionIfNeeded(objectives)
+        .onChange(of: client.works) { _, works in
+            // 优先恢复仍存在的 Work；已删除或无记录时回到“全部”。
+            restoreSelectionIfNeeded(works)
         }
-        .onChange(of: selectedObjectiveId) { _, newValue in
+        .onChange(of: selectedWorkId) { _, newValue in
             selectedCorptieTaskId = nil
             if let newValue {
-                Self.recordObjectiveId(newValue)
+                Self.recordWorkId(newValue)
             }
         }
         .onChange(of: tasks) { _, items in
@@ -114,38 +114,37 @@ struct WarRoomView: View {
                 Self.recordCorptieTaskId(newValue)
             }
         }
-        .sheet(item: $objectivePendingEdit) { objective in
-            ObjectiveDetailView(objective: objective)
+        .sheet(item: $workPendingEdit) { work in
+            WorkDetailView(work: work)
         }
         .sheet(item: $taskPendingEdit) { task in
-            let workspaceIds = client.objectives.first(where: { $0.id == task.objectiveId })?.workspaceIds ?? []
-            CorptieTaskEditView(task: task, workspaceIds: workspaceIds) {
+            CorptieTaskEditView(task: task) {
                 tasksReloadToken &+= 1
             }
         }
-        .alert(L10n("删除 Objective"), isPresented: Binding(
-            get: { objectivePendingDeletion != nil },
-            set: { if !$0 { objectivePendingDeletion = nil } }
+        .alert(L10n("删除 Work"), isPresented: Binding(
+            get: { workPendingDeletion != nil },
+            set: { if !$0 { workPendingDeletion = nil } }
         )) {
             Button(L10n("删除"), role: .destructive) {
-                guard let objective = objectivePendingDeletion else { return }
-                objectivePendingDeletion = nil
-                Task { await deleteObjective(objective) }
+                guard let work = workPendingDeletion else { return }
+                workPendingDeletion = nil
+                Task { await deleteWork(work) }
             }
-            Button(L10n("取消"), role: .cancel) { objectivePendingDeletion = nil }
+            Button(L10n("取消"), role: .cancel) { workPendingDeletion = nil }
         } message: {
             Text(L10nFormat(
                 "Delete “%@”? All of its CorptieTasks will be deleted. This action cannot be undone.",
-                objectivePendingDeletion?.name ?? ""
+                workPendingDeletion?.name ?? ""
             ))
         }
-        .alert(L10n("Objective deletion failed"), isPresented: Binding(
-            get: { objectiveDeletionError != nil },
-            set: { if !$0 { objectiveDeletionError = nil } }
+        .alert(L10n("Work deletion failed"), isPresented: Binding(
+            get: { workDeletionError != nil },
+            set: { if !$0 { workDeletionError = nil } }
         )) {
-            Button(L10n("OK"), role: .cancel) { objectiveDeletionError = nil }
+            Button(L10n("OK"), role: .cancel) { workDeletionError = nil }
         } message: {
-            Text(objectiveDeletionError ?? "")
+            Text(workDeletionError ?? "")
         }
         .sheet(item: $deletionPresentation) { presentation in
             CorptieTaskDeletionConfirmationView(
@@ -227,32 +226,32 @@ struct WarRoomView: View {
 
     // MARK: - Sidebar
 
-    private var objectiveSidebar: some View {
-        List(selection: $selectedObjectiveId) {
+    private var workSidebar: some View {
+        List(selection: $selectedWorkId) {
             Label(L10n("All"), systemImage: "square.grid.2x2")
-                .tag(WarRoomObjectiveScope.allSelectionId)
+                .tag(WarRoomWorkScope.allSelectionId)
 
-            if client.isLoading && client.objectives.isEmpty {
+            if client.isLoading && client.works.isEmpty {
                 ProgressView()
                     .frame(maxWidth: .infinity, alignment: .center)
-            } else if client.objectives.isEmpty {
-                sidebarEmptyState(L10n("No Objectives"))
+            } else if client.works.isEmpty {
+                sidebarEmptyState(L10n("No Works"))
             } else {
-                ForEach(client.objectives) { objective in
-                    objectiveSidebarLabel(objective)
+                ForEach(client.works) { work in
+                    workSidebarLabel(work)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
-                        .tag(objective.id)
+                        .tag(work.id)
                         .contextMenu {
                             Button(L10n("View Tasks"), systemImage: "rectangle.grid.1x2") {
-                                selectedObjectiveId = objective.id
+                                selectedWorkId = work.id
                             }
                             Button(L10n("编辑"), systemImage: "square.and.pencil") {
-                                objectivePendingEdit = objective
+                                workPendingEdit = work
                             }
                             Divider()
                             Button(L10n("删除"), systemImage: "trash", role: .destructive) {
-                                objectivePendingDeletion = objective
+                                workPendingDeletion = work
                             }
                         }
                 }
@@ -261,9 +260,9 @@ struct WarRoomView: View {
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
             Button {
-                isCreatingObjective = true
+                isCreatingWork = true
             } label: {
-                Label(L10n("New Objective"), systemImage: "plus")
+                Label(L10n("New Work"), systemImage: "plus")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
@@ -272,7 +271,7 @@ struct WarRoomView: View {
             .background(.regularMaterial)
         }
         .overlay(alignment: .top) {
-            if let error = client.objectivesLoadError, backendClient.isOnline {
+            if let error = client.worksLoadError, backendClient.isOnline {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -280,14 +279,14 @@ struct WarRoomView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .sheet(isPresented: $isCreatingObjective) {
-            ObjectiveCreateView()
+        .sheet(isPresented: $isCreatingWork) {
+            WorkCreateView()
         }
     }
 
-    private func objectiveSidebarLabel(_ objective: Objective) -> some View {
+    private func workSidebarLabel(_ work: Work) -> some View {
         HStack(spacing: 8) {
-            if let avatarPath = objective.avatarPath, !avatarPath.isEmpty {
+            if let avatarPath = work.avatarPath, !avatarPath.isEmpty {
                 AnimatedAvatarImage(path: avatarPath)
                     .frame(width: 20, height: 20)
                     .clipShape(Circle())
@@ -295,7 +294,7 @@ struct WarRoomView: View {
                 Image(systemName: "target")
                     .frame(width: 20, height: 20)
             }
-            Text(objective.name)
+            Text(work.name)
                 .lineLimit(1)
         }
     }
@@ -313,8 +312,8 @@ struct WarRoomView: View {
     @ViewBuilder
     private var warRoomContent: some View {
         if let error = client.tasksLoadError,
-           (selectedObjectiveId == WarRoomObjectiveScope.allSelectionId
-            || client.objectives.contains(where: { $0.id == selectedObjectiveId })) {
+           (selectedWorkId == WarRoomWorkScope.allSelectionId
+            || client.works.contains(where: { $0.id == selectedWorkId })) {
             ContentUnavailableView {
                 Label(L10n("CorptieTask 加载失败"), systemImage: "exclamationmark.triangle")
             } description: {
@@ -324,15 +323,15 @@ struct WarRoomView: View {
                     tasksReloadToken &+= 1
                 }
             }
-        } else if client.objectives.isEmpty {
+        } else if client.works.isEmpty {
             ContentUnavailableView(
-                L10n("No Objectives"),
+                L10n("No Works"),
                 systemImage: "target",
                 description: Text(L10n("通过助手对话或快捷输入创建第一个目标"))
             )
-        } else if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId {
+        } else if selectedWorkId == WarRoomWorkScope.allSelectionId {
             CorptieTaskBoardView(
-                objective: nil,
+                work: nil,
                 items: tasks,
                 selectedCorptieTaskId: $selectedCorptieTaskId,
                 pendingDeletionIds: pendingDeletionIds,
@@ -341,9 +340,9 @@ struct WarRoomView: View {
                 onRequestReload: { tasksReloadToken &+= 1 },
                 onRequestLoadMore: loadMoreTasks
             )
-        } else if let objective = client.objectives.first(where: { $0.id == selectedObjectiveId }) {
+        } else if let work = client.works.first(where: { $0.id == selectedWorkId }) {
             CorptieTaskBoardView(
-                objective: objective,
+                work: work,
                 items: tasks,
                 selectedCorptieTaskId: $selectedCorptieTaskId,
                 pendingDeletionIds: pendingDeletionIds,
@@ -368,11 +367,10 @@ struct WarRoomView: View {
     @ViewBuilder
     private var taskDetail: some View {
         if let task = tasks.first(where: { $0.id == selectedCorptieTaskId }) {
-            let owningObjective = client.objectives.first(where: { $0.id == task.objectiveId })
+            let owningWork = client.works.first(where: { $0.id == task.workId })
             CorptieTaskDetailView(
                 task: task,
-                workspaceIds: owningObjective?.workspaceIds ?? [],
-                contributorAgentIds: owningObjective?.contributorAgentIds ?? [],
+                contributorAgentIds: owningWork?.contributorAgentIds ?? [],
                 isDeletionPending: pendingDeletionIds.contains(task.id),
                 onRequestDeletion: { Task { await prepareDeletion(task) } },
                 onRequestReload: { tasksReloadToken &+= 1 }
@@ -382,33 +380,33 @@ struct WarRoomView: View {
         }
     }
 
-    // MARK: - 上次选中 Objective 的持久化
+    // MARK: - 上次选中 Work 的持久化
 
-    private func restoreSelectionIfNeeded(_ objectives: [Objective]) {
-        if selectedObjectiveId == WarRoomObjectiveScope.allSelectionId { return }
-        if let selectedObjectiveId,
-           objectives.contains(where: { $0.id == selectedObjectiveId }) {
+    private func restoreSelectionIfNeeded(_ works: [Work]) {
+        if selectedWorkId == WarRoomWorkScope.allSelectionId { return }
+        if let selectedWorkId,
+           works.contains(where: { $0.id == selectedWorkId }) {
             return
         }
-        let savedId = Self.restoredObjectiveId()
-        // 初次进入时快照可能尚未返回；先保留 Objective 选择，避免把它过早覆盖为“全部”。
-        if objectives.isEmpty,
+        let savedId = Self.restoredWorkId()
+        // 初次进入时快照可能尚未返回；先保留 Work 选择，避免把它过早覆盖为“全部”。
+        if works.isEmpty,
            let savedId,
-           savedId != WarRoomObjectiveScope.allSelectionId {
+           savedId != WarRoomWorkScope.allSelectionId {
             return
         }
-        selectedObjectiveId = WarRoomObjectiveScope.restoredSelection(
+        selectedWorkId = WarRoomWorkScope.restoredSelection(
             savedId: savedId,
-            objectives: objectives
+            works: works
         )
     }
 
-    private static func recordObjectiveId(_ id: String) {
-        CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedObjectiveKey)
+    private static func recordWorkId(_ id: String) {
+        CorptieAppEnvironment.userDefaults.set(id, forKey: lastSelectedWorkKey)
     }
 
-    private static func restoredObjectiveId() -> String? {
-        CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedObjectiveKey)
+    private static func restoredWorkId() -> String? {
+        CorptieAppEnvironment.userDefaults.string(forKey: lastSelectedWorkKey)
     }
 
     // MARK: - 上次选中 CorptieTask 的持久化
@@ -419,8 +417,8 @@ struct WarRoomView: View {
             return
         }
 
-        // 刷新列表时保留仍然有效的当前选择；首次进入或切换 Objective 时，
-        // 优先恢复上次选择。若它已删除，则选择当前 Objective 的第一个工作项，
+        // 刷新列表时保留仍然有效的当前选择；首次进入或切换 Work 时，
+        // 优先恢复上次选择。若它已删除，则选择当前 Work 的第一个工作项，
         // 保证详情栏不会停留在无效的空状态。
         if let selectedCorptieTaskId,
            items.contains(where: { $0.id == selectedCorptieTaskId }) {
@@ -446,13 +444,13 @@ struct WarRoomView: View {
         inspectingDeletionIds.union(deletingCorptieTaskIds)
     }
 
-    private func deleteObjective(_ objective: Objective) async {
-        guard await client.deleteObjective(objectiveId: objective.id) else {
-            objectiveDeletionError = client.errorMessage ?? L10n("Unable to delete Objective.")
+    private func deleteWork(_ work: Work) async {
+        guard await client.deleteWork(workId: work.id) else {
+            workDeletionError = client.errorMessage ?? L10n("Unable to delete Work.")
             return
         }
-        if selectedObjectiveId == objective.id {
-            selectedObjectiveId = WarRoomObjectiveScope.allSelectionId
+        if selectedWorkId == work.id {
+            selectedWorkId = WarRoomWorkScope.allSelectionId
         }
     }
 
@@ -590,13 +588,13 @@ private struct CorptieTaskDeletionNotice: Identifiable {
 
 // MARK: - CorptieTask 混合看板
 
-enum ObjectiveDiscussionRouteDecision: Equatable {
+enum WorkDiscussionRouteDecision: Equatable {
     case open(sessionId: String)
     case create
 
-    static func resolve(objectiveId: String, sessions: [TaskSession]) -> Self {
+    static func resolve(workId: String, sessions: [TaskSession]) -> Self {
         if let session = sessions.first(where: {
-            $0.objectiveId == objectiveId && $0.resolvedSessionKind == .objectiveChat
+            $0.workId == workId && $0.resolvedSessionKind == .workChat
         }) {
             return .open(sessionId: session.id)
         }
@@ -723,7 +721,7 @@ struct CorptieTaskBoardView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
-    let objective: Objective?
+    let work: Work?
     let items: [CorptieTask]
     @Binding var selectedCorptieTaskId: String?
     let pendingDeletionIds: Set<String>
@@ -733,18 +731,18 @@ struct CorptieTaskBoardView: View {
     var onRequestLoadMore: () async -> Void = {}
     @State private var boardItems: [CorptieTask] = []
     @State private var isCreating = false
-    @State private var isCreatingObjectiveChat = false
+    @State private var isCreatingWorkChat = false
     @State private var collapsedColumns: Set<CorptieTaskColumn> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text(objective?.name ?? L10n("All"))
+                Text(work?.name ?? L10n("All"))
                     .font(.title3.bold())
                 Spacer()
-                if objective != nil {
+                if work != nil {
                     Button {
-                        openOrCreateObjectiveDiscussion()
+                        openOrCreateWorkDiscussion()
                     } label: {
                         Label(L10n("讨论"), systemImage: "bubble.left.and.bubble.right")
                     }
@@ -786,11 +784,10 @@ struct CorptieTaskBoardView: View {
         .onAppear { boardItems = items }
         .onChange(of: items) { _, newValue in boardItems = newValue }
         .sheet(isPresented: $isCreating) {
-            if let objective {
+            if let work {
                 CorptieTaskCreateView(
-                    objectiveId: objective.id,
-                    workspaceIds: objective.workspaceIds,
-                    contributorAgentIds: objective.contributorAgentIds
+                    workId: work.id,
+                    contributorAgentIds: work.contributorAgentIds
                 ) { created in
                     if !boardItems.contains(where: { $0.id == created.id }) {
                         boardItems.append(created)
@@ -799,25 +796,25 @@ struct CorptieTaskBoardView: View {
                 }
             }
         }
-        .sheet(isPresented: $isCreatingObjectiveChat) {
-            if let objective {
-                NewSessionCreationSheet(fixedObjective: objective) { session in
+        .sheet(isPresented: $isCreatingWorkChat) {
+            if let work {
+                NewSessionCreationSheet(fixedWork: work) { session in
                     router.openSession(session.id)
                 }
             }
         }
     }
 
-    private func openOrCreateObjectiveDiscussion() {
-        guard let objective else { return }
-        switch ObjectiveDiscussionRouteDecision.resolve(
-            objectiveId: objective.id,
+    private func openOrCreateWorkDiscussion() {
+        guard let work else { return }
+        switch WorkDiscussionRouteDecision.resolve(
+            workId: work.id,
             sessions: backendClient.sessions
         ) {
         case .open(let sessionId):
             router.openSession(sessionId)
         case .create:
-            isCreatingObjectiveChat = true
+            isCreatingWorkChat = true
         }
     }
 }
@@ -1081,7 +1078,6 @@ struct CorptieTaskDetailView: View {
     @ObservedObject private var backendClient = BackendClient.shared
     @EnvironmentObject private var router: AppTabRouter
     let task: CorptieTask
-    let workspaceIds: [String]
     let contributorAgentIds: [String]
     var isDeletionPending = false
     var onRequestDeletion: (() -> Void)?
@@ -1095,8 +1091,6 @@ struct CorptieTaskDetailView: View {
     @State private var showAgentSwitch = false
     @State private var executionAgentIds = Set<String>()
     @State private var executionError: EntityLaunchError?
-    @State private var showWorkspaceBind = false
-    @State private var bindWorkspaceId: String?
     @State private var showEdit = false
     @State private var showCompleteConfirmation = false
     @State private var isLaunchingExecution = false
@@ -1139,7 +1133,7 @@ struct CorptieTaskDetailView: View {
             if isCompleted { await refreshWorktree() }
         }
         .sheet(isPresented: $showEdit) {
-            CorptieTaskEditView(task: task, workspaceIds: workspaceIds) {
+            CorptieTaskEditView(task: task) {
                 onRequestReload()
             }
         }
@@ -1187,12 +1181,6 @@ struct CorptieTaskDetailView: View {
             get: { executionError != nil },
             set: { if !$0 { executionError = nil } }
         )) {
-            if executionError?.code == "WORKSPACE_REQUIRED" {
-                Button(L10n("绑定 Workspace")) {
-                    executionError = nil
-                    showWorkspaceBind = true
-                }
-            }
             Button(L10n("好"), role: .cancel) { executionError = nil }
         } message: {
             Text(executionError?.message ?? "")
@@ -1216,16 +1204,6 @@ struct CorptieTaskDetailView: View {
                 onClose: { showAcceptanceReview = false },
                 onReject: { rejectAutomaticAcceptance() }
             )
-        }
-        .sheet(isPresented: $showWorkspaceBind) {
-            WorkspaceBindSheet(workspaceId: $bindWorkspaceId, workspaceIds: workspaceIds) {
-                guard await client.updateCorptieTask(taskId: task.id, mainWorkspaceId: bindWorkspaceId) != nil else {
-                    return false
-                }
-                await refreshExecution()
-                onRequestReload()
-                return true
-            }
         }
         .sheet(isPresented: $showDeletion) {
             if let deletionPlan {
@@ -1298,7 +1276,7 @@ struct CorptieTaskDetailView: View {
                 text: task.verificationCriteria
             )
 
-            ArtifactSectionView(objectiveId: task.objectiveId, taskId: task.id)
+            ArtifactSectionView(workId: task.workId, taskId: task.id)
 
             Divider()
 
@@ -1429,7 +1407,7 @@ struct CorptieTaskDetailView: View {
                         .foregroundStyle(.tertiary)
                     Text(workspaceName ?? L10n("No Workspace Bound"))
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(workspaceResolution.isUnresolved ? Color.orange : (workspaceName == nil ? Color.secondary : Color.primary))
+                        .foregroundStyle(workspaceName == nil ? Color.secondary : Color.primary)
                         .lineLimit(2)
                 }
             }
@@ -1640,7 +1618,7 @@ struct CorptieTaskDetailView: View {
             )
             isDeletingCorptieTask = false
             if deleted {
-                await client.refreshObjectives()
+                await client.refreshWorks()
                 onRequestReload()
                 return .success(L10nFormat("CorptieTask“%@”已删除。", task.title))
             }
@@ -1916,14 +1894,9 @@ struct CorptieTaskDetailView: View {
     }
 
     private var workspaceName: String? {
-        workspaceResolution.displayName
-    }
-
-    private var workspaceResolution: WorkspaceAssociationResolution {
-        EntityAssociationResolver.workspace(
-            id: task.mainWorkspaceId,
-            repositories: client.repositories
-        )
+        guard let work = client.works.first(where: { $0.id == task.workId }) else { return nil }
+        return client.repositories.first(where: { $0.workspaceId == work.workspaceId })?.name
+            ?? work.workspaceId
     }
 
     private func refreshExecution() async {
@@ -2073,7 +2046,7 @@ struct CorptieTaskDeletionConfirmationView: View {
                         .foregroundStyle(.secondary)
                     Picker(L10n("Artifact 处理"), selection: $artifactDisposition) {
                         Text(L10n("删除")).tag(CorptieTaskArtifactDisposition.delete)
-                        Text(L10n("移入 Objective 层级")).tag(CorptieTaskArtifactDisposition.objective)
+                        Text(L10n("移入 Work 层级")).tag(CorptieTaskArtifactDisposition.work)
                         Text(L10n("留在原地")).tag(CorptieTaskArtifactDisposition.retain)
                     }
                     .pickerStyle(.radioGroup)
@@ -2396,29 +2369,25 @@ struct CorptieTaskEditView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @Environment(\.dismiss) private var dismiss
     let task: CorptieTask
-    let workspaceIds: [String]
     let onSaved: () -> Void
 
     @State private var title: String
     @State private var detail: String
     @State private var acceptanceCriteria: String
     @State private var priority: String
-    @State private var workspaceId: String?
     @State private var status: String
     @State private var showStatusConfirm = false
     @State private var assistAgentId: String?
     @State private var saveError: String?
     @State private var updateTaskId = "task.update:\(UUID().uuidString.lowercased())"
 
-    init(task: CorptieTask, workspaceIds: [String], onSaved: @escaping () -> Void) {
+    init(task: CorptieTask, onSaved: @escaping () -> Void) {
         self.task = task
-        self.workspaceIds = workspaceIds
         self.onSaved = onSaved
         _title = State(initialValue: task.title)
         _detail = State(initialValue: task.description)
         _acceptanceCriteria = State(initialValue: task.acceptanceCriteria)
         _priority = State(initialValue: task.priority)
-        _workspaceId = State(initialValue: task.mainWorkspaceId)
         _status = State(initialValue: task.lifecycleState)
     }
 
@@ -2463,8 +2432,6 @@ struct CorptieTaskEditView: View {
                     .padding(6)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
             }
-
-            WorkspacePicker(workspaceId: $workspaceId, workspaceIds: workspaceIds)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("优先级"))
@@ -2584,8 +2551,7 @@ struct CorptieTaskEditView: View {
                 description: detail.trimmingCharacters(in: .whitespacesAndNewlines),
                 acceptanceCriteria: acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines),
                 priority: priority,
-                lifecycleState: status,
-                mainWorkspaceId: workspaceId
+                lifecycleState: status
             ) != nil else {
                 saveError = client.errorMessage ?? L10n("CorptieTask 保存失败。")
                 return
@@ -2636,7 +2602,6 @@ struct CorptieTaskEditView: View {
         let requestAcceptanceCriteria = acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestPriority = priority
         let requestStatus = status
-        let requestWorkspaceId = workspaceId
         let taskId = updateTaskId
         let started = BackgroundTaskCenter.shared.start(
             id: taskId,
@@ -2647,8 +2612,7 @@ struct CorptieTaskEditView: View {
                latest.description == requestDescription,
                latest.acceptanceCriteria == requestAcceptanceCriteria,
                latest.priority == requestPriority,
-               latest.lifecycleState == requestStatus,
-               latest.mainWorkspaceId == requestWorkspaceId {
+               latest.lifecycleState == requestStatus {
                 onSaved()
                 return .success(L10nFormat("CorptieTask“%@”已更新。", requestTitle))
             }
@@ -2662,8 +2626,7 @@ struct CorptieTaskEditView: View {
                 description: requestDescription,
                 acceptanceCriteria: requestAcceptanceCriteria,
                 priority: requestPriority,
-                lifecycleState: targetsCompleted ? nil : requestStatus,
-                mainWorkspaceId: requestWorkspaceId
+                lifecycleState: targetsCompleted ? nil : requestStatus
             ) != nil else {
                 return .failure(client.errorMessage ?? L10n("CorptieTask 保存失败，可重试。"))
             }

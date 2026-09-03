@@ -15,7 +15,7 @@ test("Task Artifact HTTP list preserves the scoped service projection", async ()
   const calls = [];
   const service = {
     store: {
-      getTask: (id) => id === "task:one" ? { id, objective_id: "objective:one" } : null,
+      getTask: (id) => id === "task:one" ? { id, work_id: "work:one" } : null,
       countArtifactsReferencedByTask: () => 1
     },
     listForTask(context, taskId) {
@@ -32,7 +32,7 @@ test("Task Artifact HTTP list preserves the scoped service projection", async ()
 test("Task private publish HTTP maps optimistic pin and idempotency fields", async () => {
   let received = null;
   const service = {
-    store: { getTask: () => ({ objective_id: "objective:one" }) },
+    store: { getTask: () => ({ work_id: "work:one" }) },
     async publishAndRepin(context, artifactId, input) {
       received = { context, artifactId, input };
       return { artifactId, version: { version: 2 }, reference: { pinnedVersion: 2 }, operationStatus: "completed" };
@@ -57,10 +57,10 @@ test("Task private publish HTTP maps optimistic pin and idempotency fields", asy
 
 test("Artifact HTTP returns a structured deadline failure instead of hanging", async () => {
   const service = {
-    async backupObjective() { return new Promise(() => {}); }
+    async backupWork() { return new Promise(() => {}); }
   };
   const result = await exchange({
-    method: "POST", path: "/objectives/objective%3Aone/artifacts/backup",
+    method: "POST", path: "/works/work%3Aone/artifacts/backup",
     service, body: {}, requestTimeoutMs: 10
   });
   assert.equal(result.statusCode, 503);

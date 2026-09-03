@@ -52,7 +52,7 @@ async function fixture(options = {}) {
         error.code = "AUTHORIZATION_REVOKED";
         throw error;
       }
-      return { objectiveId: null };
+      return { workId: null };
     },
     resolveRoute: async (logicalSessionId) => {
       const logical = store.getLogicalSession(logicalSessionId);

@@ -11,8 +11,8 @@ export class MemoryLifecycleService {
     if (!session) throw lifecycleError("SESSION_NOT_FOUND", `Session not found: ${sessionId}`);
     const owner = session.taskId
       ? { ownerType: "task", ownerId: session.taskId, taskId: session.taskId }
-      : session.objectiveId
-        ? { ownerType: "objective", ownerId: session.objectiveId }
+      : session.workId
+        ? { ownerType: "work", ownerId: session.workId }
         : { ownerType: "agent", ownerId: session.agentId };
     if (!owner.ownerId) throw lifecycleError("MEMORY_SCOPE_REQUIRED", "Session has no durable Memory owner.");
     const memory = this.store.createMemory({

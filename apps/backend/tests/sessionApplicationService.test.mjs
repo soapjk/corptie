@@ -341,7 +341,7 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
     { sessionKind: "worker" },
     {
       actorId: "agent:one",
-      objectiveId: "objective:one",
+      workId: "work:one",
       taskId: "task:one",
       sessionKind: "worker"
     }
@@ -361,7 +361,7 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
   assert.equal(toolHostContexts[0].sessionId, undefined);
   assert.deepEqual(toolHostContexts[1], {
     actorId: "agent:one",
-    objectiveId: "objective:one",
+    workId: "work:one",
     taskId: "task:one",
     sessionKind: "worker",
     purpose: "session-create-finalization",

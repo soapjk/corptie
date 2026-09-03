@@ -1,23 +1,24 @@
-const OBJECTIVE_CREATE_FIELDS = [
-  "id", "name", "description", "idealState", "avatarPath", "status", "budgetConfig",
-  "priority", "targetDate", "tags", "workspaceIds", "relatedObjectiveIds",
-  "contributorAgentIds"
+const WORK_CREATE_FIELDS = [
+  "id", "name", "description", "avatarPath", "status", "profile", "tags",
+  "workspaceId", "contributorAgentIds", "primaryAgentId"
 ];
 
-const OBJECTIVE_UPDATE_FIELDS = OBJECTIVE_CREATE_FIELDS.filter((field) => field !== "id");
+const WORK_UPDATE_FIELDS = WORK_CREATE_FIELDS.filter(
+  (field) => field !== "id" && field !== "workspaceId"
+);
 
 const TASK_CREATE_FIELDS = [
-  "id", "objectiveId", "title", "description", "goal", "acceptanceCriteria",
-  "verificationCriteria", "priority", "lifecycleState", "mainWorkspaceId", "mainAgentId"
+  "id", "workId", "title", "description", "goal", "acceptanceCriteria",
+  "verificationCriteria", "priority", "lifecycleState", "mainAgentId"
 ];
 
 const TASK_UPDATE_FIELDS = TASK_CREATE_FIELDS.filter(
-  (field) => field !== "id" && field !== "objectiveId"
+  (field) => field !== "id" && field !== "workId"
 );
 
 export const ENTITY_FIELD_ALLOWLISTS = Object.freeze({
-  objectiveCreate: Object.freeze(OBJECTIVE_CREATE_FIELDS),
-  objectiveUpdate: Object.freeze(OBJECTIVE_UPDATE_FIELDS),
+  workCreate: Object.freeze(WORK_CREATE_FIELDS),
+  workUpdate: Object.freeze(WORK_UPDATE_FIELDS),
   taskCreate: Object.freeze(TASK_CREATE_FIELDS),
   taskUpdate: Object.freeze(TASK_UPDATE_FIELDS)
 });
@@ -33,10 +34,10 @@ export class EntityValidationError extends TypeError {
   }
 }
 
-export function validateObjectiveInput(input, operation = "create") {
+export function validateWorkInput(input, operation = "create") {
   const allowed = operation === "update"
-    ? ENTITY_FIELD_ALLOWLISTS.objectiveUpdate
-    : ENTITY_FIELD_ALLOWLISTS.objectiveCreate;
+    ? ENTITY_FIELD_ALLOWLISTS.workUpdate
+    : ENTITY_FIELD_ALLOWLISTS.workCreate;
   assertRecord(input, operation === "update" ? "patch" : "input");
   assertKnownFields(input, allowed, operation);
 
@@ -44,19 +45,43 @@ export function validateObjectiveInput(input, operation = "create") {
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
   if (has(input, "name")) normalized.name = string(input.name, "name", { nonEmpty: true, trim: true });
   if (has(input, "description")) normalized.description = string(input.description, "description");
-  if (has(input, "idealState")) normalized.idealState = string(input.idealState, "idealState");
   if (has(input, "avatarPath")) normalized.avatarPath = optionalString(input.avatarPath, "avatarPath");
   if (has(input, "status")) normalized.status = string(input.status, "status", { nonEmpty: true, trim: true });
-  if (has(input, "budgetConfig")) normalized.budgetConfig = jsonObject(input.budgetConfig, "budgetConfig");
-  if (has(input, "priority")) normalized.priority = optionalString(input.priority, "priority");
-  if (has(input, "targetDate")) normalized.targetDate = optionalString(input.targetDate, "targetDate");
+  if (has(input, "profile")) normalized.profile = string(input.profile, "profile", { nonEmpty: true, trim: true });
   if (has(input, "tags")) normalized.tags = stringArray(input.tags, "tags", { trim: true });
-  if (has(input, "workspaceIds")) normalized.workspaceIds = stringArray(input.workspaceIds, "workspaceIds", { trim: true, nonEmpty: true });
-  if (has(input, "relatedObjectiveIds")) normalized.relatedObjectiveIds = stringArray(input.relatedObjectiveIds, "relatedObjectiveIds", { trim: true, nonEmpty: true });
+  if (has(input, "workspaceId")) normalized.workspaceId = optionalString(input.workspaceId, "workspaceId", { trim: true });
   if (has(input, "contributorAgentIds")) normalized.contributorAgentIds = stringArray(input.contributorAgentIds, "contributorAgentIds", { trim: true, nonEmpty: true });
+  if (has(input, "primaryAgentId")) normalized.primaryAgentId = optionalString(input.primaryAgentId, "primaryAgentId", { trim: true });
+
+  if (has(input, "status") && !["active", "archived"].includes(normalized.status)) {
+    throw new EntityValidationError("INVALID_WORK_STATUS", "status", "active | archived", input.status);
+  }
+  if (has(input, "profile") && !["general", "software", "office", "data", "design"].includes(normalized.profile)) {
+    throw new EntityValidationError(
+      "INVALID_WORK_PROFILE", "profile", "general | software | office | data | design", input.profile
+    );
+  }
 
   if (operation === "create" && !has(input, "name")) {
-    throw new EntityValidationError("INVALID_FIELD_TYPE", "name", "non-empty string", undefined, "Objective name is required.");
+    throw new EntityValidationError("INVALID_FIELD_TYPE", "name", "non-empty string", undefined, "Work name is required.");
+  }
+  if (operation === "create" && (!has(input, "contributorAgentIds") || normalized.contributorAgentIds.length === 0)) {
+    throw new EntityValidationError(
+      "WORK_CONTRIBUTOR_REQUIRED",
+      "contributorAgentIds",
+      "at least one assignable Agent ID",
+      input.contributorAgentIds,
+      "A Work requires at least one contributor Agent."
+    );
+  }
+  if (normalized.primaryAgentId && has(input, "contributorAgentIds")
+    && !normalized.contributorAgentIds.includes(normalized.primaryAgentId)) {
+    throw new EntityValidationError(
+      "PRIMARY_AGENT_OUTSIDE_WORK",
+      "primaryAgentId",
+      "Agent ID included in contributorAgentIds",
+      normalized.primaryAgentId
+    );
   }
   return normalized;
 }
@@ -70,7 +95,7 @@ export function validateTaskInput(input, operation = "create") {
 
   const normalized = { ...input };
   if (has(input, "id")) normalized.id = string(input.id, "id", { nonEmpty: true });
-  if (has(input, "objectiveId")) normalized.objectiveId = string(input.objectiveId, "objectiveId", { nonEmpty: true, trim: true });
+  if (has(input, "workId")) normalized.workId = string(input.workId, "workId", { nonEmpty: true, trim: true });
   if (has(input, "title")) normalized.title = string(input.title, "title", { nonEmpty: true, trim: true });
   if (has(input, "description")) normalized.description = string(input.description, "description");
   if (has(input, "goal")) normalized.goal = string(input.goal, "goal");
@@ -84,29 +109,15 @@ export function validateTaskInput(input, operation = "create") {
   if (has(input, "lifecycleState") && !TASK_LIFECYCLE_STATES.includes(normalized.lifecycleState)) {
     throw new EntityValidationError("INVALID_LIFECYCLE_STATE", "lifecycleState", TASK_LIFECYCLE_STATES.join(" | "), input.lifecycleState);
   }
-  if (has(input, "mainWorkspaceId")) normalized.mainWorkspaceId = optionalString(input.mainWorkspaceId, "mainWorkspaceId", { trim: true });
   if (has(input, "mainAgentId")) normalized.mainAgentId = optionalString(input.mainAgentId, "mainAgentId", { trim: true });
 
-  if (operation === "create" && !has(input, "objectiveId")) {
-    throw new EntityValidationError("INVALID_FIELD_TYPE", "objectiveId", "non-empty string", undefined, "Task objectiveId is required.");
+  if (operation === "create" && !has(input, "workId")) {
+    throw new EntityValidationError("INVALID_FIELD_TYPE", "workId", "non-empty string", undefined, "Task workId is required.");
   }
   if (operation === "create" && !has(input, "title")) {
     throw new EntityValidationError("INVALID_FIELD_TYPE", "title", "non-empty string", undefined, "Task title is required.");
   }
   return normalized;
-}
-
-export function assertRepositoryId(value, field) {
-  if (!value.startsWith("repository:")) {
-    throw new EntityValidationError(
-      "INVALID_WORKSPACE_ID_TYPE",
-      field,
-      "registered repository: ID",
-      value,
-      `Field "${field}" only accepts repository: IDs.`
-    );
-  }
-  return value;
 }
 
 export function associationError(code, field, expected, received, message) {
@@ -154,18 +165,6 @@ function stringArray(value, field, options = {}) {
   }
   const normalized = value.map((entry, index) => string(entry, `${field}[${index}]`, options));
   return [...new Set(normalized)];
-}
-
-function jsonObject(value, field) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new EntityValidationError("INVALID_FIELD_TYPE", field, "JSON object", value);
-  }
-  try {
-    JSON.stringify(value);
-  } catch {
-    throw new EntityValidationError("INVALID_FIELD_TYPE", field, "JSON object", value);
-  }
-  return value;
 }
 
 function summarizeReceived(value) {

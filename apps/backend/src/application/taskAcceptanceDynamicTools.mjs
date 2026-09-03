@@ -57,7 +57,7 @@ export const taskAcceptanceDynamicTools = Object.freeze([
     "Complete one exact Task only when the current direct user message explicitly requests it. Supply the authoritative logical Session, user-message event, sequence, and current turn evidence shown in Corptie turn context. Assistant/system/collaboration/Automation evidence is rejected.",
     {
       targetTaskId: { type: "string", minLength: 1 },
-      objectiveId: { type: "string", minLength: 1 },
+      workId: { type: "string", minLength: 1 },
       logicalSessionId: { type: "string", minLength: 1 },
       userMessageEventId: { type: "string", minLength: 1 },
       userMessageSequence: { type: "integer", minimum: 1 },
@@ -65,7 +65,7 @@ export const taskAcceptanceDynamicTools = Object.freeze([
       requestId: { type: "string", minLength: 1 },
       idempotencyKey: { type: "string", minLength: 1 }
     },
-    ["targetTaskId", "objectiveId", "logicalSessionId", "userMessageEventId",
+    ["targetTaskId", "workId", "logicalSessionId", "userMessageEventId",
       "userMessageSequence", "turnId", "requestId", "idempotencyKey"]
   ),
   tool(

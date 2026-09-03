@@ -2,7 +2,7 @@ import Foundation
 @preconcurrency import UserNotifications
 
 enum SystemNotificationCenter {
-    /// UserNotifications raises an Objective-C exception when SwiftPM launches
+    /// UserNotifications raises an Work-C exception when SwiftPM launches
     /// the executable outside an application bundle. Production packaging has
     /// both an app bundle and a bundle identifier; direct Development runs do not.
     static var isAvailable: Bool {

@@ -39,7 +39,7 @@ const ATTEMPT_FIELDS = new Set([
   "sourceBindingId", "sourceProviderSessionId", "sourceRoutingVersion", "sourceBindingGeneration",
   "targetBindingGeneration", "capabilityRevision", "boundarySequence", "boundaryTurnId",
   "triggerDeliveryId",
-  "repositoryId", "workspaceId", "worktreeId", "boundCwd", "objectiveId", "taskId",
+  "repositoryId", "workspaceId", "worktreeId", "boundCwd", "workId", "taskId",
   "instructionSources", "permissionSnapshot", "toolCatalog", "artifactReferences", "contextReferences",
   "strategy", "manifest", "manifestHash", "state", "cancelRequested", "replacement", "error",
   "metrics", "createdAt", "updatedAt", "completedAt"

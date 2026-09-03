@@ -8,7 +8,7 @@ window.__ModuleLoader__.load({
 		let react = require("react");
 		let _deepseek_ai_dsh_client_ui_primitives = require("@deepseek-ai/dsh-client-ui-primitives");
 		//#region \0dsh-css:/Volumes/T9/deepseek-harness/packages/client/ui-goal/src/client/GoalBar.module.css.mjs
-		const css$1 = "._9r3Pia_dock{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));margin:0 auto}._9r3Pia_bar{box-sizing:border-box;width:100%;max-width:calc(var(--dsh-composer-card-max-width) - 4 * var(--dsh-composer-dock-inset));border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-tip);border-radius:12px;align-items:center;gap:10px;height:36px;margin:0 auto;padding:4px 5px 4px 12px;display:flex}._9r3Pia_goalGlyph{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}._9r3Pia_label{color:var(--dsw-alias-label-primary);flex:none;font-size:13px;font-weight:500;line-height:24px}._9r3Pia_objective{min-width:0;color:var(--dsw-alias-label-primary-dimmed);text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:13px;line-height:20px;overflow:hidden}._9r3Pia_error{min-width:0;color:var(--dsw-alias-state-error-primary);text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:12px;line-height:20px;overflow:hidden}._9r3Pia_objectiveInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);min-width:0;height:26px;color:var(--dsw-alias-label-primary);border-radius:6px;outline:none;flex:1;padding:0 8px;font-size:13px;line-height:20px}._9r3Pia_objectiveInput:focus{border-color:var(--dsw-alias-state-business-primary)}._9r3Pia_objectiveInput::placeholder{color:var(--dsw-alias-label-caption)}._9r3Pia_actions{flex:none;align-items:center;gap:10px;display:flex}._9r3Pia_iconBtn{width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:999px;justify-content:center;align-items:center;padding:0;display:inline-flex}._9r3Pia_iconBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}._9r3Pia_iconBtn:disabled{opacity:.4;cursor:default}";
+		const css$1 = "._9r3Pia_dock{box-sizing:border-box;width:calc(100% - var(--dsh-composer-side-clearance) - var(--dsh-composer-side-clearance) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset) - var(--dsh-composer-dock-inset));margin:0 auto}._9r3Pia_bar{box-sizing:border-box;width:100%;max-width:calc(var(--dsh-composer-card-max-width) - 4 * var(--dsh-composer-dock-inset));border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-specific-tip);border-radius:12px;align-items:center;gap:10px;height:36px;margin:0 auto;padding:4px 5px 4px 12px;display:flex}._9r3Pia_goalGlyph{color:var(--dsw-alias-label-tertiary);flex:none;display:inline-flex}._9r3Pia_label{color:var(--dsw-alias-label-primary);flex:none;font-size:13px;font-weight:500;line-height:24px}._9r3Pia_work{min-width:0;color:var(--dsw-alias-label-primary-dimmed);text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:13px;line-height:20px;overflow:hidden}._9r3Pia_error{min-width:0;color:var(--dsw-alias-state-error-primary);text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:12px;line-height:20px;overflow:hidden}._9r3Pia_workInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-base);min-width:0;height:26px;color:var(--dsw-alias-label-primary);border-radius:6px;outline:none;flex:1;padding:0 8px;font-size:13px;line-height:20px}._9r3Pia_workInput:focus{border-color:var(--dsw-alias-state-business-primary)}._9r3Pia_workInput::placeholder{color:var(--dsw-alias-label-caption)}._9r3Pia_actions{flex:none;align-items:center;gap:10px;display:flex}._9r3Pia_iconBtn{width:28px;height:28px;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:none;border-radius:999px;justify-content:center;align-items:center;padding:0;display:inline-flex}._9r3Pia_iconBtn:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-secondary)}._9r3Pia_iconBtn:disabled{opacity:.4;cursor:default}";
 		const tagId$1 = "@deepseek-ai/dsh-client-ui-goal/GoalBar.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
@@ -25,15 +25,15 @@ window.__ModuleLoader__.load({
 			"error": "_9r3Pia_error",
 			"actions": "_9r3Pia_actions",
 			"goalGlyph": "_9r3Pia_goalGlyph",
-			"objectiveInput": "_9r3Pia_objectiveInput",
-			"objective": "_9r3Pia_objective"
+			"workInput": "_9r3Pia_workInput",
+			"work": "_9r3Pia_work"
 		};
 		//#endregion
 		//#region lib/types/client/GoalBar.js
 		/**
 		* GoalBar: the goal indicator docked above the message composer (input dock
 		* strip). A present goal shows a goal glyph, a phase label, the truncated
-		* objective, and icon actions — resume when paused, edit (inline form in the
+		* work, and icon actions — resume when paused, edit (inline form in the
 		* same strip), and clear. Goal creation lives on the `/goal` command, not
 		* here: loading (undefined), no goal (null), and complete goals render
 		* nothing. Live state arrives as the projected whole snapshot; the verbs are
@@ -89,9 +89,9 @@ window.__ModuleLoader__.load({
 					className: GoalBar_module_css_default.bar,
 					children: [
 						(0, react_jsx_runtime.jsx)("input", {
-							className: GoalBar_module_css_default.objectiveInput,
+							className: GoalBar_module_css_default.workInput,
 							type: "text",
-							"aria-label": t("objective.aria"),
+							"aria-label": t("work.aria"),
 							value: draft,
 							onChange: (e) => {
 								setDraft(e.target.value);
@@ -159,8 +159,8 @@ window.__ModuleLoader__.load({
 							children: t(PHASE_LABELS[goal.phase])
 						}),
 						(0, react_jsx_runtime.jsx)("span", {
-							className: GoalBar_module_css_default.objective,
-							children: goal.objective
+							className: GoalBar_module_css_default.work,
+							children: goal.work
 						}),
 						actionError !== null && (0, react_jsx_runtime.jsx)("span", {
 							className: GoalBar_module_css_default.error,
@@ -209,7 +209,7 @@ window.__ModuleLoader__.load({
 										className: GoalBar_module_css_default.iconBtn,
 										disabled: pending,
 										onClick: () => {
-											setDraft(goal.objective);
+											setDraft(goal.work);
 											setEditing(true);
 										},
 										"aria-label": t("action.edit"),
@@ -338,7 +338,7 @@ window.__ModuleLoader__.load({
 			"phase.active": "进行中的目标",
 			"phase.paused": "已暂停的目标",
 			"phase.blocked": "受阻的目标",
-			"objective.aria": "目标内容",
+			"work.aria": "目标内容",
 			"commandInput.aria": "命令输入",
 			"action.save": "保存目标",
 			"action.cancel": "取消编辑",
@@ -352,7 +352,7 @@ window.__ModuleLoader__.load({
 			"phase.active": "Ongoing Goal",
 			"phase.paused": "Paused Goal",
 			"phase.blocked": "Blocked Goal",
-			"objective.aria": "Goal objective",
+			"work.aria": "Goal work",
 			"commandInput.aria": "Command input",
 			"action.save": "Save goal",
 			"action.cancel": "Cancel edit",
@@ -413,10 +413,10 @@ window.__ModuleLoader__.load({
 				order: 10,
 				locale: NS,
 				inject: (sessionId) => ({
-					onEdit: async (objective) => {
+					onEdit: async (work) => {
 						const ref = refOf(sessionId);
 						if (ref === void 0) return noCurrentGoal;
-						return await ctx.remote.goals.edit(sessionId, ref, { objective });
+						return await ctx.remote.goals.edit(sessionId, ref, { work });
 					},
 					onPause: async () => {
 						const ref = refOf(sessionId);

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { AgentContextService } from "../src/application/agentContextService.mjs";
 import { HubService } from "../src/application/hubService.mjs";
-import { ObjectiveApplicationService } from "../src/application/objectiveApplicationService.mjs";
+import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { PlatformOperationService } from "../src/application/platformOperationService.mjs";
 import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -104,12 +104,12 @@ test("platform operations are denied to user Agents and use product services for
     });
     const entityEvents = [];
     const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
-    const objectiveService = new ObjectiveApplicationService({ store, onEntityChanged });
+    const workService = new WorkApplicationService({ store, onEntityChanged });
     const sessionCalls = [];
     let providerReadCount = 0;
     const service = new PlatformOperationService({
       store,
-      objectiveService,
+      workService,
       sessionService: {
         listSessions: () => [],
         readSession: async () => { providerReadCount += 1; return null; },
@@ -136,22 +136,22 @@ test("platform operations are denied to user Agents and use product services for
     assert.equal(created.result.name, "研究员");
     assert.equal(created.result.agentKind, "user");
 
-    const objective = await service.execute({
+    const work = await service.execute({
       actorId: "assistant", sessionId: "session:assistant",
-      tool: "corptie_platform_objectives_manage",
+      tool: "corptie_platform_works_manage",
       arguments: { action: "create", name: "平台事件目标" }
     });
     const task = await service.execute({
       actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_tasks_manage",
-      arguments: { action: "create", objective_id: objective.result.id, title: "平台事件任务" }
+      arguments: { action: "create", work_id: work.result.id, title: "平台事件任务" }
     });
 
     await assert.rejects(
       service.execute({
         actorId: "assistant", sessionId: "session:assistant",
-        tool: "corptie_platform_objectives_manage",
-        arguments: { action: "update", objective_id: objective.result.id, patch: { workspacePath: "/tmp" } }
+        tool: "corptie_platform_works_manage",
+        arguments: { action: "update", work_id: work.result.id, patch: { workspacePath: "/tmp" } }
       }),
       { code: "UNKNOWN_PATCH_FIELD", field: "workspacePath" }
     );
@@ -167,13 +167,13 @@ test("platform operations are denied to user Agents and use product services for
       service.execute({
         actorId: "assistant", sessionId: "session:assistant",
         tool: "corptie_platform_tasks_manage",
-        arguments: { action: "create", objective_id: objective.result.id, title: "Bad", patch: { acceptanceCriteria: [] } }
+        arguments: { action: "create", work_id: work.result.id, title: "Bad", patch: { acceptanceCriteria: [] } }
       }),
       { code: "INVALID_FIELD_TYPE", field: "acceptanceCriteria" }
     );
     assert.deepEqual(
       entityEvents.map((event) => event.type),
-      ["AgentChanged", "ObjectiveChanged", "TaskChanged"]
+      ["AgentChanged", "WorkChanged", "TaskChanged"]
     );
 
     store.upsertSession({
@@ -205,15 +205,15 @@ test("platform operations are denied to user Agents and use product services for
   }
 });
 
-test("platform Objective and Task tool patch schemas reject additional properties", () => {
-  const objectiveSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_objectives_manage").inputSchema.properties.patch;
+test("platform Work and Task tool patch schemas reject additional properties", () => {
+  const workSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_works_manage").inputSchema.properties.patch;
   const taskSchema = platformDynamicTools.find((tool) => tool.name === "corptie_platform_tasks_manage").inputSchema.properties.patch;
-  assert.equal(objectiveSchema.additionalProperties, false);
-  assert.ok(objectiveSchema.properties.idealState);
-  assert.equal(Object.hasOwn(objectiveSchema.properties, "acceptanceCriteria"), false);
+  assert.equal(workSchema.additionalProperties, false);
+  assert.ok(workSchema.properties.idealState);
+  assert.equal(Object.hasOwn(workSchema.properties, "acceptanceCriteria"), false);
   assert.equal(taskSchema.additionalProperties, false);
   assert.ok(taskSchema.properties.acceptanceCriteria);
-  for (const schema of [objectiveSchema, taskSchema]) {
+  for (const schema of [workSchema, taskSchema]) {
     assert.equal(Object.hasOwn(schema.properties, "workspacePath"), false);
     assert.equal(Object.hasOwn(schema.properties, "main_agent_id"), false);
   }
@@ -226,7 +226,7 @@ test("platform Objective and Task tool patch schemas reject additional propertie
     })),
     [
       { action: "get", required: ["task_id"] },
-      { action: "create", required: ["objective_id", "title"] },
+      { action: "create", required: ["work_id", "title"] },
       { action: "update", required: ["task_id", "patch"] },
       { action: "delete", required: ["task_id"] },
       { action: "dependencies", required: ["task_id"] },

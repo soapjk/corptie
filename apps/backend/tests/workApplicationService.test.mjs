@@ -5,57 +5,62 @@ import { join } from "node:path";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import {
-  ObjectiveApplicationService,
-  ObjectiveNotFoundError,
+  WorkApplicationService,
+  WorkNotFoundError,
   TaskNotFoundError,
   DependencyCycleError,
   SessionNotFoundError,
   EntityCreationConflictError
-} from "../src/application/objectiveApplicationService.mjs";
+} from "../src/application/workApplicationService.mjs";
 
 async function createStore() {
-  const directory = await mkdtemp(join(tmpdir(), "corptie-objective-"));
+  const directory = await mkdtemp(join(tmpdir(), "corptie-work-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
     configPath: join(directory, "config.json")
   });
   await store.initialize();
+  store.createAgent({ id: "agent:test-worker", name: "Test Worker", role: "independentContributor" });
   return { store, directory };
 }
 
-test("Objective CRUD：创建 / 列表 / 更新 / 删除", async () => {
+function createWork(service, input) {
+  return service.createWork({ ...input, contributorAgentIds: ["agent:test-worker"] });
+}
+
+test("Work CRUD：创建 / 列表 / 更新 / 删除", async () => {
   const { store, directory } = await createStore();
   try {
-    const service = new ObjectiveApplicationService({ store });
+    const service = new WorkApplicationService({ store });
 
-    assert.throws(() => service.createObjective({ name: "  " }), TypeError);
+    assert.throws(() => createWork(service, { name: "  " }), TypeError);
 
-    const objective = service.createObjective({ name: "重构 Corptie" });
-    assert.ok(objective.id);
-    assert.equal(objective.name, "重构 Corptie");
-    assert.equal(objective.status, "active");
+    const work = createWork(service, { name: "重构 Corptie" });
+    assert.ok(work.id);
+    assert.equal(work.name, "重构 Corptie");
+    assert.equal(work.status, "active");
 
-    assert.equal(service.listObjectives().length, 1);
+    assert.equal(service.listWorks().length, 1);
 
-    const updated = service.updateObjective(objective.id, { status: "done" });
-    assert.equal(updated.status, "done");
+    const updated = service.updateWork(work.id, { status: "archived" });
+    assert.equal(updated.status, "archived");
 
-    service.deleteObjective(objective.id);
-    assert.throws(() => service.getObjective(objective.id), ObjectiveNotFoundError);
+    service.deleteWork(work.id);
+    assert.throws(() => service.getWork(work.id), WorkNotFoundError);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("Task 挂 Objective，缺 objective 或 title 报错", async () => {
+test("Task 挂 Work，缺 work 或 title 报错", async () => {
   const { store, directory } = await createStore();
   try {
-    const service = new ObjectiveApplicationService({ store });
-    const objective = service.createObjective({ name: "目标" });
+    const service = new WorkApplicationService({ store });
+    const work = createWork(service, { name: "目标" });
 
     assert.throws(
-      () => service.createTask({ objectiveId: objective.id, title: " " }),
+      () => service.createTask({ workId: work.id, title: " " }),
       TypeError
     );
     assert.throws(
@@ -63,15 +68,15 @@ test("Task 挂 Objective，缺 objective 或 title 报错", async () => {
       TypeError
     );
     assert.throws(
-      () => service.createTask({ objectiveId: "missing", title: "x" }),
-      { code: "OBJECTIVE_NOT_FOUND", field: "objectiveId" }
+      () => service.createTask({ workId: "missing", title: "x" }),
+      { code: "WORK_NOT_FOUND", field: "workId" }
     );
 
-    const item = service.createTask({ objectiveId: objective.id, title: "建实体表" });
+    const item = service.createTask({ workId: work.id, title: "建实体表" });
     assert.equal(item.lifecycle_state, "todo");
-    assert.equal(item.objective_id, objective.id);
+    assert.equal(item.work_id, work.id);
 
-    const items = service.listTasksByObjective(objective.id);
+    const items = service.listTasksByWork(work.id);
     assert.equal(items.length, 1);
   } finally {
     await store.close();
@@ -79,32 +84,32 @@ test("Task 挂 Objective，缺 objective 或 title 报错", async () => {
   }
 });
 
-test("稳定创建 ID 使 Objective 和 Task 重试幂等，冲突输入明确失败", async () => {
+test("稳定创建 ID 使 Work 和 Task 重试幂等，冲突输入明确失败", async () => {
   const { store, directory } = await createStore();
   try {
     const events = [];
-    const service = new ObjectiveApplicationService({
+    const service = new WorkApplicationService({
       store,
       onEntityChanged: (type, payload) => events.push({ type, payload })
     });
-    const objectiveInput = {
-      id: "objective:background-create",
+    const workInput = {
+      id: "work:background-create",
       name: "后台创建",
       tags: ["popup", "async"]
     };
-    const firstObjective = service.createObjective(objectiveInput);
-    const retriedObjective = service.createObjective({ ...objectiveInput, tags: ["async", "popup"] });
-    assert.equal(retriedObjective.id, firstObjective.id);
-    assert.equal(store.listObjectives().length, 1);
-    assert.equal(events.filter((event) => event.type === "ObjectiveChanged").length, 1);
+    const firstWork = createWork(service, workInput);
+    const retriedWork = createWork(service, { ...workInput, tags: ["async", "popup"] });
+    assert.equal(retriedWork.id, firstWork.id);
+    assert.equal(store.listWorks().length, 1);
+    assert.equal(events.filter((event) => event.type === "WorkChanged").length, 1);
     assert.throws(
-      () => service.createObjective({ ...objectiveInput, name: "不同输入" }),
+      () => createWork(service, { ...workInput, name: "不同输入" }),
       EntityCreationConflictError
     );
 
     const taskInput = {
       id: "task:background-create",
-      objectiveId: firstObjective.id,
+      workId: firstWork.id,
       title: "后台工作项",
       description: "保持弹窗可用"
     };
@@ -126,11 +131,11 @@ test("稳定创建 ID 使 Objective 和 Task 重试幂等，冲突输入明确�
 test("依赖环检测：自依赖与传递环被拒", async () => {
   const { store, directory } = await createStore();
   try {
-    const service = new ObjectiveApplicationService({ store });
-    const objective = service.createObjective({ name: "目标" });
-    const a = service.createTask({ objectiveId: objective.id, title: "A" });
-    const b = service.createTask({ objectiveId: objective.id, title: "B" });
-    const c = service.createTask({ objectiveId: objective.id, title: "C" });
+    const service = new WorkApplicationService({ store });
+    const work = createWork(service, { name: "目标" });
+    const a = service.createTask({ workId: work.id, title: "A" });
+    const b = service.createTask({ workId: work.id, title: "B" });
+    const c = service.createTask({ workId: work.id, title: "C" });
 
     // 自依赖
     assert.throws(() => service.addDependency(a.id, a.id), DependencyCycleError);
@@ -149,15 +154,15 @@ test("依赖环检测：自依赖与传递环被拒", async () => {
   }
 });
 
-test("删除 Objective 级联删除其 Task", async () => {
+test("删除 Work 级联删除其 Task", async () => {
   const { store, directory } = await createStore();
   try {
-    const service = new ObjectiveApplicationService({ store });
-    const objective = service.createObjective({ name: "目标" });
-    const item = service.createTask({ objectiveId: objective.id, title: "X" });
+    const service = new WorkApplicationService({ store });
+    const work = createWork(service, { name: "目标" });
+    const item = service.createTask({ workId: work.id, title: "X" });
     assert.ok(service.getTask(item.id));
 
-    service.deleteObjective(objective.id);
+    service.deleteWork(work.id);
     assert.throws(() => service.getTask(item.id), TaskNotFoundError);
   } finally {
     await store.close();
@@ -168,9 +173,9 @@ test("删除 Objective 级联删除其 Task", async () => {
 test("Session 归属接线：upsertSession 写归属 + bindSession 绑定 + 按 Task 列出", async () => {
   const { store, directory } = await createStore();
   try {
-    const service = new ObjectiveApplicationService({ store });
-    const objective = service.createObjective({ name: "目标" });
-    const item = service.createTask({ objectiveId: objective.id, title: "建实体表" });
+    const service = new WorkApplicationService({ store });
+    const work = createWork(service, { name: "目标" });
+    const item = service.createTask({ workId: work.id, title: "建实体表" });
 
     // 1) upsertSession 直接带上归属两列
     store.upsertSession({
@@ -179,18 +184,18 @@ test("Session 归属接线：upsertSession 写归属 + bindSession 绑定 + 按 
       agent: "a",
       provider: "codex-app-server",
       status: "complete",
-      objectiveId: objective.id,
+      workId: work.id,
       taskId: item.id
     });
     const s1 = store.getSession("s1");
-    assert.equal(s1.objectiveId, objective.id);
+    assert.equal(s1.workId, work.id);
     assert.equal(s1.taskId, item.id);
 
-    // 2) bindSession 把已有 Session 归属到 Task（自动带出 objectiveId）
+    // 2) bindSession 把已有 Session 归属到 Task（自动带出 workId）
     store.upsertSession({ id: "s2", title: "孤立 session", agent: "a", provider: "codex-app-server", status: "complete" });
     const bound = service.bindSession("s2", item.id);
     assert.equal(bound.taskId, item.id);
-    assert.equal(bound.objectiveId, objective.id);
+    assert.equal(bound.workId, work.id);
 
     // 3) listSessionsByTask 返回该 Task 名下两个 Session
     const sessions = service.listSessionsByTask(item.id);
@@ -212,9 +217,9 @@ test("Session 归属接线：upsertSession 写归属 + bindSession 绑定 + 按 
 test("按当前活跃 session 反查 Task（session 落定自动推进状态用）", async () => {
   const { store, directory } = await createStore();
   try {
-    const service = new ObjectiveApplicationService({ store });
-    const objective = service.createObjective({ name: "目标" });
-    const item = service.createTask({ objectiveId: objective.id, title: "建实体表" });
+    const service = new WorkApplicationService({ store });
+    const work = createWork(service, { name: "目标" });
+    const item = service.createTask({ workId: work.id, title: "建实体表" });
 
     // 未绑定任何 session 时反查为空
     assert.equal(store.getTaskBySessionId("s1"), null);

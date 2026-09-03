@@ -8,7 +8,7 @@ import { buildArtifactContextIndex } from "./artifactContextIndex.mjs";
 import { ArtifactReadCoordinator, ARTIFACT_READ_DEFAULT_LIMITS } from "./artifactReadCoordinator.mjs";
 
 export const ARTIFACT_VISIBILITIES = Object.freeze([
-  "objective_private", "task_private", "session_private", "repository_tracked"
+  "work_private", "task_private", "session_private", "repository_tracked"
 ]);
 export const ARTIFACT_RELATIONS = Object.freeze([
   "implementation_spec", "security_requirement", "test_plan", "research_evidence",
@@ -17,7 +17,7 @@ export const ARTIFACT_RELATIONS = Object.freeze([
 const VISIBILITIES = new Set(ARTIFACT_VISIBILITIES);
 const RELATIONS = new Set(ARTIFACT_RELATIONS);
 const VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
-const ARTIFACT_SCOPES = new Set(["objective", "task"]);
+const ARTIFACT_SCOPES = new Set(["work", "task"]);
 const MAX_READ_BYTES = ARTIFACT_READ_DEFAULT_LIMITS.maxPageBytes;
 const ARTIFACT_SEARCH_INDEX_STATE_KEY = "artifact-search-index:v1";
 const ARTIFACT_USAGE_RECONCILIATION_STATE_KEY = "artifact-turn-read-usage:v1";
@@ -121,22 +121,22 @@ export class ArtifactService {
   context(input = {}) {
     if (input.kind === "platform_admin") {
       const binding = resolvePlatformAdminSession(this.store, input);
-      const objectiveId = requiredText(input.objectiveId, "objectiveId");
-      if (!this.store.getObjective(objectiveId)) {
-        throw artifactError("ARTIFACT_OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
+      const workId = requiredText(input.workId, "workId");
+      if (!this.store.getWork(workId)) {
+        throw artifactError("ARTIFACT_WORK_NOT_FOUND", "Work not found.", 404);
       }
       return {
         kind: "platform_admin",
         actorId: binding.agent.agentId,
-        objectiveId,
+        workId,
         sessionId: binding.actorSessionId,
         taskId: null
       };
     }
     if (input.kind === "local_user") {
-      const objectiveId = requiredText(input.objectiveId, "objectiveId");
-      if (!this.store.getObjective(objectiveId)) throw artifactError("ARTIFACT_OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
-      return { kind: "local_user", actorId: input.actorId ?? "local-user", objectiveId, sessionId: null, taskId: null };
+      const workId = requiredText(input.workId, "workId");
+      if (!this.store.getWork(workId)) throw artifactError("ARTIFACT_WORK_NOT_FOUND", "Work not found.", 404);
+      return { kind: "local_user", actorId: input.actorId ?? "local-user", workId, sessionId: null, taskId: null };
     }
     const resolved = this.sessionAuthorizationResolver.resolve({
       actorId: input.actorId,
@@ -147,16 +147,16 @@ export class ArtifactService {
     });
     const actorId = resolved.agentId;
     const sessionId = resolved.productSessionId;
-    const objectiveId = resolved.objectiveId;
+    const workId = resolved.workId;
     const taskId = resolved.taskId;
-    if (input.objectiveId && input.objectiveId !== objectiveId) {
-      throw artifactError("ARTIFACT_OBJECTIVE_FORBIDDEN", "Claimed Objective does not match the Session binding.", 403);
+    if (input.workId && input.workId !== workId) {
+      throw artifactError("ARTIFACT_WORK_FORBIDDEN", "Claimed Work does not match the Session binding.", 403);
     }
     if (input.taskId && input.taskId !== taskId) {
       throw artifactError("ARTIFACT_TASK_FORBIDDEN", "Claimed Task does not match the Session binding.", 403);
     }
     return {
-      kind: resolved.sessionKind, actorId, objectiveId, sessionId, productSessionId: sessionId, taskId,
+      kind: resolved.sessionKind, actorId, workId, sessionId, productSessionId: sessionId, taskId,
       logicalSessionId: resolved.logicalSessionId,
       providerBindingId: resolved.providerBindingId,
       authorizationRevision: resolved.authorizationRevision
@@ -166,7 +166,7 @@ export class ArtifactService {
   list(contextInput, options = {}) {
     const context = this.context(contextInput);
     const relatedTaskIds = this.#relatedTaskIds(context);
-    const artifacts = this.store.listArtifactsByObjective(context.objectiveId, {
+    const artifacts = this.store.listArtifactsByWork(context.workId, {
       includeRevoked: options.includeRevoked === true,
       limit: options.limit ?? null,
       offset: options.offset ?? 0
@@ -182,8 +182,8 @@ export class ArtifactService {
     const taskId = requiredText(taskIdValue, "taskId");
     const task = this.store.getTask(taskId);
     if (!task) throw artifactError("ARTIFACT_TASK_NOT_FOUND", "Task not found.", 404);
-    if (task.objective_id !== context.objectiveId) {
-      throw artifactError("ARTIFACT_TASK_FORBIDDEN", "Task belongs to another Objective.", 403);
+    if (task.work_id !== context.workId) {
+      throw artifactError("ARTIFACT_TASK_FORBIDDEN", "Task belongs to another Work.", 403);
     }
     const artifacts = this.store.listArtifactsReferencedByTask(taskId, {
       includeRevokedReferences: options.includeRevokedReferences === true,
@@ -207,7 +207,7 @@ export class ArtifactService {
         && artifact.boundTaskId === taskId
         && scopedReferences.some((reference) => reference.versionPolicy === "fixed" && !reference.revokedAt)
         && (context.kind !== "worker" || context.taskId === taskId);
-      const canPublishShared = artifact.status === "active" && artifact.scope === "objective"
+      const canPublishShared = artifact.status === "active" && artifact.scope === "work"
         && manageable;
       results.push({
         ...artifact,
@@ -235,7 +235,7 @@ export class ArtifactService {
       if (!version || !safeHashEqual(version.contentHash, requestedHash)) {
         throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "Requested content hash does not match the immutable Artifact version.", 409);
       }
-      referenceId = this.#ensureObjectiveScopeReadReference(context, readable, version).referenceId;
+      referenceId = this.#ensureWorkScopeReadReference(context, readable, version).referenceId;
     }
     const authorized = this.referenceAuthorizer.authorize(context, {
       artifactId, version: requestedVersion, contentHash: requestedHash,
@@ -347,7 +347,7 @@ export class ArtifactService {
     if (requestedScope && !ARTIFACT_SCOPES.has(requestedScope)) {
       throw artifactError("ARTIFACT_SCOPE_INVALID", `Unsupported Artifact scope: ${requestedScope}`, 400);
     }
-    const matches = this.store.searchArtifactDocuments(context.objectiveId, query, Math.max(limit * 4, 50));
+    const matches = this.store.searchArtifactDocuments(context.workId, query, Math.max(limit * 4, 50));
     for (const match of matches) {
       const artifact = this.store.getArtifact(match.artifactId);
       if (!artifact) continue;
@@ -376,29 +376,29 @@ export class ArtifactService {
   async create(contextInput, input = {}) {
     const context = this.context(contextInput);
     const requestedScope = input.scope
-      ?? (input.visibility ? artifactScope(input.visibility) : (context.kind === "worker" ? "task" : "objective"));
-    if (context.kind === "worker" && requestedScope !== "objective") return this.#createWorkerArtifact(context, input);
+      ?? (input.visibility ? artifactScope(input.visibility) : (context.kind === "worker" ? "task" : "work"));
+    if (context.kind === "worker" && requestedScope !== "work") return this.#createWorkerArtifact(context, input);
     if (context.kind === "worker") this.#assertActiveWorkerBinding(context);
     else this.#assertManager(context);
     const visibility = enumValue(
-      input.visibility ?? (requestedScope === "objective" ? "objective_private" : "task_private"),
+      input.visibility ?? (requestedScope === "work" ? "work_private" : "task_private"),
       VISIBILITIES,
       "ARTIFACT_VISIBILITY_INVALID"
     );
     const scope = artifactScope(visibility, input.scope);
-    if (context.kind === "worker" && scope !== "objective") {
-      throw artifactError("ARTIFACT_WORKER_SCOPE_FORBIDDEN", "Worker may create only Objective-public or current-Task Artifacts.", 403);
+    if (context.kind === "worker" && scope !== "work") {
+      throw artifactError("ARTIFACT_WORKER_SCOPE_FORBIDDEN", "Worker may create only Work-public or current-Task Artifacts.", 403);
     }
-    const binding = this.#validateBinding(context.objectiveId, visibility, input);
-    if (scope === "objective" && (binding.boundTaskId || binding.boundSessionId)) {
-      throw artifactError("ARTIFACT_SCOPE_INVALID", "Objective-scoped Artifacts cannot be privately bound to a Task or Session.", 400);
+    const binding = this.#validateBinding(context.workId, visibility, input);
+    if (scope === "work" && (binding.boundTaskId || binding.boundSessionId)) {
+      throw artifactError("ARTIFACT_SCOPE_INVALID", "Work-scoped Artifacts cannot be privately bound to a Task or Session.", 400);
     }
     const taxonomy = normalizeArtifactTaxonomy(input);
     const workerIdempotencyKey = context.kind === "worker" ? requiredText(input.idempotencyKey, "idempotencyKey") : null;
     const artifactId = input.artifactId
       ? canonicalId(input.artifactId, "artifact")
       : workerIdempotencyKey
-        ? `artifact:worker-objective:${sha256(Buffer.from(`${context.sessionId}\0${workerIdempotencyKey}`))}`
+        ? `artifact:worker-work:${sha256(Buffer.from(`${context.sessionId}\0${workerIdempotencyKey}`))}`
         : `artifact:${this.idFactory()}`;
     const existingArtifact = this.store.getArtifact(artifactId);
     if (existingArtifact) {
@@ -409,7 +409,7 @@ export class ArtifactService {
         existingArtifact.artifactId,
         existingArtifact.currentVersion
       );
-      if (existingArtifact.objectiveId !== context.objectiveId
+      if (existingArtifact.workId !== context.workId
         || existingArtifact.title !== requiredText(input.title, "title")
         || existingArtifact.summary !== (optionalText(input.summary) ?? "")
         || existingArtifact.scope !== scope
@@ -419,7 +419,7 @@ export class ArtifactService {
         || !sameStringSet(existingArtifact.aliases, taxonomy.aliases)
         || !sameStringSet(existingArtifact.keywords, taxonomy.keywords)
         || !existingVersion || !safeHashEqual(existingVersion.contentHash, expectedHash)) {
-        throw artifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "idempotencyKey is already associated with different Objective Artifact input.", 409);
+        throw artifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "idempotencyKey is already associated with different Work Artifact input.", 409);
       }
       return { ...this.present(existingArtifact), idempotentReplay: true };
     }
@@ -432,7 +432,7 @@ export class ArtifactService {
         const locator = requiredText(input.repositoryLocator, "repositoryLocator");
         const locatorHash = createHash("sha256").update(locator).digest("hex");
         this.store.createArtifactMetadata({
-          artifactId, objectiveId: context.objectiveId, title: requiredText(input.title, "title"),
+          artifactId, workId: context.workId, title: requiredText(input.title, "title"),
           summary: optionalText(input.summary) ?? "", visibility, scope, ...taxonomy, ...binding,
           repositoryLocator: locator,
           sourceSessionId: context.sessionId, sourceEventId: optionalText(input.sourceEventId),
@@ -456,7 +456,7 @@ export class ArtifactService {
     try {
       this.store.runInTransaction(() => {
         this.store.createArtifactMetadata({
-          artifactId, objectiveId: context.objectiveId, title: requiredText(input.title, "title"),
+          artifactId, workId: context.workId, title: requiredText(input.title, "title"),
           summary: optionalText(input.summary) ?? "", visibility, scope, ...taxonomy, ...binding,
           sourceSessionId: context.sessionId, sourceEventId: optionalText(input.sourceEventId),
           actorId, createdAt
@@ -499,9 +499,9 @@ export class ArtifactService {
     }
 
     // Revalidate the authoritative binding immediately before the write. The
-    // caller's Objective/Task metadata is never used to choose these values.
+    // caller's Work/Task metadata is never used to choose these values.
     const task = this.store.getTask(context.taskId);
-    if (!task || task.objective_id !== context.objectiveId
+    if (!task || task.work_id !== context.workId
       || task.current_session_id !== context.sessionId
       || task.deletion_status === "deleting") {
       throw artifactError("ARTIFACT_TASK_FORBIDDEN", "Worker Session no longer has an active authoritative Task binding.", 403);
@@ -540,13 +540,13 @@ export class ArtifactService {
         // The Task can be completed/unbound while content is prepared. Check
         // once more under the same write transaction as every persisted record.
         const currentTask = this.store.getTask(context.taskId);
-        if (!currentTask || currentTask.objective_id !== context.objectiveId
+        if (!currentTask || currentTask.work_id !== context.workId
           || currentTask.current_session_id !== context.sessionId
           || currentTask.deletion_status === "deleting") {
           throw artifactError("ARTIFACT_TASK_FORBIDDEN", "Worker Session no longer has an active authoritative Task binding.", 403);
         }
         this.store.createArtifactMetadata({
-          artifactId, objectiveId: context.objectiveId, title, summary,
+          artifactId, workId: context.workId, title, summary,
           visibility: "task_private", scope: "task", ...taxonomy,
           boundTaskId: context.taskId,
           boundSessionId: null, sourceSessionId: context.sessionId,
@@ -562,7 +562,7 @@ export class ArtifactService {
           currentVersion: 1, approvedVersion: approvalStatus === "approved" ? 1 : null, updatedAt: createdAt
         });
         this.store.createArtifactReference({
-          referenceId, artifactId, objectiveId: context.objectiveId,
+          referenceId, artifactId, workId: context.workId,
           taskId: context.taskId, sessionId: null, relation, required,
           versionPolicy, pinnedVersion: 1, pinnedHash: prepared.hash,
           actorId: workerActorId, authorizedAt: createdAt
@@ -579,7 +579,7 @@ export class ArtifactService {
           pinnedVersion: 1, pinnedHash: prepared.hash
         }, null, 1);
         this.store.createArtifactWorkerCreateOperation({
-          sessionId: context.sessionId, objectiveId: context.objectiveId,
+          sessionId: context.sessionId, workId: context.workId,
           taskId: context.taskId, idempotencyKey, requestFingerprint,
           artifactId, referenceId, createdAt
         });
@@ -604,17 +604,17 @@ export class ArtifactService {
         409
       );
     }
-    if (operation.objective_id !== context.objectiveId || operation.task_id !== context.taskId) {
+    if (operation.work_id !== context.workId || operation.task_id !== context.taskId) {
       throw artifactError("ARTIFACT_IDEMPOTENCY_SCOPE_INVALID", "Stored Worker Artifact operation does not match the current authoritative binding.", 409);
     }
     const artifact = this.store.getArtifact(operation.artifact_id);
     const reference = this.store.getArtifactReference(operation.reference_id);
     if (!artifact || !reference
-      || artifact.objectiveId !== context.objectiveId
+      || artifact.workId !== context.workId
       || artifact.visibility !== "task_private"
       || artifact.boundTaskId !== context.taskId
       || reference.artifactId !== artifact.artifactId
-      || reference.objectiveId !== context.objectiveId
+      || reference.workId !== context.workId
       || reference.taskId !== context.taskId
       || reference.sessionId != null
       || reference.revokedAt != null) {
@@ -634,7 +634,7 @@ export class ArtifactService {
 
   async publishVersion(contextInput, artifactId, input = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     if (context.kind === "worker" && artifact.scope === "task") {
       return this.publishAndRepin(contextInput, artifactId, input);
     }
@@ -680,7 +680,7 @@ export class ArtifactService {
 
   async publishAndRepin(contextInput, artifactId, input = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     const taskId = context.kind === "worker"
       ? context.taskId
       : requiredText(input.taskId, "taskId");
@@ -788,7 +788,7 @@ export class ArtifactService {
           toVersion: versionNumber, toHash: prepared.hash
         }, expectedPinnedVersion, versionNumber);
         this.store.createArtifactWorkerPublishOperation({
-          actorScopeId, objectiveId: context.objectiveId, taskId,
+          actorScopeId, workId: context.workId, taskId,
           idempotencyKey, requestFingerprint, artifactId: artifact.artifactId,
           referenceId: reference.referenceId, version: versionNumber,
           contentHash: prepared.hash, operationStatus: "completed", createdAt
@@ -808,7 +808,7 @@ export class ArtifactService {
 
   #publishAndRepinReplay(context, operation, requestFingerprint) {
     if (operation.request_fingerprint !== requestFingerprint
-      || operation.objective_id !== context.objectiveId) {
+      || operation.work_id !== context.workId) {
       throw artifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "idempotencyKey is associated with different publish input.", 409);
     }
     const artifact = this.store.getArtifact(operation.artifact_id);
@@ -840,7 +840,7 @@ export class ArtifactService {
 
   createReference(contextInput, artifactId, input = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     const taskId = optionalText(input.taskId);
     const sessionId = optionalText(input.sessionId);
     if (!taskId && !sessionId) throw artifactError("ARTIFACT_REFERENCE_TARGET_REQUIRED", "taskId or sessionId is required.", 400);
@@ -850,12 +850,12 @@ export class ArtifactService {
     }
     if (context.kind !== "worker") this.#assertManager(context);
     const task = taskId ? this.store.getTask(taskId) : null;
-    if (taskId && (!task || task.objective_id !== context.objectiveId)) {
-      throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Artifact references cannot cross Objective boundaries.", 403);
+    if (taskId && (!task || task.work_id !== context.workId)) {
+      throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Artifact references cannot cross Work boundaries.", 403);
     }
     const session = sessionId ? this.store.getSession(sessionId) : null;
-    if (sessionId && (!session || (session.objectiveId ?? session.objective_id) !== context.objectiveId)) {
-      throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Artifact references cannot target another Objective's Session.", 403);
+    if (sessionId && (!session || (session.workId ?? session.work_id) !== context.workId)) {
+      throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Artifact references cannot target another Work's Session.", 403);
     }
     const relation = enumValue(input.relation, RELATIONS, "ARTIFACT_RELATION_INVALID");
     const versionPolicy = enumValue(input.versionPolicy ?? "fixed", VERSION_POLICIES, "ARTIFACT_VERSION_POLICY_INVALID");
@@ -867,7 +867,7 @@ export class ArtifactService {
     const reference = this.store.runInTransaction(() => {
       const created = this.store.createArtifactReference({
         referenceId: `artifact_reference:${this.idFactory()}`, artifactId: artifact.artifactId,
-        objectiveId: context.objectiveId, taskId, sessionId, relation,
+        workId: context.workId, taskId, sessionId, relation,
         required: input.required === true, versionPolicy, pinnedVersion,
         pinnedHash, actorId: context.actorId, authorizedAt
       });
@@ -879,7 +879,7 @@ export class ArtifactService {
 
   prepareTaskCreationReference(contextInput, artifactId, input = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     if (!this.#canAuthorizeReference(context, artifact)) {
       throw artifactError("ARTIFACT_READ_FORBIDDEN", "Artifact is not authorized for this Session to reference.", 403);
     }
@@ -899,7 +899,7 @@ export class ArtifactService {
     const selected = this.#selectedVersion(context, artifact, input.version);
     if (!selected) throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "Artifact version not found.", 404);
     return Object.freeze({
-      context, artifactId: artifact.artifactId, objectiveId: context.objectiveId,
+      context, artifactId: artifact.artifactId, workId: context.workId,
       relation, required: input.required === true, versionPolicy,
       pinnedVersion: selected.version, pinnedHash: selected.contentHash
     });
@@ -908,17 +908,17 @@ export class ArtifactService {
   createPreparedTaskReference(prepared, taskId) {
     const task = this.store.getTask(requiredText(taskId, "taskId"));
     if (!task) throw artifactError("ARTIFACT_TASK_NOT_FOUND", "Task not found.", 404);
-    if (task.objective_id !== prepared?.objectiveId) {
+    if (task.work_id !== prepared?.workId) {
       throw artifactError(
-        "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN",
-        "Artifact references cannot cross Objective boundaries.",
+        "ARTIFACT_CROSS_WORK_FORBIDDEN",
+        "Artifact references cannot cross Work boundaries.",
         403
       );
     }
     if (task.deletion_status === "deleting") {
       throw artifactError("TASK_DELETION_IN_PROGRESS", "Cannot reference an Artifact while the Task is being deleted.", 409);
     }
-    const artifact = this.#sameObjectiveArtifact(prepared.context, prepared.artifactId);
+    const artifact = this.#sameWorkArtifact(prepared.context, prepared.artifactId);
     const version = this.store.getArtifactVersion(artifact.artifactId, prepared.pinnedVersion);
     if (!version || version.contentHash !== prepared.pinnedHash) {
       throw artifactError("ARTIFACT_VERSION_NOT_FOUND", "The selected Artifact version is no longer available.", 409);
@@ -927,7 +927,7 @@ export class ArtifactService {
     const reference = this.store.createArtifactReference({
       referenceId: `artifact_reference:${this.idFactory()}`,
       artifactId: artifact.artifactId,
-      objectiveId: prepared.objectiveId,
+      workId: prepared.workId,
       taskId: task.id,
       sessionId: null,
       relation: prepared.relation,
@@ -953,7 +953,7 @@ export class ArtifactService {
   revokeReference(contextInput, referenceId, reason) {
     const context = this.context(contextInput);
     const reference = this.store.getArtifactReference(requiredText(referenceId, "referenceId"));
-    if (!reference || reference.objectiveId !== context.objectiveId) throw artifactError("ARTIFACT_REFERENCE_NOT_FOUND", "Artifact reference not found.", 404);
+    if (!reference || reference.workId !== context.workId) throw artifactError("ARTIFACT_REFERENCE_NOT_FOUND", "Artifact reference not found.", 404);
     this.#assertCanManageReference(context, reference);
     if (reference.revokedAt) return reference;
     const revoked = this.store.updateArtifactReference(reference.referenceId, {
@@ -965,7 +965,7 @@ export class ArtifactService {
 
   updateMetadata(contextInput, artifactId, patch = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     this.#assertCanManageArtifact(context, artifact);
     const next = {};
     if (patch.title != null) next.title = requiredText(patch.title, "title");
@@ -989,7 +989,7 @@ export class ArtifactService {
 
   restoreArtifact(contextInput, artifactId) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     this.#assertCanManageArtifact(context, artifact);
     const updated = this.store.updateArtifact(artifact.artifactId, { status: "active", updatedAt: this.clock() });
     this.#indexArtifact(updated);
@@ -999,7 +999,7 @@ export class ArtifactService {
 
   changeVisibility(contextInput, artifactId, visibilityValue, { confirmed = false } = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     this.#assertCanManageArtifact(context, artifact);
     const visibility = enumValue(visibilityValue, VISIBILITIES, "ARTIFACT_VISIBILITY_INVALID");
     if (visibility !== artifact.visibility && confirmed !== true) {
@@ -1008,7 +1008,7 @@ export class ArtifactService {
     if (visibility !== artifact.visibility && (visibility === "repository_tracked" || artifact.visibility === "repository_tracked")) {
       throw artifactError("ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN", "Repository-tracked registration cannot be converted to or from private content.", 409);
     }
-    this.#validateBinding(context.objectiveId, visibility, artifact);
+    this.#validateBinding(context.workId, visibility, artifact);
     const updated = this.store.updateArtifact(artifact.artifactId, {
       visibility, scope: artifactScope(visibility), updatedAt: this.clock()
     });
@@ -1019,7 +1019,7 @@ export class ArtifactService {
 
   supersede(contextInput, artifactId) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     this.#assertCanManageArtifact(context, artifact);
     const updated = this.store.updateArtifact(artifact.artifactId, { status: "superseded", updatedAt: this.clock() });
     this.#indexArtifact(updated);
@@ -1029,7 +1029,7 @@ export class ArtifactService {
 
   revokeArtifact(contextInput, artifactId, reason) {
     const context = this.context(contextInput);
-    const artifact = this.#sameObjectiveArtifact(context, artifactId);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
     this.#assertCanManageArtifact(context, artifact);
     const updated = this.store.updateArtifact(artifact.artifactId, { status: "revoked", updatedAt: this.clock() });
     this.#indexArtifact(updated);
@@ -1041,10 +1041,10 @@ export class ArtifactService {
     const context = this.context(contextInput);
     const taskId = requiredText(taskIdValue, "taskId");
     const task = this.store.getTask(taskId);
-    if (!task || task.objective_id !== context.objectiveId) {
+    if (!task || task.work_id !== context.workId) {
       throw artifactError("ARTIFACT_TASK_NOT_FOUND", "Task not found for Artifact disposal.", 404);
     }
-    if (!["delete", "objective", "retain"].includes(disposition)) {
+    if (!["delete", "work", "retain"].includes(disposition)) {
       throw artifactError("TASK_ARTIFACT_DISPOSITION_INVALID", `Unsupported Artifact disposition: ${disposition}`, 400);
     }
     const artifacts = this.store.listTaskDeletionBlockingAssociations(taskId).artifacts
@@ -1058,13 +1058,13 @@ export class ArtifactService {
       const patch = disposition === "delete"
         ? { status: "revoked", boundTaskId: null, boundSessionId: null, updatedAt: this.clock() }
         : {
-            visibility: "objective_private", scope: "objective",
+            visibility: "work_private", scope: "work",
             boundTaskId: null, boundSessionId: null, updatedAt: this.clock()
           };
       const next = this.store.updateArtifact(artifact.artifactId, patch);
       this.#indexArtifact(next);
       this.#audit(context, artifact.artifactId,
-        disposition === "delete" ? "artifact.revoked" : "artifact.moved_to_objective",
+        disposition === "delete" ? "artifact.revoked" : "artifact.moved_to_work",
         { reason: "task_deleted", taskId });
       updated.push(artifact.artifactId);
     }
@@ -1074,7 +1074,7 @@ export class ArtifactService {
   acknowledgePendingReference(contextInput, referenceId) {
     const context = this.context(contextInput);
     const reference = this.store.getArtifactReference(requiredText(referenceId, "referenceId"));
-    if (!reference || reference.objectiveId !== context.objectiveId) throw artifactError("ARTIFACT_REFERENCE_NOT_FOUND", "Artifact reference not found.", 404);
+    if (!reference || reference.workId !== context.workId) throw artifactError("ARTIFACT_REFERENCE_NOT_FOUND", "Artifact reference not found.", 404);
     this.#assertCanManageReference(context, reference);
     if (!reference.pendingVersion) return reference;
     const updated = this.store.updateArtifactReference(reference.referenceId, {
@@ -1095,7 +1095,7 @@ export class ArtifactService {
       ...artifact,
       versions: this.store.listArtifactVersions(artifact.artifactId),
       references: this.store.listArtifactReferences({ artifactId: artifact.artifactId, includeRevoked: true }),
-      audit: this.store.listArtifactAudit(artifact.objectiveId, artifact.artifactId).slice(0, 100)
+      audit: this.store.listArtifactAudit(artifact.workId, artifact.artifactId).slice(0, 100)
     };
   }
 
@@ -1218,15 +1218,15 @@ export class ArtifactService {
     };
   }
 
-  async backupObjective(contextInput, input = {}) {
+  async backupWork(contextInput, input = {}) {
     const context = this.context(contextInput);
     this.#assertManager(context);
     if (input.confirmed !== true) throw artifactError("ARTIFACT_CONFIRMATION_REQUIRED", "Backup requires explicit confirmation.", 409);
     const destination = resolve(requiredText(input.destinationPath, "destinationPath"));
     await mkdir(destination, { recursive: false, mode: 0o700 });
-    const artifacts = this.store.listArtifactsByObjective(context.objectiveId, { includeRevoked: true });
+    const artifacts = this.store.listArtifactsByWork(context.workId, { includeRevoked: true });
     const manifest = {
-      format: "corptie-objective-artifact-backup-v1", objectiveId: context.objectiveId,
+      format: "corptie-work-artifact-backup-v1", workId: context.workId,
       environment: this.store.settings().environment, createdAt: this.clock(), artifacts: []
     };
     try {
@@ -1254,7 +1254,7 @@ export class ArtifactService {
       }
       await writeFile(join(destination, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600, flag: "wx" });
       this.store.appendArtifactAudit({
-        auditId: `artifact_audit:${this.idFactory()}`, artifactId: null, objectiveId: context.objectiveId,
+        auditId: `artifact_audit:${this.idFactory()}`, artifactId: null, workId: context.workId,
         action: "artifact.backup_created", actorId: context.actorId, sessionId: context.sessionId,
         details: { destinationPath: destination, artifactCount: artifacts.length }, createdAt: this.clock()
       });
@@ -1264,17 +1264,17 @@ export class ArtifactService {
     }
   }
 
-  async restoreObjective(contextInput, input = {}) {
+  async restoreWork(contextInput, input = {}) {
     const context = this.context(contextInput);
     this.#assertManager(context);
     if (input.confirmed !== true) throw artifactError("ARTIFACT_CONFIRMATION_REQUIRED", "Restore requires explicit confirmation.", 409);
     const source = resolve(requiredText(input.sourcePath, "sourcePath"));
     const manifest = JSON.parse(await readFile(join(source, "manifest.json"), "utf8"));
-    if (manifest?.format !== "corptie-objective-artifact-backup-v1") throw artifactError("ARTIFACT_BACKUP_FORMAT_INVALID", "Unsupported Artifact backup format.", 400);
-    if (manifest.objectiveId !== context.objectiveId) throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Backup belongs to another Objective; restore will not widen access.", 403);
+    if (manifest?.format !== "corptie-work-artifact-backup-v1") throw artifactError("ARTIFACT_BACKUP_FORMAT_INVALID", "Unsupported Artifact backup format.", 400);
+    if (manifest.workId !== context.workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Backup belongs to another Work; restore will not widen access.", 403);
     const verified = [];
     for (const entry of manifest.artifacts ?? []) {
-      if (entry.artifact?.objectiveId !== context.objectiveId) throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Backup contains a cross-Objective Artifact.", 403);
+      if (entry.artifact?.workId !== context.workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Backup contains a cross-Work Artifact.", 403);
       for (const version of entry.versions ?? []) {
         if (!version.backupPath) continue;
         const path = resolve(source, version.backupPath);
@@ -1290,10 +1290,10 @@ export class ArtifactService {
     for (const entry of manifest.artifacts ?? []) {
       const artifact = entry.artifact;
       let current = this.store.getArtifact(artifact.artifactId);
-      if (current && current.objectiveId !== context.objectiveId) throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Stable Artifact ID already belongs to another Objective.", 403);
+      if (current && current.workId !== context.workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Stable Artifact ID already belongs to another Work.", 403);
       if (!current) {
         this.store.createArtifactMetadata({
-          artifactId: artifact.artifactId, objectiveId: context.objectiveId, title: artifact.title,
+          artifactId: artifact.artifactId, workId: context.workId, title: artifact.title,
           summary: artifact.summary, visibility: artifact.visibility, boundTaskId: artifact.boundTaskId,
           boundSessionId: artifact.boundSessionId, repositoryLocator: artifact.repositoryLocator,
           sourceSessionId: artifact.sourceSessionId, sourceEventId: artifact.sourceEventId,
@@ -1341,7 +1341,7 @@ export class ArtifactService {
         if (reference.taskId && !this.store.getTask(reference.taskId)) continue;
         if (reference.sessionId && !this.store.getSession(reference.sessionId)) continue;
         const created = this.store.createArtifactReference({
-          referenceId: reference.referenceId, artifactId: artifact.artifactId, objectiveId: context.objectiveId,
+          referenceId: reference.referenceId, artifactId: artifact.artifactId, workId: context.workId,
           taskId: reference.taskId, sessionId: reference.sessionId, relation: reference.relation,
           required: reference.required, versionPolicy: reference.versionPolicy,
           pinnedVersion: reference.pinnedVersion, pinnedHash: reference.pinnedHash,
@@ -1354,7 +1354,7 @@ export class ArtifactService {
       }
     }
     this.store.appendArtifactAudit({
-      auditId: `artifact_audit:${this.idFactory()}`, artifactId: null, objectiveId: context.objectiveId,
+      auditId: `artifact_audit:${this.idFactory()}`, artifactId: null, workId: context.workId,
       action: "artifact.backup_restored", actorId: context.actorId, sessionId: context.sessionId,
       details: { sourcePath: source, restoredArtifacts }, createdAt: this.clock()
     });
@@ -1407,15 +1407,15 @@ export class ArtifactService {
   }
 
   #assertManager(context) {
-    if (!['objectiveChat', 'local_user', 'platform_admin'].includes(context.kind)) {
-      throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Worker Sessions cannot manage Objective Artifacts.", 403);
+    if (!['workChat', 'local_user', 'platform_admin'].includes(context.kind)) {
+      throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Worker Sessions cannot manage Work Artifacts.", 403);
     }
   }
 
   #assertActiveWorkerBinding(context) {
     if (context.kind !== "worker") return;
     const task = this.store.getTask(context.taskId);
-    if (!task || task.objective_id !== context.objectiveId
+    if (!task || task.work_id !== context.workId
       || task.current_session_id !== context.sessionId
       || task.deletion_status === "deleting") {
       throw artifactError("ARTIFACT_TASK_FORBIDDEN", "Worker Session no longer has an active authoritative Task binding.", 403);
@@ -1424,7 +1424,7 @@ export class ArtifactService {
 
   #assertCanManageArtifact(context, artifact) {
     if (this.#canManageArtifact(context, artifact)) return;
-    if (context.kind !== "worker") throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Session cannot manage Objective Artifacts.", 403);
+    if (context.kind !== "worker") throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Session cannot manage Work Artifacts.", 403);
     throw artifactError(
       "ARTIFACT_READ_ONLY",
       "Artifacts owned by another Task are read-only for this Work Session.",
@@ -1433,26 +1433,26 @@ export class ArtifactService {
   }
 
   #canManageArtifact(context, artifact) {
-    if (artifact.objectiveId !== context.objectiveId) return false;
-    if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return true;
+    if (artifact.workId !== context.workId) return false;
+    if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return true;
     if (context.kind !== "worker") return false;
     this.#assertActiveWorkerBinding(context);
-    return artifact.scope === "objective"
+    return artifact.scope === "work"
       || (artifact.scope === "task" && artifact.boundTaskId === context.taskId);
   }
 
   #assertCanManageReference(context, reference) {
-    if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return;
+    if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return;
     if (context.kind === "worker"
       && ((reference.taskId && reference.taskId === context.taskId)
         || (reference.sessionId && reference.sessionId === context.sessionId))) return;
     throw artifactError("ARTIFACT_REFERENCE_READ_ONLY", "Another Task's Artifact Reference is read-only.", 403);
   }
 
-  #sameObjectiveArtifact(context, artifactIdValue) {
+  #sameWorkArtifact(context, artifactIdValue) {
     const artifact = this.store.getArtifact(requiredText(artifactIdValue, "artifactId"));
     if (!artifact) throw artifactError("ARTIFACT_NOT_FOUND", "Artifact not found.", 404);
-    if (artifact.objectiveId !== context.objectiveId) throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Artifact belongs to another Objective.", 403);
+    if (artifact.workId !== context.workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Artifact belongs to another Work.", 403);
     return artifact;
   }
 
@@ -1466,16 +1466,16 @@ export class ArtifactService {
   }
 
   #canRead(context, artifact, relatedTaskIds = null) {
-    if (artifact.objectiveId !== context.objectiveId || artifact.status === "revoked") return false;
-    if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return true;
+    if (artifact.workId !== context.workId || artifact.status === "revoked") return false;
+    if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return true;
     if (context.kind !== "worker") return false;
     if (artifact.scope === "session") return artifact.boundSessionId === context.sessionId;
-    return ["objective", "task"].includes(artifact.scope);
+    return ["work", "task"].includes(artifact.scope);
   }
 
   #canAuthorizeReference(context, artifact) {
     if (artifact.status === "revoked") return false;
-    if (["objectiveChat", "local_user", "platform_admin"].includes(context.kind)) return true;
+    if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return true;
     if (context.kind !== "worker") return false;
     return this.#canRead(context, artifact);
   }
@@ -1492,7 +1492,7 @@ export class ArtifactService {
     if (firstTaskId === secondTaskId) return true;
     const first = this.store.getTask(firstTaskId);
     const second = this.store.getTask(secondTaskId);
-    if (!first || !second || first.objective_id !== second.objective_id) return false;
+    if (!first || !second || first.work_id !== second.work_id) return false;
     return this.store.listTaskDependencies(firstTaskId)
       .some((edge) => edge.target_task_id === secondTaskId)
       || this.store.listTaskDependents(firstTaskId)
@@ -1524,21 +1524,21 @@ export class ArtifactService {
     return this.store.getArtifactVersion(artifact.artifactId, version);
   }
 
-  #ensureObjectiveScopeReadReference(context, artifact, version) {
+  #ensureWorkScopeReadReference(context, artifact, version) {
     if (!this.#canRead(context, artifact)) {
       throw artifactError("ARTIFACT_READ_FORBIDDEN", "Artifact is not readable by this Session.", 403);
     }
     const existing = this.store.listArtifactReferences({ artifactId: artifact.artifactId })
       .find((reference) => !reference.revokedAt
-        && reference.authorizedByActorId === "system:objective-scope-read"
+        && reference.authorizedByActorId === "system:work-scope-read"
         && reference.pinnedVersion === version.version
         && safeHashEqual(reference.pinnedHash, version.contentHash));
     if (existing) return existing;
-    const referenceId = `artifact_reference:objective-scope:${sha256(Buffer.from(`${artifact.artifactId}\0${version.version}\0${version.contentHash}`))}`;
+    const referenceId = `artifact_reference:work-scope:${sha256(Buffer.from(`${artifact.artifactId}\0${version.version}\0${version.contentHash}`))}`;
     const input = {
       referenceId,
       artifactId: artifact.artifactId,
-      objectiveId: artifact.objectiveId,
+      workId: artifact.workId,
       taskId: null,
       sessionId: null,
       relation: "research_evidence",
@@ -1546,7 +1546,7 @@ export class ArtifactService {
       versionPolicy: "fixed",
       pinnedVersion: version.version,
       pinnedHash: version.contentHash,
-      actorId: "system:objective-scope-read",
+      actorId: "system:work-scope-read",
       authorizedAt: this.clock()
     };
     try { return this.store.createArtifactReference(input); }
@@ -1574,7 +1574,7 @@ export class ArtifactService {
     if (!artifact) return;
     this.store.upsertArtifactSearchDocument({
       artifactId: artifact.artifactId,
-      objectiveId: artifact.objectiveId,
+      workId: artifact.workId,
       title: artifact.title,
       summary: artifact.summary,
       kind: artifact.kind,
@@ -1586,14 +1586,14 @@ export class ArtifactService {
     });
   }
 
-  #validateBinding(objectiveId, visibility, input) {
+  #validateBinding(workId, visibility, input) {
     const boundTaskId = optionalText(input.boundTaskId);
     const boundSessionId = optionalText(input.boundSessionId);
     if (visibility === "task_private" && !boundTaskId) throw artifactError("ARTIFACT_TASK_REQUIRED", "task_private requires boundTaskId.", 400);
     if (visibility === "session_private" && !boundSessionId) throw artifactError("ARTIFACT_SESSION_REQUIRED", "session_private requires boundSessionId.", 400);
     if (boundTaskId) {
       const task = this.store.getTask(boundTaskId);
-      if (!task || task.objective_id !== objectiveId) throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Bound Task must belong to the current Objective.", 403);
+      if (!task || task.work_id !== workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Bound Task must belong to the current Work.", 403);
       if (task.deletion_status === "deleting") {
         throw artifactError(
           "TASK_DELETION_IN_PROGRESS",
@@ -1604,7 +1604,7 @@ export class ArtifactService {
     }
     if (boundSessionId) {
       const session = this.store.getSession(boundSessionId);
-      if (!session || (session.objectiveId ?? session.objective_id) !== objectiveId) throw artifactError("ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN", "Bound Session must belong to the current Objective.", 403);
+      if (!session || (session.workId ?? session.work_id) !== workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Bound Session must belong to the current Work.", 403);
     }
     return { boundTaskId, boundSessionId };
   }
@@ -1706,7 +1706,7 @@ export class ArtifactService {
       logicalSessionId,
       providerBindingId: contextInput.providerBindingId ?? `${context.kind}:local`,
       authorizationRevision: sha256(Buffer.from([
-        context.kind, context.actorId, context.objectiveId, context.sessionId ?? ""
+        context.kind, context.actorId, context.workId, context.sessionId ?? ""
       ].join("\0")))
     };
   }
@@ -1732,7 +1732,7 @@ export class ArtifactService {
 
   #audit(context, artifactId, action, details, fromVersion = null, toVersion = null) {
     this.store.appendArtifactAudit({
-      auditId: `artifact_audit:${this.idFactory()}`, artifactId, objectiveId: context.objectiveId,
+      auditId: `artifact_audit:${this.idFactory()}`, artifactId, workId: context.workId,
       action, actorId: context.actorId, sessionId: context.sessionId, taskId: context.taskId,
       fromVersion, toVersion, details, createdAt: this.clock()
     });
@@ -1845,7 +1845,7 @@ function contentBuffer(value) {
 function optionalText(value) { const text = typeof value === "string" ? value.trim() : ""; return text || null; }
 function artifactScope(visibility, explicitScope = null) {
   const derived = visibility === "task_private" ? "task"
-    : visibility === "session_private" ? "session" : "objective";
+    : visibility === "session_private" ? "session" : "work";
   if (explicitScope != null && explicitScope !== derived) {
     throw artifactError("ARTIFACT_SCOPE_INVALID", "Artifact scope and visibility describe different ownership boundaries.", 400);
   }

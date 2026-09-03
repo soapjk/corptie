@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { stat, writeFile } from "node:fs/promises";
+import { realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
@@ -74,4 +74,52 @@ export async function registerGitRepository({
 
   store.upsertGitWorkspaceSnapshot(snapshot);
   return store.listGitRepositories().find((repository) => repository.id === snapshot.repository.id);
+}
+
+export async function registerWorkspace({
+  dirPath,
+  initializeGit = false,
+  store,
+  registerRepository = registerGitRepository,
+  resolveRealPath = realpath,
+  inspectPath = stat
+}) {
+  let directory;
+  let canonicalRootPath;
+  try {
+    directory = await inspectPath(dirPath);
+    canonicalRootPath = await resolveRealPath(dirPath);
+  } catch {
+    throw new GitRepositoryRegistrationError("INVALID_DIRECTORY", "所选文件夹不存在或无法访问。");
+  }
+  if (!directory.isDirectory()) {
+    throw new GitRepositoryRegistrationError("INVALID_DIRECTORY", "所选路径不是文件夹。");
+  }
+
+  try {
+    const repository = await registerRepository({
+      dirPath: canonicalRootPath,
+      initializeIfNeeded: initializeGit,
+      store
+    });
+    return {
+      workspace: store.getWorkspace(repository.workspaceId),
+      repository,
+      gitCapability: "ready"
+    };
+  } catch (error) {
+    if (error?.code !== "NOT_A_GIT_REPOSITORY" || initializeGit) throw error;
+  }
+
+  const existing = store.listWorkspaces().find(
+    (workspace) => workspace.canonicalRootPath === canonicalRootPath
+  );
+  const workspace = existing ?? store.createWorkspace({
+    kind: "linkedLocal",
+    ownership: "userManaged",
+    rootPath: canonicalRootPath,
+    canonicalRootPath,
+    status: "ready"
+  });
+  return { workspace, repository: null, gitCapability: "absent" };
 }

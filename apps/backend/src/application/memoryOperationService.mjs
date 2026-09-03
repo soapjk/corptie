@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 const MEMORY_KINDS = new Set([
   "skill", "procedure", "dev_experience", "fact", "lesson", "preference", "feedback", "episodic"
 ]);
-const SCOPES = new Set(["agent", "objective", "task"]);
+const SCOPES = new Set(["agent", "work", "task"]);
 
 export class MemoryOperationService {
   constructor(options = {}) {
@@ -170,7 +170,7 @@ export class MemoryOperationService {
             sessionId: context.session.id,
             idempotencyKey,
             requestFingerprint,
-            objectiveId: context.session.objectiveId,
+            workId: context.session.workId,
             memoryId: created.id
           });
         }
@@ -198,7 +198,7 @@ export class MemoryOperationService {
     const diagnostic = {
       event: "memory_remember_failed",
       sessionId: session?.id ?? requestedSessionId ?? null,
-      targetObjectiveId: session?.objectiveId ?? optionalText(metadata?.objectiveId),
+      targetWorkId: session?.workId ?? optionalText(metadata?.workId),
       failureStage,
       errorCode: error.code ?? "MEMORY_REMEMBER_FAILED",
       actorId: optionalText(actorValue)
@@ -283,25 +283,25 @@ export class MemoryOperationService {
     if ((hasBindingResolver && !boundAgent) || (boundAgent?.agentId ?? session.agentId) !== actorId) {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The requested Session is not bound to the authenticated Agent.");
     }
-    const claimedObjectiveId = optionalText(metadata?.objectiveId);
+    const claimedWorkId = optionalText(metadata?.workId);
     const claimedTaskId = optionalText(metadata?.taskId);
-    if (claimedObjectiveId && claimedObjectiveId !== session.objectiveId) {
-      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "Objective scope does not match the current Session binding.");
+    if (claimedWorkId && claimedWorkId !== session.workId) {
+      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "Work scope does not match the current Session binding.");
     }
     if (claimedTaskId && claimedTaskId !== session.taskId) {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "Task scope does not match the current Session binding.");
     }
-    const objective = session.objectiveId ? this.store.getObjective(session.objectiveId) : null;
-    if (session.objectiveId && !objective) {
-      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references a missing Objective.");
+    const work = session.workId ? this.store.getWork(session.workId) : null;
+    if (session.workId && !work) {
+      throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references a missing Work.");
     }
     const task = session.taskId ? this.store.getTask(session.taskId) : null;
-    if (session.taskId && (!task || task.objective_id !== session.objectiveId
+    if (session.taskId && (!task || task.work_id !== session.workId
       || task.current_session_id !== session.id)) {
       throw operationError("MEMORY_SESSION_SCOPE_REQUIRED", "The current Session references an invalid Task binding.");
     }
     const owners = new Map([["agent", { ownerType: "agent", ownerId: actorId }]]);
-    if (session.objectiveId) owners.set("objective", { ownerType: "objective", ownerId: session.objectiveId });
+    if (session.workId) owners.set("work", { ownerType: "work", ownerId: session.workId });
     if (session.taskId) owners.set("task", { ownerType: "task", ownerId: session.taskId });
     return {
       actorId,
@@ -311,7 +311,7 @@ export class MemoryOperationService {
       scopes: {
         sessionId: session.id,
         agentId: actorId,
-        objectiveId: session.objectiveId ?? null,
+        workId: session.workId ?? null,
         taskId: session.taskId ?? null
       }
     };
@@ -359,7 +359,7 @@ export class MemoryOperationService {
 
 function mostSpecificScope(context) {
   if (context.owners.has("task")) return "task";
-  if (context.owners.has("objective")) return "objective";
+  if (context.owners.has("work")) return "work";
   return "agent";
 }
 
@@ -441,9 +441,9 @@ function digest(value) {
 
 function locateRememberError(error, context, metadata, failureStage) {
   const sessionId = context?.session?.id ?? optionalText(metadata?.sessionId) ?? "unknown";
-  const objectiveId = context?.session?.objectiveId ?? optionalText(metadata?.objectiveId) ?? "none";
+  const workId = context?.session?.workId ?? optionalText(metadata?.workId) ?? "none";
   if (!String(error.message).includes("[memory context:")) {
-    error.message = `${error.message} [memory context: sessionId=${sessionId}, objectiveId=${objectiveId}, stage=${failureStage}]`;
+    error.message = `${error.message} [memory context: sessionId=${sessionId}, workId=${workId}, stage=${failureStage}]`;
   }
   error.stage = failureStage;
   return error;

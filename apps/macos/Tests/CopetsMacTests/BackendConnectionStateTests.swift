@@ -9,7 +9,7 @@ import Testing
 struct BackendConnectionStateTests {
     private func snapshot(revision: Int64) -> StateSnapshotEnvelope {
         .init(revision: revision, state: .init(
-            sessions: [], tasks: [], objectives: [], agents: [], skills: [], repositories: [], integrationRuns: []
+            sessions: [], tasks: [], works: [], agents: [], skills: [], repositories: [], integrationRuns: []
         ))
     }
 

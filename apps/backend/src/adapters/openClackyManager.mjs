@@ -30,7 +30,7 @@ export class OpenClackyManager {
     this.stopRuntime = options.stopRuntime ?? null;
     // Optional bridge token provider. The token is injected by the host process and
     // must not be readable/forgeable by the model; it is bound to Session/Agent/
-    // Objective/Task/Workspace roots and re-verified by the Corptie server.
+    // Work/Task/Workspace roots and re-verified by the Corptie server.
     this.issueToolHostToken = options.issueToolHostToken ?? null;
     this.onToolCall = options.onToolCall ?? null;
     this.onProbe = options.onProbe ?? null;

@@ -29,7 +29,7 @@ async function call(method, path, body, callbacks = {}) {
     request: req,
     response: res,
     url: new URL(req.url),
-    objectiveService: { store: {} },
+    workService: { store: {} },
     startWorkSession: callbacks.start,
     getTaskStartup: callbacks.get,
     getSessionStartupBinding: callbacks.session

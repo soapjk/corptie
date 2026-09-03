@@ -12,15 +12,15 @@ async function fixture() {
     configPath: join(root, "config.json")
   });
   await store.initialize();
-  const objective = store.createObjective({ name: "Bounded collections" });
-  return { root, store, objective };
+  const work = store.createWork({ name: "Bounded collections" });
+  return { root, store, work };
 }
 
 test("Task pages are stable, active-first, bounded, and expose continuation", async () => {
-  const { root, store, objective } = await fixture();
+  const { root, store, work } = await fixture();
   try {
     const tasks = Array.from({ length: 8 }, (_, index) => store.createTask({
-      objectiveId: objective.id,
+      workId: work.id,
       title: `Task ${index}`
     }));
     for (const [index, task] of tasks.slice(0, 3).entries()) {
@@ -28,7 +28,7 @@ test("Task pages are stable, active-first, bounded, and expose continuation", as
       store.completeTaskWithAuthorization({
         operationId,
         taskId: task.id,
-        objectiveId: objective.id,
+        workId: work.id,
         sourceType: "ui_confirmation",
         nonce: `nonce:${index}`,
         callSurface: "test",
@@ -41,7 +41,7 @@ test("Task pages are stable, active-first, bounded, and expose continuation", as
     const seen = [];
     let cursor = null;
     do {
-      const page = store.listTaskPage({ objectiveId: objective.id, limit: 3, cursor });
+      const page = store.listTaskPage({ workId: work.id, limit: 3, cursor });
       assert.ok(page.items.length <= 3);
       seen.push(...page.items);
       cursor = page.nextCursor;
@@ -57,11 +57,11 @@ test("Task pages are stable, active-first, bounded, and expose continuation", as
       `EXPLAIN QUERY PLAN
        SELECT tasks.*, CASE WHEN tasks.lifecycle_state='done' THEN 1 ELSE 0 END AS completion_rank
        FROM tasks
-       WHERE COALESCE(tasks.deletion_status, '') <> 'deleted' AND tasks.objective_id=?
+       WHERE COALESCE(tasks.deletion_status, '') <> 'deleted' AND tasks.work_id=?
        ORDER BY completion_rank ASC, tasks.updated_at DESC, tasks.id DESC LIMIT ?`,
-      [objective.id, 51]
+      [work.id, 51]
     ).map((row) => row.detail).join("\n");
-    assert.match(plan, /idx_tasks_objective_browse_page/);
+    assert.match(plan, /idx_tasks_work_browse_page/);
     assert.doesNotMatch(plan, /USE TEMP B-TREE/);
   } finally {
     await store.close();
@@ -70,22 +70,22 @@ test("Task pages are stable, active-first, bounded, and expose continuation", as
 });
 
 test("Memory pages use an owner-scoped keyset and never return more than requested", async () => {
-  const { root, store, objective } = await fixture();
+  const { root, store, work } = await fixture();
   try {
     for (let index = 0; index < 7; index += 1) {
       store.createMemory({
-        ownerType: "objective",
-        ownerId: objective.id,
+        ownerType: "work",
+        ownerId: work.id,
         kind: "fact",
         content: `Memory ${index}`,
         sourceType: "user"
       });
     }
     const first = store.listMemoryPage({
-      ownerType: "objective", ownerId: objective.id, limit: 4
+      ownerType: "work", ownerId: work.id, limit: 4
     });
     const second = store.listMemoryPage({
-      ownerType: "objective", ownerId: objective.id, limit: 4, cursor: first.nextCursor
+      ownerType: "work", ownerId: work.id, limit: 4, cursor: first.nextCursor
     });
     assert.equal(first.items.length, 4);
     assert.equal(first.hasMore, true);
@@ -96,7 +96,7 @@ test("Memory pages use an owner-scoped keyset and never return more than request
       `EXPLAIN QUERY PLAN SELECT * FROM memories
        WHERE owner_type=? AND owner_id=?
        ORDER BY updated_at DESC, id DESC LIMIT ?`,
-      ["objective", objective.id, 51]
+      ["work", work.id, 51]
     ).map((row) => row.detail).join("\n");
     assert.match(plan, /idx_memories_owner_updated_page/);
     assert.doesNotMatch(plan, /USE TEMP B-TREE/);

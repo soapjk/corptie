@@ -1,32 +1,29 @@
 import SwiftUI
 
-// Objective 创建弹窗（模块 C）：名称 + 描述 + 理想状态 + 优先级 + 高级折叠（标签/预算）。
+// Work 创建弹窗：名称、唯一 Workspace 与 Contributor Agent。
 
-struct ObjectiveCreateView: View {
+struct WorkCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
     @State private var detail = ""
-    @State private var idealState = ""
-    @State private var priority: String? = nil
     @State private var tagsText = ""
     @State private var showAdvanced = false
-    @State private var workspaceIds = Set<String>()
-    @State private var relatedObjectiveIds = Set<String>()
+    @State private var workspaceId: String?
     @State private var contributorAgentIds = Set<String>()
     @State private var avatarSourcePath: String?
-    @State private var creationId = "objective:\(UUID().uuidString.lowercased())"
+    @State private var creationId = "work:\(UUID().uuidString.lowercased())"
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(L10n("创建 Objective"))
+                    Text(L10n("创建 Work"))
                         .font(.title3.bold())
 
                     HStack(spacing: 12) {
-                        objectiveAvatar(path: avatarSourcePath, size: 52)
+                        workAvatar(path: avatarSourcePath, size: 52)
                         Button(L10n("选择头像")) { chooseAvatar() }
                         if avatarSourcePath != nil {
                             Button(L10n("清除头像")) { avatarSourcePath = nil }
@@ -34,14 +31,12 @@ struct ObjectiveCreateView: View {
                     }
 
                     FormAssistPanel(
-                        formType: .objective,
+                        formType: .work,
                         promptHint: L10n("例如：统一三个创建页的一键填充体验，并确保生成内容可检查、可编辑。"),
                         currentValues: {
                             [
                                 "name": name,
                                 "description": detail,
-                                "idealState": idealState,
-                                "priority": priority ?? "",
                                 "tags": tagsText
                             ]
                         },
@@ -60,41 +55,14 @@ struct ObjectiveCreateView: View {
                             .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
                             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
                     }
-                    field(L10n("理想状态")) {
-                        TextEditor(text: $idealState)
-                            .font(.body)
-                            .frame(height: 70)
-                            .scrollContentBackground(.hidden)
-                            .padding(6)
-                            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
-                            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.2), lineWidth: 1))
-                    }
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n("优先级"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker("", selection: $priority) {
-                            Text(L10n("未设置")).tag(String?.none)
-                            Text(L10n("低")).tag(String?.some("low"))
-                            Text(L10n("中")).tag(String?.some("medium"))
-                            Text(L10n("高")).tag(String?.some("high"))
-                            Text(L10n("紧急")).tag(String?.some("urgent"))
-                        }
-                        .labelsHidden()
-                        .frame(maxWidth: 160, alignment: .leading)
-                    }
-
                     Divider()
 
-                    ObjectiveResourcesEditor(
-                        workspaceIds: $workspaceIds,
-                        relatedObjectiveIds: $relatedObjectiveIds,
-                        contributorAgentIds: $contributorAgentIds,
-                        excludeObjectiveId: nil
+                    WorkResourcesEditor(
+                        workspaceId: $workspaceId,
+                        contributorAgentIds: $contributorAgentIds
                     )
                     if contributorAgentIds.isEmpty {
-                        Text(L10n("请至少选择一个 Contributor Agent；创建 Objective 时会由其中一个 Agent 建立 Objective Chat。"))
+                        Text(L10n("请至少选择一个 Contributor Agent；创建 Work 时会由其中一个 Agent 建立 Work Chat。"))
                             .font(.caption)
                             .foregroundStyle(.red)
                     }
@@ -141,32 +109,27 @@ struct ObjectiveCreateView: View {
 
         let requestId = creationId
         let requestDetail = detail
-        let requestIdealState = idealState
         let requestAvatarSourcePath = avatarSourcePath
-        let requestPriority = priority
-        let requestWorkspaceIds = Array(workspaceIds)
-        let requestRelatedObjectiveIds = Array(relatedObjectiveIds)
+        let requestWorkspaceId = workspaceId
         let requestContributorAgentIds = Array(contributorAgentIds)
         return BackgroundTaskCenter.shared.start(
             id: requestId,
-            title: L10nFormat("创建 Objective：%@", trimmed)
+            title: L10nFormat("创建 Work：%@", trimmed)
         ) {
-            let objective = await client.createObjective(
+            let work = await client.createWork(
                 id: requestId,
                 name: trimmed,
                 description: requestDetail.isEmpty ? nil : requestDetail,
-                idealState: requestIdealState.isEmpty ? nil : requestIdealState,
                 avatarPath: requestAvatarSourcePath,
-                priority: requestPriority,
+                profile: "general",
                 tags: tags,
-                workspaceIds: requestWorkspaceIds,
-                relatedObjectiveIds: requestRelatedObjectiveIds,
+                workspaceId: requestWorkspaceId,
                 contributorAgentIds: requestContributorAgentIds
             )
-            if objective != nil {
-                return .success(L10nFormat("Objective“%@”已创建。", trimmed))
+            if work != nil {
+                return .success(L10nFormat("Work“%@”已创建。", trimmed))
             }
-            return .failure(client.errorMessage ?? L10n("Objective 创建失败，可重试。"))
+            return .failure(client.errorMessage ?? L10n("Work 创建失败，可重试。"))
         }
     }
 
@@ -181,7 +144,7 @@ struct ObjectiveCreateView: View {
         }
     }
 
-    private func objectiveAvatar(path: String?, size: CGFloat) -> some View {
+    private func workAvatar(path: String?, size: CGFloat) -> some View {
         Group {
             if let path, !path.isEmpty {
                 AnimatedAvatarImage(path: path)
@@ -201,10 +164,6 @@ struct ObjectiveCreateView: View {
     private func applyGeneratedFields(_ fields: [String: String]) {
         name = fields["name"] ?? name
         detail = fields["description"] ?? detail
-        idealState = fields["idealState"] ?? idealState
-        if let generatedPriority = fields["priority"] {
-            priority = generatedPriority.isEmpty ? nil : generatedPriority
-        }
         tagsText = fields["tags"] ?? tagsText
         if !tagsText.isEmpty { showAdvanced = true }
     }

@@ -140,7 +140,7 @@ enum SessionCollectionDiffer {
         if previous.external != next.external
             || previous.agentId != next.agentId
             || previous.sessionKind != next.sessionKind
-            || previous.objectiveId != next.objectiveId
+            || previous.workId != next.workId
             || previous.taskId != next.taskId
             || previous.lastAgentMessageSequence != next.lastAgentMessageSequence
             || previous.lastReadMessageSequence != next.lastReadMessageSequence

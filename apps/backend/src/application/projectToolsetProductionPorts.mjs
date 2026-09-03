@@ -112,7 +112,7 @@ export class ProjectToolsetAuthorizationPort {
   async assertProjectToolsetAccess(input) {
     if (typeof this.resolveAuthority !== "function") throw contractError("TOOLSET_PERMISSION_DENIED", "Toolset authority resolver is unavailable.");
     const authority = await this.resolveAuthority(input.logicalSessionId);
-    for (const field of ["logicalSessionId", "objectiveId", "taskId", "repositoryId", "worktreeId"]) {
+    for (const field of ["logicalSessionId", "workId", "taskId", "repositoryId", "worktreeId"]) {
       if (authority?.[field] !== input[field]) throw contractError("TOOLSET_PERMISSION_DENIED", `${field} differs from authenticated Toolset authority.`);
     }
     if (authority?.capabilityClass !== input.capabilityClass) throw contractError("TOOLSET_PERMISSION_DENIED", "Toolset capability differs from authenticated authority.");

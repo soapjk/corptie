@@ -11,23 +11,23 @@ enum ArtifactExportOutcome: Equatable {
 final class ArtifactAPIClient: ObservableObject {
     static let shared = ArtifactAPIClient()
 
-    @Published private(set) var artifactsByObjective: [String: [ObjectiveArtifact]] = [:]
-    @Published private(set) var artifactsByCorptieTask: [String: [ObjectiveArtifact]] = [:]
-    @Published private(set) var objectiveLoadStates: [String: ArtifactCollectionLoadState] = [:]
+    @Published private(set) var artifactsByWork: [String: [WorkArtifact]] = [:]
+    @Published private(set) var artifactsByCorptieTask: [String: [WorkArtifact]] = [:]
+    @Published private(set) var workLoadStates: [String: ArtifactCollectionLoadState] = [:]
     @Published private(set) var taskLoadStates: [String: ArtifactCollectionLoadState] = [:]
     @Published var errorMessage: String?
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
     private var requestTokens: [String: UUID] = [:]
     private var publishIdempotencyKeys: [String: String] = [:]
-    private var objectiveNextOffsets: [String: Int] = [:]
+    private var workNextOffsets: [String: Int] = [:]
     private var taskNextOffsets: [String: Int] = [:]
     private var externalRefreshTask: Task<Void, Never>?
     private static let requestTimeout: TimeInterval = 5
 
-    func artifact(artifactId: String, objectiveId: String, taskId: String?) -> ObjectiveArtifact? {
+    func artifact(artifactId: String, workId: String, taskId: String?) -> WorkArtifact? {
         let artifacts = taskId.flatMap { artifactsByCorptieTask[$0] }
-            ?? artifactsByObjective[objectiveId]
+            ?? artifactsByWork[workId]
             ?? []
         return artifacts.first { $0.artifactId == artifactId }
     }
@@ -41,13 +41,13 @@ final class ArtifactAPIClient: ObservableObject {
         externalRefreshTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(80))
             guard !Task.isCancelled, let self else { return }
-            let objectiveIds = Set(self.artifactsByObjective.keys)
-                .union(self.objectiveLoadStates.keys)
+            let workIds = Set(self.artifactsByWork.keys)
+                .union(self.workLoadStates.keys)
             let taskIds = Set(self.artifactsByCorptieTask.keys)
                 .union(self.taskLoadStates.keys)
-            for objectiveId in objectiveIds.sorted() {
+            for workId in workIds.sorted() {
                 guard !Task.isCancelled else { return }
-                await self.refresh(objectiveId: objectiveId)
+                await self.refresh(workId: workId)
             }
             for taskId in taskIds.sorted() {
                 guard !Task.isCancelled else { return }
@@ -56,15 +56,15 @@ final class ArtifactAPIClient: ObservableObject {
         }
     }
 
-    func refresh(objectiveId: String) async {
-        let key = "objective:\(objectiveId)"
+    func refresh(workId: String) async {
+        let key = "work:\(workId)"
         let token = UUID()
         requestTokens[key] = token
-        let previous = objectiveLoadStates[objectiveId]?.value ?? artifactsByObjective[objectiveId]
-        objectiveLoadStates[objectiveId] = .loading(previousValue: previous)
+        let previous = workLoadStates[workId]?.value ?? artifactsByWork[workId]
+        workLoadStates[workId] = .loading(previousValue: previous)
         do {
             var components = URLComponents(
-                url: Self.endpointURL(baseURL: baseURL, path: "objectives/\(objectiveId)/artifacts"),
+                url: Self.endpointURL(baseURL: baseURL, path: "works/\(workId)/artifacts"),
                 resolvingAgainstBaseURL: false
             )!
             components.queryItems = [URLQueryItem(name: "limit", value: "100")]
@@ -72,14 +72,14 @@ final class ArtifactAPIClient: ObservableObject {
             try Self.validateArtifactEnvelope(envelope)
             try Task.checkCancellation()
             guard requestTokens[key] == token else { return }
-            artifactsByObjective[objectiveId] = envelope.artifacts
-            objectiveNextOffsets[objectiveId] = envelope.nextOffset
-            objectiveLoadStates[objectiveId] = .loaded(envelope.artifacts)
+            artifactsByWork[workId] = envelope.artifacts
+            workNextOffsets[workId] = envelope.nextOffset
+            workLoadStates[workId] = .loaded(envelope.artifacts)
         } catch is CancellationError {
             return
         } catch {
             guard requestTokens[key] == token else { return }
-            objectiveLoadStates[objectiveId] = .failed(message: Self.displayMessage(for: error), previousValue: previous)
+            workLoadStates[workId] = .failed(message: Self.displayMessage(for: error), previousValue: previous)
         }
     }
 
@@ -114,17 +114,17 @@ final class ArtifactAPIClient: ObservableObject {
         requestTokens.removeValue(forKey: "task:\(taskId)")
     }
 
-    func hasMore(objectiveId: String, taskId: String?) -> Bool {
+    func hasMore(workId: String, taskId: String?) -> Bool {
         if let taskId { return taskNextOffsets[taskId] != nil }
-        return objectiveNextOffsets[objectiveId] != nil
+        return workNextOffsets[workId] != nil
     }
 
-    func loadMore(objectiveId: String, taskId: String?) async {
+    func loadMore(workId: String, taskId: String?) async {
         let offset: Int?
         if let taskId { offset = taskNextOffsets[taskId] }
-        else { offset = objectiveNextOffsets[objectiveId] }
+        else { offset = workNextOffsets[workId] }
         guard let offset else { return }
-        let path = taskId.map { "tasks/\($0)/artifacts" } ?? "objectives/\(objectiveId)/artifacts"
+        let path = taskId.map { "tasks/\($0)/artifacts" } ?? "works/\(workId)/artifacts"
         do {
             var components = URLComponents(
                 url: Self.endpointURL(baseURL: baseURL, path: path),
@@ -144,19 +144,19 @@ final class ArtifactAPIClient: ObservableObject {
                 taskNextOffsets[taskId] = envelope.nextOffset
                 taskLoadStates[taskId] = .loaded(artifactsByCorptieTask[taskId] ?? [])
             } else {
-                var known = Set((artifactsByObjective[objectiveId] ?? []).map(\.artifactId))
-                artifactsByObjective[objectiveId, default: []].append(
+                var known = Set((artifactsByWork[workId] ?? []).map(\.artifactId))
+                artifactsByWork[workId, default: []].append(
                     contentsOf: envelope.artifacts.filter { known.insert($0.artifactId).inserted }
                 )
-                objectiveNextOffsets[objectiveId] = envelope.nextOffset
-                objectiveLoadStates[objectiveId] = .loaded(artifactsByObjective[objectiveId] ?? [])
+                workNextOffsets[workId] = envelope.nextOffset
+                workLoadStates[workId] = .loaded(artifactsByWork[workId] ?? [])
             }
         } catch {
             errorMessage = Self.displayMessage(for: error)
         }
     }
 
-    func detail(artifact: ObjectiveArtifact, version: Int, offset: Int = 0, turnExecutionId: String) async -> ArtifactDetailEnvelope? {
+    func detail(artifact: WorkArtifact, version: Int, offset: Int = 0, turnExecutionId: String) async -> ArtifactDetailEnvelope? {
         guard let pinnedVersion = artifact.versions.first(where: { $0.version == version }) else {
             errorMessage = "The selected immutable Artifact version is unavailable."
             return nil
@@ -182,23 +182,23 @@ final class ArtifactAPIClient: ObservableObject {
         } catch { errorMessage = error.localizedDescription; return nil }
     }
 
-    func create(objectiveId: String, title: String, summary: String, content: String, visibility: ArtifactVisibility, boundTaskId: String?) async -> ObjectiveArtifact? {
+    func create(workId: String, title: String, summary: String, content: String, visibility: ArtifactVisibility, boundTaskId: String?) async -> WorkArtifact? {
         var body: [String: Any] = [
             "title": title, "summary": summary, "content": content, "visibility": visibility.rawValue
         ]
         if let boundTaskId { body["boundTaskId"] = boundTaskId }
-        return await mutate("objectives/\(objectiveId)/artifacts", method: "POST", body: body)
+        return await mutate("works/\(workId)/artifacts", method: "POST", body: body)
     }
 
-    func importFile(objectiveId: String, fileURL: URL, visibility: ArtifactVisibility, boundTaskId: String?) async -> ArtifactImportEnvelope? {
+    func importFile(workId: String, fileURL: URL, visibility: ArtifactVisibility, boundTaskId: String?) async -> ArtifactImportEnvelope? {
         var body: [String: Any] = ["importPath": fileURL.path, "title": fileURL.lastPathComponent, "visibility": visibility.rawValue]
         if let boundTaskId { body["boundTaskId"] = boundTaskId }
         let result: ArtifactImportEnvelope? = await mutate(
-            "objectives/\(objectiveId)/artifacts", method: "POST", body: body)
+            "works/\(workId)/artifacts", method: "POST", body: body)
         return result
     }
 
-    func publish(artifact: ObjectiveArtifact, taskId: String?, content: String, summary: String) async -> Bool {
+    func publish(artifact: WorkArtifact, taskId: String?, content: String, summary: String) async -> Bool {
         guard let taskId,
               artifact.availableActions?.contains("publish_and_repin") == true else {
             guard taskId == nil || artifact.availableActions?.contains("publish") == true else {
@@ -246,7 +246,7 @@ final class ArtifactAPIClient: ObservableObject {
     }
 
     func markSuperseded(artifactId: String) async -> Bool {
-        let result: ObjectiveArtifact? = await mutate("artifacts/\(artifactId)", method: "PATCH", body: ["status": "superseded"])
+        let result: WorkArtifact? = await mutate("artifacts/\(artifactId)", method: "PATCH", body: ["status": "superseded"])
         return result != nil
     }
 
@@ -260,7 +260,7 @@ final class ArtifactAPIClient: ObservableObject {
         return result != nil
     }
 
-    func export(artifact: ObjectiveArtifact, version: Int, destinationURL: URL, confirmRepositoryWrite: Bool, confirmOverwrite: Bool) async -> ArtifactExportOutcome {
+    func export(artifact: WorkArtifact, version: Int, destinationURL: URL, confirmRepositoryWrite: Bool, confirmOverwrite: Bool) async -> ArtifactExportOutcome {
         do {
             let pin = try pinnedReference(artifact: artifact, version: version)
             var request = URLRequest(url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifact.artifactId)/export"))
@@ -288,7 +288,7 @@ final class ArtifactAPIClient: ObservableObject {
         }
     }
 
-    func localFile(artifact: ObjectiveArtifact, version: Int) async throws -> ArtifactLocalFileReceipt {
+    func localFile(artifact: WorkArtifact, version: Int) async throws -> ArtifactLocalFileReceipt {
         let pin = try pinnedReference(artifact: artifact, version: version)
         var components = URLComponents(
             url: Self.endpointURL(baseURL: baseURL, path: "artifacts/\(artifact.artifactId)/local-file"),
@@ -304,7 +304,7 @@ final class ArtifactAPIClient: ObservableObject {
         return try await decode(ArtifactLocalFileReceipt.self, data: data)
     }
 
-    private func pinnedReference(artifact: ObjectiveArtifact, version: Int) throws -> (referenceId: String, contentHash: String) {
+    private func pinnedReference(artifact: WorkArtifact, version: Int) throws -> (referenceId: String, contentHash: String) {
         guard let reference = artifact.references.first(where: { $0.revokedAt == nil && $0.pinnedVersion == version }),
               let artifactVersion = artifact.versions.first(where: { $0.version == version && $0.contentHash == reference.pinnedHash }) else {
             throw EntityLaunchError(message: "Artifact content requires an active Reference pinned to this exact version and hash.", code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN")

@@ -98,7 +98,7 @@ test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact c
   });
   for (const id of providerIds) await service.prepareSession(id, {
     actorId: "agent:artifact", sessionId: "session:artifact",
-    objectiveId: "objective:artifact", sessionKind: "worker"
+    workId: "work:artifact", sessionKind: "worker"
   });
   const expected = artifactDynamicTools.map((tool) => tool.name);
   for (const id of providerIds) {
@@ -117,7 +117,7 @@ test("Artifact Host Tool authorization exposes provider-neutral scoped managemen
     actorId: "agent:worker",
     metadata: {
       sessionKind: "worker", sessionId: "session:worker",
-      objectiveId: "objective:one", taskId: "task:one"
+      workId: "work:one", taskId: "task:one"
     }
   };
   assert.deepEqual(catalog.definitions(worker).map((tool) => tool.name), artifactDynamicTools.map((tool) => tool.name));
@@ -126,16 +126,16 @@ test("Artifact Host Tool authorization exposes provider-neutral scoped managemen
   }), { ok: true });
   assert.deepEqual(catalog.definitions({
     actorId: "agent:manager",
-    metadata: { sessionKind: "objectiveChat", sessionId: "session:manager", objectiveId: "objective:one" }
+    metadata: { sessionKind: "workChat", sessionId: "session:manager", workId: "work:one" }
   }).map((tool) => tool.name), artifactDynamicTools.map((tool) => tool.name));
 });
 
 test("Tool Host carries immutable Session scope metadata into authorization and Provider attachment", async () => {
   const calls = [];
   const catalog = new HostToolCatalog([{
-    id: "objective-chat",
-    tools: [{ name: "corptie_objective_context" }],
-    authorize: ({ metadata }) => metadata?.sessionKind === "objectiveChat" && metadata?.objectiveId === "objective:1",
+    id: "work-chat",
+    tools: [{ name: "corptie_work_context" }],
+    authorize: ({ metadata }) => metadata?.sessionKind === "workChat" && metadata?.workId === "work:1",
     execute: () => ({})
   }]);
   const registry = new AgentProviderRegistry([provider("hosted", [
@@ -146,10 +146,10 @@ test("Tool Host carries immutable Session scope metadata into authorization and 
   })]);
   const service = new ToolHostService({ registry, catalog });
   const prepared = await service.prepareSession("hosted", {
-    actorId: "assistant", sessionKind: "objectiveChat", objectiveId: "objective:1"
+    actorId: "assistant", sessionKind: "workChat", workId: "work:1"
   });
-  assert.equal(prepared.providerAttachment.tools[0].name, "corptie_objective_context");
-  assert.equal(calls[0].metadata.objectiveId, "objective:1");
+  assert.equal(prepared.providerAttachment.tools[0].name, "corptie_work_context");
+  assert.equal(calls[0].metadata.workId, "work:1");
   assert.ok(Object.isFrozen(calls[0].metadata));
 });
 
@@ -406,7 +406,7 @@ test("Codex, Claude, and OpenClacky receive one provider-neutral Task completion
     await service.prepareSession(id, {
       actorId: "agent:worker", sessionId: "provider-session:worker",
       logicalSessionId: "session:worker", sessionKind: "worker",
-      objectiveId: "objective:one", taskId: "task:one"
+      workId: "work:one", taskId: "task:one"
     });
   }
   const expected = attachments.get(ids[0]).tools;

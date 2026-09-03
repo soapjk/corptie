@@ -24,7 +24,7 @@ test("the shared archive policy varies by Session kind", () => {
     { archived: true, reason: "taskCompleted" }
   );
   assert.deepEqual(
-    resolveSessionArchiveState({ sessionKind: "objectiveChat", archived: false }),
+    resolveSessionArchiveState({ sessionKind: "workChat", archived: false }),
     { archived: false, reason: null }
   );
 });
@@ -34,7 +34,7 @@ test("only Assistant Sessions allow manual archive operations", () => {
     id: "assistant:one",
     sessionKind: "assistantChat"
   }));
-  for (const sessionKind of ["worker", "objectiveChat", "legacy"]) {
+  for (const sessionKind of ["worker", "workChat", "legacy"]) {
     assert.throws(
       () => assertManualSessionArchiveAllowed({ id: `${sessionKind}:one`, sessionKind }),
       (error) => error.code === "SESSION_MANUAL_ARCHIVE_UNSUPPORTED" && error.statusCode === 409
@@ -50,10 +50,10 @@ test("Worker archive membership follows Task completion and publishes live State
   });
   try {
     await store.initialize();
-    store.createObjective({ id: "objective:one", name: "Objective" });
+    store.createWork({ id: "work:one", name: "Work" });
     store.createTask({
       id: "task:one",
-      objectiveId: "objective:one",
+      workId: "work:one",
       title: "Work item",
       lifecycleState: "in_progress"
     });
@@ -64,7 +64,7 @@ test("Worker archive membership follows Task completion and publishes live State
       provider: "codex-app-server",
       status: "complete",
       sessionKind: "worker",
-      objectiveId: "objective:one",
+      workId: "work:one",
       taskId: "task:one"
     });
     store.upsertSession({

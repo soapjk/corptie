@@ -14,7 +14,7 @@
 "Archive" = "归档";
 "Archived Sessions" = "已归档会话";
 "Archived sessions are hidden from the main screen until you restore them." = "已归档会话不会显示在主界面，恢复后才会重新出现。";
-"Group by Objective" = "按 Objective 分类";
+"Group by Work" = "按 Work 分类";
 "All" = "全部";
 "No Grouping" = "不分类";
 "Work Session Grouping" = "工作会话分类方式";
@@ -459,14 +459,14 @@
 "Project Worktrees" = "项目 Worktree";
 "Clean Up Merged (%d)" = "清除已合并项 (%d)";
 "Integrate Completed (%d)" = "一键集成已完成项 (%d)";
-"Serially merge every completed Worktree in this Objective into main" = "按顺序将此 Objective 下所有已完成的 Worktree 合并到主分支";
+"Serially merge every completed Worktree in this Work into main" = "按顺序将此 Work 下所有已完成的 Worktree 合并到主分支";
 "Resolve the current Integration Run conflicts before starting another one" = "请先处理当前集成批次的冲突，再开始新一轮集成";
 "Integrate all completed Worktrees?" = "集成所有已完成的 Worktree？";
 "Start Serial Integration" = "开始串行集成";
 "Worktree integration is already running." = "Worktree 一键集成正在执行，请等待当前操作完成。";
 "Select a Session before starting Worktree integration." = "请先选择一个 Session，再启动 Worktree 一键集成。";
 "The selected Session is not attached to a repository workspace." = "当前 Session 未关联仓库工作区，无法启动 Worktree 一键集成。";
-"The selected Session is not attached to an Objective." = "当前 Session 未关联 Objective，无法启动 Worktree 一键集成。";
+"The selected Session is not attached to an Work." = "当前 Session 未关联 Work，无法启动 Worktree 一键集成。";
 "Integrated %d Worktrees; %d have conflicts; %d failed" = "已集成 %d 个 Worktree；%d 个存在冲突；%d 个失败";
 "Integration finished with %d failed Worktrees. Review the failure details below." = "集成已结束，但有 %d 个 Worktree 失败。请查看下方失败详情。";
 "No completed Worktrees are eligible for integration. Complete the CorptieTask, stop its active Session, and commit its local changes before trying again." = "当前没有符合条件的已完成 Worktree。请先完成 CorptieTask、停止仍在运行的 Session，并提交本地修改后重试。";
@@ -485,15 +485,15 @@
 "%d Worktrees require conflict resolution" = "%d 个 Worktree 需要处理冲突";
 "Resolve Conflicts…" = "一键处理冲突…";
 "Open Conflict CorptieTask" = "打开冲突处理 CorptieTask";
-"Add an IC Agent to this Objective before creating the resolution CorptieTask" = "请先为此 Objective 添加 IC Agent，再创建冲突处理 CorptieTask";
+"Add an IC Agent to this Work before creating the resolution CorptieTask" = "请先为此 Work 添加 IC Agent，再创建冲突处理 CorptieTask";
 "Create and immediately start a CorptieTask to resolve these merge conflicts" = "创建并立即启动一个 CorptieTask 来处理这些合并冲突";
 "Create Conflict-Resolution CorptieTask" = "创建冲突处理 CorptieTask";
-"This CorptieTask will be created under Objective %@ and start immediately." = "此 CorptieTask 将创建在 Objective「%@」下，并立即开始运行。";
+"This CorptieTask will be created under Work %@ and start immediately." = "此 CorptieTask 将创建在 Work「%@」下，并立即开始运行。";
 "This operation creates one dedicated CorptieTask to resolve the merge conflicts in the following %d branches and merge the result into main:" = "此操作会单独建立一个 CorptieTask，处理以下 %d 个分支的合并冲突，并将结果合并到主分支：";
 "CorptieTask title" = "CorptieTask 标题";
 "Resolve completed Worktree merge conflicts" = "处理已完成 Worktree 的合并冲突";
 "After confirmation, Corptie will bind this CorptieTask to Agent %@ and start its Work Session in a dedicated Integration Worktree." = "确认后，Corptie 会将此 CorptieTask 绑定到 Agent「%@」，并在独立的集成 Worktree 中启动其 Work Session。";
-"This Objective has no available IC Agent." = "此 Objective 中没有可用的 IC Agent。";
+"This Work has no available IC Agent." = "此 Work 中没有可用的 IC Agent。";
 "Create and Start CorptieTask" = "创建并开始运行";
 "Connecting to the server…" = "正在连接服务器…";
 "Connect to the server" = "连接服务器";
@@ -718,7 +718,7 @@
 "Tibo forecast: %@" = "Tibo预告：%@";
 "Tibo forecast: No upcoming reset announcement" = "Tibo预告：暂无即将重置的消息";
 
-/* Console, Sessions, Objective, CorptieTask, and Agent surfaces */
+/* Console, Sessions, Work, CorptieTask, and Agent surfaces */
 "\u63A7\u5236\u53F0" = "\u63A7\u5236\u53F0";
 "\u8BBE\u7F6E" = "\u8BBE\u7F6E";
 "\u6682\u65E0\u4F1A\u8BDD" = "\u6682\u65E0\u4F1A\u8BDD";
@@ -748,7 +748,7 @@
 "\u641C\u7D22 Agent \u540D\u79F0" = "\u641C\u7D22 Agent \u540D\u79F0";
 "\u65B0\u5EFA Agent" = "\u65B0\u5EFA Agent";
 "\u5B8C\u6210" = "\u5B8C\u6210";
-"\u521B\u5EFA Objective" = "\u521B\u5EFA Objective";
+"\u521B\u5EFA Work" = "\u521B\u5EFA Work";
 "\u76EE\u6807\u540D\u79F0" = "\u76EE\u6807\u540D\u79F0";
 "\u4F18\u5148\u7EA7" = "\u4F18\u5148\u7EA7";
 "\u672A\u8BBE\u7F6E" = "\u672A\u8BBE\u7F6E";
@@ -786,7 +786,7 @@
 "\u5F00\u59CB\u65B0\u4F1A\u8BDD" = "\u5F00\u59CB\u65B0\u4F1A\u8BDD";
 "\u6253\u5F00\u8BE6\u60C5" = "\u6253\u5F00\u8BE6\u60C5";
 "Workspace\uFF08Git \u4ED3\u5E93\uFF09" = "Workspace\uFF08Git \u4ED3\u5E93\uFF09";
-"\u6240\u5C5E Objective \u5C1A\u672A\u6302\u9760\u4ED3\u5E93\uFF0C\u8BF7\u5148\u5728 Objective \u4E2D\u6DFB\u52A0" = "\u6240\u5C5E Objective \u5C1A\u672A\u6302\u9760\u4ED3\u5E93\uFF0C\u8BF7\u5148\u5728 Objective \u4E2D\u6DFB\u52A0";
+"\u6240\u5C5E Work \u5C1A\u672A\u6302\u9760\u4ED3\u5E93\uFF0C\u8BF7\u5148\u5728 Work \u4E2D\u6DFB\u52A0" = "\u6240\u5C5E Work \u5C1A\u672A\u6302\u9760\u4ED3\u5E93\uFF0C\u8BF7\u5148\u5728 Work \u4E2D\u6DFB\u52A0";
 "\u672A\u9009\u62E9" = "\u672A\u9009\u62E9";
 "\u7ED1\u5B9A Workspace" = "\u7ED1\u5B9A Workspace";
 "\u4FDD\u5B58" = "\u4FDD\u5B58";
@@ -803,9 +803,9 @@
 "\u540D\u79F0" = "\u540D\u79F0";
 "\u65E0" = "\u65E0";
 "\u6E05\u9664\u5934\u50CF" = "\u6E05\u9664\u5934\u50CF";
-"\u7F16\u8F91 Objective" = "\u7F16\u8F91 Objective";
+"\u7F16\u8F91 Work" = "\u7F16\u8F91 Work";
 "\u5DF2\u4FDD\u5B58" = "\u5DF2\u4FDD\u5B58";
-"\u5220\u9664 Objective" = "\u5220\u9664 Objective";
+"\u5220\u9664 Work" = "\u5220\u9664 Work";
 "\u7F16\u8F91" = "\u7F16\u8F91";
 "\u901A\u8FC7\u52A9\u624B\u5BF9\u8BDD\u6216\u5FEB\u6377\u8F93\u5165\u521B\u5EFA\u7B2C\u4E00\u4E2A\u76EE\u6807" = "\u901A\u8FC7\u52A9\u624B\u5BF9\u8BDD\u6216\u5FEB\u6377\u8F93\u5165\u521B\u5EFA\u7B2C\u4E00\u4E2A\u76EE\u6807";
 "\u9009\u62E9\u76EE\u6807" = "\u9009\u62E9\u76EE\u6807";
@@ -818,7 +818,7 @@
 "负责 Agent" = "负责 Agent";
 "请选择 Agent" = "请选择 Agent";
 "请选择负责该 CorptieTask 的 Agent。" = "请选择负责该 CorptieTask 的 Agent。";
-"当前 Objective 没有可用的 Independent Contributor Agent。" = "当前 Objective 没有可用的 Independent Contributor Agent。";
+"当前 Work 没有可用的 Independent Contributor Agent。" = "当前 Work 没有可用的 Independent Contributor Agent。";
 "仅创建不执行" = "仅创建不执行";
 "创建后立即执行" = "创建后立即执行";
 "重试执行" = "重试执行";
@@ -851,14 +851,14 @@
 "Console" = "控制台";
 "Sessions" = "会话";
 "Session DSH" = "会话 DSH";
-"Objective" = "目标";
+"Work" = "目标";
 "Acceptance Criteria" = "验收标准";
 "理想状态" = "理想状态";
 "Not Started" = "待开始";
 "In Progress" = "进行中";
 "Completed" = "已完成";
-"No Objective" = "未关联 Objective";
-"Unknown Objective" = "未知 Objective";
+"No Work" = "未关联 Work";
+"Unknown Work" = "未知 Work";
 "Awaiting Completion Approval" = "待确认完成";
 "Assistant" = "助手";
 "Independent Contributor" = "独立贡献者";
@@ -868,7 +868,7 @@
 "Inactive" = "停用";
 "Hide Sidebar" = "收起侧栏";
 "Show Sidebar" = "显示侧栏";
-"No Objectives" = "暂无目标";
+"No Works" = "暂无目标";
 "New %@" = "新建 %@";
 "No Workspace Bound" = "未绑定 Workspace";
 "No Content" = "暂无内容";
@@ -1021,10 +1021,10 @@
 "保留当前内容" = "保留当前内容";
 "已恢复生成前的表单内容。" = "已恢复生成前的表单内容。";
 "Worker" = "工作";
-"Objective Session" = "目标会话";
+"Work Session" = "目标会话";
 "Session Type" = "会话类型";
 "No Sessions in This Category" = "此分类暂无会话";
-"Create an Assistant, Objective, or Worker Session" = "新建助手、目标或工作会话";
+"Create an Assistant, Work, or Worker Session" = "新建助手、目标或工作会话";
 "讨论" = "讨论";
 "自动验收已通过" = "自动验收已通过";
 "人工验收未通过" = "人工验收未通过";
@@ -1056,7 +1056,7 @@
 "Unable to restore CorptieTask execution" = "无法恢复 CorptieTask 执行";
 "Restore this completed CorptieTask to In Progress? Corptie will reuse its Worktree when available, or recreate it before restoring the bound Session." = "要将这个已完成的 CorptieTask 恢复为进行中吗？Corptie 会优先复用原 Worktree；如果原 Worktree 已不存在，会先重新创建，再恢复绑定的会话。";
 "All" = "全部";
-"New Objective" = "新建 Objective";
+"New Work" = "新建 Work";
 "初始化 Git 仓库？" = "初始化 Git 仓库？";
 "初始化并添加" = "初始化并添加";
 "“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？" = "“%@”不是 Git 仓库。是否在该文件夹中初始化 Git 仓库？";
@@ -1112,7 +1112,7 @@
 "目标 Session" = "目标 Session";
 "消息" = "消息";
 "目标 CorptieTask" = "目标 CorptieTask";
-"确认后在目标 Objective 下新建" = "确认后在目标 Objective 下新建";
+"确认后在目标 Work 下新建" = "确认后在目标 Work 下新建";
 "跨会话协作" = "跨会话协作";
 "Cross-session collaboration message from %@" = "来自 %@ 的跨会话协作消息";
 "Sessions and resources" = "会话与资源";
@@ -1268,7 +1268,7 @@
 "Push committed branch changes to GitHub. Uncommitted files are not included." = "将已提交的分支修改推送到 GitHub；未提交文件不会包含在内。";
 "Push this local branch to the configured GitHub repository and set its upstream branch if needed." = "将此本地分支推送到已配置的 GitHub 仓库，并在需要时设置上游分支。";
 "CorptieTask Memory" = "工作项记忆";
-"Objective Memory" = "目标记忆";
+"Work Memory" = "目标记忆";
 "Agent Long-term Memory" = "Agent 长期记忆";
 "Kept by me" = "我保留的";
 "Suggested by Agent" = "Agent 建议保存的";
@@ -1282,15 +1282,15 @@
 "Preserved for audit but excluded from normal recall." = "保留用于审计，但不会参与正常召回。";
 "Layered Memory Inspector" = "分层 Memory 检查器";
 "Structured Memory" = "结构化 Memory";
-"CorptieTask → Objective → Agent is the recall priority. Memories are grouped by both scope and origin." = "召回优先级为工作项 → 目标 → Agent，并同时按作用域和来源分组。";
-"Only this Agent's long-term layer is managed here. Objective and CorptieTask memories remain in their own context pages." = "这里仅管理该 Agent 的长期记忆；目标和工作项记忆分别在对应上下文页面管理。";
-"Only this Agent's structured long-term layer is managed here. Objective, CorptieTask, and runtime file memories remain separate." = "这里仅管理该 Agent 的结构化长期记忆；目标、工作项以及运行时文件记忆均保持独立。";
-"Shared Objective context. CorptieTask-local and Agent long-term memories are managed separately." = "目标范围内共享的上下文；工作项局部记忆和 Agent 长期记忆分开管理。";
+"CorptieTask → Work → Agent is the recall priority. Memories are grouped by both scope and origin." = "召回优先级为工作项 → 目标 → Agent，并同时按作用域和来源分组。";
+"Only this Agent's long-term layer is managed here. Work and CorptieTask memories remain in their own context pages." = "这里仅管理该 Agent 的长期记忆；目标和工作项记忆分别在对应上下文页面管理。";
+"Only this Agent's structured long-term layer is managed here. Work, CorptieTask, and runtime file memories remain separate." = "这里仅管理该 Agent 的结构化长期记忆；目标、工作项以及运行时文件记忆均保持独立。";
+"Shared Work context. CorptieTask-local and Agent long-term memories are managed separately." = "目标范围内共享的上下文；工作项局部记忆和 Agent 长期记忆分开管理。";
 "The most specific task-local layer and the first layer considered during recall." = "最具体的任务局部记忆，也是召回时最先检查的一层。";
 "Structured Memory for the selected owner." = "当前对象的结构化 Memory。";
 "Add Memory" = "新增 Memory";
 "Add structured Memory" = "新增结构化 Memory";
-"Choose the narrowest scope that should be affected. CorptieTask is local, Objective is shared by the objective, and Agent is long-term." = "请选择应受影响的最窄作用域：工作项是局部记忆，目标是在目标内共享，Agent 是长期记忆。";
+"Choose the narrowest scope that should be affected. CorptieTask is local, Work is shared by the work, and Agent is long-term." = "请选择应受影响的最窄作用域：工作项是局部记忆，目标是在目标内共享，Agent 是长期记忆。";
 "Memory layer" = "Memory 层级";
 "Owner" = "归属对象";
 "Keep Memory" = "Keep Memory";
@@ -1342,7 +1342,7 @@
 "删除关联的 Worktree 和分支" = "删除关联的 Worktree 和分支";
 "Artifact 处理（%d 个）" = "Artifact 处理（%d 个）";
 "Artifact 处理" = "Artifact 处理";
-"移入 Objective 层级" = "移入 Objective 层级";
+"移入 Work 层级" = "移入 Work 层级";
 "留在原地" = "留在原地";
 "删除 CorptieTask：%@" = "删除 CorptieTask：%@";
 "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。" = "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。";

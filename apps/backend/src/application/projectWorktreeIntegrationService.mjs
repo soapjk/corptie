@@ -36,18 +36,18 @@ export class ProjectWorktreeIntegrationService {
     }
   }
 
-  async status(projectId, objectiveId) {
-    const scope = await this.#scope(projectId, objectiveId);
+  async status(projectId, workId) {
+    const scope = await this.#scope(projectId, workId);
     const inspection = await this.inspectProject(scope.projectId);
     const candidates = this.#candidates(scope, inspection);
     const latestRun = this.#reconcileResolvedRun(
-      this.store.getLatestProjectIntegrationRun(scope.projectId, scope.objective.id),
+      this.store.getLatestProjectIntegrationRun(scope.projectId, scope.work.id),
       inspection
     );
     return this.#present(scope, inspection, candidates, latestRun);
   }
 
-  async integrateCompleted(projectId, objectiveId) {
+  async integrateCompleted(projectId, workId) {
     const key = String(projectId);
     if (this.activeProjects.has(key)) {
       throw new ProjectWorktreeIntegrationError(
@@ -58,11 +58,11 @@ export class ProjectWorktreeIntegrationService {
     }
     this.activeProjects.add(key);
     try {
-      const scope = await this.#scope(projectId, objectiveId);
+      const scope = await this.#scope(projectId, workId);
       const initial = await this.inspectProject(scope.projectId, { forceFresh: true, reason: "integration_execute_preflight" });
       const candidates = this.#candidates(scope, initial);
       const latest = this.#reconcileResolvedRun(
-        this.store.getLatestProjectIntegrationRun(scope.projectId, scope.objective.id),
+        this.store.getLatestProjectIntegrationRun(scope.projectId, scope.work.id),
         initial
       );
       if (latest?.items.some((item) => item.status === "conflict")) {
@@ -80,7 +80,7 @@ export class ProjectWorktreeIntegrationService {
       }
       const run = this.store.createProjectIntegrationRun({
         repositoryId: scope.projectId,
-        objectiveId: scope.objective.id,
+        workId: scope.work.id,
         mainHeadBefore: initial.mainHeadOid,
         items: candidates.eligible.map((candidate, ordinal) => ({
           worktreeId: candidate.worktreeId,
@@ -163,7 +163,7 @@ export class ProjectWorktreeIntegrationService {
     }
   }
 
-  async createConflictTask(projectId, objectiveId, runId, input = {}) {
+  async createConflictTask(projectId, workId, runId, input = {}) {
     const conflictRunKey = String(runId);
     if (this.activeConflictRuns.has(conflictRunKey)) {
       throw new ProjectWorktreeIntegrationError(
@@ -174,9 +174,9 @@ export class ProjectWorktreeIntegrationService {
     }
     this.activeConflictRuns.add(conflictRunKey);
     try {
-    const scope = await this.#scope(projectId, objectiveId);
+    const scope = await this.#scope(projectId, workId);
     let run = this.store.getProjectIntegrationRun(runId);
-    if (!run || run.repositoryId !== scope.projectId || run.objectiveId !== scope.objective.id) {
+    if (!run || run.repositoryId !== scope.projectId || run.workId !== scope.work.id) {
       throw new ProjectWorktreeIntegrationError("INTEGRATION_NOT_FOUND", "Integration Run not found.", 404);
     }
     const conflicts = run.items.filter((item) => item.status === "conflict");
@@ -212,10 +212,10 @@ export class ProjectWorktreeIntegrationService {
         "Select an Independent Contributor Agent to resolve the conflicts."
       );
     }
-    if (!(scope.objective.contributorAgentIds ?? []).includes(agent.agentId)) {
+    if (!(scope.work.contributorAgentIds ?? []).includes(agent.agentId)) {
       throw new ProjectWorktreeIntegrationError(
         "INTEGRATION_AGENT_OUT_OF_SCOPE",
-        "The selected Agent is not a contributor to this Objective."
+        "The selected Agent is not a contributor to this Work."
       );
     }
 
@@ -239,7 +239,7 @@ export class ProjectWorktreeIntegrationService {
       });
     }
     const tasks = new Map(
-      this.store.listTasksByObjective(scope.objective.id).map((item) => [item.id, item])
+      this.store.listTasksByWork(scope.work.id).map((item) => [item.id, item])
     );
     const sourceLines = conflicts.map((item) => {
       const task = tasks.get(item.taskId);
@@ -279,7 +279,7 @@ export class ProjectWorktreeIntegrationService {
       "6. 不得推送远端，不得删除任何来源 Worktree 或分支。"
     ].join("\n");
     const created = await this.createAndLaunchConflictTask({
-      objective: scope.objective,
+      work: scope.work,
       projectId: scope.projectId,
       agent,
       workspace,
@@ -328,23 +328,23 @@ export class ProjectWorktreeIntegrationService {
     );
   }
 
-  async #scope(projectId, objectiveId) {
+  async #scope(projectId, workId) {
     const project = String(projectId ?? "").trim();
-    const objective = this.store.getObjective(String(objectiveId ?? "").trim());
-    if (!objective) {
-      throw new ProjectWorktreeIntegrationError("OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
+    const work = this.store.getWork(String(workId ?? "").trim());
+    if (!work) {
+      throw new ProjectWorktreeIntegrationError("WORK_NOT_FOUND", "Work not found.", 404);
     }
-    if (!project || !(objective.workspaceIds ?? []).includes(project)) {
+    if (!project || this.store.getGitRepositoryForWorkspace(work.workspaceId)?.id !== project) {
       throw new ProjectWorktreeIntegrationError(
-        "OBJECTIVE_PROJECT_MISMATCH",
-        "This Project is not attached to the selected Objective."
+        "WORK_PROJECT_MISMATCH",
+        "This Project is not attached to the selected Work."
       );
     }
-    return { projectId: project, objective };
+    return { projectId: project, work };
   }
 
   #candidates(scope, inspection) {
-    const tasks = this.store.listTasksByObjective(scope.objective.id);
+    const tasks = this.store.listTasksByWork(scope.work.id);
     const tasksById = new Map(tasks.map((item) => [item.id, item]));
     const tasksBySessionId = new Map(
       tasks.filter((item) => item.current_session_id).map((item) => [item.current_session_id, item])
@@ -368,7 +368,7 @@ export class ProjectWorktreeIntegrationService {
         taskTitle: task?.title ?? null
       };
       let reason = null;
-      if (!task) reason = "not_bound_to_objective_task";
+      if (!task) reason = "not_bound_to_work_task";
       else if (worktree.availability !== "available") reason = "worktree_unavailable";
       else if (worktree.dirty) reason = "worktree_dirty";
       else if (worktree.mergedIntoMain) reason = "already_integrated";
@@ -388,9 +388,9 @@ export class ProjectWorktreeIntegrationService {
 
   #present(scope, inspection, candidates, run) {
     const tasks = new Map(
-      this.store.listTasksByObjective(scope.objective.id).map((item) => [item.id, item])
+      this.store.listTasksByWork(scope.work.id).map((item) => [item.id, item])
     );
-    const agents = (scope.objective.contributorAgentIds ?? [])
+    const agents = (scope.work.contributorAgentIds ?? [])
       .map((agentId) => this.store.getAgent(agentId))
       .filter((agent) => agent?.role === "independentContributor")
       .map((agent) => ({
@@ -403,7 +403,7 @@ export class ProjectWorktreeIntegrationService {
     });
     return {
       projectId: scope.projectId,
-      objective: { id: scope.objective.id, name: scope.objective.name },
+      work: { id: scope.work.id, name: scope.work.name },
       mainHeadOid: inspection.mainHeadOid,
       eligibleWorktrees: candidates.eligible,
       excludedWorktrees: candidates.excluded,

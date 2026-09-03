@@ -193,7 +193,7 @@
         "resourceVersion",
         "artifactRef",
         "startupBindingRef",
-        "objectiveId",
+        "workId",
         "taskId",
         "logicalSessionId",
         "repositoryId",
@@ -226,7 +226,7 @@
         "startupBindingRef": {
           "$ref": "#/$defs/StartupBindingRef"
         },
-        "objectiveId": {
+        "workId": {
           "type": "string",
           "minLength": 1,
           "maxLength": 512

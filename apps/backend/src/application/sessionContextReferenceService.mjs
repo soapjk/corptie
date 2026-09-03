@@ -5,7 +5,7 @@ import { basename, isAbsolute, resolve } from "node:path";
 export const SESSION_CONTEXT_REFERENCE_TYPES = Object.freeze([
   "localFile",
   "webURL",
-  "objective",
+  "work",
   "task",
   "agent",
   "session"
@@ -155,8 +155,8 @@ export class SessionContextReferenceService {
     const sessionId = requiredText(ownerSessionId, "ownerSessionId");
     const session = this.store.getSession(sessionId);
     if (!session) throw serviceError("SESSION_NOT_FOUND", `Session not found: ${sessionId}`, 404);
-    if (!["assistantChat", "objectiveChat"].includes(session.sessionKind)) {
-      throw serviceError("CONTEXT_REFERENCES_REQUIRE_ASSISTANT", "Context references are available only for Assistant and Objective Chat Sessions.", 409);
+    if (!["assistantChat", "workChat"].includes(session.sessionKind)) {
+      throw serviceError("CONTEXT_REFERENCES_REQUIRE_ASSISTANT", "Context references are available only for Assistant and Work Chat Sessions.", 409);
     }
     return session;
   }
@@ -195,9 +195,9 @@ export class SessionContextReferenceService {
       };
     }
     const targetId = requiredText(input.targetId, "targetId");
-    if (targetType === "objective") {
-      const target = this.store.getObjective(targetId);
-      if (!target) throw serviceError("OBJECTIVE_NOT_FOUND", "Objective not found.", 404);
+    if (targetType === "work") {
+      const target = this.store.getWork(targetId);
+      if (!target) throw serviceError("WORK_NOT_FOUND", "Work not found.", 404);
       return { targetKey: targetId, targetId, displayName: target.name };
     }
     if (targetType === "task") {
@@ -242,7 +242,7 @@ export class SessionContextReferenceService {
     switch (reference.targetType) {
       case "localFile": return this.resolveLocalFile(reference);
       case "webURL": return { title: reference.snapshotTitle ?? reference.displayName, text: reference.snapshotText ?? "" };
-      case "objective": return this.resolveObjective(reference);
+      case "work": return this.resolveWork(reference);
       case "task": return this.resolveTask(reference);
       case "agent": return this.resolveAgent(reference);
       case "session": return this.resolveSession(reference);
@@ -266,14 +266,14 @@ export class SessionContextReferenceService {
     return { title: reference.displayName, text };
   }
 
-  resolveObjective(reference) {
-    const value = this.store.getObjective(reference.targetId);
-    if (!value) throw serviceError("OBJECTIVE_NOT_FOUND", "Referenced Objective no longer exists.", 404);
+  resolveWork(reference) {
+    const value = this.store.getWork(reference.targetId);
+    if (!value) throw serviceError("WORK_NOT_FOUND", "Referenced Work no longer exists.", 404);
     return {
-      title: `Objective: ${value.name}`,
+      title: `Work: ${value.name}`,
       text: lines([
-        ["Status", value.status], ["Priority", value.priority], ["Description", value.description],
-        ["Ideal state", value.idealState], ["Target date", value.targetDate]
+        ["Status", value.status], ["Profile", value.profile], ["Description", value.description],
+        ["Workspace id", value.workspaceId]
       ])
     };
   }
@@ -285,7 +285,7 @@ export class SessionContextReferenceService {
       title: `Task: ${value.title}`,
       text: lines([
         ["Status", value.status], ["Priority", value.priority], ["Description", value.description],
-        ["Acceptance criteria", value.acceptance_criteria], ["Objective id", value.objective_id]
+        ["Acceptance criteria", value.acceptance_criteria], ["Work id", value.work_id]
       ])
     };
   }

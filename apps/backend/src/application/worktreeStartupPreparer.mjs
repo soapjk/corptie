@@ -17,7 +17,8 @@ export class WorktreeStartupPreparer {
 
   async prepare(input) {
     const task = input?.task ?? this.store.getTask(input?.taskId);
-    if (!task || task.id !== input.taskId || task.main_workspace_id !== input.repositoryId) {
+    if (!task || task.id !== input.taskId
+      || this.store.getTaskWorkspaceContext(task)?.repository?.id !== input.repositoryId) {
       throw coded("START_REFERENCE_INVALID", "Task Repository binding changed before Worktree preparation.", false);
     }
     const owned = this.store.selectOne(

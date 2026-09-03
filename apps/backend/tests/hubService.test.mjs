@@ -17,11 +17,11 @@ async function createStore() {
 }
 
 function createStartedTask(store) {
-  store.createObjective({ id: "o1", name: "Objective" });
-  store.createTask({ id: "wi1", objectiveId: "o1", title: "Task" });
+  store.createWork({ id: "o1", name: "Work" });
+  store.createTask({ id: "wi1", workId: "o1", title: "Task" });
   store.createSession({
     id: "s1", title: "Worker", provider: "codex-app-server", status: "running",
-    objectiveId: "o1", taskId: "wi1", agentId: "a1"
+    workId: "o1", taskId: "wi1", agentId: "a1"
   });
 }
 
@@ -78,7 +78,7 @@ test("search 去抖缓存：第二次命中 cached", async () => {
       content: "git commit 流程"
     });
     const hub = new HubService({ store });
-    const scope = { agentId: "a1", sessionId: "s1", objectiveId: "o1", taskId: "wi1" };
+    const scope = { agentId: "a1", sessionId: "s1", workId: "o1", taskId: "wi1" };
 
     const first = hub.search("git commit", scope);
     assert.equal(first.cached, false);
@@ -118,13 +118,13 @@ test("缓存 key 含 agentId：同 task 不同 agent 不误命中", async () => 
     // a1 有 procedure 记忆，a2 没有
     store.createMemory({ ownerType: "agent", ownerId: "a1", kind: "procedure", content: "git commit 流程" });
     const hub = new HubService({ store });
-    const shared = { objectiveId: "o1", taskId: "wi1", sessionId: "s1" };
+    const shared = { workId: "o1", taskId: "wi1", sessionId: "s1" };
 
     const first = hub.search("git commit", { ...shared, agentId: "a1" });
     assert.equal(first.cached, false);
     assert.equal(first.found, true);
 
-    // 同一意图 + 同一 task/objective，但 agentId 不同 → 不应命中 a1 的缓存
+    // 同一意图 + 同一 task/work，但 agentId 不同 → 不应命中 a1 的缓存
     const second = hub.search("git commit", { ...shared, agentId: "a2" });
     assert.equal(second.cached, false);
     assert.equal(second.found, false); // a2 无 procedure 记忆

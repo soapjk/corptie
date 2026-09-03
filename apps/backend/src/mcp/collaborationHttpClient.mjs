@@ -41,7 +41,7 @@ export class CollaborationHttpClient {
           "x-corptie-agent-id": this.agentId,
           ...(this.sessionScope.sessionId ? { "x-corptie-session-id": this.sessionScope.sessionId } : {}),
           ...(this.sessionScope.providerBindingId ? { "x-corptie-provider-binding-id": this.sessionScope.providerBindingId } : {}),
-          ...(this.sessionScope.objectiveId ? { "x-corptie-objective-id": this.sessionScope.objectiveId } : {}),
+          ...(this.sessionScope.workId ? { "x-corptie-work-id": this.sessionScope.workId } : {}),
           ...(this.sessionScope.taskId ? { "x-corptie-task-id": this.sessionScope.taskId } : {})
         }
       });

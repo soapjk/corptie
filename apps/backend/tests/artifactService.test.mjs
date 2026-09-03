@@ -20,19 +20,19 @@ async function fixture() {
   const worker = store.createAgent({ name: "Worker", provider: "claude-sdk" });
   const peer = store.createAgent({ name: "Peer Worker", provider: "codex-app-server" });
   const outsider = store.createAgent({ name: "Outsider", provider: "openclacky" });
-  store.createObjective({ id: "objective:one", name: "One", contributorAgentIds: [manager.agentId, worker.agentId, peer.agentId] });
-  store.createObjective({ id: "objective:two", name: "Two", contributorAgentIds: [outsider.agentId] });
-  store.createTask({ id: "task:one", objectiveId: "objective:one", title: "One", mainAgentId: worker.agentId });
-  store.createTask({ id: "task:peer", objectiveId: "objective:one", title: "Peer", mainAgentId: peer.agentId });
-  store.createTask({ id: "task:two", objectiveId: "objective:two", title: "Two", mainAgentId: outsider.agentId });
-  store.upsertSession({ id: "session:manager", title: "Manager", provider: "codex-app-server", status: "running", sessionKind: "objectiveChat", agentId: manager.agentId, objectiveId: "objective:one" });
-  store.upsertSession({ id: "session:worker", title: "Worker", provider: "claude-sdk", status: "running", sessionKind: "worker", agentId: worker.agentId, objectiveId: "objective:one", taskId: "task:one" });
-  store.upsertSession({ id: "session:peer", title: "Peer", provider: "codex-app-server", status: "running", sessionKind: "worker", agentId: peer.agentId, objectiveId: "objective:one", taskId: "task:peer" });
-  store.upsertSession({ id: "session:outsider", title: "Outsider", provider: "openclacky", status: "running", sessionKind: "worker", agentId: outsider.agentId, objectiveId: "objective:two", taskId: "task:two" });
-  store.bindSessionToObjective("session:manager", "objective:one");
-  store.bindSessionToTask("session:worker", "task:one", "objective:one");
-  store.bindSessionToTask("session:peer", "task:peer", "objective:one");
-  store.bindSessionToTask("session:outsider", "task:two", "objective:two");
+  store.createWork({ id: "work:one", name: "One", contributorAgentIds: [manager.agentId, worker.agentId, peer.agentId] });
+  store.createWork({ id: "work:two", name: "Two", contributorAgentIds: [outsider.agentId] });
+  store.createTask({ id: "task:one", workId: "work:one", title: "One", mainAgentId: worker.agentId });
+  store.createTask({ id: "task:peer", workId: "work:one", title: "Peer", mainAgentId: peer.agentId });
+  store.createTask({ id: "task:two", workId: "work:two", title: "Two", mainAgentId: outsider.agentId });
+  store.upsertSession({ id: "session:manager", title: "Manager", provider: "codex-app-server", status: "running", sessionKind: "workChat", agentId: manager.agentId, workId: "work:one" });
+  store.upsertSession({ id: "session:worker", title: "Worker", provider: "claude-sdk", status: "running", sessionKind: "worker", agentId: worker.agentId, workId: "work:one", taskId: "task:one" });
+  store.upsertSession({ id: "session:peer", title: "Peer", provider: "codex-app-server", status: "running", sessionKind: "worker", agentId: peer.agentId, workId: "work:one", taskId: "task:peer" });
+  store.upsertSession({ id: "session:outsider", title: "Outsider", provider: "openclacky", status: "running", sessionKind: "worker", agentId: outsider.agentId, workId: "work:two", taskId: "task:two" });
+  store.bindSessionToWork("session:manager", "work:one");
+  store.bindSessionToTask("session:worker", "task:one", "work:one");
+  store.bindSessionToTask("session:peer", "task:peer", "work:one");
+  store.bindSessionToTask("session:outsider", "task:two", "work:two");
   core.bindSession({ agentId: manager.agentId, sessionId: "session:manager" });
   core.bindSession({ agentId: worker.agentId, sessionId: "session:worker" });
   core.bindSession({ agentId: peer.agentId, sessionId: "session:peer" });
@@ -43,11 +43,11 @@ async function fixture() {
   return { directory, store, service, core, manager, worker, peer, outsider };
 }
 
-const managerContext = (f) => ({ actorId: f.manager.agentId, sessionId: "session:manager", objectiveId: "objective:one" });
-const workerContext = (f) => ({ actorId: f.worker.agentId, sessionId: "session:worker", objectiveId: "objective:one", taskId: "task:one" });
-const peerContext = (f) => ({ actorId: f.peer.agentId, sessionId: "session:peer", objectiveId: "objective:one", taskId: "task:peer" });
-const outsiderContext = (f) => ({ actorId: f.outsider.agentId, sessionId: "session:outsider", objectiveId: "objective:two", taskId: "task:two" });
-const localUserContext = { kind: "local_user", actorId: "user:local-macos", objectiveId: "objective:one" };
+const managerContext = (f) => ({ actorId: f.manager.agentId, sessionId: "session:manager", workId: "work:one" });
+const workerContext = (f) => ({ actorId: f.worker.agentId, sessionId: "session:worker", workId: "work:one", taskId: "task:one" });
+const peerContext = (f) => ({ actorId: f.peer.agentId, sessionId: "session:peer", workId: "work:one", taskId: "task:peer" });
+const outsiderContext = (f) => ({ actorId: f.outsider.agentId, sessionId: "session:outsider", workId: "work:two", taskId: "task:two" });
+const localUserContext = { kind: "local_user", actorId: "user:local-macos", workId: "work:one" };
 let artifactReadTurn = 0;
 function pinnedReadOptions(artifact, reference = null, options = {}) {
   const selectedReference = reference ?? artifact.references?.find((candidate) => !candidate.revokedAt);
@@ -76,10 +76,10 @@ test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", 
       title: "Promote with Task", content: "promote", visibility: "task_private",
       boundTaskId: "task:one", idempotencyKey: "task-delete-artifact-promote"
     });
-    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "objective");
+    f.service.disposeBoundArtifactsForTaskDeletion(localUserContext, "task:one", "work");
     const promotedRecord = f.store.getArtifact(promoted.artifactId);
-    assert.equal(promotedRecord.visibility, "objective_private");
-    assert.equal(promotedRecord.scope, "objective");
+    assert.equal(promotedRecord.visibility, "work_private");
+    assert.equal(promotedRecord.scope, "work");
     assert.equal(promotedRecord.boundTaskId, null);
 
     const retained = await f.service.create(workerContext(f), {
@@ -92,10 +92,10 @@ test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", 
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Objective private content is hashed, atomically stored outside repositories, paged, and usage-audited", async () => {
+test("Work private content is hashed, atomically stored outside repositories, paged, and usage-audited", async () => {
   const f = await fixture();
   try {
-    const artifact = await f.service.create(managerContext(f), { title: "Implementation", summary: "Private design", visibility: "objective_private", content: "secret specification" });
+    const artifact = await f.service.create(managerContext(f), { title: "Implementation", summary: "Private design", visibility: "work_private", content: "secret specification" });
     assert.equal(artifact.currentVersion, 1);
     assert.equal(artifact.versions[0].contentHash.length, 64);
     assert.match(artifact.versions[0].storageKey, /^objects\//);
@@ -120,7 +120,7 @@ test("Artifact and Reference writes participate in the durable State invalidatio
     f.store.setStateDirtyListener(() => { dirtyNotifications += 1; });
     const before = f.store.stateRevision();
     const artifact = await f.service.create(managerContext(f), {
-      title: "Live cache spec", visibility: "objective_private", content: "v1"
+      title: "Live cache spec", visibility: "work_private", content: "v1"
     });
     f.service.createReference(managerContext(f), artifact.artifactId, {
       taskId: "task:one", relation: "implementation_spec", versionPolicy: "fixed"
@@ -139,7 +139,7 @@ test("Benchmark pinned evidence performs one complete authority read with fixed 
   const f = await fixture();
   try {
     const content = "完整 fixed implementation specification 🧪";
-    const artifact = await f.service.create(managerContext(f), { title: "Fixed spec", visibility: "objective_private", content, approvalStatus: "approved" });
+    const artifact = await f.service.create(managerContext(f), { title: "Fixed spec", visibility: "work_private", content, approvalStatus: "approved" });
     f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:one", relation: "implementation_spec", required: true, versionPolicy: "fixed", version: 1 });
     const evidence = await f.service.readPinnedEvidence(workerContext(f), artifact.artifactId, { version: 1 });
     assert.equal(evidence.content, content);
@@ -158,7 +158,7 @@ test("local file lookup reuses the stored Artifact object without reading or mat
   try {
     const artifact = await f.service.create(managerContext(f), {
       title: "Implementation Notes",
-      visibility: "objective_private",
+      visibility: "work_private",
       content: "# Existing content",
       mimeType: "text/markdown"
     });
@@ -217,15 +217,15 @@ test("local file lookup reuses the stored Artifact object without reading or mat
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Work Sessions read same-Objective Artifacts without References while cross-Objective access remains forbidden", async () => {
+test("Work Sessions read same-Work Artifacts without References while cross-Work access remains forbidden", async () => {
   const f = await fixture();
   try {
-    const artifact = await f.service.create(managerContext(f), { title: "Security", visibility: "objective_private", content: "security requirement" });
+    const artifact = await f.service.create(managerContext(f), { title: "Security", visibility: "work_private", content: "security requirement" });
     assert.equal((await f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact))).content, "security requirement");
-    assert.throws(() => f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:two", relation: "security_requirement" }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
+    assert.throws(() => f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:two", relation: "security_requirement" }), { code: "ARTIFACT_CROSS_WORK_FORBIDDEN" });
     const securityReference = f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:one", relation: "security_requirement", required: true, versionPolicy: "fixed" });
     assert.equal((await f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact, securityReference))).content, "security requirement");
-    const unrelated = await f.service.create(managerContext(f), { title: "Unrelated", visibility: "objective_private", content: "other" });
+    const unrelated = await f.service.create(managerContext(f), { title: "Unrelated", visibility: "work_private", content: "other" });
     const unrelatedReference = f.service.createReference(managerContext(f), unrelated.artifactId, { taskId: "task:one", relation: "research_evidence" });
     await assert.rejects(() => f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact, securityReference, {
       referenceId: unrelatedReference.referenceId
@@ -255,21 +255,21 @@ test("Work Sessions read same-Objective Artifacts without References while cross
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "repository_tracked", { confirmed: true }), { code: "ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN" });
     await assert.rejects(() => f.service.get(outsiderContext(f), artifact.artifactId, pinnedReadOptions(artifact)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
     const sharedByWorker = await f.service.create(workerContext(f), {
-      title: "Shared by Worker", visibility: "objective_private", scope: "objective",
+      title: "Shared by Worker", visibility: "work_private", scope: "work",
       content: "shared", idempotencyKey: "shared-by-worker"
     });
-    assert.equal(sharedByWorker.scope, "objective");
+    assert.equal(sharedByWorker.scope, "work");
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Objective Artifacts are collaboratively writable while another Task's Artifact stays read-only", async () => {
+test("Work Artifacts are collaboratively writable while another Task's Artifact stays read-only", async () => {
   const f = await fixture();
   try {
     const shared = await f.service.create(workerContext(f), {
       title: "Provider startup design",
       summary: "Shared readiness contract",
       content: "Provider initialization must not block the frontend.",
-      scope: "objective",
+      scope: "work",
       kind: "architecture",
       categoryPath: "architecture/provider/startup",
       tags: ["provider", "readiness"],
@@ -277,7 +277,7 @@ test("Objective Artifacts are collaboratively writable while another Task's Arti
       keywords: ["not ready", "bootstrap"],
       idempotencyKey: "shared-provider-startup"
     });
-    assert.equal(shared.scope, "objective");
+    assert.equal(shared.scope, "work");
     assert.equal(shared.createdByActorId, "session:worker");
     const edited = f.service.updateMetadata(peerContext(f), shared.artifactId, {
       summary: "Shared Provider readiness and startup contract",
@@ -374,7 +374,7 @@ test("Worker private publish appends an immutable version and atomically repins 
     }), { code: "ARTIFACT_PRIVATE_PUBLISH_FORBIDDEN" });
     const actions = f.service.listForTask(workerContext(f), "task:one")[0].availableActions;
     assert.ok(actions.includes("publish_and_repin"));
-    assert.equal(f.store.listArtifactAudit("objective:one", created.artifactId)
+    assert.equal(f.store.listArtifactAudit("work:one", created.artifactId)
       .some((event) => event.action === "artifact.reference_repinned"
         && event.actorId === "session:worker"), true);
     f.service.revokeReference(workerContext(f), published.reference.referenceId, "test revoked pin");
@@ -412,14 +412,14 @@ test("Worker private publish rolls back version and repin together when the Refe
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Artifact full-text and taxonomy search finds Objective documents by body, aliases, categories, and tags", async () => {
+test("Artifact full-text and taxonomy search finds Work documents by body, aliases, categories, and tags", async () => {
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), {
       title: "Runtime readiness architecture",
       summary: "Frontend connection boundary",
       content: "The Python Provider bootstrap continues after the application becomes usable.",
-      scope: "objective",
+      scope: "work",
       kind: "architecture",
       categoryPath: "architecture/provider/startup",
       tags: ["provider", "readiness"],
@@ -448,7 +448,7 @@ test("Task Artifact summary loading batches 1,000 referenced Artifacts without N
         const artifactId = `artifact:bulk-${index}`;
         const hash = index.toString(16).padStart(64, "0");
         f.store.createArtifactMetadata({
-          artifactId, objectiveId: "objective:one", title: `Bulk ${index}`, summary: "draft",
+          artifactId, workId: "work:one", title: `Bulk ${index}`, summary: "draft",
           visibility: "task_private", scope: "task", kind: "other", categoryPath: "",
           tags: [], aliases: [], keywords: [], boundTaskId: "task:one", boundSessionId: null,
           actorId: "session:worker", createdAt: "2026-09-01T00:00:00.000Z"
@@ -460,7 +460,7 @@ test("Task Artifact summary loading batches 1,000 referenced Artifacts without N
         });
         f.store.updateArtifact(artifactId, { currentVersion: 1, approvedVersion: null });
         f.store.createArtifactReference({
-          referenceId: `artifact_reference:bulk-${index}`, artifactId, objectiveId: "objective:one",
+          referenceId: `artifact_reference:bulk-${index}`, artifactId, workId: "work:one",
           taskId: "task:one", relation: "implementation_spec", required: false,
           versionPolicy: "fixed", pinnedVersion: 1, pinnedHash: hash,
           actorId: "session:worker", authorizedAt: "2026-09-01T00:00:00.000Z"
@@ -489,7 +489,7 @@ test("Worker creates one current-Task Artifact and explicit pinned Reference ato
       tool: "corptie_artifact_create",
       actorId: f.worker.agentId,
       metadata: {
-        sessionId: "session:worker", objectiveId: "objective:one",
+        sessionId: "session:worker", workId: "work:one",
         taskId: "task:one", sessionKind: "worker"
       },
       arguments: {
@@ -506,7 +506,7 @@ test("Worker creates one current-Task Artifact and explicit pinned Reference ato
     assert.equal(created.idempotentReplay, false);
     assert.equal(created.references.length, 1);
     const reference = created.references[0];
-    assert.equal(reference.objectiveId, "objective:one");
+    assert.equal(reference.workId, "work:one");
     assert.equal(reference.taskId, "task:one");
     assert.equal(reference.sessionId, null);
     assert.equal(reference.relation, "acceptance_evidence");
@@ -516,10 +516,10 @@ test("Worker creates one current-Task Artifact and explicit pinned Reference ato
     assert.equal(reference.pinnedHash, created.versions[0].contentHash);
     assert.equal(reference.authorizedByActorId, "session:worker");
     assert.deepEqual(
-      new Set(f.store.listArtifactAudit("objective:one", created.artifactId).map((event) => event.action)),
+      new Set(f.store.listArtifactAudit("work:one", created.artifactId).map((event) => event.action)),
       new Set(["artifact.created", "artifact.reference_created", "artifact.worker_created_and_referenced"])
     );
-    assert.ok(f.store.listArtifactAudit("objective:one", created.artifactId).every((event) =>
+    assert.ok(f.store.listArtifactAudit("work:one", created.artifactId).every((event) =>
       event.actorId === "session:worker" && event.sessionId === "session:worker" && event.taskId === "task:one"
     ));
     assert.equal((await f.service.get(workerContext(f), created.artifactId, pinnedReadOptions(created, reference))).content, "evidence body");
@@ -550,9 +550,9 @@ test("Worker Artifact creation is Session-scoped idempotent and rejects conflict
     await assert.rejects(() => f.service.create(workerContext(f), {
       ...input, idempotencyKey: "session-scope", boundSessionId: "session:worker"
     }), { code: "ARTIFACT_WORKER_SCOPE_FORBIDDEN" });
-    await assert.rejects(() => f.service.create({ ...workerContext(f), objectiveId: "objective:two" }, {
-      ...input, idempotencyKey: "cross-objective"
-    }), { code: "ARTIFACT_OBJECTIVE_FORBIDDEN" });
+    await assert.rejects(() => f.service.create({ ...workerContext(f), workId: "work:two" }, {
+      ...input, idempotencyKey: "cross-work"
+    }), { code: "ARTIFACT_WORK_FORBIDDEN" });
     await assert.rejects(() => f.service.create({ ...workerContext(f), taskId: "task:two" }, {
       ...input, idempotencyKey: "claimed-task"
     }), { code: "ARTIFACT_TASK_FORBIDDEN" });
@@ -564,7 +564,7 @@ test("parallel Worker Sessions owned by one Agent create Artifacts within their 
   try {
     f.store.createTask({
       id: "task:parallel",
-      objectiveId: "objective:one",
+      workId: "work:one",
       title: "Parallel",
       mainAgentId: f.worker.agentId
     });
@@ -575,10 +575,10 @@ test("parallel Worker Sessions owned by one Agent create Artifacts within their 
       status: "running",
       sessionKind: "worker",
       agentId: f.worker.agentId,
-      objectiveId: "objective:one",
+      workId: "work:one",
       taskId: "task:parallel"
     });
-    f.store.bindSessionToTask("session:parallel", "task:parallel", "objective:one");
+    f.store.bindSessionToTask("session:parallel", "task:parallel", "work:one");
     f.core.bindSession({ agentId: f.worker.agentId, sessionId: "session:parallel" });
     assert.equal(f.store.getAgent(f.worker.agentId).currentSessionId, "session:parallel");
 
@@ -590,7 +590,7 @@ test("parallel Worker Sessions owned by one Agent create Artifacts within their 
     const parallel = await f.service.create({
       actorId: f.worker.agentId,
       sessionId: "session:parallel",
-      objectiveId: "objective:one",
+      workId: "work:one",
       taskId: "task:parallel"
     }, {
       title: "Parallel Worker output",
@@ -598,16 +598,16 @@ test("parallel Worker Sessions owned by one Agent create Artifacts within their 
       idempotencyKey: "parallel-agent-second-worker"
     });
 
-    assert.equal(original.objectiveId, "objective:one");
+    assert.equal(original.workId, "work:one");
     assert.equal(original.boundTaskId, "task:one");
     assert.equal(original.references[0].taskId, "task:one");
-    assert.equal(parallel.objectiveId, "objective:one");
+    assert.equal(parallel.workId, "work:one");
     assert.equal(parallel.boundTaskId, "task:parallel");
     assert.equal(parallel.references[0].taskId, "task:parallel");
     const parallelContext = {
       actorId: f.worker.agentId,
       sessionId: "session:parallel",
-      objectiveId: "objective:one",
+      workId: "work:one",
       taskId: "task:parallel"
     };
     const [originalPage, parallelPage] = await Promise.all([
@@ -657,7 +657,7 @@ test("fixed-triple pages preserve UTF-8 boundaries, raw base64 offsets, hashes, 
   try {
     const content = "A😀中B\0C";
     const artifact = await f.service.create(managerContext(f), {
-      title: "Encoding", visibility: "objective_private", content, mimeType: "text/plain"
+      title: "Encoding", visibility: "work_private", content, mimeType: "text/plain"
     });
     const reference = f.service.createReference(managerContext(f), artifact.artifactId, {
       taskId: "task:one", relation: "test_plan", versionPolicy: "latest_approved"
@@ -716,7 +716,7 @@ test("durable page replay is charged once and fails closed when fixed content ch
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), {
-      title: "Durable replay", visibility: "objective_private", content: "immutable page", mimeType: "text/plain"
+      title: "Durable replay", visibility: "work_private", content: "immutable page", mimeType: "text/plain"
     });
     const reference = f.service.createReference(managerContext(f), artifact.artifactId, {
       taskId: "task:one", relation: "test_plan", versionPolicy: "fixed", version: 1
@@ -754,7 +754,7 @@ test("streamed fixed pages meet latency and bounded-memory envelopes without who
   try {
     const artifact = await f.service.create(managerContext(f), {
       title: "Performance body",
-      visibility: "objective_private",
+      visibility: "work_private",
       content: "x".repeat(128 * 1_024),
       mimeType: "application/octet-stream"
     });
@@ -799,7 +799,7 @@ test("read receipt and usage commit atomically and a failed audit releases the T
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), {
-      title: "Atomic read", visibility: "objective_private", content: "atomic body"
+      title: "Atomic read", visibility: "work_private", content: "atomic body"
     });
     const reference = f.service.createReference(managerContext(f), artifact.artifactId, {
       taskId: "task:one", relation: "test_plan", versionPolicy: "fixed", version: 1
@@ -884,7 +884,7 @@ test("Artifact binding is rejected once Task deletion has started", async () => 
 test("started Tasks pin latest-approved references until an explicit audited acknowledgement", async () => {
   const f = await fixture();
   try {
-    const artifact = await f.service.create(managerContext(f), { title: "Spec", visibility: "objective_private", content: "version one" });
+    const artifact = await f.service.create(managerContext(f), { title: "Spec", visibility: "work_private", content: "version one" });
     const reference = f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:one", relation: "implementation_spec", required: true, versionPolicy: "latest_approved" });
     const published = await f.service.publishVersion(managerContext(f), artifact.artifactId, { content: "version two" });
     const pending = f.store.getArtifactReference(reference.referenceId);
@@ -894,14 +894,14 @@ test("started Tasks pin latest-approved references until an explicit audited ack
     assert.deepEqual(published.affected.map((item) => item.action), ["approval_required"]);
     const acknowledged = f.service.acknowledgePendingReference(managerContext(f), reference.referenceId);
     assert.equal((await f.service.get(workerContext(f), published.artifact.artifactId, pinnedReadOptions(published.artifact, acknowledged))).content, "version two");
-    assert.ok(f.store.listArtifactAudit("objective:one", artifact.artifactId).some((event) => event.action === "artifact.reference_update_acknowledged"));
+    assert.ok(f.store.listArtifactAudit("work:one", artifact.artifactId).some((event) => event.action === "artifact.reference_update_acknowledged"));
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
 test("Reference revocation remains stable and audited without removing inherent Work Session read access", async () => {
   const f = await fixture();
   try {
-    const artifact = await f.service.create(managerContext(f), { title: "Handoff", visibility: "objective_private", content: "handoff" });
+    const artifact = await f.service.create(managerContext(f), { title: "Handoff", visibility: "work_private", content: "handoff" });
     const reference = f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:one", relation: "handoff", versionPolicy: "fixed" });
     f.service.revokeReference(managerContext(f), reference.referenceId, "No longer needed");
     await assert.rejects(() => f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact, reference)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
@@ -915,12 +915,12 @@ test("metadata failure rolls back an unreferenced content object and records a r
   try {
     const original = f.store.createArtifactVersion.bind(f.store);
     f.store.createArtifactVersion = () => { const error = new Error("injected database failure"); error.code = "INJECTED_DB_FAILURE"; throw error; };
-    await assert.rejects(() => f.service.create(managerContext(f), { title: "Failure", visibility: "objective_private", content: "must roll back" }), { code: "INJECTED_DB_FAILURE" });
+    await assert.rejects(() => f.service.create(managerContext(f), { title: "Failure", visibility: "work_private", content: "must roll back" }), { code: "INJECTED_DB_FAILURE" });
     f.store.createArtifactVersion = original;
     const objects = await readdir(join(f.directory, "data", "artifacts", "objects"), { recursive: true });
     assert.equal(objects.filter((entry) => /^[a-f0-9]{64}$/.test(entry)).length, 0);
     assert.equal(f.store.selectOne("SELECT status FROM artifact_content_operations").status, "rolled_back");
-    assert.equal(f.store.listArtifactsByObjective("objective:one", { includeRevoked: true }).length, 0);
+    assert.equal(f.store.listArtifactsByWork("work:one", { includeRevoked: true }).length, 0);
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
@@ -946,7 +946,7 @@ test("crash recovery removes prepared orphan files but preserves committed versi
 test("Session context is metadata-only and provider-neutral tools expose identical list/get/search contracts", async () => {
   const f = await fixture();
   try {
-    const artifact = await f.service.create(managerContext(f), { title: "Research", summary: "bounded summary", visibility: "objective_private", content: "body must not be injected" });
+    const artifact = await f.service.create(managerContext(f), { title: "Research", summary: "bounded summary", visibility: "work_private", content: "body must not be injected" });
     f.service.createReference(managerContext(f), artifact.artifactId, { taskId: "task:one", relation: "research_evidence", required: true, versionPolicy: "fixed" });
     const index = f.service.indexForSession(f.store.getSession("session:worker"));
     assert.equal(index.items[0].contentHash, artifact.versions[0].contentHash);
@@ -978,19 +978,19 @@ test("repository-tracked registration requires confirmation and never creates pr
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("verified backup restores corrupted content and rejects cross-Objective restore", async () => {
+test("verified backup restores corrupted content and rejects cross-Work restore", async () => {
   const f = await fixture();
   try {
-    const artifact = await f.service.create(managerContext(f), { title: "Backup", visibility: "objective_private", content: "verified backup content" });
+    const artifact = await f.service.create(managerContext(f), { title: "Backup", visibility: "work_private", content: "verified backup content" });
     const backupPath = join(f.directory, "backup-bundle");
-    const receipt = await f.service.backupObjective(managerContext(f), { destinationPath: backupPath, confirmed: true });
+    const receipt = await f.service.backupWork(managerContext(f), { destinationPath: backupPath, confirmed: true });
     assert.equal(receipt.artifactCount, 1);
     const storedPath = join(f.directory, "data", "artifacts", artifact.versions[0].storageKey);
     await writeFile(storedPath, "corrupted");
     assert.equal((await f.service.verifyIntegrity(artifact.artifactId)).ok, false);
-    const restored = await f.service.restoreObjective(managerContext(f), { sourcePath: backupPath, confirmed: true });
+    const restored = await f.service.restoreWork(managerContext(f), { sourcePath: backupPath, confirmed: true });
     assert.equal(restored.verifiedContentObjects, 1);
     assert.equal(await readFile(storedPath, "utf8"), "verified backup content");
-    await assert.rejects(() => f.service.restoreObjective({ kind: "local_user", actorId: "local", objectiveId: "objective:two" }, { sourcePath: backupPath, confirmed: true }), { code: "ARTIFACT_CROSS_OBJECTIVE_FORBIDDEN" });
+    await assert.rejects(() => f.service.restoreWork({ kind: "local_user", actorId: "local", workId: "work:two" }, { sourcePath: backupPath, confirmed: true }), { code: "ARTIFACT_CROSS_WORK_FORBIDDEN" });
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });

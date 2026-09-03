@@ -21,7 +21,7 @@ struct ArchivedSessionPaginationTests {
         #expect(sources.console.contains("More archived sessions"))
         #expect(sources.settings.contains("refreshArchivedSessions(sessionKind: .assistantChat)"))
         #expect(sources.console.contains("refreshArchivedSessions(sessionKind: .worker)"))
-        #expect(sources.console.contains("archivedWorkerSessionList(objective)"))
+        #expect(sources.console.contains("archivedWorkerSessionList(work)"))
         #expect(sources.console.contains("loadArchivedSession(id: pendingId)"))
     }
 

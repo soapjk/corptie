@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class ApplicationTerminationUITests: XCTestCase {
-    // XCTest's Objective-C invalid-object checker can over-release AppKit sheet
+    // XCTest's Work-C invalid-object checker can over-release AppKit sheet
     // windows at the test autorelease-pool boundary. Retain these process-local
     // fixtures until the test bundle exits; the behavior under test still ends
     // and hides the sheet synchronously.

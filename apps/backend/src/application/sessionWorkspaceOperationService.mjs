@@ -79,8 +79,8 @@ export class SessionWorkspaceOperationService {
     const target = this.store.getGitWorktree(targetWorktreeId);
     if (!target || target.repositoryId !== scope.logical.repositoryId) {
       throw coded(
-        "WORKSPACE_OUTSIDE_OBJECTIVE",
-        `Worktree ${targetWorktreeId} is not in the repository authorized for Objective ${scope.session.objectiveId}.`,
+        "WORKSPACE_OUTSIDE_WORK",
+        `Worktree ${targetWorktreeId} is not in the repository authorized for Work ${scope.session.workId}.`,
         403,
         "authorization"
       );
@@ -211,12 +211,12 @@ export class SessionWorkspaceOperationService {
     this.store.db.run(
       `INSERT INTO workspace_creation_requests (
         operation_id, idempotency_key, input_fingerprint, actor_agent_id,
-        source_session_id, logical_session_id, objective_id, task_id,
+        source_session_id, logical_session_id, work_id, task_id,
         repository_id, target_path, status, failure_stage, request_json, result_json,
         error_code, error_message, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'workspace_creation', ?, NULL, NULL, NULL, ?, ?)`,
       [operationId, idempotencyKey, fingerprint, actorId, scope.session.id,
-        scope.logical.logicalSessionId, scope.session.objectiveId, scope.session.taskId ?? null,
+        scope.logical.logicalSessionId, scope.session.workId, scope.session.taskId ?? null,
         scope.logical.repositoryId, targetPath, JSON.stringify(input), timestamp, timestamp]
     );
     this.store.scheduleSave();
@@ -243,16 +243,16 @@ export class SessionWorkspaceOperationService {
         "context_validation"
       );
     }
-    const objectiveId = required(
-      metadata?.objectiveId,
-      "x-corptie-objective-id",
-      "WORKSPACE_OBJECTIVE_CONTEXT_REQUIRED",
+    const workId = required(
+      metadata?.workId,
+      "x-corptie-work-id",
+      "WORKSPACE_WORK_CONTEXT_REQUIRED",
       "context_validation"
     );
-    if (!session.objectiveId || session.objectiveId !== objectiveId) {
+    if (!session.workId || session.workId !== workId) {
       throw coded(
-        "WORKSPACE_OBJECTIVE_CONTEXT_MISMATCH",
-        `Request Objective ${objectiveId} does not match source Session ${logical.logicalSessionId}.`,
+        "WORKSPACE_WORK_CONTEXT_MISMATCH",
+        `Request Work ${workId} does not match source Session ${logical.logicalSessionId}.`,
         403,
         "context_validation"
       );
@@ -282,34 +282,34 @@ export class SessionWorkspaceOperationService {
         "route_validation"
       );
     }
-    const objective = this.store.getObjective(objectiveId);
-    if (!objective) {
-      throw coded("WORKSPACE_OBJECTIVE_NOT_FOUND", `Objective ${objectiveId} was not found.`, 404, "context_validation");
+    const work = this.store.getWork(workId);
+    if (!work) {
+      throw coded("WORKSPACE_WORK_NOT_FOUND", `Work ${workId} was not found.`, 404, "context_validation");
     }
-    if (!(objective.contributorAgentIds ?? []).includes(actorId)) {
+    if (!(work.contributorAgentIds ?? []).includes(actorId)) {
       throw coded(
-        "WORKSPACE_OBJECTIVE_ACCESS_DENIED",
-        `Agent ${actorId} is not a contributor to Objective ${objectiveId}.`,
+        "WORKSPACE_WORK_ACCESS_DENIED",
+        `Agent ${actorId} is not a contributor to Work ${workId}.`,
         403,
         "authorization"
       );
     }
-    if (!logical.repositoryId || !(objective.workspaceIds ?? []).includes(logical.repositoryId)) {
+    if (!logical.repositoryId || this.store.getGitRepositoryForWorkspace(work.workspaceId)?.id !== logical.repositoryId) {
       throw coded(
-        "WORKSPACE_OBJECTIVE_ACCESS_DENIED",
-        `Objective ${objectiveId} is not authorized for Session repository ${logical.repositoryId ?? "<missing>"}.`,
+        "WORKSPACE_WORK_ACCESS_DENIED",
+        `Work ${workId} is not authorized for Session repository ${logical.repositoryId ?? "<missing>"}.`,
         403,
         "authorization"
       );
     }
-    return { session, logical, objective };
+    return { session, logical, work };
   }
 
   #failureAudit(metadata, actorId, input, error) {
     this.#audit("workspace_creation_rejected", {
       actorAgentId: actorId ?? null,
       sourceSessionId: metadata?.sessionId ?? null,
-      objectiveId: metadata?.objectiveId ?? null,
+      workId: metadata?.workId ?? null,
       taskId: metadata?.taskId ?? null,
       targetPath: input?.target_path ?? null,
       failureStage: error.stage ?? "context_validation",
@@ -327,7 +327,7 @@ function context(scope) {
   return {
     sourceSessionId: scope.logical.logicalSessionId,
     providerSessionId: scope.session.id,
-    objectiveId: scope.session.objectiveId,
+    workId: scope.session.workId,
     taskId: scope.session.taskId ?? null,
     repositoryId: scope.logical.repositoryId
   };

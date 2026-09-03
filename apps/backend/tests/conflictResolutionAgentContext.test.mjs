@@ -4,8 +4,8 @@ import { resolveConflictResolutionAgentContext } from "../src/application/confli
 
 function fixture({ associations = [], logicalSessions = [] } = {}) {
   const tasks = new Map([
-    ["task:active", { id: "task:active", objective_id: "objective:one", main_agent_id: "agent:one" }],
-    ["task:completed", { id: "task:completed", objective_id: "objective:one", main_agent_id: "agent:one" }]
+    ["task:active", { id: "task:active", work_id: "work:one", main_agent_id: "agent:one" }],
+    ["task:completed", { id: "task:completed", work_id: "work:one", main_agent_id: "agent:one" }]
   ]);
   return {
     item: { worktreeId: "worktree:integration", associations },
@@ -13,7 +13,7 @@ function fixture({ associations = [], logicalSessions = [] } = {}) {
       listLogicalSessionsByWorkspaceId: () => logicalSessions,
       getSession: (id) => id === "session:completed" ? { taskId: "task:completed" } : null,
       getTask: (id) => tasks.get(id) ?? null,
-      getObjective: (id) => id === "objective:one" ? { id } : null,
+      getWork: (id) => id === "work:one" ? { id } : null,
       getAgent: (id) => id === "agent:one" ? { agentId: id, role: "independentContributor" } : null
     }
   };
