@@ -12,8 +12,6 @@ struct ObjectiveDetailView: View {
     @State private var detail: String
     @State private var idealState: String
     @State private var priority: String?
-    @State private var hasTargetDate: Bool
-    @State private var targetDate: Date
     @State private var tagsText: String
     @State private var showAdvanced = false
     @State private var workspaceIds = Set<String>()
@@ -28,8 +26,6 @@ struct ObjectiveDetailView: View {
         _detail = State(initialValue: objective.description)
         _idealState = State(initialValue: objective.idealState)
         _priority = State(initialValue: objective.priority)
-        _hasTargetDate = State(initialValue: objective.targetDate != nil)
-        _targetDate = State(initialValue: Self.parseDate(objective.targetDate) ?? Date())
         _tagsText = State(initialValue: objective.tags.joined(separator: ", "))
         _workspaceIds = State(initialValue: Set(objective.workspaceIds))
         _relatedObjectiveIds = State(initialValue: Set(objective.relatedObjectiveIds))
@@ -79,29 +75,19 @@ struct ObjectiveDetailView: View {
                         AgentAssistButton(fieldLabel: "理想状态", text: $idealState, selectedAgentId: $assistAgentId, context: "目标名称：\(name)；描述：\(detail)")
                     }
 
-                    HStack(spacing: 24) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(L10n("优先级"))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Picker("", selection: $priority) {
-                                Text(L10n("未设置")).tag(String?.none)
-                                Text(L10n("低")).tag(String?.some("low"))
-                                Text(L10n("中")).tag(String?.some("medium"))
-                                Text(L10n("高")).tag(String?.some("high"))
-                                Text(L10n("紧急")).tag(String?.some("urgent"))
-                            }
-                            .labelsHidden()
-                            .frame(maxWidth: 160, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n("优先级"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker("", selection: $priority) {
+                            Text(L10n("未设置")).tag(String?.none)
+                            Text(L10n("低")).tag(String?.some("low"))
+                            Text(L10n("中")).tag(String?.some("medium"))
+                            Text(L10n("高")).tag(String?.some("high"))
+                            Text(L10n("紧急")).tag(String?.some("urgent"))
                         }
-                        VStack(alignment: .leading, spacing: 4) {
-                            Toggle(L10n("设置目标日期"), isOn: $hasTargetDate)
-                                .font(.caption)
-                            if hasTargetDate {
-                                DatePicker("", selection: $targetDate, displayedComponents: .date)
-                                    .labelsHidden()
-                            }
-                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 160, alignment: .leading)
                     }
 
                     Divider()
@@ -182,7 +168,6 @@ struct ObjectiveDetailView: View {
                 description: detail,
                 idealState: idealState,
                 priority: priority ?? "",
-                targetDate: hasTargetDate ? Self.dateString(targetDate) : "",
                 tags: tags,
                 workspaceIds: Array(workspaceIds),
                 relatedObjectiveIds: Array(relatedObjectiveIds),
@@ -192,19 +177,6 @@ struct ObjectiveDetailView: View {
                 dismiss()
             }
         }
-    }
-
-    private static func dateString(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
-
-    private static func parseDate(_ value: String?) -> Date? {
-        guard let value, !value.isEmpty else { return nil }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: value)
     }
 
     private var currentAvatarPath: String? {

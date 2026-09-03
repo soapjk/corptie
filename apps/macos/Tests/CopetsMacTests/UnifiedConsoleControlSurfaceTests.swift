@@ -41,6 +41,10 @@ struct UnifiedConsoleControlSurfaceTests {
         let detailSource = try source(named: "ObjectiveDetailView.swift")
         #expect(detailSource.contains("client.setObjectiveAvatar"))
         #expect(detailSource.contains("client.clearObjectiveAvatar"))
+        #expect(!detailSource.contains("hasTargetDate"))
+        #expect(!detailSource.contains("targetDate:"))
+        #expect(!detailSource.contains("DatePicker("))
+        #expect(!detailSource.contains("设置目标日期"))
 
         let consoleSource = try source(named: "UnifiedConsoleView.swift")
         #expect(consoleSource.contains("avatarPath: objective.avatarPath"))
