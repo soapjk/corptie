@@ -45,6 +45,7 @@ struct UnifiedConsoleView: View {
     @State private var workPendingDeletion: Work?
     @State private var workDeletionError: String?
     @State private var taskPendingEdit: CorptieTask?
+    @State private var taskSessionPendingRename: TaskSession?
     @State private var taskDeletionPresentation: CorptieTaskDeletionPresentation?
     @State private var taskDeletionError: String?
     @State private var pendingTaskDeletionIds = Set<String>()
@@ -84,8 +85,8 @@ struct UnifiedConsoleView: View {
     var body: some View {
         HStack(spacing: 0) {
             consoleNavigationCard
-                .padding(.leading, TwoPaneLayoutMetrics.contentPadding)
-                .padding(.vertical, TwoPaneLayoutMetrics.contentPadding)
+                .padding(.leading, MainWindowPageLayoutMetrics.outerPadding)
+                .padding(.vertical, MainWindowPageLayoutMetrics.outerPadding)
             sessionConversation
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -176,6 +177,13 @@ struct UnifiedConsoleView: View {
         .sheet(item: $taskPendingEdit) { task in
             CorptieTaskEditView(task: task) {}
         }
+        .sheet(item: $taskSessionPendingRename) { session in
+            RenameSessionSheet(session: session) {
+                taskSessionPendingRename = nil
+            }
+            .environmentObject(backendClient)
+            .presentationBackground(.clear)
+        }
         .sheet(item: $taskDeletionPresentation) { presentation in
             CorptieTaskDeletionConfirmationView(
                 task: presentation.task,
@@ -245,25 +253,30 @@ struct UnifiedConsoleView: View {
         .frame(maxHeight: .infinity)
         .clipShape(
             RoundedRectangle(
-                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
                 style: .continuous
             )
         )
         .background(
             .regularMaterial,
             in: RoundedRectangle(
-                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
                 style: .continuous
             )
         )
         .overlay {
             RoundedRectangle(
-                cornerRadius: TwoPaneLayoutMetrics.cardCornerRadius,
+                cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
                 style: .continuous
             )
             .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
         }
-        .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
+        .shadow(
+            color: Color.black.opacity(0.045),
+            radius: MainWindowPageLayoutMetrics.cardShadowRadius,
+            x: 0,
+            y: 1
+        )
         .overlay(alignment: .trailing) {
             navigationResizeHandle
         }
@@ -604,7 +617,7 @@ struct UnifiedConsoleView: View {
         List {
             Section {
                 if let row = workChatRows.first {
-                    sessionRow(row, subtitle: L10n("Work discussion"))
+                    workChatRow(row)
                 } else {
                     Label(L10n("Start Work Chat"), systemImage: "scope")
                         .foregroundStyle(.secondary)
@@ -628,6 +641,50 @@ struct UnifiedConsoleView: View {
         }
         .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+    }
+
+    private func workChatRow(_ row: SessionRowModel) -> some View {
+        let session = row.session
+        let isSelected = selectionController.selectedSessionID == session.id
+        return Button {
+            selectedTaskId = nil
+            selectSessionAfterHighlight(session)
+        } label: {
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(session.executionTaskStatus.color)
+                    .frame(width: 7, height: 7)
+                    .accessibilityLabel(session.executionTaskStatus.label)
+                Text(row.listTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if isSessionUnread(session) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel(L10n("Unread Session"))
+                        .help(L10n("Unread Session"))
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+            .contextMenu {
+                SessionContextMenuContent(
+                    session: session,
+                    isRenaming: Binding(
+                        get: { taskSessionPendingRename?.id == session.id },
+                        set: { taskSessionPendingRename = $0 ? session : nil }
+                    )
+                )
+            }
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
+                .padding(.horizontal, 8)
+        )
     }
 
     private func taskRow(_ task: CorptieTask) -> some View {
@@ -659,6 +716,16 @@ struct UnifiedConsoleView: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
             .contextMenu {
+                if let session {
+                    SessionContextMenuContent(
+                        session: session,
+                        isRenaming: Binding(
+                            get: { taskSessionPendingRename?.id == session.id },
+                            set: { taskSessionPendingRename = $0 ? session : nil }
+                        )
+                    )
+                    Divider()
+                }
                 Button(L10n("编辑"), systemImage: "square.and.pencil") {
                     taskPendingEdit = task
                 }
@@ -1375,7 +1442,7 @@ struct UnifiedConsoleView: View {
            SessionCategory(session: session) == selectedCategory,
            selectedCategory != .worker
                 || isArchivedWorkerSession(session) == isShowingWorkerArchive {
-            HStack(spacing: 8) {
+            HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
                 // One structural Detail/NSScrollView host is rebound in place.
                 // Session-specific model state changes, but native cell reuse
                 // queues and the scroll view itself are never multiplied.
@@ -1393,9 +1460,9 @@ struct UnifiedConsoleView: View {
                 // 右侧竖列详情面板（固定常驻，无收起按钮，模仿 Rudder IssueDetail rail）
                 SessionDetailPanel(session: session)
             }
-            .padding(16)
+            .padding(MainWindowPageLayoutMetrics.outerPadding)
         } else if let task = selectedTask {
-            HStack(spacing: 8) {
+            HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
                 VStack(spacing: 12) {
                     Image(systemName: "bubble.left.and.exclamationmark.bubble.right")
                         .font(.system(size: 32, weight: .light))
@@ -1414,7 +1481,7 @@ struct UnifiedConsoleView: View {
                 SessionCorptieTaskDetailCard(taskId: task.id)
                     .frame(width: 280)
             }
-            .padding(16)
+            .padding(MainWindowPageLayoutMetrics.outerPadding)
         } else {
             ContentUnavailableView(
                 L10n("Select a Session"),

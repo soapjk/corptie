@@ -6,7 +6,7 @@ import XCTest
 
 final class WorktreeManagementNavigationTests: XCTestCase {
     func testWorktreeTabIsAnIndependentMainNavigationDestination() {
-        XCTAssertEqual(AppTab.allCases, [.console, .automations, .worktrees, .sessionDSH, .agents])
+        XCTAssertEqual(AppTab.allCases, [.console, .automations, .worktrees, .agents])
         XCTAssertEqual(AppTab.worktrees.systemImage, "arrow.triangle.branch")
         XCTAssertEqual(AppTab.worktrees.index, 2)
     }
@@ -120,9 +120,11 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains("worktree.repository.column"))
         XCTAssertTrue(contents.contains("worktree.list.column"))
         XCTAssertTrue(contents.contains("worktree.detail.column"))
+        XCTAssertEqual(contents.components(separatedBy: ".mainWindowPageCard()").count - 1, 3)
+        XCTAssertTrue(contents.contains(".padding(MainWindowPageLayoutMetrics.outerPadding)"))
         XCTAssertGreaterThanOrEqual(
             contents.components(separatedBy: ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)").count - 1,
-            2
+            3
         )
         XCTAssertTrue(contents.contains("@ObservedObject private var backendClient = BackendClient.shared"))
         XCTAssertTrue(contents.contains(".task(id: worktreeReloadTrigger)"))
