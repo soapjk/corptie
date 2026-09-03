@@ -78,6 +78,8 @@ development-docs/
 **/.rooignore
 **/.github/copilot-instructions.md
 **/.github/instructions/
-docs/
+/docs/*
+!/docs/work-domain-redesign/
+!/docs/work-domain-redesign/**
 # Corptie local Agent configuration
 /.corptie/
