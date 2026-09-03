@@ -31,10 +31,8 @@ export function acceptanceCriteriaList(value) {
 export function taskExecutionPrompt(task) {
   return [
     `请完成工作项「${task?.title ?? "未命名"}」。`,
-    task?.description ? `\n任务描述：\n${task.description}` : "",
-    task?.acceptance_criteria ? `\n验收标准：\n${task.acceptance_criteria}` : "",
     task?.acceptance_criteria
-      ? "\n完成实现与验证后：只有在每条验收标准均有可复现证据时，才调用 corptie_task_report_acceptance；逐条原样填写标准、passed 结论、证据摘要与命令/文件/结果引用。证据不足时不得调用，也不得因 Session 或本轮结束而推断验收通过。"
+      ? "\n请依据已注入的 Task 上下文执行与验证；只有在每条验收标准均有可复现证据时，才调用 corptie_task_report_acceptance。"
       : ""
   ].filter(Boolean).join("\n");
 }

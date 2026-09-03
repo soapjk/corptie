@@ -90,16 +90,17 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and record this Session as its creation origin. Creation never makes it a child or subtask of another Task.", {
+  tool("corptie_collaboration_tasks_create", "Create and immediately start an independent Work-scoped Task, recording this Session as its creation origin. The returned Task is ready for conversation; no separate start action exists.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
     priority: taskFieldsSchema.priority,
     agent_id: agentIdSchema,
+    provider_id: { type: "string", minLength: 1 },
     artifact_reference: artifactReferenceSchema,
     file_reference: fileReferenceSchema,
     idempotency_key: { type: "string", minLength: 1 }
-  }, ["title", "idempotency_key"]),
+  }, ["title", "agent_id", "idempotency_key"]),
   tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,
@@ -113,14 +114,6 @@ export const collaborationDynamicTools = Object.freeze([
     version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
     version: { type: "integer", minimum: 1 }
   }, ["task_id", "artifact_id"]),
-  tool("corptie_collaboration_tasks_start", "Start an authorized collaboration Task through the Provider-neutral Session/Worktree lifecycle. Returns a staged receipt and never reports start success without an actual Session binding.", {
-    task_id: taskIdSchema,
-    agent_id: agentIdSchema,
-    provider_id: { type: "string", minLength: 1 },
-    title: { type: "string", minLength: 1 },
-    resource_version: { type: "integer", minimum: 1 },
-    idempotency_key: { type: "string", minLength: 1 }
-  }, ["task_id", "agent_id", "provider_id", "resource_version", "idempotency_key"]),
   tool("corptie_agents_discover", "Discover registered peer Agents and their capabilities.", {
     status: { type: "string", enum: ["available", "unavailable"] }
   }),
@@ -182,6 +175,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       acceptanceCriteria: input.acceptance_criteria,
       priority: input.priority,
       agentId: input.agent_id,
+      providerId: input.provider_id,
       artifactReference: input.artifact_reference ? {
         artifactId: input.artifact_reference.artifact_id,
         relation: input.artifact_reference.relation,
@@ -208,15 +202,6 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       required: input.required,
       versionPolicy: input.version_policy,
       version: input.version
-    })),
-    corptie_collaboration_tasks_start: () => client.post(`/internal/collaboration/tasks/${encodeURIComponent(input.task_id)}/start`, compact({
-      taskId: input.task_id,
-      assigneeAgentId: input.agent_id,
-      expectedTaskVersion: input.resource_version,
-      providerId: input.provider_id,
-      title: input.title,
-      idempotencyKey: input.idempotency_key,
-      sourceSessionId: client.sessionScope?.sessionId
     })),
     corptie_agents_discover: () => client.get("/internal/collaboration/agents", { status: input.status }),
     corptie_agents_get: () => client.get(`/internal/collaboration/agents/${encodeURIComponent(input.agent_id)}`),
