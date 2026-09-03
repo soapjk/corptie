@@ -427,6 +427,7 @@
 "Context handoff" = "上下文交接";
 "Active thread" = "活动线程";
 "Return to the active workspace thread" = "返回活动工作区线程";
+"Return to main window" = "回归主窗口";
 "Workspace History" = "工作区历史";
 "The active thread was created through a context handoff." = "活动线程通过上下文交接创建。";
 "Commands and terminals started by previous threads remain attached to their original workspace." = "先前线程启动的命令和终端仍归属于原工作区。";
