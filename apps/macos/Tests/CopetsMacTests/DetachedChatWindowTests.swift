@@ -21,7 +21,20 @@ struct DetachedChatWindowTests {
         #expect(source.contains("controllers[session.id] = controller"))
         #expect(source.contains("panel.level = .floating"))
         #expect(source.contains("DetachedChatWindowManager.shared.close(sessionID: sessionID)"))
-        #expect(source.contains("Image(systemName: \"xmark\")"))
+        #expect(source.contains("NSWindow.standardWindowButton(.closeButton"))
+        #expect(source.contains("Image(systemName: \"arrow.uturn.backward\")"))
+        #expect(source.contains("func returnToMain(sessionID: String)"))
+        #expect(source.contains("close(sessionID: sessionID)"))
+        #expect(source.contains("AppDelegate.shared?.openSessionInMainWindow(sessionID: sessionID)"))
+    }
+
+    @Test
+    func returningFromDetachedChatOpensTheMatchingMainWindowSession() throws {
+        let source = try contents(of: "CopetsMacApp.swift")
+
+        #expect(source.contains("func openSessionInMainWindow(sessionID: String)"))
+        #expect(source.contains("openWarRoom()"))
+        #expect(source.contains("AppTabRouter.shared.openSession(sessionID)"))
     }
 
     @Test
