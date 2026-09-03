@@ -9648,6 +9648,7 @@ export class CorptieStore {
     binding,
     agentId,
     text,
+    content = null,
     title = "User",
     source = {},
     priority = 100,
@@ -9683,6 +9684,7 @@ export class CorptieStore {
       }
       let outbox = null;
       if (inserted) {
+        const images = Array.isArray(content?.images) ? content.images : [];
         this.upsertTimelineItemProjection(sessionId, {
           id: messageId,
           bindingId: binding.bindingId,
@@ -9691,6 +9693,7 @@ export class CorptieStore {
           type: "userMessage",
           title,
           text,
+          rawMetadataJSON: images.length > 0 ? JSON.stringify({ images }) : null,
           status: "queued",
           createdAt
         });
@@ -9703,7 +9706,7 @@ export class CorptieStore {
           source,
           payload: {
             sessionId,
-            message: { id: messageId, type: "userMessage", title, text, createdAt },
+            message: { id: messageId, type: "userMessage", title, text, images, createdAt },
             deliveryId,
             bindingId: binding.bindingId,
             routingVersion: binding.routingVersion

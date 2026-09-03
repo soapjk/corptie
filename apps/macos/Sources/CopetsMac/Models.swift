@@ -579,11 +579,19 @@ struct GitHubCommitMessageSuggestion: Decodable, Sendable {
 
 struct SessionCapabilities: Codable, Equatable, Sendable {
     let canSend: Bool?
+    let canSendImages: Bool?
     let canSwitchModel: Bool?
     let canSwitchReasoning: Bool?
     let canInterrupt: Bool?
     let canReconnect: Bool?
     let canPrepareExecution: Bool?
+}
+
+struct ChatImageReference: Codable, Equatable, Hashable, Identifiable, Sendable {
+    let managedPath: String
+    let originalPath: String?
+
+    var id: String { managedPath }
 }
 
 struct SessionActionAvailability: Codable, Equatable, Sendable {
@@ -1422,6 +1430,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let options: [CodexApprovalOption]?
     let status: String?
     let createdAt: String?
+    var images: [ChatImageReference]? = nil
     var rawMetadataJSON: String? = nil
     /// Presentation-only lifecycle bounds derived from the complete turn.
     /// Process cards contain only execution items, so their own timestamps are

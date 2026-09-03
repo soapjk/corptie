@@ -145,20 +145,12 @@ struct WorkDetailView: View {
     }
 
     private var workAvatar: some View {
-        Group {
-            if let path = currentAvatarPath, !path.isEmpty {
-                AnimatedAvatarImage(path: path)
-            } else {
-                DefaultInitialAvatarView(
-                    familySeed: name,
-                    variationSeed: work.id,
-                    initials: DefaultAvatarInitials.make(from: name),
-                    size: 52
-                )
-            }
-        }
-        .frame(width: 52, height: 52)
-        .clipShape(Circle())
+        ObjectiveAvatarView(
+            objectiveID: work.id,
+            name: name,
+            avatarPath: currentAvatarPath,
+            size: 52
+        )
     }
 
     private func chooseAvatar() {

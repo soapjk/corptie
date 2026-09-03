@@ -105,7 +105,8 @@ struct UnifiedConsoleControlSurfaceTests {
 
         let consoleSource = try source(named: "UnifiedConsoleView.swift")
         #expect(consoleSource.contains("avatarPath: work.avatarPath"))
-        #expect(consoleSource.contains("AnimatedAvatarImage(path: avatarPath)"))
+        #expect(consoleSource.contains("ObjectiveAvatarView("))
+        #expect(consoleSource.contains("objectiveID: work.id"))
     }
 
     @Test

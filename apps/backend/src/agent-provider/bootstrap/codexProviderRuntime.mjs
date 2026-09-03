@@ -20,6 +20,7 @@ export class CodexProviderRuntime {
   interruptTurn(...args) { return this.client.interruptTurn(...args); }
   inspectEmptyThreadForRouteCommit(...args) { return this.client.inspectEmptyThreadForRouteCommit(...args); }
   liveItemsForThread(...args) { return this.client.liveItemsForThread(...args); }
+  attachManagedImagesToLiveItem(...args) { return this.client.attachManagedImagesToLiveItem(...args); }
   readAccountRateLimits(...args) { return this.client.readAccountRateLimits(...args); }
   readThreadForLegacyHistoryRepair(...args) { return this.client.readThreadForLegacyHistoryRepair(...args); }
   respondToApproval(...args) { return this.client.respondToApproval(...args); }

@@ -286,14 +286,12 @@ struct WarRoomView: View {
 
     private func workSidebarLabel(_ work: Work) -> some View {
         HStack(spacing: 8) {
-            if let avatarPath = work.avatarPath, !avatarPath.isEmpty {
-                AnimatedAvatarImage(path: avatarPath)
-                    .frame(width: 20, height: 20)
-                    .clipShape(Circle())
-            } else {
-                Image(systemName: "target")
-                    .frame(width: 20, height: 20)
-            }
+            ObjectiveAvatarView(
+                objectiveID: work.id,
+                name: work.name,
+                avatarPath: work.avatarPath,
+                size: 20
+            )
             Text(work.name)
                 .lineLimit(1)
         }
@@ -710,7 +708,7 @@ enum CorptieTaskBoundSessionActivity: Equatable {
         switch self {
         case .processing: CorptiePalette.connected
         case .waitingForInput, .paused: .orange
-        case .idle: .blue
+        case .idle: .orange
         case .interrupted, .failed: .red
         case .noSession, .unknown: .secondary
         }

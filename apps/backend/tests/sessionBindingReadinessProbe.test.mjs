@@ -49,6 +49,34 @@ test("binding verification publishes verifying then ready and coalesces concurre
   assert.deepEqual(f.changed, ["session:one", "session:one"]);
 });
 
+test("rechecking an already-ready binding does not publish a transient not-ready state", async () => {
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const f = fixture();
+  await f.coordinator.verify("session:one");
+  assert.equal(f.coordinator.readiness("logical:one", "binding:one"), null);
+
+  f.coordinator.probe = async () => {
+    await gate;
+    return { prepared: true };
+  };
+  const verification = f.coordinator.verify("session:one");
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(
+    f.coordinator.readiness("logical:one", "binding:one"),
+    null,
+    "a per-dispatch safety probe must preserve the last verified-ready UI projection"
+  );
+  release();
+  assert.equal((await verification).ready, true);
+  assert.deepEqual(
+    f.changed,
+    ["session:one", "session:one"],
+    "ready-to-ready rechecks must not invalidate the client projection"
+  );
+});
+
 test("Provider failure becomes binding-scoped not-ready state", async () => {
   const f = fixture({
     error: Object.assign(new Error("thread missing"), { code: "PROVIDER_SESSION_UNAVAILABLE" })

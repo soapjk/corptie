@@ -29,6 +29,10 @@ struct CorptieTaskCardStatusTests {
         }
     }
 
+    @Test func idleTaskSessionUsesTheSharedOrangeIdleIndicator() {
+        #expect(CorptieTaskBoundSessionActivity.idle.color == .orange)
+    }
+
     @Test func ignoresOtherSessionsWhenTheCurrentBindingIsPresent() {
         let current = makeCorptieTaskSession(id: "session:current", status: .running)
         let newerOther = makeCorptieTaskSession(

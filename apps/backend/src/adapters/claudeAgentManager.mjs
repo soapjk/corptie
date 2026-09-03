@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
@@ -157,7 +158,7 @@ export class ClaudeAgentManager {
     }
   }
 
-  async send(id, text, options = {}) {
+  async send(id, message, options = {}) {
     const session = this.get(id);
     if (!session) {
       throw new Error("Claude session not found");
@@ -168,9 +169,10 @@ export class ClaudeAgentManager {
     if (session.turnState === "running") {
       throw new Error("Claude session is still processing the previous request");
     }
-    const value = String(text ?? "").trim();
-    if (!value) {
-      throw new Error("Input text is required");
+    const value = String(typeof message === "string" ? message : message?.text ?? "").trim();
+    const images = Array.isArray(message?.images) ? message.images : [];
+    if (!value && images.length === 0) {
+      throw new Error("Input text or an image is required");
     }
 
     await this.ensureQueryStarted(session);
@@ -200,7 +202,7 @@ export class ClaudeAgentManager {
     });
     console.log(`[claude-sdk] send queued id=${id} chars=${value.length}`);
     const providerValue = providerMessageWithSessionContext(value, options.contextPrompt);
-    this.enqueueInput(session, makeUserMessage(providerValue));
+    this.enqueueInput(session, await makeUserMessage(providerValue, images));
     return this.toSessionSummary(session);
   }
 
@@ -1181,20 +1183,42 @@ function isChoiceItemAlreadyHandled(session, choiceId) {
   return session.items.some((item) => item.id === choiceId && item.type === "choice" && item.status === "selected");
 }
 
-function makeUserMessage(text) {
+async function makeUserMessage(text, images = []) {
+  const content = [];
+  for (const image of images) {
+    const mediaType = claudeImageMediaType(image?.mimeType);
+    const path = typeof image?.absolutePath === "string" ? image.absolutePath : "";
+    if (!path) {
+      const error = new Error("Claude image input requires a resolved local path.");
+      error.code = "CHAT_IMAGE_MISSING";
+      throw error;
+    }
+    content.push({
+      type: "image",
+      source: {
+        type: "base64",
+        media_type: mediaType,
+        data: (await readFile(path)).toString("base64")
+      }
+    });
+  }
+  if (text) content.push({ type: "text", text });
   return {
     type: "user",
     message: {
       role: "user",
-      content: [
-        {
-          type: "text",
-          text
-        }
-      ]
+      content
     },
     parent_tool_use_id: null
   };
+}
+
+function claudeImageMediaType(value) {
+  const type = String(value ?? "").toLowerCase();
+  if (["image/jpeg", "image/png", "image/gif", "image/webp"].includes(type)) return type;
+  const error = new Error(`Claude does not support image format ${type || "unknown"}.`);
+  error.code = "CHAT_IMAGE_FORMAT_UNSUPPORTED";
+  throw error;
 }
 
 function claudeAssistantContentItems(message) {
