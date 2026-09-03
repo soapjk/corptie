@@ -154,23 +154,17 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
       agentId: agent.agentId,
       sessionScope: { sessionId: "session:source", workId: work.id }
     });
-    const created = await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
+    const started = await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
       title: "Production wiring",
       agent_id: agent.agentId,
-      idempotency_key: "create:one"
-    });
-    const started = await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_start", {
-      task_id: created.task.id,
-      agent_id: agent.agentId,
       provider_id: "test-provider",
-      resource_version: created.task.resource_version,
-      idempotency_key: "start:one"
+      idempotency_key: "create:one"
     });
 
     assert.equal(started.executionStatus, "running");
     assert.equal(started.session.sessionId, "session:worker");
     assert.deepEqual(calls, { create: 1, bind: 1, activate: 1 });
-    const task = store.getTask(created.task.id);
+    const task = store.getTask(started.task.id);
     assert.equal(task.main_agent_id, agent.agentId);
     assert.equal(task.current_session_id, "provider:worker");
     assert.equal(task.lifecycle_state, "in_progress");
@@ -179,12 +173,11 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
       (event) => event.payload?.text === "Initial Turn"
     ), true);
 
-    await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_start", {
-      task_id: created.task.id,
+    await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
+      title: "Production wiring",
       agent_id: agent.agentId,
       provider_id: "test-provider",
-      resource_version: created.task.resource_version,
-      idempotency_key: "start:one"
+      idempotency_key: "create:one"
     });
     assert.deepEqual(calls, { create: 1, bind: 1, activate: 1 });
   } finally {

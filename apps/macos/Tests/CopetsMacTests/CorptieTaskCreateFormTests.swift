@@ -46,10 +46,10 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         )
     }
 
-    func testExecutionPresentationShowsNotStartedAndRunning() {
+    func testExecutionPresentationShowsPreparingAndRunningWithoutANotStartedState() {
         XCTAssertEqual(
             CorptieTaskExecutionPresentation.label(executionStatus: "idle", sessionStatus: nil),
-            L10n("Not Started")
+            L10n("Preparing")
         )
         XCTAssertEqual(
             CorptieTaskExecutionPresentation.label(executionStatus: "idle", sessionStatus: "running"),

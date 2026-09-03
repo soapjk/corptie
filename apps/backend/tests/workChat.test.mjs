@@ -144,9 +144,10 @@ test("Work Chat context delegates every code or repository mutation to a new Tas
     assert.match(context.prompt, /requires any code change or repository-content mutation/);
     assert.match(context.prompt, /Do not switch or create a worktree/);
     assert.match(context.prompt, /do not edit, create, delete, rename, stage, commit/);
-    assert.match(context.prompt, /First create a new Task in this Work/);
+    assert.match(context.prompt, /Create a new Task in this Work with an assignee/);
     assert.match(context.prompt, /title, description, and acceptance criteria must record the concrete/);
-    assert.match(context.prompt, /assign and start that Task so its Worker Session performs the actual changes and verification/);
+    assert.match(context.prompt, /Task creation starts its Worker Session automatically/);
+    assert.match(context.prompt, /never request or perform a separate start action/);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

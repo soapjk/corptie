@@ -7,7 +7,7 @@ import {
 
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
-  assert.equal(names.length, 18);
+  assert.equal(names.length, 17);
   assert.equal(new Set(names).size, names.length);
   assert.ok(names.includes("corptie_agents_discover"));
   assert.ok(names.includes("corptie_collaboration_channel_open"));
@@ -15,6 +15,7 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.ok(names.includes("corptie_sessions_discover"));
   assert.ok(names.includes("corptie_collaboration_tasks_create"));
   assert.ok(names.includes("corptie_collaboration_tasks_share_artifact"));
+  assert.equal(names.includes("corptie_collaboration_tasks_start"), false);
   assert.equal(names.includes("corptie_collaboration_tasks_cancel"), false);
   assert.equal(names.some((name) => name.includes("tasks_delete") || name.includes("tasks_update")), false);
   for (const entry of collaborationDynamicTools) {
@@ -30,37 +31,28 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.equal(Object.hasOwn(createTask.inputSchema.properties, "source_task_id"), false);
   assert.equal(createTask.inputSchema.properties.artifact_reference.required[0], "artifact_id");
   assert.equal(createTask.inputSchema.properties.file_reference.required[0], "path");
-  const startTask = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_tasks_start");
-  assert.deepEqual(startTask.inputSchema.required, [
-    "task_id", "agent_id", "provider_id", "resource_version", "idempotency_key"
-  ]);
-  assert.equal(startTask.inputSchema.properties.resource_version.type, "integer");
+  assert.deepEqual(createTask.inputSchema.required, ["title", "agent_id", "idempotency_key"]);
 });
 
-test("dynamic Task start performs the sole snake_case boundary mapping", async () => {
+test("dynamic Task creation maps assignment and Provider for automatic startup", async () => {
   const calls = [];
   const client = {
     sessionScope: { sessionId: "session:source" },
     post: async (path, body) => { calls.push({ path, body }); return { status: "ready" }; }
   };
-  await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_start", {
-    task_id: "task:one",
+  await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
+    title: "Worker",
     agent_id: "agent:worker",
     provider_id: "claude-sdk",
-    resource_version: 7,
-    title: "Worker",
-    idempotency_key: "start:one"
+    idempotency_key: "create:one"
   });
   assert.deepEqual(calls, [{
-    path: "/internal/collaboration/tasks/task%3Aone/start",
+    path: "/internal/collaboration/tasks",
     body: {
-      taskId: "task:one",
-      assigneeAgentId: "agent:worker",
-      providerId: "claude-sdk",
       title: "Worker",
-      expectedTaskVersion: 7,
-      idempotencyKey: "start:one",
-      sourceSessionId: "session:source"
+      agentId: "agent:worker",
+      providerId: "claude-sdk",
+      idempotencyKey: "create:one"
     }
   }]);
 });
@@ -87,6 +79,7 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
   const client = { post: async (path, body) => { calls.push({ path, body }); return { task: { id: "task:new" } }; } };
   await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
     title: "Referenced", idempotency_key: "create:referenced",
+    agent_id: "agent:worker",
     artifact_reference: {
       artifact_id: "artifact:spec", relation: "implementation_spec", required: true,
       version_policy: "fixed", version: 2
@@ -96,6 +89,7 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
     path: "/internal/collaboration/tasks",
     body: {
       title: "Referenced",
+      agentId: "agent:worker",
       artifactReference: {
         artifactId: "artifact:spec", relation: "implementation_spec", required: true,
         versionPolicy: "fixed", version: 2
@@ -106,6 +100,7 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
   calls.length = 0;
   await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
     title: "File", idempotency_key: "create:file",
+    agent_id: "agent:worker",
     file_reference: { path: "/workspace/spec.md", relation: "test_plan", required: false }
   });
   assert.equal(calls[0].body.fileReference.path, "/workspace/spec.md");

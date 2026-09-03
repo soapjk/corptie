@@ -116,6 +116,73 @@ final class SessionPresentationCacheTests: XCTestCase {
         XCTAssertEqual(reader.position(for: "session-a"), position)
     }
 
+    func testFirstLatestObservationCannotOverwriteHydratingReadingAnchor() async throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionViewport-hydration-race-\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let repository = SessionTimelinePositionRepository(databaseURL: databaseURL)
+        let readingPosition = AppKitChatTimelinePosition(
+            rowID: "message:reading-anchor",
+            offset: 11,
+            absoluteScrollY: 640,
+            followsLatest: false
+        )
+        try await repository.upsert(
+            readingPosition,
+            for: "session-race",
+            savedAtMilliseconds: 10
+        )
+
+        let reader = SessionViewportController(repository: repository)
+        reader.hydrate("session-race")
+        reader.store(
+            .init(
+                rowID: "message:latest",
+                offset: 0,
+                absoluteScrollY: 1_200,
+                followsLatest: true
+            ),
+            for: "session-race"
+        )
+        for _ in 0..<100 where reader.position(for: "session-race") == nil {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+
+        let storedPosition = try await repository.load(sessionID: "session-race")?.position
+        XCTAssertEqual(reader.position(for: "session-race"), readingPosition)
+        XCTAssertEqual(storedPosition, readingPosition)
+    }
+
+    func testUserScrollDuringHydrationWinsOverPersistedAnchor() async throws {
+        let databaseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SessionViewport-hydration-user-\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(at: databaseURL) }
+        let repository = SessionTimelinePositionRepository(databaseURL: databaseURL)
+        try await repository.upsert(
+            .init(rowID: "message:old", offset: 0, absoluteScrollY: 80, followsLatest: false),
+            for: "session-user",
+            savedAtMilliseconds: 10
+        )
+        let userPosition = AppKitChatTimelinePosition(
+            rowID: "message:user-selected",
+            offset: 3,
+            absoluteScrollY: 420,
+            followsLatest: false
+        )
+
+        let reader = SessionViewportController(repository: repository)
+        reader.hydrate("session-user")
+        reader.store(userPosition, for: "session-user")
+        for _ in 0..<100 where reader.position(for: "session-user") == nil {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await reader.flush()
+
+        let storedPosition = try await repository.load(sessionID: "session-user")?.position
+        XCTAssertEqual(reader.position(for: "session-user"), userPosition)
+        XCTAssertEqual(storedPosition, userPosition)
+    }
+
     func testExplicitFlushPersistsFinalSemanticPosition() async throws {
         let databaseURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("SessionViewport-final-\(UUID().uuidString).sqlite3")
