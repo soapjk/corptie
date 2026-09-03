@@ -92,13 +92,16 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
   assert.equal(Object.hasOwn(presented, "work_id"), false);
 });
 
-test("worker prompt carries the Task acceptance criteria", () => {
+test("worker prompt leaves Task description and acceptance criteria in trusted context only", () => {
   const prompt = taskExecutionPrompt({
     title: "Ship feature",
     description: "Implement the requested behavior",
     acceptance_criteria: "Task-specific criterion"
   });
-  assert.match(prompt, /验收标准：\nTask-specific criterion/);
+  assert.match(prompt, /请完成工作项「Ship feature」/);
+  assert.doesNotMatch(prompt, /Implement the requested behavior/);
+  assert.doesNotMatch(prompt, /Task-specific criterion/);
+  assert.doesNotMatch(prompt, /任务描述：|验收标准：/);
 });
 
 test("passing acceptance requires every criterion and verifiable evidence", () => {

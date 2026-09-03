@@ -12,8 +12,8 @@ export const WORK_CHAT_REPOSITORY_CHANGE_RULE = Object.freeze([
   "Work Chat code/repository change boundary:",
   "- If a user request requires any code change or repository-content mutation, do not implement it in this Work Chat Session.",
   "- Do not switch or create a worktree for that request, and do not edit, create, delete, rename, stage, commit, or otherwise mutate repository files from this Session.",
-  "- First create a new Task in this Work. Its title, description, and acceptance criteria must record the concrete code or repository changes and the verification expected.",
-  "- Then assign and start that Task so its Worker Session performs the actual changes and verification. The Work Chat may coordinate and review progress, but must not perform the implementation itself.",
+  "- Create a new Task in this Work with an assignee. Its title, description, and acceptance criteria must record the concrete code or repository changes and the verification expected.",
+  "- Task creation starts its Worker Session automatically; never request or perform a separate start action. The Work Chat may coordinate and review progress, but must not perform the implementation itself.",
   "- This delegation rule applies only when code or repository content must change. Continue handling discussion, planning, status review, and other non-mutating Work work normally."
 ].join("\n"));
 

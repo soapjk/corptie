@@ -272,12 +272,12 @@ struct CorptieTaskCreateView: View {
             guard let task = created else {
                 return .failure(client.errorMessage ?? L10n("CorptieTask 创建失败，可重试。"))
             }
-            onCreated(task)
 
             let latest = await PerfStopwatch.measure("CorptieTask.execute.existingSessionLookup") {
                 await client.task(id: task.id)
             }
             if latest?.currentSessionId != nil {
+                onCreated(latest ?? task)
                 return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
             }
             let result = await PerfStopwatch.measure("CorptieTask.execute.startRequest") {
@@ -290,8 +290,11 @@ struct CorptieTaskCreateView: View {
             }
             if let session = result.session {
                 backendClient.acceptCreatedSession(session, selectImmediately: false)
+                let startedTask = await client.task(id: task.id) ?? task
+                onCreated(startedTask)
                 return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
             }
+            onCreated(await client.task(id: task.id) ?? task)
             return .failure(L10nFormat(
                 "CorptieTask 已创建，但执行失败：%@。可重试执行，不会重复创建 CorptieTask。",
                 result.error?.message ?? L10n("未知错误")

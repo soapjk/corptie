@@ -18,6 +18,12 @@ final class SessionViewportController: ObservableObject {
     private var timestamps: [String: Int64] = [:]
     private var recency: [String] = []
     private var pendingRepositoryWrites: [String: (AppKitChatTimelinePosition, Int64)] = [:]
+    /// AppKit must render before the SQLite read completes. Keep that first
+    /// viewport observation provisional so the default latest position cannot
+    /// outrank a persisted reading anchor merely because it was observed now.
+    /// A non-latest observation represents an actual scroll-away and therefore
+    /// remains authoritative over the hydrated value.
+    private var positionsObservedDuringHydration: [String: AppKitChatTimelinePosition] = [:]
     private var loads: [String: Task<Void, Never>] = [:]
     private var persistenceTask: Task<Void, Never>?
 
@@ -36,20 +42,38 @@ final class SessionViewportController: ObservableObject {
         loads[sessionID] = Task { @MainActor [weak self] in
             let record = try? await repository.load(sessionID: sessionID)
             guard let self else { return }
-            defer { self.loads[sessionID] = nil }
-            guard let record, record.savedAtMilliseconds >= (self.timestamps[sessionID] ?? -1) else { return }
-            self.positions[sessionID] = record.position
-            self.timestamps[sessionID] = record.savedAtMilliseconds
-            self.touch(sessionID)
-            self.trimHotCache()
-            // Hydration can supply the initial semantic anchor after a cold
-            // selection, so publish exactly once. Gesture-driven stores never
-            // invalidate the SwiftUI tree or compete with AppKit scrolling.
-            self.hydrationRevision &+= 1
+            self.loads[sessionID] = nil
+            let observed = self.positionsObservedDuringHydration.removeValue(forKey: sessionID)
+            if let observed, !observed.followsLatest {
+                // User input during hydration has higher authority than an old
+                // disk anchor. Commit it only after removing the load marker.
+                self.store(observed, for: sessionID)
+                return
+            }
+            if let record, record.savedAtMilliseconds >= (self.timestamps[sessionID] ?? -1) {
+                self.positions[sessionID] = record.position
+                self.timestamps[sessionID] = record.savedAtMilliseconds
+                self.touch(sessionID)
+                self.trimHotCache()
+                // Hydration can supply the initial semantic anchor after a cold
+                // selection, so publish exactly once. Gesture-driven stores never
+                // invalidate the SwiftUI tree or compete with AppKit scrolling.
+                self.hydrationRevision &+= 1
+                return
+            }
+            if let observed {
+                // No persisted position exists: the provisional latest
+                // observation becomes this Session's initial semantic state.
+                self.store(observed, for: sessionID)
+            }
         }
     }
 
     func store(_ position: AppKitChatTimelinePosition, for sessionID: String) {
+        if loads[sessionID] != nil, positions[sessionID] == nil {
+            positionsObservedDuringHydration[sessionID] = position
+            return
+        }
         guard positions[sessionID] != position else { return }
         let timestamp = max(Int64(Date().timeIntervalSince1970 * 1_000), (timestamps[sessionID] ?? -1) + 1)
         positions[sessionID] = position
