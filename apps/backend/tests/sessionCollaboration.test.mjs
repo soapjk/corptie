@@ -482,7 +482,7 @@ test("peer Work discovery exposes context without allowing Work Chat as a delive
     assert.equal(f.store.getSession("provider:marketcow-collaboration").taskId, task.targetTaskId);
     assert.throws(() => f.service.getTask(metadata, sourceAgent.agentId, peerTask.id), { code: "TASK_OUTSIDE_SCOPE" });
     assert.throws(() => f.service.createTask(metadata, sourceAgent.agentId, {
-      title: "Illegal target write", agentId: peerAgent.agentId, idempotencyKey: "illegal:target"
+      title: "Illegaltargetwrite", agentId: peerAgent.agentId, idempotencyKey: "illegal:target"
     }), { code: "AGENT_OUTSIDE_WORK" });
   } finally {
     await f.store.close();
@@ -857,7 +857,7 @@ test("tool Task creation uses one service operation to persist the Task and bind
       suffix: "atomic-create"
     });
     const input = {
-      title: "Created and started",
+      title: "Createdandstarted",
       description: "Description belongs to Task context only",
       acceptanceCriteria: "Criterion belongs to Task context only",
       agentId: agent.agentId,
@@ -952,7 +952,7 @@ test("Task creation validates, persists, and returns an existing Artifact refere
     }, { title: "Implementation contract", content: "Use the shared contract." });
 
     const created = f.service.createTask({ sessionId: "provider:artifact-reference" }, agent.agentId, {
-      title: "Referenced work", idempotencyKey: "create:with-artifact",
+      title: "Referencedwork", idempotencyKey: "create:with-artifact",
       artifactReference: {
         artifactId: artifact.artifactId, relation: "implementation_spec",
         required: true, versionPolicy: "fixed"
@@ -967,7 +967,7 @@ test("Task creation validates, persists, and returns an existing Artifact refere
       created.task.references
     );
     const replay = f.service.createTask({ sessionId: "provider:artifact-reference" }, agent.agentId, {
-      title: "Referenced work", idempotencyKey: "create:with-artifact",
+      title: "Referencedwork", idempotencyKey: "create:with-artifact",
       artifactReference: {
         artifactId: artifact.artifactId, relation: "implementation_spec",
         required: true, versionPolicy: "fixed"
@@ -982,12 +982,12 @@ test("Task creation validates, persists, and returns an existing Artifact refere
     });
     const before = f.store.listTasksByWork(work.id).length;
     assert.throws(() => f.service.createTask({ sessionId: "provider:artifact-reference" }, agent.agentId, {
-      title: "Forbidden cross-work", idempotencyKey: "create:cross-work",
+      title: "Forbiddencrosswork", idempotencyKey: "create:cross-work",
       artifactReference: { artifactId: otherArtifact.artifactId }
     }), { code: "ARTIFACT_CROSS_WORK_FORBIDDEN" });
     assert.equal(f.store.listTasksByWork(work.id).length, before);
     assert.throws(() => f.service.createTask({ sessionId: "provider:artifact-reference" }, agent.agentId, {
-      title: "Missing Artifact", idempotencyKey: "create:missing-artifact",
+      title: "MissingArtifact", idempotencyKey: "create:missing-artifact",
       artifactReference: { artifactId: "artifact:missing" }
     }), { code: "ARTIFACT_NOT_FOUND" });
 
@@ -1003,7 +1003,7 @@ test("Task creation validates, persists, and returns an existing Artifact refere
     });
     f.store.db.run("UPDATE tasks SET current_session_id=? WHERE id=?", ["provider:artifact-worker", source.id]);
     const workerCreated = f.service.createTask({ sessionId: "provider:artifact-worker" }, workerAgent.agentId, {
-      title: "Same-Work Artifact propagation",
+      title: "SameWorkArtifactpropagation",
       idempotencyKey: "create:same-work-artifact",
       artifactReference: { artifactId: artifact.artifactId }
     });
@@ -1027,7 +1027,7 @@ test("Task creation validates Workspace file authority and returns durable file 
     const filePath = join(f.directory, "implementation-plan.md");
     await writeFile(filePath, "local plan", "utf8");
     const created = f.service.createTask({ sessionId: "provider:file-reference" }, agent.agentId, {
-      title: "File-backed work", idempotencyKey: "create:with-file",
+      title: "Filebackedwork", idempotencyKey: "create:with-file",
       fileReference: { path: filePath, relation: "test_plan", required: true }
     });
     assert.equal(created.task.references.files.length, 1);
@@ -1044,14 +1044,14 @@ test("Task creation validates Workspace file authority and returns durable file 
     const outsidePath = join(outsideDirectory, "outside.md");
     await writeFile(outsidePath, "outside", "utf8");
     assert.throws(() => f.service.createTask({ sessionId: "provider:file-reference" }, agent.agentId, {
-      title: "Outside file", idempotencyKey: "create:outside-file", fileReference: { path: outsidePath }
+      title: "Outsidefile", idempotencyKey: "create:outside-file", fileReference: { path: outsidePath }
     }), { code: "FILE_REFERENCE_FORBIDDEN" });
     assert.throws(() => f.service.createTask({ sessionId: "provider:file-reference" }, agent.agentId, {
-      title: "Missing file", idempotencyKey: "create:missing-file",
+      title: "Missingfile", idempotencyKey: "create:missing-file",
       fileReference: { path: join(f.directory, "missing.md") }
     }), { code: "FILE_REFERENCE_NOT_FOUND" });
     assert.throws(() => f.service.createTask({ sessionId: "provider:file-reference" }, agent.agentId, {
-      title: "Ambiguous reference", idempotencyKey: "create:ambiguous",
+      title: "Ambiguousreference", idempotencyKey: "create:ambiguous",
       artifactReference: { artifactId: "artifact:any" }, fileReference: { path: filePath }
     }), { code: "TASK_REFERENCE_CONFLICT" });
   } finally {
@@ -1184,7 +1184,7 @@ test("collaboration start delegates shared orchestration receipts and retries wi
     session(f.store, f.core, { providerSessionId: "provider:work-start", logicalSessionId: "session:work-start", agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory });
     const metadata = { sessionId: "provider:work-start" };
     const created = f.service.createTask(metadata, agent.agentId, {
-      title: "Retryable launch", agentId: agent.agentId, idempotencyKey: "create:retryable"
+      title: "Retryablelaunch", agentId: agent.agentId, idempotencyKey: "create:retryable"
     });
 
     f.service.workSessionStartApplicationService.start = async () => {
@@ -1211,7 +1211,7 @@ test("collaboration start delegates shared orchestration receipts and retries wi
         && error.receipt?.failureStage === "creatingSession"
     );
     assert.equal(f.store.getTask(created.task.id).execution_status, "start_failed");
-    assert.equal(f.workService.listTasksByWork(work.id).filter((item) => item.title === "Retryable launch").length, 1);
+    assert.equal(f.workService.listTasksByWork(work.id).filter((item) => item.title === "Retryablelaunch").length, 1);
 
     f.service.workSessionStartApplicationService.start = async () => {
       session(f.store, f.core, {

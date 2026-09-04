@@ -8,6 +8,7 @@ import {
 } from "../domain/taskToolSchema.mjs";
 import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
 import { authorizeDirectUserTaskCreation } from "./directUserTaskCreationAuthorization.mjs";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 const RELATIONS = new Set(COLLABORATION_RELATION_TYPES);
 const ROUTING_INTENTS = new Set(COLLABORATION_ROUTING_INTENTS);
@@ -151,6 +152,7 @@ export class SessionCollaborationService {
       "providerId", "artifactReference", "fileReference", "logicalSessionId",
       "userMessageEventId", "userMessageSequence", "turnId", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
+    const title = validateEntityName(input.title, "title", "Task");
     const kind = scope.session.sessionKind;
     if (!scope.session.workId || !["workChat", "worker"].includes(kind)) {
       throw coded("COLLABORATION_CREATE_FORBIDDEN", "A bound Work Chat or Worker Session is required to create a collaboration Task.");
@@ -168,7 +170,7 @@ export class SessionCollaborationService {
     );
     if (prior) {
       const priorOrigin = this.store.getTaskCreationOrigin(prior.id);
-      if (prior.title !== required(input.title, "title") || prior.work_id !== scope.session.workId
+      if (prior.title !== title || prior.work_id !== scope.session.workId
         || (prior.creation_reference_fingerprint ?? null) !== creationReferenceFingerprint
         || (creationAuthorization && priorOrigin?.creationContextMessageId !== creationAuthorization.eventId)) {
         throw coded("IDEMPOTENCY_CONFLICT", "The idempotency key is already associated with different Task input.", 409);
@@ -187,7 +189,7 @@ export class SessionCollaborationService {
     this.store.runInTransaction(() => {
       item = this.workService.createTask({
         workId: scope.session.workId,
-        title: required(input.title, "title"),
+        title,
         description: input.description ?? "",
         acceptanceCriteria: input.acceptanceCriteria ?? "",
         priority,

@@ -2739,6 +2739,8 @@ struct RenameCorptieTaskSheet: View {
                 )
                 .onSubmit(save)
 
+            EntityNameValidationMessage(value: title)
+
             if let saveError {
                 Text(saveError)
                     .font(.caption)
@@ -2754,7 +2756,7 @@ struct RenameCorptieTaskSheet: View {
                         .frame(width: 30, height: 30)
                 }
                 .buttonStyle(IconButtonStyle())
-                .disabled(trimmedTitle.isEmpty || isSaving)
+                .disabled(!EntityNamePolicy.isValid(title) || isSaving)
                 .help(L10n("Save name"))
             }
         }
@@ -2770,7 +2772,7 @@ struct RenameCorptieTaskSheet: View {
     }
 
     private func save() {
-        guard !trimmedTitle.isEmpty, !isSaving else { return }
+        guard EntityNamePolicy.isValid(title), !isSaving else { return }
         isSaving = true
         saveError = nil
         Task {
