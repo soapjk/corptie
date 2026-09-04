@@ -16,7 +16,7 @@ export function recoverCollaborationDeliveriesAfterCodexRolloutRepair(options = 
     const providerSessionId = `codex:${threadId}`;
     const failedTasks = store.listAgentTasksForSession(providerSessionId, { statuses: ["failed"] });
     for (const task of failedTasks) {
-      if (task.kind !== "collaboration" || !task.deliveryId
+      if (task.kind !== "collaboration" || task.source?.type === "session_channel" || !task.deliveryId
           || !historicalProviderSessionUnavailable(task.lastError)) continue;
       const delivery = core.getDelivery(task.deliveryId);
       if (delivery?.status !== "failed"
