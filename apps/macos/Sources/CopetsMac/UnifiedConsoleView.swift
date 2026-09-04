@@ -34,10 +34,9 @@ enum ConsoleWorkOutlineMetrics {
     static let groupCornerRadius: CGFloat = 8
     static let groupHorizontalInset: CGFloat = 6
     static let disclosureAnimation = Animation.easeInOut(duration: 0.16)
-    static let workingPulseMinimumOpacity = 0.20
-    static let workingPulseDuration = 1.8
-    static var workingPulseAnimation: Animation {
-        .easeInOut(duration: workingPulseDuration).repeatForever(autoreverses: true)
+    static let workingGradientDuration = 2.6
+    static var workingGradientAnimation: Animation {
+        .linear(duration: workingGradientDuration).repeatForever(autoreverses: false)
     }
 }
 
@@ -61,27 +60,43 @@ private struct ConsoleWorkTitle: View {
     let isWorking: Bool
 
     var body: some View {
-        if isWorking && !accessibilityReduceMotion {
-            ConsoleBreathingWorkTitle(title: title)
+        if isWorking {
+            ConsoleFlowingGradientWorkTitle(
+                title: title,
+                animates: !accessibilityReduceMotion
+            )
         } else {
             Text(title)
         }
     }
 }
 
-private struct ConsoleBreathingWorkTitle: View {
+private struct ConsoleFlowingGradientWorkTitle: View {
     let title: String
+    let animates: Bool
 
-    @State private var isDimmed = false
+    @State private var hasAdvancedGradient = false
 
     var body: some View {
         Text(title)
-            .opacity(isDimmed ? ConsoleWorkOutlineMetrics.workingPulseMinimumOpacity : 1)
+            .foregroundStyle(flowingGradient)
             .onAppear {
-                withAnimation(ConsoleWorkOutlineMetrics.workingPulseAnimation) {
-                    isDimmed = true
+                guard animates else { return }
+                withAnimation(ConsoleWorkOutlineMetrics.workingGradientAnimation) {
+                    hasAdvancedGradient = true
                 }
             }
+    }
+
+    private var flowingGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                .cyan, .blue, .purple, .pink, .orange, .cyan,
+                .blue, .purple, .pink, .orange, .cyan
+            ],
+            startPoint: UnitPoint(x: hasAdvancedGradient ? 0 : -1, y: 0.5),
+            endPoint: UnitPoint(x: hasAdvancedGradient ? 2 : 1, y: 0.5)
+        )
     }
 }
 
@@ -177,6 +192,94 @@ private struct HoverRevealHeaderAction<Header: View>: View {
             .help(accessibilityLabel)
         }
         .onHover { isHovering = $0 }
+    }
+}
+
+private struct ConsoleWorkOutlineHeader: View {
+    let work: Work
+    let isExpanded: Bool
+    let isSelected: Bool
+    let isWorking: Bool
+    let hasUnread: Bool
+    let isChatSelected: Bool
+    let hasUnreadChat: Bool
+    let toggleExpanded: () -> Void
+    let openChat: () -> Void
+    let createTask: () -> Void
+
+    @State private var isHovering = false
+    @FocusState private var isCreateTaskFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: toggleExpanded) {
+                HStack(spacing: 7) {
+                    ObjectiveAvatarView(
+                        objectiveID: work.id,
+                        name: work.name,
+                        avatarPath: work.avatarPath,
+                        size: 22
+                    )
+                    ConsoleWorkTitle(title: work.name, isWorking: isWorking)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(work.name)
+            .accessibilityValue(accessibilityValue)
+            .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
+
+            Button(action: openChat) {
+                Image(systemName: "message.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(isChatSelected ? Color.accentColor : Color.secondary)
+                    .frame(width: 22, height: 22)
+                    .overlay(alignment: .topTrailing) {
+                        if hasUnreadChat {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 6, height: 6)
+                        }
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.leading, 6)
+            .accessibilityLabel(L10n("Open Work Chat"))
+            .accessibilityValue(hasUnreadChat ? L10n("Unread Session") : "")
+            .help(L10n("Open Work Chat"))
+
+            Spacer(minLength: 4)
+
+            if hasUnread {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 8, height: 8)
+                    .accessibilityLabel(L10n("Unread Session"))
+            }
+
+            Button(action: createTask) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focused($isCreateTaskFocused)
+            .opacity(isHovering || isCreateTaskFocused ? 1 : 0)
+            .accessibilityLabel(L10nFormat("Create Task in %@", work.name))
+            .help(L10nFormat("Create Task in %@", work.name))
+        }
+        .onHover { isHovering = $0 }
+    }
+
+    private var accessibilityValue: String {
+        let expandedValue = isExpanded ? L10n("Expanded group") : L10n("Collapsed group")
+        return isWorking ? "\(expandedValue), \(L10n("Processing"))" : expandedValue
     }
 }
 
@@ -836,7 +939,6 @@ struct UnifiedConsoleView: View {
             sessions: sessionIndexStore.rows.map(\.session)
         )
         let tasksByWorkID = outlineTasksByWorkID
-        let workChatsByWorkID = outlineWorkChatsByWorkID
         let archivedRowsByWorkID = outlineArchivedRowsByWorkID
         let processingWorkIDs = ConsoleWorkActivityPolicy.processingWorkIDs(
             tasks: entityClient.tasks,
@@ -886,19 +988,6 @@ struct UnifiedConsoleView: View {
                                     }
                                 }
                             } else {
-                                if let row = workChatsByWorkID[work.id]?.first {
-                                    workChatRow(row)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                        .background(outlineChildSelectionBackground(
-                                            selectionController.selectedSessionID == row.session.id
-                                        ))
-                                } else {
-                                    Label(L10n("Start Work Chat"), systemImage: "scope")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                }
-
                                 ForEach(tasks) { task in
                                     taskRow(task)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
@@ -1018,14 +1107,16 @@ struct UnifiedConsoleView: View {
         isWorking: Bool
     ) -> some View {
         let isExpanded = outlineWorkIsExpanded(work.id)
-        let expandedAccessibilityValue = isExpanded
-            ? L10n("Expanded group")
-            : L10n("Collapsed group")
-        return HoverRevealHeaderAction(
-            accessibilityLabel: L10nFormat("Create Task in %@", work.name),
-            action: { presentTaskCreation(for: work.id) }
-        ) {
-            Button {
+        let workChat = workChatSession(for: work.id)
+        return ConsoleWorkOutlineHeader(
+            work: work,
+            isExpanded: isExpanded,
+            isSelected: selectedWorkId == work.id,
+            isWorking: isWorking,
+            hasUnread: hasUnread,
+            isChatSelected: selectionController.selectedSessionID == workChat?.id,
+            hasUnreadChat: workChat.map(isSessionUnread) ?? false,
+            toggleExpanded: {
                 withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
                     if collapsedOutlineWorkIDs.contains(work.id) {
                         collapsedOutlineWorkIDs.remove(work.id)
@@ -1034,38 +1125,13 @@ struct UnifiedConsoleView: View {
                     }
                 }
                 selectWorkSpace(work.id)
-            } label: {
-                HStack(spacing: 7) {
-                    ObjectiveAvatarView(
-                        objectiveID: work.id,
-                        name: work.name,
-                        avatarPath: work.avatarPath,
-                        size: 22
-                    )
-                    ConsoleWorkTitle(title: work.name, isWorking: isWorking)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(selectedWorkId == work.id ? Color.primary : Color.secondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                    if hasUnread {
-                        Circle()
-                            .fill(Color.red)
-                            .frame(width: 8, height: 8)
-                            .accessibilityLabel(L10n("Unread Session"))
-                    }
-                }
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(work.name)
-            .accessibilityValue(
-                isWorking
-                    ? "\(expandedAccessibilityValue), \(L10n("Processing"))"
-                    : expandedAccessibilityValue
-            )
-            .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
-        }
+            },
+            openChat: {
+                guard let workChat else { return }
+                openWorkChat(for: work, session: workChat)
+            },
+            createTask: { presentTaskCreation(for: work.id) }
+        )
     }
 
     @ViewBuilder
@@ -1095,16 +1161,6 @@ struct UnifiedConsoleView: View {
                     return lhs.id < rhs.id
                 }
         }
-    }
-
-    private var outlineWorkChatsByWorkID: [String: [SessionRowModel]] {
-        Dictionary(
-            grouping: searchFilteredRows.filter {
-                $0.session.resolvedSessionKind == .workChat
-                    && $0.session.workId?.isEmpty == false
-            },
-            by: { $0.session.workId ?? "" }
-        )
     }
 
     private var outlineArchivedRowsByWorkID: [String: [SessionRowModel]] {
@@ -1567,6 +1623,28 @@ struct UnifiedConsoleView: View {
         selectedTaskId = nil
         selectedCategory = .worker
         selectDefaultContentForCurrentSpace()
+    }
+
+    private func workChatSession(for workId: String) -> TaskSession? {
+        let indexedSession = sessionIndexStore.rows.lazy
+            .map(\.session)
+            .first {
+                $0.resolvedSessionKind == .workChat
+                    && $0.workId == workId
+                    && $0.archived != true
+            }
+        return indexedSession ?? backendClient.sessions.first {
+            $0.resolvedSessionKind == .workChat
+                && $0.workId == workId
+                && $0.archived != true
+        }
+    }
+
+    private func openWorkChat(for work: Work, session: TaskSession) {
+        selectedWorkId = work.id
+        selectedTaskId = nil
+        selectedCategory = .work
+        selectSessionAfterHighlight(session)
     }
 
     private func selectDefaultContentForCurrentSpace() {
