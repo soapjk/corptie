@@ -417,10 +417,6 @@ final class BackendClient: ObservableObject {
             await loadSettings()
             await syncNewSessionDefaultsFromPreferences()
             await loadProviders()
-            if let providerId = defaultSessionProviderId,
-               agentProviders.descriptor(matching: providerId)?.supports("configuration.model.list") == true {
-                await loadModels(for: providerId)
-            }
             // Startup requests race the production launch agent. If the
             // canonical Session stream is already connected, an earlier
             // transport error is stale and must not remain in the UI.
@@ -602,10 +598,6 @@ final class BackendClient: ObservableObject {
             await loadSettings()
             await syncNewSessionDefaultsFromPreferences(force: true)
             await loadProviders()
-            if let providerId = defaultSessionProviderId,
-               agentProviders.descriptor(matching: providerId)?.supports("configuration.model.list") == true {
-                await loadModels(for: providerId)
-            }
             await reconcileTimelineRevisionIndex()
             await loadAutomations()
             if let selectedSession { await loadScheduledTasks(for: selectedSession) }
@@ -2037,8 +2029,18 @@ final class BackendClient: ObservableObject {
                   self.selectedSession?.id == session.id else {
                 return
             }
-            Task { [weak self] in
-                await self?.verifyProviderBinding(for: session, expectedSelectionGeneration: generation)
+            // State Sync already carries the Backend's binding-scoped
+            // readiness cache. Re-probing a Session whose exact active
+            // projection is ready makes the composer flash a client-created
+            // "verifying" state on every row click. Dispatch still performs
+            // the authoritative Provider probe before sending, while a
+            // genuinely not-ready selection keeps this recovery probe.
+            if Self.selectionRequiresProviderBindingVerification(
+                sessionIsReady: self.selectedSession?.isReady == true
+            ) {
+                Task { [weak self] in
+                    await self?.verifyProviderBinding(for: session, expectedSelectionGeneration: generation)
+                }
             }
             Task { [weak self] in
                 await self?.loadScheduledTasks(for: session, expectedSelectionGeneration: generation)
@@ -2072,6 +2074,12 @@ final class BackendClient: ObservableObject {
                 }
             }
         }
+    }
+
+    nonisolated static func selectionRequiresProviderBindingVerification(
+        sessionIsReady: Bool
+    ) -> Bool {
+        !sessionIsReady
     }
 
     private func verifyProviderBinding(
