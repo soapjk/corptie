@@ -52,7 +52,6 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     work_id: "work:1",
     title: "Canonical Task",
     description: "Description",
-    goal: "Goal",
     acceptance_criteria: "Acceptance",
     verification_criteria: "Verification",
     priority: 3,
@@ -72,7 +71,6 @@ test("invalid acceptance objects are rejected without changing the canonical Tas
     workId: "work:1",
     title: "Canonical Task",
     description: "Description",
-    goal: "Goal",
     acceptanceCriteria: "Acceptance",
     verificationCriteria: "Verification",
     priority: 3,
@@ -257,10 +255,11 @@ test("provider-neutral revision tool carries only the new problem definition", a
   assert.ok(definition);
   assert.deepEqual(new Set(definition.inputSchema.required), new Set(["expectedRevision", "next"]));
   assert.equal(definition.inputSchema.additionalProperties, false);
+  assert.equal(Object.hasOwn(definition.inputSchema.properties.next.properties, "goal"), false);
   const calls = [];
   const argumentsValue = {
     expectedRevision: 3,
-    next: { title: "Next problem", goal: "Next goal" },
+    next: { title: "Next problem", description: "Next scope" },
     executionSummary: "Previous problem completed."
   };
   const result = await callTaskAcceptanceDynamicTool({

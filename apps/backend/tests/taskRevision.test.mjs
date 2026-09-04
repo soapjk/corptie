@@ -13,11 +13,17 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
   });
   try {
     await store.initialize();
-    const work = store.createWork({ name: "Continuous work" });
+    assert.equal(store.db.all("PRAGMA table_info(tasks)").some((column) => column.name === "goal"), false);
+    assert.equal(store.db.all("PRAGMA table_info(task_snapshots)").some((column) => column.name === "goal"), false);
+    const agent = store.createAgent({ name: "Revision worker", role: "independentContributor" });
+    const work = store.createWork({
+      name: "Continuous work",
+      contributorAgentIds: [agent.agentId]
+    });
     const task = store.createTask({
       workId: work.id,
       title: "First problem",
-      goal: "Finish the first problem",
+      description: "Finish the first problem",
       acceptanceCriteria: "First result accepted",
       verificationCriteria: "First test passes"
     });
@@ -37,7 +43,7 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
       completionEvidence: [{ kind: "test", value: "passed" }],
       next: {
         title: "Second problem",
-        goal: "Finish the second problem",
+        description: "Finish the second problem",
         acceptanceCriteria: "Second result accepted",
         verificationCriteria: "Second test passes"
       }

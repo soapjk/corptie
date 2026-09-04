@@ -337,7 +337,6 @@ function taskCreationMatches(existing, input) {
     description: input.description ?? "",
     acceptanceCriteria: input.acceptanceCriteria ?? "",
     priority: input.priority ?? "medium",
-    goal: input.goal ?? "",
     verificationCriteria: input.verificationCriteria ?? "",
     lifecycleState: input.lifecycleState ?? "todo",
     mainAgentId: input.mainAgentId ?? null
@@ -348,7 +347,6 @@ function taskCreationMatches(existing, input) {
     description: existing.description ?? "",
     acceptanceCriteria: existing.acceptance_criteria ?? "",
     priority: existing.priority ?? "medium",
-    goal: existing.goal ?? "",
     verificationCriteria: existing.verification_criteria ?? "",
     lifecycleState: existing.lifecycle_state ?? "todo",
     mainAgentId: existing.main_agent_id ?? null

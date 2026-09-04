@@ -1368,7 +1368,6 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
       workId: work.id,
       title: "First problem",
       description: "Initial description",
-      goal: "Initial goal",
       acceptanceCriteria: "Initial acceptance",
       verificationCriteria: "Initial verification"
     });
@@ -1388,7 +1387,7 @@ test("Task revision HTTP atomically snapshots the previous problem definition", 
         createdBySessionId: "session:task-revision-http",
         next: {
           title: "Second problem",
-          goal: "Second goal",
+          description: "Second description",
           acceptanceCriteria: "Second acceptance",
           verificationCriteria: "Second verification"
         },
