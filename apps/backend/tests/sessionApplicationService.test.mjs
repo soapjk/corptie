@@ -367,7 +367,8 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
     purpose: "session-create-finalization",
     sessionId: "session:new",
     logicalSessionId: "logical:new",
-    providerBindingId: "binding:new"
+    providerBindingId: "binding:new",
+    desiredToolDomains: ["artifacts"]
   });
 });
 

@@ -106,6 +106,7 @@ export class HostToolCatalog {
     const exposure = normalizedExposure(namespace?.exposure ?? "deferred");
     const source = normalizedSource(namespace?.source ?? { kind: "host", sourceId: id });
     const eligibleSurfaces = normalizedSurfaces(namespace?.eligibleSurfaces ?? TOOL_DELIVERY_SURFACES);
+    const namespaceDiscoveryTerms = normalizedDiscoveryTerms(namespace?.discoveryTerms);
     if (!Array.isArray(namespace?.tools) || typeof namespace?.execute !== "function") {
       throw new TypeError(`Host tool namespace ${id} requires tools and execute().`);
     }
@@ -132,6 +133,10 @@ export class HostToolCatalog {
         aliases: Object.freeze(aliases),
         source: normalizedSource(rawDefinition?.source ?? source),
         eligibleSurfaces: normalizedSurfaces(rawDefinition?.eligibleSurfaces ?? eligibleSurfaces),
+        discoveryTerms: normalizedDiscoveryTerms([
+          ...namespaceDiscoveryTerms,
+          ...(Array.isArray(rawDefinition?.discoveryTerms) ? rawDefinition.discoveryTerms : [])
+        ]),
         execute: namespace.execute,
         authorizeDiscover: typeof namespace.authorizeDiscover === "function"
           ? namespace.authorizeDiscover
@@ -227,7 +232,8 @@ export class HostToolCatalog {
       definition: entry.definition,
       aliases: entry.aliases,
       source: entry.source,
-      eligibleSurfaces: entry.eligibleSurfaces
+      eligibleSurfaces: entry.eligibleSurfaces,
+      discoveryTerms: entry.discoveryTerms
     })).sort((left, right) => left.canonicalName.localeCompare(right.canonicalName));
     const catalogJson = stableStringify(canonical);
     const catalogVersion = `${TOOL_HOST_CONTRACT_REVISION}:${sha256(`${catalogJson}${this.hostToolContractRevision}`)}`;
@@ -328,6 +334,12 @@ export class HostToolCatalog {
       return false;
     }
   }
+}
+
+function normalizedDiscoveryTerms(values) {
+  if (values == null) return Object.freeze([]);
+  if (!Array.isArray(values)) throw new TypeError("Tool discoveryTerms must be an array.");
+  return Object.freeze([...new Set(values.map((value) => requiredText(value, "discoveryTerm")))].sort());
 }
 
 export function stableStringify(value) {
