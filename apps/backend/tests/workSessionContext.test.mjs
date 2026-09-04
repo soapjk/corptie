@@ -96,6 +96,38 @@ test("Worker Session context includes its bound Task and Work details", () => {
   assert.match(context.prompt, /full-text search/);
 });
 
+test("Worker Session context prefers applied project-code tools with bounded fallback", () => {
+  const context = buildWorkSessionContext({
+    session: {
+      id: "session:strict",
+      sessionKind: "worker",
+      taskId: "task:strict",
+      workId: "work:quality"
+    },
+    task: {
+      id: "task:strict",
+      work_id: "work:quality",
+      title: "Search efficiently",
+      revision: 1,
+      resource_version: 1
+    },
+    toolDomains: ["artifacts", "project-code"],
+    toolCatalogVersion: "catalog:project-code:1"
+  });
+
+  assert.match(context.prompt, /use corptie_project_code_search first/);
+  assert.match(context.prompt, /corptie_project_code_read/);
+  assert.match(context.prompt, /do not search or load the domain first/);
+  assert.match(context.prompt, /expected_catalog_version=catalog:project-code:1/);
+  assert.match(context.prompt, /Fall back to Provider-native search or rg only when/);
+  assert.match(context.prompt, /does not apply to builds, tests, Git operations/);
+});
+
+test("Worker Session context does not advertise an unapplied project-code domain", () => {
+  const context = workerContext();
+  assert.doesNotMatch(context.prompt, /corptie_project_code_search/);
+});
+
 test("Worker Session context rejects a mismatched Task", () => {
   assert.throws(
     () => buildWorkSessionContext({
