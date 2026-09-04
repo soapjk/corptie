@@ -10,6 +10,7 @@ import {
 } from "../src/application/toolHostMaterializationCoordinator.mjs";
 import { appliedToolMaterializationReceipt } from "../src/agent-provider/toolSchemaCapabilities.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { scheduledSessionTaskDynamicTools } from "../src/application/scheduledSessionTaskDynamicTools.mjs";
 
 async function fixture(overrides = {}) {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-tool-coordinator-"));
@@ -503,6 +504,34 @@ test("catalog search tokenizes natural-language intent and normalized domain hin
     assert.deepEqual(result.domains[0].tools.map((tool) => tool.canonicalName), [
       "corptie_task_report_acceptance"
     ]);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("Automation product terminology and historical hints discover one complete recommended contract", async () => {
+  const value = await fixture();
+  try {
+    value.catalog.register({
+      id: "scheduled-tasks",
+      tools: scheduledSessionTaskDynamicTools,
+      execute: () => null
+    });
+    for (const intent of ["自动化", "Automation", "计划任务", "scheduled task"]) {
+      const result = await value.coordinator.search({
+        logicalSessionId: value.binding.logicalSessionId,
+        providerBindingId: value.binding.providerBindingId,
+        intent,
+        domainHint: intent === "Automation" ? "automations" : undefined
+      });
+      assert.deepEqual(result.domains.map((domain) => domain.domainId), ["scheduled-tasks"], intent);
+      const domain = result.domains[0];
+      assert.equal(domain.recommendedTool, "corptie_automations_create", intent);
+      assert.equal(domain.tools[0].canonicalName, "corptie_automations_create", intent);
+      assert.ok(domain.tools[0].inputSchema.properties.schedule_type, intent);
+      assert.equal(domain.tools[0].minimalExample.schedule_type, "after", intent);
+    }
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });

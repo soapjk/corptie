@@ -1,4 +1,5 @@
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
+import { performance } from "node:perf_hooks";
 import { providerToolSchemaCapabilities } from "../agent-provider/toolSchemaCapabilities.mjs";
 import {
   TOOL_CATALOG_SEARCH,
@@ -151,6 +152,18 @@ export class ToolHostService {
   }
 
   async execute(input = {}) {
+    const started = performance.now();
+    try {
+      const result = await this.#execute(input);
+      this.#recordToolCall(input, "success", performance.now() - started);
+      return result;
+    } catch (error) {
+      this.#recordToolCall(input, "failed", performance.now() - started, error);
+      throw error;
+    }
+  }
+
+  async #execute(input = {}) {
     if (input.tool === TOOL_CATALOG_SEARCH) {
       const scope = exactScope(input);
       return this.coordinator.search({
@@ -175,7 +188,14 @@ export class ToolHostService {
         catalogVersion: result.snapshot.catalogVersion,
         desiredVersion: result.record.desiredVersion,
         appliedVersion: result.record.appliedVersion,
-        domains: result.record.appliedDomains
+        domains: result.record.appliedDomains,
+        contract: this.catalog.domainContract({
+          actorId: input.actorId,
+          metadata: input.metadata
+        }, input.arguments.domain_id, {
+          surface: result.plan.surface,
+          catalogVersion: result.snapshot.catalogVersion
+        })
       };
     }
     if (input.tool === TOOL_RESTRICTED_GATEWAY) {
@@ -199,6 +219,25 @@ export class ToolHostService {
       }
     }
     return this.catalog.execute(input);
+  }
+
+  #recordToolCall(input, status, durationMs, error = null) {
+    this.#record({
+      stage: "tool-call",
+      status,
+      agentId: input.actorId ?? null,
+      sessionId: input.metadata?.sessionId ?? null,
+      errorCode: error?.code ?? null,
+      reason: error?.message ?? "Tool Host call completed.",
+      toolCount: 1,
+      details: {
+        tool: input.tool ?? null,
+        domainId: this.catalog.entry(input.tool)?.domainId ?? "tool-catalog",
+        durationMs: Number(durationMs.toFixed(3)),
+        schemaValidationFailureCount: error?.code === "TOOL_ARGUMENT_SCHEMA_INVALID" ? 1 : 0,
+        schemaValidationIssueCount: Array.isArray(error?.issues) ? error.issues.length : 0
+      }
+    });
   }
 
   appliedDefinitions(input = {}, surface = "generated_authenticated_mcp") {
