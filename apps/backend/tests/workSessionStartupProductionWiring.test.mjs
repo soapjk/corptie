@@ -64,6 +64,27 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
       providerId: "test-provider", boundCwd: directory, sessionName: "Work Chat"
     });
     core.bindSession({ agentId: agent.agentId, sessionId: "provider:source" });
+    const sourceLogical = store.getLogicalSession("session:source");
+    const creationMessage = store.createUserMessageDelivery({
+      deliveryId: "delivery:create-task",
+      messageId: "message:create-task",
+      sessionId: "provider:source",
+      binding: sourceLogical.activeBinding,
+      agentId: agent.agentId,
+      text: "请创建一个新的 Task 来完成这项工作",
+      source: { type: "desktop" }
+    });
+    store.updateMessageDelivery(creationMessage.delivery.deliveryId, {
+      status: "accepted", providerTurnId: "turn:create-task",
+      providerAcknowledgedAt: new Date().toISOString()
+    });
+    const creationEvent = store.getSessionEvent("user-message:message:create-task");
+    const creationEvidence = {
+      logical_session_id: "session:source",
+      user_message_event_id: creationEvent.eventId,
+      user_message_sequence: creationEvent.sequence,
+      turn_id: "turn:create-task"
+    };
 
     let applicationService;
     const calls = { create: 0, bind: 0, activate: 0 };
@@ -158,6 +179,7 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
       title: "Production wiring",
       agent_id: agent.agentId,
       provider_id: "test-provider",
+      ...creationEvidence,
       idempotency_key: "create:one"
     });
 
@@ -177,6 +199,7 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
       title: "Production wiring",
       agent_id: agent.agentId,
       provider_id: "test-provider",
+      ...creationEvidence,
       idempotency_key: "create:one"
     });
     assert.deepEqual(calls, { create: 1, bind: 1, activate: 1 });

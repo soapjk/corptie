@@ -7,6 +7,7 @@ import {
   TASK_PRIORITIES
 } from "../domain/taskToolSchema.mjs";
 import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
+import { authorizeDirectUserTaskCreation } from "./directUserTaskCreationAuthorization.mjs";
 
 const RELATIONS = new Set(COLLABORATION_RELATION_TYPES);
 const ROUTING_INTENTS = new Set(COLLABORATION_ROUTING_INTENTS);
@@ -24,6 +25,7 @@ export class SessionCollaborationService {
     this.collaborationCore = options.collaborationCore;
     this.workSessionStartApplicationService = options.workSessionStartApplicationService;
     this.defaultProviderId = options.defaultProviderId;
+    this.directUserTaskCreationTtlMs = options.directUserTaskCreationTtlMs ?? 30 * 60_000;
     this.onRoutingEvent = options.onRoutingEvent ?? ((event, details) => {
       console.info(`[collaboration-routing] event=${event} ${JSON.stringify(details)}`);
     });
@@ -107,7 +109,8 @@ export class SessionCollaborationService {
 
   async createTaskAndSession(metadata, actorId, input = {}) {
     const scope = this.#scope(metadata, actorId, { mutation: true });
-    const persisted = this.createTask(metadata, actorId, input);
+    const authorization = this.#authorizeDirectUserTaskCreation(scope, input);
+    const persisted = this.createTask(metadata, actorId, input, authorization);
     const created = await createTaskAndSession({
       workService: this.workService,
       startWorkSession: (command) => this.workSessionStartApplicationService.start(command),
@@ -143,9 +146,10 @@ export class SessionCollaborationService {
     };
   }
 
-  createTask(metadata, actorId, input = {}) {
+  createTask(metadata, actorId, input = {}, creationAuthorization = null) {
     assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId",
-      "providerId", "artifactReference", "fileReference", "idempotencyKey"]);
+      "providerId", "artifactReference", "fileReference", "logicalSessionId",
+      "userMessageEventId", "userMessageSequence", "turnId", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const kind = scope.session.sessionKind;
     if (!scope.session.workId || !["workChat", "worker"].includes(kind)) {
@@ -163,8 +167,10 @@ export class SessionCollaborationService {
       [scope.logicalSessionId, idempotencyKey]
     );
     if (prior) {
+      const priorOrigin = this.store.getTaskCreationOrigin(prior.id);
       if (prior.title !== required(input.title, "title") || prior.work_id !== scope.session.workId
-        || (prior.creation_reference_fingerprint ?? null) !== creationReferenceFingerprint) {
+        || (prior.creation_reference_fingerprint ?? null) !== creationReferenceFingerprint
+        || (creationAuthorization && priorOrigin?.creationContextMessageId !== creationAuthorization.eventId)) {
         throw coded("IDEMPOTENCY_CONFLICT", "The idempotency key is already associated with different Task input.", 409);
       }
       return { task: this.#presentTask(prior), idempotentReplay: true, phase: "created" };
@@ -192,6 +198,7 @@ export class SessionCollaborationService {
           originType: "session",
           creatorSessionId: scope.logicalSessionId,
           creationContextTaskId: scope.session.taskId,
+          creationContextMessageId: creationAuthorization?.eventId,
           operationId: idempotencyKey
         }
       });
@@ -213,6 +220,19 @@ export class SessionCollaborationService {
     });
     this.store.scheduleSave();
     return { task: this.#presentTask(this.store.getTask(item.id)), idempotentReplay: false, phase: "created" };
+  }
+
+  #authorizeDirectUserTaskCreation(scope, input) {
+    return authorizeDirectUserTaskCreation({
+      store: this.store,
+      providerSessionId: scope.session.id,
+      expectedLogicalSessionId: scope.logicalSessionId,
+      logicalSessionId: input.logicalSessionId,
+      userMessageEventId: input.userMessageEventId,
+      userMessageSequence: input.userMessageSequence,
+      turnId: input.turnId,
+      ttlMs: this.directUserTaskCreationTtlMs
+    });
   }
 
   #prepareArtifactReference(scope, input) {

@@ -134,7 +134,7 @@ test("Work Chat context is bounded and includes traceable Work state", async () 
   }
 });
 
-test("Work Chat context delegates every code or repository mutation to a new Task", async () => {
+test("Work Chat context forbids Task creation without a direct explicit user request", async () => {
   const { directory, store, workService, contributor } = await fixture();
   try {
     const work = createWork(workService, contributor, { name: "Delegated implementation" });
@@ -144,8 +144,10 @@ test("Work Chat context delegates every code or repository mutation to a new Tas
     assert.match(context.prompt, /requires any code change or repository-content mutation/);
     assert.match(context.prompt, /Do not switch or create a worktree/);
     assert.match(context.prompt, /do not edit, create, delete, rename, stage, commit/);
-    assert.match(context.prompt, /Create a new Task in this Work with an assignee/);
-    assert.match(context.prompt, /title, description, and acceptance criteria must record the concrete/);
+    assert.match(context.prompt, /Never create a new Task unless the direct user explicitly asks/);
+    assert.match(context.prompt, /Complexity, code changes, decomposition, parallelism, missing information/);
+    assert.match(context.prompt, /Do not infer consent/);
+    assert.match(context.prompt, /explicitly requests a new Task, its title, description, and acceptance criteria/);
     assert.match(context.prompt, /Task creation starts its Worker Session automatically/);
     assert.match(context.prompt, /never request or perform a separate start action/);
   } finally {
@@ -163,6 +165,7 @@ test("Work Chat repository delegation rule preserves non-mutating discussion sco
     WORK_CHAT_REPOSITORY_CHANGE_RULE,
     /Continue handling discussion, planning, status review, and other non-mutating Work work normally/
   );
+  assert.doesNotMatch(WORK_CHAT_REPOSITORY_CHANGE_RULE, /Create a new Task in this Work with an assignee/);
 });
 
 test("Work Chat tools enforce the bound Work and contributor scope", async () => {

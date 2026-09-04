@@ -1762,13 +1762,14 @@ platformOperationService = new PlatformOperationService({
     }
     return launchAgentSession({ agent, providerId, title, prompt });
   },
-  createTask: ({ taskInput, providerId, sourceSessionId, idempotencyKey }) => createTaskAndSession({
+  createTask: ({ taskInput, providerId, sourceSessionId, creationContextMessageId, idempotencyKey }) => createTaskAndSession({
     workService,
     startWorkSession: (command) => workSessionStartApplicationService.start(command),
     taskInput,
     creationOrigin: {
       originType: "session",
       creatorSessionId: sourceSessionId,
+      creationContextMessageId,
       operationId: idempotencyKey
     },
     sourceSessionId,
