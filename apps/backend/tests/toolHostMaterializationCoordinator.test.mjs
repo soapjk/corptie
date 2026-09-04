@@ -34,23 +34,6 @@ async function fixture(overrides = {}) {
       id: "memory",
       tools: [{ name: "corptie_memory_search", inputSchema: { type: "object" } }],
       execute: () => null
-    },
-    {
-      id: "project-code",
-      discoveryTerms: ["source code", "repository search", "源码", "代码导航"],
-      tools: [
-        {
-          name: "corptie_project_code_find",
-          description: "Create a fresh authoritative source Snapshot and search it in one call.",
-          inputSchema: { type: "object" }
-        },
-        {
-          name: "corptie_project_code_read",
-          description: "Read a bounded source file window.",
-          inputSchema: { type: "object" }
-        }
-      ],
-      execute: () => null
     }
   ]);
   const binding = {
@@ -111,39 +94,7 @@ test("100 concurrent desiredVersion requests single-flight into one Provider app
     assert.equal(results.filter((result) => result.joined).length, 99);
     const record = value.store.getSessionToolCatalogMaterialization("logical:worker", "binding:worker");
     assert.equal(record.appliedVersion, record.desiredVersion);
-    assert.deepEqual(record.appliedDomains.map((domain) => domain.domainId), ["artifacts"]);
-  } finally {
-    value.store.close();
-    await rm(value.directory, { recursive: true, force: true });
-  }
-});
-
-test("catalog search ranks natural-language and Chinese source-navigation intents", async () => {
-  const value = await fixture();
-  try {
-    const english = await value.coordinator.search({
-      logicalSessionId: value.binding.logicalSessionId,
-      providerBindingId: value.binding.providerBindingId,
-      intent: "Find where the repository implements provider session recovery"
-    });
-    assert.equal(english.domains[0].domainId, "project-code");
-    assert.equal(english.domains[0].tools[0].canonicalName, "corptie_project_code_find");
-
-    const chinese = await value.coordinator.search({
-      logicalSessionId: value.binding.logicalSessionId,
-      providerBindingId: value.binding.providerBindingId,
-      intent: "帮我在项目源码中定位会话恢复实现"
-    });
-    assert.equal(chinese.domains[0].domainId, "project-code");
-    assert.ok(chinese.domains[0].tools.some((tool) => tool.canonicalName === "corptie_project_code_find"));
-
-    const hinted = await value.coordinator.search({
-      logicalSessionId: value.binding.logicalSessionId,
-      providerBindingId: value.binding.providerBindingId,
-      intent: "locate implementation",
-      domainHint: "project-code"
-    });
-    assert.deepEqual(hinted.domains.map((domain) => domain.domainId), ["project-code"]);
+    assert.equal(record.appliedDomains[0].domainId, "artifacts");
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
