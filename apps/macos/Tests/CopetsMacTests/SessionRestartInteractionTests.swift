@@ -4,12 +4,34 @@ import Testing
 
 struct SessionRestartInteractionTests {
     @Test
-    func selectedTaskContextMenuExposesSharedSessionActions() throws {
+    func selectedTaskContextMenuUsesTaskOperationsOnly() throws {
         let source = try contents(of: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "private func taskRow(_ task: CorptieTask)"))
+        let rowEnd = try #require(source.range(
+            of: "private func restartTask(_ task: CorptieTask)",
+            range: rowStart.upperBound..<source.endIndex
+        ))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
 
-        #expect(source.contains("SessionContextMenuContent("))
-        #expect(source.contains("@State private var taskSessionPendingRename: TaskSession?"))
-        #expect(source.contains(".sheet(item: $taskSessionPendingRename)"))
+        #expect(row.contains("taskPendingRename = task"))
+        #expect(row.contains("taskPendingEdit = task"))
+        #expect(row.contains("restartTask(task)"))
+        #expect(row.contains("prepareTaskDeletion(task)"))
+        #expect(!row.contains("SessionContextMenuContent("))
+        #expect(row.components(separatedBy: "systemImage: \"trash\"").count - 1 == 1)
+        #expect(source.contains("restartCorptieTask(taskId: task.id)"))
+    }
+
+    @Test
+    func taskChatHeaderUsesTaskTitleAsItsCanonicalName() throws {
+        let source = try contents(of: "FloatingRootView.swift")
+        let headerStart = try #require(source.range(of: "struct DetailHeaderView: View"))
+        let header = source[headerStart.lowerBound...]
+
+        #expect(header.contains("let task = entityClient.tasks.first(where: { $0.id == taskID })"))
+        #expect(header.contains("return task.title"))
+        #expect(header.contains("Text(selectedTitle)"))
+        #expect(header.contains("copySessionTitle(selectedTitle)"))
     }
 
     @Test

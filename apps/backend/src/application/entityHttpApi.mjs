@@ -93,6 +93,7 @@ export function handleEntityHttpRequest({
   reclaimTaskWorktree,
   inspectTaskDeletion,
   deleteTaskSafely,
+  restartTask,
   restoreTaskExecution,
   taskCompletionService,
   resolveAgentAvailability,
@@ -827,6 +828,24 @@ export function handleEntityHttpRequest({
           if (typeof deleteTaskSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe Task deletion is unavailable.", 503);
           return sendJson(response, 200, await deleteTaskSafely(id, await readJson(request), localMacUserActor()));
         }
+      }
+
+      const taskRestartMatch = path.match(/^\/tasks\/([^/]+)\/restart$/);
+      if (request.method === "POST" && taskRestartMatch) {
+        if (typeof restartTask !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "Task restart is unavailable.", 503);
+        }
+        const id = decodeURIComponent(taskRestartMatch[1]);
+        const input = await readJson(request);
+        const unknown = Object.keys(input).filter((field) => field !== "idempotencyKey");
+        if (unknown.length > 0) {
+          throw apiError("TASK_RESTART_UNKNOWN_FIELD", "Task restart request contains unknown fields.", 400);
+        }
+        const result = await restartTask(id, {
+          source: "task-http",
+          idempotencyKey: String(input.idempotencyKey ?? `task-restart:${randomUUID()}`).trim()
+        });
+        return sendJson(response, result?.status === "waitingForTurn" ? 202 : 200, result);
       }
 
       const taskSnapshotsMatch = path.match(/^\/tasks\/([^/]+)\/snapshots$/);
