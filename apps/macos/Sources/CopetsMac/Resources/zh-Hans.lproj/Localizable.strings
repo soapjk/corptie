@@ -1346,3 +1346,13 @@
 "删除 CorptieTask：%@" = "删除 CorptieTask：%@";
 "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。" = "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。";
 "Preparing" = "准备中";
+"Work & Tasks" = "Work 与 Tasks";
+"Navigation layout" = "导航布局";
+"Work icons and Task list" = "Work 图标与 Task 列表";
+"Expanded Work list" = "展开式 Work 列表";
+"Show Works as icons" = "以图标显示 Work";
+"Show Works and Tasks in one list" = "在同一列表显示 Work 与 Tasks";
+"Expand Work" = "展开 Work";
+"Collapse Work" = "折叠 Work";
+"Expanded group" = "已展开";
+"Collapsed group" = "已折叠";
