@@ -33,6 +33,7 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
   for (const artifact of store.listArtifactsByWork(workId)) {
     const artifactId = artifact.artifactId;
     if (artifact.scope === "session" && artifact.boundSessionId !== sessionId) continue;
+    if (artifact.scope === "task" && artifact.boundTaskId !== taskId) continue;
     const activeReferences = byArtifact.get(artifactId) ?? [];
     if (!artifact || artifact.workId !== workId || artifact.status === "revoked") continue;
     const pin = activeReferences.length > 0
@@ -80,6 +81,8 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
     limits: limits ?? ARTIFACT_CONTEXT_DEFAULT_LIMITS[section],
     stableOrder: null
   });
+  const requiredCandidateCount = candidates.filter((item) => item.required === true).length;
+  const requiredIncludedCount = packed.items.filter((item) => item.required === true).length;
   return Object.freeze({
     policyRevision: ARTIFACT_CONTEXT_POLICY_REVISION,
     items: packed.items,
@@ -87,6 +90,7 @@ export function buildArtifactContextIndex({ store, session, policy = new Artifac
     limits: packed.limits,
     omittedArtifactCount: packed.omittedCount,
     omittedCount: packed.omittedCount,
+    requiredOmittedCount: requiredCandidateCount - requiredIncludedCount,
     omissionReasons: packed.omissionReasons,
     estimatorRevision: packed.estimatorRevision
   });
@@ -130,6 +134,7 @@ function emptyIndex(sessionKind) {
     limits,
     omittedArtifactCount: 0,
     omittedCount: 0,
+    requiredOmittedCount: 0,
     omissionReasons: Object.freeze({}),
     estimatorRevision: "unicode-scalars-or-utf8-div3-v1"
   });

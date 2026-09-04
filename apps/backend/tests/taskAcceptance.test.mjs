@@ -199,8 +199,9 @@ test("a paused Session can continue without creating or preserving an unsupporte
 });
 
 test("provider-neutral Task tool reports evidence as the authenticated Agent", async () => {
-  assert.equal(taskAcceptanceDynamicTools[0].name, "corptie_task_report_acceptance");
-  assert.equal(taskAcceptanceDynamicTools[0].inputSchema.additionalProperties, false);
+  const definition = taskAcceptanceDynamicTools.find((tool) => tool.name === "corptie_task_report_acceptance");
+  assert.ok(definition);
+  assert.equal(definition.inputSchema.additionalProperties, false);
   const calls = [];
   const result = await callTaskAcceptanceDynamicTool((actorId, input, metadata) => {
     calls.push({ actorId, input, metadata });
@@ -216,6 +217,27 @@ test("provider-neutral Task tool reports evidence as the authenticated Agent", a
     actorId: "agent-one",
     input: { results: passingInput.results },
     metadata: { sessionId: "session-one", taskId: "task-one" }
+  }]);
+});
+
+test("provider-neutral bound Task recovery tool accepts no target id and returns the current definition", async () => {
+  const definition = taskAcceptanceDynamicTools.find((tool) => tool.name === "corptie_task_get_bound");
+  assert.ok(definition);
+  assert.deepEqual(definition.inputSchema.required, []);
+  assert.deepEqual(definition.inputSchema.properties, {});
+  const calls = [];
+  const result = await callTaskAcceptanceDynamicTool({
+    getBoundTask(actorId, input, metadata) {
+      calls.push({ actorId, input, metadata });
+      return { id: metadata.taskId, title: "Current bound Task" };
+    }
+  }, {
+    actorId: "agent:one", tool: "corptie_task_get_bound", arguments: {},
+    metadata: { sessionId: "session:one", taskId: "task:one" }
+  });
+  assert.equal(result.title, "Current bound Task");
+  assert.deepEqual(calls, [{
+    actorId: "agent:one", input: {}, metadata: { sessionId: "session:one", taskId: "task:one" }
   }]);
 });
 
