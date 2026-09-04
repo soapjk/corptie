@@ -1,3 +1,26 @@
+const triggerConditionalRules = Object.freeze([
+  Object.freeze({
+    if: { properties: { schedule_type: { enum: ["at", "once"] } }, required: ["schedule_type"] },
+    then: { required: ["run_at"] }
+  }),
+  Object.freeze({
+    if: { properties: { schedule_type: { const: "after" } }, required: ["schedule_type"] },
+    then: { required: ["delay_seconds"] }
+  }),
+  Object.freeze({
+    if: { properties: { schedule_type: { const: "interval" } }, required: ["schedule_type"] },
+    then: { required: ["interval_seconds"] }
+  }),
+  Object.freeze({
+    if: { properties: { schedule_type: { const: "condition" } }, required: ["schedule_type"] },
+    then: { required: ["condition"] }
+  }),
+  Object.freeze({
+    if: { properties: { schedule_type: { const: "processExit" } }, required: ["schedule_type"] },
+    then: { required: ["process"] }
+  })
+]);
+
 const scheduledSessionTaskManageTool = Object.freeze({
     type: "function",
     name: "corptie_scheduled_tasks_manage",
@@ -79,13 +102,14 @@ const scheduledSessionTaskManageTool = Object.freeze({
       allOf: [{
         if: { properties: { action: { const: "create" } }, required: ["action"] },
         then: {
-          required: ["name"],
+          required: ["name", "schedule_type"],
           oneOf: [
             { required: ["expires_at"], not: { required: ["expires_after_seconds"] } },
             { required: ["expires_after_seconds"], not: { required: ["expires_at"] } }
-          ]
+          ],
+          allOf: triggerConditionalRules
         }
-      }]
+      }, ...triggerConditionalRules]
     }
   });
 

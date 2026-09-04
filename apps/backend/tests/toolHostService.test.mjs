@@ -49,6 +49,67 @@ test("Tool Host attaches one product-owned catalog through a Provider capability
   assert.equal(prepared.providerAttachment.identity, "agent-one");
 });
 
+test("domain_load returns the exact directly callable or restricted-gateway contract", async () => {
+  const catalog = new HostToolCatalog([{
+    id: "memory",
+    tools: memoryDynamicTools,
+    execute: () => ({})
+  }]);
+  const snapshot = catalog.snapshot();
+  const appliedDomains = snapshot.domains.filter((domain) => domain.domainId === "memory");
+  const registry = new AgentProviderRegistry([]);
+  const coordinator = {
+    loadDomain: async () => ({
+      status: "applied",
+      snapshot,
+      plan: { surface: "restricted_gateway" },
+      record: {
+        desiredVersion: "desired:1",
+        appliedVersion: "desired:1",
+        appliedDomains
+      }
+    })
+  };
+  const service = new ToolHostService({ registry, catalog, coordinator });
+  const result = await service.execute({
+    actorId: "agent:memory",
+    metadata: { logicalSessionId: "logical:memory", providerBindingId: "binding:memory" },
+    tool: "corptie_tool_domain_load",
+    arguments: { domain_id: "memory", expected_catalog_version: snapshot.catalogVersion }
+  });
+  assert.equal(result.contract.invocation.mode, "restricted_gateway");
+  assert.equal(result.contract.invocation.expectedCatalogVersion, snapshot.catalogVersion);
+  assert.equal(result.contract.tools[0].canonicalName, "corptie_memory_search");
+  assert.ok(result.contract.tools[0].inputSchema);
+  assert.ok(result.contract.tools[0].minimalExample);
+});
+
+test("Tool Host telemetry records business latency and aggregate schema failures without arguments", async () => {
+  const events = [];
+  const catalog = new HostToolCatalog([{
+    id: "memory",
+    tools: memoryDynamicTools,
+    execute: () => ({ ok: true })
+  }]);
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry([]),
+    catalog,
+    recordRuntimeEvent: (event) => events.push(event)
+  });
+  await service.execute({ tool: "corptie_memory_get", arguments: { memory_id: "memory:one" } });
+  await assert.rejects(
+    service.execute({ tool: "corptie_memory_get", arguments: { unexpected: true } }),
+    { code: "TOOL_ARGUMENT_SCHEMA_INVALID" }
+  );
+  assert.equal(events.length, 2);
+  assert.equal(events[0].details.tool, "corptie_memory_get");
+  assert.equal(events[0].details.schemaValidationFailureCount, 0);
+  assert.ok(events[0].details.durationMs >= 0);
+  assert.equal(events[1].details.schemaValidationFailureCount, 1);
+  assert.ok(events[1].details.schemaValidationIssueCount >= 2);
+  assert.equal(Object.hasOwn(events[0].details, "arguments"), false);
+});
+
 test("prospective replacement bindings preserve the explicitly requested Tool domains", async () => {
   const attachments = [];
   const registry = new AgentProviderRegistry([
