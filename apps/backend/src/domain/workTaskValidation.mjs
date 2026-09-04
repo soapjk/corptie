@@ -8,7 +8,7 @@ const WORK_UPDATE_FIELDS = WORK_CREATE_FIELDS.filter(
 );
 
 const TASK_CREATE_FIELDS = [
-  "id", "workId", "title", "description", "goal", "acceptanceCriteria",
+  "id", "workId", "title", "description", "acceptanceCriteria",
   "verificationCriteria", "priority", "lifecycleState", "mainAgentId"
 ];
 
@@ -98,7 +98,6 @@ export function validateTaskInput(input, operation = "create") {
   if (has(input, "workId")) normalized.workId = string(input.workId, "workId", { nonEmpty: true, trim: true });
   if (has(input, "title")) normalized.title = string(input.title, "title", { nonEmpty: true, trim: true });
   if (has(input, "description")) normalized.description = string(input.description, "description");
-  if (has(input, "goal")) normalized.goal = string(input.goal, "goal");
   if (has(input, "acceptanceCriteria")) normalized.acceptanceCriteria = string(input.acceptanceCriteria, "acceptanceCriteria");
   if (has(input, "verificationCriteria")) normalized.verificationCriteria = string(input.verificationCriteria, "verificationCriteria");
   if (has(input, "priority")) normalized.priority = string(input.priority, "priority", { nonEmpty: true, trim: true });

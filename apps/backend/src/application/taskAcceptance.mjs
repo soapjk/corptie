@@ -201,7 +201,6 @@ export function presentTaskAcceptance(task) {
     workId: task.work_id,
     title: task.title,
     description: task.description,
-    goal: task.goal,
     acceptanceCriteria: task.acceptance_criteria,
     verificationCriteria: task.verification_criteria,
     priority: task.priority,

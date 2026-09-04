@@ -1,4 +1,5 @@
 const MIGRATION_ID = "task-domain-v1";
+const TASK_GOAL_REMOVAL_MIGRATION_ID = "task-goal-removal-v1";
 
 export function needsTaskDomainMigration(db) {
   return Boolean(table(db, "work_items") || hasColumn(db, "tasks", "status"));
@@ -44,6 +45,36 @@ export function migrateTaskDomainV1(db, now = new Date().toISOString()) {
     db.run("PRAGMA foreign_keys = ON");
   }
   return { migrated: true, renamedTables, renamedColumns };
+}
+
+export function migrateTaskGoalRemovalV1(db, now = new Date().toISOString()) {
+  if (db.get(
+    "SELECT migration_id FROM data_migrations WHERE migration_id = ?",
+    [TASK_GOAL_REMOVAL_MIGRATION_ID]
+  )) return { migrated: false, droppedColumns: [] };
+
+  const droppedColumns = [];
+  db.run("BEGIN IMMEDIATE");
+  try {
+    for (const tableName of ["tasks", "task_snapshots"]) {
+      if (!hasColumn(db, tableName, "goal")) continue;
+      db.run(`ALTER TABLE ${identifier(tableName)} DROP COLUMN ${identifier("goal")}`);
+      droppedColumns.push({ table: tableName, column: "goal" });
+    }
+    db.run(
+      "INSERT INTO data_migrations (migration_id, applied_at) VALUES (?, ?)",
+      [TASK_GOAL_REMOVAL_MIGRATION_ID, now]
+    );
+    const violations = db.all("PRAGMA foreign_key_check");
+    if (violations.length > 0) {
+      throw new Error(`TASK_GOAL_REMOVAL_FOREIGN_KEY_FAILURE: ${JSON.stringify(violations)}`);
+    }
+    db.run("COMMIT");
+  } catch (error) {
+    try { db.run("ROLLBACK"); } catch {}
+    throw error;
+  }
+  return { migrated: true, droppedColumns };
 }
 
 function renameTaskLifecycleColumn(db, audit) {
@@ -206,7 +237,6 @@ function createTaskSnapshotSchema(db) {
     version INTEGER NOT NULL CHECK (version >= 1),
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    goal TEXT NOT NULL DEFAULT '',
     acceptance_criteria TEXT NOT NULL DEFAULT '',
     verification_criteria TEXT NOT NULL DEFAULT '',
     acceptance_assessment_json TEXT NOT NULL DEFAULT '{}',

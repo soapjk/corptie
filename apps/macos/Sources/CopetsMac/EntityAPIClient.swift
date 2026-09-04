@@ -291,7 +291,6 @@ final class EntityAPIClient: ObservableObject {
     // 更新 CorptieTask：PATCH /tasks/:id → task（直接返回对象，非 envelope）
     @discardableResult
     func updateCorptieTask(taskId: String, title: String? = nil, description: String? = nil,
-                        goal: String? = nil,
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
                         priority: String? = nil, lifecycleState: String? = nil,
@@ -302,7 +301,6 @@ final class EntityAPIClient: ObservableObject {
         var body: [String: Any] = [:]
         if let title { body["title"] = title }
         if let description { body["description"] = description }
-        if let goal { body["goal"] = goal }
         if let acceptanceCriteria { body["acceptanceCriteria"] = acceptanceCriteria }
         if let verificationCriteria { body["verificationCriteria"] = verificationCriteria }
         if let priority { body["priority"] = priority }
@@ -566,7 +564,6 @@ final class EntityAPIClient: ObservableObject {
     // 创建 CorptieTask 及其伴生 Work Session：统一 POST /tasks，一次返回两者。
     @discardableResult
     func createCorptieTask(id: String? = nil, workId: String, title: String, description: String? = nil,
-                        goal: String? = nil,
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
                         mainAgentId: String? = nil,
@@ -599,7 +596,6 @@ final class EntityAPIClient: ObservableObject {
         ]
         if let id, !id.isEmpty { body["id"] = id }
         if let description, !description.isEmpty { body["description"] = description }
-        if let goal, !goal.isEmpty { body["goal"] = goal }
         if let acceptanceCriteria, !acceptanceCriteria.isEmpty { body["acceptanceCriteria"] = acceptanceCriteria }
         if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }
         if let mainAgentId, !mainAgentId.isEmpty { body["mainAgentId"] = mainAgentId }
@@ -634,7 +630,6 @@ final class EntityAPIClient: ObservableObject {
         createdBySessionId: String,
         title: String,
         description: String,
-        goal: String,
         acceptanceCriteria: String,
         verificationCriteria: String,
         executionSummary: String,
@@ -650,7 +645,6 @@ final class EntityAPIClient: ObservableObject {
             "next": [
                 "title": title,
                 "description": description,
-                "goal": goal,
                 "acceptanceCriteria": acceptanceCriteria,
                 "verificationCriteria": verificationCriteria
             ]
