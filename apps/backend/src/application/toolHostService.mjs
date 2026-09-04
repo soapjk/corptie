@@ -203,12 +203,26 @@ export class ToolHostService {
       const canonicalName = requiredText(input.arguments?.tool, "tool");
       const expectedCatalogVersion = requiredText(input.arguments?.expected_catalog_version, "expected_catalog_version");
       const snapshot = this.catalog.snapshot();
-      if (snapshot.catalogVersion !== expectedCatalogVersion) {
-        throw toolError("TOOL_CATALOG_STALE", "The Tool Host catalog changed; search again before calling the gateway.", 409);
-      }
-      this.coordinator.assertCanonicalToolApplied(
+      const applied = this.coordinator.assertCanonicalToolApplied(
         scope.logicalSessionId, scope.providerBindingId, canonicalName, "restricted_gateway"
       );
+      // A Provider may retain the catalog version returned by an earlier Turn
+      // while the Session boundary has already adopted a newer catalog. The
+      // restricted gateway ABI is stable and the current canonical schema is
+      // validated again below, so an unrelated catalog update must not abort
+      // the business call. Fail closed only when this exact Session has not
+      // applied the current catalog generation.
+      if (snapshot.catalogVersion !== expectedCatalogVersion
+        && applied.record?.appliedCatalogVersion !== snapshot.catalogVersion) {
+        const error = toolError(
+          "TOOL_CATALOG_STALE",
+          "The Tool Host catalog changed and this Session has not applied the current generation; search again before calling the gateway.",
+          409
+        );
+        error.expectedCatalogVersion = expectedCatalogVersion;
+        error.currentCatalogVersion = snapshot.catalogVersion;
+        throw error;
+      }
       return this.catalog.execute({ ...input, tool: canonicalName, arguments: input.arguments?.arguments ?? {} });
     }
     if (this.coordinator) {
