@@ -66,3 +66,31 @@ test("Skill MCP gateway rejects duplicate tool names across assigned packages", 
     await gateway.close();
   }
 });
+
+test("Skill MCP gateway exposes assigned tools as restricted-gateway discovery contracts", async () => {
+  const gateway = new SkillMcpGateway({
+    resolveServers: async () => ({ investrace: {} }),
+    connectServer: async () => ({
+      listTools: async () => ({ tools: [
+        { name: "investrace_context", description: "Read portfolio context", inputSchema: { type: "object" } },
+        { name: "investrace_diagnostics", description: "Inspect MCP health", inputSchema: { type: "object" } }
+      ] }),
+      close: async () => {}
+    })
+  });
+  try {
+    const result = await gateway.search({
+      actorId: "agent:1", providerId: "provider:1", intent: "investrace portfolio"
+    });
+    assert.equal(result.domains.length, 1);
+    assert.equal(result.domains[0].domainId, "skill-mcp:investrace");
+    assert.equal(result.domains[0].recommendedTool, "investrace_diagnostics");
+    assert.equal(result.domains[0].invocation.mode, "restricted_gateway");
+    assert.match(result.domains[0].invocation.expectedCatalogVersion, /^skill-mcp:1:/);
+    assert.deepEqual(result.domains[0].tools.map((tool) => tool.canonicalName), [
+      "investrace_context", "investrace_diagnostics"
+    ]);
+  } finally {
+    await gateway.close();
+  }
+});
