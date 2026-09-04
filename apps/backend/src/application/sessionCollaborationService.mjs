@@ -6,6 +6,7 @@ import {
   COLLABORATION_ROUTING_INTENTS,
   TASK_PRIORITIES
 } from "../domain/taskToolSchema.mjs";
+import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
 
 const RELATIONS = new Set(COLLABORATION_RELATION_TYPES);
 const ROUTING_INTENTS = new Set(COLLABORATION_ROUTING_INTENTS);
@@ -104,9 +105,28 @@ export class SessionCollaborationService {
     return this.#presentTask(item);
   }
 
+  async createTaskAndSession(metadata, actorId, input = {}) {
+    const scope = this.#scope(metadata, actorId, { mutation: true });
+    const persisted = this.createTask(metadata, actorId, input);
+    const created = await createTaskAndSession({
+      workService: this.workService,
+      startWorkSession: (command) => this.workSessionStartApplicationService.start(command),
+      taskInput: {},
+      sourceSessionId: scope.logicalSessionId,
+      providerId: optional(input.providerId) ?? this.defaultProviderId,
+      idempotencyKey: required(input.idempotencyKey, "idempotency_key"),
+      persistTask: async () => persisted
+    });
+    return {
+      ...created,
+      task: this.#presentTask(created.task),
+      phase: "started"
+    };
+  }
+
   createTask(metadata, actorId, input = {}) {
-    assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId", "providerId",
-      "artifactReference", "fileReference", "idempotencyKey"]);
+    assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId",
+      "providerId", "artifactReference", "fileReference", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const kind = scope.session.sessionKind;
     if (!scope.session.workId || !["workChat", "worker"].includes(kind)) {
@@ -174,35 +194,6 @@ export class SessionCollaborationService {
     });
     this.store.scheduleSave();
     return { task: this.#presentTask(this.store.getTask(item.id)), idempotentReplay: false, phase: "created" };
-  }
-
-  async createAndStartTask(metadata, actorId, input = {}) {
-    const assigneeAgentId = required(input.agentId, "agent_id");
-    const created = this.createTask(metadata, actorId, input);
-    const current = this.store.getTask(created.task.id);
-    const startIdempotencyKey = `${required(input.idempotencyKey, "idempotency_key")}:start`;
-    if (current?.current_session_id) {
-      const session = this.#resolveSession(current.current_session_id);
-      if (session) {
-        return this.#startReceipt(
-          current, session, "running", true, startIdempotencyKey
-        );
-      }
-    }
-    const scope = this.#scope(metadata, actorId, { mutation: true });
-    const started = await this.startTask(metadata, actorId, {
-      taskId: current.id,
-      assigneeAgentId,
-      expectedTaskVersion: Number(current.resource_version ?? 1),
-      providerId: optional(input.providerId) ?? this.defaultProviderId,
-      title: current.title,
-      idempotencyKey: startIdempotencyKey,
-      sourceSessionId: scope.logicalSessionId
-    });
-    return {
-      ...started,
-      idempotentReplay: created.idempotentReplay && started.idempotentReplay
-    };
   }
 
   #prepareArtifactReference(scope, input) {

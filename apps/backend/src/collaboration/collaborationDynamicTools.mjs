@@ -90,7 +90,7 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create and immediately start an independent Work-scoped Task, recording this Session as its creation origin. The returned Task is ready for conversation; no separate start action exists.", {
+  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and its companion Worker Session in one operation. Records this Session as creation origin; never creates a child or subtask.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
