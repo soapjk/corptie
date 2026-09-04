@@ -123,6 +123,20 @@ export function associationError(code, field, expected, received, message) {
   return new EntityValidationError(code, field, expected, received, message);
 }
 
+export function validateEntityName(value, field = "name", entity = "Entity") {
+  string(value, field, { nonEmpty: true });
+  if (!/^[A-Za-z0-9\p{Script=Han}]+$/u.test(value)) {
+    throw new EntityValidationError(
+      "INVALID_ENTITY_NAME",
+      field,
+      "uppercase or lowercase English letters, Chinese characters, or digits only",
+      value,
+      `${entity} ${field} may only contain English letters, Chinese characters, or digits.`
+    );
+  }
+  return value;
+}
+
 function assertRecord(value, field) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new EntityValidationError("INVALID_FIELD_TYPE", field, "object", value);

@@ -44,7 +44,10 @@ struct WorkDetailView: View {
                     }
 
                     field(L10n("名称 *")) {
-                        TextField(L10n("目标名称"), text: $name)
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField(L10n("目标名称"), text: $name)
+                            EntityNameValidationMessage(value: name)
+                        }
                     }
                     field(L10n("描述")) {
                         TextEditor(text: $detail)
@@ -102,7 +105,7 @@ struct WorkDetailView: View {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSaveName)
             }
             .padding(16)
         }
@@ -119,8 +122,7 @@ struct WorkDetailView: View {
     }
 
     private func save() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard canSaveName else { return }
 
         let tags = tagsText
             .split(separator: ",")
@@ -130,7 +132,7 @@ struct WorkDetailView: View {
         Task {
             let updatedWork = await client.updateWork(
                 workId: work.id,
-                name: trimmed,
+                name: name == work.name ? nil : name,
                 description: detail,
                 tags: tags,
                 contributorAgentIds: Array(contributorAgentIds)
@@ -139,6 +141,10 @@ struct WorkDetailView: View {
                 dismiss()
             }
         }
+    }
+
+    private var canSaveName: Bool {
+        name == work.name || EntityNamePolicy.isValid(name)
     }
 
     private var currentAvatarPath: String? {

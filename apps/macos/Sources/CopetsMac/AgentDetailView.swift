@@ -164,7 +164,10 @@ struct AgentDetailView: View {
     private var form: some View {
         VStack(alignment: .leading, spacing: 12) {
             field(L10n("名称")) {
-                TextField(L10n("名称"), text: $name)
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField(L10n("名称"), text: $name)
+                    EntityNameValidationMessage(value: name)
+                }
             }
             if agent.isPlatformAssistant {
                 Text(L10n("这是 Corptie 内置的平台助手。它的提示词、Skill 和平台权限由应用管理，不能由用户修改。"))
@@ -227,11 +230,14 @@ struct AgentDetailView: View {
                     saveError = nil
                     let updated: Agent?
                     if agent.isPlatformAssistant {
-                        updated = await client.updateAgent(agentId: agent.agentId, name: name)
+                        updated = await client.updateAgent(
+                            agentId: agent.agentId,
+                            name: name == agent.name ? nil : name
+                        )
                     } else {
                         updated = await client.updateAgent(
                             agentId: agent.agentId,
-                            name: name,
+                            name: name == agent.name ? nil : name,
                             description: detail,
                             systemPrompt: systemPrompt,
                             skillIds: Array(selectedSkillIds)
@@ -246,7 +252,7 @@ struct AgentDetailView: View {
                 }
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(isSaving || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(isSaving || !(name == agent.name || EntityNamePolicy.isValid(name)))
         }
     }
 

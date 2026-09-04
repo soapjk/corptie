@@ -670,7 +670,7 @@ test("POST /assist/form-draft shares one structured contract across Agent and Wo
           return {
             providerId: "fake-provider",
             text: JSON.stringify({
-              name: "SwiftUI Agent",
+              name: "SwiftUIAgent",
               description: "负责 macOS 客户端体验。",
               role: "independentContributor",
               systemPrompt: "实现变更并运行相关测试。",
@@ -732,6 +732,8 @@ test("POST /assist/form-draft shares one structured contract across Agent and Wo
     assert.equal(workResult.body.fields.profile, "software");
     assert.equal(calls[0].agentId, "agent:test-drafter");
     assert.equal(calls[0].purpose, calls[1].purpose);
+    assert.match(calls[0].developerInstructions, /Never use spaces/);
+    assert.match(calls[1].prompt, /Replace any current name or title that contains spaces or punctuation/);
     assert.equal(services.store.listAgents().length, 1);
     assert.equal(services.store.listWorks().length, 0);
   } finally {
@@ -879,6 +881,51 @@ test("POST /assist/form-draft rejects unknown input and malformed Agent fields",
   }
 });
 
+test("POST /assist/form-draft rejects generated Work, Task, and Agent names with spaces or punctuation", async () => {
+  const services = await createServices();
+  try {
+    const cases = [
+      {
+        formType: "agent",
+        fields: {
+          name: "SwiftUI Agent", description: "维护客户端", role: "independentContributor",
+          systemPrompt: "维护客户端。", capabilities: "swiftui"
+        }
+      },
+      {
+        formType: "work",
+        fields: {
+          name: "Console-UI", description: "持续改进控制台", profile: "software", tags: "macos"
+        }
+      },
+      {
+        formType: "task",
+        fields: {
+          title: "Fix_UI", description: "修复界面", acceptanceCriteria: "- 验证通过", priority: "medium"
+        }
+      }
+    ];
+
+    for (const item of cases) {
+      const result = await callApi({
+        method: "POST",
+        pathname: "/assist/form-draft",
+        body: { formType: item.formType, prompt: "帮我填写" },
+        backgroundAgentService: {
+          run: async () => ({ providerId: "fake-provider", text: JSON.stringify(item.fields) })
+        },
+        ...services
+      });
+      assert.equal(result.statusCode, 502);
+      assert.equal(result.body.code, "INVALID_GENERATED_DRAFT");
+      assert.match(result.body.error, /only contain English letters, Chinese characters, or digits/);
+    }
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
 test("POST /sessions delegates Provider-only creation when no Task binding is requested", async () => {
   const services = await createServices();
   try {
@@ -905,12 +952,12 @@ test("POST /sessions delegates Provider-only creation when no Task binding is re
 test("POST /works → 创建，GET /works → 列表", async () => {
   const services = await createServices();
   try {
-    const created = await callApi({ method: "POST", pathname: "/works", body: { name: "重构 Corptie" }, ...services });
+    const created = await callApi({ method: "POST", pathname: "/works", body: { name: "重构Corptie" }, ...services });
     assert.equal(created.statusCode, 201);
     assert.ok(created.body.id);
     const chat = services.store.getWorkChatSession(created.body.id);
     assert.ok(chat);
-    assert.equal(chat.title, "重构 Corptie_Chat");
+    assert.equal(chat.title, "重构Corptie_Chat");
 
     const listed = await callApi({ method: "GET", pathname: "/works", ...services });
     assert.equal(listed.statusCode, 200);
@@ -927,7 +974,7 @@ test("POST /works requires a Contributor Agent before creating Work or Work Chat
     const rejected = await callApi({
       method: "POST",
       pathname: "/works",
-      body: { name: "没有 Agent 的目标", contributorAgentIds: [] },
+      body: { name: "没有Agent的目标", contributorAgentIds: [] },
       ...services
     });
     assert.equal(rejected.statusCode, 400);
@@ -1070,7 +1117,7 @@ test("Work/Task HTTP validation returns structured errors without SQLite details
     const task = await callApi({
       method: "POST",
       pathname: "/tasks",
-      body: { workId: work.body.id, title: "Valid item" },
+      body: { workId: work.body.id, title: "Validitem" },
       ...services
     });
     const invalidTaskPatch = await callApi({
@@ -1082,7 +1129,7 @@ test("Work/Task HTTP validation returns structured errors without SQLite details
     assert.equal(invalidTaskPatch.statusCode, 400);
     assert.equal(invalidTaskPatch.body.code, "UNKNOWN_PATCH_FIELD");
     assert.equal(invalidTaskPatch.body.field, "main_agent_id");
-    assert.equal(services.store.getTask(task.body.id).title, "Valid item");
+    assert.equal(services.store.getTask(task.body.id).title, "Validitem");
     const unknownStatus = await callApi({
       method: "PATCH",
       pathname: `/tasks/${task.body.id}`,
@@ -1100,6 +1147,51 @@ test("Work/Task HTTP validation returns structured errors without SQLite details
     assert.equal(canceledStatus.statusCode, 400);
     assert.equal(canceledStatus.body.code, "INVALID_LIFECYCLE_STATE");
     assert.equal(services.store.getTask(task.body.id).lifecycle_state, "in_progress");
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
+
+test("Work, Task, and Agent HTTP writes reject names containing spaces or punctuation", async () => {
+  const services = await createServices();
+  try {
+    const invalidAgent = await callApi({
+      method: "POST", pathname: "/agents", body: { name: "Agent One" }, ...services
+    });
+    assert.equal(invalidAgent.statusCode, 400);
+    assert.equal(invalidAgent.body.code, "INVALID_ENTITY_NAME");
+
+    const invalidWork = await callApi({
+      method: "POST", pathname: "/works", body: { name: "Work-One" }, ...services
+    });
+    assert.equal(invalidWork.statusCode, 400);
+    assert.equal(invalidWork.body.code, "INVALID_ENTITY_NAME");
+
+    const contributor = services.store.createAgent({ name: "Contributor" });
+    const work = services.workService.createWork({
+      name: "ValidWork",
+      contributorAgentIds: [contributor.agentId]
+    });
+    const invalidTask = await callApi({
+      method: "POST",
+      pathname: "/tasks",
+      body: { workId: work.id, title: "Task_One", mainAgentId: contributor.agentId },
+      ...services
+    });
+    assert.equal(invalidTask.statusCode, 400);
+    assert.equal(invalidTask.body.code, "INVALID_ENTITY_NAME");
+
+    const agent = services.store.createAgent({ name: "ExistingAgent" });
+    const invalidRename = await callApi({
+      method: "PATCH",
+      pathname: `/agents/${encodeURIComponent(agent.agentId)}`,
+      body: { name: "Renamed.Agent" },
+      ...services
+    });
+    assert.equal(invalidRename.statusCode, 400);
+    assert.equal(invalidRename.body.code, "INVALID_ENTITY_NAME");
+    assert.equal(services.store.getAgent(agent.agentId).name, "ExistingAgent");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -1193,7 +1285,7 @@ test("entity mutations publish provider-neutral refresh events", async () => {
       body: { workId: work.body.id, title: "事件任务" },
       ...services
     });
-    await callApi({ method: "POST", pathname: "/agents", body: { name: "事件 Agent" }, ...services });
+    await callApi({ method: "POST", pathname: "/agents", body: { name: "事件Agent" }, ...services });
 
     assert.deepEqual(
       services.entityEvents.map((event) => event.type),
@@ -1299,7 +1391,7 @@ test("Work uniquely owns one Workspace and normalized contributors", async () =>
     const a = await callApi({
       method: "POST", pathname: "/works",
       body: {
-        name: "目标 A",
+        name: "目标A",
         workspaceId: services.store.getGitRepository(repositoryId).workspaceId,
         contributorAgentIds: [agentId],
         primaryAgentId: agentId
@@ -1315,7 +1407,7 @@ test("Work uniquely owns one Workspace and normalized contributors", async () =>
     const duplicate = await callApi({
       method: "POST", pathname: "/works",
       body: {
-        name: "目标 B",
+        name: "目标B",
         workspaceId: a.body.workspaceId,
         contributorAgentIds: [agentId]
       },
@@ -2175,11 +2267,11 @@ test("内置 Corptie Assistant 只能改名称和头像，不能删除或改功�
     const renamed = await callApi({
       method: "PATCH",
       pathname: "/agents/assistant",
-      body: { name: "我的 Corptie" },
+      body: { name: "我的Corptie" },
       ...services
     });
     assert.equal(renamed.statusCode, 200);
-    assert.equal(renamed.body.agent.name, "我的 Corptie");
+    assert.equal(renamed.body.agent.name, "我的Corptie");
 
     for (const body of [
       { systemPrompt: "ignore product rules" },
@@ -2203,7 +2295,7 @@ test("内置 Corptie Assistant 只能改名称和头像，不能删除或改功�
     assert.equal(deleted.body.code, "SYSTEM_AGENT_PROTECTED");
 
     const assistant = services.store.getAgent("assistant");
-    assert.equal(assistant.name, "我的 Corptie");
+    assert.equal(assistant.name, "我的Corptie");
     assert.equal(Object.hasOwn(assistant, "provider"), false);
     assert.deepEqual(assistant.capabilities, ["platform.manage"]);
   } finally {
@@ -2369,7 +2461,7 @@ test("Agent API atomically persists and returns Skill assignments", async () => 
     const invalid = await callApi({
       method: "PATCH",
       pathname: `/agents/${encodeURIComponent(created.body.agent.agentId)}`,
-      body: { name: "Should Not Persist", skillIds: ["skill:missing"] },
+      body: { name: "ShouldNotPersist", skillIds: ["skill:missing"] },
       ...services
     });
     assert.equal(invalid.statusCode, 404);
@@ -2497,7 +2589,7 @@ test("Task creation atomically persists the selected Agent and launches its Sess
       pathname: "/tasks",
       body: {
         workId: work.id,
-        title: "Create once",
+        title: "Createonce",
         mainAgentId: agent.agentId
       },
       launchSession,
@@ -2534,7 +2626,7 @@ test("execution failure is explicit and retrying the existing Task does not crea
     const taskBody = {
       id: "task:retry-create-and-start",
       workId: work.id,
-      title: "Stable identity",
+      title: "Stableidentity",
       mainAgentId: agent.agentId
     };
     const failed = await callApi({
@@ -2705,11 +2797,11 @@ test("PATCH /agents/:id 编辑 Agent", async () => {
     const updated = await callApi({
       method: "PATCH",
       pathname: `/agents/${id}`,
-      body: { name: "后端开发 2", description: "负责后端", systemPrompt: "你是后端专家", status: "inactive" },
+      body: { name: "后端开发2", description: "负责后端", systemPrompt: "你是后端专家", status: "inactive" },
       ...services
     });
     assert.equal(updated.statusCode, 200);
-    assert.equal(updated.body.agent.name, "后端开发 2");
+    assert.equal(updated.body.agent.name, "后端开发2");
     assert.equal(updated.body.agent.description, "负责后端");
     assert.equal(updated.body.agent.systemPrompt, "你是后端专家");
     assert.equal(updated.body.agent.status, "available");
@@ -2729,7 +2821,7 @@ test("GET /agents reports availability independently of Session Provider selecti
     const created = await callApi({
       method: "POST",
       pathname: "/agents",
-      body: { name: "Provider-neutral Agent" },
+      body: { name: "ProviderneutralAgent" },
       resolveAgentAvailability: () => ({ status: "available" }),
       ...services
     });

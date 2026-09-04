@@ -2449,6 +2449,7 @@ struct CorptieTaskEditView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextField(L10n("工作项标题"), text: $title)
+                EntityNameValidationMessage(value: title)
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -2523,7 +2524,7 @@ struct CorptieTaskEditView: View {
                     save()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(trimmedTitle.isEmpty)
+                .disabled(!(title == task.title || EntityNamePolicy.isValid(title)))
             }
         }
         .padding(20)
@@ -2581,7 +2582,7 @@ struct CorptieTaskEditView: View {
     }
 
     private func save() {
-        guard !trimmedTitle.isEmpty else { return }
+        guard title == task.title || EntityNamePolicy.isValid(title) else { return }
         // 强制改状态 → 先弹二次确认，确认后才真正落库。
         if statusChanged {
             showStatusConfirm = true
@@ -2595,7 +2596,7 @@ struct CorptieTaskEditView: View {
         Task {
             guard await client.updateCorptieTask(
                 taskId: task.id,
-                title: trimmedTitle,
+                title: title == task.title ? nil : title,
                 description: detail.trimmingCharacters(in: .whitespacesAndNewlines),
                 acceptanceCriteria: acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines),
                 priority: priority,
@@ -2646,6 +2647,7 @@ struct CorptieTaskEditView: View {
 
     private func startPersistBackground(completionSubmission: CorptieTaskCompletionSubmission? = nil) {
         let requestTitle = trimmedTitle
+        let requestTitlePatch = title == task.title ? nil : title
         let requestDescription = detail.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestAcceptanceCriteria = acceptanceCriteria.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestPriority = priority
@@ -2670,7 +2672,7 @@ struct CorptieTaskEditView: View {
             ) == .alreadyCompleted
             guard await client.updateCorptieTask(
                 taskId: task.id,
-                title: requestTitle,
+                title: requestTitlePatch,
                 description: requestDescription,
                 acceptanceCriteria: requestAcceptanceCriteria,
                 priority: requestPriority,
