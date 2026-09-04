@@ -519,6 +519,9 @@
 /* Shared navigation and entity vocabulary */
 "Console" = "Console";
 "Sessions" = "Sessions";
+"Session" = "Session";
+"Mention a Work or Session" = "Mention a Work or Session";
+"Mention suggestions" = "Mention suggestions";
 "Agents" = "Agents";
 "Work" = "Work";
 "Description" = "Description";

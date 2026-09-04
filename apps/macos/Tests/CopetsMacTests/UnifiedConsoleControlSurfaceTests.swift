@@ -62,6 +62,26 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func messageComposerOffersKeyboardAccessibleOneTurnMentions() throws {
+        let source = try source(named: "FloatingRootView.swift")
+        let start = try #require(source.range(of: "struct MessageComposer: View"))
+        let end = try #require(source.range(
+            of: "enum ComposerInputLayout",
+            range: start.upperBound..<source.endIndex
+        ))
+        let composer = source[start.lowerBound..<end.lowerBound]
+
+        #expect(composer.contains("Mention a Work or Session"))
+        #expect(composer.contains("targetType: .work"))
+        #expect(composer.contains("targetType: .session"))
+        #expect(composer.contains("mentions: submittedMentions"))
+        #expect(source.contains("onMentionCommand?(.move(1))"))
+        #expect(source.contains("onMentionCommand?(.select)"))
+        #expect(source.contains("onMentionCommand?(.dismiss)"))
+        #expect(source.contains("LazyVStack(spacing: 2)"))
+    }
+
+    @Test
     func workRailAndTaskToolbarExposeTheCorrectCreationFlows() throws {
         let unifiedSource = try source(named: "UnifiedConsoleView.swift")
 

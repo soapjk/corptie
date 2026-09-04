@@ -9906,8 +9906,23 @@ struct AgentMessageParts {
     }
 }
 
+private struct ComposerMentionCandidate: Identifiable {
+    let mention: ConversationMention
+    let detail: String
+    let symbol: String
+
+    var id: String { mention.id }
+}
+
+private enum ComposerMentionCommand {
+    case move(Int)
+    case select
+    case dismiss
+}
+
 struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var appState = AppStateStore.shared
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @Environment(\.isLiquidGlass) private var isLiquidGlass
     let sessionId: String
@@ -9922,6 +9937,9 @@ struct MessageComposer: View {
     @State private var scheduleSubmission: ComposerDraftBuffer.Submission?
     @State private var attachedImages: [ChatImageReference] = []
     @State private var isImportingImages = false
+    @State private var mentionQuery: ComposerMentionQuery?
+    @State private var mentionSelectionIndex = 0
+    @State private var selectedMentions: [ConversationMention] = []
 
     init(
         sessionId: String,
@@ -9960,6 +9978,17 @@ struct MessageComposer: View {
                 }
 
                 HStack(spacing: 2) {
+                Button(action: beginMention) {
+                    Text("@")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .help(L10n("Mention a Work or Session"))
+                .accessibilityLabel(L10n("Mention a Work or Session"))
+                .padding(.leading, 4)
+
                 Button(action: chooseImages) {
                     Group {
                         if isImportingImages {
@@ -9993,6 +10022,8 @@ struct MessageComposer: View {
                         }
                     },
                     onPasteImages: importImagesFromPasteboard,
+                    onMentionQueryChange: updateMentionQuery,
+                    onMentionCommand: handleMentionCommand,
                     onSubmit: send
                 )
                     .frame(minWidth: 0, maxWidth: .infinity)
@@ -10087,6 +10118,18 @@ struct MessageComposer: View {
             .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
                 importDroppedImages(providers)
             }
+            .overlay(alignment: .topLeading) {
+                if mentionQuery != nil, !mentionCandidates.isEmpty {
+                    ComposerMentionMenu(
+                        candidates: mentionCandidates,
+                        selectedIndex: mentionSelectionIndex,
+                        onSelect: selectMention
+                    )
+                    .frame(width: min(340, max(240, composerWidth - 80)))
+                    .offset(x: 8, y: -CGFloat(min(mentionCandidates.count, 7) * 42 + 48))
+                    .zIndex(20)
+                }
+            }
 
             if allowsModelSwitch, canSwitchModel {
                 CodexModelMenu(maxWidth: modelMenuMaxWidth)
@@ -10149,11 +10192,16 @@ struct MessageComposer: View {
             return
         }
         let submittedImages = attachedImages
-        let didStartSending = backendClient.sendMessage(submission.text, to: session, images: submittedImages, onFailure: {
+        let submittedMentions = selectedMentions.filter { submission.text.contains("@\($0.displayName)") }
+        let didStartSending = backendClient.sendMessage(submission.text, to: session,
+            images: submittedImages,
+            mentions: submittedMentions,
+            onFailure: {
             if editorController.restoreAfterFailedSubmission(submission) {
                 hasSendableText = true
             }
             attachedImages = submittedImages
+            selectedMentions = submittedMentions
         })
         guard didStartSending else {
             return
@@ -10163,6 +10211,86 @@ struct MessageComposer: View {
             inputHeight = ComposerInputLayout.minimumHeight
         }
         attachedImages = []
+        selectedMentions = []
+        mentionQuery = nil
+    }
+
+    private var mentionCandidates: [ComposerMentionCandidate] {
+        guard let mentionQuery else { return [] }
+        let activeMentionIDs = Set(selectedMentions
+            .filter { editorController.draft.text.contains("@\($0.displayName)") }
+            .map(\.id))
+        guard activeMentionIDs.count < 8 else { return [] }
+        let needle = mentionQuery.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let works = appState.works.map { work in
+            ComposerMentionCandidate(
+                mention: ConversationMention(targetType: .work, targetId: work.id, displayName: work.name),
+                detail: L10n("Work"),
+                symbol: "briefcase"
+            )
+        }
+        let sessions = appState.sessions
+            .filter { $0.id != sessionId && $0.archived != true }
+            .map { candidate in
+                ComposerMentionCandidate(
+                    mention: ConversationMention(targetType: .session, targetId: candidate.id, displayName: candidate.title),
+                    detail: L10n("Session"),
+                    symbol: "bubble.left.and.bubble.right"
+                )
+            }
+        return (works + sessions)
+            .filter { candidate in
+                !activeMentionIDs.contains(candidate.id)
+                    && (needle.isEmpty
+                        || candidate.mention.displayName.localizedCaseInsensitiveContains(needle)
+                        || candidate.mention.targetId.localizedCaseInsensitiveContains(needle))
+            }
+            .prefix(10)
+            .map { $0 }
+    }
+
+    private func beginMention() {
+        isFocused = true
+        mentionQuery = editorController.insertMentionTrigger()
+        mentionSelectionIndex = 0
+        hasSendableText = editorController.draft.hasSendableText
+    }
+
+    private func updateMentionQuery(_ query: ComposerMentionQuery?) {
+        if query?.text != mentionQuery?.text {
+            mentionSelectionIndex = 0
+        }
+        mentionQuery = query
+    }
+
+    private func handleMentionCommand(_ command: ComposerMentionCommand) -> Bool {
+        guard mentionQuery != nil else { return false }
+        switch command {
+        case .move(let delta):
+            guard !mentionCandidates.isEmpty else { return false }
+            mentionSelectionIndex = (mentionSelectionIndex + delta + mentionCandidates.count) % mentionCandidates.count
+        case .select:
+            guard mentionCandidates.indices.contains(mentionSelectionIndex) else {
+                mentionQuery = nil
+                return false
+            }
+            selectMention(mentionCandidates[mentionSelectionIndex])
+        case .dismiss:
+            mentionQuery = nil
+        }
+        return true
+    }
+
+    private func selectMention(_ candidate: ComposerMentionCandidate) {
+        guard let mentionQuery else { return }
+        editorController.replaceMentionQuery(mentionQuery, with: candidate.mention.displayName)
+        if !selectedMentions.contains(where: { $0.id == candidate.mention.id }) {
+            selectedMentions.append(candidate.mention)
+        }
+        self.mentionQuery = nil
+        mentionSelectionIndex = 0
+        hasSendableText = true
+        isFocused = true
     }
 
     private var isRunningTurn: Bool {
@@ -10624,6 +10752,67 @@ enum ModelMenuLabel {
     }
 }
 
+private struct ComposerMentionMenu: View {
+    let candidates: [ComposerMentionCandidate]
+    let selectedIndex: Int
+    let onSelect: (ComposerMentionCandidate) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L10n("Mention a Work or Session"))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                        Button {
+                            onSelect(candidate)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: candidate.symbol)
+                                    .frame(width: 18)
+                                    .foregroundStyle(CorptiePalette.softBlue)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(candidate.mention.displayName)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(candidate.detail)
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(CorptiePalette.secondaryText)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 8)
+                            .frame(height: 38)
+                            .background(
+                                index == selectedIndex ? CorptiePalette.softBlue.opacity(0.12) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(candidate.mention.displayName), \(candidate.detail)")
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.bottom, 4)
+            }
+            .frame(maxHeight: 294)
+        }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.7))
+        }
+        .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L10n("Mention suggestions"))
+    }
+}
+
 private struct ComposerInputTextView: NSViewRepresentable {
     let controller: ComposerEditorController
     let placeholder: String
@@ -10633,6 +10822,8 @@ private struct ComposerInputTextView: NSViewRepresentable {
     var onSendableTextChange: (Bool) -> Void = { _ in }
     var onContentHeightChange: (CGFloat) -> Void = { _ in }
     var onPasteImages: () -> Bool = { false }
+    var onMentionQueryChange: (ComposerMentionQuery?) -> Void = { _ in }
+    var onMentionCommand: (ComposerMentionCommand) -> Bool = { _ in false }
     let onSubmit: (ComposerDraftBuffer.Submission) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -10666,6 +10857,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
         textView.onFocusChange = onFocusChange
         textView.onSubmit = context.coordinator.submit
         textView.onPasteImages = onPasteImages
+        textView.onMentionCommand = onMentionCommand
 
         scrollView.documentView = textView
         controller.attach(textView)
@@ -10685,6 +10877,8 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onFocusChange: onFocusChange,
             onSendableTextChange: onSendableTextChange,
             onContentHeightChange: onContentHeightChange,
+            onMentionQueryChange: onMentionQueryChange,
+            onMentionCommand: onMentionCommand,
             onSubmit: onSubmit
         )
         textView.placeholder = placeholder
@@ -10693,6 +10887,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
         textView.onFocusChange = onFocusChange
         textView.onSubmit = context.coordinator.submit
         textView.onPasteImages = onPasteImages
+        textView.onMentionCommand = onMentionCommand
         controller.attach(textView)
         DispatchQueue.main.async {
             context.coordinator.reportContentHeight(of: textView)
@@ -10705,6 +10900,8 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onFocusChange: onFocusChange,
             onSendableTextChange: onSendableTextChange,
             onContentHeightChange: onContentHeightChange,
+            onMentionQueryChange: onMentionQueryChange,
+            onMentionCommand: onMentionCommand,
             onSubmit: onSubmit
         )
     }
@@ -10715,6 +10912,8 @@ private struct ComposerInputTextView: NSViewRepresentable {
         private var onFocusChange: (Bool) -> Void
         private var onSendableTextChange: (Bool) -> Void
         private var onContentHeightChange: (CGFloat) -> Void
+        private var onMentionQueryChange: (ComposerMentionQuery?) -> Void
+        private var onMentionCommand: (ComposerMentionCommand) -> Bool
         private var onSubmit: (ComposerDraftBuffer.Submission) -> Void
         private var lastSendableState: Bool
 
@@ -10723,12 +10922,16 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onFocusChange: @escaping (Bool) -> Void,
             onSendableTextChange: @escaping (Bool) -> Void,
             onContentHeightChange: @escaping (CGFloat) -> Void,
+            onMentionQueryChange: @escaping (ComposerMentionQuery?) -> Void,
+            onMentionCommand: @escaping (ComposerMentionCommand) -> Bool,
             onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
         ) {
             self.controller = controller
             self.onFocusChange = onFocusChange
             self.onSendableTextChange = onSendableTextChange
             self.onContentHeightChange = onContentHeightChange
+            self.onMentionQueryChange = onMentionQueryChange
+            self.onMentionCommand = onMentionCommand
             self.onSubmit = onSubmit
             lastSendableState = controller.draft.hasSendableText
         }
@@ -10736,6 +10939,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
         func attach(_ textView: ComposerSubmitTextView) {
             textView.onFocusChange = onFocusChange
             textView.onSubmit = submit
+            textView.onMentionCommand = onMentionCommand
         }
 
         func update(
@@ -10743,12 +10947,16 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onFocusChange: @escaping (Bool) -> Void,
             onSendableTextChange: @escaping (Bool) -> Void,
             onContentHeightChange: @escaping (CGFloat) -> Void,
+            onMentionQueryChange: @escaping (ComposerMentionQuery?) -> Void,
+            onMentionCommand: @escaping (ComposerMentionCommand) -> Bool,
             onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
         ) {
             self.controller = controller
             self.onFocusChange = onFocusChange
             self.onSendableTextChange = onSendableTextChange
             self.onContentHeightChange = onContentHeightChange
+            self.onMentionQueryChange = onMentionQueryChange
+            self.onMentionCommand = onMentionCommand
             self.onSubmit = onSubmit
             lastSendableState = controller.draft.hasSendableText
         }
@@ -10758,6 +10966,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
                 return
             }
             controller.recordEditorText(textView.string)
+            onMentionQueryChange(ComposerMentionQuery.resolve(in: textView.string, selection: textView.selectedRange()))
             reportContentHeight(of: textView)
             let nextSendableState = controller.draft.hasSendableText
             guard nextSendableState != lastSendableState else {
@@ -10765,6 +10974,11 @@ private struct ComposerInputTextView: NSViewRepresentable {
             }
             lastSendableState = nextSendableState
             onSendableTextChange(nextSendableState)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            onMentionQueryChange(ComposerMentionQuery.resolve(in: textView.string, selection: textView.selectedRange()))
         }
 
         func submit() {
@@ -10789,6 +11003,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
     final class ComposerSubmitTextView: NSTextView {
         var onSubmit: (() -> Void)?
         var onPasteImages: (() -> Bool)?
+        var onMentionCommand: ((ComposerMentionCommand) -> Bool)?
         var onFocusChange: ((Bool) -> Void)?
         var placeholder = "" {
             didSet {
@@ -10797,12 +11012,16 @@ private struct ComposerInputTextView: NSViewRepresentable {
         }
 
         override func keyDown(with event: NSEvent) {
+            if event.keyCode == 125, onMentionCommand?(.move(1)) == true { return }
+            if event.keyCode == 126, onMentionCommand?(.move(-1)) == true { return }
+            if event.keyCode == 53, onMentionCommand?(.dismiss) == true { return }
             let isReturn = event.keyCode == 36 || event.keyCode == 76
             let wantsNewline = event.modifierFlags.contains(.shift)
             if isReturn, hasMarkedText() {
                 super.keyDown(with: event)
                 return
             }
+            if isReturn, !wantsNewline, onMentionCommand?(.select) == true { return }
             if isReturn && !wantsNewline {
                 onSubmit?()
                 return
