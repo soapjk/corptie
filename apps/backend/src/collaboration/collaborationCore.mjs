@@ -1712,12 +1712,13 @@ export class CollaborationCore {
   #resolveTaskScope(input, initiator, recipient) {
     const initiatorRoute = this.#routeForSession(input.initiatorSessionId);
     const recipientRoute = this.#routeForSession(input.recipientSessionId);
-    const sourceWorkId = initiatorRoute?.workId ?? this.#resolveWorkForAgent(
-      initiator, optionalText(input.sourceWorkId), "sourceWorkId"
-    );
     const targetWorkId = recipientRoute?.workId ?? this.#resolveWorkForAgent(
       recipient, optionalText(input.targetWorkId), "targetWorkId"
     );
+    const sourceWorkId = initiatorRoute?.workId
+      ?? (initiator.agentKind === "platformAssistant" && !input.sourceWorkId
+        ? targetWorkId
+        : this.#resolveWorkForAgent(initiator, optionalText(input.sourceWorkId), "sourceWorkId"));
     if (input.sourceWorkId && input.sourceWorkId !== sourceWorkId) {
       throw domainError("SOURCE_WORK_SPOOFED", "sourceWorkId is derived from the authenticated source Session.");
     }

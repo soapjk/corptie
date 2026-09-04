@@ -78,8 +78,8 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
   const calls = [];
   const client = { post: async (path, body) => { calls.push({ path, body }); return { task: { id: "task:new" } }; } };
   await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
-    title: "Referenced", idempotency_key: "create:referenced",
-    agent_id: "agent:worker",
+    title: "Referenced", agent_id: "agent:worker", provider_id: "provider:test",
+    idempotency_key: "create:referenced",
     artifact_reference: {
       artifact_id: "artifact:spec", relation: "implementation_spec", required: true,
       version_policy: "fixed", version: 2
@@ -90,6 +90,7 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
     body: {
       title: "Referenced",
       agentId: "agent:worker",
+      providerId: "provider:test",
       artifactReference: {
         artifactId: "artifact:spec", relation: "implementation_spec", required: true,
         versionPolicy: "fixed", version: 2

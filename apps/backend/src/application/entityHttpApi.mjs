@@ -17,6 +17,7 @@ import { presentMemory } from "./memoryOperationService.mjs";
 import { validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
+import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
 
 function encodeTaskCursor(cursor) {
   return cursor ? Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url") : null;
@@ -79,6 +80,7 @@ export function handleEntityHttpRequest({
   memoryLifecycleService,
   assistantService,
   startWorkSession,
+  defaultSessionProviderId,
   getTaskStartup,
   getSessionStartupBinding,
   launchAgentSession,
@@ -768,12 +770,37 @@ export function handleEntityHttpRequest({
         timing.taskId = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
         timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         phaseStartedAt = performance.now();
-        const created = presentTaskWithOrigin(workService, workService.createTask(input, {
-          creationOrigin: { originType: "direct_user" }
-        }));
-        timing.taskId = created.id;
+        const authenticatedSourceSessionId = boundedHeaderText(request, "x-corptie-logical-session-id") || null;
+        const sourceSessionId = input.sourceSessionId ?? authenticatedSourceSessionId;
+        if (sourceSessionId !== authenticatedSourceSessionId) {
+          throw apiError("SOURCE_SESSION_ACTOR_MISMATCH", "Task creation source does not match the authenticated Session.", 403);
+        }
+        const providerId = input.providerId ?? defaultSessionProviderId;
+        const idempotencyKey = input.idempotencyKey ?? input.id;
+        const { providerId: _providerId, sourceSessionId: _sourceSessionId,
+          idempotencyKey: _idempotencyKey, ...taskInput } = input;
+        const created = await createTaskAndSession({
+          workService,
+          startWorkSession,
+          taskInput,
+          creationOrigin: {
+            originType: "session",
+            creatorSessionId: sourceSessionId,
+            operationId: idempotencyKey
+          },
+          sourceSessionId,
+          providerId,
+          idempotencyKey
+        });
+        const presented = presentTaskWithOrigin(workService, created.task);
+        timing.taskId = presented.id;
         timing.phases.validateAndPersistMs = roundedMilliseconds(performance.now() - phaseStartedAt);
-        const result = sendJson(response, 201, created);
+        const result = sendJson(response, created.idempotentReplay ? 200 : 201, {
+          ...presented,
+          session: created.session,
+          start: created.start,
+          idempotentReplay: created.idempotentReplay
+        });
         finishTaskTiming("succeeded");
         return result;
       }
