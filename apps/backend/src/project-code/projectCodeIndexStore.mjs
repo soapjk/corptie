@@ -21,6 +21,7 @@ export class ProjectCodeIndexStore {
     this.maxLoadedGenerations = options.maxLoadedGenerations ?? 4;
     this.singleFlights = new Map();
     this.loadedLayers = new Map();
+    this.layerStates = new Map();
     this.latestCatalogByWorktree = new Map();
     this.latestTextByWorktree = new Map();
     this.io = options.io ?? {};
@@ -47,9 +48,52 @@ export class ProjectCodeIndexStore {
     if (layer !== "L1" && layer !== "L2") throw new TypeError(`Unsupported index layer ${layer}.`);
     const key = `${snapshot.receipt.sourceFingerprint}:${layer}`;
     if (!this.singleFlights.has(key)) {
-      this.singleFlights.set(key, this.#ensureLayer(snapshot, layer, options).finally(() => this.singleFlights.delete(key)));
+      const started = performance.now();
+      this.#setLayerState(key, { status: "building", startedAt: new Date().toISOString(), durationMs: null, errorCode: null });
+      this.singleFlights.set(key, this.#ensureLayer(snapshot, layer, options)
+        .then((result) => {
+          this.#setLayerState(key, {
+            status: "ready",
+            startedAt: this.layerStates.get(key)?.startedAt ?? null,
+            durationMs: elapsedMilliseconds(started),
+            errorCode: null
+          });
+          return result;
+        })
+        .catch((error) => {
+          this.#setLayerState(key, {
+            status: "failed",
+            startedAt: this.layerStates.get(key)?.startedAt ?? null,
+            durationMs: elapsedMilliseconds(started),
+            errorCode: error?.code ?? "DATA_ROOT_UNAVAILABLE"
+          });
+          throw error;
+        })
+        .finally(() => this.singleFlights.delete(key)));
     }
     return this.singleFlights.get(key);
+  }
+
+  readyLayer(snapshot, layer) {
+    const key = `${snapshot.receipt.sourceFingerprint}:${layer}`;
+    const index = this.loadedLayers.get(key);
+    if (!index || this.layerStates.get(key)?.status !== "ready") return null;
+    this.loadedLayers.delete(key);
+    this.loadedLayers.set(key, index);
+    return Object.freeze({ index, indexHit: true, incremental: true });
+  }
+
+  layerState(snapshot, layer) {
+    const key = `${snapshot.receipt.sourceFingerprint}:${layer}`;
+    return this.layerStates.get(key) ?? Object.freeze({ status: "uninitialized", startedAt: null, durationMs: null, errorCode: null });
+  }
+
+  warmLayer(snapshot, layer, options = {}) {
+    return this.ensureLayer(snapshot, layer, options);
+  }
+
+  #setLayerState(key, value) {
+    lruSet(this.layerStates, key, Object.freeze(value), Math.max(8, this.maxLoadedGenerations * 4));
   }
 
   async readLayer(snapshot, layer) {
@@ -586,4 +630,8 @@ function throwIfAborted(signal) {
   error.name = "AbortError";
   error.code = "QUERY_CANCELLED";
   throw error;
+}
+
+function elapsedMilliseconds(started) {
+  return Math.max(0, Number((performance.now() - started).toFixed(3)));
 }
