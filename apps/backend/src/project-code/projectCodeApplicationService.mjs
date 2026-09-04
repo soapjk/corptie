@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { contractError, validateProjectCodeReceipt, validateToolsetValidationReceipt } from "./projectCodeContracts.mjs";
+import { createValidatedSnapshotLease } from "./projectCodeValidationLease.mjs";
 
 export class ProjectCodeSearchApplicationService {
   constructor(options = {}) {
@@ -9,17 +10,12 @@ export class ProjectCodeSearchApplicationService {
     }
     this.now = options.now ?? (() => new Date().toISOString());
     this.toolsetReceipts = options.toolsetReceipts ?? null;
+    this.snapshotFlights = new Map();
   }
 
   async createSnapshot(input = {}) {
     const context = this.#context(input);
-    const snapshot = await this.snapshotBuilder.build({
-      startupReceipt: context.startupReceipt,
-      binding: context.binding,
-      sessionContext: context.sessionContext,
-      sourceDeclarations: input.sourceDeclarations ?? [],
-      signal: input.signal
-    });
+    const snapshot = await this.#buildCurrentSnapshot(context, input.sourceDeclarations ?? [], input.signal);
     await validateProjectCodeReceipt(snapshot.receipt, "RepositorySourceSnapshotReceipt");
     this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
     return Object.freeze({ receipt: snapshot.receipt, rejectedPaths: Object.freeze(snapshot.rejectedPaths) });
@@ -27,12 +23,16 @@ export class ProjectCodeSearchApplicationService {
 
   async search(input = {}) {
     const context = this.#context(input);
-    const snapshot = await this.#loadSnapshot(input.snapshotReceiptId, context, input.signal);
+    const responseDetail = normalizeChoice(input.responseDetail, "compact", ["compact", "full"], "responseDetail");
+    const snapshotPolicy = normalizeChoice(input.snapshotPolicy, "reuse_current", ["reuse_current", "require_exact", "create_new"], "snapshotPolicy");
+    const resolved = await this.#resolveSnapshot({ ...input, snapshotPolicy }, context);
+    const snapshot = resolved.snapshot;
     const toolsetValidationReceipt = input.toolsetValidationReceipt
       ?? await this.#resolveToolsetReceipt(input.toolsetValidationReceiptId, context);
     if (toolsetValidationReceipt) await validateToolsetValidationReceipt(toolsetValidationReceipt);
     const result = await this.searchService.search({
       snapshot,
+      validationLease: resolved.validationLease,
       sessionContext: context.sessionContext,
       searchScenarioId: input.searchScenarioId ?? `project-code:${randomUUID()}`,
       query: input.query,
@@ -48,21 +48,34 @@ export class ProjectCodeSearchApplicationService {
       toolsetRequired: input.toolsetRequired === true
     });
     this.#persist("SearchReceipt", result.receipt, context);
-    return Object.freeze({ snapshotReceipt: snapshot.receipt, searchReceipt: result.receipt, results: result.results });
+    if (responseDetail === "full") {
+      return Object.freeze({ snapshotReceipt: snapshot.receipt, searchReceipt: result.receipt, results: result.results });
+    }
+    return compactSearchPresentation(snapshot.receipt, result, { snapshotReused: resolved.reused });
   }
 
   async pointRead(input = {}) {
     const context = this.#context(input);
-    const snapshot = await this.#loadSnapshot(input.snapshotReceiptId, context, input.signal);
+    const resolved = await this.#resolveSnapshot({ ...input, snapshotPolicy: input.snapshotPolicy ?? "require_exact" }, context);
+    const snapshot = resolved.snapshot;
     return this.searchService.pointRead({
       snapshot,
+      validationLease: resolved.validationLease,
       sessionContext: context.sessionContext,
       path: input.path,
       startLine: input.startLine,
       lineCount: input.lineCount,
       maxBytes: input.maxBytes,
+      maxScanBytes: input.maxScanBytes,
       signal: input.signal
     });
+  }
+
+  getReceipt(input = {}) {
+    const context = this.#context(input);
+    const stored = this.store.getProjectCodeReceipt(requiredText(input.receiptId, "receiptId"), context.sessionContext.logicalSessionId);
+    if (!stored) throw contractError("RECEIPT_NOT_FOUND", "The requested project-code receipt is unavailable.", 404);
+    return Object.freeze({ receiptType: stored.receiptType, receipt: Object.freeze(stored.receipt) });
   }
 
   #context(input) {
@@ -97,25 +110,54 @@ export class ProjectCodeSearchApplicationService {
     return Object.freeze({ logical, session, task, startupReceipt, sessionContext, binding });
   }
 
-  async #loadSnapshot(receiptId, context, signal) {
+  async #resolveSnapshot(input, context) {
+    if (input.snapshotPolicy === "require_exact") {
+      return this.#loadSnapshot(requiredText(input.snapshotReceiptId, "snapshotReceiptId"), context, input.signal, true);
+    }
+    if (input.snapshotPolicy === "reuse_current") {
+      const stored = input.snapshotReceiptId
+        ? this.store.getProjectCodeReceipt(input.snapshotReceiptId, context.sessionContext.logicalSessionId)
+        : this.store.getLatestProjectCodeSnapshot?.(context.sessionContext.logicalSessionId);
+      if (stored?.receiptType === "RepositorySourceSnapshotReceipt") {
+        try { return await this.#loadSnapshot(stored.receipt.receiptId, context, input.signal, true); }
+        catch (error) { if (error?.code !== "SOURCE_SNAPSHOT_STALE") throw error; }
+      }
+    }
+    const snapshot = await this.#buildCurrentSnapshot(context, input.sourceDeclarations ?? [], input.signal);
+    await validateProjectCodeReceipt(snapshot.receipt, "RepositorySourceSnapshotReceipt");
+    this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
+    return Object.freeze({ snapshot, validationLease: createValidatedSnapshotLease(snapshot, this.snapshotBuilder), reused: false });
+  }
+
+  async #loadSnapshot(receiptId, context, signal, reused = false) {
     const stored = this.store.getProjectCodeReceipt(requiredText(receiptId, "snapshotReceiptId"), context.sessionContext.logicalSessionId);
     if (!stored || stored.receiptType !== "RepositorySourceSnapshotReceipt") {
       throw contractError("SOURCE_SNAPSHOT_REQUIRED", "The requested authoritative RepositorySourceSnapshotReceipt is unavailable.", 404);
     }
     await validateProjectCodeReceipt(stored.receipt, "RepositorySourceSnapshotReceipt");
-    const current = await this.snapshotBuilder.build({
-      startupReceipt: context.startupReceipt,
-      binding: context.binding,
-      sessionContext: context.sessionContext,
-      sourceDeclarations: [],
-      signal
-    });
+    const current = await this.#buildCurrentSnapshot(context, [], signal);
     for (const field of ["repositoryId", "worktreeId", "sourceCommitOid", "sourceTreeOid", "sourceFingerprint"]) {
       if (current.receipt[field] !== stored.receipt[field]) {
         throw contractError("SOURCE_SNAPSHOT_STALE", `Persisted Snapshot ${field} no longer matches current source state.`);
       }
     }
-    return Object.freeze({ ...current, receipt: Object.freeze(stored.receipt) });
+    const snapshot = Object.freeze({ ...current, receipt: Object.freeze(stored.receipt) });
+    return Object.freeze({ snapshot, validationLease: createValidatedSnapshotLease(snapshot, this.snapshotBuilder), reused });
+  }
+
+  async #buildCurrentSnapshot(context, sourceDeclarations, signal) {
+    const key = [context.sessionContext.logicalSessionId, context.startupReceipt.startupOperationId,
+      context.binding.bindingGeneration, context.binding.worktreeId, JSON.stringify(sourceDeclarations)].join(":");
+    if (!this.snapshotFlights.has(key)) {
+      this.snapshotFlights.set(key, this.snapshotBuilder.build({
+        startupReceipt: context.startupReceipt,
+        binding: context.binding,
+        sessionContext: context.sessionContext,
+        sourceDeclarations,
+        signal
+      }).finally(() => this.snapshotFlights.delete(key)));
+    }
+    return this.snapshotFlights.get(key);
   }
 
   #persist(receiptType, receipt, context) {
@@ -151,4 +193,49 @@ function requiredText(value, field) {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) throw contractError("QUERY_INVALID", `${field} is required.`, 400);
   return text;
+}
+
+function normalizeChoice(value, fallback, allowed, field) {
+  const result = value ?? fallback;
+  if (!allowed.includes(result)) throw contractError("UNSUPPORTED_OPTION", `${field} is unsupported.`, 400);
+  return result;
+}
+
+function compactSearchPresentation(snapshot, result, options = {}) {
+  const layers = result.receipt.layers.map((layer) => Object.freeze({
+    layer: layer.layer, status: layer.status, indexHit: layer.indexHit,
+    resultCount: layer.resultCount, latencyMs: layer.latencyMs,
+    degradedReason: layer.degradedReason
+  }));
+  const presentedResults = [...result.results];
+  const response = {
+    snapshot: Object.freeze({
+      receiptId: snapshot.receiptId,
+      sourceFingerprint: snapshot.sourceFingerprint,
+      repositoryId: snapshot.repositoryId,
+      worktreeId: snapshot.worktreeId,
+      reused: options.snapshotReused === true
+    }),
+    search: Object.freeze({
+      receiptId: result.receipt.receiptId,
+      outcome: result.receipt.outcome,
+      errorCode: result.receipt.errorCode,
+      layers: Object.freeze(layers),
+      totalMs: result.receipt.latency.totalMs,
+      truncated: result.receipt.resultSummary.truncated === true
+    }),
+    results: presentedResults,
+    guidance: result.results.length === 0 ? zeroResultGuidance(result.receipt) : null
+  };
+  while (presentedResults.length > 0 && Buffer.byteLength(JSON.stringify(response)) > 16 * 1024) {
+    presentedResults.pop();
+    response.search = Object.freeze({ ...response.search, truncated: true });
+  }
+  return Object.freeze({ ...response, results: Object.freeze(presentedResults) });
+}
+
+function zeroResultGuidance(receipt) {
+  const degraded = receipt.layers.find((layer) => layer.status === "degraded");
+  if (degraded) return `No results; ${degraded.layer} is degraded (${degraded.degradedReason}).`;
+  return "No results in the selected Snapshot and scope; try symbols or semantic mode, or broaden paths.";
 }

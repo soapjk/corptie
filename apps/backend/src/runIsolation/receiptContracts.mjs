@@ -20,7 +20,12 @@ export const CLEANUP_RECEIPT_CONTRACT = Object.freeze({
 const resourceDirectory = new URL("../../resources/run-isolation/", import.meta.url);
 export const runReceiptSchema = loadSchema("RunReceipt.schema.json");
 export const cleanupReceiptSchema = loadSchema("CleanupReceipt.schema.json");
-export const toolsetValidationReceiptSchema = loadSchema("ToolsetValidationReceipt.schema.json");
+// The approved ed9 v3 contract is shared with project-code. Loading the stale
+// legacy resource copy here allowed the two subsystems to validate different
+// identity fields for the same fixed Artifact.
+export const toolsetValidationReceiptSchema = JSON.parse(readFileSync(
+  fileURLToPath(new URL("../contracts/toolset-validation-receipt-v3.schema.json", import.meta.url)), "utf8"
+));
 export const searchSnapshotReceiptSchema = loadSchema("SearchSnapshotReceipt.schema.json");
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 addFormats(ajv);

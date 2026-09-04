@@ -1783,6 +1783,9 @@ const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
 const projectCodeIndexStore = new ProjectCodeIndexStore({
   dataRoot: join(store.dataRoot, "project-code-index")
 });
+void projectCodeIndexStore.initialize().catch((error) => {
+  console.warn(`[project-code] index store unavailable: ${error?.code ?? "DATA_ROOT_UNAVAILABLE"}`);
+});
 const projectCodeRunIsolationPort = runIsolationCoordinator
   ? new ProjectCodeRunIsolationPort({
       coordinator: runIsolationCoordinator,
@@ -9194,7 +9197,17 @@ function route(request, response) {
       time: now(),
       storeReady: backendStoreReady,
       maintenance: store.migrationInProgress,
-      dataRootMigration: dataRootMigrationCoordinator.status()
+      dataRootMigration: dataRootMigrationCoordinator.status(),
+      projectCode: (() => {
+        const readiness = projectCodeIndexStore.getReadiness();
+        return {
+          l0Exact: "ready",
+          l1Catalog: readiness.status === "ready" ? "ready" : "degraded",
+          l2Symbols: readiness.status === "ready" ? "ready" : "degraded",
+          semantic: projectCodeRunIsolationPort ? "ready" : "unsupported",
+          reasonCode: readiness.status === "unavailable" ? readiness.code : null
+        };
+      })()
     });
     return;
   }
