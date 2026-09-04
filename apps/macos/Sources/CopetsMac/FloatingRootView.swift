@@ -5448,7 +5448,7 @@ func nativeCollaborationCardPresentation(
     }
 
     if isMessage {
-        guard nonEmpty(item.collaborationTaskId) != nil,
+        guard (nonEmpty(item.collaborationTaskId) != nil || nonEmpty(item.collaborationChannelId) != nil),
               nonEmpty(item.collaborationInitiatorSessionId) != nil,
               nonEmpty(item.collaborationRecipientSessionId) != nil,
               nonEmpty(item.collaborationSourceWorkId) != nil,
@@ -5471,6 +5471,7 @@ func nativeCollaborationCardPresentation(
         ?? item.status
         ?? "queued").lowercased()
     let status: String = switch statusSource {
+    case "sent", "delivered": L10n("已发送")
     case "confirmed", "completed", "complete": L10n("已处理")
     case "running", "processing": L10n("处理中")
     case "failed": L10n("处理失败")
@@ -9151,6 +9152,7 @@ struct ThreadItemView: View {
 
     private var collaborationStatusLabel: String {
         switch collaborationProcessingStatus {
+        case "sent", "delivered": "已发送"
         case "running", "processing": "处理中"
         case "completed", "complete": "已处理"
         case "failed": "处理失败"
@@ -9161,6 +9163,7 @@ struct ThreadItemView: View {
 
     private var collaborationStatusIcon: String {
         switch collaborationProcessingStatus {
+        case "sent", "delivered": "paperplane.fill"
         case "running", "processing": "clock.arrow.circlepath"
         case "completed", "complete": "checkmark.circle.fill"
         case "failed": "exclamationmark.circle.fill"
@@ -9171,6 +9174,7 @@ struct ThreadItemView: View {
 
     private var collaborationStatusColor: Color {
         switch collaborationProcessingStatus {
+        case "sent", "delivered": CorptiePalette.connected
         case "running", "processing": CorptiePalette.running
         case "completed", "complete": CorptiePalette.connected
         case "failed", "cancelled", "canceled": .red

@@ -3486,6 +3486,10 @@ function productTimelineItemsForEvent(type, payload, sessionEvent, sessionId) {
     const item = sessionChannelAuthorizationTimelineItem(payload?.channelRequest ?? payload?.request, sessionId);
     if (item) items.push(item);
   }
+  if (type === "SessionChannelMessageSent") {
+    const item = sessionChannelMessageTimelineItem(payload, sessionId);
+    if (item) items.push(item);
+  }
   return items;
 }
 
@@ -6399,6 +6403,78 @@ function sessionChannelAuthorizationTimelineItem(channelRequest, sessionId) {
   };
 }
 
+function sessionChannelMessageTimelineItem(payload, sessionId) {
+  const message = payload?.message;
+  const channel = payload?.channel;
+  if (!message?.messageId || !channel?.channelId || !message.senderSessionId || !message.recipientSessionId) {
+    return null;
+  }
+  const senderLogical = store.getLogicalSession(message.senderSessionId);
+  const recipientLogical = store.getLogicalSession(message.recipientSessionId);
+  const senderSession = senderLogical?.legacySessionId ? store.getSession(senderLogical.legacySessionId) : null;
+  const recipientSession = recipientLogical?.legacySessionId ? store.getSession(recipientLogical.legacySessionId) : null;
+  const senderAgent = senderSession?.agentId ? store.getAgent(senderSession.agentId) : null;
+  const recipientAgent = recipientSession?.agentId ? store.getAgent(recipientSession.agentId) : null;
+  const resources = message.resourceContext ?? {};
+  const sourceWorkId = resources.sender?.workId ?? senderSession?.workId ?? null;
+  const targetWorkId = resources.recipient?.workId ?? recipientSession?.workId ?? null;
+  return {
+    id: `session-channel-message:${message.messageId}:outbound`,
+    turnId: `session-channel-message:${message.messageId}`,
+    turnStatus: "completed",
+    type: "userMessage",
+    title: "Session Channel Message",
+    text: message.body,
+    status: "sent",
+    userMessageStatus: "consumed",
+    createdAt: message.createdAt,
+    sourceType: "session_channel",
+    sourceChannel: "session_channel",
+    presentationRole: "collaboration",
+    presentationText: message.body,
+    collaborationDirection: "outbound",
+    collaborationSenderAgentId: senderSession?.agentId ?? resources.sender?.agentId ?? null,
+    collaborationSenderName: senderAgent?.name ?? null,
+    collaborationRecipientAgentId: recipientSession?.agentId ?? resources.recipient?.agentId ?? null,
+    collaborationRecipientName: recipientAgent?.name ?? null,
+    collaborationInitiatorSessionId: message.senderSessionId,
+    collaborationInitiatorSessionTitle: senderLogical?.sessionName ?? senderSession?.title ?? null,
+    collaborationInitiatorSessionKind: senderSession?.sessionKind ?? null,
+    collaborationRecipientSessionId: message.recipientSessionId,
+    collaborationRecipientSessionTitle: recipientLogical?.sessionName ?? recipientSession?.title ?? null,
+    collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
+    collaborationSourceWorkId: sourceWorkId,
+    collaborationSourceWorkName: sourceWorkId ? store.getWork(sourceWorkId)?.name ?? null : null,
+    collaborationTargetWorkId: targetWorkId,
+    collaborationTargetWorkName: targetWorkId ? store.getWork(targetWorkId)?.name ?? null : null,
+    collaborationSourceTaskId: resources.sender?.taskId ?? senderSession?.taskId ?? null,
+    collaborationTargetTaskId: resources.recipient?.taskId ?? recipientSession?.taskId ?? null,
+    collaborationMessageKind: message.messageKind ?? "message",
+    collaborationProcessingStatus: "sent",
+    collaborationChannelId: channel.channelId,
+    productSessionId: sessionId
+  };
+}
+
+function projectSessionChannelMessageForSender(result) {
+  const message = result?.message;
+  if (!message?.messageId || !message.senderSessionId) return;
+  emitEvent("SessionChannelMessageSent", {
+    sessionId: message.senderSessionId,
+    channel: result.channel,
+    message,
+    delivery: result.delivery ?? null
+  }, {
+    eventId: `session-channel-message-sent:${message.messageId}`,
+    sessionId: message.senderSessionId,
+    source: {
+      type: "session_channel",
+      channelId: result.channel?.channelId ?? message.channelId,
+      messageId: message.messageId
+    }
+  });
+}
+
 function collaborationPresentationForTask(task, sessionId = task.sessionId) {
   if (task.kind !== "collaboration") return {};
   if (task.source?.type === "session_channel") {
@@ -9045,7 +9121,10 @@ function route(request, response) {
       }, { sessionId: channelRequest.requestingSessionId });
     },
     onChannelRequestResolved: resolveSessionChannelRequest,
-    onChannelMessageCreated: async () => syncSessionChannelDeliveriesIntoAgentWorkQueue(),
+    onChannelMessageCreated: async (result) => {
+      projectSessionChannelMessageForSender(result);
+      await syncSessionChannelDeliveriesIntoAgentWorkQueue();
+    },
     onListWorkspaces: (agentId, metadata) => sessionWorkspaceOperations.listWorkspaces(metadata, agentId),
     onCreateWorktree: (agentId, input, metadata) => sessionWorkspaceOperations.createWorktree(metadata, agentId, input),
     onSwitchWorkspace: (agentId, input, metadata) => sessionWorkspaceOperations.switchWorkspace(metadata, agentId, input),
