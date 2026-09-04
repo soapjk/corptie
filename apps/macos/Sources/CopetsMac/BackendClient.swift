@@ -3475,6 +3475,7 @@ final class BackendClient: ObservableObject {
         _ text: String,
         to session: TaskSession,
         images: [ChatImageReference] = [],
+        mentions: [ConversationMention] = [],
         isChoiceSelection: Bool = false,
         onSuccess: @escaping () -> Void = {},
         onFailure: @escaping () -> Void = {}
@@ -3482,6 +3483,7 @@ final class BackendClient: ObservableObject {
         sendText(
             text,
             images: images,
+            mentions: mentions,
             to: session,
             reloadDetail: selectedSession?.id == session.id,
             isChoiceSelection: isChoiceSelection,
@@ -3521,6 +3523,7 @@ final class BackendClient: ObservableObject {
     private func sendText(
         _ text: String,
         images: [ChatImageReference],
+        mentions: [ConversationMention] = [],
         to session: TaskSession,
         reloadDetail: Bool,
         isChoiceSelection: Bool,
@@ -3558,6 +3561,13 @@ final class BackendClient: ObservableObject {
                 request.setValue(String(requestStartedAtMs), forHTTPHeaderField: "x-corptie-message-request-started-at-ms")
                 request.httpBody = try JSONSerialization.data(withJSONObject: [
                     "text": trimmed,
+                    "mentions": mentions.map { mention in
+                        [
+                            "targetType": mention.targetType.rawValue,
+                            "targetId": mention.targetId,
+                            "displayName": mention.displayName
+                        ]
+                    },
                     "images": images.map { image in
                         [
                             "managedPath": image.managedPath,
