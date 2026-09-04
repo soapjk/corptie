@@ -312,6 +312,31 @@ final class EntityAPIClient: ObservableObject {
         return await performEntityMutation(request, as: CorptieTask.self)
     }
 
+    @discardableResult
+    func restartCorptieTask(taskId: String) async -> Bool {
+        var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/restart"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "idempotencyKey": "task-restart:\(UUID().uuidString.lowercased())"
+        ])
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
+                errorMessage = envelope?.displayMessage ?? L10n("Could not restart Task.")
+                return false
+            }
+            await AppStateSyncController.shared.refreshSnapshot()
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     func inspectCorptieTaskDeletion(taskId: String) async -> CorptieTaskDeletionPlan? {
         let url = baseURL.appending(path: "tasks/\(taskId)/deletion")
         do {

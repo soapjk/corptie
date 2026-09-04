@@ -77,6 +77,41 @@ test("rechecking an already-ready binding does not publish a transient not-ready
   );
 });
 
+test("message dispatch reuses the exact ready binding without probing again", async () => {
+  const f = fixture();
+  const first = await f.coordinator.verify("session:one");
+  assert.equal(first.ready, true);
+  assert.equal(f.calls(), 1);
+
+  f.coordinator.probe = async () => {
+    throw new Error("a cached dispatch must not reach the Provider probe");
+  };
+  const cached = await f.coordinator.verify("session:one", { reuseReady: true });
+
+  assert.equal(cached.ready, true);
+  assert.equal(cached.cached, true);
+  assert.equal(f.calls(), 1);
+  assert.equal(f.coordinator.readiness("logical:one", "binding:one"), null);
+});
+
+test("failed dispatch invalidation makes the next message probe again", async () => {
+  const f = fixture();
+  await f.coordinator.verify("session:one");
+  assert.equal(f.calls(), 1);
+
+  assert.equal(f.coordinator.invalidateBinding({
+    sessionId: "session:one",
+    logicalSessionId: "logical:one",
+    bindingId: "binding:one"
+  }), true);
+  assert.equal(f.coordinator.readiness("logical:one", "binding:one"), undefined);
+
+  const verification = await f.coordinator.verify("session:one", { reuseReady: true });
+  assert.equal(verification.ready, true);
+  assert.equal(verification.cached, undefined);
+  assert.equal(f.calls(), 2);
+});
+
 test("Provider failure becomes binding-scoped not-ready state", async () => {
   const f = fixture({
     error: Object.assign(new Error("thread missing"), { code: "PROVIDER_SESSION_UNAVAILABLE" })
