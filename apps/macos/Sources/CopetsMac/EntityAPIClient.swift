@@ -571,12 +571,17 @@ final class EntityAPIClient: ObservableObject {
                         verificationCriteria: String? = nil,
                         mainAgentId: String? = nil,
                         priority: String? = nil,
-                        providerId: String) async -> CorptieTask? {
-        guard let sourceSession = BackendClient.shared.selectedSession else {
-            errorMessage = L10n("创建 CorptieTask 需要一个已激活的源会话。")
+                        providerId: String,
+                        sourceSession explicitSourceSession: TaskSession? = nil) async -> CorptieTask? {
+        let backendClient = BackendClient.shared
+        guard let sourceSession = CorptieTaskSessionSourcePolicy.resolve(
+            workId: workId,
+            preferred: explicitSourceSession ?? backendClient.selectedSession,
+            sessions: backendClient.sessions
+        ), let sourceSessionId = CorptieTaskSessionSourcePolicy.sourceSessionId(for: sourceSession) else {
+            errorMessage = L10n("所属 Work 没有可用于创建 CorptieTask 的 Session。")
             return nil
         }
-        let sourceSessionId = sourceSession.external?.logicalSessionId ?? sourceSession.id
         var request = URLRequest(url: baseURL.appending(path: "tasks"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -895,16 +900,20 @@ final class EntityAPIClient: ObservableObject {
         title: String? = nil,
         sourceSession explicitSourceSession: TaskSession? = nil
     ) async -> EntitySessionLaunchResult {
-        guard let sourceSession = explicitSourceSession ?? BackendClient.shared.selectedSession else {
-            let message = L10n("启动 CorptieTask 需要一个已激活的源会话。请先打开所属 Work 的会话后重试。")
-            errorMessage = message
-            return .failure(message: message, code: "SOURCE_SESSION_NOT_FOUND")
-        }
-        let sourceSessionId = sourceSession.external?.logicalSessionId ?? sourceSession.id
         guard let task = await task(id: taskId) else {
             let message = errorMessage ?? L10n("CorptieTask 不存在或无法读取最新版本。")
             errorMessage = message
             return .failure(message: message, code: "TASK_NOT_FOUND")
+        }
+        let backendClient = BackendClient.shared
+        guard let sourceSession = CorptieTaskSessionSourcePolicy.resolve(
+            workId: task.workId,
+            preferred: explicitSourceSession ?? backendClient.selectedSession,
+            sessions: backendClient.sessions
+        ), let sourceSessionId = CorptieTaskSessionSourcePolicy.sourceSessionId(for: sourceSession) else {
+            let message = L10n("所属 Work 没有可用于启动 CorptieTask 的 Session。")
+            errorMessage = message
+            return .failure(message: message, code: "SOURCE_SESSION_NOT_FOUND")
         }
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/start"))
         request.httpMethod = "POST"

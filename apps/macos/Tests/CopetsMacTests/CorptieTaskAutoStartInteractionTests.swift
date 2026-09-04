@@ -32,6 +32,15 @@ struct CorptieTaskAutoStartInteractionTests {
         #expect(!control.contains("currentSession == nil ? \"Run\""))
     }
 
+    @Test
+    func openingTaskInformationRepairsAMissingCompanionSession() throws {
+        let source = try source(named: "WarRoomView.swift")
+
+        #expect(source.contains("await ensureCompanionSessionIfNeeded()"))
+        #expect(source.contains("guard !isCompleted, currentSession == nil, !isLaunchingExecution"))
+        #expect(source.contains("await client.createSession("))
+    }
+
     private func source(named name: String) throws -> String {
         let testsURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testsURL
