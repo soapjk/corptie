@@ -61,6 +61,7 @@ export class CollaborationHttpClient {
       const error = new Error(payload.error || `Corptie backend returned HTTP ${response.status}.`);
       error.code = payload.code || "BACKEND_ERROR";
       error.status = response.status;
+      if (payload.details && typeof payload.details === "object") error.details = payload.details;
       throw error;
     }
     return payload;

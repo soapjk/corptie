@@ -63,6 +63,29 @@ test("compatibility entry and field mappings are explicit while canonical Automa
   assert.match(legacy.compatibility.resultNormalization, /taskId/);
 });
 
+test("collaboration discovery recommends direct Channel open for an explicit Session alias", () => {
+  const catalog = catalogFixture();
+  const contract = catalog.domainContract({}, "collaboration");
+  assert.equal(contract.recommendedTool, "corptie_collaboration_channel_open");
+  assert.equal(contract.tools[0].canonicalName, "corptie_collaboration_channel_open");
+  const open = contract.tools[0];
+  assert.match(open.description, /without pre-discovery/);
+  assert.match(open.inputSchema.properties.recipient_session_name.description, /optionally prefixed with @/);
+  const agents = contract.tools.find((tool) => tool.canonicalName === "corptie_agents_discover");
+  assert.match(agents.description, /Do not use this tool to resolve an @Session name/);
+});
+
+test("Automation discovery contract explains long-process wakeup without foreground polling", () => {
+  const catalog = catalogFixture();
+  const contract = catalog.domainContract({}, "scheduled-tasks");
+  const create = contract.tools.find((tool) => tool.canonicalName === "corptie_automations_create");
+  assert.match(create.description, /background/);
+  assert.match(create.description, /processExit or condition/);
+  assert.match(create.description, /never starts or restarts/);
+  assert.match(create.inputSchema.properties.process.properties.expected_start_time.description, /PID reuse/);
+  assert.match(create.inputSchema.properties.expires_after_seconds.description, /exactly one expiration field/);
+});
+
 test("discovery contracts distinguish read-only context from mutating operations", () => {
   const catalog = catalogFixture();
   assert.equal(catalog.domainContract({}, "work-chat").tools

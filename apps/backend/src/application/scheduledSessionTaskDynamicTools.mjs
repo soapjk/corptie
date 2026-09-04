@@ -24,7 +24,7 @@ const triggerConditionalRules = Object.freeze([
 const scheduledSessionTaskManageTool = Object.freeze({
     type: "function",
     name: "corptie_scheduled_tasks_manage",
-    description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. Create requires a concise name plus exactly one of expires_at or expires_after_seconds. Supports at, after, interval, processExit, and structured condition triggers plus local Session message, activation, and notification actions. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
+    description: "Manage provider-neutral Corptie Automations（计划任务）for a Logical Session. For a non-interactive task expected to run longer than two minutes, start it as a background process, then create a processExit trigger for its PID or a read-only condition trigger so Automation wakes the Session instead of the model polling. processExit observes only and never starts or restarts the process. Create requires a concise name plus exactly one expiration field. Actor identity is injected by the Tool Host and permissions are rechecked before every run.",
     deferLoading: false,
     inputSchema: {
       type: "object",
@@ -49,7 +49,7 @@ const scheduledSessionTaskManageTool = Object.freeze({
             }
           ]
         },
-        schedule_type: { type: "string", enum: ["at", "after", "interval", "processExit", "condition", "once"], description: "Required for create. once is a compatibility alias for at." },
+        schedule_type: { type: "string", enum: ["at", "after", "interval", "processExit", "condition", "once"], description: "Required for create. Use processExit after starting a known PID in the background; use condition for a read-only completion predicate. once is a compatibility alias for at." },
         run_at: { type: "string", description: "ISO-8601 first execution time. Required for once; optional for interval and condition." },
         delay_seconds: { type: "integer", minimum: 1, maximum: 31536000 },
         interval_seconds: { type: "integer", minimum: 1, description: "Fixed interval in seconds for interval tasks." },
@@ -73,9 +73,9 @@ const scheduledSessionTaskManageTool = Object.freeze({
         process: {
           type: "object", additionalProperties: false,
           properties: {
-            pid: { type: "integer", minimum: 1 },
-            poll_interval_seconds: { type: "integer", minimum: 1, maximum: 3600 },
-            expected_start_time: { type: "string" }
+            pid: { type: "integer", minimum: 1, description: "PID of an already-running background process. Automation only observes this PID and never starts or restarts it." },
+            poll_interval_seconds: { type: "integer", minimum: 1, maximum: 3600, description: "Seconds between host-side process checks; defaults to 5, so the model must not poll." },
+            expected_start_time: { type: "string", description: "Optional ISO-8601 process start time used to reject PID reuse. Capture it when available before yielding the turn." }
           },
           required: ["pid"]
         },
@@ -149,7 +149,7 @@ export const scheduledSessionTaskDynamicTools = Object.freeze([
   Object.freeze({
     type: "function",
     name: "corptie_automations_create",
-    description: "Create a provider-neutral Corptie Automation for this authenticated logical Session by default. Requires a concise name and exactly one expiration field.",
+    description: "Create a provider-neutral Corptie Automation for this authenticated logical Session. For long non-interactive work, start the command in the background and use processExit or condition to wake the Session without model polling. processExit never starts or restarts the process; identify it with pid and, when available, expected_start_time. Set exactly one expiration field so abandoned observers terminate.",
     deferLoading: false,
     inputSchema: {
       type: "object",
