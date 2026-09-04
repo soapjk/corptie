@@ -2,6 +2,21 @@ import XCTest
 @testable import CorptieMac
 
 final class ComposerDraftTests: XCTestCase {
+    func testMentionQueryRecognizesOnlyTheActiveWhitespaceDelimitedToken() {
+        XCTAssertEqual(
+            ComposerMentionQuery.resolve(in: "Ask @con", selection: NSRange(location: 8, length: 0)),
+            ComposerMentionQuery(replacementRange: NSRange(location: 4, length: 4), text: "con")
+        )
+        XCTAssertNil(ComposerMentionQuery.resolve(
+            in: "mail@example.com",
+            selection: NSRange(location: 16, length: 0)
+        ))
+        XCTAssertEqual(
+            ComposerMentionQuery.resolve(in: "@控制台", selection: NSRange(location: 4, length: 0)),
+            ComposerMentionQuery(replacementRange: NSRange(location: 0, length: 4), text: "控制台")
+        )
+    }
+
     func testComposerInputHeightUsesComfortableMinimumAndCapsGrowth() {
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 20), 44)
         XCTAssertEqual(ComposerInputLayout.resolvedHeight(for: 63.2), 64)

@@ -15,7 +15,10 @@ export function normalizeConversationMessage(input) {
     : typeof input.content === "string"
       ? input.content
       : contentText(input.content);
-  return message(text, images);
+  const mentions = Array.isArray(input.mentions)
+    ? input.mentions.map(normalizeConversationMention)
+    : [];
+  return message(text, images, mentions);
 }
 
 export function conversationMessageText(input) {
@@ -34,7 +37,7 @@ export function conversationMessageContent(input) {
   ];
 }
 
-function message(text, images) {
+function message(text, images, mentions = []) {
   const normalizedText = String(text ?? "").trim();
   if (images.length > MAX_CONVERSATION_IMAGES) {
     throw invalidMessage(`A message can contain at most ${MAX_CONVERSATION_IMAGES} images.`);
@@ -42,7 +45,30 @@ function message(text, images) {
   if (!normalizedText && images.length === 0) {
     throw invalidMessage("Message text or at least one image is required.");
   }
-  return Object.freeze({ text: normalizedText, images: Object.freeze(images) });
+  if (mentions.length > 8) {
+    throw invalidMessage("A message can contain at most 8 mentions.");
+  }
+  return Object.freeze({
+    text: normalizedText,
+    images: Object.freeze(images),
+    ...(mentions.length > 0 ? { mentions: Object.freeze(mentions) } : {})
+  });
+}
+
+function normalizeConversationMention(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw invalidMessage("Each message mention must be an object.");
+  }
+  const targetType = typeof value.targetType === "string" ? value.targetType.trim() : "";
+  if (!new Set(["work", "session"]).has(targetType)) {
+    throw invalidMessage("Message mentions support only Work or Session targets.");
+  }
+  const targetId = typeof value.targetId === "string" ? value.targetId.trim() : "";
+  if (!targetId || targetId.length > 200) {
+    throw invalidMessage("Message mention targetId must contain 1 to 200 characters.");
+  }
+  const displayName = typeof value.displayName === "string" ? value.displayName.trim() : "";
+  return Object.freeze({ targetType, targetId, displayName: displayName.slice(0, 200) });
 }
 
 function normalizeConversationImage(value) {

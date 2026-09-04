@@ -1,6 +1,34 @@
 import AppKit
 import Foundation
 
+struct ComposerMentionQuery: Equatable {
+    let replacementRange: NSRange
+    let text: String
+
+    static func resolve(in text: String, selection: NSRange) -> Self? {
+        guard selection.length == 0 else { return nil }
+        let value = text as NSString
+        guard selection.location <= value.length else { return nil }
+        let prefix = value.substring(to: selection.location) as NSString
+        var index = prefix.length
+        while index > 0 {
+            let scalar = UnicodeScalar(prefix.character(at: index - 1))
+            if scalar.map(CharacterSet.whitespacesAndNewlines.contains) == true { break }
+            index -= 1
+        }
+        guard index < prefix.length, prefix.character(at: index) == 64 else { return nil }
+        if index > 0 {
+            let preceding = UnicodeScalar(prefix.character(at: index - 1))
+            guard preceding.map(CharacterSet.whitespacesAndNewlines.contains) == true else { return nil }
+        }
+        let queryRange = NSRange(location: index + 1, length: prefix.length - index - 1)
+        return Self(
+            replacementRange: NSRange(location: index, length: prefix.length - index),
+            text: prefix.substring(with: queryRange)
+        )
+    }
+}
+
 @MainActor
 final class ComposerDraftRepository {
     private var draftsBySessionId: [String: ComposerDraftBuffer] = [:]
@@ -91,6 +119,33 @@ final class ComposerEditorController {
 
     func recordEditorText(_ text: String) {
         draft.updateFromEditor(text)
+    }
+
+    func currentMentionQuery() -> ComposerMentionQuery? {
+        guard let textView else { return nil }
+        return ComposerMentionQuery.resolve(in: textView.string, selection: textView.selectedRange())
+    }
+
+    @discardableResult
+    func insertMentionTrigger() -> ComposerMentionQuery? {
+        guard let textView, !textView.hasMarkedText() else { return nil }
+        textView.window?.makeFirstResponder(textView)
+        let selection = textView.selectedRange()
+        let value = textView.string as NSString
+        let needsSpace = selection.location > 0
+            && UnicodeScalar(value.character(at: selection.location - 1))
+                .map { !CharacterSet.whitespacesAndNewlines.contains($0) } == true
+        let insertion = needsSpace ? " @" : "@"
+        textView.insertText(insertion, replacementRange: selection)
+        recordEditorText(textView.string)
+        return currentMentionQuery()
+    }
+
+    func replaceMentionQuery(_ query: ComposerMentionQuery, with displayName: String) {
+        guard let textView, !textView.hasMarkedText() else { return }
+        let replacement = "@\(displayName) "
+        textView.insertText(replacement, replacementRange: query.replacementRange)
+        recordEditorText(textView.string)
     }
 
     func submission() -> ComposerDraftBuffer.Submission? {

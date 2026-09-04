@@ -156,6 +156,7 @@ import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExt
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
 import { SessionContextReferenceService } from "./application/sessionContextReferenceService.mjs";
+import { resolveMessageMentionContext } from "./application/messageMentionContext.mjs";
 import { handleSessionContextReferenceHttpRequest } from "./application/sessionContextReferenceHttpApi.mjs";
 import { ScheduledSessionTaskService } from "./application/scheduledSessionTaskService.mjs";
 import { createScheduledSessionRouteResolver } from "./application/scheduledSessionRoute.mjs";
@@ -1202,6 +1203,11 @@ const sessionApplicationService = new SessionApplicationService({
   },
   resolveMessageContext: async (reference, messageContext = {}) => {
     const session = store.getSession(reference.sessionId);
+    const mentionContext = resolveMessageMentionContext(
+      store,
+      reference.sessionId,
+      normalizeConversationMessage(messageContext.message).mentions ?? []
+    );
     let baseContext = null;
     if (session?.sessionKind === "workChat" && session.workId) {
       baseContext = workChatContextService.build(session.workId, session);
@@ -1254,7 +1260,7 @@ const sessionApplicationService = new SessionApplicationService({
         };
       }
     }
-    const contexts = [memoryContext, baseContext, directUserIntentContext].filter((item) => item?.prompt);
+    const contexts = [memoryContext, baseContext, mentionContext, directUserIntentContext].filter((item) => item?.prompt);
     if (contexts.length === 0) return null;
     if (contexts.length === 1) return contexts[0];
     return {
@@ -6844,7 +6850,7 @@ async function resolvedConversationMessage(reference, input) {
       byteLength: stored.byteLength
     });
   }
-  return { text: message.text, images };
+  return { text: message.text, images, ...(message.mentions ? { mentions: message.mentions } : {}) };
 }
 
 function enqueueUserAgentWork(session, input, source, latencyTrace = null, reference = null) {
