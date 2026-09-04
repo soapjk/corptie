@@ -6,7 +6,7 @@ struct SessionRestartInteractionTests {
     @Test
     func selectedTaskContextMenuUsesTaskOperationsOnly() throws {
         let source = try contents(of: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "private func taskRow(_ task: CorptieTask)"))
+        let rowStart = try #require(source.range(of: "private func taskRow(_ task: CorptieTask,"))
         let rowEnd = try #require(source.range(
             of: "private func restartTask(_ task: CorptieTask)",
             range: rowStart.upperBound..<source.endIndex
@@ -62,23 +62,15 @@ struct SessionRestartInteractionTests {
     @Test
     func sessionsTabSidebarExposesRestartThroughTheSharedContextMenu() throws {
         let sessionsSource = try contents(of: "UnifiedConsoleView.swift")
-        let rowStart = try #require(sessionsSource.range(of: "private struct SessionsSidebarRow: View"))
+        let rowStart = try #require(sessionsSource.range(of: "private struct ConsoleSessionRow: View"))
         let rowEnd = try #require(sessionsSource.range(
             of: "func sessionMatchingPendingSelection",
             range: rowStart.upperBound..<sessionsSource.endIndex
         ))
         let row = sessionsSource[rowStart.lowerBound..<rowEnd.lowerBound]
-        let sharedSource = try contents(of: "FloatingRootView.swift")
-        let sharedStart = try #require(sharedSource.range(of: "struct CompactSessionRow: View"))
-        let sharedEnd = try #require(sharedSource.range(
-            of: "private struct SessionIdentityLine: View",
-            range: sharedStart.upperBound..<sharedSource.endIndex
-        ))
-        let sharedRow = sharedSource[sharedStart.lowerBound..<sharedEnd.lowerBound]
 
-        #expect(row.contains("CompactSessionRow("))
-        #expect(sharedRow.contains(".contextMenu"))
-        #expect(sharedRow.contains("SessionContextMenuContent(session: session"))
+        #expect(row.contains(".contextMenu"))
+        #expect(row.contains("SessionContextMenuContent(session: session"))
     }
 
     @Test

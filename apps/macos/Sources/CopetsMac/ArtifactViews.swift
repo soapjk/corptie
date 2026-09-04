@@ -19,9 +19,11 @@ struct ArtifactSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Label(L10n("Artifacts"), systemImage: "doc.on.doc")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                Label(
+                    taskId == nil ? L10n("Artifacts") : L10n("引用内容"),
+                    systemImage: taskId == nil ? "doc.on.doc" : "link"
+                )
+                .detailRailSectionLabelStyle()
                 Text("\(CorptieAppEnvironment.displayName) · :\(CorptieAppEnvironment.backendPort)")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(CorptieAppEnvironment.isDevelopment ? Color.orange : Color.secondary)
@@ -81,10 +83,7 @@ struct ArtifactSectionView: View {
                 artifactLoading
             }
         case .loaded(let artifacts):
-            if artifacts.isEmpty {
-                Text(L10n("No private Artifacts are referenced."))
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
-            } else {
+            if !artifacts.isEmpty {
                 artifactRows(artifacts)
             }
         case .failed(let message, let previous):
@@ -115,33 +114,34 @@ struct ArtifactSectionView: View {
     private func artifactRows(_ artifacts: [WorkArtifact]) -> some View {
         LazyVStack(spacing: 6) {
             ForEach(artifacts) { artifact in
-                        Button { selection = artifact } label: {
-                            HStack(spacing: 8) {
-                                if artifact.visibility == .repositoryTracked {
-                                    Image(systemName: "point.3.connected.trianglepath.dotted")
-                                        .foregroundStyle(artifact.status == "revoked" ? Color.red : Color.accentColor)
-                                } else {
-                                    Image(systemName: "lock.doc")
-                                        .foregroundStyle(artifact.status == "revoked" ? Color.red : Color.accentColor)
-                                }
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(artifact.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                                    Text("v\(ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: taskId)) · \(artifact.visibility.rawValue)")
-                                        .font(.system(size: 9)).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if artifact.references.contains(where: { $0.required && $0.revokedAt == nil }) {
-                                    Text(L10n("Required")).font(.system(size: 8, weight: .semibold)).foregroundStyle(.orange)
-                                }
-                                if artifact.references.contains(where: { $0.pendingVersion != nil && $0.revokedAt == nil }) {
-                                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                                }
-                            }
-                            .padding(8)
-                            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
-                            .contentShape(Rectangle())
+                Button { selection = artifact } label: {
+                    HStack(spacing: 7) {
+                        if artifact.visibility == .repositoryTracked {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                                .foregroundStyle(artifact.status == "revoked" ? Color.red : Color.accentColor)
+                        } else {
+                            Image(systemName: "lock.doc")
+                                .foregroundStyle(artifact.status == "revoked" ? Color.red : Color.accentColor)
                         }
-                        .buttonStyle(.plain)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(artifact.title).font(.system(size: 11, weight: .medium)).lineLimit(1)
+                            Text("v\(ArtifactVersionSelectionPolicy.preferredVersion(for: artifact, taskId: taskId)) · \(artifact.visibility.rawValue)")
+                                .font(.system(size: 9)).foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 2)
+                        if artifact.references.contains(where: { $0.required && $0.revokedAt == nil }) {
+                            Text(L10n("Required")).font(.system(size: 8, weight: .semibold)).foregroundStyle(.orange)
+                        }
+                        if artifact.references.contains(where: { $0.pendingVersion != nil && $0.revokedAt == nil }) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        }
+                    }
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .detailRailReferenceRowStyle()
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
     }

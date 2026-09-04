@@ -1250,39 +1250,18 @@ struct CorptieTaskDetailView: View {
         VStack(alignment: .leading, spacing: 16) {
             overviewSection
 
-            detailTextSection(
-                title: L10n("Description"),
-                systemImage: "text.alignleft",
-                text: task.description
-            )
-
-            detailTextSection(
-                title: L10n("Acceptance Criteria"),
-                systemImage: "checklist",
-                text: task.acceptanceCriteria
-            )
-
-            detailTextSection(
-                title: L10n("Verification Criteria"),
-                systemImage: "checkmark.seal",
-                text: task.verificationCriteria
-            )
-
-            ArtifactSectionView(workId: task.workId, taskId: task.id)
-
-            Divider()
-
-            executionSection
-
-            if isCompleted {
+            if hasTaskDefinitionContent {
                 Divider()
 
-                worktreeSection
+                taskDefinitionSection
             }
 
             Divider()
+            executionAndWorkspaceSection
 
-            memorySection
+            Divider()
+
+            taskResourcesSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
@@ -1345,11 +1324,7 @@ struct CorptieTaskDetailView: View {
     }
 
     private var overviewSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(task.title)
-                .font(.system(size: 16, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
-
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 compactStatusBadge(task.lifecycleState)
                 metadataPill(priorityLabel, systemImage: "flag")
@@ -1358,7 +1333,6 @@ struct CorptieTaskDetailView: View {
                         .help(creationOriginHelp(origin))
                 }
             }
-
 
             switch acceptanceReviewState {
             case .passed:
@@ -1390,6 +1364,66 @@ struct CorptieTaskDetailView: View {
         }
     }
 
+    private var taskDefinitionSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if hasContent(task.description) {
+                detailTextSection(
+                    title: L10n("Description"),
+                    systemImage: "text.alignleft",
+                    text: task.description
+                )
+            }
+
+            if hasContent(task.acceptanceCriteria) {
+                detailTextSection(
+                    title: L10n("Acceptance Criteria"),
+                    systemImage: "checklist",
+                    text: task.acceptanceCriteria
+                )
+            }
+
+            if hasContent(task.verificationCriteria) {
+                detailTextSection(
+                    title: L10n("Verification Criteria"),
+                    systemImage: "checkmark.seal",
+                    text: task.verificationCriteria
+                )
+            }
+        }
+    }
+
+    private var hasTaskDefinitionContent: Bool {
+        hasContent(task.description)
+            || hasContent(task.acceptanceCriteria)
+            || hasContent(task.verificationCriteria)
+    }
+
+    private func hasContent(_ text: String) -> Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var executionAndWorkspaceSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            executionSection
+
+            if isCompleted {
+                Divider()
+
+                worktreeSection
+            }
+        }
+    }
+
+    private var taskResourcesSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ArtifactSectionView(workId: task.workId, taskId: task.id)
+
+            Divider()
+
+            memorySection
+        }
+    }
+
     private func creationOriginLabel(_ origin: CorptieTaskCreationOrigin) -> String {
         switch origin.originType {
         case "direct_user": L10n("用户创建")
@@ -1409,11 +1443,10 @@ struct CorptieTaskDetailView: View {
     private func detailTextSection(title: String, systemImage: String, text: String) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             Label(title, systemImage: systemImage)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .detailRailSectionLabelStyle()
             CollapsibleDetailText(
-                text: text.isEmpty ? L10n("No Content") : text,
-                color: text.isEmpty ? .secondary.opacity(0.6) : .secondary
+                text: text,
+                color: .secondary
             )
         }
     }
@@ -1480,8 +1513,7 @@ struct CorptieTaskDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Label(L10n("工作项记忆"), systemImage: "brain.head.profile")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .detailRailSectionLabelStyle()
                 Spacer()
                 if !memories.isEmpty {
                     Text("\(memories.count)")
@@ -1496,11 +1528,7 @@ struct CorptieTaskDetailView: View {
                 .buttonStyle(.borderless)
                 .help(L10n("Open Memory Inspector"))
             }
-            if memories.isEmpty {
-                Text(L10n("暂无记忆"))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-            } else {
+            if !memories.isEmpty {
                 ForEach(memories) { memory in
                     VStack(alignment: .leading, spacing: 3) {
                         CollapsibleDetailText(
