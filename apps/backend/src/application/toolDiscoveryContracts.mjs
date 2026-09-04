@@ -4,8 +4,11 @@ const DOMAIN_PROFILES = Object.freeze({
     "corptie_artifact_search"
   ),
   collaboration: profile(
-    ["collaboration", "channel", "peer session", "task collaboration", "协作", "频道", "会话协作"],
-    "corptie_collaboration_capabilities"
+    [
+      "collaboration", "channel", "peer session", "peer message", "send message", "@session",
+      "task collaboration", "协作", "频道", "会话协作", "发送消息", "发消息", "@会话名"
+    ],
+    "corptie_collaboration_channel_open"
   ),
   "task-acceptance": profile(
     ["task acceptance", "acceptance", "work item acceptance", "验收", "任务验收", "工作项验收"],
@@ -30,7 +33,10 @@ const DOMAIN_PROFILES = Object.freeze({
   "scheduled-tasks": profile(
     [
       "scheduled-tasks", "scheduled task", "scheduled tasks", "automation", "automations",
-      "schedule", "reminder", "自动化", "计划任务", "定时任务", "提醒"
+      "schedule", "reminder", "long-running task", "background task", "background process",
+      "process exit", "process completion", "completion wakeup", "wait for process",
+      "自动化", "计划任务", "定时任务", "提醒", "长任务", "后台任务", "后台进程",
+      "进程退出", "任务完成唤醒"
     ],
     "corptie_automations_create"
   ),

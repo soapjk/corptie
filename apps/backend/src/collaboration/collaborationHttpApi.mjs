@@ -302,19 +302,30 @@ export function handleCollaborationHttpRequest({
           sessionMetadata, actorAgentId, { validateContext: true }
         );
         let recipientSessionId = input.recipientSessionId ?? null;
+        let aliasResolution = null;
         if (!recipientSessionId && input.recipientSessionName) {
-          recipientSessionId = core.store.getLogicalSessionByName(input.recipientSessionName)?.logicalSessionId ?? null;
+          aliasResolution = resolveDirectRecipientAlias(core.store, input.recipientSessionName);
+          if (aliasResolution.status === "ambiguous") throw recipientAliasError(aliasResolution);
+          recipientSessionId = aliasResolution.session?.logicalSessionId ?? null;
         }
         if (recipientSessionId) {
-          recipientSessionId = resolveRecipientSession(sessionCollaborationService, sessionMetadata, actorAgentId, {
+          const recipient = resolveRecipientSession(sessionCollaborationService, sessionMetadata, actorAgentId, {
             ...input, recipientSessionId
-          }).sessionId;
+          });
+          if (!recipient) {
+            throw apiError(
+              "RECIPIENT_SESSION_UNAVAILABLE",
+              `Session ${recipientSessionId} is not an active Worker Session Channel endpoint.`,
+              409
+            );
+          }
+          recipientSessionId = recipient.sessionId;
         } else if (!input.targetWorkId || !input.sessionAgentId) {
-          throw apiError(
-            "SESSION_CREATION_RESOURCES_REQUIRED",
-            "Supply an exact recipient Session, or targetWorkId plus sessionAgentId so Corptie can create the target Task and Session.",
-            400
-          );
+          if (input.recipientSessionName) {
+            throw recipientAliasError(aliasResolution);
+          }
+          throw apiError("SESSION_CREATION_RESOURCES_REQUIRED",
+            "Supply an exact recipient Session, or targetWorkId plus sessionAgentId so Corptie can create the target Task and Session.", 400);
         }
         const channelRequest = sessionChannelService.requestChannel({
           ...input,
@@ -478,7 +489,8 @@ export function handleCollaborationHttpRequest({
       sendJson(response, error.statusCode ?? statusForCode(error.code), {
         error: safeCollaborationErrorMessage(error),
         code: error.code ?? "COLLABORATION_ERROR",
-        ...(typeof error.stage === "string" ? { stage: error.stage } : {})
+        ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
+        ...(safeCollaborationErrorDetails(error) ? { details: safeCollaborationErrorDetails(error) } : {})
       });
     });
   return true;
@@ -491,6 +503,50 @@ function safeCollaborationErrorMessage(error) {
   return String(error?.message ?? "Collaboration operation failed.")
     .replace(/(token|secret|password|authorization)\s*[=:]\s*\S+/gi, "$1=[redacted]")
     .replace(/\s+/g, " ").trim().slice(0, 1000);
+}
+
+function resolveDirectRecipientAlias(store, input) {
+  const requestedName = String(input ?? "").trim();
+  const normalizedName = requestedName.replace(/^[@＠]\s*/, "");
+  const matches = store.findLogicalSessionsByName(normalizedName);
+  if (matches.length === 1) {
+    return { status: "resolved", requestedName, normalizedName, session: matches[0], candidates: [] };
+  }
+  return {
+    status: matches.length > 1 ? "ambiguous" : "not_found",
+    requestedName,
+    normalizedName,
+    session: null,
+    candidates: matches.map((session) => ({
+      sessionId: session.logicalSessionId,
+      sessionName: session.sessionName,
+      archived: session.archived === true
+    }))
+  };
+}
+
+function recipientAliasError(resolution) {
+  const ambiguous = resolution.status === "ambiguous";
+  const error = apiError(
+    ambiguous ? "RECIPIENT_SESSION_ALIAS_AMBIGUOUS" : "RECIPIENT_SESSION_NOT_FOUND",
+    ambiguous
+      ? `More than one Session matches ${resolution.requestedName}; discover Sessions and retry with recipient_session_id.`
+      : `No active Session is named ${resolution.requestedName}; discover Sessions before retrying.`,
+    ambiguous ? 409 : 404
+  );
+  error.details = {
+    resolution: resolution.status,
+    requestedSessionName: resolution.requestedName,
+    normalizedSessionName: resolution.normalizedName,
+    candidates: resolution.candidates,
+    nextAction: "corptie_sessions_discover"
+  };
+  return error;
+}
+
+function safeCollaborationErrorDetails(error) {
+  if (!["RECIPIENT_SESSION_ALIAS_AMBIGUOUS", "RECIPIENT_SESSION_NOT_FOUND"].includes(error?.code)) return null;
+  return error.details && typeof error.details === "object" ? error.details : null;
 }
 
 function memoryMetadata(request) {

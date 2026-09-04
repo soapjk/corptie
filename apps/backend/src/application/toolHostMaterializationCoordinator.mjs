@@ -253,6 +253,7 @@ export class ToolHostMaterializationCoordinator {
     const queryTerms = searchTerms(query);
     const hintTerms = searchTerms(input.domainHint);
     const domains = [];
+    let domainOrder = 0;
     for (const [domainId, entries] of this.catalog.domains(catalogContext(binding))) {
       const normalizedDomainId = searchableText(searchableDomainText(domainId));
       if (hintTerms.length > 0 && !hintTerms.every((term) => normalizedDomainId.includes(term))) continue;
@@ -263,7 +264,7 @@ export class ToolHostMaterializationCoordinator {
         const normalizedAlias = searchableText(alias);
         return query.includes(normalizedAlias) || normalizedAlias.includes(query);
       });
-      const tools = entries
+      const rankedTools = entries
         .map((entry) => {
           const haystack = searchableText(
             `${entry.canonicalName} ${entry.definition.description ?? ""} ${normalizedDomainId}`
@@ -280,25 +281,33 @@ export class ToolHostMaterializationCoordinator {
         })
         .filter(({ score }) => queryTerms.length === 0 || score > 0)
         .sort((left, right) => right.score - left.score
-          || left.entry.canonicalName.localeCompare(right.entry.canonicalName))
-        .map(({ entry }) => entry);
-      if (queryTerms.length > 0 && tools.length === 0) continue;
+          || left.entry.canonicalName.localeCompare(right.entry.canonicalName));
+      if (queryTerms.length > 0 && rankedTools.length === 0) continue;
+      const score = rankedTools.reduce((maximum, tool) => Math.max(maximum, tool.score), 0);
+      const tools = rankedTools.map(({ entry }) => entry);
       const snapshotDomain = snapshot.domains.find((domain) => domain.domainId === domainId);
       domains.push({
-        domainId,
-        domainRevision: snapshotDomain?.domainRevision ?? "1",
-        toolCount: tools.length,
-        aliases: domainContract.aliases,
-        recommendedTool: domainContract.recommendedTool,
-        invocation: domainContract.invocation,
-        tools: tools.slice(0, 20).map((entry) => domainContract.tools.find(
-          (tool) => tool.canonicalName === entry.canonicalName
-        ))
+        score,
+        order: domainOrder++,
+        contract: {
+          domainId,
+          domainRevision: snapshotDomain?.domainRevision ?? "1",
+          toolCount: tools.length,
+          aliases: domainContract.aliases,
+          recommendedTool: domainContract.recommendedTool,
+          invocation: domainContract.invocation,
+          tools: tools.slice(0, 20).map((entry) => domainContract.tools.find(
+            (tool) => tool.canonicalName === entry.canonicalName
+          ))
+        }
       });
     }
+    const rankedDomains = domains
+      .sort((left, right) => right.score - left.score || left.order - right.order)
+      .map(({ contract }) => contract);
     const durationMs = performance.now() - started;
-    this.#emit("catalog_search", { binding, durationMs, resultCount: domains.length });
-    return { catalogVersion: snapshot.catalogVersion, domains, durationMs };
+    this.#emit("catalog_search", { binding, durationMs, resultCount: rankedDomains.length });
+    return { catalogVersion: snapshot.catalogVersion, domains: rankedDomains, durationMs };
   }
 
   assertCanonicalToolApplied(logicalSessionId, providerBindingId, canonicalName, requiredSurface = null) {
