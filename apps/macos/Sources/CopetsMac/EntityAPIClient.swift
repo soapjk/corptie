@@ -365,7 +365,8 @@ final class EntityAPIClient: ObservableObject {
         var body: [String: Any] = [
             "mode": force ? "force" : "safe",
             "deleteWorktree": deleteWorktree,
-            "artifactDisposition": artifactDisposition.rawValue
+            "artifactDisposition": artifactDisposition.rawValue,
+            "idempotencyKey": "task-delete:\(taskId):\(UUID().uuidString)"
         ]
         if force {
             body["acknowledgeDataLoss"] = true
@@ -378,8 +379,34 @@ final class EntityAPIClient: ObservableObject {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
                 throw EntityLaunchError(message: envelope?.displayMessage ?? L10n("Unable to delete CorptieTask."), code: envelope?.code)
             }
-            let result = try decoder.decode(CorptieTaskDeletionResult.self, from: data)
-            guard result.ok else { throw EntityLaunchError(message: L10n("CorptieTask deletion did not complete."), code: "DELETE_INCOMPLETE") }
+            let accepted = try decoder.decode(CorptieTaskDeletionAcceptedEnvelope.self, from: data)
+            guard accepted.accepted else {
+                throw EntityLaunchError(message: L10n("CorptieTask deletion was not accepted."), code: "DELETE_NOT_ACCEPTED")
+            }
+            var operation = accepted.operation
+            while operation.state == "queued" || operation.state == "running" {
+                try await Task.sleep(for: .milliseconds(350))
+                let statusURL = baseURL.appending(path: "task-deletion-operations/\(operation.operationId)")
+                let (statusData, statusResponse) = try await URLSession.shared.data(from: statusURL)
+                guard let statusHTTP = statusResponse as? HTTPURLResponse,
+                      (200..<300).contains(statusHTTP.statusCode) else {
+                    let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: statusData)
+                    throw EntityLaunchError(
+                        message: envelope?.displayMessage ?? L10n("Unable to read CorptieTask deletion progress."),
+                        code: envelope?.code
+                    )
+                }
+                operation = try decoder.decode(
+                    CorptieTaskDeletionOperationEnvelope.self,
+                    from: statusData
+                ).operation
+            }
+            guard operation.state == "succeeded" else {
+                throw EntityLaunchError(
+                    message: operation.errorMessage ?? L10n("CorptieTask deletion did not complete."),
+                    code: operation.errorCode ?? "DELETE_INCOMPLETE"
+                )
+            }
             await AppStateSyncController.shared.refreshSnapshot()
             if let syncError = appState.syncError { throw EntityLaunchError(message: syncError, code: "STATE_SYNC_FAILED") }
             errorMessage = nil

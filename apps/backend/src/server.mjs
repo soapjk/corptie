@@ -9251,7 +9251,8 @@ function route(request, response) {
     inspectTaskWorktree,
     reclaimTaskWorktree,
     inspectTaskDeletion: (taskId, actor) => taskDeletionService.inspect(taskId, actor),
-    deleteTaskSafely: (taskId, input, actor) => taskDeletionService.delete(taskId, input, actor),
+    deleteTaskSafely: (taskId, input, actor) => taskDeletionService.request(taskId, input, actor),
+    getTaskDeletionOperation: (operationId) => taskDeletionService.getOperation(operationId),
     restartTask: (taskId, context) => {
       const task = workService.getTask(taskId);
       if (!task.current_session_id) {
@@ -11382,6 +11383,10 @@ function startBackendRuntime() {
     const reconciled = store.reconcileInterruptedSessionExecutionAtStartup();
     if (Object.values(reconciled).some((count) => count > 0)) {
       console.warn(`[startup-interruption-reconcile] ${JSON.stringify(reconciled)}`);
+    }
+    const recoveredTaskDeletions = taskDeletionService.recoverInterruptedDeletions();
+    if (recoveredTaskDeletions > 0) {
+      console.warn(`[task-deletion-recovery] ${JSON.stringify({ recoveredTaskDeletions })}`);
     }
     trackStartupMaintenance(runProviderStartupMaintenance([...knownActiveWorktrees.values()]));
     trackStartupMaintenance(worktreeIntegrationJobService.recover()

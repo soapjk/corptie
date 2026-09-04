@@ -15,8 +15,9 @@ async function fixture() {
   const configPath = join(directory, "config.json");
   const store = new CorptieStore({ dbPath, configPath });
   await store.initialize();
-  store.createWork({ id: "work:delete", name: "Deletion" });
-  store.createTask({ id: "task:delete", workId: "work:delete", title: "Delete me" });
+  const agent = store.createAgent({ id: "agent:deletion", name: "Deletion", role: "independentContributor" });
+  store.createWork({ id: "work:delete", name: "Deletion", contributorAgentIds: [agent.agentId] });
+  store.createTask({ id: "task:delete", workId: "work:delete", title: "Deleteme", mainAgentId: agent.agentId });
   const changed = [];
   const deletion = new TaskDeletionService({
     store,
@@ -66,6 +67,46 @@ test("authorized deletion removes Task from detail and list and remains deleted 
   }
 });
 
+test("deletion request returns a durable operation before slow cleanup completes", async () => {
+  const f = await fixture();
+  try {
+    let releaseCleanup;
+    const cleanupGate = new Promise((resolve) => { releaseCleanup = resolve; });
+    f.deletion.deleteSession = async (sessionId) => {
+      await cleanupGate;
+      return f.store.deleteSession(sessionId);
+    };
+    f.store.createSession({
+      id: "session:slow", title: "Slow", provider: "codex-app-server",
+      agentId: "agent:deletion", sessionKind: "worker", workId: "work:delete",
+      taskId: "task:delete", cwd: f.directory, deferTaskProjection: true
+    });
+    const accepted = await f.deletion.request("task:delete", {
+      mode: "safe", idempotencyKey: "delete:slow"
+    }, localUser);
+    assert.equal(accepted.accepted, true);
+    assert.equal(accepted.operation.state, "queued");
+    assert.equal(f.store.getTask("task:delete").deletion_status, "deleting");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.deletion.getOperation(accepted.operation.operationId).state, "running");
+    releaseCleanup();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      if (f.deletion.getOperation(accepted.operation.operationId).state === "succeeded") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(f.deletion.getOperation(accepted.operation.operationId).state, "succeeded");
+    const replay = await f.deletion.request("task:delete", {
+      mode: "safe", idempotencyKey: "delete:slow"
+    }, localUser);
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(replay.operation.operationId, accepted.operation.operationId);
+    assert.equal(replay.operation.state, "succeeded");
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("a bound Artifact can move to Work scope while deleting its Task", async () => {
   const f = await fixture();
   try {
@@ -95,13 +136,11 @@ test("a bound Artifact can move to Work scope while deleting its Task", async ()
 test("deletion removes associated Worker Session history instead of detaching it", async () => {
   const f = await fixture();
   try {
-    const agent = f.store.createAgent({ id: "agent:delete", name: "Delete", role: "independentContributor" });
-    f.store.updateWork("work:delete", { contributorAgentIds: [agent.agentId] });
     f.store.upsertSession({
       id: "session:delete",
       title: "Delete history",
       agent: "Delete",
-      agentId: agent.agentId,
+      agentId: "agent:deletion",
       provider: "codex-app-server",
       status: "complete",
       sessionKind: "worker",

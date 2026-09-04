@@ -78,7 +78,9 @@ test("business validation and SQLite guards reject orphaned or cross-Work Worker
       sessionKind: "worker"
     }), { code: "WORKER_SESSION_ASSOCIATION_REQUIRED" });
 
-    const other = f.store.createWork({ id: "work:other", name: "Other" });
+    const other = f.store.createWork({
+      id: "work:other", name: "Other", contributorAgentIds: [f.agent.agentId]
+    });
     assert.throws(() => f.store.upsertSession({
       id: "provider:mismatch",
       title: "Mismatch",
