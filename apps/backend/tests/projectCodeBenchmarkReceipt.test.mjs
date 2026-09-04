@@ -111,8 +111,9 @@ test("SQLite v5 warm symbol query layer p95 stays below the indexed-search budge
     }
     const p95 = nearestRankPercentile(samples, 0.95);
     context.diagnostic(`SQLite v5 warm L2 samples=40; nearest-rank p95=${p95}ms; opens=${store.stats.opens}; builds=${store.stats.l2Builds}`);
-    assert.ok(p95 <= 25, `warm SQLite L2 p95=${p95}ms`);
+    assert.ok(p95 <= 5, `warm SQLite L2 p95=${p95}ms`);
     assert.equal(store.stats.l2Builds, 1);
+    assert.ok(store.stats.opens <= 2, `immutable generation metadata should remain memory-resident; opens=${store.stats.opens}`);
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
     await rm(dataRoot, { recursive: true, force: true });

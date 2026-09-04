@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
 import { ProjectCodeSearchApplicationService } from "../src/project-code/projectCodeApplicationService.mjs";
-import { createProjectCodeHostNamespace } from "../src/project-code/projectCodeDynamicTools.mjs";
+import {
+  createProjectCodeHostNamespace,
+  PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED,
+  projectCodeDynamicTools
+} from "../src/project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeIndexStore } from "../src/project-code/projectCodeIndexStore.mjs";
 import { ProjectCodeRunIsolationPort } from "../src/project-code/projectCodeRunIsolationPort.mjs";
 import { ProjectCodeSearchService } from "../src/project-code/projectCodeSearchService.mjs";
@@ -151,6 +155,13 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
     await rm(fixture.directory, { recursive: true, force: true });
     await rm(dataRoot, { recursive: true, force: true });
   }
+});
+
+test("project-code remains on-demand until a real-repository benchmark proves rg parity", () => {
+  assert.equal(PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED, false);
+  const search = projectCodeDynamicTools.find((definition) => definition.name === "corptie_project_code_search");
+  assert.match(search.description, /does not instruct the model to select it over provider-native search/i);
+  assert.doesNotMatch(search.description, /\b(?:must|should|prefer)\b.*\b(?:use|select)\b/i);
 });
 
 function applicationFor({ store, fixture, builder, indexStore, runIsolationPort = null, toolsetReceipt = null }) {
