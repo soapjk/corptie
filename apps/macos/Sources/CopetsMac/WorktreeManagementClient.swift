@@ -434,6 +434,45 @@ final class WorktreeManagementClient: ObservableObject {
         }
     }
 
+    func prepareBranchOperation(
+        operationType: String,
+        sourceWorktreeIds: [String],
+        targetWorktreeId: String
+    ) async {
+        guard let repositoryId = selection.repositoryId else { return }
+        let preparationId = UUID()
+        planPreparationId = preparationId
+        isPreparingPlan = true
+        errorMessage = nil
+        do {
+            if let existing = job, existing.status == "awaiting_confirmation" {
+                let canceled: WorktreeIntegrationJobEnvelope = try await post(
+                    "worktree-management/jobs/\(existing.id)/cancel",
+                    body: ["replan": false]
+                )
+                if planPreparationId == preparationId { job = canceled.job }
+            }
+            guard planPreparationId == preparationId else { return }
+            let envelope: WorktreeIntegrationJobEnvelope = try await post(
+                "worktree-management/repositories/\(repositoryId)/integration-plans",
+                body: [
+                    "operationType": operationType,
+                    "sourceWorktreeIds": sourceWorktreeIds,
+                    "targetWorktreeId": targetWorktreeId
+                ]
+            )
+            guard planPreparationId == preparationId else { return }
+            job = envelope.job
+        } catch {
+            guard planPreparationId == preparationId else { return }
+            errorMessage = error.localizedDescription
+        }
+        if planPreparationId == preparationId {
+            planPreparationId = nil
+            isPreparingPlan = false
+        }
+    }
+
     func cancelPlanPreparation() {
         planPreparationId = nil
         isPreparingPlan = false
