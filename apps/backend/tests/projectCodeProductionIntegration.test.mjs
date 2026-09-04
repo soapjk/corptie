@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -13,6 +13,7 @@ import {
 import { ProjectCodeIndexStore } from "../src/project-code/projectCodeIndexStore.mjs";
 import { ProjectCodeRunIsolationPort } from "../src/project-code/projectCodeRunIsolationPort.mjs";
 import { ProjectCodeSearchService } from "../src/project-code/projectCodeSearchService.mjs";
+import { ProjectCodeSourceRevisionMonitor } from "../src/project-code/projectCodeSourceRevisionMonitor.mjs";
 import { RepositorySourceSnapshotBuilder } from "../src/project-code/projectCodeSnapshot.mjs";
 import { RunIsolationExecutionCoordinator } from "../src/runIsolation/runIsolationExecutionCoordinator.mjs";
 import { createProjectCodeFixture, toolsetReceiptFor } from "./helpers/projectCodeTestFixture.mjs";
@@ -167,19 +168,47 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
   }
 });
 
-test("project-code remains on-demand until a real-repository benchmark proves rg parity", () => {
-  assert.equal(PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED, false);
+test("project-code recommendation is enabled after three real-repository p50/p95 wins over rg", () => {
+  assert.equal(PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED, true);
   const search = projectCodeDynamicTools.find((definition) => definition.name === "corptie_project_code_search");
-  assert.match(search.description, /does not instruct the model to select it over provider-native search/i);
-  assert.doesNotMatch(search.description, /\b(?:must|should|prefer)\b.*\b(?:use|select)\b/i);
+  assert.match(search.description, /prefer this indexed tool/i);
+  assert.match(search.description, /fall back to provider-native search while the index is warming or degraded/i);
 });
 
-function applicationFor({ store, fixture, builder, indexStore, runIsolationPort = null, toolsetReceipt = null }) {
+test("a changed Worktree invalidates the cached Snapshot and reuse_current refreshes once", async () => {
+  const fixture = await createProjectCodeFixture();
+  const dataRoot = await mkdtemp(join(tmpdir(), "corptie-project-code-refresh-"));
+  const receipts = new Map();
+  const builder = new RepositorySourceSnapshotBuilder();
+  const monitor = new ProjectCodeSourceRevisionMonitor();
+  try {
+    const indexStore = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
+    const application = applicationFor({ store: storeFor(fixture, receipts), fixture, builder,
+      indexStore, freshnessMonitor: monitor });
+    await application.prewarm({ logicalSessionId: fixture.sessionContext.logicalSessionId });
+    const before = await application.search({ logicalSessionId: fixture.sessionContext.logicalSessionId,
+      query: "exactNeedle", mode: "symbols", responseDetail: "full" });
+    await writeFile(join(fixture.directory, "Sources/App.swift"), "struct SearchFixture {\n  func refreshedNeedle() {}\n}\n");
+    const after = await application.search({ logicalSessionId: fixture.sessionContext.logicalSessionId,
+      query: "refreshedNeedle", mode: "symbols", responseDetail: "full" });
+    assert.notEqual(after.snapshotReceipt.receiptId, before.snapshotReceipt.receiptId);
+    assert.ok(after.results.some((entry) => entry.symbol === "refreshedNeedle"));
+    assert.ok(monitor.summary().invalidations >= 1);
+    assert.equal(indexStore.stats.l2Builds, 2, "the changed source publishes one new incremental generation");
+  } finally {
+    monitor.close();
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+});
+
+function applicationFor({ store, fixture, builder, indexStore, runIsolationPort = null, toolsetReceipt = null, freshnessMonitor = null }) {
   return new ProjectCodeSearchApplicationService({
     store,
     startupReceipts: { require: () => fixture.startupReceipt },
     toolsetReceipts: { require: ({ receiptId }) => receiptId === toolsetReceipt?.receiptId ? toolsetReceipt : null },
     snapshotBuilder: builder,
+    freshnessMonitor,
     searchService: new ProjectCodeSearchService({ snapshotBuilder: builder, indexStore, runIsolationPort })
   });
 }

@@ -66,6 +66,90 @@ unsafe extern "C" {
         expected_target_inode: u64,
         out: *mut NativeSafeTreeResult,
     ) -> i32;
+    fn corptie_source_journal_start(root: *const c_char, handle: *mut u64, out: *mut NativeSourceJournalResult) -> i32;
+    fn corptie_source_journal_reset(handle: u64, paths: *const *const c_char, count: usize, out: *mut NativeSourceJournalResult) -> i32;
+    fn corptie_source_journal_barrier(handle: u64, out: *mut NativeSourceJournalResult) -> i32;
+    fn corptie_source_journal_stop(handle: u64) -> i32;
+}
+
+#[repr(C)]
+struct NativeSourceJournalResult {
+    epoch: u64,
+    event_id: u64,
+    trusted: i32,
+    error_code: [c_char; 64],
+}
+
+impl Default for NativeSourceJournalResult {
+    fn default() -> Self { Self { epoch: 0, event_id: 0, trusted: 0, error_code: [0; 64] } }
+}
+
+#[napi(object)]
+pub struct SourceJournalStart {
+    pub handle: String,
+    pub epoch: String,
+    pub trusted: bool,
+}
+
+#[napi(object)]
+pub struct SourceJournalBarrier {
+    pub epoch: String,
+    pub event_id: String,
+    pub trusted: bool,
+    pub error_code: Option<String>,
+}
+
+#[napi]
+pub fn source_journal_start(root_path: String) -> Result<SourceJournalStart> {
+    let root = c_string(root_path)?;
+    let mut handle = 0_u64;
+    let mut result = NativeSourceJournalResult::default();
+    let status = unsafe { corptie_source_journal_start(root.as_ptr(), &mut handle, &mut result) };
+    if status != 0 { return Err(source_journal_error(&result)); }
+    Ok(SourceJournalStart { handle: handle.to_string(), epoch: result.epoch.to_string(), trusted: result.trusted != 0 })
+}
+
+#[napi]
+pub fn source_journal_barrier(handle: String) -> Result<SourceJournalBarrier> {
+    let handle = parse_identity(&handle, "source journal handle")?;
+    let mut result = NativeSourceJournalResult::default();
+    let status = unsafe { corptie_source_journal_barrier(handle, &mut result) };
+    if status != 0 { return Err(source_journal_error(&result)); }
+    let code = unsafe { CStr::from_ptr(result.error_code.as_ptr()) }.to_string_lossy().into_owned();
+    Ok(SourceJournalBarrier {
+        epoch: result.epoch.to_string(), event_id: result.event_id.to_string(), trusted: result.trusted != 0,
+        error_code: if code.is_empty() { None } else { Some(code) },
+    })
+}
+
+#[napi]
+pub fn source_journal_reset(handle: String, paths: Vec<String>) -> Result<SourceJournalBarrier> {
+    let handle = parse_identity(&handle, "source journal handle")?;
+    let values: Result<Vec<CString>> = paths.into_iter().map(c_string).collect();
+    let values = values?;
+    let pointers: Vec<*const c_char> = values.iter().map(|value| value.as_ptr()).collect();
+    let mut result = NativeSourceJournalResult::default();
+    let status = unsafe { corptie_source_journal_reset(handle, pointers.as_ptr(), pointers.len(), &mut result) };
+    if status != 0 { return Err(source_journal_error(&result)); }
+    let code = unsafe { CStr::from_ptr(result.error_code.as_ptr()) }.to_string_lossy().into_owned();
+    Ok(SourceJournalBarrier {
+        epoch: result.epoch.to_string(), event_id: result.event_id.to_string(), trusted: result.trusted != 0,
+        error_code: if code.is_empty() { None } else { Some(code) },
+    })
+}
+
+#[napi]
+pub fn source_journal_stop(handle: String) -> Result<()> {
+    let handle = parse_identity(&handle, "source journal handle")?;
+    if unsafe { corptie_source_journal_stop(handle) } != 0 {
+        return Err(Error::new(Status::InvalidArg, "SOURCE_JOURNAL_HANDLE_INVALID: Unknown source journal handle.".to_string()));
+    }
+    Ok(())
+}
+
+fn source_journal_error(result: &NativeSourceJournalResult) -> Error {
+    let code = unsafe { CStr::from_ptr(result.error_code.as_ptr()) }.to_string_lossy();
+    Error::new(Status::GenericFailure, format!("{code}: Source journal operation failed."))
 }
 
 #[napi(object)]

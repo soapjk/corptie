@@ -9,7 +9,7 @@ function tool(name, description, properties, required = []) {
 }
 
 const snapshotId = { type: "string", minLength: 1, maxLength: 128, description: "Persisted RepositorySourceSnapshotReceipt receiptId from corptie_project_code_snapshot." };
-export const PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED = false;
+export const PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED = true;
 
 export const projectCodeDynamicTools = Object.freeze([
   tool(
@@ -19,7 +19,7 @@ export const projectCodeDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_project_code_search",
-    "On-demand search over the persisted authoritative Snapshot. This tool definition does not instruct the model to select it over provider-native search; deeper layers are capability-gated.",
+    "Prefer this indexed tool for code-location, symbol, caller/import, scoped, and natural-language source queries in a ready Worker Session. Fall back to provider-native search while the index is warming or degraded; deeper layers remain capability-gated.",
     {
       snapshot_receipt_id: snapshotId,
       snapshot_policy: { type: "string", enum: ["reuse_current", "require_exact", "create_new"], description: "Defaults to reuse_current; require_exact requires snapshot_receipt_id." },
