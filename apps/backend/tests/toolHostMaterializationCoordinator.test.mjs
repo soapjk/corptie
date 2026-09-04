@@ -11,6 +11,7 @@ import {
 import { appliedToolMaterializationReceipt } from "../src/agent-provider/toolSchemaCapabilities.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { scheduledSessionTaskDynamicTools } from "../src/application/scheduledSessionTaskDynamicTools.mjs";
+import { collaborationDynamicTools } from "../src/collaboration/collaborationDynamicTools.mjs";
 
 async function fixture(overrides = {}) {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-tool-coordinator-"));
@@ -647,6 +648,29 @@ test("catalog search tokenizes natural-language intent and normalized domain hin
   }
 });
 
+test("an explicit @Session message query recommends direct Channel open", async () => {
+  const value = await fixture();
+  try {
+    value.catalog.register({
+      id: "collaboration",
+      tools: collaborationDynamicTools,
+      execute: () => null
+    });
+    const result = await value.coordinator.search({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      intent: "给 @automation工具维护 发送协作消息"
+    });
+
+    assert.equal(result.domains[0].domainId, "collaboration");
+    assert.equal(result.domains[0].recommendedTool, "corptie_collaboration_channel_open");
+    assert.equal(result.domains[0].tools[0].canonicalName, "corptie_collaboration_channel_open");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("Automation product terminology and historical hints discover one complete recommended contract", async () => {
   const value = await fixture();
   try {
@@ -669,6 +693,39 @@ test("Automation product terminology and historical hints discover one complete 
       assert.ok(domain.tools[0].inputSchema.properties.schedule_type, intent);
       assert.equal(domain.tools[0].minimalExample.schedule_type, "after", intent);
     }
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("long-running background work ranks scheduled-tasks first and recommends Automation creation", async () => {
+  const value = await fixture();
+  try {
+    value.catalog.register({
+      id: "background-observability",
+      tools: [{
+        name: "corptie_background_status",
+        description: "Inspect background task completion status for the current Session.",
+        inputSchema: { type: "object" }
+      }],
+      execute: () => null
+    });
+    value.catalog.register({
+      id: "scheduled-tasks",
+      tools: scheduledSessionTaskDynamicTools,
+      execute: () => null
+    });
+
+    const result = await value.coordinator.search({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      intent: "A long-running background task should wake this Session when the process exits"
+    });
+
+    assert.equal(result.domains[0].domainId, "scheduled-tasks");
+    assert.equal(result.domains[0].recommendedTool, "corptie_automations_create");
+    assert.equal(result.domains[0].tools[0].canonicalName, "corptie_automations_create");
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
