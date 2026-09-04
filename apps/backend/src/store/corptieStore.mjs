@@ -1692,6 +1692,7 @@ export class CorptieStore {
         status TEXT NOT NULL DEFAULT 'queued'
           CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
         delivery_id TEXT,
+        channel_delivery_id TEXT,
         target_turn_id TEXT,
         last_error TEXT,
         created_at TEXT NOT NULL,
@@ -1700,7 +1701,9 @@ export class CorptieStore {
         updated_at TEXT NOT NULL,
         FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
         FOREIGN KEY (delivery_id) REFERENCES collaboration_deliveries(delivery_id) ON DELETE CASCADE,
-        UNIQUE (delivery_id)
+        FOREIGN KEY (channel_delivery_id) REFERENCES session_collaboration_deliveries(delivery_id) ON DELETE CASCADE,
+        UNIQUE (delivery_id),
+        UNIQUE (channel_delivery_id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_agent_operations_next
@@ -2997,6 +3000,13 @@ export class CorptieStore {
     this.ensureColumn("agents", "work_dir", "TEXT");
     this.ensureColumn("agents", "avatar_path", "TEXT");
     migrateTaskGoalRemovalV1(this.db);
+    this.ensureColumn(
+      "agent_operations",
+      "channel_delivery_id",
+      "TEXT REFERENCES session_collaboration_deliveries(delivery_id) ON DELETE CASCADE"
+    );
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_operations_channel_delivery
+      ON agent_operations(channel_delivery_id) WHERE channel_delivery_id IS NOT NULL`);
     this.ensureColumn("tasks", "current_session_id", "TEXT");
     this.ensureColumn("tasks", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("tasks", "verification_criteria", "TEXT NOT NULL DEFAULT ''");
@@ -8425,8 +8435,8 @@ export class CorptieStore {
     this.db.run(
       `INSERT OR IGNORE INTO agent_operations (
         task_id, agent_id, session_id, kind, priority, text, source_json,
-        local_visibility, status, delivery_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
+        local_visibility, status, delivery_id, channel_delivery_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
       [
         item.taskId,
         item.agentId,
@@ -8437,6 +8447,7 @@ export class CorptieStore {
         JSON.stringify(item.source ?? {}),
         item.localVisibility ?? "normal",
         item.deliveryId ?? null,
+        item.channelDeliveryId ?? null,
         timestamp,
         timestamp
       ]
@@ -8445,7 +8456,9 @@ export class CorptieStore {
     if (inserted) this.scheduleSave();
     const task = inserted
       ? this.getAgentTask(item.taskId)
-      : (item.deliveryId ? this.getAgentTaskForDelivery(item.deliveryId) : this.getAgentTask(item.taskId));
+      : (item.deliveryId || item.channelDeliveryId
+          ? this.getAgentTaskForDelivery(item.deliveryId ?? item.channelDeliveryId)
+          : this.getAgentTask(item.taskId));
     return { task, inserted };
   }
 
@@ -8455,7 +8468,10 @@ export class CorptieStore {
   }
 
   getAgentTaskForDelivery(deliveryId) {
-    const row = this.selectOne("SELECT * FROM agent_operations WHERE delivery_id = ?", [deliveryId]);
+    const row = this.selectOne(
+      "SELECT * FROM agent_operations WHERE delivery_id = ? OR channel_delivery_id = ?",
+      [deliveryId, deliveryId]
+    );
     return row ? agentTaskFromRow(row) : null;
   }
 
@@ -14401,7 +14417,7 @@ function agentTaskFromRow(row) {
     source: parseJson(row.source_json, {}),
     localVisibility: row.local_visibility,
     status: row.status,
-    deliveryId: row.delivery_id || null,
+    deliveryId: row.channel_delivery_id || row.delivery_id || null,
     targetTurnId: row.target_turn_id || null,
     lastError: row.last_error || null,
     createdAt: row.created_at,
