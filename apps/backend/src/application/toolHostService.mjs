@@ -145,17 +145,41 @@ export class ToolHostService {
   async #execute(input = {}) {
     if (input.tool === TOOL_CATALOG_SEARCH) {
       const scope = exactScope(input);
-      return this.coordinator.search({
+      const searchInput = {
         ...scope,
         intent: input.arguments?.intent,
         domainHint: input.arguments?.domain_hint
-      });
+      };
+      const [host, skill] = await Promise.all([
+        this.coordinator.search(searchInput),
+        this.skillMcpGateway
+          ? this.skillMcpGateway.search({ ...input, ...searchInput })
+          : { domains: [] }
+      ]);
+      return { ...host, domains: [...host.domains, ...skill.domains] };
     }
     if (input.tool === TOOL_DOMAIN_LOAD) {
       const scope = exactScope(input);
+      const domainId = requiredText(input.arguments?.domain_id, "domain_id");
+      if (domainId.startsWith("skill-mcp:") && this.skillMcpGateway) {
+        const contract = await this.skillMcpGateway.domain(input, domainId);
+        if (!contract) throw toolError("TOOL_DOMAIN_NOT_FOUND", `Assigned Skill MCP domain is unavailable: ${domainId}`, 404);
+        const expectedCatalogVersion = requiredText(input.arguments?.expected_catalog_version, "expected_catalog_version");
+        if (contract.invocation.expectedCatalogVersion !== expectedCatalogVersion) {
+          throw toolError("TOOL_CATALOG_STALE", "The assigned Skill MCP catalog changed; search again before loading the domain.", 409);
+        }
+        return {
+          status: "applied",
+          catalogVersion: expectedCatalogVersion,
+          desiredVersion: expectedCatalogVersion,
+          appliedVersion: expectedCatalogVersion,
+          domains: [{ domainId, domainRevision: contract.domainRevision }],
+          contract
+        };
+      }
       const result = await this.coordinator.loadDomain({
         ...scope,
-        domainId: requiredText(input.arguments?.domain_id, "domain_id"),
+        domainId,
         expectedCatalogVersion: requiredText(input.arguments?.expected_catalog_version, "expected_catalog_version"),
         // A domain_load invocation is itself inside a Provider Turn. Native
         // schema mutation remains blocked; generated MCP refresh and the fixed
@@ -181,6 +205,13 @@ export class ToolHostService {
       const scope = exactScope(input);
       const canonicalName = requiredText(input.arguments?.tool, "tool");
       const expectedCatalogVersion = requiredText(input.arguments?.expected_catalog_version, "expected_catalog_version");
+      if (!this.catalog.entry(canonicalName) && this.skillMcpGateway) {
+        return this.skillMcpGateway.execute({
+          ...input,
+          tool: canonicalName,
+          arguments: input.arguments?.arguments ?? {}
+        }, { expectedCatalogVersion });
+      }
       const snapshot = this.catalog.snapshot();
       const applied = this.coordinator.assertCanonicalToolApplied(
         scope.logicalSessionId, scope.providerBindingId, canonicalName, "restricted_gateway"

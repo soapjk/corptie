@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { toolDiscoveryContract } from "./toolDiscoveryContracts.mjs";
 
 // Keeps Skill MCP processes behind Corptie's authenticated, Session-scoped MCP
 // server. Provider bindings therefore remain stable when Agent assignments
@@ -29,8 +30,75 @@ export class SkillMcpGateway {
     return entry.definitions;
   }
 
-  async execute(input = {}) {
+  async search(input = {}) {
     const entry = await this.#entry(input);
+    const toolLimit = Number.isSafeInteger(input.toolLimit) && input.toolLimit > 0
+      ? input.toolLimit
+      : 20;
+    const query = searchableText(input.intent);
+    const queryTerms = searchTerms(query);
+    const hintTerms = searchTerms(input.domainHint);
+    const grouped = new Map();
+    for (const [name, target] of entry.tools) {
+      const values = grouped.get(target.serverName) ?? [];
+      values.push({ name, target });
+      grouped.set(target.serverName, values);
+    }
+    const domains = [];
+    for (const [serverName, tools] of grouped) {
+      const domainId = `skill-mcp:${serverName}`;
+      const domainText = searchableText(`${domainId} ${serverName}`);
+      if (hintTerms.length > 0 && !hintTerms.every((term) => domainText.includes(term))) continue;
+      const ranked = tools.map(({ name, target }) => {
+        const haystack = searchableText(`${name} ${target.definition.description ?? ""} ${serverName}`);
+        const matches = queryTerms.filter((term) => haystack.includes(term)).length;
+        return { name, target, score: haystack.includes(query) ? matches + 2 : matches };
+      }).filter(({ score }) => queryTerms.length === 0 || score > 0)
+        .sort((left, right) => right.score - left.score || left.name.localeCompare(right.name));
+      if (queryTerms.length > 0 && ranked.length === 0) continue;
+      const recommendedTool = recommendedToolName(ranked.map(({ name }) => name));
+      const profile = { aliases: Object.freeze([serverName, domainId, `skill mcp ${serverName}`]), recommendedTool };
+      domains.push(Object.freeze({
+        domainId,
+        domainRevision: entry.catalogVersion,
+        toolCount: ranked.length,
+        aliases: profile.aliases,
+        recommendedTool,
+        invocation: Object.freeze({
+          mode: "restricted_gateway",
+          gatewayTool: "corptie_tool_call",
+          expectedCatalogVersion: entry.catalogVersion,
+          contract: "Call the selected assigned Skill MCP tool through the fixed Corptie gateway using its minimalExample and authoritative inputSchema."
+        }),
+        tools: Object.freeze(ranked.slice(0, toolLimit).map(({ name, target }) => toolDiscoveryContract({
+          canonicalName: name,
+          domainId,
+          definition: target.definition,
+          aliases: Object.freeze([])
+        }, profile)))
+      }));
+    }
+    return Object.freeze({ catalogVersion: entry.catalogVersion, domains: Object.freeze(domains) });
+  }
+
+  async domain(input = {}, domainId) {
+    const result = await this.search({
+      ...input,
+      intent: "",
+      domainHint: String(domainId).replace(/^skill-mcp:/, ""),
+      toolLimit: Number.MAX_SAFE_INTEGER
+    });
+    return result.domains.find((domain) => domain.domainId === domainId) ?? null;
+  }
+
+  async execute(input = {}, options = {}) {
+    const entry = await this.#entry(input);
+    if (options.expectedCatalogVersion && options.expectedCatalogVersion !== entry.catalogVersion) {
+      const error = gatewayError("TOOL_CATALOG_STALE", "The assigned Skill MCP catalog changed; search again before calling the gateway.", 409);
+      error.expectedCatalogVersion = options.expectedCatalogVersion;
+      error.currentCatalogVersion = entry.catalogVersion;
+      throw error;
+    }
     const target = entry.tools.get(requiredText(input.tool, "tool"));
     if (!target) throw gatewayError("HOST_TOOL_UNSUPPORTED", `Unsupported assigned Skill MCP tool: ${input.tool}`, 404);
     // #entry re-resolves the current assignment fingerprint before every call,
@@ -90,11 +158,12 @@ export class SkillMcpGateway {
             ...(raw.annotations ? { annotations: raw.annotations } : {})
           });
           definitions.push(definition);
-          tools.set(name, { client, remoteName: name, serverName });
+          tools.set(name, { client, remoteName: name, serverName, definition });
         }
       }
       definitions.sort((left, right) => left.name.localeCompare(right.name));
-      return Object.freeze({ fingerprint, clients, tools, definitions: Object.freeze(definitions) });
+      const catalogVersion = `skill-mcp:1:${sha256(`${fingerprint}:${stableStringify(definitions)}`)}`;
+      return Object.freeze({ fingerprint, catalogVersion, clients, tools, definitions: Object.freeze(definitions) });
     } catch (error) {
       await Promise.all(clients.map((client) => client.close().catch(() => {})));
       throw error;
@@ -153,6 +222,21 @@ function stableStringify(value) {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function searchableText(value) {
+  return String(value ?? "").trim().toLocaleLowerCase();
+}
+
+function searchTerms(value) {
+  return searchableText(value).split(/[^\p{L}\p{N}_:-]+/u).filter(Boolean);
+}
+
+function recommendedToolName(names) {
+  return names.find((name) => /(?:^|_)diagnostics(?:_|$)/.test(name))
+    ?? names.find((name) => /(?:^|_)context(?:_|$)/.test(name))
+    ?? names[0]
+    ?? null;
 }
 
 function requiredText(value, field) {
