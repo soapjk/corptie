@@ -89,10 +89,12 @@ struct CorptieTaskDeletionInteractionTests {
     }
 
     @Test
-    func selectingASessionVerifiesItsConcreteProviderBindingBeforeEnablingComposer() throws {
+    func selectingASessionReusesReadyBindingStateAndProbesOnlyWhenNotReady() throws {
         let source = try backendClientSource()
 
         #expect(source.contains("actions/probe-binding"))
+        #expect(source.contains("selectionRequiresProviderBindingVerification"))
+        #expect(source.contains("sessionIsReady: self.selectedSession?.isReady == true"))
         #expect(source.contains("bindingVerificationSessionIDs.insert(session.id)"))
         #expect(source.contains("bindingVerificationSessionIDs.contains(id) { return false }"))
         #expect(source.contains("await AppStateSyncController.shared.refreshSnapshot()"))
