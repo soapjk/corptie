@@ -15,6 +15,7 @@ import {
   PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED
 } from "../src/project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeSearchService } from "../src/project-code/projectCodeSearchService.mjs";
+import { ProjectCodeSourceRevisionMonitor } from "../src/project-code/projectCodeSourceRevisionMonitor.mjs";
 import { RepositorySourceSnapshotBuilder } from "../src/project-code/projectCodeSnapshot.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -29,6 +30,7 @@ const benchmarkParent = process.env.CORPTIE_PROJECT_CODE_BENCHMARK_ROOT
   ?? (process.platform === "darwin" ? "/Volumes/T9/CorptieData/project-code-benchmarks" : tmpdir());
 await mkdir(benchmarkParent, { recursive: true });
 const dataRoot = await mkdtemp(join(benchmarkParent, "run-"));
+let freshnessMonitor = null;
 
 try {
   const identity = await inspectGitWorkspace(repositoryRoot);
@@ -56,12 +58,14 @@ try {
   const store = benchmarkStore({ binding, sessionContext, receipts });
   const snapshotBuilder = new RepositorySourceSnapshotBuilder();
   const indexStore = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
+  freshnessMonitor = new ProjectCodeSourceRevisionMonitor();
   const searchService = new ProjectCodeSearchService({ snapshotBuilder, indexStore, nonBlockingIndexWarmup: true });
   const application = new ProjectCodeSearchApplicationService({
     store,
     startupReceipts: { require: () => startupReceipt },
     snapshotBuilder,
-    searchService
+    searchService,
+    freshnessMonitor
   });
 
   let started = performance.now();
@@ -76,12 +80,13 @@ try {
     const projectCode = [];
     const ripgrep = [];
     for (let index = 0; index < sampleCount; index += 1) {
-      started = performance.now();
-      await application.search(searchInput(sessionContext.logicalSessionId, query));
-      projectCode.push(performance.now() - started);
-      started = performance.now();
-      await rg(query);
-      ripgrep.push(performance.now() - started);
+      if (index % 2 === 0) {
+        projectCode.push(await measure(() => application.search(searchInput(sessionContext.logicalSessionId, query))));
+        ripgrep.push(await measure(() => rg(query)));
+      } else {
+        ripgrep.push(await measure(() => rg(query)));
+        projectCode.push(await measure(() => application.search(searchInput(sessionContext.logicalSessionId, query))));
+      }
     }
     measurements[query] = {
       projectCodeMs: statistics(projectCode),
@@ -103,6 +108,7 @@ try {
       excludedFromQueryComparison: true
     },
     indexStats: indexStore.stats,
+    freshness: freshnessMonitor.summary(),
     measurements,
     comparison: {
       fasterP50ForEveryQuery: fasterP50,
@@ -112,6 +118,7 @@ try {
     }
   }, null, 2)}\n`);
 } finally {
+  freshnessMonitor?.close();
   closeProjectCodeQueryConnections();
   await rm(dataRoot, { recursive: true, force: true });
 }
@@ -197,6 +204,12 @@ function statistics(values) {
     p95: rounded(percentile(values, 0.95)),
     minimum: rounded(Math.min(...values))
   };
+}
+
+async function measure(operation) {
+  const started = performance.now();
+  await operation();
+  return performance.now() - started;
 }
 
 function percentile(values, ratio) {

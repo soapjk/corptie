@@ -10,6 +10,7 @@ export class ProjectCodeSearchApplicationService {
     }
     this.now = options.now ?? (() => new Date().toISOString());
     this.toolsetReceipts = options.toolsetReceipts ?? null;
+    this.freshnessMonitor = options.freshnessMonitor ?? null;
     this.snapshotFlights = new Map();
     this.snapshotCache = new Map();
     this.maxCachedSnapshots = options.maxCachedSnapshots ?? 32;
@@ -30,29 +31,28 @@ export class ProjectCodeSearchApplicationService {
     const context = this.#context(input);
     const responseDetail = normalizeChoice(input.responseDetail, "compact", ["compact", "full"], "responseDetail");
     const snapshotPolicy = normalizeChoice(input.snapshotPolicy, "reuse_current", ["reuse_current", "require_exact", "create_new"], "snapshotPolicy");
-    const resolved = await this.#resolveSnapshot({ ...input, snapshotPolicy }, context);
-    const snapshot = resolved.snapshot;
+    let resolved = await this.#resolveSnapshot({ ...input, snapshotPolicy }, context);
     const toolsetValidationReceipt = input.toolsetValidationReceipt
       ?? await this.#resolveToolsetReceipt(input.toolsetValidationReceiptId, context);
     if (toolsetValidationReceipt) await validateToolsetValidationReceipt(toolsetValidationReceipt);
-    const result = await this.searchService.search({
-      snapshot,
-      validationLease: resolved.validationLease,
-      sessionContext: context.sessionContext,
-      searchScenarioId: input.searchScenarioId ?? `project-code:${randomUUID()}`,
-      query: input.query,
-      mode: input.mode,
-      paths: input.paths,
-      languages: input.languages,
-      kinds: input.kinds,
-      limit: input.limit,
-      minResults: input.minResults,
-      timeoutMs: input.timeoutMs,
-      signal: input.signal,
-      toolsetValidationReceipt,
-      toolsetRequired: input.toolsetRequired === true
-    });
-    this.#persist("SearchReceipt", result.receipt, context);
+    const searchScenarioId = input.searchScenarioId ?? `project-code:${randomUUID()}`;
+    let result;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      result = await this.searchService.search({
+        snapshot: resolved.snapshot,
+        validationLease: resolved.validationLease,
+        sessionContext: context.sessionContext,
+        searchScenarioId,
+        query: input.query, mode: input.mode, paths: input.paths,
+        languages: input.languages, kinds: input.kinds, limit: input.limit,
+        minResults: input.minResults, timeoutMs: input.timeoutMs, signal: input.signal,
+        toolsetValidationReceipt, toolsetRequired: input.toolsetRequired === true
+      });
+      this.#persist("SearchReceipt", result.receipt, context);
+      if (attempt > 0 || snapshotPolicy !== "reuse_current" || result.receipt.errorCode !== "SOURCE_SNAPSHOT_STALE") break;
+      resolved = await this.#createCurrentSnapshot(input, context);
+    }
+    const snapshot = resolved.snapshot;
     if (responseDetail === "full") {
       return Object.freeze({ snapshotReceipt: snapshot.receipt, searchReceipt: result.receipt, results: result.results });
     }
@@ -169,11 +169,15 @@ export class ProjectCodeSearchApplicationService {
         catch (error) { if (error?.code !== "SOURCE_SNAPSHOT_STALE") throw error; }
       }
     }
+    return this.#createCurrentSnapshot(input, context);
+  }
+
+  async #createCurrentSnapshot(input, context) {
     const snapshot = await this.#buildCurrentSnapshot(context, input.sourceDeclarations ?? [], input.signal);
     await validateProjectCodeReceipt(snapshot.receipt, "RepositorySourceSnapshotReceipt");
     this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
     this.#cacheSnapshot(snapshot);
-    return Object.freeze({ snapshot, validationLease: createValidatedSnapshotLease(snapshot, this.snapshotBuilder), reused: false });
+    return Object.freeze({ snapshot, validationLease: this.#validationLease(snapshot), reused: false });
   }
 
   async #loadSnapshot(receiptId, context, signal, reused = false) {
@@ -186,7 +190,7 @@ export class ProjectCodeSearchApplicationService {
     if (cached?.receipt?.receiptHash === stored.receipt.receiptHash) {
       this.snapshotCache.delete(receiptId);
       this.snapshotCache.set(receiptId, cached);
-      return Object.freeze({ snapshot: cached, validationLease: createValidatedSnapshotLease(cached, this.snapshotBuilder), reused });
+      return Object.freeze({ snapshot: cached, validationLease: this.#validationLease(cached), reused });
     }
     const current = await this.#buildCurrentSnapshot(context, [], signal);
     for (const field of ["repositoryId", "worktreeId", "sourceCommitOid", "sourceTreeOid", "sourceFingerprint"]) {
@@ -195,8 +199,9 @@ export class ProjectCodeSearchApplicationService {
       }
     }
     const snapshot = Object.freeze({ ...current, receipt: Object.freeze(stored.receipt) });
+    this.freshnessMonitor?.adopt(snapshot, current);
     this.#cacheSnapshot(snapshot);
-    return Object.freeze({ snapshot, validationLease: createValidatedSnapshotLease(snapshot, this.snapshotBuilder), reused });
+    return Object.freeze({ snapshot, validationLease: this.#validationLease(snapshot), reused });
   }
 
   #cacheSnapshot(snapshot) {
@@ -206,6 +211,11 @@ export class ProjectCodeSearchApplicationService {
     while (this.snapshotCache.size > this.maxCachedSnapshots) this.snapshotCache.delete(this.snapshotCache.keys().next().value);
   }
 
+  #validationLease(snapshot) {
+    return this.freshnessMonitor?.lease(snapshot, this.snapshotBuilder)
+      ?? createValidatedSnapshotLease(snapshot, this.snapshotBuilder);
+  }
+
   async #performPrewarm(context, started, sourceDeclarations) {
     const snapshotStarted = performance.now();
     const snapshot = await this.#buildCurrentSnapshot(context, sourceDeclarations);
@@ -213,7 +223,10 @@ export class ProjectCodeSearchApplicationService {
     this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
     this.#cacheSnapshot(snapshot);
     const snapshotMs = elapsedMilliseconds(snapshotStarted);
+    const validationLease = this.#validationLease(snapshot);
+    await validationLease.verifyBefore();
     const index = await this.searchService.prewarm({ snapshot });
+    await validationLease.verifyAfter();
     const key = [context.startupReceipt.worktreeId, context.startupReceipt.startupOperationId,
       context.startupReceipt.bindingGeneration].join(":");
     const state = this.#setPrewarmState(key, context, {
@@ -247,13 +260,19 @@ export class ProjectCodeSearchApplicationService {
     const key = [context.sessionContext.logicalSessionId, context.startupReceipt.startupOperationId,
       context.binding.bindingGeneration, context.binding.worktreeId, JSON.stringify(sourceDeclarations)].join(":");
     if (!this.snapshotFlights.has(key)) {
-      this.snapshotFlights.set(key, this.snapshotBuilder.build({
-        startupReceipt: context.startupReceipt,
-        binding: context.binding,
-        sessionContext: context.sessionContext,
-        sourceDeclarations,
-        signal
-      }).finally(() => this.snapshotFlights.delete(key)));
+      const build = () => this.snapshotBuilder.build({
+        startupReceipt: context.startupReceipt, binding: context.binding,
+        sessionContext: context.sessionContext, sourceDeclarations, signal
+      });
+      const operation = this.freshnessMonitor
+        ? this.freshnessMonitor.establish({
+            worktreeId: context.binding.worktreeId,
+            canonicalRoot: context.binding.canonicalWorktreePath,
+            build,
+            verify: (snapshot) => this.snapshotBuilder.assertCurrent(snapshot, { signal })
+          })
+        : build();
+      this.snapshotFlights.set(key, operation.finally(() => this.snapshotFlights.delete(key)));
     }
     return this.snapshotFlights.get(key);
   }
