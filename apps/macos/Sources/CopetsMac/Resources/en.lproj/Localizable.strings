@@ -959,3 +959,13 @@
 "删除此 CorptieTask 将永久删除 %d 个关联会话及完整会话历史。Worktree 和 Artifact 将按下方选项处理。此操作无法撤销。" = "Deleting this CorptieTask permanently deletes %d associated Session(s) and their complete conversation history. The Worktree and Artifacts will be handled according to the options below. This cannot be undone.";
 "The Provider Session binding is being verified." = "The Provider Session binding is being verified.";
 "Preparing" = "Preparing";
+"Work & Tasks" = "Work & Tasks";
+"Navigation layout" = "Navigation layout";
+"Work icons and Task list" = "Work icons and Task list";
+"Expanded Work list" = "Expanded Work list";
+"Show Works as icons" = "Show Works as icons";
+"Show Works and Tasks in one list" = "Show Works and Tasks in one list";
+"Expand Work" = "Expand Work";
+"Collapse Work" = "Collapse Work";
+"Expanded group" = "Expanded";
+"Collapsed group" = "Collapsed";

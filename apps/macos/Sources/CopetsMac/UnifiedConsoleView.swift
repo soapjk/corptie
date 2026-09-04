@@ -12,6 +12,23 @@ enum ConsoleNavigationCardWidthPolicy {
     }
 }
 
+enum ConsoleNavigationMode: String, CaseIterable {
+    case workRail
+    case workOutline
+
+    static func resolved(_ rawValue: String) -> Self {
+        Self(rawValue: rawValue) ?? .workRail
+    }
+
+    @MainActor
+    var accessibilityValue: String {
+        switch self {
+        case .workRail: L10n("Work icons and Task list")
+        case .workOutline: L10n("Expanded Work list")
+        }
+    }
+}
+
 enum ConsoleTaskSelectionPolicy {
     static func isValidSelection(
         task: CorptieTask,
@@ -119,6 +136,14 @@ struct UnifiedConsoleView: View {
         "console.navigationCard.taskColumnWidth",
         store: CorptieAppEnvironment.userDefaults
     ) private var storedTaskColumnWidth = ConsoleNavigationCardWidthPolicy.defaultTaskColumnWidth
+    @AppStorage(
+        "console.navigationCard.navigationMode",
+        store: CorptieAppEnvironment.userDefaults
+    ) private var navigationModeRawValue = ConsoleNavigationMode.workRail.rawValue
+    /// Outline mode starts expanded. Persisting only the presentation mode keeps
+    /// disclosure state lightweight and prevents stale Work IDs accumulating.
+    @State private var isOutlineAssistantCollapsed = false
+    @State private var collapsedOutlineWorkIDs = Set<String>()
     @State private var navigationResizeStartWidth: Double?
     @State private var isHoveringNavigationResizeHandle = false
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
@@ -298,12 +323,18 @@ struct UnifiedConsoleView: View {
 
     private var consoleNavigationCard: some View {
         HStack(spacing: 0) {
-            workRail
-                .frame(width: 64)
+            if navigationMode == .workRail {
+                workRail
+                    .frame(width: 64)
 
-            unifiedTaskSidebar
-                .frame(width: taskColumnWidth)
-                .background(taskColumnBackground)
+                unifiedTaskSidebar
+                    .frame(width: taskColumnWidth)
+                    .background(taskColumnBackground)
+            } else {
+                unifiedWorkOutlineSidebar
+                    .frame(width: taskColumnWidth + 64)
+                    .background(taskColumnBackground)
+            }
         }
         .frame(maxHeight: .infinity)
         .clipShape(
@@ -335,6 +366,51 @@ struct UnifiedConsoleView: View {
         .overlay(alignment: .trailing) {
             navigationResizeHandle
         }
+        .overlay(alignment: .bottomLeading) {
+            navigationModeToggle
+                .padding(.leading, navigationMode == .workRail ? 76 : 12)
+                .padding(.bottom, 12)
+        }
+    }
+
+    private var navigationMode: ConsoleNavigationMode {
+        ConsoleNavigationMode.resolved(navigationModeRawValue)
+    }
+
+    private var usesWorkOutlineBinding: Binding<Bool> {
+        Binding(
+            get: { navigationMode == .workOutline },
+            set: { navigationModeRawValue = $0
+                ? ConsoleNavigationMode.workOutline.rawValue
+                : ConsoleNavigationMode.workRail.rawValue }
+        )
+    }
+
+    private var navigationModeToggle: some View {
+        HStack(spacing: 5) {
+            Image(systemName: navigationMode == .workOutline
+                ? "list.bullet.indent"
+                : "rectangle.split.2x1")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Toggle(L10n("Navigation layout"), isOn: usesWorkOutlineBinding)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+        }
+        .fixedSize()
+        .padding(.horizontal, 7)
+        .frame(height: 30)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color(nsColor: .separatorColor).opacity(0.38), lineWidth: 1)
+        }
+        .help(navigationMode == .workOutline
+            ? L10n("Show Works as icons")
+            : L10n("Show Works and Tasks in one list"))
+        .accessibilityValue(navigationMode.accessibilityValue)
     }
 
     private var taskColumnWidth: CGFloat {
@@ -562,6 +638,259 @@ struct UnifiedConsoleView: View {
         .sheet(isPresented: $showNewSessionCreation) {
             NewSessionCreationSheet()
         }
+    }
+
+    private var unifiedWorkOutlineSidebar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text(L10n("Work & Tasks"))
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                searchToggleButton
+            }
+            .padding(8)
+
+            if isSearching {
+                sessionSearchBar
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+            }
+
+            workOutlineList
+
+            if isShowingWorkerArchive,
+               backendClient.archivedSessionsHasMore
+                || backendClient.isLoadingMoreArchivedSessions
+                || backendClient.archivedSessionsLoadError != nil {
+                archivedWorkerPaginationBar
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            floatingCreationMenu
+                .padding(12)
+        }
+        .sheet(isPresented: $showNewSessionCreation) {
+            NewSessionCreationSheet()
+        }
+    }
+
+    private var workOutlineList: some View {
+        let unreadSummary = WorkRailUnreadSummary(
+            sessions: sessionIndexStore.rows.map(\.session)
+        )
+        let tasksByWorkID = outlineTasksByWorkID
+        let workChatsByWorkID = outlineWorkChatsByWorkID
+        let archivedRowsByWorkID = outlineArchivedRowsByWorkID
+
+        return List {
+            Section {
+                if !isOutlineAssistantCollapsed || !searchText.isEmpty {
+                    if assistantSessionRows.isEmpty {
+                        outlineEmptyRow(L10n("No Assistant Sessions"))
+                    } else {
+                        ForEach(assistantSessionRows) { row in
+                            sessionRow(row)
+                                .padding(.leading, 18)
+                        }
+                    }
+                }
+            } header: {
+                outlineAssistantHeader(
+                    hasUnread: unreadSummary.hasUnreadAssistantSessions
+                )
+                .textCase(nil)
+            }
+
+            ForEach(entityClient.works) { work in
+                Section {
+                    if outlineWorkIsExpanded(work.id) {
+                        if isShowingWorkerArchive {
+                            let rows = archivedRowsByWorkID[work.id] ?? []
+                            if rows.isEmpty {
+                                outlineEmptyRow(L10n("No Archived Sessions"))
+                            } else {
+                                ForEach(rows) { row in
+                                    sessionRow(row)
+                                        .padding(.leading, 18)
+                                }
+                            }
+                        } else {
+                            if let row = workChatsByWorkID[work.id]?.first {
+                                workChatRow(row)
+                                    .padding(.leading, 18)
+                            } else {
+                                Label(L10n("Start Work Chat"), systemImage: "scope")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.leading, 18)
+                            }
+
+                            let tasks = tasksByWorkID[work.id] ?? []
+                            if tasks.isEmpty {
+                                outlineEmptyRow(L10n("No Tasks"))
+                            } else {
+                                ForEach(tasks) { task in
+                                    taskRow(task)
+                                        .padding(.leading, 18)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    outlineWorkHeader(
+                        work,
+                        hasUnread: unreadSummary.workIDs.contains(work.id)
+                    )
+                    .textCase(nil)
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func outlineAssistantHeader(hasUnread: Bool) -> some View {
+        let isExpanded = !isOutlineAssistantCollapsed || !searchText.isEmpty
+        return Button {
+            if searchText.isEmpty {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    isOutlineAssistantCollapsed.toggle()
+                }
+            }
+            selectAssistantSpace()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                Image(systemName: "sparkles")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 22)
+                Text(L10n("Assistant"))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(selectedWorkId == nil ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if hasUnread {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel(L10n("Unread Session"))
+                }
+            }
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(L10n("Assistant"))
+        .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
+    }
+
+    private func outlineEmptyRow(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .padding(.leading, 42)
+    }
+
+    private func outlineWorkIsExpanded(_ workID: String) -> Bool {
+        !collapsedOutlineWorkIDs.contains(workID)
+            || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func outlineWorkHeader(_ work: Work, hasUnread: Bool) -> some View {
+        let isExpanded = outlineWorkIsExpanded(work.id)
+        return Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if collapsedOutlineWorkIDs.contains(work.id) {
+                    collapsedOutlineWorkIDs.remove(work.id)
+                } else {
+                    collapsedOutlineWorkIDs.insert(work.id)
+                }
+            }
+            selectWorkSpace(work.id)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                ObjectiveAvatarView(
+                    objectiveID: work.id,
+                    name: work.name,
+                    avatarPath: work.avatarPath,
+                    size: 22
+                )
+                Text(work.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(selectedWorkId == work.id ? Color.primary : Color.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if hasUnread {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel(L10n("Unread Session"))
+                }
+            }
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .contextMenu {
+                Button(L10n("编辑"), systemImage: "square.and.pencil") {
+                    workPendingEdit = work
+                }
+                Divider()
+                Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+                    workPendingDeletion = work
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(work.name)
+        .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
+        .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
+    }
+
+    private var outlineTasksByWorkID: [String: [CorptieTask]] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeTasks = entityClient.tasks.filter { $0.lifecycleState != "done" }
+        let grouped = Dictionary(grouping: activeTasks, by: \.workId)
+        return grouped.mapValues { tasks in
+            tasks
+                .filter { task in
+                    query.isEmpty
+                        || task.title.localizedCaseInsensitiveContains(query)
+                        || task.description.localizedCaseInsensitiveContains(query)
+                }
+                .sorted { lhs, rhs in
+                    if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+                    return lhs.id < rhs.id
+                }
+        }
+    }
+
+    private var outlineWorkChatsByWorkID: [String: [SessionRowModel]] {
+        Dictionary(
+            grouping: searchFilteredRows.filter {
+                $0.session.resolvedSessionKind == .workChat
+                    && $0.session.workId?.isEmpty == false
+            },
+            by: { $0.session.workId ?? "" }
+        )
+    }
+
+    private var outlineArchivedRowsByWorkID: [String: [SessionRowModel]] {
+        let taskWorkIDs = Dictionary(uniqueKeysWithValues: entityClient.tasks.map { ($0.id, $0.workId) })
+        return Dictionary(
+            grouping: searchFilteredRows.filter { $0.session.resolvedSessionKind == .worker },
+            by: { row in
+                row.session.workId
+                    ?? row.session.taskId.flatMap { taskWorkIDs[$0] }
+                    ?? ""
+            }
+        )
     }
 
     private var archivedWorkerPaginationBar: some View {
@@ -809,6 +1138,8 @@ struct UnifiedConsoleView: View {
     }
 
     private func openTask(_ task: CorptieTask, session: TaskSession?) {
+        selectedWorkId = task.workId
+        selectedCategory = .worker
         selectedTaskId = task.id
         switch ConsoleTaskOpenDecision.resolve(task: task, session: session) {
         case .selectSession:

@@ -145,6 +145,28 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func navigationCanSwitchBetweenWorkRailAndExpandedWorkOutline() throws {
+        #expect(ConsoleNavigationMode.resolved("workRail") == .workRail)
+        #expect(ConsoleNavigationMode.resolved("workOutline") == .workOutline)
+        #expect(ConsoleNavigationMode.resolved("unknown") == .workRail)
+
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(source.contains("console.navigationCard.navigationMode"))
+        #expect(source.contains("if navigationMode == .workRail"))
+        #expect(source.contains("unifiedWorkOutlineSidebar"))
+        #expect(source.contains("workOutlineList"))
+        #expect(source.contains("outlineAssistantHeader"))
+        #expect(source.contains("ForEach(assistantSessionRows)"))
+        #expect(source.contains("collapsedOutlineWorkIDs"))
+        #expect(source.contains("workChatRow(row)"))
+        #expect(source.contains("taskRow(task)"))
+        #expect(source.contains("Toggle(L10n(\"Navigation layout\"), isOn: usesWorkOutlineBinding)"))
+        #expect(source.contains(".toggleStyle(.switch)"))
+        #expect(source.contains(".overlay(alignment: .bottomLeading)"))
+        #expect(source.contains(".accessibilityValue(navigationMode.accessibilityValue)"))
+    }
+
+    @Test
     func navigationCardWidthIsResizableAndPersisted() throws {
         #expect(ConsoleNavigationCardWidthPolicy.clamped(120) == 220)
         #expect(ConsoleNavigationCardWidthPolicy.clamped(360) == 360)
