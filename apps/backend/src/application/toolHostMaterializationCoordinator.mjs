@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { buildToolExposurePlan } from "./toolExposurePlan.mjs";
 import { stableStringify } from "./hostToolCatalog.mjs";
+import { searchableDomainText } from "./toolDiscoveryContracts.mjs";
 import {
   appliedToolMaterializationReceipt,
   validateToolMaterializationReceipt
@@ -253,16 +254,29 @@ export class ToolHostMaterializationCoordinator {
     const hintTerms = searchTerms(input.domainHint);
     const domains = [];
     for (const [domainId, entries] of this.catalog.domains(catalogContext(binding))) {
-      const normalizedDomainId = searchableText(domainId);
+      const normalizedDomainId = searchableText(searchableDomainText(domainId));
       if (hintTerms.length > 0 && !hintTerms.every((term) => normalizedDomainId.includes(term))) continue;
+      const domainContract = this.catalog.domainContract(catalogContext(binding), domainId, {
+        catalogVersion: snapshot.catalogVersion
+      });
+      const domainIntentMatch = query.length > 0 && domainContract.aliases.some((alias) => {
+        const normalizedAlias = searchableText(alias);
+        return query.includes(normalizedAlias) || normalizedAlias.includes(query);
+      });
       const tools = entries
         .map((entry) => {
           const haystack = searchableText(
-            `${entry.canonicalName} ${entry.definition.description ?? ""} ${domainId}`
+            `${entry.canonicalName} ${entry.definition.description ?? ""} ${normalizedDomainId}`
           );
           const matchedTerms = queryTerms.filter((term) => haystack.includes(term));
           const exactPhrase = query.length > 0 && haystack.includes(query);
-          return { entry, score: exactPhrase ? queryTerms.length + 2 : matchedTerms.length };
+          const preferred = entry.canonicalName === domainContract.recommendedTool ? 1 : 0;
+          const baseScore = (exactPhrase ? queryTerms.length + 2 : matchedTerms.length)
+            + (domainIntentMatch ? 1 : 0);
+          return {
+            entry,
+            score: baseScore > 0 ? baseScore + preferred : 0
+          };
         })
         .filter(({ score }) => queryTerms.length === 0 || score > 0)
         .sort((left, right) => right.score - left.score
@@ -274,10 +288,12 @@ export class ToolHostMaterializationCoordinator {
         domainId,
         domainRevision: snapshotDomain?.domainRevision ?? "1",
         toolCount: tools.length,
-        tools: tools.slice(0, 20).map((entry) => ({
-          canonicalName: entry.canonicalName,
-          description: entry.definition.description ?? ""
-        }))
+        aliases: domainContract.aliases,
+        recommendedTool: domainContract.recommendedTool,
+        invocation: domainContract.invocation,
+        tools: tools.slice(0, 20).map((entry) => domainContract.tools.find(
+          (tool) => tool.canonicalName === entry.canonicalName
+        ))
       });
     }
     const durationMs = performance.now() - started;

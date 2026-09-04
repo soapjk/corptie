@@ -30,7 +30,7 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
   ]);
   assert.equal(definition.inputSchema.additionalProperties, false);
   assert.equal(definition.inputSchema.allOf[0].then.oneOf.length, 2);
-  assert.deepEqual(definition.inputSchema.allOf[0].then.required, ["name"]);
+  assert.deepEqual(definition.inputSchema.allOf[0].then.required, ["name", "schedule_type"]);
   assert.equal(Object.hasOwn(definition.inputSchema.properties, "actor_id"), false);
 
   await catalog.execute({
@@ -82,7 +82,9 @@ test("Host Tool contract injects the runtime actor and never accepts an actor fr
       action: "create", name: "Missing expiration", schedule_type: "after",
       delay_seconds: 10, message: "missing expiration"
     }
-  }), (error) => error.code === "INVALID_INPUT" && /requires exactly one/.test(error.message));
+  }), (error) => error.code === "TOOL_ARGUMENT_SCHEMA_INVALID"
+    && error.issues.some((issue) => issue.path === "$.expires_at")
+    && error.issues.some((issue) => issue.path === "$.expires_after_seconds"));
   await assert.rejects(() => catalog.execute({
     actorId: "agent:forged",
     metadata: { sessionId: "session:runtime" },
