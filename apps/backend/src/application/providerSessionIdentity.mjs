@@ -23,3 +23,22 @@ export function resolveStableSessionIdForProviderDetail({
   if (store.getSession(prefixed)) return prefixed;
   return null;
 }
+
+// Product events may originate at provider-neutral boundaries that expose a
+// Logical Session id. Durable timeline and outbox tables deliberately retain
+// their foreign key to the concrete sessions row, so normalize that identity
+// before entering the persistence transaction. An unavailable/tombstoned
+// route still produces a global product event, but must not make the primary
+// operation fail with an opaque SQLite foreign-key error.
+export function resolveDurableEventSessionId(store, requestedSessionId) {
+  const requested = String(requestedSessionId ?? "").trim();
+  if (!requested) return null;
+  if (store.getSession(requested)) return requested;
+
+  const logical = store.getLogicalSession(requested)
+    ?? store.getLogicalSessionByLegacySessionId(requested);
+  const durableSessionId = String(logical?.legacySessionId ?? "").trim();
+  return durableSessionId && store.getSession(durableSessionId)
+    ? durableSessionId
+    : null;
+}
