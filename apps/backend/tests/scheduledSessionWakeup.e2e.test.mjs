@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ScheduledSessionTaskService } from "../src/application/scheduledSessionTaskService.mjs";
+import { createScheduledSessionRouteResolver } from "../src/application/scheduledSessionRoute.mjs";
 import { handleScheduledSessionTaskHttpRequest } from "../src/application/scheduledSessionTaskHttpApi.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -72,14 +73,7 @@ test("short-delay HTTP schedule wakes the same logical Session in a new queued T
         assert.equal(logicalSessionId, "logical:e2e");
         return {};
       },
-      resolveRoute: async () => {
-        const logical = store.getLogicalSession("logical:e2e");
-        return {
-          sessionId: logical.legacySessionId,
-          agentId: "agent:e2e",
-          binding: logical.activeBinding
-        };
-      },
+      resolveRoute: createScheduledSessionRouteResolver({ store, collaborationCore: core }),
       enqueue: (work) => {
         const queued = store.enqueueAgentTask(work);
         setImmediate(drain);
