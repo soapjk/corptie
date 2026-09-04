@@ -5440,16 +5440,25 @@ export class CorptieStore {
   }
 
   getLogicalSessionByName(sessionName) {
-    const key = normalizeSessionTitle(sessionName);
-    if (!key) return null;
-    const row = this.selectOne(
-      `SELECT logical_session_id FROM logical_sessions WHERE session_name_key = ?
+    return this.findLogicalSessionsByName(sessionName)[0] ?? null;
+  }
+
+  findLogicalSessionsByName(sessionName) {
+    const alias = String(sessionName ?? "").trim().replace(/^[@＠]\s*/, "");
+    const key = normalizeSessionTitle(alias);
+    if (!key) return [];
+    const rows = this.selectAll(
+      `SELECT logical_session_id FROM logical_sessions
+       WHERE session_name_key = ? AND deleted_at IS NULL
        UNION ALL
-       SELECT logical_session_id FROM session_name_aliases WHERE alias_key = ?
-       LIMIT 1`,
+       SELECT aliases.logical_session_id FROM session_name_aliases aliases
+       JOIN logical_sessions sessions ON sessions.logical_session_id = aliases.logical_session_id
+       WHERE aliases.alias_key = ? AND sessions.deleted_at IS NULL`,
       [key, key]
     );
-    return row ? this.getLogicalSession(row.logical_session_id) : null;
+    return [...new Set(rows.map((row) => row.logical_session_id))]
+      .map((logicalSessionId) => this.getLogicalSession(logicalSessionId))
+      .filter(Boolean);
   }
 
   getLogicalSessionByProviderThreadId(providerThreadId) {
