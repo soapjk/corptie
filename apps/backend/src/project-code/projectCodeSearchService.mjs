@@ -38,6 +38,7 @@ export class ProjectCodeSearchService {
     this.limiter = options.limiter ?? new ProjectCodeQueryLimiter();
     this.telemetrySink = options.telemetrySink ?? null;
     this.maxCachedWorktrees = options.maxCachedWorktrees ?? 32;
+    this.nonBlockingIndexWarmup = options.nonBlockingIndexWarmup === true;
     this.previousL2ByWorktree = new Map();
   }
 
@@ -166,6 +167,27 @@ export class ProjectCodeSearchService {
     } finally { await handle.close(); }
   }
 
+  async prewarm({ snapshot, signal } = {}) {
+    if (!snapshot?.receipt) throw new TypeError("ProjectCodeSearchService.prewarm requires snapshot.");
+    if (!this.indexStore) {
+      return Object.freeze({ status: "unsupported", indexHit: false, incremental: false, durationMs: 0 });
+    }
+    const started = performance.now();
+    const previousIndex = this.previousL2ByWorktree.get(snapshot.receipt.worktreeId) ?? null;
+    const built = await this.indexStore.warmLayer(snapshot, "L2", { signal, previousIndex });
+    lruSet(this.previousL2ByWorktree, snapshot.receipt.worktreeId, {
+      documentsByHash: new Map(built.index.documents.map((document) => [document.contentHash, document]))
+    }, this.maxCachedWorktrees);
+    return Object.freeze({
+      status: "ready",
+      indexHit: built.indexHit,
+      incremental: built.incremental,
+      durationMs: elapsed(started),
+      documentCount: built.index.documents.length,
+      sourceFingerprint: snapshot.receipt.sourceFingerprint
+    });
+  }
+
   async #executeLayers(input) {
     const mode = normalizeMode(input.mode);
     const minResults = normalizeInteger(input.minResults, 1, 1, 20, "minResults");
@@ -206,8 +228,13 @@ export class ProjectCodeSearchService {
       try {
         await runLayer("L2", () => this.#runL2(input, limit));
       } catch (error) {
-        if (error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
-        input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+        if (error?.code === "INDEX_WARMING") {
+          input.state.layers.push(layerFact("L2", "skipped", { skippedReason: "INDEX_WARMING" }));
+          await runLayer("L0", () => this.#runL0ForInput(input, limit));
+        } else {
+          if (error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
+          input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+        }
       }
       if (deduplicate(all).length >= minResults) return success(deduplicate(all).slice(0, limit), isolation,
         input.state.layers.some((fact) => fact.status === "degraded") ? "degraded" : "success");
@@ -217,21 +244,19 @@ export class ProjectCodeSearchService {
       try {
         await runLayer("L2", () => this.#runL2(input, limit));
       } catch (error) {
-        if (error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
-        input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+        if (error?.code === "INDEX_WARMING") {
+          input.state.layers.push(layerFact("L2", "skipped", { skippedReason: "INDEX_WARMING" }));
+          await runLayer("L0", () => this.#runL0ForInput(input, limit));
+        } else {
+          if (error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
+          input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+        }
       }
       if (deduplicate(all).length >= minResults) return success(deduplicate(all).slice(0, limit), isolation,
         input.state.layers.some((fact) => fact.status === "degraded") ? "degraded" : "success");
     }
     if (mode === "exact" || (mode === "auto" && autoPlan === "exact")) {
-      await runLayer("L0", () => this.#runL0(input.query, input.scope, {
-        signal: input.signal, limit, root: input.snapshot.canonicalWorktreePath,
-        targets: (input.paths?.length ?? 0) > 0
-          ? input.scopeTargets
-          : input.snapshot.declarations.length > 0 ? input.snapshot.declarations.map((entry) => entry.path) : ["."],
-        allowedPaths: new Set(input.scope.map((entry) => entry.path)),
-        allowGenerated: input.snapshot.declarations.some((entry) => entry.generatedAllowed)
-      }));
+      await runLayer("L0", () => this.#runL0ForInput(input, limit));
       if (mode === "exact" || deduplicate(all).length >= minResults) return success(deduplicate(all).slice(0, limit), isolation);
     }
     if (["auto", "files"].includes(mode)) {
@@ -245,8 +270,13 @@ export class ProjectCodeSearchService {
         try {
           await runLayer("L2", () => this.#runL2(input, limit));
         } catch (error) {
-          if (!(["auto", "semantic"].includes(mode)) || error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
-          input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+          if (error?.code === "INDEX_WARMING") {
+            input.state.layers.push(layerFact("L2", "skipped", { skippedReason: "INDEX_WARMING" }));
+            await runLayer("L0", () => this.#runL0ForInput(input, limit));
+          } else {
+            if (!(["auto", "semantic"].includes(mode)) || error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
+            input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+          }
         }
       }
       if (mode === "symbols" || (mode === "auto" && deduplicate(all).length >= minResults)) {
@@ -289,13 +319,34 @@ export class ProjectCodeSearchService {
     return { results, candidateCount: scope.length, indexHit: false, isolationRequired: false };
   }
 
+  #runL0ForInput(input, limit) {
+    return this.#runL0(input.query, input.scope, {
+      signal: input.signal,
+      limit,
+      root: input.snapshot.canonicalWorktreePath,
+      targets: (input.paths?.length ?? 0) > 0
+        ? input.scopeTargets
+        : input.snapshot.declarations.length > 0 ? input.snapshot.declarations.map((entry) => entry.path) : ["."],
+      allowedPaths: new Set(input.scope.map((entry) => entry.path)),
+      allowGenerated: input.snapshot.declarations.some((entry) => entry.generatedAllowed)
+    });
+  }
+
   async #runL1(input, limit) {
     const needle = input.query.toLocaleLowerCase("en-US");
     if (!this.indexStore) {
       return { results: fileResults(input.scope, needle, limit), candidateCount: input.scope.length, indexHit: false, isolationRequired: false, status: "degraded", degradedReason: "INDEX_STORE_DISABLED" };
     }
     try {
-      const built = await this.indexStore.ensureLayer(input.snapshot, "L1", { signal: input.signal });
+      let built = this.nonBlockingIndexWarmup ? this.indexStore.readyLayer?.(input.snapshot, "L1") : null;
+      if (!built && this.nonBlockingIndexWarmup) {
+        void this.indexStore.warmLayer(input.snapshot, "L1").catch(() => {});
+        return {
+          results: fileResults(input.scope, needle, limit), candidateCount: input.scope.length,
+          indexHit: false, isolationRequired: false, status: "degraded", degradedReason: "INDEX_WARMING"
+        };
+      }
+      built ??= await this.indexStore.ensureLayer(input.snapshot, "L1", { signal: input.signal });
       const allowed = new Set(input.scope.map((candidate) => candidate.path));
       const candidates = built.index.files.filter((file) => allowed.has(file.path)).map((file) => ({ path: file.path, language: file.language }));
       return { results: fileResults(candidates, needle, limit), candidateCount: candidates.length, indexHit: built.indexHit, isolationRequired: false };
@@ -308,7 +359,12 @@ export class ProjectCodeSearchService {
   async #runL2(input, limit) {
     if (!this.indexStore) throw contractError("DATA_ROOT_UNAVAILABLE", "L2 requires the external project-code index store.", 503);
     const previousIndex = this.previousL2ByWorktree.get(input.snapshot.receipt.worktreeId) ?? null;
-    const built = await this.indexStore.ensureLayer(input.snapshot, "L2", { signal: input.signal, previousIndex });
+    let built = this.nonBlockingIndexWarmup ? this.indexStore.readyLayer?.(input.snapshot, "L2") : null;
+    if (!built && this.nonBlockingIndexWarmup) {
+      void this.indexStore.warmLayer(input.snapshot, "L2", { previousIndex }).catch(() => {});
+      throw contractError("INDEX_WARMING", "The project-code index is warming in the background.", 503);
+    }
+    built ??= await this.indexStore.ensureLayer(input.snapshot, "L2", { signal: input.signal, previousIndex });
     lruSet(this.previousL2ByWorktree, input.snapshot.receipt.worktreeId, {
       documentsByHash: new Map(built.index.documents.map((document) => [document.contentHash, document]))
     }, this.maxCachedWorktrees);

@@ -89,6 +89,16 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
       snapshotPolicy: "require_exact", query: "ProductionNeedle" }),
     (error) => error.code === "QUERY_INVALID");
 
+    const [firstPrewarm, duplicatePrewarm] = await Promise.all([
+      application.prewarm({ logicalSessionId: metadata.logicalSessionId }),
+      application.prewarm({ logicalSessionId: metadata.logicalSessionId })
+    ]);
+    assert.equal(firstPrewarm.status, "ready");
+    assert.equal(duplicatePrewarm.snapshotReceiptId, firstPrewarm.snapshotReceiptId);
+    assert.equal(indexStore.stats.l2Builds, 1, "concurrent Session-ready prewarm must single-flight");
+    assert.equal(application.prewarmSummary().ready, 1);
+    assert.equal(application.prewarmSummary().failed, 0);
+
     const l2 = await catalog.execute({
       tool: "corptie_project_code_search", metadata,
       arguments: { snapshot_receipt_id: snap.receipt.receiptId, response_detail: "full", query: "Coordinator", mode: "symbols" }

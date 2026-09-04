@@ -29,6 +29,7 @@ export class WorkSessionStartupCoordinator {
     this.providerWorkSessionPort = options.providerWorkSessionPort;
     this.compensateWorktree = options.compensateWorktree ?? null;
     this.onChanged = options.onChanged ?? (() => {});
+    this.onReady = options.onReady ?? (() => {});
     this.clock = options.clock ?? (() => new Date().toISOString());
     this.leaseOwner = options.leaseOwner ?? `startup-worker:${process.pid}:${randomUUID()}`;
     this.leaseTtlMs = options.leaseTtlMs ?? 30_000;
@@ -44,6 +45,7 @@ export class WorkSessionStartupCoordinator {
       }
     }
     if (!this.store) throw new TypeError("WorkSessionStartupCoordinator requires a Store.");
+    if (typeof this.onReady !== "function") throw new TypeError("WorkSessionStartupCoordinator onReady must be a function.");
   }
 
   async start(input = {}) {
@@ -250,6 +252,7 @@ export class WorkSessionStartupCoordinator {
           throw phaseFailure(error, "START_PROVIDER_BINDING_FAILED", "provider_activation");
         }
         const ready = this.#commitReady(operation, allocation);
+        this.#notifyReady(ready);
         return this.#dispatchInitialTurn(this.#operation(operationId), ready.idempotentReplay);
       }
       if (operation.state === "ready") return this.#readyView(operation, true);
@@ -833,6 +836,15 @@ export class WorkSessionStartupCoordinator {
       session: this.store.getSession(operation.legacy_session_id),
       task: this.store.getTask(operation.task_id)
     };
+  }
+
+  #notifyReady(ready) {
+    try {
+      void Promise.resolve(this.onReady(ready)).catch(() => {});
+    } catch {
+      // Ready hooks are advisory background work and must never roll back a
+      // committed Work Session or delay its initial Turn.
+    }
   }
 
   async #dispatchInitialTurn(operation, idempotentReplay) {

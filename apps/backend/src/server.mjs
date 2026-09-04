@@ -1747,7 +1747,8 @@ const projectCodeRunIsolationPort = runIsolationCoordinator
 const projectCodeSearchService = new ProjectCodeSearchService({
   snapshotBuilder: projectCodeSnapshotBuilder,
   indexStore: projectCodeIndexStore,
-  runIsolationPort: projectCodeRunIsolationPort
+  runIsolationPort: projectCodeRunIsolationPort,
+  nonBlockingIndexWarmup: true
 });
 projectCodeApplicationService = new ProjectCodeSearchApplicationService({
   store,
@@ -2205,7 +2206,20 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
       throw error;
     }
   },
-  onChanged: (type, payload) => emitEvent(type, payload)
+  onChanged: (type, payload) => emitEvent(type, payload),
+  onReady: ({ receipt }) => projectCodeApplicationService.prewarm({ logicalSessionId: receipt.logicalSessionId })
+    .then((result) => {
+      emitEvent("ProjectCodeIndexPrewarmChanged", { status: result.status, worktreeId: result.worktreeId,
+        logicalSessionId: result.logicalSessionId, durationMs: result.durationMs, indexHit: result.indexHit });
+      console.info(`[project-code-prewarm] ${JSON.stringify({ status: result.status, worktreeId: result.worktreeId,
+        durationMs: result.durationMs, snapshotMs: result.snapshotMs, indexMs: result.indexMs, indexHit: result.indexHit })}`);
+    })
+    .catch((error) => {
+      emitEvent("ProjectCodeIndexPrewarmChanged", { status: "failed", worktreeId: receipt.worktreeId,
+        logicalSessionId: receipt.logicalSessionId, errorCode: error?.code ?? "PROJECT_CODE_PREWARM_FAILED" });
+      console.warn(`[project-code-prewarm] ${JSON.stringify({ status: "failed", worktreeId: receipt.worktreeId,
+        errorCode: error?.code ?? "PROJECT_CODE_PREWARM_FAILED" })}`);
+    })
 });
 workSessionStartApplicationService = new WorkSessionStartApplicationService({
   store,
@@ -9244,7 +9258,8 @@ function route(request, response) {
           l1Catalog: readiness.status === "ready" ? "ready" : "degraded",
           l2Symbols: readiness.status === "ready" ? "ready" : "degraded",
           semantic: projectCodeRunIsolationPort ? "ready" : "unsupported",
-          reasonCode: readiness.status === "unavailable" ? readiness.code : null
+          reasonCode: readiness.status === "unavailable" ? readiness.code : null,
+          prewarm: projectCodeApplicationService.prewarmSummary()
         };
       })()
     });
