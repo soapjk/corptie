@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
@@ -65,6 +65,96 @@ test("L1 and L2 use immutable external-dataRoot generations and single-flight bu
     assert.ok(search.results.some((entry) => entry.symbol === "layeredSymbol" && entry.kind === "function"));
     assert.equal(search.receipt.layers[0].layer, "L2");
     assert.equal(search.receipt.layers[0].indexHit, true);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("IndexStore initializes a missing dedicated child under a verified writable parent", async () => {
+  const fixture = await createProjectCodeFixture();
+  const parent = await mkdtemp(join(tmpdir(), "corptie-index-parent-"));
+  const dataRoot = join(parent, "project-code-index");
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build(fixture);
+    const store = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
+    const [readiness, built] = await Promise.all([store.initialize(), store.ensureLayer(snapshot, "L2")]);
+    assert.equal(readiness.status, "ready");
+    assert.equal(store.getReadiness().status, "ready");
+    assert.ok(built.index.documents.length > 0);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("directory scopes expand only Snapshot candidates and point-read reaches deep UTF-8 lines", async () => {
+  const deep = Array.from({ length: 5000 }, (_, index) => `第${index + 1}行 ${index === 4320 ? "deepNeedle" : "padding"}`).join("\n");
+  const fixture = await createProjectCodeFixture({ files: {
+    "Sources/Deep.swift": deep,
+    "Other/Outside.swift": "let deepNeedle = false\n",
+    ".gitignore": ".build/\n"
+  } });
+  const dataRoot = await mkdtemp(join(tmpdir(), "corptie-directory-scope-"));
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build(fixture);
+    const service = new ProjectCodeSearchService({ snapshotBuilder: builder,
+      indexStore: new ProjectCodeIndexStore({ dataRoot, requireExternal: false }) });
+    const exact = await service.search({ snapshot, sessionContext: fixture.sessionContext,
+      searchScenarioId: "directory-exact", query: "deepNeedle", mode: "exact", paths: ["Sources"] });
+    assert.deepEqual(exact.results.map((entry) => entry.path), ["Sources/Deep.swift"]);
+    const symbols = await service.search({ snapshot, sessionContext: fixture.sessionContext,
+      searchScenarioId: "directory-symbols", query: "deepNeedle", mode: "symbols", paths: ["Sources"] });
+    assert.equal(symbols.results.every((entry) => entry.path.startsWith("Sources/")), true);
+    const window = await service.pointRead({ snapshot, sessionContext: fixture.sessionContext,
+      path: "Sources/Deep.swift", startLine: 4318, lineCount: 6, maxBytes: 4096 });
+    assert.equal(window.lines[3].includes("deepNeedle"), true);
+    assert.equal(window.nextStartLine, 4324);
+    assert.equal(window.truncatedReason, "line_count");
+    assert.equal(window.eof, false);
+    await assert.rejects(() => service.pointRead({ snapshot, sessionContext: fixture.sessionContext,
+      path: "Sources/Deep.swift", startLine: 4318, maxScanBytes: 128 }),
+    (error) => error.code === "POINT_READ_SCAN_LIMIT");
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("SQLite v5 inverted index returns symbols, callers, imports, and Chinese requirement Top-5 results", async () => {
+  const fixture = await createProjectCodeFixture({ files: {
+    "Sources/SessionViewportController.swift": "final class SessionViewportController {\n  func restorePositionAfterHydration() {}\n}\n",
+    "Sources/TaskService.ts": "import { startupCoordinator } from './startupCoordinator';\nexport function createAndStartTask() { startupCoordinator(); }\nexport function invokeTask() { createAndStartTask(); }\nexport function taskExecutionPrompt(description: string) { return `context ${description}`; }\n",
+    ".gitignore": ".build/\n"
+  } });
+  const dataRoot = await mkdtemp(join(tmpdir(), "corptie-v5-index-"));
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build(fixture);
+    const store = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
+    const built = await store.ensureLayer(snapshot, "L2");
+    assert.equal(built.index.schemaVersion, 5);
+    await access(built.index.databasePath);
+    const service = new ProjectCodeSearchService({ snapshotBuilder: builder, indexStore: store });
+    const callers = await service.search({ snapshot, sessionContext: fixture.sessionContext,
+      searchScenarioId: "callers", query: "谁调用 createAndStartTask", mode: "symbols" });
+    assert.ok(callers.results.some((entry) => entry.kind === "call" && entry.line === 3));
+    const imported = await service.search({ snapshot, sessionContext: fixture.sessionContext,
+      searchScenarioId: "imports", query: "startupCoordinator", mode: "symbols" });
+    assert.ok(imported.results.some((entry) => entry.kind === "import" && entry.line === 1));
+    const goldens = [
+      ["恢复会话上次阅读位置", "SessionViewportController.swift"],
+      ["创建任务后立即启动工作会话", "TaskService.ts"],
+      ["描述只放上下文不要发成消息", "TaskService.ts"]
+    ];
+    for (const [query, expected] of goldens) {
+      const result = await service.search({ snapshot, sessionContext: fixture.sessionContext,
+        searchScenarioId: `golden-${expected}-${query.length}`, query, mode: "auto", limit: 5 });
+      assert.ok(result.results.slice(0, 5).some((entry) => entry.path.endsWith(expected)), `${query}: ${JSON.stringify(result.results)}`);
+      assert.equal(result.receipt.layers[0].layer, "L2", "natural-language auto queries must not waste an exact-rg pass");
+    }
   } finally {
     await rm(fixture.directory, { recursive: true, force: true });
     await rm(dataRoot, { recursive: true, force: true });
