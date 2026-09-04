@@ -204,6 +204,37 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
     }
 
     @MainActor
+    func testAuthorizedSessionChannelSendRendersAsSentWithoutTaskIdentity() throws {
+        var message = item(id: "channel-message", type: "userMessage", text: "Status update")
+        message.sourceType = "session_channel"
+        message.presentationRole = "collaboration"
+        message.presentationText = "Status update"
+        message.collaborationChannelId = "channel:authorized"
+        message.collaborationDirection = "outbound"
+        message.collaborationInitiatorSessionId = "logical:source"
+        message.collaborationInitiatorSessionTitle = "Source Work Chat"
+        message.collaborationRecipientSessionId = "logical:target"
+        message.collaborationRecipientSessionTitle = "Target Worker"
+        message.collaborationSourceWorkId = "work:source"
+        message.collaborationSourceWorkName = "Source Work"
+        message.collaborationTargetWorkId = "work:target"
+        message.collaborationTargetWorkName = "Target Work"
+        message.collaborationMessageKind = "update"
+        message.collaborationProcessingStatus = "sent"
+
+        let presentation = try XCTUnwrap(nativeCollaborationCardPresentation(
+            for: message,
+            currentSessionTitle: "Source Work Chat"
+        ))
+
+        XCTAssertTrue(presentation.metadata.contains(L10n("已发送")))
+        XCTAssertEqual(presentation.route.destinationKind, .existingSession)
+        XCTAssertEqual(presentation.route.sourceSession, "Session · Source Work Chat")
+        XCTAssertEqual(presentation.route.targetName, "Session · Target Worker")
+        XCTAssertEqual(presentation.messageText, "Status update")
+    }
+
+    @MainActor
     func testCollaborationConfirmationShowsPendingCorptieTaskInsteadOfInventingTargetSession() throws {
         var confirmation = item(
             id: "collaboration-confirmation",
