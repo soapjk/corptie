@@ -737,6 +737,7 @@ const providerSessionLifecycle = new ProviderSessionLifecycle({
 });
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
+  environment: () => process.env,
   prepareSessionInput: prepareClaudeProviderSessionInput,
   onProviderEvent: handleClaudeProviderEventSafely,
   listModels: loadClaudeModels,
@@ -9816,6 +9817,31 @@ function route(request, response) {
       .catch((error) => {
         sendJson(response, 400, { ok: false, error: error.message });
       });
+    return;
+  }
+
+  const providerConfigurationActionMatch = url.pathname.match(
+    /^\/providers\/([^/]+)\/(configuration\/validate|connection-test)$/
+  );
+  if (request.method === "POST" && providerConfigurationActionMatch) {
+    const providerId = decodeURIComponent(providerConfigurationActionMatch[1]);
+    const action = providerConfigurationActionMatch[2];
+    readJson(request)
+      .then((input) => agentProviderRegistry.invoke(
+        providerId,
+        action === "configuration/validate"
+          ? AGENT_PROVIDER_CAPABILITIES.CONFIGURATION_VALIDATE
+          : AGENT_PROVIDER_CAPABILITIES.CONNECTION_TEST,
+        input
+      ))
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, error.statusCode ?? 400), {
+        ok: false,
+        error: error.message,
+        code: error.code ?? "PROVIDER_CONFIGURATION_FAILED",
+        retryable: error.retryable === true,
+        ...(Array.isArray(error.details) ? { details: error.details } : {})
+      }));
     return;
   }
 
