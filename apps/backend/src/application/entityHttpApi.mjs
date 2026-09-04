@@ -93,6 +93,7 @@ export function handleEntityHttpRequest({
   reclaimTaskWorktree,
   inspectTaskDeletion,
   deleteTaskSafely,
+  getTaskDeletionOperation,
   restartTask,
   restoreTaskExecution,
   taskCompletionService,
@@ -145,6 +146,7 @@ export function handleEntityHttpRequest({
     path === "/works" || path.startsWith("/works/") ||
     path === "/tasks" || path.startsWith("/tasks/") ||
     path.startsWith("/task-completion-operations/") ||
+    path.startsWith("/task-deletion-operations/") ||
     path === "/repositories" || path === "/repositories/detect" ||
     path === "/workspaces" || path === "/workspaces/detect" || path.startsWith("/workspaces/") ||
     path === "/memories" || path.startsWith("/memories/") || path === "/memory-audit" ||
@@ -836,8 +838,18 @@ export function handleEntityHttpRequest({
         }
         if (request.method === "DELETE") {
           if (typeof deleteTaskSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe Task deletion is unavailable.", 503);
-          return sendJson(response, 200, await deleteTaskSafely(id, await readJson(request), localMacUserActor()));
+          return sendJson(response, 202, await deleteTaskSafely(id, await readJson(request), localMacUserActor()));
         }
+      }
+
+      const taskDeletionOperationMatch = path.match(/^\/task-deletion-operations\/([^/]+)$/);
+      if (request.method === "GET" && taskDeletionOperationMatch) {
+        if (typeof getTaskDeletionOperation !== "function") {
+          throw apiError("CAPABILITY_UNAVAILABLE", "Task deletion operation status is unavailable.", 503);
+        }
+        return sendJson(response, 200, {
+          operation: getTaskDeletionOperation(decodeURIComponent(taskDeletionOperationMatch[1]))
+        });
       }
 
       const taskRestartMatch = path.match(/^\/tasks\/([^/]+)\/restart$/);
@@ -887,9 +899,10 @@ export function handleEntityHttpRequest({
         if (typeof deleteTaskSafely !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Safe Task deletion is unavailable.", 503);
         const input = await readJson(request);
         rejectUnknownFields(input, new Set([
-          "mode", "acknowledgeDataLoss", "confirmedBranchName", "deleteWorktree", "artifactDisposition"
+          "mode", "acknowledgeDataLoss", "confirmedBranchName", "deleteWorktree", "artifactDisposition",
+          "idempotencyKey"
         ]));
-        return sendJson(response, 200, await deleteTaskSafely(
+        return sendJson(response, 202, await deleteTaskSafely(
           decodeURIComponent(deleteTaskMatch[1]), input, localMacUserActor()
         ));
       }

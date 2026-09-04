@@ -292,6 +292,20 @@ export class WorkSessionStartupCoordinator {
     const operationId = `startup:${sha256(`${taskId}\0${idempotencyKey}`).slice(0, 32)}`;
     let result;
     this.store.runInTransaction(() => {
+      const currentTask = this.store.selectOne("SELECT * FROM tasks WHERE id=?", [taskId]);
+      if (!currentTask || currentTask.deletion_status === "deleted") {
+        throw coded("START_REFERENCE_INVALID", "Task was not found.", 404, false);
+      }
+      if (["deleting", "delete_failed"].includes(currentTask.deletion_status)) {
+        throw coded(
+          "START_TASK_DELETION_IN_PROGRESS",
+          currentTask.deletion_status === "deleting"
+            ? "Task deletion is in progress. A new Session cannot be started."
+            : "Task deletion previously failed. Retry or resolve deletion before starting a Session.",
+          409,
+          false
+        );
+      }
       const existing = this.store.selectOne(
         "SELECT * FROM work_session_startup_operations WHERE task_id=? AND idempotency_key=?",
         [taskId, idempotencyKey]
@@ -302,6 +316,25 @@ export class WorkSessionStartupCoordinator {
         }
         result = existing;
         return;
+      }
+      const existingSession = this.store.selectOne(
+        `SELECT id FROM sessions
+         WHERE id=? AND task_id=? AND session_kind='worker' AND deleted_at IS NULL`,
+        [currentTask.current_session_id, taskId]
+      );
+      const readyStartup = this.store.selectOne(
+        `SELECT legacy_session_id FROM work_session_startup_operations
+         WHERE task_id=? AND state='ready' LIMIT 1`,
+        [taskId]
+      );
+      if (existingSession || readyStartup) {
+        throw coded(
+          "START_TASK_SESSION_ALREADY_EXISTS",
+          "Task already has an active Worker Session.",
+          409,
+          false,
+          { sessionId: existingSession?.id ?? readyStartup.legacy_session_id }
+        );
       }
       const active = this.store.selectOne(
         `SELECT startup_operation_id FROM work_session_startup_operations
@@ -595,7 +628,8 @@ export class WorkSessionStartupCoordinator {
          main_agent_id=?, acceptance_assessment_json='{}',
          resource_version=resource_version+1, updated_at=?
          WHERE id=? AND resource_version=? AND lifecycle_state='todo'
-           AND current_session_id IS NULL`,
+           AND current_session_id IS NULL
+           AND COALESCE(deletion_status, '')=''`,
         [session.id, operation.assignee_agent_id, now, operation.task_id,
           operation.expected_task_version]
       );

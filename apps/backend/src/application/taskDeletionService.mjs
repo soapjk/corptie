@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 const FORCEABLE_RISKS = new Set(["UNCOMMITTED_CHANGES", "UNTRACKED_FILES", "NOT_MERGED_INTO_MAIN"]);
 const ARTIFACT_DISPOSITIONS = new Set(["delete", "work", "retain"]);
 
@@ -10,6 +12,7 @@ export class TaskDeletionService {
     this.handleArtifacts = options.handleArtifacts;
     this.authorize = options.authorize;
     this.onChanged = options.onChanged ?? (() => {});
+    this.inFlight = new Map();
     if (!this.store || typeof this.store.finalizeTaskDeletion !== "function"
       || typeof this.store.listTaskDeletionBlockingAssociations !== "function"
       || typeof this.store.listSessionsByTask !== "function") {
@@ -21,6 +24,85 @@ export class TaskDeletionService {
     for (const method of ["inspectWorktree", "removeWorktree", "deleteSession", "handleArtifacts"]) {
       if (typeof this[method] !== "function") throw new TypeError(`TaskDeletionService requires ${method}().`);
     }
+  }
+
+  async request(taskId, input = {}, actor = null) {
+    const requestedKey = String(input.idempotencyKey ?? "").trim();
+    if (requestedKey) {
+      const replay = this.store.getTaskDeletionOperationByKey(taskId, requestedKey);
+      if (replay) return { accepted: true, operation: replay, idempotentReplay: true };
+    }
+    const plan = await this.inspect(taskId, actor);
+    this.#assertDeletionAllowed(plan, input);
+    const operation = this.store.beginTaskDeletionOperation(
+      taskId,
+      input,
+      requestedKey || `task-delete:${randomUUID()}`
+    );
+    this.onChanged("TaskChanged", {
+      action: "deletion-started",
+      entity: this.store.getTask(taskId),
+      operation
+    });
+    if (["queued", "running"].includes(operation.state)) this.#schedule(operation.operationId);
+    return { accepted: true, operation, idempotentReplay: false };
+  }
+
+  getOperation(operationId) {
+    const operation = this.store.getTaskDeletionOperation(operationId);
+    if (!operation) throw coded("TASK_DELETE_OPERATION_NOT_FOUND", "Task deletion operation was not found.", 404);
+    return operation;
+  }
+
+  recoverInterruptedDeletions() {
+    const operations = this.store.listRecoverableTaskDeletionOperations();
+    for (const operation of operations) this.#schedule(operation.operationId);
+    return operations.length;
+  }
+
+  #schedule(operationId) {
+    if (this.inFlight.has(operationId)) return this.inFlight.get(operationId);
+    const promise = this.#drive(operationId).finally(() => this.inFlight.delete(operationId));
+    this.inFlight.set(operationId, promise);
+    return promise;
+  }
+
+  async #drive(operationId) {
+    let operation = this.getOperation(operationId);
+    if (["succeeded", "failed"].includes(operation.state)) return operation;
+    operation = this.store.updateTaskDeletionOperation(operationId, {
+      state: "running",
+      stage: "cleanup",
+      startedAt: operation.startedAt ?? new Date().toISOString(),
+      attempt: operation.state === "running" ? operation.attempt + 1 : operation.attempt
+    });
+    try {
+      const result = await this.delete(operation.taskId, operation.input, { type: "user", id: "user:local-macos" });
+      operation = this.store.updateTaskDeletionOperation(operationId, {
+        state: "succeeded",
+        stage: "completed",
+        result,
+        errorCode: null,
+        errorMessage: null,
+        retryable: false,
+        completedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      operation = this.store.updateTaskDeletionOperation(operationId, {
+        state: "failed",
+        stage: error?.stage ?? "cleanup",
+        errorCode: error?.code ?? "TASK_DELETE_FAILED",
+        errorMessage: actionableFailure(error),
+        retryable: true,
+        completedAt: new Date().toISOString()
+      });
+    }
+    this.onChanged("TaskChanged", {
+      action: operation.state === "succeeded" ? "deleted" : "deletion-failed",
+      entity: this.store.getTask(operation.taskId) ?? { id: operation.taskId },
+      operation
+    });
+    return operation;
   }
 
   async inspect(taskId, actor = null) {
@@ -51,27 +133,9 @@ export class TaskDeletionService {
 
   async delete(taskId, input = {}, actor = null) {
     const plan = await this.inspect(taskId, actor);
+    this.#assertDeletionAllowed(plan, input);
     const deleteWorktree = input.deleteWorktree !== false;
     const artifactDisposition = input.artifactDisposition ?? "delete";
-    if (!ARTIFACT_DISPOSITIONS.has(artifactDisposition)) {
-      throw coded("TASK_ARTIFACT_DISPOSITION_INVALID", `Unsupported Artifact disposition: ${artifactDisposition}`, 400);
-    }
-    const effectiveBlockers = deleteWorktree
-      ? plan.blockers
-      : plan.blockers.filter((blocker) => blocker.code === "START_IN_PROGRESS");
-    if (effectiveBlockers.length > 0) {
-      throw coded("TASK_DELETE_BLOCKED", effectiveBlockers[0].message, 409, { deletion: plan });
-    }
-    const force = input.mode === "force";
-    if (deleteWorktree && plan.risks.length > 0 && !force) {
-      throw coded(
-        "TASK_DELETE_RISK_CONFIRMATION_REQUIRED",
-        "Task 的专属 Worktree 含有可能丢失的内容。请先合并，或经过二次确认后强制删除。",
-        409,
-        { deletion: plan }
-      );
-    }
-    if (deleteWorktree && force) this.#assertForceConfirmation(plan, input);
 
     this.store.markTaskDeletion(taskId, "deleting", null);
     let cleanup = null;
@@ -94,7 +158,7 @@ export class TaskDeletionService {
         cleanup = await this.removeWorktree({
           taskId,
           inspection: plan.inspection,
-          force,
+          force: input.mode === "force",
           confirmedBranchName: input.confirmedBranchName
         });
         this.store.markTaskWorktreeRemoved(taskId);
@@ -116,6 +180,30 @@ export class TaskDeletionService {
         error?.statusCode ?? 409
       );
     }
+  }
+
+  #assertDeletionAllowed(plan, input) {
+    const deleteWorktree = input.deleteWorktree !== false;
+    const artifactDisposition = input.artifactDisposition ?? "delete";
+    if (!ARTIFACT_DISPOSITIONS.has(artifactDisposition)) {
+      throw coded("TASK_ARTIFACT_DISPOSITION_INVALID", `Unsupported Artifact disposition: ${artifactDisposition}`, 400);
+    }
+    const effectiveBlockers = deleteWorktree
+      ? plan.blockers
+      : plan.blockers.filter((blocker) => blocker.code === "START_IN_PROGRESS");
+    if (effectiveBlockers.length > 0) {
+      throw coded("TASK_DELETE_BLOCKED", effectiveBlockers[0].message, 409, { deletion: plan });
+    }
+    const force = input.mode === "force";
+    if (deleteWorktree && plan.risks.length > 0 && !force) {
+      throw coded(
+        "TASK_DELETE_RISK_CONFIRMATION_REQUIRED",
+        "Task 的专属 Worktree 含有可能丢失的内容。请先合并，或经过二次确认后强制删除。",
+        409,
+        { deletion: plan }
+      );
+    }
+    if (deleteWorktree && force) this.#assertForceConfirmation(plan, input);
   }
 
   #assertForceConfirmation(plan, input) {
