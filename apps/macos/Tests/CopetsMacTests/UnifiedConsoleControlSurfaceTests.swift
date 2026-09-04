@@ -188,6 +188,21 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func expandedWorkOutlineUsesIndentedChildrenInsideGroupedCards() throws {
+        #expect(ConsoleWorkOutlineMetrics.childIndent == 24)
+        #expect(ConsoleWorkOutlineMetrics.groupCornerRadius == 8)
+        #expect(ConsoleWorkOutlineMetrics.groupHorizontalInset == 6)
+
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(source.contains("Color.black.opacity(0.065)"))
+        #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
+        #expect(source.contains("outlineWorkEmptyRow"))
+        #expect(source.contains("outlineChildSelectionBackground"))
+        #expect(source.contains(".listRowBackground(Color.clear)"))
+        #expect(source.contains(".listRowSeparator(.hidden)"))
+    }
+
+    @Test
     func navigationCardWidthIsResizableAndPersisted() throws {
         #expect(ConsoleNavigationCardWidthPolicy.clamped(120) == 220)
         #expect(ConsoleNavigationCardWidthPolicy.clamped(360) == 360)
