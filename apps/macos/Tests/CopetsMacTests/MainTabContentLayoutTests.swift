@@ -10,6 +10,7 @@ struct MainTabContentLayoutTests {
         #expect(AppTab.automations.index == 1)
         #expect(AppTab.worktrees.index == 2)
         #expect(AppTab.agents.index == 3)
+        #expect(AppTab.console.systemImage == "circle.hexagongrid.fill")
     }
 
     @Test
@@ -22,6 +23,9 @@ struct MainTabContentLayoutTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("root = AnyView(UnifiedConsoleView())"))
+        #expect(contents.contains("case .console: L10n(\"Workbench\")"))
+        #expect(contents.contains("case .console: \"circle.hexagongrid.fill\""))
+        #expect(!contents.contains("case .console: \"square.grid.2x2\""))
         #expect(!contents.contains("case sessions"))
         #expect(!contents.contains("root = AnyView(WarRoomView())"))
         #expect(contents.contains("selectTab(.console)"))

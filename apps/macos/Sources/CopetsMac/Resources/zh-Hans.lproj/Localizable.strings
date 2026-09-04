@@ -855,6 +855,7 @@
 
 /* Shared navigation and entity vocabulary */
 "Console" = "控制台";
+"Workbench" = "工作台";
 "Sessions" = "会话";
 "Session" = "会话";
 "Chat" = "聊天";
