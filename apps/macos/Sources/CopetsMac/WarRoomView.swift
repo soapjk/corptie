@@ -1128,6 +1128,7 @@ struct CorptieTaskDetailView: View {
             // 以 task 作为 task 标识：当父层重新拉取、currentSessionId 等字段变化时，
             // 本视图会拿到新的 task 值并重新刷新「当前执行」，避免依赖陈旧的 currentSessionId。
             await refreshExecution()
+            await ensureCompanionSessionIfNeeded()
             if isCompleted { await refreshWorktree() }
         }
         .sheet(isPresented: $showEdit) {
@@ -1913,6 +1914,56 @@ struct CorptieTaskDetailView: View {
         } else {
             memories = []
         }
+    }
+
+    /// A non-completed Task without a Worker Session is an incomplete product
+    /// state, not a user decision. Opening its detail repairs that state in the
+    /// background through the same idempotent startup endpoint used at creation.
+    private func ensureCompanionSessionIfNeeded() async {
+        guard !isCompleted, currentSession == nil, !isLaunchingExecution else { return }
+        guard let agentId = task.mainAgentId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !agentId.isEmpty else {
+            executionError = EntityLaunchError(
+                message: L10n("CorptieTask 没有负责 Agent，无法自动创建伴生 Session。"),
+                code: "START_ASSIGNEE_REQUIRED"
+            )
+            return
+        }
+        isLaunchingExecution = true
+        defer { isLaunchingExecution = false }
+
+        if backendClient.agentProviders.isEmpty {
+            await backendClient.loadProviders()
+        }
+        let providerId = CorptieTaskCreateProviderPolicy.selection(
+            current: "",
+            preferred: backendClient.defaultSessionProviderId,
+            providers: backendClient.agentProviders
+        )
+        guard !providerId.isEmpty else {
+            executionError = EntityLaunchError(
+                message: L10n("没有可创建 Session 的 Provider。"),
+                code: "SESSION_PROVIDER_NOT_FOUND"
+            )
+            return
+        }
+
+        let result = await client.createSession(
+            taskId: task.id,
+            agentId: agentId,
+            providerId: providerId,
+            title: task.title
+        )
+        guard let session = result.session else {
+            executionError = result.error ?? EntityLaunchError(
+                message: client.errorMessage ?? L10n("创建伴生 Session 失败"),
+                code: nil
+            )
+            return
+        }
+        backendClient.acceptCreatedSession(session, selectImmediately: false)
+        await refreshExecution()
+        onRequestReload()
     }
 
     private func kindLabel(_ kind: String) -> String {
