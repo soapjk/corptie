@@ -31,6 +31,9 @@ export function appliedToolMaterializationReceipt(input = {}) {
     ...(input.providerDefinitionsHash == null ? {} : {
       providerDefinitionsHash: required(input.providerDefinitionsHash, "providerDefinitionsHash")
     }),
+    ...(input.providerContractHash == null ? {} : {
+      providerContractHash: required(input.providerContractHash, "providerContractHash")
+    }),
     ...(input.providerDefinitionsCount == null ? {} : {
       providerDefinitionsCount: nonNegativeInteger(input.providerDefinitionsCount, "providerDefinitionsCount")
     }),
@@ -64,11 +67,22 @@ export function validateToolMaterializationReceipt(receipt, expected) {
     }
   }
   if (receipt?.providerDefinitionsHash != null
-    && receipt.providerDefinitionsHash !== expected.providerDefinitionsHash) {
+    && receipt.providerDefinitionsHash !== expected.providerDefinitionsHash
+    && (expected.providerContractHash == null
+      || receipt?.providerContractHash !== expected.providerContractHash)) {
     const error = new Error("Provider Tool receipt providerDefinitionsHash did not match the requested materialization.");
     error.code = "PROVIDER_TOOL_RECEIPT_INVALID";
     error.statusCode = 502;
     error.field = "providerDefinitionsHash";
+    throw error;
+  }
+  if (receipt?.providerContractHash != null
+    && expected.providerContractHash != null
+    && receipt.providerContractHash !== expected.providerContractHash) {
+    const error = new Error("Provider Tool receipt providerContractHash did not match the requested materialization.");
+    error.code = "PROVIDER_TOOL_RECEIPT_INVALID";
+    error.statusCode = 502;
+    error.field = "providerContractHash";
     throw error;
   }
   if (expected.providerDefinitionsCount != null

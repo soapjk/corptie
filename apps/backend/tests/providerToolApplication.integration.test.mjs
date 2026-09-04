@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
-import { schemaHash } from "../src/application/hostToolCatalog.mjs";
+import {
+  schemaHash,
+  toolDefinitionsContractHash
+} from "../src/application/hostToolCatalog.mjs";
 import { OpenClackyManager } from "../src/adapters/openClackyManager.mjs";
 
 const toolDefinitions = [{
@@ -92,6 +95,32 @@ test("Codex accepts an exact durable Tool-definition hash without the legacy exc
   );
   assert.equal(confirmation.restored, true);
   assert.equal(confirmation.providerDefinitionsHash, schemaHash(toolDefinitions));
+});
+
+test("Codex restores a stale description when the installed invocation contract is unchanged", () => {
+  const client = new CodexAppServerClient();
+  const installed = toolDefinitions.map((definition) => ({
+    ...definition,
+    description: "Older Provider guidance"
+  }));
+  const restored = client.restoreThreadToolPlanConfirmation(
+    "thread:compatible-description",
+    toolDefinitions,
+    {
+      providerRevision: "thread-start:thread:compatible-description:confirmed",
+      providerDefinitionsHash: schemaHash(installed),
+      providerContractHash: toolDefinitionsContractHash(installed),
+      providerDefinitionsCount: installed.length,
+      providerObservationKind: "thread_start_accepted"
+    }
+  );
+  assert.equal(restored.definitionFreshness, "stale_compatible");
+  assert.equal(restored.providerDefinitionsHash, schemaHash(installed));
+  assert.equal(restored.providerContractHash, toolDefinitionsContractHash(toolDefinitions));
+  assert.doesNotThrow(() => client.confirmThreadToolPlan(
+    "thread:compatible-description",
+    toolDefinitions
+  ));
 });
 
 test("OpenClacky gateway requires an explicit applied generation from the bridge", async () => {

@@ -20,7 +20,7 @@ async function fixture(overrides = {}) {
     logicalSessionId: "logical:worker", providerThreadId: "thread:worker", providerSessionId: "thread:worker",
     bindingId: "binding:worker", providerId: "fake", boundCwd: directory, sessionName: "Tool Worker"
   });
-  const catalog = new HostToolCatalog([
+  const catalog = overrides.catalog ?? new HostToolCatalog([
     {
       id: "artifacts",
       tools: [
@@ -63,7 +63,7 @@ async function fixture(overrides = {}) {
     resolveBinding: async () => ({ ...binding }),
     onEvent: (type, details) => events.push({ type, details })
   });
-  return { directory, store, catalog, binding, coordinator, events, get applyCount() { return applyCount; } };
+  return { directory, store, catalog, binding, coordinator, port, events, get applyCount() { return applyCount; } };
 }
 
 function receipt(input, patch = {}) {
@@ -143,6 +143,143 @@ test("invalidating an applied proof keeps the existing binding and fails readine
     assert.equal(invalidated.lastErrorSummary, "Explicit Recovery is required.");
     assert.equal(value.store.getLogicalSession("logical:worker").activeBinding.bindingId, "binding:worker");
     assert.equal(value.events.at(-1).type, "applied_proof_invalidated");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("a bootstrap replacement failure is normalized to a Session recovery requirement", async () => {
+  const value = await fixture({
+    apply: async () => {
+      const error = new Error("Codex did not confirm this Tool schema on thread/start.");
+      error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+      throw error;
+    }
+  });
+  try {
+    await assert.rejects(() => value.coordinator.ensureApplied({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker"
+    }), { code: "SESSION_TOOL_CATALOG_REFRESH_FAILED" });
+    const normalized = await value.coordinator.markBindingRecoveryRequired(
+      "logical:worker",
+      "binding:worker",
+      "PROVIDER_TOOL_RECOVERY_REQUIRED",
+      "Start Session Recovery."
+    );
+    assert.equal(normalized.status, "error");
+    assert.equal(normalized.lastErrorCode, "PROVIDER_TOOL_RECOVERY_REQUIRED");
+    assert.equal(normalized.lastErrorSummary, "Start Session Recovery.");
+    assert.equal(value.store.getLogicalSession("logical:worker").activeBinding.bindingId, "binding:worker");
+    assert.equal(value.events.at(-1).type, "binding_recovery_required");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("description-only definition upgrades adopt the existing Provider contract without another apply", async () => {
+  const catalog = (description) => new HostToolCatalog([{
+    id: "artifacts",
+    tools: [{
+      name: "corptie_artifact_create",
+      description,
+      inputSchema: { type: "object", properties: { title: { type: "string" } } }
+    }],
+    execute: () => null
+  }]);
+  const value = await fixture({
+    catalog: catalog("Old description"),
+    apply: async (input) => receipt(input, {
+      providerDefinitionsHash: input.plan.providerDefinitionsHash,
+      providerContractHash: input.plan.providerContractHash,
+      providerDefinitionsCount: input.plan.providerDefinitions.length,
+      providerObservationKind: "provider_schema_accepted"
+    })
+  });
+  try {
+    await value.coordinator.ensureApplied({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker"
+    });
+    value.store.db.run(
+      `UPDATE session_tool_catalog_materializations
+       SET status='error', desired_version='legacy-definition-version',
+           last_error_code='PROVIDER_TOOL_APPLICATION_UNCONFIRMED'`
+    );
+    const upgraded = new ToolHostMaterializationCoordinator({
+      store: value.store,
+      catalog: catalog("New description and usage guidance"),
+      providerPort: value.port,
+      resolveBinding: async () => ({ ...value.binding }),
+      onEvent: (type, details) => value.events.push({ type, details })
+    });
+    const result = await upgraded.ensureApplied({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker"
+    });
+    assert.equal(result.status, "applied");
+    assert.equal(value.applyCount, 1);
+    assert.equal(result.record.exposurePlan.definitionFreshness, "stale_compatible");
+    assert.notEqual(
+      result.record.providerReceipt.providerDefinitionsHash,
+      result.record.exposurePlan.providerDefinitionsHash
+    );
+    assert.equal(
+      result.record.providerReceipt.providerContractHash,
+      result.record.exposurePlan.providerContractHash
+    );
+    assert.equal(value.events.at(-1).type, "materialization_definition_compatibility_adopted");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("the audited v1 bootstrap definition receipt upgrades by contract without replacing Codex", async () => {
+  const value = await fixture({
+    capability: {
+      bootstrapAttach: true,
+      appendInPlace: false,
+      replaceAtTurnBoundary: false,
+      generatedMcpRefresh: false,
+      restrictedGateway: true,
+      bindingReplacement: true,
+      definitionMetadataRefresh: "none",
+      capabilityRevision: "fake:capability:1"
+    },
+    apply: async (input) => receipt(input, {
+      providerDefinitionsHash: input.plan.providerDefinitionsHash,
+      providerContractHash: input.plan.providerContractHash,
+      providerDefinitionsCount: input.plan.providerDefinitions.length,
+      providerObservationKind: "thread_start_accepted"
+    })
+  });
+  try {
+    await value.coordinator.ensureApplied({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker"
+    });
+    const current = value.store.getSessionToolCatalogMaterialization("logical:worker", "binding:worker");
+    const legacyReceipt = { ...current.providerReceipt };
+    delete legacyReceipt.providerContractHash;
+    legacyReceipt.providerDefinitionsHash = "b57c8ea168bd12a45b3b3f1d832c450027fdf7587d86d0add42654b4531f502f";
+    value.store.db.run(
+      `UPDATE session_tool_catalog_materializations
+       SET status='error', desired_version='legacy-bootstrap-v1',
+           provider_receipt_json=?, last_error_code='PROVIDER_TOOL_APPLICATION_UNCONFIRMED'`,
+      [JSON.stringify(legacyReceipt)]
+    );
+    const result = await value.coordinator.ensureApplied({
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker"
+    });
+    assert.equal(result.status, "applied");
+    assert.equal(value.applyCount, 1);
+    assert.equal(result.record.exposurePlan.definitionFreshness, "stale_compatible");
+    assert.equal(result.record.providerReceipt.providerDefinitionsHash, legacyReceipt.providerDefinitionsHash);
+    assert.equal(result.record.providerReceipt.providerContractHash, undefined);
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });

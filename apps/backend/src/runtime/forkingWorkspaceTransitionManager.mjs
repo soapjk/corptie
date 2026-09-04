@@ -1,9 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   permissionSnapshotFromAppServerResponse,
   validateWorkspaceInstructionSources,
   workspaceTransitionContext
 } from "../utils/workspaceTransitionValidation.mjs";
+import {
+  providerContractHashFromReceipt,
+  toolDefinitionsContractHash
+} from "../application/hostToolCatalog.mjs";
 
 export class ForkingWorkspaceTransitionManager {
   constructor(options) {
@@ -769,14 +773,14 @@ export function workspaceContinuationPrompt(value = null, transitionId = null) {
 function requireExactDynamicToolConfirmation(threadId, options = {}, errorCode = null) {
   if (!Array.isArray(options.dynamicTools)) return null;
   const proof = normalizeDynamicToolConfirmation(options.dynamicToolConfirmation);
-  const expectedHash = hashDynamicToolDefinitions(options.dynamicTools);
+  const expectedContractHash = toolDefinitionsContractHash(options.dynamicTools);
   const providerRevision = proof?.providerRevision ?? "";
   const exactThreadRevision = providerRevision.startsWith(`thread-start:${threadId}:`)
     || providerRevision.startsWith(`thread-fork-inherited:${threadId}:`);
   const exactCount = proof?.providerDefinitionsCount === options.dynamicTools.length;
   if (!proof
     || !exactThreadRevision
-    || proof.providerDefinitionsHash !== expectedHash
+    || providerContractHashFromReceipt(proof, options.dynamicTools) !== expectedContractHash
     || !exactCount) {
     throw dynamicToolConfirmationError(
       "The Tool schema proof did not match the Provider thread and exact Tool definitions.",
@@ -794,7 +798,8 @@ function requireExactDynamicToolConfirmation(threadId, options = {}, errorCode =
   }
   return {
     providerRevision,
-    providerDefinitionsHash: expectedHash,
+    providerDefinitionsHash: proof.providerDefinitionsHash,
+    providerContractHash: expectedContractHash,
     providerDefinitionsCount: options.dynamicTools.length,
     providerObservationKind
   };
@@ -809,6 +814,9 @@ function normalizeDynamicToolConfirmation(value) {
     providerDefinitionsHash: typeof value.providerDefinitionsHash === "string"
       ? value.providerDefinitionsHash.trim()
       : "",
+    providerContractHash: typeof value.providerContractHash === "string"
+      ? value.providerContractHash.trim()
+      : "",
     providerDefinitionsCount: value.providerDefinitionsCount == null
       ? null
       : Number(value.providerDefinitionsCount),
@@ -816,24 +824,6 @@ function normalizeDynamicToolConfirmation(value) {
       ? value.providerObservationKind.trim()
       : (typeof value.observationKind === "string" ? value.observationKind.trim() : "")
   };
-}
-
-function hashDynamicToolDefinitions(definitions) {
-  return createHash("sha256")
-    .update(stableDynamicToolDefinitions(definitions))
-    .digest("hex");
-}
-
-function stableDynamicToolDefinitions(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map(stableDynamicToolDefinitions).join(",")}]`;
-  }
-  if (value && typeof value === "object") {
-    return `{${Object.keys(value).sort().map((key) => (
-      `${JSON.stringify(key)}:${stableDynamicToolDefinitions(value[key])}`
-    )).join(",")}}`;
-  }
-  return JSON.stringify(value);
 }
 
 function replacementDynamicToolMetadata(value, providerBindingId, routingVersion, bindingGeneration) {

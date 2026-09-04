@@ -9,6 +9,9 @@ export const TOOL_CATALOG_SEARCH = "corptie_tool_catalog_search";
 export const TOOL_DOMAIN_LOAD = "corptie_tool_domain_load";
 export const TOOL_RESTRICTED_GATEWAY = "corptie_tool_call";
 export const TOOL_HOST_BOOTSTRAP_ABI_REVISION = "tool-host-bootstrap:2";
+export const TOOL_HOST_BOOTSTRAP_CONTRACT_REVISION = "tool-host-contract:1";
+export const TOOL_HOST_BOOTSTRAP_GUIDANCE_REVISION = "tool-host-guidance:2";
+export const TOOL_HOST_BOOTSTRAP_COMPATIBILITY_EPOCH = 1;
 export const TOOL_DELIVERY_SURFACES = Object.freeze([
   "native_dynamic", "generated_authenticated_mcp", "restricted_gateway"
 ]);
@@ -61,6 +64,15 @@ export const TOOL_HOST_BOOTSTRAP_ABI_DEFINITIONS = Object.freeze([
 // recomputes it from the three entry definitions so ordinary Tool additions
 // cannot silently force every existing Provider binding to be replaced.
 export const TOOL_HOST_BOOTSTRAP_SCHEMA_HASH = "271bf54a6dcf48623938937de25af17dc383ab3705feb3a40213418b840035ec";
+export const TOOL_HOST_BOOTSTRAP_CONTRACT_HASH = "0716b25882249ffd01a4a31ee9effaa5ef6d46a71e02457c6713e4ca48fcddf2";
+
+// Definition hashes are exact Provider payload identities. This registry does
+// not claim that an old payload was refreshed; it only records audited wire-
+// contract compatibility for receipts created before contract hashes existed.
+const LEGACY_PROVIDER_DEFINITION_CONTRACT_HASHES = Object.freeze({
+  b57c8ea168bd12a45b3b3f1d832c450027fdf7587d86d0add42654b4531f502f:
+    "499142548fe15dbac05ea6362f785ff25bccc07967b22688b25e046ac4a9d37f"
+});
 
 export class HostToolCatalog {
   constructor(namespaces = [], options = {}) {
@@ -219,6 +231,15 @@ export class HostToolCatalog {
     })).sort((left, right) => left.canonicalName.localeCompare(right.canonicalName));
     const catalogJson = stableStringify(canonical);
     const catalogVersion = `${TOOL_HOST_CONTRACT_REVISION}:${sha256(`${catalogJson}${this.hostToolContractRevision}`)}`;
+    const contractCatalog = canonical.map((entry) => ({
+      canonicalName: entry.canonicalName,
+      domainId: entry.domainId,
+      domainRevision: entry.domainRevision,
+      exposure: entry.exposure,
+      contract: toolContractProjection(entry.definition),
+      eligibleSurfaces: entry.eligibleSurfaces
+    }));
+    const catalogContractVersion = `${TOOL_HOST_CONTRACT_REVISION}-contract:${sha256(stableStringify(contractCatalog))}`;
     const domains = [];
     const grouped = new Map();
     for (const entry of canonical) {
@@ -230,20 +251,28 @@ export class HostToolCatalog {
       const definitions = entries.map((entry) => entry.definition);
       const revisions = [...new Set(entries.map((entry) => entry.domainRevision))].sort();
       const schemaJson = stableStringify(definitions);
+      const contractJson = stableStringify(definitions.map(toolContractProjection));
       domains.push(Object.freeze({
         domainId,
         domainRevision: revisions.join("+"),
         canonicalToolNames: Object.freeze(entries.map((entry) => entry.canonicalName).sort()),
         schemaHash: sha256(schemaJson),
+        definitionHash: sha256(schemaJson),
+        contractHash: sha256(contractJson),
         schemaBytes: Buffer.byteLength(schemaJson),
         sourceIds: Object.freeze([...new Set(entries.map((entry) => entry.source.sourceId))].sort())
       }));
     }
     return Object.freeze({
       catalogVersion,
+      catalogContractVersion,
       hostToolContractRevision: this.hostToolContractRevision,
       bootstrapAbiRevision: TOOL_HOST_BOOTSTRAP_ABI_REVISION,
       bootstrapSchemaHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
+      bootstrapContractRevision: TOOL_HOST_BOOTSTRAP_CONTRACT_REVISION,
+      bootstrapContractHash: TOOL_HOST_BOOTSTRAP_CONTRACT_HASH,
+      bootstrapGuidanceRevision: TOOL_HOST_BOOTSTRAP_GUIDANCE_REVISION,
+      bootstrapDefinitionHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
       generatedAt: new Date().toISOString(),
       bootstrap: Object.freeze([TOOL_CATALOG_SEARCH, TOOL_DOMAIN_LOAD]),
       domains: Object.freeze(domains)
@@ -313,19 +342,60 @@ export function schemaHash(definition) {
   return sha256(stableStringify(definition));
 }
 
+export function toolContractProjection(definition = {}) {
+  return Object.freeze({
+    name: definition.name,
+    inputSchema: definition.inputSchema,
+    ...(definition.outputSchema === undefined ? {} : { outputSchema: definition.outputSchema }),
+    deferLoading: definition.deferLoading === true
+  });
+}
+
+export function toolDefinitionsContractHash(definitions = [], options = {}) {
+  const projected = definitions.map(toolContractProjection);
+  const value = options.bootstrap === true
+    ? { compatibilityEpoch: TOOL_HOST_BOOTSTRAP_COMPATIBILITY_EPOCH, definitions: projected }
+    : projected;
+  return sha256(stableStringify(value));
+}
+
+export function providerContractHashFromReceipt(receipt = {}, definitions = null) {
+  if (typeof receipt.providerContractHash === "string" && receipt.providerContractHash.trim()) {
+    return receipt.providerContractHash.trim();
+  }
+  const exactHash = typeof receipt.providerDefinitionsHash === "string"
+    ? receipt.providerDefinitionsHash.trim()
+    : "";
+  if (exactHash && LEGACY_PROVIDER_DEFINITION_CONTRACT_HASHES[exactHash]) {
+    return LEGACY_PROVIDER_DEFINITION_CONTRACT_HASHES[exactHash];
+  }
+  if (Array.isArray(definitions) && exactHash === schemaHash(definitions)) {
+    return toolDefinitionsContractHash(definitions);
+  }
+  return null;
+}
+
 export function computedToolHostBootstrapSchemaHash() {
   return sha256(stableStringify(TOOL_HOST_BOOTSTRAP_ABI_DEFINITIONS));
 }
 
+export function computedToolHostBootstrapContractHash() {
+  return toolDefinitionsContractHash(TOOL_HOST_BOOTSTRAP_ABI_DEFINITIONS, { bootstrap: true });
+}
+
 function assertBootstrapAbi() {
   const actual = computedToolHostBootstrapSchemaHash();
-  if (actual === TOOL_HOST_BOOTSTRAP_SCHEMA_HASH) return;
+  const actualContract = computedToolHostBootstrapContractHash();
+  if (actual === TOOL_HOST_BOOTSTRAP_SCHEMA_HASH
+    && actualContract === TOOL_HOST_BOOTSTRAP_CONTRACT_HASH) return;
   const error = catalogError(
     "TOOL_BOOTSTRAP_ABI_DRIFT",
     `Tool Host bootstrap ABI ${TOOL_HOST_BOOTSTRAP_ABI_REVISION} changed without an explicit hash migration.`
   );
   error.expectedHash = TOOL_HOST_BOOTSTRAP_SCHEMA_HASH;
   error.actualHash = actual;
+  error.expectedContractHash = TOOL_HOST_BOOTSTRAP_CONTRACT_HASH;
+  error.actualContractHash = actualContract;
   throw error;
 }
 

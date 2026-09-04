@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { buildToolExposurePlan } from "./toolExposurePlan.mjs";
-import { stableStringify } from "./hostToolCatalog.mjs";
+import {
+  providerContractHashFromReceipt,
+  stableStringify
+} from "./hostToolCatalog.mjs";
 import { searchableDomainText } from "./toolDiscoveryContracts.mjs";
 import {
   appliedToolMaterializationReceipt,
@@ -46,13 +49,45 @@ export class ToolHostMaterializationCoordinator {
       plan.surface
     );
     const desiredVersion = desiredMaterializationVersion({
-      catalogVersion: snapshot.catalogVersion,
+      catalogContractVersion: snapshot.catalogContractVersion,
       authorizationScopeFingerprint: authorizationScopeFingerprint(binding),
       providerCapabilityRevision: capability.capabilityRevision,
       assignedSkillMcpRevision: input.assignedSkillMcpRevision ?? "none",
       desiredDomains: domainRecords,
-      exposurePlanHash: plan.exposurePlanHash
+      exposureContractHash: plan.exposureContractHash
     });
+    if (compatibleDefinitionOnly(record, binding, capability, plan, desiredVersion)) {
+      const installedDefinitionsHash = record.providerReceipt.providerDefinitionsHash;
+      const compatiblePlan = {
+        ...plan,
+        definitionFreshness: installedDefinitionsHash === plan.providerDefinitionsHash
+          ? "current"
+          : "stale_compatible",
+        installedProviderDefinitionsHash: installedDefinitionsHash,
+        compatibilityProof: {
+          kind: "provider_contract_hash_match",
+          providerContractHash: plan.providerContractHash,
+          sourceReceiptId: record.providerReceipt.receiptId ?? null,
+          observedAt: this.clock()
+        }
+      };
+      const adopted = this.store.adoptCompatibleSessionToolCatalogDefinition({
+        logicalSessionId: binding.logicalSessionId,
+        providerBindingId: binding.providerBindingId,
+        desiredVersion,
+        desiredCatalogVersion: snapshot.catalogVersion,
+        desiredDomains: domainRecords,
+        exposurePlan: compatiblePlan,
+        updatedAt: this.clock()
+      }, record.resourceVersion);
+      if (!adopted) return this.ensureApplied(input);
+      this.#emit("materialization_definition_compatibility_adopted", {
+        binding,
+        desiredVersion,
+        definitionFreshness: compatiblePlan.definitionFreshness
+      });
+      return Object.freeze({ status: "applied", record: adopted, plan: compatiblePlan, snapshot, joined: false });
+    }
     if (!matchesDesired(record, desiredVersion, snapshot.catalogVersion, domainRecords, plan)) {
       record = this.store.writeSessionToolCatalogDesired({
         logicalSessionId: binding.logicalSessionId,
@@ -103,6 +138,9 @@ export class ToolHostMaterializationCoordinator {
     const confirmation = input.providerConfirmation ?? {};
     if (typeof confirmation.providerDefinitionsHash !== "string"
       || !confirmation.providerDefinitionsHash.trim()
+      || confirmation.providerDefinitionsHash !== plan.providerDefinitionsHash
+      || (confirmation.providerContractHash != null
+        && confirmation.providerContractHash !== plan.providerContractHash)
       || !Number.isSafeInteger(confirmation.providerDefinitionsCount)
       || typeof (confirmation.providerObservationKind ?? confirmation.observationKind) !== "string"
       || !(confirmation.providerObservationKind ?? confirmation.observationKind).trim()) {
@@ -120,6 +158,7 @@ export class ToolHostMaterializationCoordinator {
       appliedDomains: domainRecords,
       appliedExposurePlanHash: plan.exposurePlanHash,
       providerDefinitionsHash: confirmation.providerDefinitionsHash,
+      providerContractHash: confirmation.providerContractHash ?? plan.providerContractHash,
       providerDefinitionsCount: confirmation.providerDefinitionsCount,
       providerObservationKind: confirmation.providerObservationKind ?? confirmation.observationKind,
       refreshMode: plan.refreshMode,
@@ -135,6 +174,7 @@ export class ToolHostMaterializationCoordinator {
       catalogVersion: snapshot.catalogVersion,
       exposurePlanHash: plan.exposurePlanHash,
       providerDefinitionsHash: plan.providerDefinitionsHash,
+      providerContractHash: plan.providerContractHash,
       providerDefinitionsCount: plan.providerDefinitions.length,
       appliedDomains: domainRecords
     });
@@ -208,12 +248,12 @@ export class ToolHostMaterializationCoordinator {
       plan.surface
     );
     const desiredVersion = desiredMaterializationVersion({
-      catalogVersion: snapshot.catalogVersion,
+      catalogContractVersion: snapshot.catalogContractVersion,
       authorizationScopeFingerprint: authorizationScopeFingerprint(binding),
       providerCapabilityRevision: capability.capabilityRevision,
       assignedSkillMcpRevision: input.assignedSkillMcpRevision ?? "none",
       desiredDomains: domainRecords,
-      exposurePlanHash: plan.exposurePlanHash
+      exposureContractHash: plan.exposureContractHash
     });
     return { binding, capability, snapshot, plan, domainRecords, desiredVersion };
   }
@@ -348,6 +388,21 @@ export class ToolHostMaterializationCoordinator {
     return failed;
   }
 
+  async markBindingRecoveryRequired(logicalSessionId, providerBindingId, errorCode, errorSummary) {
+    const binding = await this.#binding(logicalSessionId, providerBindingId);
+    const current = this.store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
+    if (!current || !["applied", "error"].includes(current.status)) return current;
+    const failed = this.store.markSessionToolCatalogRecoveryRequired({
+      logicalSessionId,
+      providerBindingId,
+      errorCode,
+      errorSummary,
+      updatedAt: this.clock()
+    }, current.resourceVersion);
+    if (failed) this.#emit("binding_recovery_required", { binding, desiredVersion: current.desiredVersion });
+    return failed;
+  }
+
   async reconcile(logicalSessionId, providerBindingId) {
     const binding = await this.#binding(logicalSessionId, providerBindingId);
     const record = this.store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
@@ -386,6 +441,7 @@ export class ToolHostMaterializationCoordinator {
       appliedDomains: current.desiredDomains,
       appliedExposurePlanHash: current.exposurePlan.exposurePlanHash,
       providerDefinitionsHash: current.exposurePlan.providerDefinitionsHash,
+      providerContractHash: current.exposurePlan.providerContractHash,
       refreshMode: current.exposurePlan.refreshMode,
       providerRevision: `mcp-tools-list:${observationId}`,
       receiptId: `mcp-tools-list:${binding.providerBindingId}:${current.desiredVersion}:${observationId}`
@@ -517,6 +573,7 @@ export class ToolHostMaterializationCoordinator {
       catalogVersion: current.desiredCatalogVersion,
       exposurePlanHash: current.exposurePlan.exposurePlanHash,
       providerDefinitionsHash: current.exposurePlan.providerDefinitionsHash,
+      providerContractHash: current.exposurePlan.providerContractHash,
       providerDefinitionsCount: receipt?.providerDefinitionsCount == null
         ? null
         : current.exposurePlan.providerDefinitions?.length,
@@ -619,12 +676,18 @@ export class RegistryToolMaterializationPort {
 
 export function desiredMaterializationVersion(input) {
   return sha256([
-    input.catalogVersion,
+    input.catalogContractVersion,
     input.authorizationScopeFingerprint,
     input.providerCapabilityRevision,
     input.assignedSkillMcpRevision,
-    stableStringify(input.desiredDomains),
-    input.exposurePlanHash
+    stableStringify((input.desiredDomains ?? []).map((domain) => ({
+      domainId: domain.domainId,
+      domainRevision: domain.domainRevision,
+      contractHash: domain.contractHash,
+      canonicalToolNames: domain.canonicalToolNames,
+      deliverySurface: domain.deliverySurface
+    }))),
+    input.exposureContractHash
   ].join("\0"));
 }
 
@@ -671,6 +734,16 @@ function materializedDomains(catalog, context, snapshot, desiredDomainIds, surfa
       domainId: domain.domainId,
       domainRevision: domain.domainRevision,
       schemaHash: authorizedSchemaHash,
+      definitionHash: authorizedSchemaHash,
+      contractHash: sha256(stableStringify(entries.map((entry) => ({
+        canonicalName: entry.canonicalName,
+        contract: entry.definition && {
+          name: entry.definition.name,
+          inputSchema: entry.definition.inputSchema,
+          ...(entry.definition.outputSchema === undefined ? {} : { outputSchema: entry.definition.outputSchema }),
+          deferLoading: entry.definition.deferLoading === true
+        }
+      })))),
       canonicalToolNames: Object.freeze(canonicalToolNames),
       deliverySurface: surface
     });
@@ -680,9 +753,39 @@ function materializedDomains(catalog, context, snapshot, desiredDomainIds, surfa
 function matchesDesired(record, version, catalogVersion, domains, plan) {
   return record
     && record.desiredVersion === version
-    && record.desiredCatalogVersion === catalogVersion
-    && stableStringify(record.desiredDomains) === stableStringify(domains)
-    && record.exposurePlan?.exposurePlanHash === plan.exposurePlanHash;
+    && stableStringify((record.desiredDomains ?? []).map(contractDomainRecord))
+      === stableStringify(domains.map(contractDomainRecord))
+    && record.exposurePlan?.exposureContractHash === plan.exposureContractHash;
+}
+
+function compatibleDefinitionOnly(record, binding, capability, plan, desiredVersion) {
+  if (!record || !["applied", "error"].includes(record.status)) return false;
+  if (record.status === "applied"
+    && record.appliedVersion === desiredVersion
+    && record.exposurePlan?.providerContractHash === plan.providerContractHash
+    && record.exposurePlan?.providerDefinitionsHash === plan.providerDefinitionsHash) return false;
+  const receipt = record.providerReceipt;
+  if (!receipt || receipt.providerBindingId !== binding.providerBindingId) return false;
+  if (receipt.providerCapabilityRevision !== capability.capabilityRevision) return false;
+  if (!receipt.providerObservationKind || !receipt.providerDefinitionsHash) return false;
+  const installedContractHash = providerContractHashFromReceipt(
+    receipt,
+    record.exposurePlan?.providerDefinitions
+  );
+  if (!installedContractHash || installedContractHash !== plan.providerContractHash) return false;
+  if (receipt.providerDefinitionsCount != null
+    && receipt.providerDefinitionsCount !== plan.providerDefinitions.length) return false;
+  return record.exposurePlan?.surface === plan.surface;
+}
+
+function contractDomainRecord(domain = {}) {
+  return {
+    domainId: domain.domainId,
+    domainRevision: domain.domainRevision,
+    contractHash: domain.contractHash,
+    canonicalToolNames: domain.canonicalToolNames,
+    deliverySurface: domain.deliverySurface
+  };
 }
 
 function catalogContext(binding) {

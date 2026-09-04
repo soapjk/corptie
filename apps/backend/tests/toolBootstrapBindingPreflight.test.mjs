@@ -38,6 +38,7 @@ function fixture(options = {}) {
   ]);
   const calls = [];
   const invalidations = [];
+  const recoveryMarkers = [];
   const service = new ToolBootstrapBindingPreflight({
     store: {
       listSessions: ({ archived }) => sessions.filter((session) => archived
@@ -57,12 +58,16 @@ function fixture(options = {}) {
       invalidateAppliedProof: async (...args) => {
         invalidations.push(args);
         return { status: "error", lastErrorCode: args[2] };
+      },
+      markBindingRecoveryRequired: async (...args) => {
+        recoveryMarkers.push(args);
+        return { status: "error", lastErrorCode: args[2] };
       }
     },
     isSessionBusy: (session) => session.status === "running",
     isAppliedProofCurrent: options.isAppliedProofCurrent,
   });
-  return { service, calls, invalidations };
+  return { service, calls, invalidations, recoveryMarkers };
 }
 
 test("startup preflight hot-applies only stale idle bindings and preserves desired domains", async () => {
@@ -98,7 +103,7 @@ test("startup preflight does not skip a claimed applied record with obsolete Pro
   assert.equal(result.hotApplied, 1);
   assert.equal(result.recoveryRequired, 1);
   assert.equal(value.calls.length, 1);
-  assert.deepEqual(value.invalidations[0].slice(0, 3), [
+  assert.deepEqual(value.recoveryMarkers[0].slice(0, 3), [
     "logical:1", "binding:1", "PROVIDER_TOOL_RECOVERY_REQUIRED"
   ]);
 });
@@ -117,7 +122,9 @@ test("startup preflight never replaces a binding when explicit Recovery is requi
   const result = await value.service.run();
   assert.equal(result.recoveryRequired, 1);
   assert.equal(result.failed, 0);
-  assert.equal(value.invalidations.length, 0);
+  assert.deepEqual(value.recoveryMarkers[0].slice(0, 3), [
+    "logical:0", "binding:0", "PROVIDER_TOOL_RECOVERY_REQUIRED"
+  ]);
 
   const ambiguous = fixture({ ensureApplied: async () => {
     throw Object.assign(new Error("unknown"), {

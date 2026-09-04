@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { SessionNotFoundError } from "../agent-provider/sessionApplicationService.mjs";
+import { toolDefinitionsContractHash } from "./hostToolCatalog.mjs";
 
 // Provider-neutral coordinator for switching a logical Session from its current
 // Session Provider to another one. It reuses the workspace_transitions state
@@ -476,6 +477,7 @@ function requireExactTargetToolConfirmation(threadId, definitions, value) {
   return {
     providerRevision: proof.providerRevision,
     providerDefinitionsHash: expectedHash,
+    providerContractHash: toolDefinitionsContractHash(definitions),
     providerDefinitionsCount: definitions.length,
     providerObservationKind: "thread_start_accepted"
   };
@@ -503,6 +505,9 @@ function normalizeToolConfirmation(value) {
       : "",
     providerDefinitionsHash: typeof value.providerDefinitionsHash === "string"
       ? value.providerDefinitionsHash.trim()
+      : "",
+    providerContractHash: typeof value.providerContractHash === "string"
+      ? value.providerContractHash.trim()
       : "",
     providerDefinitionsCount: value.providerDefinitionsCount == null
       ? null

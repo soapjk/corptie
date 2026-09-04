@@ -6,9 +6,13 @@ import {
   TOOL_DOMAIN_LOAD,
   TOOL_HOST_BOOTSTRAP_ABI_DEFINITIONS,
   TOOL_HOST_BOOTSTRAP_ABI_REVISION,
+  TOOL_HOST_BOOTSTRAP_CONTRACT_HASH,
   TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
   TOOL_RESTRICTED_GATEWAY,
-  computedToolHostBootstrapSchemaHash
+  computedToolHostBootstrapContractHash,
+  computedToolHostBootstrapSchemaHash,
+  schemaHash,
+  toolDefinitionsContractHash
 } from "../src/application/hostToolCatalog.mjs";
 
 function namespace(id = "artifacts") {
@@ -31,6 +35,7 @@ test("CatalogSnapshot hash is stable and public bootstrap contains only search/l
   assert.equal(left.snapshot().bootstrapAbiRevision, TOOL_HOST_BOOTSTRAP_ABI_REVISION);
   assert.equal(left.snapshot().bootstrapSchemaHash, TOOL_HOST_BOOTSTRAP_SCHEMA_HASH);
   assert.equal(computedToolHostBootstrapSchemaHash(), TOOL_HOST_BOOTSTRAP_SCHEMA_HASH);
+  assert.equal(computedToolHostBootstrapContractHash(), TOOL_HOST_BOOTSTRAP_CONTRACT_HASH);
   assert.deepEqual(
     TOOL_HOST_BOOTSTRAP_ABI_DEFINITIONS.map((tool) => tool.name),
     [TOOL_CATALOG_SEARCH, TOOL_DOMAIN_LOAD, TOOL_RESTRICTED_GATEWAY]
@@ -38,6 +43,37 @@ test("CatalogSnapshot hash is stable and public bootstrap contains only search/l
   assert.deepEqual(left.bootstrapDefinitions().map((tool) => tool.name), [TOOL_CATALOG_SEARCH, TOOL_DOMAIN_LOAD]);
   assert.equal(left.definitions().some((tool) => tool.name === TOOL_CATALOG_SEARCH), false);
   assert.equal(left.snapshot().domains.find((domain) => domain.domainId === "artifacts").canonicalToolNames.length, 1);
+});
+
+test("Tool descriptions change definition identity without changing the invocation contract", () => {
+  const before = [{
+    name: "corptie_example",
+    description: "Old guidance",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    deferLoading: false
+  }];
+  const after = [{ ...before[0], description: "New guidance with a better example" }];
+  assert.notEqual(schemaHash(before), schemaHash(after));
+  assert.equal(toolDefinitionsContractHash(before), toolDefinitionsContractHash(after));
+
+  const incompatible = [{
+    ...after[0],
+    inputSchema: { ...after[0].inputSchema, required: ["id", "revision"] }
+  }];
+  assert.notEqual(toolDefinitionsContractHash(before), toolDefinitionsContractHash(incompatible));
+
+  const oldCatalog = new HostToolCatalog([{
+    id: "example",
+    tools: before,
+    execute: () => null
+  }]);
+  const newCatalog = new HostToolCatalog([{
+    id: "example",
+    tools: after,
+    execute: () => null
+  }]);
+  assert.notEqual(oldCatalog.snapshot().catalogVersion, newCatalog.snapshot().catalogVersion);
+  assert.equal(oldCatalog.snapshot().catalogContractVersion, newCatalog.snapshot().catalogContractVersion);
 });
 
 test("Catalog keeps every capability namespace deferred and locks the bootstrap ABI", () => {
