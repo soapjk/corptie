@@ -3,6 +3,7 @@ import { isAbsolute } from "node:path";
 import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
 import { stableJson } from "./platformConfirmationService.mjs";
 import { authorizeDirectUserTaskCreation } from "./directUserTaskCreationAuthorization.mjs";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 const PLATFORM_OPERATIONS = Object.freeze({
   corptie_platform_agents_manage: ["list", "get", "create", "update", "delete"],
@@ -98,8 +99,11 @@ export class PlatformOperationService {
     switch (required(args.action, "action")) {
       case "list": return this.store.listAgents();
       case "get": return found(this.store.getAgent(required(args.agent_id, "agent_id")), "AGENT_NOT_FOUND");
-      case "create": return this.emitEntityChanged("AgentChanged", this.store.createAgentWithRegistrySkills({ name: required(args.name, "name"), description: args.description ?? "", role: args.role, systemPrompt: args.system_prompt ?? "", capabilities: array(args.capabilities), workDir: optional(args.work_dir), avatarPath: optional(args.avatar_path) }, array(args.skill_ids)), "created");
-      case "update": return this.emitEntityChanged("AgentChanged", found(this.store.updateAgentWithRegistrySkills(required(args.agent_id, "agent_id"), compact({ name: args.name, description: args.description, systemPrompt: args.system_prompt, capabilities: args.capabilities, workDir: args.work_dir, avatarPath: args.avatar_path }), Array.isArray(args.skill_ids) ? args.skill_ids : null), "AGENT_NOT_FOUND"), "updated");
+      case "create": return this.emitEntityChanged("AgentChanged", this.store.createAgentWithRegistrySkills({ name: validateEntityName(required(args.name, "name"), "name", "Agent"), description: args.description ?? "", role: args.role, systemPrompt: args.system_prompt ?? "", capabilities: array(args.capabilities), workDir: optional(args.work_dir), avatarPath: optional(args.avatar_path) }, array(args.skill_ids)), "created");
+      case "update": {
+        if (args.name !== undefined) validateEntityName(args.name, "name", "Agent");
+        return this.emitEntityChanged("AgentChanged", found(this.store.updateAgentWithRegistrySkills(required(args.agent_id, "agent_id"), compact({ name: args.name, description: args.description, systemPrompt: args.system_prompt, capabilities: args.capabilities, workDir: args.work_dir, avatarPath: args.avatar_path }), Array.isArray(args.skill_ids) ? args.skill_ids : null), "AGENT_NOT_FOUND"), "updated");
+      }
       case "delete": { const agentId = required(args.agent_id, "agent_id"); found(this.store.getAgent(agentId), "AGENT_NOT_FOUND"); this.store.deleteAgent(agentId); this.emitEntityChanged("AgentChanged", { agentId }, "deleted"); return { deleted: true }; }
       default: throw unsupported("Agent", args.action);
     }
@@ -110,8 +114,11 @@ export class PlatformOperationService {
     switch (required(args.action, "action")) {
       case "list": return this.workService.listWorks();
       case "get": return this.workService.getWork(required(args.work_id, "work_id"));
-      case "create": return this.workService.createWork({ ...(args.patch ?? {}), name: required(args.name, "name") });
-      case "update": return this.workService.updateWork(required(args.work_id, "work_id"), args.patch ?? {});
+      case "create": return this.workService.createWork({ ...(args.patch ?? {}), name: validateEntityName(required(args.name, "name"), "name", "Work") });
+      case "update": {
+        if (args.patch?.name !== undefined) validateEntityName(args.patch.name, "name", "Work");
+        return this.workService.updateWork(required(args.work_id, "work_id"), args.patch ?? {});
+      }
       case "delete": this.workService.deleteWork(required(args.work_id, "work_id")); return { deleted: true };
       default: throw unsupported("Work", args.action);
     }
@@ -124,12 +131,13 @@ export class PlatformOperationService {
       case "list": return args.work_id ? this.workService.listTasksByWork(args.work_id) : this.workService.listTasks();
       case "get": return this.workService.getTask(required(args.task_id, "task_id"));
       case "create": {
+        const title = validateEntityName(required(args.title, "title"), "title", "Task");
         const authorization = this.#authorizeTaskCreation(args, binding);
         const created = await this.createTask({
           taskInput: {
             ...(args.patch ?? {}),
             workId: required(args.work_id, "work_id"),
-            title: required(args.title, "title"),
+            title,
             mainAgentId: required(args.agent_id, "agent_id")
           },
           providerId: optional(args.provider_id),
@@ -139,7 +147,10 @@ export class PlatformOperationService {
         });
         return { ...created.task, session: created.session, start: created.start };
       }
-      case "update": return this.workService.updateTask(required(args.task_id, "task_id"), args.patch ?? {});
+      case "update": {
+        if (args.patch?.title !== undefined) validateEntityName(args.patch.title, "title", "Task");
+        return this.workService.updateTask(required(args.task_id, "task_id"), args.patch ?? {});
+      }
       case "delete": this.workService.deleteTask(required(args.task_id, "task_id")); return { deleted: true };
       case "dependencies": return this.workService.listDependencies(required(args.task_id, "task_id"));
       case "add_dependency": return this.workService.addDependency(required(args.task_id, "task_id"), required(args.target_task_id, "target_task_id"), args.dependency_type ?? "depends_on");

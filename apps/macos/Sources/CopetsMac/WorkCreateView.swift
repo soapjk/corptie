@@ -45,7 +45,10 @@ struct WorkCreateView: View {
                     )
 
                     field(L10n("名称 *")) {
-                        TextField(L10n("目标名称"), text: $name)
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField(L10n("目标名称"), text: $name)
+                            EntityNameValidationMessage(value: name)
+                        }
                     }
                     field(L10n("描述")) {
                         TextEditor(text: $detail)
@@ -90,7 +93,7 @@ struct WorkCreateView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(
-                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    !EntityNamePolicy.isValid(name)
                         || contributorAgentIds.isEmpty
                 )
             }
@@ -100,8 +103,8 @@ struct WorkCreateView: View {
     }
 
     private func create() -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !contributorAgentIds.isEmpty else { return false }
+        guard EntityNamePolicy.isValid(name), !contributorAgentIds.isEmpty else { return false }
+        let validatedName = name
 
         let tags = tagsText
             .split(separator: ",")
@@ -115,11 +118,11 @@ struct WorkCreateView: View {
         let requestContributorAgentIds = Array(contributorAgentIds)
         return BackgroundTaskCenter.shared.start(
             id: requestId,
-            title: L10nFormat("创建 Work：%@", trimmed)
+            title: L10nFormat("创建 Work：%@", validatedName)
         ) {
             let work = await client.createWork(
                 id: requestId,
-                name: trimmed,
+                name: validatedName,
                 description: requestDetail.isEmpty ? nil : requestDetail,
                 avatarPath: requestAvatarSourcePath,
                 profile: "general",
@@ -128,7 +131,7 @@ struct WorkCreateView: View {
                 contributorAgentIds: requestContributorAgentIds
             )
             if work != nil {
-                return .success(L10nFormat("Work“%@”已创建。", trimmed))
+                return .success(L10nFormat("Work“%@”已创建。", validatedName))
             }
             return .failure(client.errorMessage ?? L10n("Work 创建失败，可重试。"))
         }

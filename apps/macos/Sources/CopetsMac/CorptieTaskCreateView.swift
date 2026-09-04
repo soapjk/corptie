@@ -19,6 +19,9 @@ enum CorptieTaskCreateFormPolicy {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return L10n("请输入 Task 标题。")
         }
+        if !EntityNamePolicy.isValid(title) {
+            return EntityNamePolicy.validationMessage
+        }
         if detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return L10n("请输入 Task 描述。")
         }
@@ -93,6 +96,7 @@ struct CorptieTaskCreateView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextField(L10n("Task 标题"), text: $title)
+                EntityNameValidationMessage(value: title)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text(L10n("描述 *"))
