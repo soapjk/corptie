@@ -5706,6 +5706,49 @@ export class CorptieStore {
     return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
   }
 
+  markSessionToolCatalogRecoveryRequired(input, expectedResourceVersion) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         status = 'error', last_error_code = ?, last_error_summary = ?,
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status IN ('applied', 'error')`,
+      [
+        input.errorCode, String(input.errorSummary ?? "").slice(0, 500), now,
+        input.logicalSessionId, input.providerBindingId, expectedResourceVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
+  adoptCompatibleSessionToolCatalogDefinition(input, expectedResourceVersion) {
+    const now = input.updatedAt ?? createdAtFromOrNow();
+    this.db.run(
+      `UPDATE session_tool_catalog_materializations SET
+         desired_version = ?, applied_version = ?,
+         desired_catalog_version = ?, applied_catalog_version = ?,
+         desired_domains_json = ?, applied_domains_json = ?, exposure_plan_json = ?,
+         status = 'applied', last_error_code = NULL, last_error_summary = NULL,
+         applied_at = COALESCE(applied_at, ?),
+         resource_version = resource_version + 1, updated_at = ?
+       WHERE logical_session_id = ? AND provider_binding_id = ? AND resource_version = ?
+         AND status IN ('applied', 'error') AND provider_receipt_json IS NOT NULL`,
+      [
+        input.desiredVersion, input.desiredVersion,
+        input.desiredCatalogVersion, input.desiredCatalogVersion,
+        JSON.stringify(input.desiredDomains ?? []), JSON.stringify(input.desiredDomains ?? []),
+        JSON.stringify(input.exposurePlan ?? {}), now, now,
+        input.logicalSessionId, input.providerBindingId, expectedResourceVersion
+      ]
+    );
+    if (this.db.getRowsModified() === 0) return null;
+    this.scheduleSave();
+    return this.getSessionToolCatalogMaterialization(input.logicalSessionId, input.providerBindingId);
+  }
+
   #insertAppliedSessionToolCatalogMaterialization(input, expected = {}) {
     if (input == null) {
       if (expected.required) {
@@ -5812,6 +5855,10 @@ export class CorptieStore {
     ];
     for (const [field, value] of receiptFields) {
       if (providerReceipt[field] !== value) invalid(`providerReceipt.${field}`);
+    }
+    if (exposurePlan.providerContractHash != null
+      && providerReceipt.providerContractHash !== exposurePlan.providerContractHash) {
+      invalid("providerReceipt.providerContractHash");
     }
     if (recoveryStableJson(providerReceipt.appliedDomains ?? []) !== recoveryStableJson(input.appliedDomains)) {
       invalid("providerReceipt.appliedDomains");

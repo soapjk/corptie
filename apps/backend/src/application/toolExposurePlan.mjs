@@ -2,10 +2,14 @@ import { createHash } from "node:crypto";
 import {
   TOOL_DELIVERY_SURFACES,
   TOOL_HOST_BOOTSTRAP_ABI_REVISION,
+  TOOL_HOST_BOOTSTRAP_CONTRACT_REVISION,
+  TOOL_HOST_BOOTSTRAP_CONTRACT_HASH,
+  TOOL_HOST_BOOTSTRAP_GUIDANCE_REVISION,
   TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
   TOOL_RESTRICTED_GATEWAY,
   RESTRICTED_GATEWAY_DEFINITION,
   schemaHash,
+  toolDefinitionsContractHash,
   stableStringify
 } from "./hostToolCatalog.mjs";
 
@@ -26,7 +30,8 @@ export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = 
       sourceId: entry.source.sourceId,
       domainId: entry.domainId,
       surface,
-      schemaHash: schemaHash(entry.definition)
+      schemaHash: schemaHash(entry.definition),
+      contractHash: toolDefinitionsContractHash([entry.definition])
     });
   }
   const bootstrap = catalog.entries(context, { exposure: "bootstrap" });
@@ -38,7 +43,8 @@ export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = 
       sourceId: entry.source.sourceId,
       domainId: entry.domainId,
       surface: bootstrapSurface,
-      schemaHash: schemaHash(entry.definition)
+      schemaHash: schemaHash(entry.definition),
+      contractHash: toolDefinitionsContractHash([entry.definition])
     });
   }
   const providerDefinitions = bootstrap.map((entry) => entry.definition);
@@ -47,7 +53,8 @@ export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = 
       sourceId: "tool-host",
       domainId: "tool-catalog",
       surface: "restricted_gateway",
-      schemaHash: schemaHash(RESTRICTED_GATEWAY_DEFINITION)
+      schemaHash: schemaHash(RESTRICTED_GATEWAY_DEFINITION),
+      contractHash: toolDefinitionsContractHash([RESTRICTED_GATEWAY_DEFINITION])
     });
     providerDefinitions.push(RESTRICTED_GATEWAY_DEFINITION);
   } else {
@@ -55,14 +62,29 @@ export function buildToolExposurePlan({ catalog, context = {}, desiredDomains = 
   }
   const orderedOwnership = Object.fromEntries(Object.entries(ownership).sort(([left], [right]) => left.localeCompare(right)));
   const exposurePlanHash = sha256(stableStringify(orderedOwnership));
+  const exposureContractHash = sha256(stableStringify(Object.fromEntries(
+    Object.entries(orderedOwnership).map(([name, owner]) => [name, {
+      sourceId: owner.sourceId,
+      domainId: owner.domainId,
+      surface: owner.surface,
+      contractHash: owner.contractHash
+    }])
+  )));
   const providerDefinitionsHash = sha256(stableStringify(providerDefinitions));
+  const providerContractHash = toolDefinitionsContractHash(providerDefinitions);
   return Object.freeze({
     surface,
     refreshMode: refreshMode(normalizedCapabilities, phase, surface),
     bootstrapAbiRevision: TOOL_HOST_BOOTSTRAP_ABI_REVISION,
     bootstrapSchemaHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
+    bootstrapContractRevision: TOOL_HOST_BOOTSTRAP_CONTRACT_REVISION,
+    bootstrapContractHash: TOOL_HOST_BOOTSTRAP_CONTRACT_HASH,
+    bootstrapGuidanceRevision: TOOL_HOST_BOOTSTRAP_GUIDANCE_REVISION,
+    bootstrapDefinitionHash: TOOL_HOST_BOOTSTRAP_SCHEMA_HASH,
     exposurePlanHash,
+    exposureContractHash,
     providerDefinitionsHash,
+    providerContractHash,
     ownership: Object.freeze(orderedOwnership),
     providerDefinitions: Object.freeze(providerDefinitions),
     desiredDomains: Object.freeze(domainIds),
@@ -94,6 +116,9 @@ export function normalizeToolSchemaCapabilities(input = {}) {
     generatedMcpRefresh: input.generatedMcpRefresh === true,
     restrictedGateway: input.restrictedGateway === true,
     bindingReplacement: input.bindingReplacement === true,
+    definitionMetadataRefresh: ["none", "turn_boundary", "runtime"].includes(input.definitionMetadataRefresh)
+      ? input.definitionMetadataRefresh
+      : "none",
     capabilityRevision
   });
 }

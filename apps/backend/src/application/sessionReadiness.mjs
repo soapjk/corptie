@@ -68,7 +68,6 @@ export function resolveSessionReadiness(session, context = {}) {
   if (materialization && (
     materialization.status !== "applied"
     || materialization.appliedVersion !== materialization.desiredVersion
-    || materialization.appliedCatalogVersion !== materialization.desiredCatalogVersion
   )) {
     return notReady(
       materialization.lastErrorCode ?? "TOOL_SCHEMA_UNCONFIRMED",

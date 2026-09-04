@@ -1,6 +1,11 @@
-import { TOOL_HOST_BOOTSTRAP_SCHEMA_HASH } from "./hostToolCatalog.mjs";
+import {
+  TOOL_HOST_BOOTSTRAP_CONTRACT_HASH,
+  TOOL_HOST_BOOTSTRAP_SCHEMA_HASH
+} from "./hostToolCatalog.mjs";
 
 const REPLACEMENT_ERROR = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
+const RECOVERY_REQUIRED_CODE = "PROVIDER_TOOL_RECOVERY_REQUIRED";
+const RECOVERY_REQUIRED_SUMMARY = "The existing Provider Thread was preserved, but its Tool schema must be upgraded. Start Session Recovery to replace it safely.";
 
 export class ToolBootstrapBindingPreflight {
   constructor(options = {}) {
@@ -10,7 +15,7 @@ export class ToolBootstrapBindingPreflight {
     this.isAppliedProofCurrent = options.isAppliedProofCurrent ?? (() => true);
     this.maxCandidates = positiveInteger(options.maxCandidates ?? 32, "maxCandidates");
     this.concurrency = positiveInteger(options.concurrency ?? 2, "concurrency");
-    this.bootstrapSchemaHash = options.bootstrapSchemaHash ?? TOOL_HOST_BOOTSTRAP_SCHEMA_HASH;
+    this.bootstrapContractHash = options.bootstrapContractHash ?? TOOL_HOST_BOOTSTRAP_CONTRACT_HASH;
     if (!this.store?.listSessions || !this.store?.getLogicalSessionByLegacySessionId) {
       throw new TypeError("Tool Bootstrap preflight requires a Session Store.");
     }
@@ -32,7 +37,8 @@ export class ToolBootstrapBindingPreflight {
       );
       const claimsCurrentBootstrap = record?.status === "applied"
         && record.appliedVersion === record.desiredVersion
-        && record.exposurePlan?.bootstrapSchemaHash === this.bootstrapSchemaHash;
+        && (record.exposurePlan?.bootstrapContractHash === this.bootstrapContractHash
+          || record.exposurePlan?.bootstrapSchemaHash === TOOL_HOST_BOOTSTRAP_SCHEMA_HASH);
       const appliedProofCurrent = claimsCurrentBootstrap
         && this.isAppliedProofCurrent({ session, logical, binding, record });
       if (appliedProofCurrent) {
@@ -85,12 +91,7 @@ export class ToolBootstrapBindingPreflight {
     // Startup preparation may verify or reconnect the existing binding, but
     // only an explicit Restart/Recovery operation may replace its Thread.
     if (candidate.untrustedAppliedProof) {
-      await this.coordinator.invalidateAppliedProof(
-        input.logicalSessionId,
-        input.providerBindingId,
-        "PROVIDER_TOOL_RECOVERY_REQUIRED",
-        "The existing Provider Thread was preserved, but its Tool schema proof is no longer trusted. Explicit Session Recovery is required."
-      );
+      await this.#markRecoveryRequired(input);
       return recoveryRequired(input);
     }
     try {
@@ -110,8 +111,31 @@ export class ToolBootstrapBindingPreflight {
           code: error?.code ?? "TOOL_BOOTSTRAP_PREFLIGHT_FAILED"
         });
       }
+      // ensureApplied records the low-level Provider rejection first. Replace
+      // that implementation detail with the product-level recovery state so
+      // an intentional bootstrap ABI upgrade does not surface as a fleet of
+      // apparently broken Codex threads after an App update.
+      await this.#markRecoveryRequired(input);
       return recoveryRequired(input);
     }
+  }
+
+  async #markRecoveryRequired(input) {
+    if (typeof this.coordinator.markBindingRecoveryRequired === "function") {
+      await this.coordinator.markBindingRecoveryRequired(
+        input.logicalSessionId,
+        input.providerBindingId,
+        RECOVERY_REQUIRED_CODE,
+        RECOVERY_REQUIRED_SUMMARY
+      );
+      return;
+    }
+    await this.coordinator.invalidateAppliedProof(
+      input.logicalSessionId,
+      input.providerBindingId,
+      RECOVERY_REQUIRED_CODE,
+      RECOVERY_REQUIRED_SUMMARY
+    );
   }
 }
 
@@ -120,7 +144,7 @@ function recoveryRequired(input) {
     logicalSessionId: input.logicalSessionId,
     sourceBindingId: input.providerBindingId,
     status: "recovery_required",
-    code: "PROVIDER_TOOL_RECOVERY_REQUIRED"
+    code: RECOVERY_REQUIRED_CODE
   });
 }
 

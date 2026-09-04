@@ -11,6 +11,7 @@ import { SessionApplicationService } from "../src/agent-provider/sessionApplicat
 import { SessionBindingRepository } from "../src/agent-provider/sessionBindingRepository.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { withSessionActions } from "../src/agent-provider/sessionActions.mjs";
+import { toolDefinitionsContractHash } from "../src/application/hostToolCatalog.mjs";
 
 function providerSession(store, options = {}) {
   const providerId = options.providerId ?? "codex-app-server";
@@ -104,6 +105,7 @@ function exactToolProof(threadId, definitions = PROVIDER_SWITCH_TOOLS) {
   return {
     providerRevision: `thread-start:${threadId}:confirmed`,
     providerDefinitionsHash: toolDefinitionsHash(definitions),
+    providerContractHash: toolDefinitionsContractHash(definitions),
     providerDefinitionsCount: definitions.length,
     providerObservationKind: "thread_start_accepted"
   };
@@ -119,6 +121,7 @@ function appliedToolMaterialization({ logicalSessionId, binding, confirmation })
     capabilityRevision: "codex-app-server:tool-schema:5",
     exposurePlanHash: "plan:provider-switch",
     providerDefinitionsHash: confirmation.providerDefinitionsHash,
+    providerContractHash: confirmation.providerContractHash,
     providerDefinitions: PROVIDER_SWITCH_TOOLS,
     refreshMode: "binding_replacement"
   };
@@ -142,6 +145,7 @@ function appliedToolMaterialization({ logicalSessionId, binding, confirmation })
       appliedDomains: domains,
       appliedExposurePlanHash: exposurePlan.exposurePlanHash,
       providerDefinitionsHash: confirmation.providerDefinitionsHash,
+      providerContractHash: confirmation.providerContractHash,
       providerDefinitionsCount: confirmation.providerDefinitionsCount,
       providerObservationKind: confirmation.providerObservationKind,
       refreshMode: exposurePlan.refreshMode,

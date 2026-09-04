@@ -11,6 +11,7 @@ import {
   workspaceHandoffPrompt
 } from "../src/runtime/forkingWorkspaceTransitionManager.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { toolDefinitionsContractHash } from "../src/application/hostToolCatalog.mjs";
 
 test("workspace transition waits for an active turn then atomically routes a fork", async () => {
   const fixture = await createFixture("success");
@@ -1058,6 +1059,7 @@ function toolProof(threadId, definitions, kind) {
     providerDefinitionsHash: createHash("sha256")
       .update(stableToolDefinitions(definitions))
       .digest("hex"),
+    providerContractHash: toolDefinitionsContractHash(definitions),
     providerDefinitionsCount: definitions.length,
     providerObservationKind
   };

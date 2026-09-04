@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
 import { createCodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
-import { confirmOrRestoreCodexToolPlan } from "../src/application/codexToolPlanConfirmation.mjs";
-import { schemaHash } from "../src/application/hostToolCatalog.mjs";
+import {
+  codexAppliedToolProofIsCurrent,
+  confirmOrRestoreCodexToolPlan
+} from "../src/application/codexToolPlanConfirmation.mjs";
+import {
+  schemaHash,
+  toolDefinitionsContractHash
+} from "../src/application/hostToolCatalog.mjs";
 
 const definitions = [{
   name: "corptie_tool_call",
@@ -13,7 +19,8 @@ const definitions = [{
 const binding = {
   logicalSessionId: "logical:one",
   providerBindingId: "binding:one",
-  providerSessionId: "thread:one"
+  providerSessionId: "thread:one",
+  providerId: "codex-app-server"
 };
 const plan = {
   providerDefinitions: definitions,
@@ -66,6 +73,56 @@ test("a restarted Codex runtime restores an exact thread-start Tool receipt", ()
   });
   assert.equal(confirmation.restored, true);
   assert.equal(runtime.confirmThreadToolPlan(binding.providerSessionId, definitions).restored, true);
+});
+
+test("startup proof reconstructs a missing contract hash from an exact legacy definition receipt", () => {
+  const capabilityRevision = "codex-app-server:tool-schema:5";
+  const record = {
+    exposurePlan: {
+      capabilityRevision,
+      providerDefinitions: definitions
+    },
+    providerReceipt: {
+      providerBindingId: binding.providerBindingId,
+      providerCapabilityRevision: capabilityRevision,
+      providerRevision: `thread-start:${binding.providerSessionId}:confirmed`,
+      providerDefinitionsHash: schemaHash(definitions),
+      providerDefinitionsCount: definitions.length,
+      providerObservationKind: "thread_start_accepted"
+    }
+  };
+
+  assert.equal(
+    codexAppliedToolProofIsCurrent(binding, record, capabilityRevision),
+    true
+  );
+  assert.equal(record.exposurePlan.providerContractHash, undefined);
+});
+
+test("startup proof still rejects contract drift when the persisted contract is explicit", () => {
+  const capabilityRevision = "codex-app-server:tool-schema:5";
+  const record = {
+    exposurePlan: {
+      capabilityRevision,
+      providerDefinitions: definitions,
+      providerContractHash: toolDefinitionsContractHash([{
+        ...definitions[0],
+        inputSchema: { type: "object", required: ["changed"] }
+      }])
+    },
+    providerReceipt: {
+      providerCapabilityRevision: capabilityRevision,
+      providerRevision: `thread-start:${binding.providerSessionId}:confirmed`,
+      providerDefinitionsHash: schemaHash(definitions),
+      providerDefinitionsCount: definitions.length,
+      providerObservationKind: "thread_start_accepted"
+    }
+  };
+
+  assert.equal(
+    codexAppliedToolProofIsCurrent(binding, record, capabilityRevision),
+    false
+  );
 });
 
 test("persisted legacy thread-fork claims are never restored as Provider confirmation", () => {

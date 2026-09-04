@@ -10,6 +10,7 @@ export const CLAUDE_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
   generatedMcpRefresh: true,
   restrictedGateway: false,
   bindingReplacement: false,
+  definitionMetadataRefresh: "runtime",
   capabilityRevision: "claude-sdk:catalog-mcp:3"
 });
 const CORPTIE_OWNED_CLAUDE_WORKSPACE_TOOLS = Object.freeze([

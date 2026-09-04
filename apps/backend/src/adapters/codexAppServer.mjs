@@ -5,6 +5,10 @@ import { createInterface } from "node:readline";
 import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
 import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
+import {
+  providerContractHashFromReceipt,
+  toolDefinitionsContractHash
+} from "../application/hostToolCatalog.mjs";
 
 function threadResumeFingerprint(options = {}) {
   return JSON.stringify({
@@ -275,7 +279,9 @@ export class CodexAppServerClient {
       this.confirmedToolSchemasByThread.set(result.thread.id, {
         schema: JSON.stringify(definitions),
         providerDefinitionsHash: hashToolDefinitions(definitions),
+        providerContractHash: toolDefinitionsContractHash(definitions),
         providerDefinitionsCount: definitions.length,
+        definitionFreshness: "current",
         observationKind: "thread_start_accepted",
         providerRevision: `thread-start:${result.thread.id}:${result.thread.updatedAt ?? result.thread.createdAt ?? "confirmed"}`
       });
@@ -285,7 +291,7 @@ export class CodexAppServerClient {
 
   confirmThreadToolPlan(threadId, definitions = []) {
     const confirmed = this.confirmedToolSchemasByThread.get(threadId);
-    if (!confirmed || confirmed.schema !== JSON.stringify(definitions)) {
+    if (!confirmed || confirmed.providerContractHash !== toolDefinitionsContractHash(definitions)) {
       const error = new Error("Codex did not confirm this Tool schema on thread/start.");
       error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
       throw error;
@@ -298,14 +304,18 @@ export class CodexAppServerClient {
     const revisionMatchesThread = providerRevision.startsWith(`thread-start:${threadId}:`)
       || providerRevision.startsWith(`thread-fork-inherited:${threadId}:`);
     const definitionsHash = hashToolDefinitions(definitions);
-    const hasExactHash = typeof proof.providerDefinitionsHash === "string"
-      && proof.providerDefinitionsHash === definitionsHash;
+    const providerContractHash = providerContractHashFromReceipt(proof, definitions);
+    const requestedContractHash = toolDefinitionsContractHash(definitions);
+    const hasCompatibleContract = providerContractHash === requestedContractHash;
+    const hasDefinitionHash = typeof proof.providerDefinitionsHash === "string"
+      && proof.providerDefinitionsHash.trim().length > 0;
     const observationKind = providerRevision.startsWith(`thread-start:${threadId}:`)
       ? "thread_start_accepted"
       : "thread_fork_inherited";
     const hasExactCount = proof.providerDefinitionsCount === definitions.length;
     const hasExactObservation = proof.providerObservationKind === observationKind;
-    if (!revisionMatchesThread || !hasExactHash || !hasExactCount || !hasExactObservation) {
+    if (!revisionMatchesThread || !hasCompatibleContract || !hasDefinitionHash
+      || !hasExactCount || !hasExactObservation) {
       const error = new Error("Persisted Codex Tool confirmation did not match this thread and Tool schema.");
       error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
       throw error;
@@ -313,9 +323,13 @@ export class CodexAppServerClient {
     const confirmation = {
       schema: JSON.stringify(definitions),
       providerRevision,
-      providerDefinitionsHash: definitionsHash,
+      providerDefinitionsHash: proof.providerDefinitionsHash,
+      providerContractHash,
       providerDefinitionsCount: definitions.length,
       observationKind,
+      definitionFreshness: proof.providerDefinitionsHash === definitionsHash
+        ? "current"
+        : "stale_compatible",
       restored: true
     };
     this.confirmedToolSchemasByThread.set(threadId, confirmation);
@@ -432,7 +446,9 @@ export class CodexAppServerClient {
         this.confirmedToolSchemasByThread.set(result.thread.id, {
           schema: sourceConfirmation.schema,
           providerDefinitionsHash: sourceConfirmation.providerDefinitionsHash,
+          providerContractHash: sourceConfirmation.providerContractHash,
           providerDefinitionsCount: sourceConfirmation.providerDefinitionsCount,
+          definitionFreshness: sourceConfirmation.definitionFreshness,
           observationKind: "thread_fork_inherited",
           providerRevision: `thread-fork-inherited:${result.thread.id}:${threadId}:${result.thread.updatedAt ?? result.thread.createdAt ?? "confirmed"}`
         });
@@ -453,7 +469,7 @@ export class CodexAppServerClient {
         throw toolPlanConfirmationError(error, overrides.mismatchCode);
       }
     }
-    if (!confirmed || confirmed.schema !== JSON.stringify(definitions)) {
+    if (!confirmed || confirmed.providerContractHash !== toolDefinitionsContractHash(definitions)) {
       throw toolPlanConfirmationError(null, overrides.mismatchCode);
     }
     return confirmed;

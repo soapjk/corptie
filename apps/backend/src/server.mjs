@@ -35,7 +35,10 @@ import {
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
-import { confirmOrRestoreCodexToolPlan } from "./application/codexToolPlanConfirmation.mjs";
+import {
+  codexAppliedToolProofIsCurrent,
+  confirmOrRestoreCodexToolPlan
+} from "./application/codexToolPlanConfirmation.mjs";
 import { appliedToolMaterializationReceipt } from "./agent-provider/toolSchemaCapabilities.mjs";
 import {
   ProviderSessionLifecycle,
@@ -1002,7 +1005,8 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
         appliedCatalogVersion: request.catalogVersion,
         appliedDomains: request.appliedDomains,
         appliedExposurePlanHash: plan.exposurePlanHash,
-        providerDefinitionsHash: plan.providerDefinitionsHash,
+        providerDefinitionsHash: confirmation.providerDefinitionsHash,
+        providerContractHash: confirmation.providerContractHash ?? plan.providerContractHash,
         providerDefinitionsCount: confirmation.providerDefinitionsCount,
         providerObservationKind: confirmation.observationKind,
         refreshMode: plan.refreshMode,
@@ -1128,6 +1132,7 @@ async function applyOpenClackyToolPlanAtTurnBoundary(binding, plan, request) {
     appliedDomains: request.appliedDomains,
     appliedExposurePlanHash: plan.exposurePlanHash,
     providerDefinitionsHash: plan.providerDefinitionsHash,
+    providerContractHash: plan.providerContractHash,
     refreshMode: plan.refreshMode,
     providerRevision: confirmation.providerRevision,
     receiptId: confirmation.receiptId
@@ -1374,6 +1379,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         toolConfirmation = {
           providerRevision: confirmed.providerRevision,
           providerDefinitionsHash: confirmed.providerDefinitionsHash,
+          providerContractHash: confirmed.providerContractHash,
           providerDefinitionsCount: confirmed.providerDefinitionsCount,
           providerObservationKind: confirmed.observationKind
         };
@@ -1413,6 +1419,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         dynamicToolConfirmation: {
           providerRevision: expected.providerRevision,
           providerDefinitionsHash: expected.providerDefinitionsHash,
+          providerContractHash: expected.providerContractHash,
           providerDefinitionsCount: expected.providerDefinitionsCount,
           providerObservationKind: expected.providerObservationKind
         }
@@ -1504,6 +1511,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
         domains: materialization?.appliedDomains ?? attempt.toolCatalog?.appliedDomains ?? [],
         providerRevision: replacement.toolConfirmation?.providerRevision ?? null,
         providerDefinitionsHash: replacement.toolConfirmation?.providerDefinitionsHash ?? null,
+        providerContractHash: replacement.toolConfirmation?.providerContractHash ?? null,
         providerDefinitionsCount: replacement.toolConfirmation?.providerDefinitionsCount ?? null,
         providerObservationKind: replacement.toolConfirmation?.providerObservationKind ?? null,
         materialization
@@ -1546,6 +1554,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
             dynamicToolConfirmation: {
               providerRevision: replacement.toolConfirmation.providerRevision,
               providerDefinitionsHash: replacement.toolConfirmation.providerDefinitionsHash,
+              providerContractHash: replacement.toolConfirmation.providerContractHash,
               providerDefinitionsCount: replacement.toolConfirmation.providerDefinitionsCount,
               providerObservationKind: replacement.toolConfirmation.providerObservationKind
             }
@@ -1591,6 +1600,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
             dynamicToolConfirmation: {
               providerRevision: replacement.toolConfirmation.providerRevision,
               providerDefinitionsHash: replacement.toolConfirmation.providerDefinitionsHash,
+              providerContractHash: replacement.toolConfirmation.providerContractHash,
               providerDefinitionsCount: replacement.toolConfirmation.providerDefinitionsCount,
               providerObservationKind: replacement.toolConfirmation.providerObservationKind
             }
@@ -1650,7 +1660,11 @@ const toolBootstrapBindingPreflight = new ToolBootstrapBindingPreflight({
   store,
   coordinator: toolHostMaterializationCoordinator,
   isSessionBusy: (session) => sessionHasActiveRun(session),
-  isAppliedProofCurrent: ({ binding, record }) => codexAppliedToolProofIsCurrent(binding, record),
+  isAppliedProofCurrent: ({ binding, record }) => codexAppliedToolProofIsCurrent(
+    binding,
+    record,
+    CODEX_TOOL_SCHEMA_CAPABILITIES.capabilityRevision
+  ),
   maxCandidates: 32,
   concurrency: 4
 });
@@ -4208,6 +4222,7 @@ async function collaborationThreadOptionsForSession(sessionId, options = {}) {
     dynamicToolConfirmation: {
       providerRevision: receipt.providerRevision,
       providerDefinitionsHash: receipt.providerDefinitionsHash,
+      providerContractHash: receipt.providerContractHash,
       providerDefinitionsCount: receipt.providerDefinitionsCount,
       providerObservationKind: receipt.providerObservationKind
     }
@@ -4242,30 +4257,11 @@ function withPersistedCodexToolConfirmation(reference, attachment = {}) {
     dynamicToolConfirmation: {
       providerRevision: receipt.providerRevision,
       providerDefinitionsHash: receipt.providerDefinitionsHash,
+      providerContractHash: receipt.providerContractHash,
       providerDefinitionsCount: receipt.providerDefinitionsCount,
       providerObservationKind: receipt.providerObservationKind
     }
   };
-}
-
-function codexAppliedToolProofIsCurrent(binding, record) {
-  if (binding?.providerId !== "codex-app-server") return true;
-  const receipt = record?.providerReceipt ?? {};
-  const definitions = record?.exposurePlan?.providerDefinitions;
-  const threadId = binding.providerSessionId;
-  const startProof = typeof receipt.providerRevision === "string"
-    && receipt.providerRevision.startsWith(`thread-start:${threadId}:`)
-    && receipt.providerObservationKind === "thread_start_accepted";
-  const inheritedProof = typeof receipt.providerRevision === "string"
-    && receipt.providerRevision.startsWith(`thread-fork-inherited:${threadId}:`)
-    && receipt.providerObservationKind === "thread_fork_inherited";
-  return record?.exposurePlan?.capabilityRevision === CODEX_TOOL_SCHEMA_CAPABILITIES.capabilityRevision
-    && receipt.providerCapabilityRevision === CODEX_TOOL_SCHEMA_CAPABILITIES.capabilityRevision
-    && typeof receipt.providerDefinitionsHash === "string"
-    && receipt.providerDefinitionsHash === record.exposurePlan?.providerDefinitionsHash
-    && Array.isArray(definitions)
-    && receipt.providerDefinitionsCount === definitions.length
-    && (startProof || inheritedProof);
 }
 
 function sessionToolMetadata(session) {

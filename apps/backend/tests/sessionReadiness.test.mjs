@@ -75,6 +75,24 @@ test("Provider preparation and Tool confirmation produce explicit Not Ready reas
   assert.equal(toolFailure.notReadyReason.code, "PROVIDER_TOOL_APPLICATION_UNCONFIRMED");
 });
 
+test("compatible stale Tool guidance does not block Session readiness", () => {
+  const compatible = withSessionReadiness(sendable, {
+    logicalSession: { activeBinding: { bindingId: "binding:one" } },
+    requireActiveBinding: true,
+    providerRuntime: { state: "ready" },
+    toolMaterialization: {
+      status: "applied",
+      desiredVersion: "contract:1",
+      appliedVersion: "contract:1",
+      desiredCatalogVersion: "catalog:guidance:2",
+      appliedCatalogVersion: "catalog:guidance:1",
+      exposurePlan: { definitionFreshness: "stale_compatible" }
+    }
+  });
+  assert.equal(compatible.readiness, "ready");
+  assert.equal(compatible.actions.send.available, true);
+});
+
 test("an unverified post-restart binding blocks sending independently from Provider readiness", () => {
   const session = withSessionReadiness(sendable, {
     logicalSession: { activeBinding: { bindingId: "binding:empty" } },

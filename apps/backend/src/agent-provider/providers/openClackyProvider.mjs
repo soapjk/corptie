@@ -13,6 +13,7 @@ export function openClackyToolSchemaCapabilities(manager) {
     generatedMcpRefresh: false,
     restrictedGateway: toolHost,
     bindingReplacement: false,
+    definitionMetadataRefresh: bridge.toolHostReplace === true ? "turn_boundary" : "none",
     capabilityRevision: `openclacky:tool-schema:3:${manager?.probe?.protocolVersion ?? "unprobed"}:${toolHost ? "gateway" : "unsupported"}`
   });
 }

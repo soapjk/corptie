@@ -9,6 +9,7 @@ export const CODEX_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
   generatedMcpRefresh: false,
   restrictedGateway: true,
   bindingReplacement: true,
+  definitionMetadataRefresh: "none",
   // Revision 5 invalidates receipts issued before Corptie distinguished
   // thread/start schema acceptance from thread/fork schema inheritance.
   capabilityRevision: "codex-app-server:tool-schema:5"
