@@ -164,6 +164,41 @@ async function cleanup(f) {
   await rm(f.directory, { recursive: true, force: true });
 }
 
+test("deletion state rejects startup before any Worktree or Provider side effect", async () => {
+  for (const deletionStatus of ["deleting", "delete_failed"]) {
+    const f = await fixture();
+    try {
+      f.store.markTaskDeletion("task:one", deletionStatus, deletionStatus === "delete_failed" ? "cleanup failed" : null);
+      await assert.rejects(
+        f.service.start(input(`start:${deletionStatus}`)),
+        { code: "START_TASK_DELETION_IN_PROGRESS" }
+      );
+      assert.deepEqual(f.calls, {
+        prepare: 0, inspectWorktree: 0, create: 0, bind: 0,
+        inspectBinding: 0, activate: 0, compensate: 0
+      });
+    } finally { await cleanup(f); }
+  }
+});
+
+test("an existing Worker Session rejects a second startup before side effects", async () => {
+  const f = await fixture();
+  try {
+    f.store.createSession({
+      id: "provider:existing", title: "Existing", provider: "codex-app-server",
+      agentId: "agent:worker", sessionKind: "worker", workId: "work:one",
+      taskId: "task:one", cwd: f.directory
+    });
+    await assert.rejects(
+      f.service.start(input("start:duplicate")),
+      (error) => error.code === "START_TASK_SESSION_ALREADY_EXISTS"
+        && error.sessionId === "provider:existing"
+    );
+    assert.equal(f.calls.prepare, 0);
+    assert.equal(f.calls.create, 0);
+  } finally { await cleanup(f); }
+});
+
 test("commits a complete hash-verifiable StartupBindingReceipt before first Turn dispatch", async () => {
   const f = await fixture();
   try {

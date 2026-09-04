@@ -317,7 +317,9 @@ enum ConsoleTaskSelectionPolicy {
         task: CorptieTask,
         selectedWorkID: String?
     ) -> Bool {
-        task.workId == selectedWorkID && task.lifecycleState != "done"
+        task.workId == selectedWorkID
+            && task.lifecycleState != "done"
+            && task.deletionStatus != "deleting"
     }
 
     static func session(
@@ -338,22 +340,11 @@ enum ConsoleTaskSelectionPolicy {
 
 enum ConsoleTaskOpenDecision: Equatable {
     case selectSession(id: String)
-    case createSession(agentID: String)
     case showWithoutSession
 
     static func resolve(task: CorptieTask, session: TaskSession?) -> Self {
         if let session { return .selectSession(id: session.id) }
-        guard task.lifecycleState != "done",
-              let agentID = normalized(task.mainAgentId) else {
-            return .showWithoutSession
-        }
-        return .createSession(agentID: agentID)
-    }
-
-    private static func normalized(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !value.isEmpty else { return nil }
-        return value
+        return .showWithoutSession
     }
 }
 
@@ -396,8 +387,6 @@ struct UnifiedConsoleView: View {
     @State private var taskDeletionError: String?
     @State private var pendingTaskDeletionIds = Set<String>()
     @State private var pendingTaskRestartIds = Set<String>()
-    @State private var launchingTaskSessionIds = Set<String>()
-    @State private var taskSessionLaunchError: EntityLaunchError?
     @State private var isShowingWorkerArchive = false
     @State private var submittedReadSequencesBySessionID: [String: Int] = [:]
     @AppStorage(
@@ -598,14 +587,6 @@ struct UnifiedConsoleView: View {
             }
         } message: {
             Text(workDeletionError ?? taskDeletionError ?? "")
-        }
-        .alert(L10n("执行失败"), isPresented: Binding(
-            get: { taskSessionLaunchError != nil },
-            set: { if !$0 { taskSessionLaunchError = nil } }
-        )) {
-            Button(L10n("好"), role: .cancel) { taskSessionLaunchError = nil }
-        } message: {
-            Text(taskSessionLaunchError?.message ?? "")
         }
     }
 
@@ -1411,6 +1392,11 @@ struct UnifiedConsoleView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if task.deletionStatus == "deleting" {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .accessibilityLabel(L10n("后台处理中"))
+                }
                 if let session, isSessionUnread(session) {
                     Circle()
                         .fill(Color.red)
@@ -1423,6 +1409,7 @@ struct UnifiedConsoleView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(task.deletionStatus == "deleting")
         .listRowBackground(
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(selectedTaskId == task.id ? Color.accentColor.opacity(0.09) : Color.clear)
@@ -1446,19 +1433,22 @@ struct UnifiedConsoleView: View {
         Button(L10n("Rename"), systemImage: "pencil") {
             taskPendingRename = task
         }
+        .disabled(task.deletionStatus == "deleting")
         Button(L10n("编辑"), systemImage: "square.and.pencil") {
             taskPendingEdit = task
         }
+        .disabled(task.deletionStatus == "deleting")
         Button(L10n("Restart Task"), systemImage: "arrow.clockwise") {
             restartTask(task)
         }
         .disabled(session?.actions?.restart?.available != true
-            || pendingTaskRestartIds.contains(task.id))
+            || pendingTaskRestartIds.contains(task.id)
+            || task.deletionStatus == "deleting")
         Divider()
         Button(L10n("删除"), systemImage: "trash", role: .destructive) {
             Task { await prepareTaskDeletion(task) }
         }
-        .disabled(pendingTaskDeletionIds.contains(task.id))
+        .disabled(pendingTaskDeletionIds.contains(task.id) || task.deletionStatus == "deleting")
     }
 
     private func restartTask(_ task: CorptieTask) {
@@ -1479,63 +1469,8 @@ struct UnifiedConsoleView: View {
             guard let session else { return }
             selectedCategory = .worker
             selectSessionAfterHighlight(session)
-        case .createSession(let agentID):
-            let sourceSession = backendClient.selectedSession
-            backendClient.closeDetail()
-            Task {
-                await createTaskSessionIfNeeded(
-                    for: task,
-                    agentID: agentID,
-                    sourceSession: sourceSession
-                )
-            }
         case .showWithoutSession:
             backendClient.closeDetail()
-        }
-    }
-
-    private func createTaskSessionIfNeeded(
-        for task: CorptieTask,
-        agentID: String,
-        sourceSession: TaskSession?
-    ) async {
-        guard launchingTaskSessionIds.insert(task.id).inserted else { return }
-        defer { launchingTaskSessionIds.remove(task.id) }
-
-        if backendClient.agentProviders.isEmpty {
-            await backendClient.loadProviders()
-        }
-        let providerID = CorptieTaskCreateProviderPolicy.selection(
-            current: "",
-            preferred: backendClient.defaultSessionProviderId,
-            providers: backendClient.agentProviders
-        )
-        guard !providerID.isEmpty else {
-            taskSessionLaunchError = EntityLaunchError(
-                message: L10n("没有可创建 Session 的 Provider。"),
-                code: "SESSION_PROVIDER_NOT_FOUND"
-            )
-            return
-        }
-
-        let result = await entityClient.createSession(
-            taskId: task.id,
-            agentId: agentID,
-            providerId: providerID,
-            title: task.title,
-            sourceSession: sourceSession
-        )
-        guard let session = result.session else {
-            taskSessionLaunchError = result.error ?? EntityLaunchError(
-                message: entityClient.errorMessage ?? L10n("创建会话失败"),
-                code: nil
-            )
-            return
-        }
-
-        backendClient.acceptCreatedSession(session, selectImmediately: false)
-        if selectedTaskId == task.id {
-            selectSessionAfterHighlight(session)
         }
     }
 

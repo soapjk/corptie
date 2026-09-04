@@ -216,6 +216,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     reclaimTaskWorktree: services.reclaimTaskWorktree,
     inspectTaskDeletion: services.inspectTaskDeletion,
     deleteTaskSafely: services.deleteTaskSafely,
+    getTaskDeletionOperation: services.getTaskDeletionOperation,
     restartTask: services.restartTask,
     restoreTaskExecution: services.restoreTaskExecution,
     taskCompletionService: services.taskCompletionService,
@@ -372,12 +373,23 @@ test("Task deletion endpoints expose preflight and execute only through the safe
       },
       deleteTaskSafely: async (taskId, input, actor) => {
         calls.push(["delete", taskId, input, actor]);
-        return { ok: true, taskId };
+        return { accepted: true, operation: { operationId: "task-deletion:one", taskId, state: "queued" } };
       },
       ...services
     });
-    assert.equal(deleted.statusCode, 200);
-    assert.equal(deleted.body.ok, true);
+    assert.equal(deleted.statusCode, 202);
+    assert.equal(deleted.body.accepted, true);
+    assert.equal(deleted.body.operation.operationId, "task-deletion:one");
+    const operation = await callApi({
+      ...services,
+      method: "GET",
+      pathname: "/task-deletion-operations/task-deletion%3Aone",
+      getTaskDeletionOperation: (operationId) => ({
+        operationId, taskId: "task:one", state: "running", stage: "cleanup"
+      })
+    });
+    assert.equal(operation.statusCode, 200);
+    assert.equal(operation.body.operation.state, "running");
     assert.deepEqual(calls, [
       ["inspect", "task:one", { type: "user", id: "user:local-macos" }],
       ["delete", "task:one", {

@@ -208,6 +208,8 @@ export function presentTaskAcceptance(task) {
     mainAgentId: task.main_agent_id ?? null,
     currentSessionId: task.current_session_id ?? null,
     executionStatus: task.execution_status,
+    deletionStatus: task.deletion_status ?? null,
+    deletionError: task.deletion_error ?? null,
     acceptanceAssessment,
     completionSuggestion: completionSuggestionForTask(task),
     currentSnapshotId: task.current_snapshot_id ?? null,

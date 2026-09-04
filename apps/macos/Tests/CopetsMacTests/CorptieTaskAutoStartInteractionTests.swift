@@ -33,12 +33,11 @@ struct CorptieTaskAutoStartInteractionTests {
     }
 
     @Test
-    func openingTaskInformationRepairsAMissingCompanionSession() throws {
+    func openingTaskInformationNeverRepairsDomainStateFromAViewLifecycleCallback() throws {
         let source = try source(named: "WarRoomView.swift")
 
-        #expect(source.contains("await ensureCompanionSessionIfNeeded()"))
-        #expect(source.contains("guard !isCompleted, currentSession == nil, !isLaunchingExecution"))
-        #expect(source.contains("await client.createSession("))
+        #expect(!source.contains("ensureCompanionSessionIfNeeded"))
+        #expect(!source.contains("guard !isCompleted, currentSession == nil, !isLaunchingExecution"))
     }
 
     private func source(named name: String) throws -> String {
