@@ -73,6 +73,31 @@ struct CorptieTaskCardStatusTests {
         ) == .processing)
     }
 
+    @Test func workActivityIncludesOnlyWorksWithProcessingTasks() {
+        let task = makeCorptieTask(
+            currentSessionId: "session:current",
+            executionStatus: "idle"
+        )
+        let runningSession = makeCorptieTaskSession(
+            id: "session:current",
+            status: .running
+        )
+
+        #expect(ConsoleWorkActivityPolicy.processingWorkIDs(
+            tasks: [task],
+            sessions: [runningSession]
+        ) == ["work:one"])
+
+        let blockedSession = makeCorptieTaskSession(
+            id: "session:current",
+            status: .blocked
+        )
+        #expect(ConsoleWorkActivityPolicy.processingWorkIDs(
+            tasks: [task],
+            sessions: [blockedSession]
+        ).isEmpty)
+    }
+
     @Test func unifiedTaskListIndicatorConsumesLiveSessionActivity() throws {
         let source = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
