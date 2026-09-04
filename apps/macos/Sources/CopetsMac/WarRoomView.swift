@@ -784,8 +784,7 @@ struct CorptieTaskBoardView: View {
         .sheet(isPresented: $isCreating) {
             if let work {
                 CorptieTaskCreateView(
-                    workId: work.id,
-                    contributorAgentIds: work.contributorAgentIds
+                    initialWorkId: work.id
                 ) { created in
                     if !boardItems.contains(where: { $0.id == created.id }) {
                         boardItems.append(created)

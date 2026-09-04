@@ -33,6 +33,8 @@ enum ConsoleWorkOutlineMetrics {
     static let childIndent: CGFloat = 24
     static let groupCornerRadius: CGFloat = 8
     static let groupHorizontalInset: CGFloat = 6
+    static let disclosureAnimation = Animation.easeInOut(duration: 0.16)
+    @MainActor static let disclosureTransition = AnyTransition.opacity.combined(with: .offset(y: -4))
 }
 
 private struct ConsoleWorkOutlineGroupCardModifier: ViewModifier {
@@ -64,95 +66,47 @@ private extension View {
     }
 }
 
-private struct ConsoleContextMenuEntry {
-    let title: String?
-    let systemImage: String?
-    let isEnabled: Bool
-    let action: (() -> Void)?
+private struct HoverRevealHeaderAction<Header: View>: View {
+    let accessibilityLabel: String
+    let header: Header
+    let action: () -> Void
 
-    static var separator: Self {
-        Self(title: nil, systemImage: nil, isEnabled: false, action: nil)
+    @State private var isHovering = false
+    @FocusState private var isFocused: Bool
+
+    init(
+        accessibilityLabel: String,
+        action: @escaping () -> Void,
+        @ViewBuilder header: () -> Header
+    ) {
+        self.accessibilityLabel = accessibilityLabel
+        self.action = action
+        self.header = header()
     }
 
-    static func action(
-        _ title: String,
-        systemImage: String,
-        isEnabled: Bool = true,
-        perform: @escaping () -> Void
-    ) -> Self {
-        Self(title: title, systemImage: systemImage, isEnabled: isEnabled, action: perform)
-    }
-}
-
-final class ConsoleRightClickOnlyView: NSView {
-    var currentEventType: () -> NSEvent.EventType? = { NSApp.currentEvent?.type }
-    var onRightMouseDown: ((NSEvent, NSView) -> Void)?
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        guard currentEventType() == .rightMouseDown else { return nil }
-        return super.hitTest(point)
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        onRightMouseDown?(event, self)
-    }
-}
-
-private struct ConsoleRightClickMenuHitTarget: NSViewRepresentable {
-    let entries: [ConsoleContextMenuEntry]
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(entries: entries)
-    }
-
-    func makeNSView(context: Context) -> ConsoleRightClickOnlyView {
-        let view = ConsoleRightClickOnlyView()
-        view.onRightMouseDown = { [weak coordinator = context.coordinator] event, sourceView in
-            coordinator?.showMenu(for: event, relativeTo: sourceView)
-        }
-        return view
-    }
-
-    func updateNSView(_ nsView: ConsoleRightClickOnlyView, context: Context) {
-        context.coordinator.entries = entries
-    }
-
-    final class Coordinator: NSObject {
-        var entries: [ConsoleContextMenuEntry]
-
-        init(entries: [ConsoleContextMenuEntry]) {
-            self.entries = entries
-        }
-
-        func showMenu(for event: NSEvent, relativeTo sourceView: NSView) {
-            let menu = NSMenu()
-            for (index, entry) in entries.enumerated() {
-                guard let title = entry.title else {
-                    menu.addItem(.separator())
-                    continue
-                }
-                let item = NSMenuItem(
-                    title: title,
-                    action: #selector(performMenuAction(_:)),
-                    keyEquivalent: ""
-                )
-                item.tag = index
-                item.target = self
-                item.isEnabled = entry.isEnabled
-                if let systemImage = entry.systemImage {
-                    item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: title)
-                }
-                menu.addItem(item)
+    var body: some View {
+        HStack(spacing: 0) {
+            header
+            Button(action: action) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
-            NSMenu.popUpContextMenu(menu, with: event, for: sourceView)
+            .buttonStyle(.plain)
+            .focused($isFocused)
+            .opacity(isHovering || isFocused ? 1 : 0)
+            .accessibilityLabel(accessibilityLabel)
+            .help(accessibilityLabel)
         }
-
-        @objc private func performMenuAction(_ sender: NSMenuItem) {
-            guard entries.indices.contains(sender.tag) else { return }
-            entries[sender.tag].action?()
-        }
+        .onHover { isHovering = $0 }
     }
+}
 
+private enum ConsoleWorkOutlineContextTarget: Equatable {
+    case work(String)
+    case task(workID: String, taskID: String)
+    case session(workID: String, sessionID: String)
 }
 
 enum ConsoleTaskSelectionPolicy {
@@ -253,6 +207,7 @@ struct UnifiedConsoleView: View {
     @State private var showNewSessionCreation = false
     @State private var isCreatingWork = false
     @State private var isCreatingTask = false
+    @State private var taskCreationWorkID: String?
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
     @State private var collapsedGroupKeys: Set<String> = []
     @State private var entityGroupingRevision: UInt64 = 0
@@ -272,6 +227,7 @@ struct UnifiedConsoleView: View {
     /// disclosure state lightweight and prevents stale Work IDs accumulating.
     @State private var isOutlineAssistantCollapsed = false
     @State private var collapsedOutlineWorkIDs = Set<String>()
+    @State private var workOutlineContextTarget: ConsoleWorkOutlineContextTarget?
     @State private var navigationResizeStartWidth: Double?
     @State private var isHoveringNavigationResizeHandle = false
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
@@ -365,13 +321,9 @@ struct UnifiedConsoleView: View {
             WorkCreateView()
         }
         .sheet(isPresented: $isCreatingTask) {
-            if let work = selectedWork {
-                CorptieTaskCreateView(
-                    workId: work.id,
-                    contributorAgentIds: work.contributorAgentIds
-                ) { task in
-                    selectedTaskId = task.id
-                }
+            CorptieTaskCreateView(initialWorkId: taskCreationWorkID) { task in
+                selectedWorkId = task.workId
+                selectedTaskId = task.id
             }
         }
         .sheet(item: $taskPendingEdit) { task in
@@ -824,19 +776,26 @@ struct UnifiedConsoleView: View {
                 )
 
                 if !isOutlineAssistantCollapsed || !searchText.isEmpty {
-                    if assistantSessionRows.isEmpty {
-                        outlineGroupEmptyRow(L10n("No Assistant Sessions"))
-                    } else {
-                        ForEach(assistantSessionRows) { row in
-                            sessionRow(row)
-                                .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                .background(outlineChildSelectionBackground(
-                                    selectionController.selectedSessionID == row.session.id
-                                ))
+                    VStack(alignment: .leading, spacing: 2) {
+                        if assistantSessionRows.isEmpty {
+                            outlineGroupEmptyRow(L10n("No Assistant Sessions"))
+                        } else {
+                            ForEach(assistantSessionRows) { row in
+                                sessionRow(row)
+                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
+                                    .background(outlineChildSelectionBackground(
+                                        selectionController.selectedSessionID == row.session.id
+                                    ))
+                            }
                         }
                     }
+                    .transition(ConsoleWorkOutlineMetrics.disclosureTransition)
                 }
             }
+            .animation(
+                ConsoleWorkOutlineMetrics.disclosureAnimation,
+                value: isOutlineAssistantCollapsed
+            )
             .consoleWorkOutlineGroupCard()
 
             ForEach(entityClient.works) { work in
@@ -845,46 +804,73 @@ struct UnifiedConsoleView: View {
                         work,
                         hasUnread: unreadSummary.workIDs.contains(work.id)
                     )
+                    .onHover { isHovering in
+                        updateWorkOutlineContextTarget(.work(work.id), isHovering: isHovering)
+                    }
 
                     if outlineWorkIsExpanded(work.id) {
-                        if isShowingWorkerArchive {
-                            let rows = archivedRowsByWorkID[work.id] ?? []
-                            if rows.isEmpty {
-                                outlineGroupEmptyRow(L10n("No Archived Sessions"))
+                        VStack(alignment: .leading, spacing: 2) {
+                            if isShowingWorkerArchive {
+                                let rows = archivedRowsByWorkID[work.id] ?? []
+                                if rows.isEmpty {
+                                    outlineGroupEmptyRow(L10n("No Archived Sessions"))
+                                } else {
+                                    ForEach(rows) { row in
+                                        sessionRow(row)
+                                            .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
+                                            .onHover { isHovering in
+                                                updateWorkOutlineContextTarget(
+                                                    .session(workID: work.id, sessionID: row.session.id),
+                                                    isHovering: isHovering
+                                                )
+                                            }
+                                    }
+                                }
                             } else {
-                                ForEach(rows) { row in
-                                    sessionRow(row)
+                                if let row = workChatsByWorkID[work.id]?.first {
+                                    workChatRow(row, ownsContextMenu: false)
+                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
+                                        .background(outlineChildSelectionBackground(
+                                            selectionController.selectedSessionID == row.session.id
+                                        ))
+                                        .onHover { isHovering in
+                                            updateWorkOutlineContextTarget(
+                                                .session(workID: work.id, sessionID: row.session.id),
+                                                isHovering: isHovering
+                                            )
+                                        }
+                                } else {
+                                    Label(L10n("Start Work Chat"), systemImage: "scope")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.secondary)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                 }
-                            }
-                        } else {
-                            if let row = workChatsByWorkID[work.id]?.first {
-                                workChatRow(row)
-                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                                    .background(outlineChildSelectionBackground(
-                                        selectionController.selectedSessionID == row.session.id
-                                    ))
-                            } else {
-                                Label(L10n("Start Work Chat"), systemImage: "scope")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
-                            }
 
-                            let tasks = tasksByWorkID[work.id] ?? []
-                            if tasks.isEmpty {
-                                outlineGroupEmptyRow(L10n("No Tasks"))
-                            } else {
+                                let tasks = tasksByWorkID[work.id] ?? []
                                 ForEach(tasks) { task in
-                                    taskRow(task)
+                                    taskRow(task, ownsContextMenu: false)
                                         .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                         .background(outlineChildSelectionBackground(
                                             selectedTaskId == task.id
                                         ))
+                                        .onHover { isHovering in
+                                            updateWorkOutlineContextTarget(
+                                                .task(workID: work.id, taskID: task.id),
+                                                isHovering: isHovering
+                                            )
+                                        }
                                 }
                             }
                         }
+                        .transition(ConsoleWorkOutlineMetrics.disclosureTransition)
                     }
+                }
+                .animation(
+                    ConsoleWorkOutlineMetrics.disclosureAnimation,
+                    value: outlineWorkIsExpanded(work.id)
+                )
+                .contextMenu {
+                    workOutlineContextMenu(for: work)
                 }
                 .consoleWorkOutlineGroupCard()
             }
@@ -895,40 +881,45 @@ struct UnifiedConsoleView: View {
 
     private func outlineChatHeader(hasUnread: Bool) -> some View {
         let isExpanded = !isOutlineAssistantCollapsed || !searchText.isEmpty
-        return Button {
-            if searchText.isEmpty {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    isOutlineAssistantCollapsed.toggle()
+        return HoverRevealHeaderAction(
+            accessibilityLabel: L10n("New Assistant Session"),
+            action: { showNewSessionCreation = true }
+        ) {
+            Button {
+                if searchText.isEmpty {
+                    withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
+                        isOutlineAssistantCollapsed.toggle()
+                    }
                 }
-            }
-            selectAssistantSpace()
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12)
-                Image(systemName: "bubble.left.and.bubble.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .frame(width: 22)
-                Text(L10n("Chat"))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(selectedWorkId == nil ? Color.primary : Color.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if hasUnread {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
-                        .accessibilityLabel(L10n("Unread Session"))
+                selectAssistantSpace()
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .frame(width: 22)
+                    Text(L10n("Chat"))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(selectedWorkId == nil ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if hasUnread {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                            .accessibilityLabel(L10n("Unread Session"))
+                    }
                 }
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
             }
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityLabel(L10n("Chat"))
+            .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(L10n("Chat"))
-        .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
     }
 
     private func outlineGroupEmptyRow(_ title: String) -> some View {
@@ -952,55 +943,103 @@ struct UnifiedConsoleView: View {
 
     private func outlineWorkHeader(_ work: Work, hasUnread: Bool) -> some View {
         let isExpanded = outlineWorkIsExpanded(work.id)
-        return Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                if collapsedOutlineWorkIDs.contains(work.id) {
-                    collapsedOutlineWorkIDs.remove(work.id)
-                } else {
-                    collapsedOutlineWorkIDs.insert(work.id)
+        return HoverRevealHeaderAction(
+            accessibilityLabel: L10nFormat("Create Task in %@", work.name),
+            action: { presentTaskCreation(for: work.id) }
+        ) {
+            Button {
+                withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
+                    if collapsedOutlineWorkIDs.contains(work.id) {
+                        collapsedOutlineWorkIDs.remove(work.id)
+                    } else {
+                        collapsedOutlineWorkIDs.insert(work.id)
+                    }
                 }
+                selectWorkSpace(work.id)
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    ObjectiveAvatarView(
+                        objectiveID: work.id,
+                        name: work.name,
+                        avatarPath: work.avatarPath,
+                        size: 22
+                    )
+                    Text(work.name)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(selectedWorkId == work.id ? Color.primary : Color.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    if hasUnread {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                            .accessibilityLabel(L10n("Unread Session"))
+                    }
+                }
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
             }
-            selectWorkSpace(work.id)
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12)
-                ObjectiveAvatarView(
-                    objectiveID: work.id,
-                    name: work.name,
-                    avatarPath: work.avatarPath,
-                    size: 22
-                )
-                Text(work.name)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(selectedWorkId == work.id ? Color.primary : Color.secondary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-                if hasUnread {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 8, height: 8)
-                        .accessibilityLabel(L10n("Unread Session"))
-                }
-            }
-            .padding(.vertical, 3)
-            .contentShape(Rectangle())
-            .contextMenu {
-                Button(L10n("编辑"), systemImage: "square.and.pencil") {
-                    workPendingEdit = work
-                }
-                Divider()
-                Button(L10n("删除"), systemImage: "trash", role: .destructive) {
-                    workPendingDeletion = work
-                }
+            .buttonStyle(.plain)
+            .accessibilityLabel(work.name)
+            .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
+            .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
+        }
+    }
+
+    private func updateWorkOutlineContextTarget(
+        _ target: ConsoleWorkOutlineContextTarget,
+        isHovering: Bool
+    ) {
+        if isHovering {
+            workOutlineContextTarget = target
+        } else if workOutlineContextTarget == target {
+            switch target {
+            case .work(let workID), .task(let workID, _), .session(let workID, _):
+                workOutlineContextTarget = .work(workID)
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(work.name)
-        .accessibilityValue(isExpanded ? L10n("Expanded group") : L10n("Collapsed group"))
-        .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
+    }
+
+    @ViewBuilder
+    private func workOutlineContextMenu(for work: Work) -> some View {
+        switch workOutlineContextTarget {
+        case .task(let workID, let taskID) where workID == work.id:
+            if let task = entityClient.tasks.first(where: { $0.id == taskID }) {
+                taskContextMenuContent(for: task, session: workerSession(for: task))
+            } else {
+                workContextMenuContent(for: work)
+            }
+        case .session(let workID, let sessionID) where workID == work.id:
+            if let session = (sessionIndexStore.rows + archivedSessionIndexStore.rows)
+                .first(where: { $0.session.id == sessionID })?.session {
+                SessionContextMenuContent(
+                    session: session,
+                    isRenaming: Binding(
+                        get: { sessionPendingRename?.id == session.id },
+                        set: { sessionPendingRename = $0 ? session : nil }
+                    )
+                )
+            } else {
+                workContextMenuContent(for: work)
+            }
+        default:
+            workContextMenuContent(for: work)
+        }
+    }
+
+    @ViewBuilder
+    private func workContextMenuContent(for work: Work) -> some View {
+        Button(L10n("编辑"), systemImage: "square.and.pencil") {
+            workPendingEdit = work
+        }
+        Divider()
+        Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+            workPendingDeletion = work
+        }
     }
 
     private var outlineTasksByWorkID: [String: [CorptieTask]] {
@@ -1170,13 +1209,8 @@ struct UnifiedConsoleView: View {
             }
 
             Section {
-                if visibleWorkTasks.isEmpty {
-                    Text(L10n("No Tasks"))
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(visibleWorkTasks) { task in
-                        taskRow(task)
-                    }
+                ForEach(visibleWorkTasks) { task in
+                    taskRow(task)
                 }
             } header: {
                 Text(L10n("Tasks"))
@@ -1186,10 +1220,11 @@ struct UnifiedConsoleView: View {
         .scrollContentBackground(.hidden)
     }
 
-    private func workChatRow(_ row: SessionRowModel) -> some View {
+    @ViewBuilder
+    private func workChatRow(_ row: SessionRowModel, ownsContextMenu: Bool = true) -> some View {
         let session = row.session
         let isSelected = selectionController.selectedSessionID == session.id
-        return Button {
+        let rowView = Button {
             selectedTaskId = nil
             selectSessionAfterHighlight(session)
         } label: {
@@ -1212,7 +1247,16 @@ struct UnifiedConsoleView: View {
             }
             .padding(.vertical, 4)
             .contentShape(Rectangle())
-            .contextMenu {
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
+                .padding(.horizontal, 8)
+        )
+
+        if ownsContextMenu {
+            rowView.contextMenu {
                 SessionContextMenuContent(
                     session: session,
                     isRenaming: Binding(
@@ -1221,22 +1265,19 @@ struct UnifiedConsoleView: View {
                     )
                 )
             }
+        } else {
+            rowView
         }
-        .buttonStyle(.plain)
-        .listRowBackground(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
-                .padding(.horizontal, 8)
-        )
     }
 
-    private func taskRow(_ task: CorptieTask) -> some View {
+    @ViewBuilder
+    private func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View {
         let session = workerSession(for: task)
         let sessionActivity = CorptieTaskBoundSessionActivity.resolve(
             task: task,
             sessions: backendClient.sessions
         )
-        return Button {
+        let rowView = Button {
             openTask(task, session: session)
         } label: {
             HStack(spacing: 9) {
@@ -1258,11 +1299,6 @@ struct UnifiedConsoleView: View {
             }
             .padding(.vertical, 4)
             .contentShape(Rectangle())
-            .overlay {
-                ConsoleRightClickMenuHitTarget(
-                    entries: taskContextMenuEntries(for: task, session: session)
-                )
-            }
         }
         .buttonStyle(.plain)
         .listRowBackground(
@@ -1270,36 +1306,37 @@ struct UnifiedConsoleView: View {
                 .fill(selectedTaskId == task.id ? Color.accentColor.opacity(0.09) : Color.clear)
                 .padding(.horizontal, 8)
         )
+
+        if ownsContextMenu {
+            rowView.contextMenu {
+                taskContextMenuContent(for: task, session: session)
+            }
+        } else {
+            rowView
+        }
     }
 
-    private func taskContextMenuEntries(
+    @ViewBuilder
+    private func taskContextMenuContent(
         for task: CorptieTask,
         session: TaskSession?
-    ) -> [ConsoleContextMenuEntry] {
-        [
-            .action(L10n("Rename"), systemImage: "pencil") {
-                taskPendingRename = task
-            },
-            .action(L10n("编辑"), systemImage: "square.and.pencil") {
-                taskPendingEdit = task
-            },
-            .action(
-                L10n("Restart Task"),
-                systemImage: "arrow.clockwise",
-                isEnabled: session?.actions?.restart?.available == true
-                    && !pendingTaskRestartIds.contains(task.id)
-            ) {
-                restartTask(task)
-            },
-            .separator,
-            .action(
-                L10n("删除"),
-                systemImage: "trash",
-                isEnabled: !pendingTaskDeletionIds.contains(task.id)
-            ) {
-                Task { await prepareTaskDeletion(task) }
-            }
-        ]
+    ) -> some View {
+        Button(L10n("Rename"), systemImage: "pencil") {
+            taskPendingRename = task
+        }
+        Button(L10n("编辑"), systemImage: "square.and.pencil") {
+            taskPendingEdit = task
+        }
+        Button(L10n("Restart Task"), systemImage: "arrow.clockwise") {
+            restartTask(task)
+        }
+        .disabled(session?.actions?.restart?.available != true
+            || pendingTaskRestartIds.contains(task.id))
+        Divider()
+        Button(L10n("删除"), systemImage: "trash", role: .destructive) {
+            Task { await prepareTaskDeletion(task) }
+        }
+        .disabled(pendingTaskDeletionIds.contains(task.id))
     }
 
     private func restartTask(_ task: CorptieTask) {
@@ -1847,10 +1884,9 @@ struct UnifiedConsoleView: View {
                 Button(L10n("New Assistant Session"), systemImage: "bubble.left.and.bubble.right") {
                     showNewSessionCreation = true
                 }
-            } else {
-                Button(L10n("New Task"), systemImage: "checklist") {
-                    isCreatingTask = true
-                }
+            }
+            Button(L10n("New Task"), systemImage: "checklist") {
+                presentTaskCreation(for: selectedWorkId)
             }
 
             Divider()
@@ -1870,6 +1906,11 @@ struct UnifiedConsoleView: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help(L10n("Create"))
+    }
+
+    private func presentTaskCreation(for workID: String?) {
+        taskCreationWorkID = workID
+        isCreatingTask = true
     }
 
     private var workerSessionFunctionBar: some View {
@@ -1930,26 +1971,16 @@ struct UnifiedConsoleView: View {
         .modifier(SessionSidebarFunctionBarGlassModifier())
     }
 
-    private func sessionRow(_ row: SessionRowModel, subtitle: String? = nil) -> some View {
+    private func sessionRow(_ row: SessionRowModel) -> some View {
         let isSelected = selectionController.selectedSessionID == row.session.id
-        return SessionsSidebarRow(
+        return ConsoleSessionRow(
             row: row,
-            subtitle: subtitle,
             selectionRequested: selectSessionAfterHighlight
         )
-            .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 8))
-            .listRowSeparator(.hidden)
             .listRowBackground(
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
-                    if isSelected {
-                        Capsule()
-                            .fill(Color.accentColor)
-                            .frame(width: 3, height: 22)
-                            .padding(.leading, 2)
-                    }
-                }
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
+                    .padding(.horizontal, 8)
             )
     }
 
@@ -2199,23 +2230,49 @@ private struct SessionSidebarFunctionBarGlassModifier: ViewModifier {
     }
 }
 
-/// Observes the stable list-row model directly so content-only Session patches
-/// (status, activity, title, summary, capabilities) repaint without requiring
-/// a parent-list invalidation or selecting the Session first.
-private struct SessionsSidebarRow: View {
+/// Chat Session rows intentionally share the same visual metrics as Task rows
+/// so switching between the two groups does not change navigation density. It
+/// observes the stable row model directly so content-only patches stay local.
+private struct ConsoleSessionRow: View {
     @ObservedObject var row: SessionRowModel
-    let subtitle: String?
+    @EnvironmentObject private var backendClient: BackendClient
+    @State private var isRenaming = false
     let selectionRequested: (TaskSession) -> Void
 
     var body: some View {
-        CompactSessionRow(
-            session: row.session,
-            isUnread: isSessionUnread(row.session),
-            style: subtitle == nil ? .sessionsSidebar : .sessionsSidebarWithSubtitle,
-            displayTitle: row.listTitle,
-            subtitle: subtitle,
-            selectionRequested: selectionRequested
-        )
+        let session = row.session
+        Button {
+            selectionRequested(session)
+        } label: {
+            HStack(spacing: 9) {
+                Circle()
+                    .fill(session.executionTaskStatus.color)
+                    .frame(width: 7, height: 7)
+                    .accessibilityLabel(session.executionTaskStatus.label)
+                Text(row.listTitle)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if isSessionUnread(session) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel(L10n("Unread Session"))
+                        .help(L10n("Unread Session"))
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            SessionContextMenuContent(session: session, isRenaming: $isRenaming)
+        }
+        .sheet(isPresented: $isRenaming) {
+            RenameSessionSheet(session: session) { isRenaming = false }
+                .environmentObject(backendClient)
+                .presentationBackground(.clear)
+        }
     }
 }
 

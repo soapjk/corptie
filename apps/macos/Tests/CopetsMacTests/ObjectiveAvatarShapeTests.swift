@@ -46,4 +46,21 @@ struct ObjectiveAvatarShapeTests {
         #expect(component.contains("style: .continuous"))
         #expect(component.contains(".clipShape(MacOSAppIconShape())"))
     }
+
+    @Test
+    func workAvatarPickersAcceptSVGImages() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+
+        for fileName in ["WorkCreateView.swift", "WorkDetailView.swift"] {
+            let source = try String(
+                contentsOf: sourceRoot.appendingPathComponent(fileName),
+                encoding: .utf8
+            )
+            #expect(source.contains(".svg"), "SVG is not selectable in \(fileName)")
+        }
+    }
 }
