@@ -84,6 +84,16 @@ test("Codex binding readiness preserves a live empty thread until its first Turn
     "an existence probe must not be blocked by Tool catalog refresh");
 });
 
+test("message dispatch reuses binding readiness and invalidates it after Provider failure", async () => {
+  const source = await readFile(sourceURL, "utf8");
+  const begin = source.indexOf("async function sendUnifiedSessionMessage");
+  const end = source.indexOf("function assertSessionRecoveryMessageBoundary", begin);
+  const body = source.slice(begin, end);
+
+  assert.match(body, /sessionBindingReadinessProbe\.verify\([\s\S]*reuseReady:\s*true/);
+  assert.match(body, /catch \(error\) \{[\s\S]*sessionBindingReadinessProbe\.invalidateBinding\(reference\)/);
+});
+
 test("Worker initial prompts drain only after the authoritative ready receipt commit", async () => {
   const source = await readFile(sourceURL, "utf8");
   const serviceBegin = source.indexOf("const providerWorkSessionPort = new ProviderWorkSessionPort");

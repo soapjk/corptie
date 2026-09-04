@@ -39,6 +39,12 @@ struct UnifiedConsoleControlSurfaceTests {
     @Test
     func messageComposerStaysVisuallyStableWhileSubmissionIsGuarded() throws {
         let source = try source(named: "FloatingRootView.swift")
+        let sessionComposerStart = try #require(source.range(of: "private var sessionComposer: some View"))
+        let sessionComposerEnd = try #require(source.range(
+            of: "    var body: some View",
+            range: sessionComposerStart.upperBound..<source.endIndex
+        ))
+        let sessionComposer = source[sessionComposerStart.lowerBound..<sessionComposerEnd.lowerBound]
         let start = try #require(source.range(of: "struct MessageComposer: View"))
         let end = try #require(source.range(
             of: "enum ComposerInputLayout",
@@ -46,6 +52,9 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let composer = source[start.lowerBound..<end.lowerBound]
 
+        #expect(sessionComposer.contains("MessageComposer("))
+        #expect(!sessionComposer.contains("else if !sessionIsReady"))
+        #expect(!sessionComposer.contains("ReadOnlyComposer(\n                reason: composerUnavailableReason"))
         #expect(composer.contains(".disabled(false)"))
         #expect(composer.contains("|| backendClient.isSendingMessage"))
         #expect(composer.contains("!backendClient.isSendingMessage else"))
