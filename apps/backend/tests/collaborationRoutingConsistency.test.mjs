@@ -9,11 +9,94 @@ import { WorkApplicationService } from "../src/application/workApplicationServic
 import { SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { handleCollaborationHttpRequest } from "../src/collaboration/collaborationHttpApi.mjs";
+import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
 import { CollaborationHttpClient } from "../src/mcp/collaborationHttpClient.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
 const LEGACY_DISCOVERY_TASK = "task:1be73667-legacy-discovery";
 const AUTHORITATIVE_TASK = "task:0aba863c-runtime-binding";
+
+test("Channel HTTP routing opens a request to an exact peer Work Chat Session", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-channel-work-chat-routing-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  let server;
+  try {
+    await store.initialize();
+    const core = new CollaborationCore(store, { idFactory: deterministicIds() });
+    const works = new WorkApplicationService({ store });
+    const source = store.createAgent({
+      id: "agent:channel-source", name: "Channel Source", role: "independentContributor"
+    });
+    const target = store.createAgent({
+      id: "agent:channel-target", name: "Channel Target", role: "independentContributor"
+    });
+    const sourceWork = works.createWork({
+      id: "work:channel-source", name: "Channel Source", contributorAgentIds: [source.agentId]
+    });
+    const targetWork = works.createWork({
+      id: "work:channel-target", name: "Channel Target", contributorAgentIds: [target.agentId]
+    });
+    const sourceTask = works.createTask({
+      id: "task:channel-source", workId: sourceWork.id, title: "Open exact Channel",
+      mainAgentId: source.agentId
+    });
+    bindSession(store, core, {
+      providerSessionId: "provider:channel-source", logicalSessionId: "logical:channel-source",
+      agentId: source.agentId, workId: sourceWork.id, taskId: sourceTask.id
+    });
+    bindSession(store, core, {
+      providerSessionId: "provider:channel-target", logicalSessionId: "logical:channel-target",
+      agentId: target.agentId, workId: targetWork.id, taskId: null, kind: "workChat"
+    });
+    const collaboration = new SessionCollaborationService({
+      store, workService: works, collaborationCore: core,
+      defaultProviderId: "test-provider",
+      workSessionStartApplicationService: { start: async () => { throw new Error("must not launch"); } }
+    });
+    const channels = new SessionChannelService({
+      store, collaborationCore: core, idFactory: deterministicIds()
+    });
+    const staged = [];
+    server = http.createServer((request, response) => {
+      const url = new URL(request.url, `http://${request.headers.host}`);
+      if (!handleCollaborationHttpRequest({
+        request, response, url, core,
+        sessionCollaborationService: collaboration,
+        sessionChannelService: channels,
+        onChannelRequestStaged: async (channelRequest) => staged.push(channelRequest)
+      })) response.writeHead(404).end();
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const client = new CollaborationHttpClient({
+      baseUrl: `http://127.0.0.1:${server.address().port}`,
+      agentId: source.agentId,
+      sessionScope: {
+        sessionId: "provider:channel-source", workId: sourceWork.id, taskId: sourceTask.id
+      }
+    });
+
+    const result = await client.post("/internal/collaboration/channel-requests", {
+      recipientSessionId: "logical:channel-target",
+      recipientSessionName: "Channel Target Work Chat",
+      sessionAgentId: target.agentId,
+      targetWorkId: targetWork.id,
+      body: "Please coordinate Discovery v3 incrementally.",
+      idempotencyKey: "channel:exact-work-chat"
+    });
+
+    assert.equal(result.request.status, "pending");
+    assert.equal(result.request.requestedRecipientSessionId, "logical:channel-target");
+    assert.equal(staged.length, 1);
+    assert.equal(store.listTasksByWork(targetWork.id).length, 0);
+  } finally {
+    if (server) await new Promise((resolve) => server.close(resolve));
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("legacy Agent discovery delegates to the authoritative runtime binding and request fails closed on stale parent context", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-collaboration-routing-consistency-"));
