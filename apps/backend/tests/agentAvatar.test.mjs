@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { saveWorkAvatar } from "../src/runtime/agentAvatar.mjs";
+import { saveAgentAvatar, saveWorkAvatar } from "../src/runtime/agentAvatar.mjs";
 
 test("Work avatars preserve the SVG extension", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-work-avatar-svg-"));
@@ -18,6 +18,24 @@ test("Work avatars preserve the SVG extension", async () => {
       environmentName: "development"
     });
     assert.equal(managed.endsWith("/works/work:svg/avatar.svg"), true);
+    assert.equal(await readFile(managed, "utf8"), svg);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Agent avatars preserve the SVG extension", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-agent-avatar-svg-"));
+  const source = join(directory, "avatar.svg");
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="12"/></svg>';
+  await writeFile(source, svg);
+
+  try {
+    const managed = await saveAgentAvatar("agent:svg", source, {
+      corptieHome: join(directory, "corptie"),
+      environmentName: "development"
+    });
+    assert.equal(managed.endsWith("/agents/agent:svg/avatar.svg"), true);
     assert.equal(await readFile(managed, "utf8"), svg);
   } finally {
     await rm(directory, { recursive: true, force: true });
