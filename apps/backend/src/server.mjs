@@ -154,6 +154,7 @@ import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
 import { SessionContextReferenceService } from "./application/sessionContextReferenceService.mjs";
 import { handleSessionContextReferenceHttpRequest } from "./application/sessionContextReferenceHttpApi.mjs";
 import { ScheduledSessionTaskService } from "./application/scheduledSessionTaskService.mjs";
+import { createScheduledSessionRouteResolver } from "./application/scheduledSessionRoute.mjs";
 import { handleScheduledSessionTaskHttpRequest } from "./application/scheduledSessionTaskHttpApi.mjs";
 import {
   scheduledSessionTaskDynamicTools,
@@ -500,6 +501,7 @@ const collaborationDispatcher = new CollaborationDeliveryDispatcher({
     });
   }
 });
+const resolveScheduledSessionRoute = createScheduledSessionRouteResolver({ store, collaborationCore });
 const scheduledSessionTaskService = new ScheduledSessionTaskService({
   store,
   environment: environmentName,
@@ -4446,38 +4448,6 @@ function authorizeScheduledSessionTask({ actor, logicalSessionId, environment })
     throw error;
   }
   return { workId: session.workId ?? null, session };
-}
-
-async function resolveScheduledSessionRoute(logicalSessionId) {
-  const logical = store.getLogicalSession(logicalSessionId);
-  if (!logical) {
-    const error = new Error(`Logical Session ${logicalSessionId} no longer exists.`);
-    error.code = "SESSION_NOT_FOUND";
-    throw error;
-  }
-  if (logical.archived) {
-    const error = new Error(`Logical Session ${logicalSessionId} is archived.`);
-    error.code = "SESSION_ARCHIVED";
-    throw error;
-  }
-  if (!logical.activeBinding || logical.activeBinding.state !== "active") {
-    const error = new Error(`Logical Session ${logicalSessionId} has no active Provider binding.`);
-    error.code = "ROUTE_UNAVAILABLE";
-    throw error;
-  }
-  const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
-  const agent = session ? collaborationCore.getAgentForSession(session.id) : null;
-  if (!session || !agent) {
-    const error = new Error(`Logical Session ${logicalSessionId} has no authorized Agent.`);
-    error.code = session ? "AGENT_NOT_FOUND" : "SESSION_NOT_FOUND";
-    throw error;
-  }
-  return {
-    logicalSession: logical,
-    sessionId: session.id,
-    assigneeAgentId: agent.agentId,
-    binding: logical.activeBinding
-  };
 }
 
 function enqueueScheduledSessionWork(input) {

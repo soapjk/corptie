@@ -8,6 +8,7 @@ import {
   ScheduledSessionTaskService,
   processObservationFromPs
 } from "../src/application/scheduledSessionTaskService.mjs";
+import { createScheduledSessionRouteResolver } from "../src/application/scheduledSessionRoute.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -54,19 +55,7 @@ async function fixture(options = {}) {
       }
       return { workId: null };
     },
-    resolveRoute: async (logicalSessionId) => {
-      const logical = store.getLogicalSession(logicalSessionId);
-      if (!logical) {
-        const error = new Error("session missing");
-        error.code = "SESSION_NOT_FOUND";
-        throw error;
-      }
-      return {
-        sessionId: logical.legacySessionId,
-        agentId: "agent:owner",
-        binding: logical.activeBinding
-      };
-    },
+    resolveRoute: createScheduledSessionRouteResolver({ store, collaborationCore: core }),
     enqueue: options.enqueue ?? ((work) => {
       const result = store.enqueueAgentTaskWithResult(work);
       if (result.inserted) queued.push(work);
@@ -190,6 +179,34 @@ test("validates time zones, schedule fields, authorization, and full lifecycle o
     const cancelled = f.service.cancel(created.taskId, f.actor);
     assert.equal(cancelled.status, "cancelled");
     assert.ok(f.service.get(created.taskId, f.actor).events.length >= 3);
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("a newly created Automation runs immediately through the production route and exposes its queued result", async () => {
+  const f = await fixture();
+  try {
+    const created = f.service.create({
+      logicalSessionId: "logical:stable",
+      name: "Immediate production-route check",
+      message: "run immediately",
+      scheduleType: "interval",
+      intervalSeconds: 300
+    }, f.actor);
+
+    const run = await f.service.runNow(created.taskId, f.actor);
+    assert.equal(run.status, "queued");
+    assert.equal(run.triggerKind, "manual");
+    assert.equal(run.triggerReason, "run_now");
+    assert.equal(run.agentTaskId, f.queued[0].taskId);
+    assert.deepEqual(run.stages.map((value) => value.name), [
+      "trigger", "authorization", "routing", "action:0:queueSessionMessage", "dispatch"
+    ]);
+    const [visible] = f.service.list({ includeRuns: true }, f.actor);
+    assert.equal(visible.status, "active");
+    assert.equal(visible.lastRunStatus, "queued");
+    assert.equal(visible.runs[0].runId, run.runId);
   } finally {
     await cleanup(f);
   }
