@@ -13,6 +13,7 @@ enum CorptieTaskCreateFormPolicy {
     static func validationMessage(
         title: String,
         detail: String,
+        workId: String?,
         agentId: String?
     ) -> String? {
         if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -20,6 +21,9 @@ enum CorptieTaskCreateFormPolicy {
         }
         if detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return L10n("请输入 Task 描述。")
+        }
+        if workId == nil {
+            return L10n("请选择 Work。")
         }
         if agentId == nil {
             return L10n("请选择负责该 CorptieTask 的 Agent。")
@@ -46,18 +50,24 @@ struct CorptieTaskCreateView: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
     @Environment(\.dismiss) private var dismiss
-    let workId: String
-    let contributorAgentIds: [String]
+    let initialWorkId: String?
     let onCreated: (CorptieTask) -> Void
 
     @State private var title = ""
     @State private var detail = ""
     @State private var acceptanceCriteria = ""
     @State private var priority = "medium"
+    @State private var selectedWorkId: String?
     @State private var selectedAgentId: String?
     @State private var selectedProviderId = ""
     @State private var creationId = "task:\(UUID().uuidString.lowercased())"
     @State private var submissionError: String?
+
+    init(initialWorkId: String? = nil, onCreated: @escaping (CorptieTask) -> Void) {
+        self.initialWorkId = initialWorkId
+        self.onCreated = onCreated
+        _selectedWorkId = State(initialValue: initialWorkId)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -105,6 +115,8 @@ struct CorptieTaskCreateView: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor)))
             }
 
+            workSection
+
             agentSection
 
             providerSection
@@ -143,17 +155,32 @@ struct CorptieTaskCreateView: View {
         .frame(width: 500)
         .task {
             async let agents: Void = client.refreshAgents()
+            async let works: Void = client.refreshWorks()
             if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
-            _ = await agents
+            _ = await (agents, works)
+            reconcileWorkSelection()
             reconcileProviderSelection()
         }
+        .onChange(of: client.works) { _, _ in reconcileWorkSelection() }
+        .onChange(of: selectedWorkId) { _, _ in reconcileAgentSelection() }
         .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
+    }
+
+    private var availableWorks: [Work] {
+        client.works.sorted { lhs, rhs in
+            lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private var selectedWork: Work? {
+        guard let selectedWorkId else { return nil }
+        return client.works.first(where: { $0.id == selectedWorkId })
     }
 
     private var availableAgents: [Agent] {
         CorptieTaskCreateFormPolicy.availableAgents(
             from: client.agents,
-            allowedAgentIds: Set(contributorAgentIds)
+            allowedAgentIds: Set(selectedWork?.contributorAgentIds ?? [])
         )
     }
 
@@ -161,11 +188,34 @@ struct CorptieTaskCreateView: View {
         CorptieTaskCreateFormPolicy.validationMessage(
             title: title,
             detail: detail,
+            workId: selectedWorkId,
             agentId: selectedAgentId
         )
     }
 
     private var canSubmit: Bool { validationMessage == nil }
+
+    private var workSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(L10n("Work *"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker(L10n("Work"), selection: $selectedWorkId) {
+                Text(L10n("请选择 Work")).tag(String?.none)
+                ForEach(availableWorks) { work in
+                    Text(work.name).tag(String?.some(work.id))
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if availableWorks.isEmpty {
+                Text(L10n("当前没有可用的 Work。"))
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
 
     @ViewBuilder
     private var agentSection: some View {
@@ -231,8 +281,27 @@ struct CorptieTaskCreateView: View {
         )
     }
 
+    private func reconcileWorkSelection() {
+        if let selectedWorkId,
+           availableWorks.contains(where: { $0.id == selectedWorkId }) {
+            return
+        }
+        selectedWorkId = availableWorks.first(where: { $0.id == initialWorkId })?.id
+            ?? availableWorks.first?.id
+    }
+
+    private func reconcileAgentSelection() {
+        if let selectedAgentId,
+           availableAgents.contains(where: { $0.agentId == selectedAgentId }) {
+            return
+        }
+        selectedAgentId = nil
+    }
+
     private func submit() {
-        guard validationMessage == nil, let selectedAgentId else {
+        guard validationMessage == nil,
+              let selectedWorkId,
+              let selectedAgentId else {
             submissionError = validationMessage ?? L10n("请选择负责该 CorptieTask 的 Agent。")
             return
         }
@@ -243,7 +312,7 @@ struct CorptieTaskCreateView: View {
 
         submissionError = nil
         let requestId = creationId
-        let requestWorkId = workId
+        let requestWorkId = selectedWorkId
         let requestTitle = trimmedTitle
         let requestDetail = trimmedDetail
         let requestAcceptanceCriteria = acceptanceCriteria

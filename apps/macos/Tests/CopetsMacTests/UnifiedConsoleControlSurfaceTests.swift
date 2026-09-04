@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import Testing
 @testable import CorptieMac
@@ -95,6 +94,14 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(unifiedSource.contains("Button(L10n(\"New Assistant Session\")"))
         #expect(unifiedSource.contains("Button(L10n(\"New Task\")"))
         #expect(unifiedSource.contains("Button(L10n(\"New Work\")"))
+        #expect(unifiedSource.contains("presentTaskCreation(for: work.id)"))
+        #expect(unifiedSource.contains("private struct HoverRevealHeaderAction<Header: View>: View"))
+        #expect(unifiedSource.contains(".opacity(isHovering || isFocused ? 1 : 0)"))
+        #expect(unifiedSource.contains(".focused($isFocused)"))
+        #expect(unifiedSource.contains(".onHover { isHovering = $0 }"))
+        #expect(unifiedSource.contains("accessibilityLabel: L10n(\"New Assistant Session\")"))
+        #expect(unifiedSource.contains("action: { showNewSessionCreation = true }"))
+        #expect(unifiedSource.contains("Create Task in %@"))
         #expect(unifiedSource.contains(".overlay(alignment: .bottomTrailing)"))
         #expect(unifiedSource.contains("FloatingCreationButtonGlassModifier"))
         #expect(!unifiedSource.contains("Completed Tasks remain available until archived."))
@@ -102,8 +109,11 @@ struct UnifiedConsoleControlSurfaceTests {
         let createSource = try source(named: "CorptieTaskCreateView.swift")
         #expect(createSource.contains("Text(L10n(\"新建 Task\"))"))
         #expect(createSource.contains("TextField(L10n(\"Task 标题\")"))
+        #expect(createSource.contains("Picker(L10n(\"Work\"), selection: $selectedWorkId)"))
+        #expect(createSource.contains("initialWorkId: String? = nil"))
         #expect(!createSource.contains("新建工作项"))
         #expect(!createSource.contains("工作项标题"))
+        #expect(!unifiedSource.contains("outlineGroupEmptyRow(L10n(\"No Tasks\"))"))
     }
 
     @Test
@@ -261,58 +271,39 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("outlineChildSelectionBackground"))
         #expect(source.contains(".listRowBackground(Color.clear)"))
         #expect(source.contains(".listRowSeparator(.hidden)"))
+        #expect(source.contains("static let disclosureAnimation = Animation.easeInOut(duration: 0.16)"))
+        #expect(source.contains("@MainActor static let disclosureTransition = AnyTransition.opacity.combined(with: .offset(y: -4))"))
+        #expect(source.components(
+            separatedBy: ".transition(ConsoleWorkOutlineMetrics.disclosureTransition)"
+        ).count - 1 == 2)
+        #expect(source.components(
+            separatedBy: "withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation)"
+        ).count - 1 == 2)
+        #expect(source.contains("value: isOutlineAssistantCollapsed"))
+        #expect(source.contains("value: outlineWorkIsExpanded(work.id)"))
         #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
         #expect(source.contains("Text(L10n(\"Chat\"))"))
         #expect(!source.contains("Text(L10n(\"Assistant\"))"))
     }
 
     @Test
-    func taskContextMenuUsesARightClickOnlyOverlayWithoutChangingGroupLayout() throws {
+    func workOutlineUsesOneContextMenuPerCardAndRoutesItFromTheHoveredChild() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
-        let rowStart = try #require(source.range(of: "private func taskRow("))
-        let rowEnd = try #require(source.range(
-            of: "private func openTask(",
-            range: rowStart.lowerBound..<source.endIndex
+        let outlineStart = try #require(source.range(of: "private var workOutlineList: some View"))
+        let outlineEnd = try #require(source.range(
+            of: "private func outlineChatHeader",
+            range: outlineStart.lowerBound..<source.endIndex
         ))
-        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+        let outline = source[outlineStart.lowerBound..<outlineEnd.lowerBound]
 
-        #expect(source.contains("struct ConsoleRightClickMenuHitTarget: NSViewRepresentable"))
-        #expect(source.contains("guard currentEventType() == .rightMouseDown else { return nil }"))
-        #expect(row.contains("ConsoleRightClickMenuHitTarget("))
-        #expect(row.contains("taskContextMenuEntries(for: task, session: session)"))
-        #expect(!row.contains(".contextMenu {"))
+        #expect(outline.contains("taskRow(task, ownsContextMenu: false)"))
+        #expect(outline.contains(".task(workID: work.id, taskID: task.id)"))
+        #expect(outline.contains(".contextMenu {\n                    workOutlineContextMenu(for: work)"))
+        #expect(source.contains("private func workOutlineContextMenu(for work: Work)"))
+        #expect(source.contains("taskContextMenuContent(for: task, session: workerSession(for: task))"))
+        #expect(!source.contains("ConsoleRightClickMenuHitTarget"))
         #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
         #expect(source.contains("VStack(alignment: .leading, spacing: 2)"))
-    }
-
-    @Test
-    @MainActor
-    func taskContextMenuHitTargetCapturesOnlyRightMouseEvents() throws {
-        let view = ConsoleRightClickOnlyView(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
-
-        view.currentEventType = { .leftMouseDown }
-        #expect(view.hitTest(NSPoint(x: 10, y: 10)) == nil)
-
-        view.currentEventType = { .rightMouseDown }
-        #expect(view.hitTest(NSPoint(x: 10, y: 10)) === view)
-
-        var deliveredRightClick = false
-        view.onRightMouseDown = { _, sourceView in
-            deliveredRightClick = sourceView === view
-        }
-        let event = try #require(NSEvent.mouseEvent(
-            with: .rightMouseDown,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: 0,
-            windowNumber: 0,
-            context: nil,
-            eventNumber: 1,
-            clickCount: 1,
-            pressure: 1
-        ))
-        view.rightMouseDown(with: event)
-        #expect(deliveredRightClick)
     }
 
     @Test
@@ -440,6 +431,24 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(row.contains(".lineLimit(1)"))
         #expect(row.contains("RoundedRectangle(cornerRadius: 5, style: .continuous)"))
         #expect(row.contains("SessionContextMenuContent("))
+    }
+
+    @Test
+    func chatSessionRowsUseTheSameCompactMetricsAsTaskRows() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "private struct ConsoleSessionRow: View"))
+        let rowEnd = try #require(source.range(
+            of: "func sessionMatchingPendingSelection(",
+            range: rowStart.lowerBound..<source.endIndex
+        ))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+
+        #expect(source.contains("return ConsoleSessionRow("))
+        #expect(row.contains("HStack(spacing: 9)"))
+        #expect(row.contains(".frame(width: 7, height: 7)"))
+        #expect(row.contains(".font(.system(size: 12, weight: .semibold))"))
+        #expect(row.contains(".padding(.vertical, 4)"))
+        #expect(!row.contains("CompactSessionRow("))
     }
 
     @Test

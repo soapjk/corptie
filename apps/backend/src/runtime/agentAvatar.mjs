@@ -10,7 +10,7 @@ import { extname, join, resolve } from "node:path";
 // 路径作为元数据落库（agents.avatar_path），前端直接读该文件渲染。
 // 与 session 头像不同：会话不再单独持有头像，所有入口都走 Agent 头像。
 
-const AVATAR_EXTENSIONS = [".gif", ".png", ".jpeg", ".jpg", ".heic", ".tiff", ".webp"];
+const AVATAR_EXTENSIONS = [".gif", ".png", ".jpeg", ".jpg", ".heic", ".tiff", ".webp", ".svg"];
 
 export function resolveAgentAvatarsRoot(options = {}) {
   const home = resolve(options.homeDir ?? os.homedir());

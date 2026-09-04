@@ -525,6 +525,11 @@
 "Mention suggestions" = "Mention suggestions";
 "Agents" = "Agents";
 "Work" = "Work";
+"Work *" = "Work *";
+"请选择 Work" = "Select a Work";
+"请选择 Work。" = "Select a Work.";
+"当前没有可用的 Work。" = "There are no available Works.";
+"Create Task in %@" = "Create Task in %@";
 "Description" = "Description";
 "Acceptance Criteria" = "Acceptance Criteria";
 "In Progress" = "In Progress";
