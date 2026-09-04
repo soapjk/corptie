@@ -63,6 +63,11 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func messageComposerOffersKeyboardAccessibleOneTurnMentions() throws {
+        #expect(ComposerMentionMenuMetrics.width == 360)
+        #expect(ComposerMentionMenuMetrics.height(candidateCount: 0) == 180)
+        #expect(ComposerMentionMenuMetrics.height(candidateCount: 1) == 180)
+        #expect(ComposerMentionMenuMetrics.height(candidateCount: 10) == 326)
+
         let source = try source(named: "FloatingRootView.swift")
         let start = try #require(source.range(of: "struct MessageComposer: View"))
         let end = try #require(source.range(
@@ -80,6 +85,14 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("onMentionCommand?(.select)"))
         #expect(source.contains("onMentionCommand?(.dismiss)"))
         #expect(source.contains("LazyVStack(spacing: 2)"))
+        #expect(composer.contains(".popover("))
+        #expect(composer.contains("attachmentAnchor: .rect(.bounds)"))
+        #expect(composer.contains("arrowEdge: .bottom"))
+        #expect(composer.contains("mentionMenuPresented"))
+        #expect(source.contains("ScrollViewReader { proxy in"))
+        #expect(source.contains("proxy.scrollTo(candidates[index].id, anchor: .center)"))
+        #expect(source.contains(".accessibilityAddTraits(index == selectedIndex ? .isSelected : [])"))
+        #expect(!composer.contains(".offset(x: 8, y:"))
     }
 
     @Test
@@ -333,17 +346,22 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
-    func workingWorkTitleUsesAnAccessibleCompositorFriendlyBreathingAnimation() throws {
-        #expect(ConsoleWorkOutlineMetrics.workingPulseMinimumOpacity == 0.20)
-        #expect(ConsoleWorkOutlineMetrics.workingPulseDuration == 1.8)
+    func workingWorkTitleUsesAnAccessibleFlowingColorGradient() throws {
+        #expect(ConsoleWorkOutlineMetrics.workingGradientDuration == 2.6)
 
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(source.contains("private struct ConsoleWorkTitle: View"))
         #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
-        #expect(source.contains("ConsoleBreathingWorkTitle(title: title)"))
-        #expect(source.contains(".repeatForever(autoreverses: true)"))
-        #expect(source.contains(".opacity(isDimmed ? ConsoleWorkOutlineMetrics.workingPulseMinimumOpacity : 1)"))
+        #expect(source.contains("private struct ConsoleFlowingGradientWorkTitle: View"))
+        #expect(source.contains("animates: !accessibilityReduceMotion"))
+        #expect(source.contains(".repeatForever(autoreverses: false)"))
+        #expect(source.contains(".foregroundStyle(flowingGradient)"))
+        #expect(source.contains(".cyan, .blue, .purple, .pink, .orange, .cyan"))
+        #expect(source.contains("startPoint: UnitPoint(x: hasAdvancedGradient ? 0 : -1, y: 0.5)"))
+        #expect(source.contains("endPoint: UnitPoint(x: hasAdvancedGradient ? 2 : 1, y: 0.5)"))
         #expect(source.contains("isWorking: processingWorkIDs.contains(work.id)"))
+        #expect(!source.contains("ConsoleBreathingWorkTitle"))
+        #expect(!source.contains("workingPulseMinimumOpacity"))
         #expect(!source.contains("Timer.publish"))
         #expect(!source.contains("TimelineView"))
     }
@@ -359,7 +377,8 @@ struct UnifiedConsoleControlSurfaceTests {
         let outline = source[outlineStart.lowerBound..<outlineEnd.lowerBound]
 
         #expect(outline.contains("taskRow(task)"))
-        #expect(outline.contains("workChatRow(row)"))
+        #expect(!outline.contains("workChatRow(row)"))
+        #expect(!outline.contains("Start Work Chat"))
         #expect(outline.contains("sessionRow(row)"))
         #expect(outline.contains("workContextMenuContent(for: work)"))
         #expect(!source.contains("workOutlineContextMenu(for work: Work)"))
@@ -369,6 +388,35 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(outline.contains("LazyVStack"))
         #expect(outline.contains("DisclosureGroup(isExpanded:"))
         #expect(!outline.contains("Section(isExpanded:"))
+    }
+
+    @Test
+    func workChatIsAnIndependentActionBesideTheWorkTitle() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let headerStart = try #require(source.range(of: "private struct ConsoleWorkOutlineHeader: View"))
+        let headerEnd = try #require(source.range(
+            of: "enum ConsoleTaskSelectionPolicy",
+            range: headerStart.upperBound..<source.endIndex
+        ))
+        let header = source[headerStart.lowerBound..<headerEnd.lowerBound]
+
+        #expect(header.contains("Button(action: toggleExpanded)"))
+        #expect(header.contains("Button(action: openChat)"))
+        #expect(header.contains("Button(action: createTask)"))
+        #expect(header.contains(".padding(.leading, 6)"))
+        #expect(header.contains("message.fill"))
+        #expect(!header.contains("ellipsis.message"))
+        #expect(!header.contains("bubble.left.and.bubble.right"))
+        #expect(header.contains("if hasUnreadChat"))
+        #expect(header.contains("isChatSelected ? Color.accentColor : Color.secondary"))
+
+        #expect(!source.contains("workPendingNewChat"))
+        #expect(!source.contains("NewSessionCreationSheet(fixedWork: work)"))
+        #expect(source.contains("guard let workChat else { return }"))
+        #expect(source.contains("openWorkChat(for: work, session: workChat)"))
+        #expect(source.contains("private func workChatSession(for workId: String)"))
+        #expect(source.contains("indexedSession ?? backendClient.sessions.first"))
+        #expect(source.contains("private func openWorkChat(for work: Work, session: TaskSession)"))
     }
 
     @Test
