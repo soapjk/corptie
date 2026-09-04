@@ -90,7 +90,7 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and its companion Worker Session in one operation. Records this Session as creation origin; never creates a child or subtask.", {
+  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and its companion Worker Session in one operation. Call only when the current direct user message explicitly requests creation of a new Task. Complexity, decomposition, parallel work, missing information, and assistant or peer judgment are not authorization. Supply the authoritative direct-user message evidence shown in Corptie turn context; assistant, system, collaboration, and Automation evidence is rejected. Records this Session as creation origin; never creates a child or subtask.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
@@ -99,8 +99,13 @@ export const collaborationDynamicTools = Object.freeze([
     provider_id: { type: "string", minLength: 1 },
     artifact_reference: artifactReferenceSchema,
     file_reference: fileReferenceSchema,
+    logical_session_id: { type: "string", minLength: 1, description: "Authoritative logical Session from the current Corptie direct-user evidence block; this is not a Provider Session id." },
+    user_message_event_id: { type: "string", minLength: 1, description: "Authoritative direct-user message event id from the current Corptie turn." },
+    user_message_sequence: { type: "integer", minimum: 1, description: "Authoritative direct-user message sequence from the current Corptie turn." },
+    turn_id: { type: "string", minLength: 1, description: "Authoritative current delivery/turn id from the direct-user evidence block." },
     idempotency_key: { type: "string", minLength: 1 }
-  }, ["title", "agent_id", "idempotency_key"]),
+  }, ["title", "agent_id", "logical_session_id", "user_message_event_id",
+    "user_message_sequence", "turn_id", "idempotency_key"]),
   tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,
@@ -188,6 +193,10 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
         relation: input.file_reference.relation,
         required: input.file_reference.required
       } : undefined,
+      logicalSessionId: input.logical_session_id,
+      userMessageEventId: input.user_message_event_id,
+      userMessageSequence: input.user_message_sequence,
+      turnId: input.turn_id,
       idempotencyKey: input.idempotency_key
     })),
     corptie_collaboration_tasks_relate: () => client.post("/internal/collaboration/task-relations", {

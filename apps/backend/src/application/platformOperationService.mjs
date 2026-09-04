@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.mjs";
 import { stableJson } from "./platformConfirmationService.mjs";
+import { authorizeDirectUserTaskCreation } from "./directUserTaskCreationAuthorization.mjs";
 
 const PLATFORM_OPERATIONS = Object.freeze({
   corptie_platform_agents_manage: ["list", "get", "create", "update", "delete"],
@@ -117,11 +118,13 @@ export class PlatformOperationService {
   }
 
   async #tasks(args, binding) {
-    assertKnown(args, ["action", "task_id", "target_task_id", "work_id", "title", "agent_id", "provider_id", "dependency_type", "patch", "idempotency_key"]);
+    assertKnown(args, ["action", "task_id", "target_task_id", "work_id", "title", "agent_id", "provider_id", "dependency_type", "patch",
+      "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key"]);
     switch (required(args.action, "action")) {
       case "list": return args.work_id ? this.workService.listTasksByWork(args.work_id) : this.workService.listTasks();
       case "get": return this.workService.getTask(required(args.task_id, "task_id"));
       case "create": {
+        const authorization = this.#authorizeTaskCreation(args, binding);
         const created = await this.createTask({
           taskInput: {
             ...(args.patch ?? {}),
@@ -131,6 +134,7 @@ export class PlatformOperationService {
           },
           providerId: optional(args.provider_id),
           sourceSessionId: binding.logicalSessionId ?? binding.actorSessionId,
+          creationContextMessageId: authorization.eventId,
           idempotencyKey: required(args.idempotency_key, "idempotency_key")
         });
         return { ...created.task, session: created.session, start: created.start };
@@ -228,12 +232,14 @@ export class PlatformOperationService {
   }
 
   async #collaboration(args, binding) {
-    assertKnown(args, ["action", "session_id", "work_id", "agent_id", "task_id", "resource_version", "title", "description", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations", "idempotency_key"]);
+    assertKnown(args, ["action", "session_id", "work_id", "agent_id", "task_id", "resource_version", "title", "description", "acceptance_criteria", "priority", "provider_id", "summary", "type", "max_iterations",
+      "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key"]);
     if (!this.collaborationCore) throw coded("PLATFORM_COLLABORATION_UNAVAILABLE", "Collaboration platform service is unavailable.");
     switch (required(args.action, "action")) {
       case "discover_sessions": return { sessions: this.store.listSessions().filter((session) => !session.deletedAt).filter((session) => !args.work_id || session.workId === args.work_id).filter((session) => !args.agent_id || session.agentId === args.agent_id).map((session) => sessionDescriptor(this.store, session)) };
       case "get_session": return sessionDescriptor(this.store, found(resolveSession(this.store, required(args.session_id, "session_id")), "SESSION_NOT_FOUND"));
       case "create_task": {
+        const authorization = this.#authorizeTaskCreation(args, binding);
         const workId = required(args.work_id, "work_id");
         found(this.store.getWork(workId), "WORK_NOT_FOUND");
         const agentId = required(args.agent_id, "agent_id");
@@ -249,6 +255,7 @@ export class PlatformOperationService {
           },
           providerId: optional(args.provider_id),
           sourceSessionId: binding.logicalSessionId ?? binding.actorSessionId,
+          creationContextMessageId: authorization.eventId,
           idempotencyKey: required(args.idempotency_key, "idempotency_key")
         });
         return { ...created.task, session: created.session, start: created.start };
@@ -276,6 +283,18 @@ export class PlatformOperationService {
       }
       default: throw unsupported("Collaboration", args.action);
     }
+  }
+
+  #authorizeTaskCreation(args, binding) {
+    return authorizeDirectUserTaskCreation({
+      store: this.store,
+      providerSessionId: binding.actorSessionId,
+      expectedLogicalSessionId: binding.logicalSessionId ?? binding.actorSessionId,
+      logicalSessionId: args.logical_session_id,
+      userMessageEventId: args.user_message_event_id,
+      userMessageSequence: args.user_message_sequence,
+      turnId: args.turn_id
+    });
   }
 
   #storedSession(sessionId) { const summary = found(resolveSession(this.store, sessionId), "SESSION_NOT_FOUND"); const detail = this.store.getDetail?.(summary.id) ?? {}; return { ...detail, ...summary, id: summary.id, items: detail.items ?? this.store.getItems?.(summary.id) ?? [] }; }

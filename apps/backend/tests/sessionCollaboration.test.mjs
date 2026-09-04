@@ -11,6 +11,7 @@ import {
   resolveRecipientSession,
   SessionCollaborationService
 } from "../src/application/sessionCollaborationService.mjs";
+import { containsExplicitTaskCreationIntent } from "../src/application/directUserTaskCreationAuthorization.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
@@ -53,6 +54,32 @@ function session(store, core, input) {
     sessionName: input.logicalSessionId
   });
   core.bindSession({ agentId: input.agentId, sessionId: input.providerSessionId });
+}
+
+function taskCreationEvidence(store, input) {
+  const suffix = input.suffix ?? "create";
+  const logical = store.getLogicalSession(input.logicalSessionId);
+  const message = store.createUserMessageDelivery({
+    deliveryId: `delivery:${suffix}`,
+    messageId: `message:${suffix}`,
+    sessionId: input.providerSessionId,
+    binding: logical.activeBinding,
+    agentId: input.agentId,
+    text: input.text ?? "请创建一个新的 Task 来处理这项工作",
+    source: input.source ?? { type: "desktop" }
+  });
+  store.updateMessageDelivery(message.delivery.deliveryId, {
+    status: "accepted",
+    providerTurnId: `turn:${suffix}`,
+    providerAcknowledgedAt: new Date().toISOString()
+  });
+  const event = store.getSessionEvent(`user-message:message:${suffix}`);
+  return {
+    logicalSessionId: input.logicalSessionId,
+    userMessageEventId: event.eventId,
+    userMessageSequence: event.sequence,
+    turnId: `turn:${suffix}`
+  };
 }
 
 let collaborationArtifactTurn = 0;
@@ -769,12 +796,19 @@ test("tool Task creation uses one service operation to persist the Task and bind
       });
       return { status: "ready", session: f.store.getSession("provider:atomic-worker") };
     };
+    const authorization = taskCreationEvidence(f.store, {
+      providerSessionId: "provider:atomic-source",
+      logicalSessionId: "session:atomic-source",
+      agentId: agent.agentId,
+      suffix: "atomic-create"
+    });
     const input = {
       title: "Created and started",
       description: "Description belongs to Task context only",
       acceptanceCriteria: "Criterion belongs to Task context only",
       agentId: agent.agentId,
       providerId: "codex-app-server",
+      ...authorization,
       idempotencyKey: "tool-create:atomic"
     };
 
@@ -791,9 +825,59 @@ test("tool Task creation uses one service operation to persist the Task and bind
     assert.equal(stored.current_session_id, "provider:atomic-worker");
     assert.equal(stored.description, "Description belongs to Task context only");
     assert.equal(stored.acceptance_criteria, "Criterion belongs to Task context only");
+    assert.equal(
+      f.store.getTaskCreationOrigin(stored.id).creationContextMessageId,
+      authorization.userMessageEventId
+    );
     assert.equal(replay.task.id, created.task.id);
     assert.equal(replay.idempotentReplay, true);
     assert.equal(startCount, 1);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("tool Task creation rejects assistant initiative and accepts only an explicit direct-user request", async () => {
+  const f = await fixture();
+  try {
+    const agent = f.store.createAgent({ id: "agent:creation-guard", name: "Guard", role: "independentContributor" });
+    const work = f.workService.createWork({ name: "Guarded creation", contributorAgentIds: [agent.agentId] });
+    session(f.store, f.core, {
+      providerSessionId: "provider:creation-guard", logicalSessionId: "session:creation-guard",
+      agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
+    });
+    const metadata = { sessionId: "provider:creation-guard" };
+    const policyOnly = taskCreationEvidence(f.store, {
+      providerSessionId: "provider:creation-guard", logicalSessionId: "session:creation-guard",
+      agentId: agent.agentId, suffix: "policy-only",
+      text: "除非用户明确要求创建新的 Task，否则不允许模型擅自创建一个 Task。"
+    });
+    await assert.rejects(
+      f.service.createTaskAndSession(metadata, agent.agentId, {
+        title: "Unauthorized initiative", agentId: agent.agentId,
+        ...policyOnly, idempotencyKey: "create:unauthorized"
+      }),
+      (error) => error.code === "USER_MESSAGE_TASK_CREATION_INTENT_MISSING"
+    );
+    assert.equal(f.store.listTasksByWork(work.id).length, 0);
+
+    const collaborationEvidence = taskCreationEvidence(f.store, {
+      providerSessionId: "provider:creation-guard", logicalSessionId: "session:creation-guard",
+      agentId: agent.agentId, suffix: "peer-create", source: { type: "collaboration", taskId: "task:peer" },
+      text: "请创建一个新的 Task"
+    });
+    await assert.rejects(
+      f.service.createTaskAndSession(metadata, agent.agentId, {
+        title: "Peer initiated", agentId: agent.agentId,
+        ...collaborationEvidence, idempotencyKey: "create:peer"
+      }),
+      (error) => error.code === "COLLABORATION_MESSAGE_NOT_AUTHORIZED"
+    );
+
+    assert.equal(containsExplicitTaskCreationIntent("下面这份可以直接交给另一个 Task。"), true);
+    assert.equal(containsExplicitTaskCreationIntent("Please create a task for this work."), true);
+    assert.equal(containsExplicitTaskCreationIntent("This is complex, so maybe parallelize it."), false);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

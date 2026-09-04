@@ -5,6 +5,13 @@ import {
   collaborationDynamicTools
 } from "../src/collaboration/collaborationDynamicTools.mjs";
 
+const directUserEvidence = {
+  logical_session_id: "session:source",
+  user_message_event_id: "user-message:message:create",
+  user_message_sequence: 7,
+  turn_id: "delivery:create"
+};
+
 test("dynamic collaboration tools are top-level, eagerly loaded, unique, and provider-safe", () => {
   const names = collaborationDynamicTools.map((entry) => entry.name);
   assert.equal(names.length, 17);
@@ -31,7 +38,12 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.equal(Object.hasOwn(createTask.inputSchema.properties, "source_task_id"), false);
   assert.equal(createTask.inputSchema.properties.artifact_reference.required[0], "artifact_id");
   assert.equal(createTask.inputSchema.properties.file_reference.required[0], "path");
-  assert.deepEqual(createTask.inputSchema.required, ["title", "agent_id", "idempotency_key"]);
+  assert.match(createTask.description, /current direct user message explicitly requests/);
+  assert.match(createTask.description, /assistant, system, collaboration, and Automation evidence is rejected/);
+  assert.deepEqual(createTask.inputSchema.required, [
+    "title", "agent_id", "logical_session_id", "user_message_event_id",
+    "user_message_sequence", "turn_id", "idempotency_key"
+  ]);
 });
 
 test("dynamic Task creation maps assignment and Provider for automatic startup", async () => {
@@ -44,6 +56,7 @@ test("dynamic Task creation maps assignment and Provider for automatic startup",
     title: "Worker",
     agent_id: "agent:worker",
     provider_id: "claude-sdk",
+    ...directUserEvidence,
     idempotency_key: "create:one"
   });
   assert.deepEqual(calls, [{
@@ -52,6 +65,10 @@ test("dynamic Task creation maps assignment and Provider for automatic startup",
       title: "Worker",
       agentId: "agent:worker",
       providerId: "claude-sdk",
+      logicalSessionId: "session:source",
+      userMessageEventId: "user-message:message:create",
+      userMessageSequence: 7,
+      turnId: "delivery:create",
       idempotencyKey: "create:one"
     }
   }]);
@@ -79,6 +96,7 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
   const client = { post: async (path, body) => { calls.push({ path, body }); return { task: { id: "task:new" } }; } };
   await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
     title: "Referenced", agent_id: "agent:worker", provider_id: "provider:test",
+    ...directUserEvidence,
     idempotency_key: "create:referenced",
     artifact_reference: {
       artifact_id: "artifact:spec", relation: "implementation_spec", required: true,
@@ -95,6 +113,10 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
         artifactId: "artifact:spec", relation: "implementation_spec", required: true,
         versionPolicy: "fixed", version: 2
       },
+      logicalSessionId: "session:source",
+      userMessageEventId: "user-message:message:create",
+      userMessageSequence: 7,
+      turnId: "delivery:create",
       idempotencyKey: "create:referenced"
     }
   });
@@ -102,6 +124,7 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
   await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
     title: "File", idempotency_key: "create:file",
     agent_id: "agent:worker",
+    ...directUserEvidence,
     file_reference: { path: "/workspace/spec.md", relation: "test_plan", required: false }
   });
   assert.equal(calls[0].body.fileReference.path, "/workspace/spec.md");

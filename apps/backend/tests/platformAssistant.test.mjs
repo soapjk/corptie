@@ -102,6 +102,23 @@ test("platform operations are denied to user Agents and use product services for
       providerThreadId: "thread:assistant", providerSessionId: "session:assistant",
       providerId: "codex-app-server", boundCwd: directory, sessionName: "Corptie"
     });
+    const logical = store.getLogicalSession("logical:assistant");
+    const creationMessage = store.createUserMessageDelivery({
+      deliveryId: "delivery:platform-create", messageId: "message:platform-create",
+      sessionId: "session:assistant", binding: logical.activeBinding, agentId: "assistant",
+      text: "请创建两个新的 Task 来处理这些工作", source: { type: "desktop" }
+    });
+    store.updateMessageDelivery(creationMessage.delivery.deliveryId, {
+      status: "accepted", providerTurnId: "turn:platform-create",
+      providerAcknowledgedAt: new Date().toISOString()
+    });
+    const creationEvent = store.getSessionEvent("user-message:message:platform-create");
+    const creationEvidence = {
+      logical_session_id: "logical:assistant",
+      user_message_event_id: creationEvent.eventId,
+      user_message_sequence: creationEvent.sequence,
+      turn_id: "turn:platform-create"
+    };
     const entityEvents = [];
     const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
     const workService = new WorkApplicationService({ store, onEntityChanged });
@@ -154,12 +171,25 @@ test("platform operations are denied to user Agents and use product services for
         patch: { contributorAgentIds: [created.result.agentId] }
       }
     });
+    await assert.rejects(
+      service.execute({
+        actorId: "assistant", sessionId: "session:assistant",
+        tool: "corptie_platform_tasks_manage",
+        arguments: {
+          action: "create", work_id: work.result.id, title: "擅自创建",
+          agent_id: created.result.agentId, idempotency_key: "platform-task:unauthorized"
+        }
+      }),
+      (error) => error.code === "INVALID_INPUT" && /logical_session_id/.test(error.message)
+    );
+    assert.equal(taskCreateCalls.length, 0);
     const task = await service.execute({
       actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_tasks_manage",
       arguments: {
         action: "create", work_id: work.result.id, title: "平台事件任务",
-        agent_id: created.result.agentId, idempotency_key: "platform-task:create"
+        agent_id: created.result.agentId, ...creationEvidence,
+        idempotency_key: "platform-task:create"
       }
     });
     const collaborationTask = await service.execute({
@@ -168,11 +198,13 @@ test("platform operations are denied to user Agents and use product services for
       arguments: {
         action: "create_task", work_id: work.result.id, title: "平台协作任务",
         agent_id: created.result.agentId, provider_id: "provider:test",
+        ...creationEvidence,
         idempotency_key: "platform-collaboration-task:create"
       }
     });
     assert.equal(taskCreateCalls.length, 2);
     assert.equal(taskCreateCalls[1].sourceSessionId, "logical:assistant");
+    assert.equal(taskCreateCalls[1].creationContextMessageId, creationEvent.eventId);
     assert.equal(collaborationTask.result.session.id, "session:task-created:2");
 
     await assert.rejects(
@@ -197,7 +229,8 @@ test("platform operations are denied to user Agents and use product services for
         tool: "corptie_platform_tasks_manage",
         arguments: {
           action: "create", work_id: work.result.id, title: "Bad",
-          agent_id: created.result.agentId, idempotency_key: "platform-task:bad",
+          agent_id: created.result.agentId, ...creationEvidence,
+          idempotency_key: "platform-task:bad",
           patch: { acceptanceCriteria: [] }
         }
       }),
@@ -258,7 +291,7 @@ test("platform Work and Task tool patch schemas reject additional properties", (
     })),
     [
       { action: "get", required: ["task_id"] },
-      { action: "create", required: ["work_id", "title", "agent_id", "idempotency_key"] },
+      { action: "create", required: ["work_id", "title", "agent_id", "logical_session_id", "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key"] },
       { action: "update", required: ["task_id", "patch"] },
       { action: "delete", required: ["task_id"] },
       { action: "dependencies", required: ["task_id"] },
