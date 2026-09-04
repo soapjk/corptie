@@ -84,7 +84,7 @@ import {
 import { ProviderWorkSessionPort } from "./agent-provider/providerWorkSessionPort.mjs";
 import { TaskDeletionService } from "./application/taskDeletionService.mjs";
 import { WorkspaceContinuationCoordinator } from "./application/workspaceContinuationCoordinator.mjs";
-import { buildWorkSessionContext } from "./application/workSessionContext.mjs";
+import { buildWorkSessionContext, mergeWorkerSessionContexts } from "./application/workSessionContext.mjs";
 import { ArtifactService } from "./application/artifactService.mjs";
 import { ChatResourceService } from "./application/chatResourceService.mjs";
 import {
@@ -612,6 +612,7 @@ const hostToolCatalog = new HostToolCatalog([
     id: "task-acceptance",
     tools: taskAcceptanceDynamicTools,
     execute: (input) => callTaskAcceptanceDynamicTool({
+      getBoundTask: getBoundTaskForAgent,
       reportAcceptance: reportTaskAcceptanceForAgent,
       completeTask: completeTaskForSession,
       reviseTask: reviseTaskForSession
@@ -1256,6 +1257,9 @@ const sessionApplicationService = new SessionApplicationService({
     }
     const contexts = [memoryContext, baseContext, directUserIntentContext].filter((item) => item?.prompt);
     if (contexts.length === 0) return null;
+    if (session?.sessionKind === "worker") {
+      return mergeWorkerSessionContexts({ baseContext, directUserIntentContext, memoryContext });
+    }
     if (contexts.length === 1) return contexts[0];
     return {
       ...baseContext,
@@ -5653,9 +5657,21 @@ function settleTaskForWorkspaceContinuation(transitionId) {
 }
 
 function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
+  const { sessionId, task } = resolveBoundTaskForAgent(agentId, metadata, "Task acceptance");
+  return presentTaskAcceptance(workService.recordAcceptanceAssessment(task.id, {
+    sourceSessionId: sessionId,
+    results: input.results
+  }));
+}
+
+function getBoundTaskForAgent(agentId, _input = {}, metadata = {}) {
+  return presentTaskAcceptance(resolveBoundTaskForAgent(agentId, metadata, "Bound Task read").task);
+}
+
+function resolveBoundTaskForAgent(agentId, metadata = {}, operation = "Task operation") {
   const requestedSessionId = String(metadata.sessionId ?? "").trim();
   if (!requestedSessionId) {
-    const error = new Error("Task acceptance requires the authenticated Session scope.");
+    const error = new Error(`${operation} requires the authenticated Session scope.`);
     error.code = "SESSION_SCOPE_REQUIRED";
     throw error;
   }
@@ -5680,10 +5696,13 @@ function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
     error.code = "TASK_SESSION_MISMATCH";
     throw error;
   }
-  return presentTaskAcceptance(workService.recordAcceptanceAssessment(taskId, {
-    sourceSessionId: sessionId,
-    results: input.results
-  }));
+  const task = store.getTask(taskId);
+  if (!task) {
+    const error = new Error("The bound Task no longer exists.");
+    error.code = "TASK_NOT_FOUND";
+    throw error;
+  }
+  return { sessionId, task };
 }
 
 function reviseTaskForSession(agentId, input = {}, metadata = {}) {
@@ -9649,7 +9668,11 @@ function route(request, response) {
         );
       })
       .then((result) => sendJson(response, 202, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), { error: error.message, code: error.code }));
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message,
+        code: error.code,
+        ...(error.details && typeof error.details === "object" ? { details: error.details } : {})
+      }));
     return;
   }
 
