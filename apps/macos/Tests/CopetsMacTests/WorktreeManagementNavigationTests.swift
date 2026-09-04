@@ -176,6 +176,38 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(models.contains("This branch is already up to date with GitHub"))
     }
 
+    func testWorktreeBatchOperationsExposeSelectionOrderingAndAllThreeSemantics() throws {
+        let macRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let view = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementView.swift"),
+            encoding: .utf8
+        )
+        let client = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementClient.swift"),
+            encoding: .utf8
+        )
+        let models = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementModels.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(view.contains("worktree.batch.select"))
+        XCTAssertTrue(view.contains("worktree.batch.actions"))
+        XCTAssertTrue(view.contains(".onMove { offsets, destination in"))
+        XCTAssertTrue(view.contains("\"batch_merge\""))
+        XCTAssertTrue(view.contains("\"one_way_sync\""))
+        XCTAssertTrue(view.contains("\"converge\""))
+        XCTAssertTrue(view.contains("Make all selected branches identical"))
+        XCTAssertTrue(client.contains("func prepareBranchOperation("))
+        XCTAssertTrue(client.contains("\"sourceWorktreeIds\": sourceWorktreeIds"))
+        XCTAssertTrue(client.contains("\"targetWorktreeId\": targetWorktreeId"))
+        XCTAssertTrue(models.contains("let operationType: String?"))
+        XCTAssertTrue(models.contains("let convergenceStatus: String?"))
+    }
+
     func testWorktreeStatusOpensProviderNeutralIndividualOperationReview() throws {
         let macRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

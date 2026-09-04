@@ -23,6 +23,9 @@ struct WorktreeManagementView: View {
     @State private var deletionBlocker: WorktreeDeletionBlockerPresentation?
     @State private var pendingCleanup: WorktreeCleanupRequest?
     @State private var worktreeScrollRequest: WorktreeListScrollRequest?
+    @State private var isBatchSelecting = false
+    @State private var selectedWorktreeIds: [String] = []
+    @State private var batchOperationDraft: WorktreeBatchOperationDraft?
 
     var body: some View {
         NavigationSplitView(columnVisibility: $sidebarState.visibility) {
@@ -80,6 +83,14 @@ struct WorktreeManagementView: View {
         }
         .sheet(isPresented: $showingPlan) {
             WorktreeIntegrationFlowSheet(client: client, isPresented: $showingPlan)
+        }
+        .sheet(item: $batchOperationDraft) { draft in
+            WorktreeBatchOperationFlowSheet(
+                draft: draft,
+                worktrees: client.detail?.project.worktrees ?? [],
+                client: client,
+                onClose: { batchOperationDraft = nil }
+            )
         }
         .sheet(item: $pendingOperation) { worktree in
             IndividualWorktreeOperationView(
@@ -196,7 +207,8 @@ struct WorktreeManagementView: View {
                 Task { await client.refreshSelected() }
             }
             if let project = client.detail?.project {
-                worktreeActions(project)
+                batchSelectionHeader(project)
+                if !isBatchSelecting { worktreeActions(project) }
                 if let job = client.job, job.status != "awaiting_confirmation", job.status != "canceled" {
                     jobProgress(job)
                 }
@@ -209,7 +221,27 @@ struct WorktreeManagementView: View {
                             set: { client.selectWorktree($0) }
                         )) {
                             ForEach(project.worktrees) { worktree in
-                                worktreeRow(worktree)
+                                HStack(spacing: 8) {
+                                    if isBatchSelecting {
+                                        Button {
+                                            toggleBatchSelection(worktree)
+                                        } label: {
+                                            Image(systemName: selectedWorktreeIds.contains(worktree.worktreeId)
+                                                ? "checkmark.square.fill" : "square")
+                                                .foregroundStyle(selectedWorktreeIds.contains(worktree.worktreeId)
+                                                    ? Color.accentColor : Color.secondary)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(!isBatchEligible(worktree))
+                                        .help(batchEligibilityExplanation(worktree))
+                                        .accessibilityLabel(L10nFormat(
+                                            "%@ %@",
+                                            selectedWorktreeIds.contains(worktree.worktreeId) ? L10n("Deselect") : L10n("Select"),
+                                            worktree.branchName ?? worktree.path
+                                        ))
+                                    }
+                                    worktreeRow(worktree)
+                                }
                                     .id(worktree.worktreeId)
                                     .tag(worktree.worktreeId)
                                     .accessibilityIdentifier("worktree.item.\(worktree.worktreeId)")
@@ -238,6 +270,7 @@ struct WorktreeManagementView: View {
                             proxy.scrollTo(request.worktreeId, anchor: .center)
                         }
                     }
+                    if isBatchSelecting { batchActionBar(project) }
                 }
             } else if client.isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -255,6 +288,107 @@ struct WorktreeManagementView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityIdentifier("worktree.list.column")
+    }
+
+    private func batchSelectionHeader(_ project: ManagedGitProject) -> some View {
+        HStack(spacing: 8) {
+            if isBatchSelecting {
+                Text(L10nFormat("%d selected", selectedWorktreeIds.count))
+                    .font(.caption.weight(.semibold))
+                Button(L10n("Select All Available")) {
+                    selectedWorktreeIds = project.worktrees.filter(isBatchEligible).map(\.worktreeId)
+                }
+                .controlSize(.small)
+                Spacer()
+                Button(L10n("Done")) { endBatchSelection() }
+                    .controlSize(.small)
+            } else {
+                Spacer()
+                Button {
+                    isBatchSelecting = true
+                    selectedWorktreeIds = []
+                } label: {
+                    Label(L10n("Select Worktrees"), systemImage: "checkmark.square")
+                }
+                .controlSize(.small)
+                .disabled(client.isMutating || client.job?.isActive == true)
+                .accessibilityIdentifier("worktree.batch.select")
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .background(Color.primary.opacity(0.025))
+    }
+
+    private func batchActionBar(_ project: ManagedGitProject) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                presentBatchOperation(.merge, project: project)
+            } label: {
+                Label(L10n("Merge Into…"), systemImage: "arrow.triangle.merge")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(selectedWorktreeIds.isEmpty || client.isMutating)
+            Button {
+                presentBatchOperation(.synchronize, project: project)
+            } label: {
+                Label(L10n("Synchronize…"), systemImage: "arrow.triangle.2.circlepath")
+                    .frame(maxWidth: .infinity)
+            }
+            .disabled(selectedWorktreeIds.isEmpty || client.isMutating)
+            Button(L10n("Cancel"), role: .cancel) { endBatchSelection() }
+        }
+        .controlSize(.small)
+        .padding(10)
+        .background(.bar)
+        .accessibilityIdentifier("worktree.batch.actions")
+    }
+
+    private func presentBatchOperation(_ kind: WorktreeBatchOperationKind, project: ManagedGitProject) {
+        let selectedSet = Set(selectedWorktreeIds)
+        let selected = project.worktrees
+            .filter { selectedSet.contains($0.worktreeId) }
+            .sorted { left, right in
+                if left.isMain != right.isMain { return !left.isMain }
+                let leftDistance = (left.behindMain ?? 0) + (left.aheadOfMain ?? 0)
+                let rightDistance = (right.behindMain ?? 0) + (right.aheadOfMain ?? 0)
+                if leftDistance != rightDistance { return leftDistance < rightDistance }
+                return (left.branchName ?? left.path).localizedStandardCompare(right.branchName ?? right.path) == .orderedAscending
+            }
+            .map(\.worktreeId)
+        guard !selected.isEmpty else { return }
+        let mainId = project.worktrees.first(where: \.isMain)?.worktreeId
+        let target = kind == .synchronize && selected.count > 1 ? selected[0] : (mainId ?? selected[0])
+        batchOperationDraft = WorktreeBatchOperationDraft(kind: kind, sourceWorktreeIds: selected, targetWorktreeId: target)
+    }
+
+    private func toggleBatchSelection(_ worktree: ManagedWorktree) {
+        guard isBatchEligible(worktree) else { return }
+        if let index = selectedWorktreeIds.firstIndex(of: worktree.worktreeId) {
+            selectedWorktreeIds.remove(at: index)
+        } else {
+            selectedWorktreeIds.append(worktree.worktreeId)
+        }
+    }
+
+    private func endBatchSelection() {
+        isBatchSelecting = false
+        selectedWorktreeIds = []
+    }
+
+    private func isBatchEligible(_ worktree: ManagedWorktree) -> Bool {
+        worktree.availability == "available"
+            && worktree.branchName != nil
+            && !worktree.isDetached
+            && worktree.operationState == nil
+            && worktree.conflictFiles.isEmpty
+    }
+
+    private func batchEligibilityExplanation(_ worktree: ManagedWorktree) -> String {
+        isBatchEligible(worktree)
+            ? L10n("Include this Worktree in a batch operation.")
+            : L10n("This Worktree is unavailable, detached, or already has a Git operation in progress.")
     }
 
     @ViewBuilder
@@ -572,7 +706,7 @@ struct WorktreeManagementView: View {
             } else if job.hasMergeConflict, let item = currentConflictItem(job) {
                 Text(L10nFormat(
                     "Resolve the conflicts in main (%@), stage the resolved files, then choose Retry after Manual Resolution. Conflicts: %@",
-                    job.plan.mainPath,
+                    job.plan.executionPath ?? job.plan.mainPath,
                     item.conflictFiles.isEmpty ? "—" : item.conflictFiles.joined(separator: ", ")
                 ))
                 .font(.caption)
@@ -1200,7 +1334,11 @@ private func localizedIntegrationPhase(_ value: String) -> String {
     case "preflight_complete": L10n("Preflight complete")
     case "validating": L10n("Validating")
     case "committing": L10n("Creating local commits")
-    case "merging": L10n("Merging into main")
+    case "merging": L10n("Merging branches")
+    case "rebasing": L10n("Rebasing source Worktrees")
+    case "preparing_convergence": L10n("Preparing isolated convergence Worktree")
+    case "fast_forwarding": L10n("Publishing the unified commit")
+    case "partial_completed": L10n("Partially completed")
     case "conflict": L10n("Waiting for conflict resolution")
     case "conflict_resolution_preparing": L10n("Preparing the Agent conflict workspace")
     case "conflict_resolution_running": L10n("Agent is resolving conflicts")
@@ -1241,6 +1379,177 @@ private func localizedIntegrationRisk(_ risk: WorktreeIntegrationRisk) -> String
     case "ACTIVE_SESSION_IN_PROGRESS": L10n("An active Session is still modifying this Worktree. Stop it before integrating.")
     case "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE": L10n("Local Agent configuration links cannot be committed. Replace them with real project files first.")
     default: risk.message
+    }
+}
+
+private enum WorktreeBatchOperationKind: String {
+    case merge
+    case synchronize
+}
+
+private struct WorktreeBatchOperationDraft: Identifiable {
+    let id = UUID()
+    let kind: WorktreeBatchOperationKind
+    let sourceWorktreeIds: [String]
+    let targetWorktreeId: String
+}
+
+private struct WorktreeBatchOperationFlowSheet: View {
+    let draft: WorktreeBatchOperationDraft
+    let worktrees: [ManagedWorktree]
+    @ObservedObject var client: WorktreeManagementClient
+    let onClose: () -> Void
+
+    @State private var sourceWorktreeIds: [String]
+    @State private var targetWorktreeId: String
+    @State private var synchronizationMode = "one_way_sync"
+    @State private var hasRequestedPlan = false
+
+    init(
+        draft: WorktreeBatchOperationDraft,
+        worktrees: [ManagedWorktree],
+        client: WorktreeManagementClient,
+        onClose: @escaping () -> Void
+    ) {
+        self.draft = draft
+        self.worktrees = worktrees
+        self.client = client
+        self.onClose = onClose
+        _sourceWorktreeIds = State(initialValue: draft.sourceWorktreeIds)
+        _targetWorktreeId = State(initialValue: draft.targetWorktreeId)
+    }
+
+    var body: some View {
+        Group {
+            if hasRequestedPlan {
+                WorktreeIntegrationFlowSheet(
+                    client: client,
+                    isPresented: Binding(get: { true }, set: { if !$0 { onClose() } })
+                )
+            } else {
+                configuration
+            }
+        }
+        .interactiveDismissDisabled(client.isPreparingPlan)
+        .onChange(of: synchronizationMode) { _, mode in
+            if mode == "converge", !sourceWorktreeIds.contains(targetWorktreeId) {
+                targetWorktreeId = sourceWorktreeIds.first ?? ""
+            }
+        }
+    }
+
+    private var configuration: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(draft.kind == .merge ? L10n("Merge Selected Worktrees") : L10n("Synchronize Selected Worktrees"))
+                .font(.title2.weight(.semibold))
+            Text(operationExplanation)
+                .foregroundStyle(.secondary)
+
+            if draft.kind == .synchronize {
+                Picker(L10n("Synchronization mode"), selection: $synchronizationMode) {
+                    Text(L10n("Synchronize each source to a target")).tag("one_way_sync")
+                    Text(L10n("Make all selected branches identical")).tag("converge")
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Picker(targetLabel, selection: $targetWorktreeId) {
+                ForEach(targetCandidates) { worktree in
+                    Text(worktree.branchName ?? worktree.path).tag(worktree.worktreeId)
+                }
+            }
+
+            Text(L10n("Recommended order — drag to adjust"))
+                .font(.headline)
+            List {
+                ForEach(orderedSourceIds, id: \.self) { id in
+                    if let worktree = worktrees.first(where: { $0.worktreeId == id }) {
+                        HStack {
+                            Image(systemName: "line.3.horizontal")
+                                .foregroundStyle(.secondary)
+                            Text(worktree.branchName ?? worktree.path)
+                            Spacer()
+                            Text(String((worktree.headOid ?? "—").prefix(8)))
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .onMove { offsets, destination in
+                    moveSources(from: offsets, to: destination)
+                }
+            }
+            .frame(minHeight: 180, maxHeight: 300)
+
+            HStack {
+                Button(L10n("Cancel"), role: .cancel) { onClose() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(L10n("Generate Review Plan")) {
+                    hasRequestedPlan = true
+                    Task {
+                        await client.prepareBranchOperation(
+                            operationType: operationType,
+                            sourceWorktreeIds: submittedSourceIds,
+                            targetWorktreeId: targetWorktreeId
+                        )
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(submittedSourceIds.isEmpty || targetWorktreeId.isEmpty)
+                .accessibilityIdentifier("worktree.batch.generate-plan")
+            }
+        }
+        .padding(20)
+        .frame(width: 680, height: 560)
+    }
+
+    private var operationType: String {
+        draft.kind == .merge ? "batch_merge" : synchronizationMode
+    }
+
+    private var isConvergence: Bool {
+        draft.kind == .synchronize && synchronizationMode == "converge"
+    }
+
+    private var targetCandidates: [ManagedWorktree] {
+        let available = worktrees.filter {
+            $0.availability == "available" && $0.branchName != nil && !$0.isDetached
+        }
+        if isConvergence {
+            return available.filter { sourceWorktreeIds.contains($0.worktreeId) }
+        }
+        return available
+    }
+
+    private var orderedSourceIds: [String] {
+        sourceWorktreeIds.filter { $0 != targetWorktreeId }
+    }
+
+    private var submittedSourceIds: [String] {
+        isConvergence ? sourceWorktreeIds : orderedSourceIds
+    }
+
+    private var targetLabel: String {
+        isConvergence ? L10n("Integration base") : L10n("Target branch")
+    }
+
+    private var operationExplanation: String {
+        if draft.kind == .merge {
+            return L10n("The selected branches are merged into the target in order. Source branches remain unchanged.")
+        }
+        if isConvergence {
+            return L10n("Corptie creates one unified commit, then fast-forwards every selected branch to the same HEAD.")
+        }
+        return L10n("Each selected source is rebased independently onto the target. The target branch remains unchanged.")
+    }
+
+    private func moveSources(from offsets: IndexSet, to destination: Int) {
+        var reordered = orderedSourceIds
+        reordered.move(fromOffsets: offsets, toOffset: destination)
+        sourceWorktreeIds = sourceWorktreeIds.contains(targetWorktreeId)
+            ? [targetWorktreeId] + reordered
+            : reordered
     }
 }
 
@@ -1291,8 +1600,8 @@ private struct WorktreeIntegrationPlanReview: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(L10n("Review Worktree Integration Plan")).font(.title2.weight(.semibold))
-            Text(L10n("Only local commits and merges will be performed. Nothing is pushed, deleted, reset, or force-cleaned."))
+            Text(reviewTitle).font(.title2.weight(.semibold))
+            Text(reviewExplanation)
                 .foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -1308,7 +1617,9 @@ private struct WorktreeIntegrationPlanReview: View {
                     }
                     ForEach(reviewItems) { item in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(item.isMain ? "main — \(item.path)" : (item.branchName ?? item.path)).fontWeight(.semibold)
+                            Text(item.isTarget == true
+                                ? L10nFormat("Target: %@", item.branchName ?? item.path)
+                                : (item.branchName ?? item.path)).fontWeight(.semibold)
                             Text(item.dirty ? L10nFormat("%d changed files; commit: %@", item.changedFiles.count, item.commitMessage ?? "—") : L10n("No local commit required"))
                                 .font(.caption)
                             if !item.isMain {
@@ -1357,7 +1668,7 @@ private struct WorktreeIntegrationPlanReview: View {
                 .keyboardShortcut(.cancelAction)
                 Spacer()
                 if job.plan.blockingRisks.isEmpty {
-                    Button(L10n("Confirm")) {
+                    Button(confirmLabel) {
                         confirmAndDismiss()
                     }
                     .buttonStyle(.borderedProminent)
@@ -1368,6 +1679,34 @@ private struct WorktreeIntegrationPlanReview: View {
         }
         .padding(20)
         .frame(width: 680, height: 620)
+    }
+
+    private var reviewTitle: String {
+        switch job.plan.operationType {
+        case "merge": L10n("Review Batch Merge Plan")
+        case "sync": L10n("Review Synchronization Plan")
+        case "converge": L10n("Review Branch Convergence Plan")
+        default: L10n("Review Worktree Integration Plan")
+        }
+    }
+
+    private var reviewExplanation: String {
+        let safety = L10n("Nothing is pushed, deleted, reset, or force-cleaned.")
+        switch job.plan.operationType {
+        case "sync": return L10n("Each source will be rebased independently onto the target. The target remains unchanged. ") + safety
+        case "converge": return L10n("A unified commit will be created, then every selected branch will be fast-forwarded to the same HEAD. ") + safety
+        case "merge": return L10n("The selected branches will be merged into the target in the reviewed order. ") + safety
+        default: return L10n("Only local commits and merges will be performed. ") + safety
+        }
+    }
+
+    private var confirmLabel: String {
+        switch job.plan.operationType {
+        case "sync": L10nFormat("Confirm and Synchronize %d Worktrees", job.plan.sourceWorktreeIds?.count ?? 0)
+        case "converge": L10nFormat("Confirm and Unify %d Branches", (job.plan.sourceWorktreeIds?.count ?? 0) + 1)
+        case "merge": L10nFormat("Confirm Merge into %@", job.plan.targetBranchName ?? L10n("Target"))
+        default: L10n("Confirm")
+        }
     }
 
     @ViewBuilder
