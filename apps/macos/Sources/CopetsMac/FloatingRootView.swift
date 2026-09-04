@@ -2698,6 +2698,92 @@ struct RenameSessionSheet: View {
     }
 }
 
+struct RenameCorptieTaskSheet: View {
+    @ObservedObject private var entityClient = EntityAPIClient.shared
+    @State private var title: String
+    @State private var isSaving = false
+    @State private var saveError: String?
+    let task: CorptieTask
+    let close: () -> Void
+
+    init(task: CorptieTask, close: @escaping () -> Void) {
+        self.task = task
+        self.close = close
+        _title = State(initialValue: task.title)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(L10n("Rename Task"))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                Spacer()
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(IconButtonStyle())
+                .help(L10n("Close"))
+            }
+
+            TextField(L10n("Task name"), text: $title)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+                )
+                .onSubmit(save)
+
+            if let saveError {
+                Text(saveError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Spacer()
+                if isSaving { ProgressView().controlSize(.small) }
+                Button(action: save) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(IconButtonStyle())
+                .disabled(trimmedTitle.isEmpty || isSaving)
+                .help(L10n("Save name"))
+            }
+        }
+        .padding(18)
+        .frame(width: 340)
+        .background(SheetPanelBackground(cornerRadius: 20))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .compositingGroup()
+    }
+
+    private var trimmedTitle: String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func save() {
+        guard !trimmedTitle.isEmpty, !isSaving else { return }
+        isSaving = true
+        saveError = nil
+        Task {
+            if await entityClient.updateCorptieTask(taskId: task.id, title: trimmedTitle) != nil {
+                close()
+            } else {
+                saveError = entityClient.errorMessage ?? L10n("CorptieTask 保存失败。")
+                isSaving = false
+            }
+        }
+    }
+}
+
 private struct SheetPanelBackground: View {
     let cornerRadius: CGFloat
 
@@ -3495,12 +3581,11 @@ struct DetailView: View {
         } else if let recovery = displayedWorkspaceRecoveryStatus,
                   recovery.blocksSessionInput {
             WorkspaceMissingComposer(status: recovery)
-        } else if !sessionIsReady {
-            ReadOnlyComposer(
-                reason: composerUnavailableReason,
-                isRecovering: backendClient.selectedSession?.transitionState == "sessionRecovery"
-            )
         } else {
+            // Keep the editor identity stable across transient Provider and
+            // Binding readiness changes. MessageComposer gates submission from
+            // the authoritative Session projection; readiness must not destroy
+            // the text view, its focus, or the user's draft.
             MessageComposer(
                 sessionId: sessionId,
                 draftRepository: composerDraftRepository,
@@ -3676,28 +3761,6 @@ struct DetailView: View {
             scrollTargetTurnID = turnID
             scrollTargetTurnRevision &+= 1
         }
-    }
-
-    private var composerUnavailableReason: String? {
-        if selectionController.selectedSessionID == sessionId,
-           let reason = backendClient.selectedNotReadyReason?.message {
-            return reason
-        }
-        if selectedSession?.transitionState == "sessionRecovery" {
-            return L10n("Session recovery is in progress. Sending messages is temporarily unavailable.")
-        }
-        return displayedDetail?.sendUnavailableReason
-            ?? selectedSession?.actions?.send.reason
-    }
-
-    private var sessionIsReady: Bool {
-        guard backendClient.isOnline,
-              let selectedSession,
-              !backendClient.bindingVerificationSessionIDs.contains(sessionId) else { return false }
-        if selectionController.selectedSessionID == sessionId {
-            return backendClient.selectedIsReady
-        }
-        return selectedSession.isReady
     }
 
     private func appKitCachedDetailMessages() -> some View {
@@ -5731,6 +5794,7 @@ private func fileChangesSignature(_ item: CodexThreadItem) -> String {
 
 struct DetailHeaderView: View {
     @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var entityClient = EntityAPIClient.shared
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @Environment(\.isLiquidGlass) private var isLiquidGlass
@@ -5756,12 +5820,12 @@ struct DetailHeaderView: View {
             }
 
             VStack(alignment: .leading, spacing: 2) {
-                if !isLiquidGlass, let selectedSession = backendClient.selectedSession {
+                if !isLiquidGlass, let selectedTitle {
                     HStack(spacing: 7) {
                         Button {
-                            copySessionTitle(selectedSession.title)
+                            copySessionTitle(selectedTitle)
                         } label: {
-                            Text(selectedSession.title)
+                            Text(selectedTitle)
                                 .font(.system(size: 18, weight: .semibold))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
@@ -5920,6 +5984,16 @@ struct DetailHeaderView: View {
             sessionTitleCopyFeedbackTask?.cancel()
             sessionTitleCopyFeedbackTask = nil
         }
+    }
+
+    private var selectedTitle: String? {
+        guard let session = backendClient.selectedSession else { return nil }
+        guard session.resolvedSessionKind == .worker,
+              let taskID = session.taskId,
+              let task = entityClient.tasks.first(where: { $0.id == taskID }) else {
+            return session.title
+        }
+        return task.title
     }
 
     private var selectedSessionWorktree: ProjectWorktreeStatus? {

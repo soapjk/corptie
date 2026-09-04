@@ -6597,10 +6597,14 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     return { accepted: true, mode: "collaboration-confirmation", sessionId: publicSessionId, collaborationConfirmation: confirmation };
   }
 
-  // Never infer a concrete Session binding's health from the Provider process
-  // or a persisted `active` row. Every dispatch crosses the Provider-neutral
-  // readiness probe; selection prewarms the same coalesced operation for UI.
-  const bindingVerification = await sessionBindingReadinessProbe.verify(routedSessionId);
+  // A successful probe is scoped to the exact logical Session + Binding
+  // generation. Reuse that proof until Provider restart, route replacement,
+  // or a failed dispatch invalidates it; ordinary messages must not resume the
+  // same Provider thread merely to rediscover that it is still present.
+  const bindingVerification = await sessionBindingReadinessProbe.verify(
+    routedSessionId,
+    { reuseReady: true }
+  );
   if (bindingVerification.ready !== true) {
     const error = new Error(
       bindingVerification.readiness?.message ?? "The Provider Session is unavailable."
@@ -6682,6 +6686,9 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
       }
     );
   } catch (error) {
+    // A failed Provider dispatch makes the last-known-ready proof suspect. The
+    // next dispatch performs one real probe before retrying this Binding.
+    sessionBindingReadinessProbe.invalidateBinding(reference);
     if (delivery) {
       const status = providerDeliveryFailureStatus(error);
       store.updateMessageDelivery(deliveryId, {
@@ -9125,6 +9132,15 @@ function route(request, response) {
     reclaimTaskWorktree,
     inspectTaskDeletion: (taskId, actor) => taskDeletionService.inspect(taskId, actor),
     deleteTaskSafely: (taskId, input, actor) => taskDeletionService.delete(taskId, input, actor),
+    restartTask: (taskId, context) => {
+      const task = workService.getTask(taskId);
+      if (!task.current_session_id) {
+        const error = new Error(`Task ${taskId} has no active Session to restart.`);
+        error.code = "TASK_SESSION_NOT_FOUND";
+        throw error;
+      }
+      return sessionApplicationService.restartSession(task.current_session_id, context);
+    },
     restoreTaskExecution: (taskId) => taskExecutionOrchestrator.restore(taskId),
     taskCompletionService,
     resolveAgentAvailability: (agent) => {

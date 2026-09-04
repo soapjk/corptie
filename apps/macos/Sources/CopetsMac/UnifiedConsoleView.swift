@@ -107,10 +107,12 @@ struct UnifiedConsoleView: View {
     @State private var workPendingDeletion: Work?
     @State private var workDeletionError: String?
     @State private var taskPendingEdit: CorptieTask?
-    @State private var taskSessionPendingRename: TaskSession?
+    @State private var taskPendingRename: CorptieTask?
+    @State private var sessionPendingRename: TaskSession?
     @State private var taskDeletionPresentation: CorptieTaskDeletionPresentation?
     @State private var taskDeletionError: String?
     @State private var pendingTaskDeletionIds = Set<String>()
+    @State private var pendingTaskRestartIds = Set<String>()
     @State private var launchingTaskSessionIds = Set<String>()
     @State private var taskSessionLaunchError: EntityLaunchError?
     @State private var isShowingWorkerArchive = false
@@ -249,9 +251,15 @@ struct UnifiedConsoleView: View {
         .sheet(item: $taskPendingEdit) { task in
             CorptieTaskEditView(task: task) {}
         }
-        .sheet(item: $taskSessionPendingRename) { session in
+        .sheet(item: $taskPendingRename) { task in
+            RenameCorptieTaskSheet(task: task) {
+                taskPendingRename = nil
+            }
+            .presentationBackground(.clear)
+        }
+        .sheet(item: $sessionPendingRename) { session in
             RenameSessionSheet(session: session) {
-                taskSessionPendingRename = nil
+                sessionPendingRename = nil
             }
             .environmentObject(backendClient)
             .presentationBackground(.clear)
@@ -1066,8 +1074,8 @@ struct UnifiedConsoleView: View {
                 SessionContextMenuContent(
                     session: session,
                     isRenaming: Binding(
-                        get: { taskSessionPendingRename?.id == session.id },
-                        set: { taskSessionPendingRename = $0 ? session : nil }
+                        get: { sessionPendingRename?.id == session.id },
+                        set: { sessionPendingRename = $0 ? session : nil }
                     )
                 )
             }
@@ -1109,19 +1117,19 @@ struct UnifiedConsoleView: View {
             .padding(.vertical, 4)
             .contentShape(Rectangle())
             .contextMenu {
-                if let session {
-                    SessionContextMenuContent(
-                        session: session,
-                        isRenaming: Binding(
-                            get: { taskSessionPendingRename?.id == session.id },
-                            set: { taskSessionPendingRename = $0 ? session : nil }
-                        )
-                    )
-                    Divider()
+                Button(L10n("Rename"), systemImage: "pencil") {
+                    taskPendingRename = task
                 }
                 Button(L10n("编辑"), systemImage: "square.and.pencil") {
                     taskPendingEdit = task
                 }
+                Button(L10n("Restart Task"), systemImage: "arrow.clockwise") {
+                    restartTask(task)
+                }
+                .disabled(
+                    session?.actions?.restart?.available != true
+                        || pendingTaskRestartIds.contains(task.id)
+                )
                 Divider()
                 Button(L10n("删除"), systemImage: "trash", role: .destructive) {
                     Task { await prepareTaskDeletion(task) }
@@ -1135,6 +1143,15 @@ struct UnifiedConsoleView: View {
                 .fill(selectedTaskId == task.id ? Color.accentColor.opacity(0.09) : Color.clear)
                 .padding(.horizontal, 8)
         )
+    }
+
+    private func restartTask(_ task: CorptieTask) {
+        guard !pendingTaskRestartIds.contains(task.id) else { return }
+        pendingTaskRestartIds.insert(task.id)
+        Task {
+            defer { pendingTaskRestartIds.remove(task.id) }
+            _ = await entityClient.restartCorptieTask(taskId: task.id)
+        }
     }
 
     private func openTask(_ task: CorptieTask, session: TaskSession?) {

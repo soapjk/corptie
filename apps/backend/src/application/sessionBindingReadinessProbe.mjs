@@ -23,11 +23,15 @@ export class SessionBindingReadinessProbe {
     return record.readiness;
   }
 
-  async verify(sessionId) {
+  async verify(sessionId, options = {}) {
     const reference = await this.resolveReference(sessionId);
     const logicalSessionId = reference.logicalSessionId ?? reference.sessionId;
     const bindingId = reference.bindingId ?? reference.providerBindingId ?? reference.providerSessionId;
     const key = `${logicalSessionId}:${bindingId}`;
+    const cachedReadiness = this.readiness(logicalSessionId, bindingId);
+    if (options.reuseReady === true && cachedReadiness === null) {
+      return Object.freeze({ ready: true, readiness: null, outcome: null, cached: true });
+    }
     const existing = this.inFlight.get(key);
     if (existing) return existing;
 
@@ -45,6 +49,19 @@ export class SessionBindingReadinessProbe {
     });
     this.inFlight.set(key, operation);
     return operation;
+  }
+
+  invalidateBinding(reference) {
+    const logicalSessionId = reference?.logicalSessionId ?? reference?.sessionId;
+    const bindingId = reference?.bindingId
+      ?? reference?.providerBindingId
+      ?? reference?.providerSessionId;
+    if (!logicalSessionId || !bindingId) return false;
+    const current = this.states.get(logicalSessionId);
+    if (!current || current.bindingId !== bindingId) return false;
+    this.states.delete(logicalSessionId);
+    this.onChanged(current.sessionId);
+    return true;
   }
 
   invalidateProvider(providerId) {

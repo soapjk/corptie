@@ -216,6 +216,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     reclaimTaskWorktree: services.reclaimTaskWorktree,
     inspectTaskDeletion: services.inspectTaskDeletion,
     deleteTaskSafely: services.deleteTaskSafely,
+    restartTask: services.restartTask,
     restoreTaskExecution: services.restoreTaskExecution,
     taskCompletionService: services.taskCompletionService,
     resolveAgentAvailability: services.resolveAgentAvailability,
@@ -238,6 +239,34 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     body: response.body ? JSON.parse(response.body) : null
   };
 }
+
+test("Task restart API resolves execution through the Task-facing command", async () => {
+  const services = await createServices();
+  try {
+    let invocation = null;
+    services.restartTask = async (taskId, context) => {
+      invocation = { taskId, context };
+      return { status: "completed", sessionId: "session:task-restart" };
+    };
+
+    const response = await callApi({
+      method: "POST",
+      pathname: "/tasks/task%3Arestart/restart",
+      body: { idempotencyKey: "task-restart:test" },
+      ...services
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.status, "completed");
+    assert.deepEqual(invocation, {
+      taskId: "task:restart",
+      context: { source: "task-http", idempotencyKey: "task-restart:test" }
+    });
+  } finally {
+    await services.store.close();
+    await rm(services.directory, { recursive: true, force: true });
+  }
+});
 
 async function completeThroughMacOSIntent(services, task, suffix = randomUUID()) {
   const requestId = `completion-intent:${suffix}`;
