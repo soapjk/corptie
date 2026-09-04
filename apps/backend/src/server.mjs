@@ -258,6 +258,7 @@ import { collaborationDynamicTools, callCollaborationDynamicTool } from "./colla
 import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 import {
+  agentWorkFailureMessage,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
   shouldReportAgentWorkQueued,
@@ -7014,7 +7015,7 @@ async function syncSessionChannelDeliveriesIntoAgentWorkQueue() {
         resourceContext: envelope.message.resourceContext
       },
       localVisibility: "status_only",
-      deliveryId: delivery.deliveryId,
+      channelDeliveryId: delivery.deliveryId,
       createdAt: delivery.createdAt
     });
     registerRuntimeQueuedWork(route.providerSessionId, task.taskId);
@@ -7554,18 +7555,27 @@ async function resolveSessionChannelRequest(requestId, approved, source = { type
     }, { sessionId: rejected.requestingSessionId, source });
     return rejected;
   }
+  if (before.status === "confirmed") {
+    await syncSessionChannelDeliveriesIntoAgentWorkQueue().catch((error) => {
+      console.error(`[session-channel] confirmation replay delivery sync failed request=${requestId}: ${error.message}`);
+    });
+    return before;
+  }
+  let confirmed;
   try {
     const target = await sessionCollaborationService.prepareChannelRequestTarget(before);
-    const confirmed = sessionChannelService.confirmRequest(requestId, target, source);
-    emitEvent("SessionChannelRequestResolved", {
-      sessionId: confirmed.requestingSessionId, request: confirmed
-    }, { sessionId: confirmed.requestingSessionId, source });
-    await syncSessionChannelDeliveriesIntoAgentWorkQueue();
-    return confirmed;
+    confirmed = sessionChannelService.confirmRequest(requestId, target, source);
   } catch (error) {
     sessionChannelService.failRequest(requestId, error);
     throw error;
   }
+  emitEvent("SessionChannelRequestResolved", {
+    sessionId: confirmed.requestingSessionId, request: confirmed
+  }, { sessionId: confirmed.requestingSessionId, source });
+  await syncSessionChannelDeliveriesIntoAgentWorkQueue().catch((error) => {
+    console.error(`[session-channel] confirmation delivery sync failed request=${requestId}: ${error.message}`);
+  });
+  return confirmed;
 }
 
 function unifiedErrorStatus(error) {
@@ -7955,7 +7965,7 @@ async function handleClaudeTurnSettled(event) {
     const updatedWork = store.updateAgentTask(runningWork.taskId, {
       status: event.status === "completed" ? "completed" : (event.status === "cancelled" ? "cancelled" : "failed"),
       targetTurnId: event.turnId,
-      lastError: event.error ?? null
+      lastError: agentWorkFailureMessage(event.error)
     });
     emitEvent("AgentWorkCompleted", { sessionId, task: updatedWork }, {
       sessionId,

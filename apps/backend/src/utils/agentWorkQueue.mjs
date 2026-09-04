@@ -64,3 +64,14 @@ export function userMessageStatusForAgentWork(status) {
     default: return null;
   }
 }
+
+export function agentWorkFailureMessage(error) {
+  if (error == null) return null;
+  if (typeof error === "string") return error;
+  if (typeof error?.message === "string" && error.message.trim()) return error.message.trim();
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}

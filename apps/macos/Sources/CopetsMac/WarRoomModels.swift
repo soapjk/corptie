@@ -61,7 +61,6 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var workId: String
     var title: String
     var description: String
-    var goal: String = ""
     var acceptanceCriteria: String
     var verificationCriteria: String = ""
     var priority: String
@@ -86,7 +85,6 @@ struct CorptieTaskSnapshot: Identifiable, Codable, Hashable {
     let version: Int
     let title: String
     let description: String
-    let goal: String
     let acceptanceCriteria: String
     let verificationCriteria: String
     let acceptanceAssessment: CorptieTaskAcceptanceAssessment?

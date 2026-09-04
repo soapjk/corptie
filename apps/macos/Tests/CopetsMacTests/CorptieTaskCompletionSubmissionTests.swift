@@ -79,7 +79,6 @@ private func task(id: String, workId: String, title: String) throws -> CorptieTa
         "workId": workId,
         "title": title,
         "description": "",
-        "goal": "",
         "acceptanceCriteria": "",
         "verificationCriteria": "",
         "priority": "medium",

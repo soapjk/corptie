@@ -1252,12 +1252,6 @@ struct CorptieTaskDetailView: View {
             overviewSection
 
             detailTextSection(
-                title: L10n("Goal"),
-                systemImage: "scope",
-                text: task.goal
-            )
-
-            detailTextSection(
                 title: L10n("Description"),
                 systemImage: "text.alignleft",
                 text: task.description
@@ -1393,22 +1387,6 @@ struct CorptieTaskDetailView: View {
                     .accessibilityLabel(L10n("人工验收未通过"))
             case .unavailable:
                 EmptyView()
-            }
-
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "folder")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 14)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n("WORKSPACE"))
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                    Text(workspaceName ?? L10n("No Workspace Bound"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(workspaceName == nil ? Color.secondary : Color.primary)
-                        .lineLimit(2)
-                }
             }
         }
     }
@@ -1890,12 +1868,6 @@ struct CorptieTaskDetailView: View {
         case "high": L10n("High")
         default: task.priority
         }
-    }
-
-    private var workspaceName: String? {
-        guard let work = client.works.first(where: { $0.id == task.workId }) else { return nil }
-        return client.repositories.first(where: { $0.workspaceId == work.workspaceId })?.name
-            ?? work.workspaceId
     }
 
     private func refreshExecution() async {
