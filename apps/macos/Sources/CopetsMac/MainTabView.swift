@@ -851,6 +851,13 @@ struct WorktreeNavigationTarget: Equatable {
     let worktreeId: String?
     let worktreePath: String?
 
+    static func preferredRepositoryId(
+        sessionRepositoryId: String?,
+        loadedProjectRepositoryId: String?
+    ) -> String? {
+        normalizedIdentifier(sessionRepositoryId) ?? normalizedIdentifier(loadedProjectRepositoryId)
+    }
+
     func matchingWorktree(in worktrees: [ManagedWorktree]) -> ManagedWorktree? {
         if let worktreeId,
            let exact = worktrees.first(where: { $0.worktreeId == worktreeId }) {
@@ -861,5 +868,10 @@ struct WorktreeNavigationTarget: Equatable {
         return worktrees.first {
             URL(fileURLWithPath: $0.path).standardizedFileURL.path == normalized
         }
+    }
+
+    private static func normalizedIdentifier(_ value: String?) -> String? {
+        let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized?.isEmpty == false ? normalized : nil
     }
 }

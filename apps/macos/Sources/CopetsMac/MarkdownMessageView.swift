@@ -143,7 +143,6 @@ struct MessageLinkTarget: Equatable {
 
     let kind: Kind
     let url: URL
-    let requiresOutsideWorkspaceConfirmation: Bool
 }
 
 enum MessageLinkResolutionError: Error, Equatable {
@@ -189,8 +188,7 @@ enum MessageLinkResolver {
             }
             return .success(MessageLinkTarget(
                 kind: .web,
-                url: url,
-                requiresOutsideWorkspaceConfirmation: false
+                url: url
             ))
         }
 
@@ -239,11 +237,7 @@ enum MessageLinkResolver {
         }
         return .success(MessageLinkTarget(
             kind: kind,
-            url: resolvedURL,
-            requiresOutsideWorkspaceConfirmation: isOutsideWorkspace(
-                resolvedURL,
-                baseDirectory: baseDirectory
-            )
+            url: resolvedURL
         ))
     }
 
@@ -266,13 +260,65 @@ enum MessageLinkResolver {
         return URL(fileURLWithPath: withoutLocation).standardizedFileURL
     }
 
-    private static func isOutsideWorkspace(_ url: URL, baseDirectory: String?) -> Bool {
-        guard let baseDirectory = normalized(baseDirectory) else { return true }
-        let rootPath = URL(fileURLWithPath: baseDirectory, isDirectory: true)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL.path
-        let targetPath = url.resolvingSymlinksInPath().standardizedFileURL.path
-        return targetPath != rootPath && !targetPath.hasPrefix(rootPath + "/")
+}
+
+struct MessageMarkdownImageReference: Equatable {
+    let source: String
+    let url: URL
+}
+
+/// Extracts explicit Markdown images so the native AppKit message row can feed
+/// them into the same cached thumbnail pipeline as managed chat attachments.
+/// Parsing is intentionally bounded and skips fenced code examples.
+enum MessageMarkdownImageResolver {
+    private static let image = try! NSRegularExpression(
+        pattern: #"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s\)]+))(?:\s+(?:\"[^\"]*\"|'[^']*'))?\s*\)"#
+    )
+
+    static func references(
+        in markdown: String,
+        baseDirectory: String?,
+        fileManager: FileManager = .default
+    ) -> [MessageMarkdownImageReference] {
+        guard markdown.contains("![") else { return [] }
+        var inFence = false
+        var seen = Set<URL>()
+        var references: [MessageMarkdownImageReference] = []
+
+        for line in markdown.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+                inFence.toggle()
+                continue
+            }
+            guard !inFence else { continue }
+
+            let range = NSRange(line.startIndex..., in: line)
+            for match in image.matches(in: line, range: range) {
+                let destination = [match.range(at: 1), match.range(at: 2)]
+                    .first(where: { $0.location != NSNotFound })
+                    .flatMap { Range($0, in: line) }
+                    .map { String(line[$0]) }
+                guard let destination,
+                      let rawURL = URL(string: destination),
+                      case .success(let target) = MessageLinkResolver.resolve(
+                        rawURL,
+                        baseDirectory: baseDirectory,
+                        fileManager: fileManager
+                      ),
+                      target.kind == .file || (
+                        target.kind == .web
+                            && ["http", "https"].contains(target.url.scheme?.lowercased() ?? "")
+                      ),
+                      seen.insert(target.url).inserted else { continue }
+                references.append(MessageMarkdownImageReference(
+                    source: destination,
+                    url: target.url
+                ))
+                if references.count == 4 { return references }
+            }
+        }
+        return references
     }
 }
 
@@ -292,9 +338,6 @@ enum MessageLinkOpener {
             presentError(error.localizedMessage)
             return true
         case .success(let target):
-            guard !target.requiresOutsideWorkspaceConfirmation || confirmOutsideWorkspace(target.url) else {
-                return true
-            }
             let didOpen: Bool
             switch target.kind {
             case .web, .file, .directory:
@@ -318,17 +361,6 @@ enum MessageLinkOpener {
             baseDirectory: baseDirectory
         ), target.kind != .web else { return nil }
         return target.url
-    }
-
-    @MainActor
-    private static func confirmOutsideWorkspace(_ url: URL) -> Bool {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = L10n("Open a file outside the current workspace?")
-        alert.informativeText = url.path
-        alert.addButton(withTitle: L10n("Open"))
-        alert.addButton(withTitle: L10n("Cancel"))
-        return alert.runModal() == .alertFirstButtonReturn
     }
 
     @MainActor

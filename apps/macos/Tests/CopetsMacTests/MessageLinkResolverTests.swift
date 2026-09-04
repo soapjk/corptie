@@ -16,7 +16,6 @@ final class MessageLinkResolverTests: XCTestCase {
 
             XCTAssertEqual(target.kind, .file)
             XCTAssertEqual(target.url, file.standardizedFileURL)
-            XCTAssertFalse(target.requiresOutsideWorkspaceConfirmation)
         }
     }
 
@@ -50,7 +49,6 @@ final class MessageLinkResolverTests: XCTestCase {
             ).get())
 
             XCTAssertEqual(target.url, file.standardizedFileURL)
-            XCTAssertFalse(target.requiresOutsideWorkspaceConfirmation)
         }
     }
 
@@ -101,7 +99,7 @@ final class MessageLinkResolverTests: XCTestCase {
         }
     }
 
-    func testMarksFilesOutsideTheSessionWorkspaceForConfirmation() throws {
+    func testResolvesFilesOutsideTheSessionWorkspaceWithoutASeparatePolicyGate() throws {
         try withTemporaryDirectory { root in
             let workspace = root.appendingPathComponent("workspace", isDirectory: true)
             let outside = root.appendingPathComponent("outside.txt")
@@ -123,9 +121,8 @@ final class MessageLinkResolverTests: XCTestCase {
                 baseDirectory: workspace.path
             ).get())
 
-            XCTAssertTrue(target.requiresOutsideWorkspaceConfirmation)
-            XCTAssertTrue(traversalTarget.requiresOutsideWorkspaceConfirmation)
-            XCTAssertTrue(symlinkTarget.requiresOutsideWorkspaceConfirmation)
+            XCTAssertEqual(target.url, outside.standardizedFileURL)
+            XCTAssertEqual(traversalTarget.url, outside.standardizedFileURL)
             XCTAssertEqual(symlinkTarget.url, outside.standardizedFileURL)
         }
     }
@@ -139,7 +136,6 @@ final class MessageLinkResolverTests: XCTestCase {
 
         XCTAssertEqual(webTarget.kind, .web)
         XCTAssertEqual(webTarget.url, webURL)
-        XCTAssertFalse(webTarget.requiresOutsideWorkspaceConfirmation)
 
         let customResult = MessageLinkResolver.resolve(
             try XCTUnwrap(URL(string: "javascript:alert(1)")),
@@ -155,6 +151,42 @@ final class MessageLinkResolverTests: XCTestCase {
         )
         guard case .failure(.remoteFileHost("remote-host")) = remoteFileResult else {
             return XCTFail("Expected a remote-file-host failure, received \(remoteFileResult)")
+        }
+    }
+
+    func testExtractsLocalAndRemoteMarkdownImagesOutsideCodeFences() throws {
+        try withTemporaryDirectory { directory in
+            let image = directory.appendingPathComponent("preview image.png")
+            try Data([0x89, 0x50, 0x4E, 0x47]).write(to: image)
+            let markdown = """
+            ![local](<preview image.png> "Preview")
+            ![remote](https://example.com/preview.png)
+            ![duplicate](https://example.com/preview.png)
+            ```markdown
+            ![example](https://example.com/not-rendered.png)
+            ```
+            """
+
+            let references = MessageMarkdownImageResolver.references(
+                in: markdown,
+                baseDirectory: directory.path
+            )
+
+            XCTAssertEqual(references.map(\.url), [
+                image.standardizedFileURL,
+                try XCTUnwrap(URL(string: "https://example.com/preview.png"))
+            ])
+        }
+    }
+
+    func testMarkdownImageResolverIgnoresMissingFilesAndNonImageLinks() throws {
+        try withTemporaryDirectory { directory in
+            let references = MessageMarkdownImageResolver.references(
+                in: "[document](https://example.com/doc) ![missing](missing.png)",
+                baseDirectory: directory.path
+            )
+
+            XCTAssertTrue(references.isEmpty)
         }
     }
 

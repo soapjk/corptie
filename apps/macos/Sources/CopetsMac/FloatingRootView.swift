@@ -3918,6 +3918,18 @@ struct DetailView: View {
             let presentedText = collaboration?.bodyMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
                 ? copyText
                 : "\(copyText)\n\n\(supplementalText)")
+            let existingImageURLs = Set(images.compactMap(\.displayURL))
+            images.append(contentsOf: MessageMarkdownImageResolver.references(
+                in: presentedText,
+                baseDirectory: displayedDetail?.cwd
+            ).compactMap { reference in
+                guard !existingImageURLs.contains(reference.url) else { return nil }
+                return ChatTimelineImage(
+                    managedPath: "markdown:\(reference.url.absoluteString)",
+                    displayURL: reference.url,
+                    originalPath: reference.url.isFileURL ? reference.url.path : nil
+                )
+            })
             text = ClickableMessageText.markdown(
                 from: presentedText,
                 baseDirectory: displayedDetail?.cwd
@@ -6172,7 +6184,10 @@ struct DetailHeaderView: View {
 
     private func openWorktreeManagement() {
         AppDelegate.shared?.openWorktreeManagement(
-            repositoryId: supplementaryData.selectedProjectWorktreeStatus?.project.repositoryId,
+            repositoryId: WorktreeNavigationTarget.preferredRepositoryId(
+                sessionRepositoryId: backendClient.selectedSession?.external?.workspace?.repositoryId,
+                loadedProjectRepositoryId: supplementaryData.selectedProjectWorktreeStatus?.project.repositoryId
+            ),
             worktreeId: selectedSessionWorktree?.worktreeId
                 ?? backendClient.selectedSession?.external?.workspace?.id,
             worktreePath: workspacePath

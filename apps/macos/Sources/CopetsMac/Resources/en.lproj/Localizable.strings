@@ -932,8 +932,6 @@
 "The relative file link has no workspace: %@" = "The relative file link has no workspace: %@";
 "The linked file does not exist: %@" = "The linked file does not exist: %@";
 "The link could not be opened: %@" = "The link could not be opened: %@";
-"Open a file outside the current workspace?" = "Open a file outside the current workspace?";
-"Open" = "Open";
 "Unable to open link" = "Unable to open link";
 "Move Data Root?" = "Move Data Root?";
 "Migrating Data Root" = "Migrating Data Root";

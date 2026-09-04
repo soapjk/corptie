@@ -35,8 +35,14 @@ enum ConsoleWorkOutlineMetrics {
     static let groupHorizontalInset: CGFloat = 6
     static let disclosureAnimation = Animation.easeInOut(duration: 0.16)
     static let workingGradientDuration = 2.6
-    static var workingGradientAnimation: Animation {
-        .linear(duration: workingGradientDuration).repeatForever(autoreverses: false)
+    static let workingGradientFrameInterval = 1.0 / 24.0
+}
+
+enum ConsoleWorkFlowingGradientPolicy {
+    static func progress(at date: Date) -> CGFloat {
+        let elapsed = date.timeIntervalSinceReferenceDate
+            .truncatingRemainder(dividingBy: ConsoleWorkOutlineMetrics.workingGradientDuration)
+        return CGFloat(elapsed / ConsoleWorkOutlineMetrics.workingGradientDuration)
     }
 }
 
@@ -75,27 +81,50 @@ private struct ConsoleFlowingGradientWorkTitle: View {
     let title: String
     let animates: Bool
 
-    @State private var hasAdvancedGradient = false
-
+    @ViewBuilder
     var body: some View {
-        Text(title)
-            .foregroundStyle(flowingGradient)
-            .onAppear {
-                guard animates else { return }
-                withAnimation(ConsoleWorkOutlineMetrics.workingGradientAnimation) {
-                    hasAdvancedGradient = true
-                }
+        if animates {
+            TimelineView(.animation(
+                minimumInterval: ConsoleWorkOutlineMetrics.workingGradientFrameInterval,
+                paused: false
+            )) { context in
+                flowingTitle(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
             }
+        } else {
+            Text(title)
+                .foregroundStyle(staticGradient)
+        }
     }
 
-    private var flowingGradient: LinearGradient {
+    private func flowingTitle(progress: CGFloat) -> some View {
+        Text(title)
+            .foregroundStyle(.clear)
+            .overlay {
+                GeometryReader { proxy in
+                    seamlessGradient
+                        .frame(width: proxy.size.width * 2, height: proxy.size.height)
+                        .offset(x: proxy.size.width * (progress - 1))
+                }
+                .mask(Text(title))
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+    }
+
+    private var seamlessGradient: LinearGradient {
         LinearGradient(
-            colors: [
-                .cyan, .blue, .purple, .pink, .orange, .cyan,
-                .blue, .purple, .pink, .orange, .cyan
-            ],
-            startPoint: UnitPoint(x: hasAdvancedGradient ? 0 : -1, y: 0.5),
-            endPoint: UnitPoint(x: hasAdvancedGradient ? 2 : 1, y: 0.5)
+            colors: [.cyan, .blue, .purple, .pink, .orange, .cyan,
+                     .blue, .purple, .pink, .orange, .cyan],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
+
+    private var staticGradient: LinearGradient {
+        LinearGradient(
+            colors: [.cyan, .blue, .purple, .pink, .orange],
+            startPoint: .leading,
+            endPoint: .trailing
         )
     }
 }
