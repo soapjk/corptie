@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createCatalogBackedMcpServer } from "../src/mcp/catalogBackedMcpServer.mjs";
 
 test("authenticated MCP lists only the latest applied catalog and delegates calls by canonical name", async () => {
@@ -12,6 +13,7 @@ test("authenticated MCP lists only the latest applied catalog and delegates call
   const calls = [];
   const observations = [];
   const server = createCatalogBackedMcpServer({
+    pollIntervalMs: 0,
     client: {
       get: async (path, search) => {
         assert.equal(path, "/internal/session/tool/catalog");
@@ -39,6 +41,40 @@ test("authenticated MCP lists only the latest applied catalog and delegates call
       path: "/internal/session/tool",
       body: { tool: "corptie_artifact_get", arguments: {} }
     }]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test("authenticated MCP announces an assignment-driven catalog revision change", async () => {
+  let revision = "catalog:skills:none";
+  let changed = 0;
+  let announceChange;
+  const server = createCatalogBackedMcpServer({
+    client: {
+      get: async (path) => path.endsWith("/revision")
+        ? { revision }
+        : { revision, tools: [] },
+      post: async () => ({ ok: true }),
+      subscribeCatalogChanges: (callback) => {
+        announceChange = callback;
+        return () => {};
+      }
+    }
+  });
+  const client = new Client({ name: "catalog-notification-test", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  client.setNotificationHandler(
+    ToolListChangedNotificationSchema,
+    async () => { changed += 1; }
+  );
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    await client.listTools();
+    revision = "catalog:skills:assigned";
+    await announceChange();
+    assert.equal(changed, 1);
   } finally {
     await client.close();
     await server.close();

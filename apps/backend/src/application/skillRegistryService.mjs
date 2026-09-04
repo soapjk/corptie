@@ -460,7 +460,7 @@ export class SkillRegistryService {
         skillId: skill.skillId,
         agentId,
         providerId,
-        reason: "Assigned Skill MCP dependency resolved for session attachment.",
+        reason: "Assigned Skill MCP dependency resolved for the authenticated Tool Host gateway.",
         serverNames: Object.keys(installed.mcp?.servers ?? {})
       });
       } catch (error) {
@@ -478,6 +478,20 @@ export class SkillRegistryService {
       }
     }
     return result;
+  }
+
+  mcpAssignmentRevisionForAgent(agentId) {
+    if (!agentId || !this.store.getAgent(agentId)) return "none";
+    const assigned = this.store.listRegistrySkillsForAgent(agentId).map((skill) => ({
+      skillId: skill.skillId,
+      contentHash: skill.contentHash ?? "",
+      updatedAt: skill.updatedAt ?? "",
+      packageSubpath: skill.packageSubpath ?? "",
+      mcpDescriptorSubpath: skill.mcpDescriptorSubpath ?? ""
+    })).sort((left, right) => left.skillId.localeCompare(right.skillId));
+    return assigned.length === 0
+      ? "none"
+      : createHash("sha256").update(JSON.stringify(assigned)).digest("hex");
   }
 
   #recordRuntimeEvent(input) {

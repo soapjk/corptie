@@ -14,7 +14,7 @@ export class ToolHostService {
     this.catalog = options.catalog;
     this.coordinator = options.coordinator ?? null;
     this.materializationPort = options.materializationPort ?? null;
-    this.resolveMcpServers = options.resolveMcpServers ?? null;
+    this.skillMcpGateway = options.skillMcpGateway ?? null;
     this.recordRuntimeEvent = options.recordRuntimeEvent ?? null;
     if (!this.registry) throw new TypeError("ToolHostService requires an Agent Provider Registry.");
     if (!this.catalog) throw new TypeError("ToolHostService requires a Host Tool Catalog.");
@@ -39,29 +39,7 @@ export class ToolHostService {
     const actorId = normalizedText(context.actorId);
     if (!supportsAttachment && !actorId) return null;
     if (!actorId) throw toolError("AGENT_REQUIRED", "A session must be bound to an existing Agent; actorId is required.");
-    let mcpServers;
-    try {
-      mcpServers = typeof this.resolveMcpServers === "function"
-        ? await this.resolveMcpServers({ actorId, providerId, context })
-        : {};
-    } catch (error) {
-      this.#recordFailure(context, actorId, providerId, error, "MCP_LOADING_FAILED");
-      throw error;
-    }
-    const mcpServerNames = Object.keys(mcpServers ?? {});
-    if (mcpServerNames.length > 0
-      && !this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.SKILL_MCP_DEPENDENCIES)) {
-      const error = toolError(
-        "MCP_PROVIDER_UNSUPPORTED",
-        `Agent Provider ${providerId} cannot materialize assigned Skill MCP dependencies.`
-      );
-      this.#recordFailure(context, actorId, providerId, error, error.code, mcpServerNames);
-      throw error;
-    }
     if (!supportsAttachment) {
-      if (mcpServerNames.length > 0) {
-        throw toolError("MCP_PROVIDER_UNSUPPORTED", `Agent Provider ${providerId} cannot attach assigned Skill MCP dependencies.`);
-      }
       return null;
     }
 
@@ -73,7 +51,6 @@ export class ToolHostService {
         logicalSessionId: context.logicalSessionId,
         providerBindingId: context.providerBindingId,
         desiredDomains: context.desiredToolDomains,
-        assignedSkillMcpRevision: context.assignedSkillMcpRevision,
         activeTurn: context.activeTurn === true,
         phase: context.purpose === "session-bootstrap" ? "create" : "refresh"
       });
@@ -109,7 +86,9 @@ export class ToolHostService {
     const attachment = Object.freeze({
       actorId,
       tools: Object.freeze([...tools]),
-      mcpServers: Object.freeze({ ...(mcpServers ?? {}) }),
+      // Skill MCP servers are proxied by the permanent authenticated Corptie
+      // Tool Host. Mutating this Provider-native set would change the binding.
+      mcpServers: Object.freeze({}),
       metadata: Object.freeze({
         ...context,
         purpose: context.purpose ?? "session",
@@ -127,7 +106,7 @@ export class ToolHostService {
         context
       );
     } catch (error) {
-      this.#recordFailure(context, actorId, providerId, error, "PROVIDER_TOOL_MATERIALIZATION_FAILED", mcpServerNames);
+      this.#recordFailure(context, actorId, providerId, error, "PROVIDER_TOOL_MATERIALIZATION_FAILED");
       throw error;
     }
     this.#record({
@@ -141,7 +120,7 @@ export class ToolHostService {
       desiredVersion: materialization?.record?.desiredVersion ?? null,
       appliedVersion: materialization?.record?.appliedVersion ?? null,
       surface: materialization?.plan?.surface ?? null,
-      serverNames: mcpServerNames,
+      serverNames: [],
       reason: materialization?.status === "applying"
         ? "Provider Tool Host application is awaiting an exact Provider observation."
         : context.purpose === "session-resume"
@@ -232,6 +211,8 @@ export class ToolHostService {
         this.coordinator.assertCanonicalToolApplied(scope.logicalSessionId, scope.providerBindingId, entry.canonicalName);
       }
     }
+    if (this.catalog.entry(input.tool)) return this.catalog.execute(input);
+    if (this.skillMcpGateway) return this.skillMcpGateway.execute(input);
     return this.catalog.execute(input);
   }
 
@@ -285,7 +266,33 @@ export class ToolHostService {
       desiredVersion: input.desiredVersion,
       observationId: input.observationId
     });
-    return this.appliedDefinitions(input, "generated_authenticated_mcp");
+    const applied = this.appliedDefinitions(input, "generated_authenticated_mcp");
+    const skillTools = this.skillMcpGateway
+      ? await this.skillMcpGateway.definitions(input)
+      : [];
+    const names = new Set(applied.tools.map((tool) => tool.name.toLocaleLowerCase()));
+    for (const tool of skillTools) {
+      const key = tool.name.toLocaleLowerCase();
+      if (names.has(key) || this.catalog.entry(tool.name)) {
+        throw toolError("MCP_TOOL_NAME_CONFLICT", `Assigned Skill MCP tool conflicts with a Corptie Tool Host name: ${tool.name}`, 409);
+      }
+      names.add(key);
+    }
+    const revision = this.catalogRevision(input);
+    return Object.freeze({
+      ...applied,
+      revision,
+      tools: Object.freeze([...applied.tools, ...skillTools].sort((left, right) => left.name.localeCompare(right.name)))
+    });
+  }
+
+  catalogRevision(input = {}) {
+    const scope = exactScope(input);
+    const record = this.coordinator?.store.getSessionToolCatalogMaterialization(
+      scope.logicalSessionId, scope.providerBindingId
+    );
+    const skillRevision = this.skillMcpGateway?.revision(input.actorId) ?? "none";
+    return `${record?.appliedVersion ?? record?.desiredVersion ?? "none"}:${skillRevision}`;
   }
 
   async confirmPreparedSession(prepared, options = {}) {

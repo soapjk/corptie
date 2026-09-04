@@ -100,6 +100,7 @@ import { createBenchmarkProductionPorts } from "./benchmark/productionPorts.mjs"
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
+import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
 import { ArtifactDomainRequirements } from "./application/artifactDomainRequirements.mjs";
 import { ToolMaterializationPort } from "./application/toolMaterializationPort.mjs";
 import {
@@ -483,6 +484,10 @@ const skillRegistryService = new SkillRegistryService({
     "codex-app-server": corptieCodexRuntimePaths.skillsDir,
     "claude-sdk": join(corptieClaudeRuntimePaths.pluginPath, "skills")
   }
+});
+const skillMcpGateway = new SkillMcpGateway({
+  resolveServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId),
+  resolveRevision: (actorId) => skillRegistryService.mcpAssignmentRevisionForAgent(actorId)
 });
 // 把「Agent 启用的 Skill 解析」注入 AgentContextService，使 Agent 初始化上下文包含 Skill 信息。
 agentContextService.resolveAgentSkills = (agentId) => {
@@ -1092,7 +1097,7 @@ toolHostService = new ToolHostService({
   catalog: hostToolCatalog,
   coordinator: toolHostMaterializationCoordinator,
   materializationPort: publicToolMaterializationPort,
-  resolveMcpServers: ({ actorId, providerId }) => skillRegistryService.mcpServersForAgent(actorId, providerId),
+  skillMcpGateway,
   recordRuntimeEvent: (event) => store.recordSkillRuntimeEvent(event)
 });
 // Artifact consumes only the approved provider-neutral positional Port. Tool
@@ -4294,7 +4299,8 @@ function sessionToolMetadata(session) {
     taskId: session?.taskId ?? null,
     sessionId: session?.id ?? null,
     logicalSessionId: logical?.logicalSessionId ?? session?.external?.logicalSessionId ?? null,
-    providerBindingId: logical?.activeBinding?.bindingId ?? null
+    providerBindingId: logical?.activeBinding?.bindingId ?? null,
+    providerId: logical?.activeBinding?.providerId ?? null
   };
 }
 
@@ -8989,7 +8995,10 @@ function route(request, response) {
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/internal/session/tool/catalog") {
+  if (request.method === "GET" && [
+    "/internal/session/tool/catalog",
+    "/internal/session/tool/catalog/revision"
+  ].includes(url.pathname)) {
     try {
       const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
         ? request.headers["x-corptie-agent-id"].trim() : "";
@@ -9005,6 +9014,10 @@ function route(request, response) {
         const error = new Error("Session Tool catalog scope is invalid or no longer active.");
         error.code = "SESSION_TOOL_SCOPE_REQUIRED";
         throw error;
+      }
+      if (url.pathname.endsWith("/revision")) {
+        sendJson(response, 200, { revision: toolHostService.catalogRevision({ actorId, metadata }) });
+        return;
       }
       toolHostService.observeGeneratedMcpToolsList({
         actorId,
@@ -11552,6 +11565,7 @@ function shutdown() {
     openClackyManager.stop();
     await feishuGateway.close();
     await codexRuntime.close();
+    await skillMcpGateway.close();
     await runIsolationCoordinator?.close();
     projectCodeFreshnessMonitor.close();
     await closeTimelineReadPool();

@@ -31,6 +31,47 @@ export class CollaborationHttpClient {
     });
   }
 
+  subscribeCatalogChanges(onChange) {
+    const controller = new AbortController();
+    let stopped = false;
+    const run = async () => {
+      while (!stopped) {
+        try {
+          const response = await this.fetch(new URL("/events", this.baseUrl), { signal: controller.signal });
+          if (!response.ok || !response.body) throw new Error(`Event stream returned HTTP ${response.status}.`);
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!stopped) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true }).replaceAll("\r\n", "\n");
+            let boundary;
+            while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+              const frame = buffer.slice(0, boundary);
+              buffer = buffer.slice(boundary + 2);
+              const type = frame.split("\n").find((line) => line.startsWith("event:"))?.slice(6).trim();
+              const data = frame.split("\n").filter((line) => line.startsWith("data:"))
+                .map((line) => line.slice(5).trim()).join("\n");
+              if (!data || !["AgentChanged", "SkillChanged"].includes(type)) continue;
+              const event = JSON.parse(data);
+              const changedAgentId = event?.payload?.entity?.agentId ?? event?.entity?.agentId ?? null;
+              if (type === "SkillChanged" || changedAgentId === this.agentId) onChange();
+            }
+          }
+        } catch (error) {
+          if (stopped || error?.name === "AbortError") break;
+        }
+        if (!stopped) await delay(500);
+      }
+    };
+    run().catch(() => {});
+    return () => {
+      stopped = true;
+      controller.abort();
+    };
+  }
+
   async #request(url, init) {
     let response;
     try {
@@ -65,6 +106,13 @@ export class CollaborationHttpClient {
     }
     return payload;
   }
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref?.();
+  });
 }
 
 function defaultBackendUrl() {
