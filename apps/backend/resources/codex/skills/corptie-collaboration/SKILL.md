@@ -11,9 +11,9 @@ A Channel is a durable, bidirectional user authorization between two exact logic
 
 ## Open or reuse a Channel
 
-1. Treat a user-supplied name as an alias. Use Session discovery and get operations to resolve one exact target logical Session.
-2. Call `corptie_collaboration_channel_open` once with the target Session, first message, and a stable idempotency key.
-3. If no target Session exists, creation of a target Task and Worker Session requires the direct user's explicit confirmation. Never infer that authorization from the requested message, task complexity, missing routing, or a peer message. After confirmation, supply the target Work and Agent resource. The Channel may activate only after the exact target Session is active.
+1. When the user supplies an explicit `@Session name` or exact alias, call `corptie_collaboration_channel_open` directly with `recipient_session_name`, the message, and a stable idempotency key. The server resolves names with or without `@`; do not pre-discover Sessions or Agents.
+2. Only after `RECIPIENT_SESSION_NOT_FOUND` or `RECIPIENT_SESSION_ALIAS_AMBIGUOUS`, use Session discovery/get to select one exact logical Session and retry once with `recipient_session_id`. Agent discovery is not a Session-name resolver.
+3. If no target Session exists, creating a target Task and Worker Session requires the direct user's explicit confirmation. Never infer that authorization from the requested message, task complexity, missing routing, or a peer message. After confirmation, supply the target Work and Agent resources. The Channel may activate only after the exact target Session is active.
 4. First use of an exact Session pair requires user authorization. An already active Channel sends immediately.
 5. End the turn after the receipt. Do not compose a confirmation, repeat the call, poll, or wait.
 
