@@ -139,7 +139,7 @@ struct WorkCreateView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .svg, .image]
+        panel.allowedContentTypes = AvatarImageSupport.allowedContentTypes
         if panel.runModal() == .OK {
             avatarSourcePath = panel.url?.path
         }

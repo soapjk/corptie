@@ -334,7 +334,7 @@ struct UnifiedConsoleControlSurfaceTests {
 
     @Test
     func workingWorkTitleUsesAnAccessibleCompositorFriendlyBreathingAnimation() throws {
-        #expect(ConsoleWorkOutlineMetrics.workingPulseMinimumOpacity == 0.38)
+        #expect(ConsoleWorkOutlineMetrics.workingPulseMinimumOpacity == 0.20)
         #expect(ConsoleWorkOutlineMetrics.workingPulseDuration == 1.8)
 
         let source = try source(named: "UnifiedConsoleView.swift")

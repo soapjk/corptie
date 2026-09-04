@@ -3362,7 +3362,7 @@ struct AnimatedAvatarImage: NSViewRepresentable {
     }
 
     func updateNSView(_ imageView: AspectFillAnimatedImageView, context: Context) {
-        imageView.image = NSImage(contentsOfFile: path)
+        imageView.image = AvatarImageSupport.loadImage(at: path)
     }
 
     final class AspectFillAnimatedImageView: NSView {
