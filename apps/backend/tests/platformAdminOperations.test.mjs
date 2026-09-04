@@ -27,7 +27,12 @@ async function fixture() {
     store, workService, artifactService, collaborationCore: core, confirmationService,
     sessionService: { listSessions: () => [], sendMessage: () => ({}) },
     listSessions: () => store.listSessions(),
-    createSession: async (input) => { started.push(input); return { id: "provider:started", ...input }; }
+    createSession: async (input) => { started.push(input); return { id: "provider:started", ...input }; },
+    createTask: async ({ taskInput }) => ({
+      task: workService.createTask(taskInput),
+      session: { id: "provider:task-session" },
+      start: { status: "ready" }
+    })
   });
   return { directory, store, workService, core, artifactService, confirmationService, service, started };
 }

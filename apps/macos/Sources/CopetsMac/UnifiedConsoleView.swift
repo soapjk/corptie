@@ -12,6 +12,51 @@ enum ConsoleNavigationCardWidthPolicy {
     }
 }
 
+enum ConsoleTaskSelectionPolicy {
+    static func isValidSelection(
+        task: CorptieTask,
+        selectedWorkID: String?
+    ) -> Bool {
+        task.workId == selectedWorkID && task.lifecycleState != "done"
+    }
+
+    static func session(
+        for task: CorptieTask,
+        in sessions: [TaskSession]
+    ) -> TaskSession? {
+        if let currentSessionID = task.currentSessionId,
+           let current = sessions.first(where: {
+               $0.id == currentSessionID
+                   && $0.taskId == task.id
+                   && $0.archived != true
+           }) {
+            return current
+        }
+        return sessions.first { $0.taskId == task.id && $0.archived != true }
+    }
+}
+
+enum ConsoleTaskOpenDecision: Equatable {
+    case selectSession(id: String)
+    case createSession(agentID: String)
+    case showWithoutSession
+
+    static func resolve(task: CorptieTask, session: TaskSession?) -> Self {
+        if let session { return .selectSession(id: session.id) }
+        guard task.lifecycleState != "done",
+              let agentID = normalized(task.mainAgentId) else {
+            return .showWithoutSession
+        }
+        return .createSession(agentID: agentID)
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+}
+
 // 统一控制台：Work/Assistant 导航、Task 列、消息列和详情列。
 //   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，纸面卡片质感）
 //   中 content  — 对话（复用旧版 DetailView，吃满剩余宽度，纸面卡片质感）
@@ -49,6 +94,8 @@ struct UnifiedConsoleView: View {
     @State private var taskDeletionPresentation: CorptieTaskDeletionPresentation?
     @State private var taskDeletionError: String?
     @State private var pendingTaskDeletionIds = Set<String>()
+    @State private var launchingTaskSessionIds = Set<String>()
+    @State private var taskSessionLaunchError: EntityLaunchError?
     @State private var isShowingWorkerArchive = false
     @State private var submittedReadSequencesBySessionID: [String: Int] = [:]
     @AppStorage(
@@ -238,6 +285,14 @@ struct UnifiedConsoleView: View {
             }
         } message: {
             Text(workDeletionError ?? taskDeletionError ?? "")
+        }
+        .alert(L10n("执行失败"), isPresented: Binding(
+            get: { taskSessionLaunchError != nil },
+            set: { if !$0 { taskSessionLaunchError = nil } }
+        )) {
+            Button(L10n("好"), role: .cancel) { taskSessionLaunchError = nil }
+        } message: {
+            Text(taskSessionLaunchError?.message ?? "")
         }
     }
 
@@ -755,11 +810,68 @@ struct UnifiedConsoleView: View {
 
     private func openTask(_ task: CorptieTask, session: TaskSession?) {
         selectedTaskId = task.id
-        if let session {
+        switch ConsoleTaskOpenDecision.resolve(task: task, session: session) {
+        case .selectSession:
+            guard let session else { return }
             selectedCategory = .worker
             selectSessionAfterHighlight(session)
-        } else {
+        case .createSession(let agentID):
+            let sourceSession = backendClient.selectedSession
             backendClient.closeDetail()
+            Task {
+                await createTaskSessionIfNeeded(
+                    for: task,
+                    agentID: agentID,
+                    sourceSession: sourceSession
+                )
+            }
+        case .showWithoutSession:
+            backendClient.closeDetail()
+        }
+    }
+
+    private func createTaskSessionIfNeeded(
+        for task: CorptieTask,
+        agentID: String,
+        sourceSession: TaskSession?
+    ) async {
+        guard launchingTaskSessionIds.insert(task.id).inserted else { return }
+        defer { launchingTaskSessionIds.remove(task.id) }
+
+        if backendClient.agentProviders.isEmpty {
+            await backendClient.loadProviders()
+        }
+        let providerID = CorptieTaskCreateProviderPolicy.selection(
+            current: "",
+            preferred: backendClient.defaultSessionProviderId,
+            providers: backendClient.agentProviders
+        )
+        guard !providerID.isEmpty else {
+            taskSessionLaunchError = EntityLaunchError(
+                message: L10n("没有可创建 Session 的 Provider。"),
+                code: "SESSION_PROVIDER_NOT_FOUND"
+            )
+            return
+        }
+
+        let result = await entityClient.createSession(
+            taskId: task.id,
+            agentId: agentID,
+            providerId: providerID,
+            title: task.title,
+            sourceSession: sourceSession
+        )
+        guard let session = result.session else {
+            taskSessionLaunchError = result.error ?? EntityLaunchError(
+                message: entityClient.errorMessage ?? L10n("创建会话失败"),
+                code: nil
+            )
+            return
+        }
+
+        backendClient.acceptCreatedSession(session, selectImmediately: false)
+        if selectedTaskId == task.id {
+            selectSessionAfterHighlight(session)
         }
     }
 
@@ -820,11 +932,7 @@ struct UnifiedConsoleView: View {
     }
 
     private func workerSession(for task: CorptieTask) -> TaskSession? {
-        if let currentSessionId = task.currentSessionId,
-           let current = backendClient.sessions.first(where: { $0.id == currentSessionId }) {
-            return current
-        }
-        return backendClient.sessions.first { $0.taskId == task.id && $0.archived != true }
+        ConsoleTaskSelectionPolicy.session(for: task, in: backendClient.sessions)
     }
 
     private func taskStatusColor(_ status: String) -> Color {
@@ -907,6 +1015,24 @@ struct UnifiedConsoleView: View {
     }
 
     private func restoreConsoleContentIfNeeded() {
+        // A Task without a Session is still an explicit, valid user selection.
+        // Keep it authoritative across session-index refreshes instead of
+        // treating the empty detail selection as a reason to jump to the
+        // first Task in the Work. Once its Session appears, connect it here.
+        if let selectedTask,
+           ConsoleTaskSelectionPolicy.isValidSelection(
+               task: selectedTask,
+               selectedWorkID: selectedWorkId
+           ) {
+            if let session = workerSession(for: selectedTask) {
+                if backendClient.selectedSession?.id != session.id {
+                    selectSessionAfterHighlight(session)
+                }
+            } else if backendClient.selectedSession != nil {
+                backendClient.closeDetail()
+            }
+            return
+        }
         if let session = backendClient.selectedSession,
            sessionMatchesCurrentConsoleSpace(session) {
             return

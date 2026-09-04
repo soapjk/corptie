@@ -106,6 +106,7 @@ test("platform operations are denied to user Agents and use product services for
     const onEntityChanged = (type, payload) => entityEvents.push({ type, payload });
     const workService = new WorkApplicationService({ store, onEntityChanged });
     const sessionCalls = [];
+    const taskCreateCalls = [];
     let providerReadCount = 0;
     const service = new PlatformOperationService({
       store,
@@ -115,7 +116,16 @@ test("platform operations are denied to user Agents and use product services for
         readSession: async () => { providerReadCount += 1; return null; },
         sendMessage: async (...args) => sessionCalls.push(args)
       },
+      collaborationCore: {},
       createSession: async (input) => ({ id: "session-1", ...input }),
+      createTask: async (input) => {
+        taskCreateCalls.push(input);
+        return {
+          task: workService.createTask(input.taskInput),
+          session: { id: `session:task-created:${taskCreateCalls.length}` },
+          start: { status: "ready" }
+        };
+      },
       onEntityChanged
     });
 
@@ -139,13 +149,31 @@ test("platform operations are denied to user Agents and use product services for
     const work = await service.execute({
       actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_works_manage",
-      arguments: { action: "create", name: "平台事件目标" }
+      arguments: {
+        action: "create", name: "平台事件目标",
+        patch: { contributorAgentIds: [created.result.agentId] }
+      }
     });
     const task = await service.execute({
       actorId: "assistant", sessionId: "session:assistant",
       tool: "corptie_platform_tasks_manage",
-      arguments: { action: "create", work_id: work.result.id, title: "平台事件任务" }
+      arguments: {
+        action: "create", work_id: work.result.id, title: "平台事件任务",
+        agent_id: created.result.agentId, idempotency_key: "platform-task:create"
+      }
     });
+    const collaborationTask = await service.execute({
+      actorId: "assistant", sessionId: "session:assistant",
+      tool: "corptie_platform_collaboration_manage",
+      arguments: {
+        action: "create_task", work_id: work.result.id, title: "平台协作任务",
+        agent_id: created.result.agentId, provider_id: "provider:test",
+        idempotency_key: "platform-collaboration-task:create"
+      }
+    });
+    assert.equal(taskCreateCalls.length, 2);
+    assert.equal(taskCreateCalls[1].sourceSessionId, "logical:assistant");
+    assert.equal(collaborationTask.result.session.id, "session:task-created:2");
 
     await assert.rejects(
       service.execute({
@@ -167,13 +195,17 @@ test("platform operations are denied to user Agents and use product services for
       service.execute({
         actorId: "assistant", sessionId: "session:assistant",
         tool: "corptie_platform_tasks_manage",
-        arguments: { action: "create", work_id: work.result.id, title: "Bad", patch: { acceptanceCriteria: [] } }
+        arguments: {
+          action: "create", work_id: work.result.id, title: "Bad",
+          agent_id: created.result.agentId, idempotency_key: "platform-task:bad",
+          patch: { acceptanceCriteria: [] }
+        }
       }),
       { code: "INVALID_FIELD_TYPE", field: "acceptanceCriteria" }
     );
     assert.deepEqual(
       entityEvents.map((event) => event.type),
-      ["AgentChanged", "WorkChanged", "TaskChanged"]
+      ["AgentChanged", "WorkChanged", "TaskChanged", "TaskChanged"]
     );
 
     store.upsertSession({
@@ -226,7 +258,7 @@ test("platform Work and Task tool patch schemas reject additional properties", (
     })),
     [
       { action: "get", required: ["task_id"] },
-      { action: "create", required: ["work_id", "title"] },
+      { action: "create", required: ["work_id", "title", "agent_id", "idempotency_key"] },
       { action: "update", required: ["task_id", "patch"] },
       { action: "delete", required: ["task_id"] },
       { action: "dependencies", required: ["task_id"] },

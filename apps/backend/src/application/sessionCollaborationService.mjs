@@ -6,6 +6,7 @@ import {
   COLLABORATION_ROUTING_INTENTS,
   TASK_PRIORITIES
 } from "../domain/taskToolSchema.mjs";
+import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
 
 const RELATIONS = new Set(COLLABORATION_RELATION_TYPES);
 const ROUTING_INTENTS = new Set(COLLABORATION_ROUTING_INTENTS);
@@ -104,9 +105,28 @@ export class SessionCollaborationService {
     return this.#presentTask(item);
   }
 
+  async createTaskAndSession(metadata, actorId, input = {}) {
+    const scope = this.#scope(metadata, actorId, { mutation: true });
+    const persisted = this.createTask(metadata, actorId, input);
+    const created = await createTaskAndSession({
+      workService: this.workService,
+      startWorkSession: (command) => this.workSessionStartApplicationService.start(command),
+      taskInput: {},
+      sourceSessionId: scope.logicalSessionId,
+      providerId: optional(input.providerId) ?? this.defaultProviderId,
+      idempotencyKey: required(input.idempotencyKey, "idempotency_key"),
+      persistTask: async () => persisted
+    });
+    return {
+      ...created,
+      task: this.#presentTask(created.task),
+      phase: "started"
+    };
+  }
+
   createTask(metadata, actorId, input = {}) {
     assertKnown(input, ["title", "description", "acceptanceCriteria", "priority", "agentId",
-      "artifactReference", "fileReference", "idempotencyKey"]);
+      "providerId", "artifactReference", "fileReference", "idempotencyKey"]);
     const scope = this.#scope(metadata, actorId, { mutation: true });
     const kind = scope.session.sessionKind;
     if (!scope.session.workId || !["workChat", "worker"].includes(kind)) {

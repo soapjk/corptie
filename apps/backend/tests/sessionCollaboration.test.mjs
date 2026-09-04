@@ -751,6 +751,49 @@ test("Worker creates an independent Task with Session provenance and retries ide
   }
 });
 
+test("tool Task creation uses one service operation to persist the Task and bind its Session", async () => {
+  const f = await fixture();
+  try {
+    const agent = f.store.createAgent({ id: "agent:atomic-tool", name: "Atomic Tool", role: "independentContributor" });
+    const work = f.workService.createWork({ name: "Atomic Tool Work", contributorAgentIds: [agent.agentId] });
+    session(f.store, f.core, {
+      providerSessionId: "provider:atomic-source", logicalSessionId: "session:atomic-source",
+      agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
+    });
+    let startCount = 0;
+    f.service.workSessionStartApplicationService.start = async ({ taskId, assigneeAgentId }) => {
+      startCount += 1;
+      session(f.store, f.core, {
+        providerSessionId: "provider:atomic-worker", logicalSessionId: "session:atomic-worker",
+        agentId: assigneeAgentId, kind: "worker", workId: work.id, taskId, cwd: f.directory
+      });
+      return { status: "ready", session: f.store.getSession("provider:atomic-worker") };
+    };
+    const input = {
+      title: "Created and started",
+      agentId: agent.agentId,
+      providerId: "codex-app-server",
+      idempotencyKey: "tool-create:atomic"
+    };
+
+    const created = await f.service.createTaskAndSession(
+      { sessionId: "provider:atomic-source" }, agent.agentId, input
+    );
+    const replay = await f.service.createTaskAndSession(
+      { sessionId: "provider:atomic-source" }, agent.agentId, input
+    );
+
+    assert.equal(created.session.id, "provider:atomic-worker");
+    assert.equal(f.store.getTask(created.task.id).current_session_id, "provider:atomic-worker");
+    assert.equal(replay.task.id, created.task.id);
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(startCount, 1);
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("Task creation validates, persists, and returns an existing Artifact reference", async () => {
   const f = await fixture();
   try {
