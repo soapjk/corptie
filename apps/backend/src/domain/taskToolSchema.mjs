@@ -21,7 +21,6 @@ export const workIdSchema = id("work", "Stable Work identity (work: ID).");
 
 export const taskFieldsSchema = Object.freeze({
   description: { type: "string", description: "Detailed Task scope and constraints." },
-  goal: { type: "string", description: "The concrete outcome currently pursued by this evolving Task." },
   acceptance_criteria: {
     type: "string",
     description: "Human-readable acceptance criteria. Completion still requires the dedicated acceptance workflow."
@@ -37,7 +36,6 @@ export const taskPatchSchema = Object.freeze({
   properties: {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
-    goal: taskFieldsSchema.goal,
     acceptanceCriteria: taskFieldsSchema.acceptance_criteria,
     verificationCriteria: taskFieldsSchema.verification_criteria,
     priority: { type: "string", enum: [...TASK_PRIORITIES] },

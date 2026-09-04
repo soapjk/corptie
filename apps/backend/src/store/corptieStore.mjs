@@ -38,7 +38,7 @@ import {
   resolveSessionArchiveState
 } from "../domain/sessionArchivePolicy.mjs";
 import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
-import { migrateTaskDomainV1 } from "./taskSchemaMigration.mjs";
+import { migrateTaskDomainV1, migrateTaskGoalRemovalV1 } from "./taskSchemaMigration.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -1692,6 +1692,7 @@ export class CorptieStore {
         status TEXT NOT NULL DEFAULT 'queued'
           CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
         delivery_id TEXT,
+        channel_delivery_id TEXT,
         target_turn_id TEXT,
         last_error TEXT,
         created_at TEXT NOT NULL,
@@ -1700,7 +1701,9 @@ export class CorptieStore {
         updated_at TEXT NOT NULL,
         FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
         FOREIGN KEY (delivery_id) REFERENCES collaboration_deliveries(delivery_id) ON DELETE CASCADE,
-        UNIQUE (delivery_id)
+        FOREIGN KEY (channel_delivery_id) REFERENCES session_collaboration_deliveries(delivery_id) ON DELETE CASCADE,
+        UNIQUE (delivery_id),
+        UNIQUE (channel_delivery_id)
       );
 
       CREATE INDEX IF NOT EXISTS idx_agent_operations_next
@@ -2079,7 +2082,6 @@ export class CorptieStore {
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         acceptance_criteria TEXT NOT NULL DEFAULT '',
-        goal TEXT NOT NULL DEFAULT '',
         verification_criteria TEXT NOT NULL DEFAULT '',
         priority TEXT NOT NULL DEFAULT 'medium',
         lifecycle_state TEXT NOT NULL DEFAULT 'todo',
@@ -2100,7 +2102,6 @@ export class CorptieStore {
         version INTEGER NOT NULL CHECK (version >= 1),
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
-        goal TEXT NOT NULL DEFAULT '',
         acceptance_criteria TEXT NOT NULL DEFAULT '',
         verification_criteria TEXT NOT NULL DEFAULT '',
         acceptance_assessment_json TEXT NOT NULL DEFAULT '{}',
@@ -2998,9 +2999,16 @@ export class CorptieStore {
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("agents", "work_dir", "TEXT");
     this.ensureColumn("agents", "avatar_path", "TEXT");
+    migrateTaskGoalRemovalV1(this.db);
+    this.ensureColumn(
+      "agent_operations",
+      "channel_delivery_id",
+      "TEXT REFERENCES session_collaboration_deliveries(delivery_id) ON DELETE CASCADE"
+    );
+    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_operations_channel_delivery
+      ON agent_operations(channel_delivery_id) WHERE channel_delivery_id IS NOT NULL`);
     this.ensureColumn("tasks", "current_session_id", "TEXT");
     this.ensureColumn("tasks", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
-    this.ensureColumn("tasks", "goal", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("tasks", "verification_criteria", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("tasks", "lifecycle_state", "TEXT NOT NULL DEFAULT 'todo'");
     this.ensureColumn("tasks", "current_snapshot_id", "TEXT");
@@ -8427,8 +8435,8 @@ export class CorptieStore {
     this.db.run(
       `INSERT OR IGNORE INTO agent_operations (
         task_id, agent_id, session_id, kind, priority, text, source_json,
-        local_visibility, status, delivery_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)`,
+        local_visibility, status, delivery_id, channel_delivery_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
       [
         item.taskId,
         item.agentId,
@@ -8439,6 +8447,7 @@ export class CorptieStore {
         JSON.stringify(item.source ?? {}),
         item.localVisibility ?? "normal",
         item.deliveryId ?? null,
+        item.channelDeliveryId ?? null,
         timestamp,
         timestamp
       ]
@@ -8447,7 +8456,9 @@ export class CorptieStore {
     if (inserted) this.scheduleSave();
     const task = inserted
       ? this.getAgentTask(item.taskId)
-      : (item.deliveryId ? this.getAgentTaskForDelivery(item.deliveryId) : this.getAgentTask(item.taskId));
+      : (item.deliveryId || item.channelDeliveryId
+          ? this.getAgentTaskForDelivery(item.deliveryId ?? item.channelDeliveryId)
+          : this.getAgentTask(item.taskId));
     return { task, inserted };
   }
 
@@ -8457,7 +8468,10 @@ export class CorptieStore {
   }
 
   getAgentTaskForDelivery(deliveryId) {
-    const row = this.selectOne("SELECT * FROM agent_operations WHERE delivery_id = ?", [deliveryId]);
+    const row = this.selectOne(
+      "SELECT * FROM agent_operations WHERE delivery_id = ? OR channel_delivery_id = ?",
+      [deliveryId, deliveryId]
+    );
     return row ? agentTaskFromRow(row) : null;
   }
 
@@ -11048,15 +11062,14 @@ export class CorptieStore {
     const origin = normalizeTaskCreationOrigin(creationOrigin);
     this.runInTransaction(() => {
       this.db.run(
-        `INSERT INTO tasks (id, work_id, title, description, goal, acceptance_criteria,
+        `INSERT INTO tasks (id, work_id, title, description, acceptance_criteria,
           verification_criteria, priority, lifecycle_state, main_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           normalized.workId,
           normalized.title,
           normalized.description ?? "",
-          normalized.goal ?? "",
           normalized.acceptanceCriteria ?? "",
           normalized.verificationCriteria ?? "",
           normalized.priority ?? "medium",
@@ -12191,7 +12204,6 @@ export class CorptieStore {
     const prospective = {
       title: current.title,
       description: current.description,
-      goal: current.goal,
       acceptanceCriteria: current.acceptance_criteria,
       verificationCriteria: current.verification_criteria,
       priority: current.priority,
@@ -12215,14 +12227,13 @@ export class CorptieStore {
     this.assertTaskAssociations(prospective, work);
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
-      `UPDATE tasks SET title=?, description=?, goal=?, acceptance_criteria=?, verification_criteria=?,
+      `UPDATE tasks SET title=?, description=?, acceptance_criteria=?, verification_criteria=?,
         priority=?, lifecycle_state=?, main_agent_id=?,
         execution_status=?, acceptance_assessment_json=?, resource_version=resource_version+1,
         updated_at=? WHERE id=?`,
       [
         has("title") ? normalized.title : current.title,
         has("description") ? normalized.description : current.description,
-        has("goal") ? normalized.goal : current.goal,
         has("acceptanceCriteria") ? normalized.acceptanceCriteria : current.acceptance_criteria,
         has("verificationCriteria") ? normalized.verificationCriteria : current.verification_criteria,
         has("priority") ? normalized.priority : current.priority,
@@ -12274,7 +12285,7 @@ export class CorptieStore {
     }
     const patch = validateTaskInput(input.next ?? {}, "update");
     if (!Object.keys(patch).some((key) => [
-      "title", "description", "goal", "acceptanceCriteria", "verificationCriteria"
+      "title", "description", "acceptanceCriteria", "verificationCriteria"
     ].includes(key))) {
       const error = new Error("A Task revision must change its current problem definition.");
       error.code = "TASK_REVISION_EMPTY";
@@ -12286,7 +12297,6 @@ export class CorptieStore {
       version: Number(current.revision ?? 1),
       title: current.title,
       description: current.description ?? "",
-      goal: current.goal ?? "",
       acceptanceCriteria: current.acceptance_criteria ?? "",
       verificationCriteria: current.verification_criteria ?? "",
       acceptanceAssessment: parseJson(current.acceptance_assessment_json, {}),
@@ -12299,7 +12309,6 @@ export class CorptieStore {
     snapshot.contentHash = createHash("sha256").update(JSON.stringify({
       title: snapshot.title,
       description: snapshot.description,
-      goal: snapshot.goal,
       acceptanceCriteria: snapshot.acceptanceCriteria,
       verificationCriteria: snapshot.verificationCriteria,
       acceptanceAssessment: snapshot.acceptanceAssessment,
@@ -12311,11 +12320,11 @@ export class CorptieStore {
     return this.runInTransaction(() => {
       this.db.run(
         `INSERT INTO task_snapshots (
-          id, task_id, version, title, description, goal, acceptance_criteria,
+          id, task_id, version, title, description, acceptance_criteria,
           verification_criteria, acceptance_assessment_json, completion_evidence_json,
           execution_summary, source_message_id, created_by_session_id, content_hash, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [snapshot.id, id, snapshot.version, snapshot.title, snapshot.description, snapshot.goal,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [snapshot.id, id, snapshot.version, snapshot.title, snapshot.description,
           snapshot.acceptanceCriteria, snapshot.verificationCriteria,
           JSON.stringify(snapshot.acceptanceAssessment), JSON.stringify(snapshot.completionEvidence),
           snapshot.executionSummary, snapshot.sourceMessageId, snapshot.createdBySessionId,
@@ -14408,7 +14417,7 @@ function agentTaskFromRow(row) {
     source: parseJson(row.source_json, {}),
     localVisibility: row.local_visibility,
     status: row.status,
-    deliveryId: row.delivery_id || null,
+    deliveryId: row.channel_delivery_id || row.delivery_id || null,
     targetTurnId: row.target_turn_id || null,
     lastError: row.last_error || null,
     createdAt: row.created_at,
@@ -14982,7 +14991,6 @@ function taskSnapshotFromRow(row) {
     version: Number(row.version),
     title: row.title,
     description: row.description,
-    goal: row.goal,
     acceptanceCriteria: row.acceptance_criteria,
     verificationCriteria: row.verification_criteria,
     acceptanceAssessment,

@@ -134,6 +134,47 @@ test("Channel authorization creates one durable equal Session pair and supports 
   }
 });
 
+test("a Session Channel delivery uses its own Agent queue foreign key", async () => {
+  const value = await fixture();
+  try {
+    const pending = value.service.requestChannel({
+      requestingSessionId: "session:a",
+      recipientSessionId: "session:b",
+      body: "Deliver through the Session Channel queue.",
+      idempotencyKey: "open:channel-queue"
+    });
+    const confirmed = value.service.confirmRequest(pending.requestId, {
+      recipientSessionId: "session:b"
+    }, { type: "direct_user" });
+    const delivery = value.service.getDeliveryByMessage(confirmed.firstMessageId);
+
+    const queued = value.store.enqueueAgentTask({
+      taskId: `delivery:${delivery.deliveryId}`,
+      agentId: "agent:b",
+      sessionId: "provider:b",
+      kind: "collaboration",
+      priority: 50,
+      text: "Trusted Channel envelope",
+      source: { type: "session_channel", deliveryId: delivery.deliveryId },
+      localVisibility: "status_only",
+      channelDeliveryId: delivery.deliveryId,
+      createdAt: delivery.createdAt
+    });
+
+    assert.equal(queued.deliveryId, delivery.deliveryId);
+    assert.equal(value.store.getAgentTaskForDelivery(delivery.deliveryId)?.taskId, queued.taskId);
+    const stored = value.store.selectOne(
+      "SELECT delivery_id, channel_delivery_id FROM agent_operations WHERE task_id=?",
+      [queued.taskId]
+    );
+    assert.equal(stored.delivery_id, null);
+    assert.equal(stored.channel_delivery_id, delivery.deliveryId);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("Task creation origin is immutable provenance and does not create hierarchy", async () => {
   const value = await fixture();
   try {

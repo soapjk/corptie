@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import CorptieMac
@@ -157,6 +158,57 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func taskInformationDoesNotRepeatSessionWorkspaceOrShowLegacyGoal() throws {
+        let source = try source(named: "WarRoomView.swift")
+        let detailStart = try #require(source.range(of: "private var detailContent: some View"))
+        let detailEnd = try #require(source.range(
+            of: "private var detailHeader: some View",
+            range: detailStart.upperBound..<source.endIndex
+        ))
+        let detail = source[detailStart.lowerBound..<detailEnd.lowerBound]
+
+        let overviewStart = try #require(source.range(of: "private var overviewSection: some View"))
+        let overviewEnd = try #require(source.range(
+            of: "private func creationOriginLabel",
+            range: overviewStart.upperBound..<source.endIndex
+        ))
+        let overview = source[overviewStart.lowerBound..<overviewEnd.lowerBound]
+
+        #expect(!detail.contains("title: L10n(\"Goal\")"))
+        #expect(!detail.contains("text: task.goal"))
+        #expect(!overview.contains("L10n(\"WORKSPACE\")"))
+        #expect(!overview.contains("workspaceName"))
+        #expect(!source.contains("private var workspaceName: String?"))
+    }
+
+    @Test
+    func runtimeEnvironmentShowsOnlyProviderAgentAndWorkspace() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let contentStart = try #require(source.range(of: "private var sessionDetailContent: some View"))
+        let contentEnd = try #require(source.range(
+            of: "private var statusCard: some View",
+            range: contentStart.upperBound..<source.endIndex
+        ))
+        let content = source[contentStart.lowerBound..<contentEnd.lowerBound]
+        let fieldsStart = try #require(source.range(of: "private var runtimeFields:"))
+        let fieldsEnd = try #require(source.range(
+            of: "private var agentDisplayName:",
+            range: fieldsStart.upperBound..<source.endIndex
+        ))
+        let fields = source[fieldsStart.lowerBound..<fieldsEnd.lowerBound]
+
+        #expect(content.contains("detailSection(title: \"运行环境\""))
+        #expect(content.contains("providerPicker"))
+        #expect(content.contains("detailFields(runtimeFields)"))
+        #expect(content.components(separatedBy: "工作空间").count - 1 == 0)
+        #expect(fields.contains("(\"Agent\", agentDisplayName)"))
+        #expect(fields.contains("(\"工作空间\", compactPath(cwd))"))
+        #expect(!fields.contains("currentModel"))
+        #expect(!fields.contains("currentReasoningLevel"))
+        #expect(!fields.contains("推理强度"))
+    }
+
+    @Test
     func workAndTaskColumnsShareOneNavigationCard() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let cardStart = try #require(source.range(of: "private var consoleNavigationCard: some View"))
@@ -185,7 +237,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("if navigationMode == .workRail"))
         #expect(source.contains("unifiedWorkOutlineSidebar"))
         #expect(source.contains("workOutlineList"))
-        #expect(source.contains("outlineAssistantHeader"))
+        #expect(source.contains("outlineChatHeader"))
         #expect(source.contains("ForEach(assistantSessionRows)"))
         #expect(source.contains("collapsedOutlineWorkIDs"))
         #expect(source.contains("workChatRow(row)"))
@@ -205,10 +257,62 @@ struct UnifiedConsoleControlSurfaceTests {
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(source.contains("Color.black.opacity(0.065)"))
         #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
-        #expect(source.contains("outlineWorkEmptyRow"))
+        #expect(source.contains("outlineGroupEmptyRow"))
         #expect(source.contains("outlineChildSelectionBackground"))
         #expect(source.contains(".listRowBackground(Color.clear)"))
         #expect(source.contains(".listRowSeparator(.hidden)"))
+        #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
+        #expect(source.contains("Text(L10n(\"Chat\"))"))
+        #expect(!source.contains("Text(L10n(\"Assistant\"))"))
+    }
+
+    @Test
+    func taskContextMenuUsesARightClickOnlyOverlayWithoutChangingGroupLayout() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let rowStart = try #require(source.range(of: "private func taskRow("))
+        let rowEnd = try #require(source.range(
+            of: "private func openTask(",
+            range: rowStart.lowerBound..<source.endIndex
+        ))
+        let row = source[rowStart.lowerBound..<rowEnd.lowerBound]
+
+        #expect(source.contains("struct ConsoleRightClickMenuHitTarget: NSViewRepresentable"))
+        #expect(source.contains("guard currentEventType() == .rightMouseDown else { return nil }"))
+        #expect(row.contains("ConsoleRightClickMenuHitTarget("))
+        #expect(row.contains("taskContextMenuEntries(for: task, session: session)"))
+        #expect(!row.contains(".contextMenu {"))
+        #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
+        #expect(source.contains("VStack(alignment: .leading, spacing: 2)"))
+    }
+
+    @Test
+    @MainActor
+    func taskContextMenuHitTargetCapturesOnlyRightMouseEvents() throws {
+        let view = ConsoleRightClickOnlyView(frame: NSRect(x: 0, y: 0, width: 100, height: 24))
+
+        view.currentEventType = { .leftMouseDown }
+        #expect(view.hitTest(NSPoint(x: 10, y: 10)) == nil)
+
+        view.currentEventType = { .rightMouseDown }
+        #expect(view.hitTest(NSPoint(x: 10, y: 10)) === view)
+
+        var deliveredRightClick = false
+        view.onRightMouseDown = { _, sourceView in
+            deliveredRightClick = sourceView === view
+        }
+        let event = try #require(NSEvent.mouseEvent(
+            with: .rightMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 1
+        ))
+        view.rightMouseDown(with: event)
+        #expect(deliveredRightClick)
     }
 
     @Test

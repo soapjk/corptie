@@ -19,7 +19,6 @@ function fixture() {
         work_id: input.workId,
         title: input.title,
         description: input.description ?? "",
-        goal: input.goal ?? "",
         acceptance_criteria: input.acceptanceCriteria ?? "",
         verification_criteria: input.verificationCriteria ?? "",
         priority: input.priority ?? "medium",
