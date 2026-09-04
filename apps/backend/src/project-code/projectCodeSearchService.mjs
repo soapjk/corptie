@@ -105,6 +105,7 @@ export class ProjectCodeSearchService {
       } else if (isExpectedSearchError(error)) {
         state.outcome = "failed";
         state.errorCode = error.code;
+        results = [];
         if (error.rejectedPath) state.rejectedPaths.push(error.rejectedPath);
         if (state.layers.length === 0) state.layers.push(layerFact("L0", "failed", { degradedReason: error.code }));
       } else {
@@ -200,6 +201,17 @@ export class ProjectCodeSearchService {
       }
     };
 
+    if (mode === "auto" && autoPlan === "symbol") {
+      l2Attempted = true;
+      try {
+        await runLayer("L2", () => this.#runL2(input, limit));
+      } catch (error) {
+        if (error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
+        input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+      }
+      if (deduplicate(all).length >= minResults) return success(deduplicate(all).slice(0, limit), isolation,
+        input.state.layers.some((fact) => fact.status === "degraded") ? "degraded" : "success");
+    }
     if (mode === "auto" && autoPlan === "lexical") {
       l2Attempted = true;
       try {
@@ -302,7 +314,11 @@ export class ProjectCodeSearchService {
     }, this.maxCachedWorktrees);
     const allowed = new Set(input.scope.map((candidate) => candidate.path));
     return {
-      results: queryTextSymbolIndex(built.index, input.query, { signal: input.signal, limit: 50 }).filter((result) => allowed.has(result.path)).slice(0, limit),
+      results: queryTextSymbolIndex(built.index, input.query, {
+        signal: input.signal,
+        limit: 50,
+        includeText: input.mode === "semantic" || (input.mode === "auto" && planAutoQuery(input.query) === "lexical")
+      }).filter((result) => allowed.has(result.path)).slice(0, limit),
       candidateCount: built.index.documents.length,
       indexHit: built.indexHit,
       isolationRequired: false
@@ -748,6 +764,7 @@ function normalizeMode(value) {
 function planAutoQuery(query) {
   const value = String(query);
   if (/["'`{}();]|\.[A-Za-z0-9]{1,8}\b|[/\\]/u.test(value)) return "exact";
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(value)) return "symbol";
   return "lexical";
 }
 
