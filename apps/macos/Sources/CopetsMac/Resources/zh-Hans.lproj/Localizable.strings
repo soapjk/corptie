@@ -201,6 +201,11 @@
 "Unpair" = "解除配对";
 "Use the selected permission and approval mode for future new sessions" = "将所选权限和审批模式用于今后新建的会话";
 "Work" = "工作";
+"Work *" = "Work *";
+"请选择 Work" = "请选择 Work";
+"请选择 Work。" = "请选择 Work。";
+"当前没有可用的 Work。" = "当前没有可用的 Work。";
+"Create Task in %@" = "在 %@ 中创建 Task";
 "Running" = "运行中";
 "Blocked" = "等待处理";
 "Complete" = "已完成";

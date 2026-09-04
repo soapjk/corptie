@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Work 创建弹窗：名称、唯一 Workspace 与 Contributor Agent。
 
@@ -138,7 +139,7 @@ struct WorkCreateView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
+        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .svg, .image]
         if panel.runModal() == .OK {
             avatarSourcePath = panel.url?.path
         }

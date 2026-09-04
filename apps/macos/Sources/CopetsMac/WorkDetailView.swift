@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // Work 详情/编辑页。Workspace 是创建后不可换绑的唯一资源。
 
@@ -158,7 +159,7 @@ struct WorkDetailView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
+        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .svg, .image]
         if panel.runModal() == .OK, let url = panel.url {
             Task { await client.setWorkAvatar(workId: work.id, sourcePath: url.path) }
         }
