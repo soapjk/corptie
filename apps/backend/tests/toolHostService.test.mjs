@@ -84,6 +84,76 @@ test("domain_load returns the exact directly callable or restricted-gateway cont
   assert.ok(result.contract.tools[0].minimalExample);
 });
 
+test("restricted gateway accepts an older caller catalog version after the Session applies the current generation", async () => {
+  const catalog = new HostToolCatalog([{
+    id: "memory",
+    domainId: "memory",
+    tools: memoryDynamicTools,
+    execute: () => ({ ok: true })
+  }]);
+  const currentCatalogVersion = catalog.snapshot().catalogVersion;
+  const coordinator = {
+    assertCanonicalToolApplied: () => ({
+      owner: { surface: "restricted_gateway" },
+      record: { appliedCatalogVersion: currentCatalogVersion }
+    })
+  };
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry([]), catalog, coordinator
+  });
+
+  const result = await service.execute({
+    actorId: "agent:memory",
+    metadata: {
+      logicalSessionId: "logical:memory",
+      providerBindingId: "binding:memory"
+    },
+    tool: "corptie_tool_call",
+    arguments: {
+      tool: "corptie_memory_get",
+      arguments: { memory_id: "memory:one" },
+      expected_catalog_version: "th2:previous"
+    }
+  });
+
+  assert.deepEqual(result, { ok: true });
+});
+
+test("restricted gateway rejects an older caller version when the Session generation is also stale", async () => {
+  const catalog = new HostToolCatalog([{
+    id: "memory",
+    domainId: "memory",
+    tools: memoryDynamicTools,
+    execute: () => ({ ok: true })
+  }]);
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry([]),
+    catalog,
+    coordinator: {
+      assertCanonicalToolApplied: () => ({
+        owner: { surface: "restricted_gateway" },
+        record: { appliedCatalogVersion: "th2:previous" }
+      })
+    }
+  });
+
+  await assert.rejects(service.execute({
+    actorId: "agent:memory",
+    metadata: {
+      logicalSessionId: "logical:memory",
+      providerBindingId: "binding:memory"
+    },
+    tool: "corptie_tool_call",
+    arguments: {
+      tool: "corptie_memory_get",
+      arguments: { memory_id: "memory:one" },
+      expected_catalog_version: "th2:previous"
+    }
+  }), (error) => error.code === "TOOL_CATALOG_STALE"
+    && error.expectedCatalogVersion === "th2:previous"
+    && error.currentCatalogVersion === catalog.snapshot().catalogVersion);
+});
+
 test("Tool Host telemetry records business latency and aggregate schema failures without arguments", async () => {
   const events = [];
   const catalog = new HostToolCatalog([{
