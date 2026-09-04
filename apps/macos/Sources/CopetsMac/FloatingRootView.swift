@@ -9924,6 +9924,21 @@ private enum ComposerMentionCommand {
     case dismiss
 }
 
+enum ComposerMentionMenuMetrics {
+    static let width: CGFloat = 360
+    static let minimumHeight: CGFloat = 180
+    static let maximumHeight: CGFloat = 326
+    private static let headerHeight: CGFloat = 38
+    private static let rowHeight: CGFloat = 40
+    private static let maximumVisibleRows = 7
+
+    static func height(candidateCount: Int) -> CGFloat {
+        let visibleRows = min(max(candidateCount, 0), maximumVisibleRows)
+        let contentHeight = headerHeight + CGFloat(visibleRows) * rowHeight + 8
+        return min(maximumHeight, max(minimumHeight, contentHeight))
+    }
+}
+
 struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var appState = AppStateStore.shared
@@ -10111,17 +10126,20 @@ struct MessageComposer: View {
             .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
                 importDroppedImages(providers)
             }
-            .overlay(alignment: .topLeading) {
-                if mentionQuery != nil, !mentionCandidates.isEmpty {
-                    ComposerMentionMenu(
-                        candidates: mentionCandidates,
-                        selectedIndex: mentionSelectionIndex,
-                        onSelect: selectMention
-                    )
-                    .frame(width: min(340, max(240, composerWidth - 80)))
-                    .offset(x: 8, y: -CGFloat(min(mentionCandidates.count, 7) * 42 + 48))
-                    .zIndex(20)
-                }
+            .popover(
+                isPresented: mentionMenuPresented,
+                attachmentAnchor: .rect(.bounds),
+                arrowEdge: .bottom
+            ) {
+                ComposerMentionMenu(
+                    candidates: mentionCandidates,
+                    selectedIndex: mentionSelectionIndex,
+                    onSelect: selectMention
+                )
+                .frame(
+                    width: ComposerMentionMenuMetrics.width,
+                    height: ComposerMentionMenuMetrics.height(candidateCount: mentionCandidates.count)
+                )
             }
 
             if allowsModelSwitch, canSwitchModel {
@@ -10240,6 +10258,17 @@ struct MessageComposer: View {
             }
             .prefix(10)
             .map { $0 }
+    }
+
+    private var mentionMenuPresented: Binding<Bool> {
+        Binding(
+            get: { mentionQuery != nil && !mentionCandidates.isEmpty },
+            set: { isPresented in
+                guard !isPresented else { return }
+                mentionQuery = nil
+                mentionSelectionIndex = 0
+            }
+        )
     }
 
     private func updateMentionQuery(_ query: ComposerMentionQuery?) {
@@ -10751,49 +10780,50 @@ private struct ComposerMentionMenu: View {
                 .padding(.horizontal, 10)
                 .padding(.top, 8)
 
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
-                        Button {
-                            onSelect(candidate)
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: candidate.symbol)
-                                    .frame(width: 18)
-                                    .foregroundStyle(CorptiePalette.softBlue)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(candidate.mention.displayName)
-                                        .font(.system(size: 12, weight: .medium))
-                                        .lineLimit(1)
-                                    Text(candidate.detail)
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(CorptiePalette.secondaryText)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 2) {
+                        ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                            Button {
+                                onSelect(candidate)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: candidate.symbol)
+                                        .frame(width: 18)
+                                        .foregroundStyle(CorptiePalette.softBlue)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(candidate.mention.displayName)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .lineLimit(1)
+                                        Text(candidate.detail)
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(CorptiePalette.secondaryText)
+                                    }
+                                    Spacer(minLength: 0)
                                 }
-                                Spacer(minLength: 0)
+                                .padding(.horizontal, 8)
+                                .frame(height: 38)
+                                .background(
+                                    index == selectedIndex ? CorptiePalette.softBlue.opacity(0.12) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                )
+                                .contentShape(Rectangle())
                             }
-                            .padding(.horizontal, 8)
-                            .frame(height: 38)
-                            .background(
-                                index == selectedIndex ? CorptiePalette.softBlue.opacity(0.12) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            )
-                            .contentShape(Rectangle())
+                            .buttonStyle(.plain)
+                            .id(candidate.id)
+                            .accessibilityLabel("\(candidate.mention.displayName), \(candidate.detail)")
+                            .accessibilityAddTraits(index == selectedIndex ? .isSelected : [])
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("\(candidate.mention.displayName), \(candidate.detail)")
                     }
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 4)
                 }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 4)
+                .onChange(of: selectedIndex) { _, index in
+                    guard candidates.indices.contains(index) else { return }
+                    proxy.scrollTo(candidates[index].id, anchor: .center)
+                }
             }
-            .frame(maxHeight: 294)
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.7))
-        }
-        .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(L10n("Mention suggestions"))
     }
