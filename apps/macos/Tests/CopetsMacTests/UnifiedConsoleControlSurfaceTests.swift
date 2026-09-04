@@ -269,25 +269,48 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains(".padding(.leading, ConsoleWorkOutlineMetrics.childIndent)"))
         #expect(source.contains("outlineGroupEmptyRow"))
         #expect(source.contains("outlineChildSelectionBackground"))
-        #expect(source.contains(".listRowBackground(Color.clear)"))
-        #expect(source.contains(".listRowSeparator(.hidden)"))
         #expect(source.contains("static let disclosureAnimation = Animation.easeInOut(duration: 0.16)"))
-        #expect(source.contains("@MainActor static let disclosureTransition = AnyTransition.opacity.combined(with: .offset(y: -4))"))
-        #expect(source.components(
-            separatedBy: ".transition(ConsoleWorkOutlineMetrics.disclosureTransition)"
-        ).count - 1 == 2)
+        #expect(source.contains("private struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle"))
+        #expect(source.contains("private struct ConsoleWorkOutlineGroupCardModifier: ViewModifier"))
+        #expect(source.contains("return ScrollView {"))
+        #expect(source.contains("LazyVStack(alignment: .leading, spacing: 8)"))
+        #expect(source.contains("DisclosureGroup(isExpanded: outlineAssistantExpandedBinding)"))
+        #expect(source.contains("DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id))"))
+        #expect(source.contains(".disclosureGroupStyle(ConsoleWorkOutlineDisclosureStyle())"))
+        #expect(source.contains(".background(\n                Color.black.opacity(0.065),"))
+        #expect(source.contains(".transition(.opacity.combined(with: .offset(y: -4)))"))
+        #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
+        #expect(!source.contains("ConsoleWorkOutlineCardRowModifier"))
+        #expect(!source.contains("UnevenRoundedRectangle"))
+        #expect(!source.contains("ConsoleAnimatedDisclosureContent"))
+        #expect(!source.contains("ConsoleDisclosureHeightPreferenceKey"))
         #expect(source.components(
             separatedBy: "withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation)"
-        ).count - 1 == 2)
-        #expect(source.contains("value: isOutlineAssistantCollapsed"))
-        #expect(source.contains("value: outlineWorkIsExpanded(work.id)"))
-        #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
+        ).count - 1 == 3)
         #expect(source.contains("Text(L10n(\"Chat\"))"))
+        #expect(source.contains("Text(L10n(\"Work\"))"))
+        #expect(!source.contains("Text(L10n(\"Work & Tasks\"))"))
         #expect(!source.contains("Text(L10n(\"Assistant\"))"))
     }
 
     @Test
-    func workOutlineUsesOneContextMenuPerCardAndRoutesItFromTheHoveredChild() throws {
+    func workingWorkTitleUsesAnAccessibleCompositorFriendlyBreathingAnimation() throws {
+        #expect(ConsoleWorkOutlineMetrics.workingPulseMinimumOpacity == 0.38)
+        #expect(ConsoleWorkOutlineMetrics.workingPulseDuration == 1.8)
+
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(source.contains("private struct ConsoleWorkTitle: View"))
+        #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
+        #expect(source.contains("ConsoleBreathingWorkTitle(title: title)"))
+        #expect(source.contains(".repeatForever(autoreverses: true)"))
+        #expect(source.contains(".opacity(isDimmed ? ConsoleWorkOutlineMetrics.workingPulseMinimumOpacity : 1)"))
+        #expect(source.contains("isWorking: processingWorkIDs.contains(work.id)"))
+        #expect(!source.contains("Timer.publish"))
+        #expect(!source.contains("TimelineView"))
+    }
+
+    @Test
+    func workOutlineKeepsContextMenusOnTheirNativeListRows() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let outlineStart = try #require(source.range(of: "private var workOutlineList: some View"))
         let outlineEnd = try #require(source.range(
@@ -296,14 +319,17 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let outline = source[outlineStart.lowerBound..<outlineEnd.lowerBound]
 
-        #expect(outline.contains("taskRow(task, ownsContextMenu: false)"))
-        #expect(outline.contains(".task(workID: work.id, taskID: task.id)"))
-        #expect(outline.contains(".contextMenu {\n                    workOutlineContextMenu(for: work)"))
-        #expect(source.contains("private func workOutlineContextMenu(for work: Work)"))
-        #expect(source.contains("taskContextMenuContent(for: task, session: workerSession(for: task))"))
+        #expect(outline.contains("taskRow(task)"))
+        #expect(outline.contains("workChatRow(row)"))
+        #expect(outline.contains("sessionRow(row)"))
+        #expect(outline.contains("workContextMenuContent(for: work)"))
+        #expect(!source.contains("workOutlineContextMenu(for work: Work)"))
+        #expect(!source.contains("ConsoleWorkOutlineContextTarget"))
         #expect(!source.contains("ConsoleRightClickMenuHitTarget"))
-        #expect(source.components(separatedBy: ".consoleWorkOutlineGroupCard()").count - 1 == 2)
-        #expect(source.contains("VStack(alignment: .leading, spacing: 2)"))
+        #expect(outline.contains("return ScrollView"))
+        #expect(outline.contains("LazyVStack"))
+        #expect(outline.contains("DisclosureGroup(isExpanded:"))
+        #expect(!outline.contains("Section(isExpanded:"))
     }
 
     @Test
