@@ -897,6 +897,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var scrollCommandGeneration = 0
         private var nearTopSuppressionGeneration = 0
         private var suppressesNearTopTrigger = false
+        private var suppressesLayoutDrivenFollowReconciliation = false
         var lastScrollToBottomRevision = Int.min
         var lastScrollToTurnRevision = Int.min
         var lastHistoryRequestEpoch = Int.min
@@ -989,6 +990,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             positionPublishCorptieTask = nil
             scrollCommandGeneration &+= 1
             nearTopSuppressionGeneration &+= 1
+            suppressesNearTopTrigger = false
+            suppressesLayoutDrivenFollowReconciliation = false
             representedSessionID = sessionID
             rows.removeAll(keepingCapacity: true)
             revisionsByID.removeAll(keepingCapacity: true)
@@ -1424,7 +1427,6 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             DispatchQueue.main.async { [weak self, weak tableView] in
                 guard let self,
                       self.scrollCommandGeneration == generation,
-                      self.followsLatest,
                       let tableView,
                       !self.rows.isEmpty else { return }
                 tableView.layoutSubtreeIfNeeded()
@@ -1456,6 +1458,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 ?? (isProcessingUserScrollEvent || eventIsUserInitiated)
             if acceptsHistoryRequest {
                 userDidBeginScrolling()
+            }
+            // Row remeasurement temporarily moves the bottom farther away
+            // before the queued follow correction runs. That AppKit bounds
+            // notification is geometry feedback, not reader intent: letting
+            // it clear `followsLatest` can cancel the correction and strand a
+            // streaming reply in history. A real wheel/scroller gesture still
+            // bypasses this guard and owns the viewport immediately.
+            if !acceptsHistoryRequest && suppressesLayoutDrivenFollowReconciliation {
+                return
             }
             updateFollowStateFromViewport()
 
@@ -1784,6 +1795,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                     // is never a valid cross-revision fallback. A deleted or
                     // missing semantic anchor degrades once to latest.
                     clipView.scroll(to: NSPoint(x: 0, y: maximumY))
+                    followsLatest = true
+                    if !followsLatestBinding.wrappedValue {
+                        followsLatestBinding.wrappedValue = true
+                    }
                 }
             } else if pendingInitialScrollToBottom {
                 clipView.scroll(to: NSPoint(x: 0, y: maximumY))
@@ -1831,9 +1846,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             nearTopSuppressionGeneration &+= 1
             let generation = nearTopSuppressionGeneration
             suppressesNearTopTrigger = true
+            suppressesLayoutDrivenFollowReconciliation = true
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.nearTopSuppressionGeneration == generation else { return }
                 self.suppressesNearTopTrigger = false
+                self.suppressesLayoutDrivenFollowReconciliation = false
             }
         }
 
@@ -2667,15 +2684,29 @@ private final class ChatTimelineImageLoader {
             completion(image)
             return
         }
+        if url.isFileURL {
+            Task { [weak self] in
+                let data = await Task.detached(priority: .userInitiated) {
+                    try? Data(contentsOf: url, options: .mappedIfSafe)
+                }.value
+                let image = data.flatMap(NSImage.init(data:))
+                self?.store(image, for: url)
+                completion(image)
+            }
+            return
+        }
         Task { [weak self] in
             let data = try? await URLSession.shared.data(from: url).0
             let image = data.flatMap(NSImage.init(data:))
-            if let image {
-                let pixels = Int(image.size.width * image.size.height)
-                self?.cache.setObject(image, forKey: url as NSURL, cost: min(pixels * 4, 20 * 1_024 * 1_024))
-            }
+            self?.store(image, for: url)
             completion(image)
         }
+    }
+
+    private func store(_ image: NSImage?, for url: URL) {
+        guard let image else { return }
+        let pixels = Int(image.size.width * image.size.height)
+        cache.setObject(image, forKey: url as NSURL, cost: min(pixels * 4, 20 * 1_024 * 1_024))
     }
 }
 
