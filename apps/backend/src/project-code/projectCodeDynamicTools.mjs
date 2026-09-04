@@ -13,6 +13,26 @@ export const PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED = true;
 
 export const projectCodeDynamicTools = Object.freeze([
   tool(
+    "corptie_project_code_find",
+    "Create a fresh authoritative source Snapshot and search it in one call. Prefer this for ordinary Worker repository code navigation.",
+    {
+      query: { type: "string", minLength: 1, maxLength: 500 },
+      mode: { type: "string", enum: ["auto", "exact", "files", "symbols", "semantic"] },
+      paths: { type: "array", maxItems: 100, items: { type: "string", minLength: 1 } },
+      languages: { type: "array", maxItems: 32, items: { type: "string", minLength: 1 } },
+      kinds: { type: "array", maxItems: 32, items: { type: "string", minLength: 1 } },
+      toolset_validation_receipt_id: {
+        type: "string",
+        pattern: "^toolset_validation_receipt:[A-Za-z0-9_-]+$",
+        description: "Authoritative ToolsetValidationReceipt v3 id required only for L3 semantic execution."
+      },
+      limit: { type: "integer", minimum: 1, maximum: 50 },
+      min_results: { type: "integer", minimum: 1, maximum: 20 },
+      timeout_ms: { type: "integer", minimum: 250, maximum: 10000 }
+    },
+    ["query"]
+  ),
+  tool(
     "corptie_project_code_snapshot",
     "Create and persist an authoritative source Snapshot for this Worker Session's current Startup-bound Worktree.",
     {}
@@ -67,6 +87,10 @@ export function createProjectCodeHostNamespace(options = {}) {
   }
   return Object.freeze({
     id: "project-code",
+    discoveryTerms: [
+      "project code", "source code", "repository search", "code navigation", "find files", "locate symbol",
+      "项目代码", "源码", "仓库搜索", "代码导航", "查找文件", "定位符号"
+    ],
     tools: projectCodeDynamicTools,
     authorize: ({ metadata }) => metadata?.sessionKind === "worker"
       && Boolean(metadata?.logicalSessionId)
@@ -83,6 +107,22 @@ export async function callProjectCodeDynamicTool(service, input = {}) {
   if (!service) throw coded("PROJECT_CODE_SEARCH_UNAVAILABLE", "Project-code search service is unavailable.");
   const logicalSessionId = input.metadata?.logicalSessionId;
   const args = input.arguments ?? {};
+  if (input.tool === "corptie_project_code_find") {
+    return service.find({
+      logicalSessionId,
+      query: args.query,
+      mode: args.mode,
+      paths: args.paths,
+      languages: args.languages,
+      kinds: args.kinds,
+      limit: args.limit,
+      minResults: args.min_results,
+      timeoutMs: args.timeout_ms,
+      toolsetValidationReceiptId: args.toolset_validation_receipt_id,
+      toolsetRequired: args.mode === "semantic",
+      signal: input.signal
+    });
+  }
   if (input.tool === "corptie_project_code_snapshot") {
     return service.createSnapshot({ logicalSessionId, signal: input.signal });
   }

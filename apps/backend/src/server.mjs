@@ -555,6 +555,10 @@ const hostToolCatalog = new HostToolCatalog([
   },
   {
     id: "artifacts",
+    discoveryTerms: [
+      "artifact", "acceptance evidence", "implementation spec", "reference", "share",
+      "工件", "产物", "验收证据", "技术规格", "引用", "分享"
+    ],
     tools: artifactDynamicTools,
     authorize: authorizeArtifactDynamicTool,
     execute: (input) => callArtifactDynamicTool(artifactService, input, { toolMaterializationPort })
@@ -1176,7 +1180,8 @@ const sessionApplicationService = new SessionApplicationService({
   toolMaterializationPort,
   resolveRequiredToolDomains: (context) => ArtifactDomainRequirements
     .forSessionRole({ sessionKind: context.sessionKind, roleCapabilities: context.roleCapabilities ?? [] })
-    .requiredBeforeFirstTurn.map((requirement) => requirement.domainId),
+    .requiredBeforeFirstTurn.map((requirement) => requirement.domainId)
+    .concat(context.sessionKind === "worker" ? ["project-code"] : []),
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
   assertMessageDispatchAllowed: (reference) => assertSessionRecoveryMessageBoundary(reference),
@@ -4603,7 +4608,8 @@ function collaborationRuntimeInstructions(agentId) {
     "After channel_open or message_send returns, end the current turn. Corptie handles pending authorization programmatically and pushes peer messages into the unified queue; do not poll or wait.",
     "Use Corptie Automation for requests to schedule, remind, monitor, defer, repeat, pause, resume, cancel, inspect, or run an Automation, and for non-interactive work expected to exceed two minutes do not continuously poll: start it in the background and use a processExit or condition trigger to wake the current Session when it finishes; if Automation tools are not visible, first search the Tool Catalog for scheduled-tasks.",
     "Assigned Skill MCP tools may be hot-routed behind the fixed Corptie Tool Catalog gateway instead of appearing as same-named native tools. When an assigned Skill requires a tool that is not visible, search corptie_tool_catalog_search using the Skill or tool name before declaring MCP injection failed, then call the returned canonical tool through its invocation contract. This does not require a new Session or Provider binding replacement.",
-    "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace."
+    "Corptie programmatically binds the Task Worktree. Stay in it; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development is not authorization, and shell cd or command workdir never changes the logical Workspace.",
+    "In a Worker Session, use Corptie's built-in project-code capability before shell filesystem search for repository source navigation. Search the Tool Host catalog with domain_hint=project-code when needed, then prefer corptie_project_code_find for a fresh authoritative Snapshot and search; use corptie_project_code_read for bounded source reads. Use rg, rg --files, find, grep, or sed for repository discovery only when project-code is unavailable, rejects the requested scope, or an exact raw-filesystem diagnostic is specifically required."
   ].join(" ");
 }
 

@@ -262,6 +262,46 @@ test("prospective replacement bindings preserve the explicitly requested Tool do
   assert.ok(Array.isArray(attachments[0].tools));
 });
 
+test("prospective Worker bindings prepare Artifact and project-code domains together", async () => {
+  const attachments = [];
+  const registry = new AgentProviderRegistry([
+    provider("worker-provider", [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+      attachTools(attachment) {
+        attachments.push(attachment);
+        return { attached: true };
+      }
+    })
+  ]);
+  const service = new ToolHostService({
+    registry,
+    coordinator: {},
+    catalog: new HostToolCatalog([
+      {
+        id: "artifacts",
+        tools: [{ name: "corptie_artifact_get", inputSchema: { type: "object" } }],
+        execute: () => ({})
+      },
+      {
+        id: "project-code",
+        tools: [{ name: "corptie_project_code_find", inputSchema: { type: "object" } }],
+        execute: () => ({})
+      }
+    ])
+  });
+
+  const prepared = await service.prepareSession("worker-provider", {
+    actorId: "agent:worker",
+    sessionKind: "worker"
+  });
+
+  assert.deepEqual(prepared.materialization.desiredDomains, ["artifacts", "project-code"]);
+  assert.deepEqual(attachments[0].tools.map((tool) => tool.name), [
+    "corptie_tool_catalog_search", "corptie_tool_domain_load", "corptie_tool_call"
+  ]);
+  assert.equal(prepared.materialization.plan.ownership.corptie_artifact_get.domainId, "artifacts");
+  assert.equal(prepared.materialization.plan.ownership.corptie_project_code_find.domainId, "project-code");
+});
+
 test("Codex, Claude, and OpenClacky receive the same provider-neutral Artifact contracts", async () => {
   const attachments = new Map();
   const providerIds = ["codex-app-server", "claude-sdk", "openclacky"];

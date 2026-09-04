@@ -291,12 +291,12 @@ export class ToolHostMaterializationCoordinator {
     const snapshot = this.catalog.snapshot();
     const query = searchableText(input.intent);
     const queryTerms = searchTerms(query);
-    const hintTerms = searchTerms(input.domainHint);
+    const hint = searchableText(input.domainHint);
     const domains = [];
     let domainOrder = 0;
     for (const [domainId, entries] of this.catalog.domains(catalogContext(binding))) {
       const normalizedDomainId = searchableText(searchableDomainText(domainId));
-      if (hintTerms.length > 0 && !hintTerms.every((term) => normalizedDomainId.includes(term))) continue;
+      if (hint && !domainMatchesHint(domainId, entries, hint)) continue;
       const domainContract = this.catalog.domainContract(catalogContext(binding), domainId, {
         catalogVersion: snapshot.catalogVersion
       });
@@ -304,16 +304,17 @@ export class ToolHostMaterializationCoordinator {
         const normalizedAlias = searchableText(alias);
         return query.includes(normalizedAlias) || normalizedAlias.includes(query);
       });
-      const rankedTools = entries
+      let rankedTools = entries
         .map((entry) => {
           const haystack = searchableText(
-            `${entry.canonicalName} ${entry.definition.description ?? ""} ${normalizedDomainId}`
+            `${entry.canonicalName} ${entry.definition.description ?? ""} ${normalizedDomainId} ${(entry.discoveryTerms ?? []).join(" ")}`
           );
           const matchedTerms = queryTerms.filter((term) => haystack.includes(term));
           const exactPhrase = query.length > 0 && haystack.includes(query);
           const preferred = entry.canonicalName === domainContract.recommendedTool ? 1 : 0;
           const baseScore = (exactPhrase ? queryTerms.length + 2 : matchedTerms.length)
-            + (domainIntentMatch ? 1 : 0);
+            + (domainIntentMatch ? 1 : 0)
+            + discoveryTermScore(entry, query);
           return {
             entry,
             score: baseScore > 0 ? baseScore + preferred : 0
@@ -322,6 +323,15 @@ export class ToolHostMaterializationCoordinator {
         .filter(({ score }) => queryTerms.length === 0 || score > 0)
         .sort((left, right) => right.score - left.score
           || left.entry.canonicalName.localeCompare(right.entry.canonicalName));
+      if (hint && rankedTools.length === 0) {
+        rankedTools = entries
+          .map((entry) => ({
+            entry,
+            score: entry.canonicalName === domainContract.recommendedTool ? 2 : 1
+          }))
+          .sort((left, right) => right.score - left.score
+            || left.entry.canonicalName.localeCompare(right.entry.canonicalName));
+      }
       if (queryTerms.length > 0 && rankedTools.length === 0) continue;
       const score = rankedTools.reduce((maximum, tool) => Math.max(maximum, tool.score), 0);
       const tools = rankedTools.map(({ entry }) => entry);
@@ -730,6 +740,23 @@ function canonicalToolDomainId(domainId) {
   // receipts from before that cutover remain valid intent, but must resolve to
   // the canonical catalog domain before lookup and replacement planning.
   return domainId === "work-item-acceptance" ? "task-acceptance" : domainId;
+}
+
+function domainMatchesHint(domainId, entries, hint) {
+  const document = searchableText([
+    searchableDomainText(domainId),
+    ...entries.flatMap((entry) => entry.discoveryTerms ?? [])
+  ].join(" "));
+  return document.includes(hint) || hint.includes(searchableText(searchableDomainText(domainId)));
+}
+
+function discoveryTermScore(entry, query) {
+  let score = 0;
+  const discoveryTerms = (entry.discoveryTerms ?? []).map(searchableText).filter(Boolean);
+  for (const term of discoveryTerms) {
+    if (query.includes(term)) score += term.length >= 4 ? 24 : 12;
+  }
+  return score;
 }
 
 function materializedDomains(catalog, context, snapshot, desiredDomainIds, surface) {
