@@ -110,6 +110,62 @@ test("Tool Host telemetry records business latency and aggregate schema failures
   assert.equal(Object.hasOwn(events[0].details, "arguments"), false);
 });
 
+test("restricted gateway telemetry attributes project-code calls and fallback evidence to the canonical tool", async () => {
+  const events = [];
+  const catalog = new HostToolCatalog([{
+    id: "project-code",
+    tools: [{
+      name: "corptie_project_code_search",
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string" } },
+        required: ["query"],
+        additionalProperties: false
+      }
+    }],
+    execute: () => ({
+      search: {
+        outcome: "NoResults",
+        errorCode: null,
+        totalMs: 3.25,
+        layers: [{ layer: "L1", status: "degraded", degradedReason: "INDEX_WARMING" }]
+      },
+      results: []
+    })
+  }]);
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry([]),
+    catalog,
+    coordinator: {
+      assertCanonicalToolApplied() {}
+    },
+    recordRuntimeEvent: (event) => events.push(event)
+  });
+
+  await service.execute({
+    actorId: "agent:worker",
+    metadata: {
+      sessionId: "session:worker",
+      logicalSessionId: "logical:worker",
+      providerBindingId: "binding:worker"
+    },
+    tool: "corptie_tool_call",
+    arguments: {
+      tool: "corptie_project_code_search",
+      expected_catalog_version: catalog.snapshot().catalogVersion,
+      arguments: { query: "symbol" }
+    }
+  });
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].details.tool, "corptie_project_code_search");
+  assert.equal(events[0].details.gatewayTool, "corptie_tool_call");
+  assert.equal(events[0].details.domainId, "project-code");
+  assert.equal(events[0].details.resultCount, 0);
+  assert.equal(events[0].details.fallbackRecommended, true);
+  assert.deepEqual(events[0].details.fallbackReasons, ["INDEX_WARMING"]);
+});
+
 test("prospective replacement bindings preserve the explicitly requested Tool domains", async () => {
   const attachments = [];
   const registry = new AgentProviderRegistry([

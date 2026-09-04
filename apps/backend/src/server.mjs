@@ -97,7 +97,7 @@ import { createBenchmarkProductionPorts } from "./benchmark/productionPorts.mjs"
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
-import { ArtifactDomainRequirements } from "./application/artifactDomainRequirements.mjs";
+import { requiredToolDomainsForSession as resolveSessionToolDomainRequirements } from "./application/sessionToolDomainRequirements.mjs";
 import { ToolMaterializationPort } from "./application/toolMaterializationPort.mjs";
 import {
   RegistryToolMaterializationPort,
@@ -275,7 +275,10 @@ import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.m
 import { resolveProjectWorktreeCommitMessage } from "./runtime/projectCommitMessage.mjs";
 import { workspaceDynamicTools } from "./runtime/workspaceDynamicTools.mjs";
 import { ProjectCodeSearchApplicationService } from "./project-code/projectCodeApplicationService.mjs";
-import { createProjectCodeHostNamespace } from "./project-code/projectCodeDynamicTools.mjs";
+import {
+  createProjectCodeHostNamespace,
+  PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED
+} from "./project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeIndexStore } from "./project-code/projectCodeIndexStore.mjs";
 import { ProjectCodeSearchService } from "./project-code/projectCodeSearchService.mjs";
 import { ProjectCodeSourceRevisionMonitor } from "./project-code/projectCodeSourceRevisionMonitor.mjs";
@@ -1158,9 +1161,7 @@ const sessionApplicationService = new SessionApplicationService({
   },
   toolHostService,
   toolMaterializationPort,
-  resolveRequiredToolDomains: (context) => ArtifactDomainRequirements
-    .forSessionRole({ sessionKind: context.sessionKind, roleCapabilities: context.roleCapabilities ?? [] })
-    .requiredBeforeFirstTurn.map((requirement) => requirement.domainId),
+  resolveRequiredToolDomains: requiredToolDomainsForSession,
   resolveSessionReference: (sessionId) => sessionBindingRepository.resolve(sessionId),
   resolveSessionBinding: (sessionId, bindingId) => sessionBindingRepository.resolveBinding(sessionId, bindingId),
   assertMessageDispatchAllowed: (reference) => assertSessionRecoveryMessageBoundary(reference),
@@ -1215,10 +1216,16 @@ const sessionApplicationService = new SessionApplicationService({
          ORDER BY operation.binding_generation DESC LIMIT 1`,
         [reference.logicalSessionId]
       );
+      const toolMaterialization = store.getSessionToolCatalogMaterialization(
+        reference.logicalSessionId,
+        reference.bindingId
+      );
       baseContext = buildWorkSessionContext({
         session, task, work,
         artifactIndex: artifactService.indexForSession(session),
-        startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null
+        startupReceipt: startupReceiptRow ? JSON.parse(startupReceiptRow.receipt_json) : null,
+        toolDomains: appliedToolDomainIds(toolMaterialization),
+        toolCatalogVersion: toolMaterialization?.appliedCatalogVersion ?? null
       });
     }
     let memoryContext = null;
@@ -4393,6 +4400,21 @@ function desiredToolDomainIds(materialization = null) {
   ].map((domain) => typeof domain === "string" ? domain : domain?.domainId)
     .filter(Boolean)
     .map((domainId) => domainId === "work-item-acceptance" ? "task-acceptance" : domainId))].sort();
+}
+
+function appliedToolDomainIds(materialization = null) {
+  if (!materialization
+    || materialization.status !== "applied"
+    || materialization.appliedVersion !== materialization.desiredVersion) return [];
+  return [...new Set((materialization.appliedDomains ?? [])
+    .map((domain) => typeof domain === "string" ? domain : domain?.domainId)
+    .filter(Boolean))].sort();
+}
+
+function requiredToolDomainsForSession(context = {}) {
+  return resolveSessionToolDomainRequirements(context, {
+    projectCodeRecommendationEnabled: PROJECT_CODE_MODEL_RECOMMENDATION_ENABLED
+  });
 }
 
 function workChatInstructions(metadata) {
