@@ -163,6 +163,26 @@ function memoryFixture({
       if (abortMergeError) throw abortMergeError;
       return { aborted: true, alreadyClean: false, mainHead: input.expectedMainHead };
     },
+    rebaseSource: async (input) => {
+      calls.push(`rebase:${input.path}:${input.targetHead}`);
+      const worktree = worktrees.find((entry) => entry.path === input.path);
+      worktree.headOid = `${input.targetHead}:rebased:${worktree.branchName}`;
+      return { rebased: true, alreadySynchronized: false, headOid: worktree.headOid };
+    },
+    fastForwardSource: async (input) => {
+      calls.push(`fast-forward:${input.path}:${input.targetHead}`);
+      const worktree = worktrees.find((entry) => entry.path === input.path);
+      worktree.headOid = input.targetHead;
+      return { headOid: input.targetHead };
+    },
+    prepareConvergence: async (input) => {
+      calls.push(`prepare-convergence:${input.baseHead}`);
+      return { worktreeId: "wt:convergence", path: "/repo-convergence", branchName: "integration/converge-test", headOid: input.baseHead };
+    },
+    cleanupConvergence: async (input) => {
+      calls.push(`cleanup-convergence:${input.expectedHead}`);
+      return { removed: true };
+    },
     prepareConflictResolution: async (input) => {
       calls.push(`prepare-conflict:${input.sourceHead}`);
       const prepareError = prepareConflictErrors.shift();
@@ -396,6 +416,59 @@ test("reviewed plan preserves main and commits each dirty task Worktree before d
   assert.equal(completed.plan.items[1].mergeStatus, "completed");
   assert.ok(completed.audit.some((entry) => entry.event === "plan_confirmed"));
   assert.ok(completed.audit.some((entry) => entry.event === "execution_completed"));
+});
+
+test("batch merge honors the reviewed source order and explicit target", async () => {
+  const { service, calls } = memoryFixture({ featureDirty: false, conflictAttempts: [0, 0] });
+  const plan = await service.preflight("repository:1", {
+    operationType: "batch_merge",
+    sourceWorktreeIds: ["wt:feature-two", "wt:feature"],
+    targetWorktreeId: "wt:main"
+  });
+  assert.equal(plan.plan.operationType, "merge");
+  assert.deepEqual(plan.plan.mergeOrder, ["wt:feature-two", "wt:feature"]);
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.equal(completed.plan.targetWorktreeId, "wt:main");
+  assert.deepEqual(calls, ["merge:feature:2", "merge:feature:1"]);
+});
+
+test("one-way synchronization rebases every source independently and leaves the target out of the steps", async () => {
+  const { service, calls } = memoryFixture({ featureDirty: false, conflictAttempts: [0, 0] });
+  const plan = await service.preflight("repository:1", {
+    operationType: "one_way_sync",
+    sourceWorktreeIds: ["wt:feature", "wt:feature-two"],
+    targetWorktreeId: "wt:main"
+  });
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.equal(completed.plan.operationType, "sync");
+  assert.deepEqual(calls, [
+    "rebase:/repo-feature:main:1",
+    "rebase:/repo-feature-two:main:1"
+  ]);
+});
+
+test("convergence merges all selected heads then fast-forwards every non-base branch to one result", async () => {
+  const { service, calls, worktrees } = memoryFixture({ featureDirty: false, conflictAttempts: [0, 0] });
+  const plan = await service.preflight("repository:1", {
+    operationType: "converge",
+    sourceWorktreeIds: ["wt:main", "wt:feature", "wt:feature-two"],
+    targetWorktreeId: "wt:main"
+  });
+  await service.confirm(plan.id, { confirmed: true, planFingerprint: plan.planFingerprint });
+  const completed = await waitForJob(service, plan.id, "completed");
+  assert.equal(completed.plan.operationType, "converge");
+  assert.equal(new Set(worktrees.map((worktree) => worktree.headOid)).size, 1);
+  assert.deepEqual(calls, [
+    "prepare-convergence:main:1",
+    "merge:feature:1",
+    "merge:feature:2",
+    "fast-forward:/repo:main:1:merge:merge",
+    "fast-forward:/repo-feature:main:1:merge:merge",
+    "fast-forward:/repo-feature-two:main:1:merge:merge",
+    "cleanup-convergence:main:1:merge:merge"
+  ]);
 });
 
 test("an awaiting-confirmation plan prevents duplicate preflight jobs", async () => {
