@@ -628,7 +628,9 @@ struct WorktreeManagementView: View {
                 if job.hasMergeConflict,
                           let resolution = job.currentConflictResolution,
                           let sessionId = resolution.sessionId {
-                    Button(L10n("View Agent Session")) { router.openSession(sessionId) }
+                    Button(L10n("View Agent Session")) {
+                        openConflictSession(sessionId: sessionId, taskId: resolution.taskId)
+                    }
                         .controlSize(.small)
                         .accessibilityIdentifier("worktree.integrate.open-conflict-agent")
                     if job.phase == "failed", resolution.status == "ready" {
@@ -642,7 +644,9 @@ struct WorktreeManagementView: View {
                     }
                 } else if job.hasMergeConflict {
                     if let sessionId = job.conflictAutomation?.sessionId {
-                        Button(L10n("View Agent Session")) { router.openSession(sessionId) }
+                        Button(L10n("View Agent Session")) {
+                            openConflictSession(sessionId: sessionId, taskId: job.conflictAutomation?.taskId)
+                        }
                             .controlSize(.small)
                             .accessibilityIdentifier("worktree.integrate.open-plan-conflict-agent")
                     }
@@ -755,6 +759,14 @@ struct WorktreeManagementView: View {
 
     private func currentConflictItem(_ job: WorktreeIntegrationJob) -> WorktreeIntegrationItem? {
         job.plan.items.first { $0.worktreeId == job.currentWorktreeId && $0.mergeStatus == "conflict" }
+    }
+
+    private func openConflictSession(sessionId: String, taskId: String?) {
+        if let taskId, !taskId.isEmpty {
+            router.openTaskSession(taskId: taskId, sessionId: sessionId)
+        } else {
+            router.openSession(sessionId)
+        }
     }
 
     private func manualConflictRetryButton() -> some View {
