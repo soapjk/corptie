@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { migrateTaskDomainV1, needsTaskDomainMigration } from "../src/store/taskSchemaMigration.mjs";
+import {
+  migrateTaskDomainV1,
+  migrateTaskGoalRemovalV1,
+  needsTaskDomainMigration
+} from "../src/store/taskSchemaMigration.mjs";
 
 function database() {
   const db = new DatabaseSync(":memory:");
@@ -113,5 +117,57 @@ test("task domain migration rejects an ambiguous dual schema", () => {
   db.exec("CREATE TABLE tasks (id TEXT PRIMARY KEY)");
   assert.throws(() => migrateTaskDomainV1(db), /both exist/);
   assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='work_items'").get());
+  db.close();
+});
+
+test("Task goal removal drops persisted columns while preserving Task and snapshot data", () => {
+  const db = new DatabaseSync(":memory:");
+  db.get = (sql, params = []) => db.prepare(sql).get(...params);
+  db.all = (sql, params = []) => db.prepare(sql).all(...params);
+  db.run = (sql, params = []) => db.prepare(sql).run(...params);
+  db.exec("PRAGMA foreign_keys=ON");
+  db.exec(`
+    CREATE TABLE data_migrations (migration_id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+    CREATE TABLE tasks (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      goal TEXT NOT NULL DEFAULT '',
+      acceptance_criteria TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE task_snapshots (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      goal TEXT NOT NULL DEFAULT '',
+      acceptance_criteria TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TRIGGER task_snapshots_immutable_update
+      BEFORE UPDATE ON task_snapshots BEGIN SELECT RAISE(ABORT, 'TASK_SNAPSHOT_IMMUTABLE'); END;
+    INSERT INTO tasks VALUES ('task:one', 'Current', 'Current description', 'Legacy goal', 'Accepted');
+    INSERT INTO task_snapshots VALUES (
+      'snapshot:one', 'task:one', 'Previous', 'Previous description', 'Previous goal', 'Previously accepted'
+    );
+  `);
+
+  const result = migrateTaskGoalRemovalV1(db, "2026-09-04T00:00:00.000Z");
+  assert.deepEqual(result.droppedColumns, [
+    { table: "tasks", column: "goal" },
+    { table: "task_snapshots", column: "goal" }
+  ]);
+  assert.equal(db.prepare("PRAGMA table_info(tasks)").all().some((column) => column.name === "goal"), false);
+  assert.equal(db.prepare("PRAGMA table_info(task_snapshots)").all().some((column) => column.name === "goal"), false);
+  assert.deepEqual({ ...db.prepare("SELECT title, description, acceptance_criteria FROM tasks").get() }, {
+    title: "Current", description: "Current description", acceptance_criteria: "Accepted"
+  });
+  assert.deepEqual({ ...db.prepare(
+    "SELECT title, description, acceptance_criteria FROM task_snapshots"
+  ).get() }, {
+    title: "Previous", description: "Previous description", acceptance_criteria: "Previously accepted"
+  });
+  assert.throws(() => db.prepare("UPDATE task_snapshots SET title='Changed'").run(), /TASK_SNAPSHOT_IMMUTABLE/);
+  assert.equal(migrateTaskGoalRemovalV1(db).migrated, false);
+  assert.equal(db.prepare("PRAGMA foreign_key_check").all().length, 0);
   db.close();
 });

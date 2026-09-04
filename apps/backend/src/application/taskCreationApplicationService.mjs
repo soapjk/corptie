@@ -98,7 +98,6 @@ function assertTaskCreationReplay(existing, input) {
     ["workId", existing.work_id, input.workId],
     ["title", existing.title, input.title],
     ["description", existing.description, input.description],
-    ["goal", existing.goal, input.goal],
     ["acceptanceCriteria", existing.acceptance_criteria, input.acceptanceCriteria],
     ["verificationCriteria", existing.verification_criteria, input.verificationCriteria],
     ["priority", existing.priority, input.priority],

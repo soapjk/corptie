@@ -520,6 +520,7 @@
 "Console" = "Console";
 "Sessions" = "Sessions";
 "Session" = "Session";
+"Chat" = "Chat";
 "Mention a Work or Session" = "Mention a Work or Session";
 "Mention suggestions" = "Mention suggestions";
 "Agents" = "Agents";
