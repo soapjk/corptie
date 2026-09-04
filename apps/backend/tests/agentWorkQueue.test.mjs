@@ -10,11 +10,23 @@ import {
   sessionHasActiveRun
 } from "../src/utils/sessionPresentation.mjs";
 import {
+  agentWorkFailureMessage,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
   shouldReportAgentWorkQueued,
   userMessageStatusForAgentWork
 } from "../src/utils/agentWorkQueue.mjs";
+
+test("Provider failure objects become SQLite-safe Agent work messages", () => {
+  assert.equal(agentWorkFailureMessage(null), null);
+  assert.equal(agentWorkFailureMessage("Provider stopped."), "Provider stopped.");
+  assert.equal(agentWorkFailureMessage({
+    code: "CLAUDE_REQUEST_FAILED",
+    message: "Claude Provider request failed.",
+    retryable: true
+  }), "Claude Provider request failed.");
+  assert.equal(agentWorkFailureMessage({ code: "UNKNOWN" }), '{"code":"UNKNOWN"}');
+});
 
 async function fixture() {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-work-queue-test-"));
