@@ -1716,14 +1716,10 @@ struct UnifiedConsoleView: View {
     // 控制台「打开对话」→ 切到本 Tab 后，选中目标会话（sessions 加载完成后）。
     private func attemptPendingSelection(_ sessions: [TaskSession]) {
         guard let pendingId = router.pendingSessionId else { return }
+        let pendingTaskId = router.pendingTaskId
         if let session = sessionMatchingPendingSelection(pendingId, in: sessions) {
             pendingSelectionTask?.cancel()
-            selectedCategory = SessionCategory(session: session)
-            if selectedCategory == .worker {
-                isShowingWorkerArchive = isArchivedWorkerSession(session)
-            }
-            backendClient.select(session: session)
-            router.pendingSessionId = nil
+            selectPendingRoute(session, requestedSessionId: pendingId, taskId: pendingTaskId)
             return
         }
         guard pendingSelectionTask == nil else { return }
@@ -1736,17 +1732,32 @@ struct UnifiedConsoleView: View {
                 // back to the Corptie-local archive endpoint on demand.
                 resolved = await backendClient.loadArchivedSession(id: pendingId)
             }
+            guard router.pendingSessionId == pendingId,
+                  router.pendingTaskId == pendingTaskId else { return }
             if let session = resolved {
-                selectedCategory = SessionCategory(session: session)
-                if selectedCategory == .worker {
-                    isShowingWorkerArchive = isArchivedWorkerSession(session)
-                }
-                backendClient.select(session: session)
-                router.pendingSessionId = nil
+                selectPendingRoute(session, requestedSessionId: pendingId, taskId: pendingTaskId)
             } else {
                 router.failSessionNavigation(pendingId)
             }
         }
+    }
+
+    private func selectPendingRoute(
+        _ session: TaskSession,
+        requestedSessionId: String,
+        taskId: String?
+    ) {
+        selectedCategory = SessionCategory(session: session)
+        if selectedCategory == .worker {
+            selectedWorkId = session.workId
+            selectedTaskId = taskId ?? session.taskId
+            isShowingWorkerArchive = isArchivedWorkerSession(session)
+        } else {
+            selectedWorkId = nil
+            selectedTaskId = nil
+        }
+        backendClient.select(session: session)
+        router.consumeSessionNavigation(requestedSessionId)
     }
 
     // 未选中时恢复上次选中的会话（跨窗口/重启记忆）。
