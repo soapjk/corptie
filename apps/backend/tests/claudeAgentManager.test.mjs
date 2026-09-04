@@ -574,6 +574,73 @@ test("Claude clear forgets the SDK context while preserving the Corptie session"
   assert.equal(session.queryClosed, false);
 });
 
+test("Claude reasoning effort applies through the live Query and persists on the Session", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-reasoning", cwd: "/tmp/project" });
+  const session = manager.get("claude-reasoning");
+  const applied = [];
+  session.query = {
+    applyFlagSettings: async (settings) => { applied.push(settings); }
+  };
+
+  const updated = await manager.switchReasoning("claude-reasoning", "HIGH");
+
+  assert.deepEqual(applied, [{ effortLevel: "high" }]);
+  assert.equal(session.currentReasoningLevel, "high");
+  assert.equal(updated.external.currentReasoningLevel, "high");
+  assert.equal(updated.capabilities.canSwitchReasoning, true);
+  assert.equal(
+    session.items.at(-1).text,
+    "Switched Claude reasoning effort to high."
+  );
+});
+
+test("Claude reasoning effort starts with the Session and reaches the first Query", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-reasoning-start", cwd: "/tmp/project", reasoningLevel: "xhigh" });
+  const session = manager.get("claude-reasoning-start");
+  const started = [];
+  manager.ensureQueryStarted = async (target) => { started.push(target); };
+
+  assert.equal(session.currentReasoningLevel, "xhigh");
+  await manager.send("claude-reasoning-start", "hello");
+  assert.deepEqual(started, [session]);
+  assert.equal(session.currentReasoningLevel, "xhigh");
+});
+
+test("Claude rejects unsupported reasoning levels and rejects a switch during a running Turn", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-reasoning-guard", cwd: "/tmp/project", reasoningLevel: "not-a-level" });
+  assert.equal(manager.get("claude-reasoning-guard").currentReasoningLevel, null);
+
+  await assert.rejects(
+    () => manager.switchReasoning("claude-reasoning-guard", "off"),
+    /Unsupported Claude reasoning level/
+  );
+
+  manager.get("claude-reasoning-guard").turnState = "running";
+  await assert.rejects(
+    () => manager.switchReasoning("claude-reasoning-guard", "high"),
+    (error) => error.code === "SESSION_BUSY"
+  );
+  assert.equal(manager.get("claude-reasoning-guard").currentReasoningLevel, null);
+});
+
+test("Claude reasoning switch restores a persisted Session before applying the level", async () => {
+  const manager = new ClaudeAgentManager();
+  let restored = false;
+  manager.reconnect = async (id) => {
+    restored = true;
+    return manager.start({ id, cwd: "/tmp/restored", prompt: "" });
+  };
+
+  const updated = await manager.switchReasoning("claude-restored-reasoning", "low");
+
+  assert.equal(restored, true);
+  assert.equal(updated.external.cwd, "/tmp/restored");
+  assert.equal(updated.external.currentReasoningLevel, "low");
+});
+
 test("Claude permissions can change after session creation and reconfigure the next Query", async () => {
   const manager = new ClaudeAgentManager();
   manager.start({

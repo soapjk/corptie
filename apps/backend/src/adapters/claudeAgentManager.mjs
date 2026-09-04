@@ -42,7 +42,7 @@ export class ClaudeAgentManager {
       sortOrder: input.sortOrder ?? null,
       agentSessionId: input.agentSessionId ?? null,
       currentModel: input.model ?? null,
-      currentReasoningLevel: null,
+      currentReasoningLevel: normalizeClaudeEffortLevel(input.reasoningLevel),
       initialPrompt: input.prompt ?? "",
       phase: "ready",
       connectionReady: true,
@@ -243,6 +243,32 @@ export class ClaudeAgentManager {
       type: "system",
       title: "Claude Code",
       text: `Switched Claude model to ${nextModel}.`
+    });
+    return this.toSessionSummary(session);
+  }
+
+  async switchReasoning(id, level) {
+    const session = await this.sessionForOperation(id);
+    const nextLevel = normalizeClaudeEffortLevel(level);
+    if (!nextLevel) {
+      throw new Error("Unsupported Claude reasoning level");
+    }
+    if (session.turnState === "running") {
+      const error = new Error("Claude must finish the active turn before switching reasoning effort.");
+      error.code = "SESSION_BUSY";
+      throw error;
+    }
+    // An idle Query is recreated cheaply so the next instruction launches with
+    // the new effort level; a live Query applies it through flag settings.
+    if (session.query) {
+      await session.query.applyFlagSettings({ effortLevel: nextLevel });
+    }
+    session.currentReasoningLevel = nextLevel;
+    session.updatedAt = new Date().toISOString();
+    this.appendItem(session, {
+      type: "system",
+      title: "Claude Code",
+      text: `Switched Claude reasoning effort to ${nextLevel}.`
     });
     return this.toSessionSummary(session);
   }
@@ -532,7 +558,9 @@ export class ClaudeAgentManager {
       sortOrder: stored.sortOrder ?? null,
       agentSessionId,
       currentModel: stored.external?.currentModel ?? raw.currentModel ?? null,
-      currentReasoningLevel: null,
+      currentReasoningLevel: normalizeClaudeEffortLevel(
+        stored.external?.currentReasoningLevel ?? raw.currentReasoningLevel
+      ),
       initialPrompt: raw.initialPrompt ?? "",
       phase: agentSessionId ? "reconnecting" : "ready",
       connectionReady: true,
@@ -640,6 +668,7 @@ export class ClaudeAgentManager {
           resume: session.agentSessionId || undefined,
           persistSession: true,
           model: session.currentModel || undefined,
+          effort: session.currentReasoningLevel || undefined,
           ...runtimeOptions,
           ...permissionOptions,
           canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
@@ -969,7 +998,7 @@ export class ClaudeAgentManager {
       source: "claude-sdk",
       connectionStatus: "connected",
       currentModel: session.currentModel ?? null,
-      currentReasoningLevel: null,
+      currentReasoningLevel: session.currentReasoningLevel ?? null,
       activityStatus: activityStatusForSession(session),
       cwd: session.cwd,
       createdAt: session.createdAt,
@@ -998,7 +1027,7 @@ export class ClaudeAgentManager {
       capabilities: {
         canSend,
         canSwitchModel: true,
-        canSwitchReasoning: false,
+        canSwitchReasoning: true,
         canInterrupt: Boolean(session.query) && session.turnState === "running",
         canReconnect: false
       },
@@ -1034,7 +1063,7 @@ export class ClaudeAgentManager {
         agentSessionId: session.agentSessionId,
         connectionStatus: detail.connectionStatus,
         currentModel: session.currentModel ?? null,
-        currentReasoningLevel: null,
+        currentReasoningLevel: session.currentReasoningLevel ?? null,
         cwd: session.cwd,
         sandbox: session.sandbox,
         approvalPolicy: session.approvalPolicy,
@@ -1600,6 +1629,14 @@ function claudePermissionOptions(session) {
     // active permissionMode remains authoritative and is not widened by it.
     allowDangerouslySkipPermissions: true
   };
+}
+
+// Claude effort levels mirror the Agent SDK's EffortLevel union. "off" is not
+// part of the SDK surface; callers map a disabled level to undefined before it
+// reaches this helper.
+export function normalizeClaudeEffortLevel(value) {
+  const level = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return ["low", "medium", "high", "xhigh", "max"].includes(level) ? level : null;
 }
 
 export function normalizeClaudeRuntimeOptions(input = {}) {

@@ -60,12 +60,21 @@ test("initial prompts are persisted after Session and Binding creation before Pr
 });
 
 test("Codex binding readiness preserves a live empty thread until its first Turn", async () => {
+  // Execution preparation is now Provider-neutral orchestration that calls the
+  // Codex protocol through the lifecycle adapter; the readiness contract is
+  // guarded on both files.
   const source = await readFile(sourceURL, "utf8");
-  const begin = source.indexOf("async function prepareCodexProviderExecution");
+  const begin = source.indexOf("function prepareCodexProviderExecution");
   const end = source.indexOf("async function probeCodexProviderBinding", begin);
   const body = source.slice(begin, end);
-  assert.match(body, /codexRuntime\.ensureThreadResumed\(threadId/);
-  assert.doesNotMatch(body, /bindingReadinessProbe[\s\S]*codexRuntime\.resumeThread/);
+  assert.match(body, /providerSessionLifecycle\.prepareExecution/);
+
+  const lifecycleSource = await readFile(
+    new URL("../src/application/providerSessionLifecycle.mjs", import.meta.url),
+    "utf8"
+  );
+  assert.match(lifecycleSource, /adapter\.ensureResumed\(threadId/);
+  assert.doesNotMatch(lifecycleSource, /bindingReadinessProbe[\s\S]*resumeThread/);
 
   const probeBegin = source.indexOf("async function probeCodexProviderBinding");
   const probeEnd = source.indexOf("function resolvePreparedWorkspaceRoute", probeBegin);
@@ -131,7 +140,7 @@ test("every supported streaming Provider isolates lifecycle callback failures", 
 test("Claude turn settlement completes a waiting Provider switch through exactly one route", async () => {
   const source = await readFile(sourceURL, "utf8");
   const handlerBegin = source.indexOf("async function handleClaudeTurnSettled(event)");
-  const handlerEnd = source.indexOf("async function restartCodexProviderSession", handlerBegin);
+  const handlerEnd = source.indexOf("function restartCodexProviderSession", handlerBegin);
   const handlerBody = source.slice(handlerBegin, handlerEnd);
 
   assert.notEqual(handlerBegin, -1);
