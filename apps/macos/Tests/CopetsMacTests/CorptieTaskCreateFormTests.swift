@@ -21,6 +21,7 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         let message = CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
             detail: "Implement the feature",
+            workId: "work:one",
             agentId: nil
         )
 
@@ -31,6 +32,7 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         XCTAssertNil(CorptieTaskCreateFormPolicy.validationMessage(
             title: "Implement",
             detail: "Implement the feature",
+            workId: "work:one",
             agentId: "agent:one"
         ))
     }
@@ -40,9 +42,22 @@ final class CorptieTaskCreateFormTests: XCTestCase {
             CorptieTaskCreateFormPolicy.validationMessage(
                 title: "",
                 detail: "Implement the feature",
+                workId: "work:one",
                 agentId: "agent:one"
             ),
             L10n("请输入 Task 标题。")
+        )
+    }
+
+    func testMissingWorkHasExplicitValidation() {
+        XCTAssertEqual(
+            CorptieTaskCreateFormPolicy.validationMessage(
+                title: "Implement",
+                detail: "Implement the feature",
+                workId: nil,
+                agentId: "agent:one"
+            ),
+            L10n("请选择 Work。")
         )
     }
 
