@@ -253,49 +253,24 @@ struct CorptieTaskCreateView: View {
             id: requestId,
             title: L10nFormat("创建 CorptieTask：%@", requestTitle)
         ) {
-            var created = await PerfStopwatch.measure("CorptieTask.create.idempotencyLookup") {
-                await client.task(id: requestId)
-            }
-            if created == nil {
-                created = await PerfStopwatch.measure("CorptieTask.create.persistRequest") {
-                    await client.createCorptieTask(
-                        id: requestId,
-                        workId: requestWorkId,
-                        title: requestTitle,
-                        description: requestDetail,
-                        acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
-                        mainAgentId: selectedAgentId,
-                        priority: requestPriority
-                    )
-                }
+            let created = await PerfStopwatch.measure("CorptieTask.createAndStart.request") {
+                await client.createCorptieTask(
+                    id: requestId,
+                    workId: requestWorkId,
+                    title: requestTitle,
+                    description: requestDetail,
+                    acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
+                    mainAgentId: selectedAgentId,
+                    priority: requestPriority,
+                    providerId: providerId
+                )
             }
             guard let task = created else {
                 return .failure(client.errorMessage ?? L10n("CorptieTask 创建失败，可重试。"))
             }
             onCreated(task)
 
-            let latest = await PerfStopwatch.measure("CorptieTask.execute.existingSessionLookup") {
-                await client.task(id: task.id)
-            }
-            if latest?.currentSessionId != nil {
-                return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
-            }
-            let result = await PerfStopwatch.measure("CorptieTask.execute.startRequest") {
-                await client.createSession(
-                    taskId: task.id,
-                    agentId: selectedAgentId,
-                    providerId: providerId,
-                    title: task.title
-                )
-            }
-            if let session = result.session {
-                backendClient.acceptCreatedSession(session, selectImmediately: false)
-                return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
-            }
-            return .failure(L10nFormat(
-                "CorptieTask 已创建，但执行失败：%@。可重试执行，不会重复创建 CorptieTask。",
-                result.error?.message ?? L10n("未知错误")
-            ))
+            return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
         }
         if started { dismiss() }
     }

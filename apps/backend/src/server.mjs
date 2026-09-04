@@ -124,6 +124,7 @@ import { formatTrustedChannelMessage, formatTrustedCollaborationEvent } from "./
 import { collaborationMessagePresentationRoute } from "./collaboration/collaborationPresentationRoute.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
 import { WorkApplicationService } from "./application/workApplicationService.mjs";
+import { createTaskAndSession } from "./application/taskCreationApplicationService.mjs";
 import {
   presentTaskAcceptance,
   taskExecutionPatch,
@@ -1700,6 +1701,19 @@ platformOperationService = new PlatformOperationService({
     }
     return launchAgentSession({ agent, providerId, title, prompt });
   },
+  createTask: ({ taskInput, providerId, sourceSessionId, idempotencyKey }) => createTaskAndSession({
+    workService,
+    startWorkSession: (command) => workSessionStartApplicationService.start(command),
+    taskInput,
+    creationOrigin: {
+      originType: "session",
+      creatorSessionId: sourceSessionId,
+      operationId: idempotencyKey
+    },
+    sourceSessionId,
+    providerId: providerId ?? agentProviderRegistry.defaultProviderId,
+    idempotencyKey
+  }),
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
 const sessionContextReferenceService = new SessionContextReferenceService({
@@ -9164,6 +9178,7 @@ function route(request, response) {
     memoryLifecycleService,
     assistantService,
     startWorkSession: (input) => workSessionStartApplicationService.start(input),
+    defaultSessionProviderId: agentProviderRegistry.defaultProviderId,
     getTaskStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
     launchAgentSession,
@@ -10935,18 +10950,6 @@ function route(request, response) {
       clearInterval(heartbeat);
       stateSyncClients.delete(response);
     });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/tasks") {
-    readJson(request)
-      .then((input) => {
-        const session = createSession(input);
-        sendJson(response, 201, { session });
-      })
-      .catch((error) => {
-        sendJson(response, 400, { error: error.message });
-      });
     return;
   }
 

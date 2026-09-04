@@ -4,14 +4,18 @@ import Testing
 struct CorptieTaskAutoStartInteractionTests {
     @Test
     func creationAlwaysStartsACompanionWorkSession() throws {
-        let source = try source(named: "CorptieTaskCreateView.swift")
+        let viewSource = try source(named: "CorptieTaskCreateView.swift")
+        let clientSource = try source(named: "EntityAPIClient.swift")
 
-        #expect(!source.contains("case createOnly"))
-        #expect(!source.contains("仅创建不执行"))
-        #expect(source.contains("Button(L10n(\"创建\"))"))
-        #expect(source.contains("let providerId = selectedProviderId"))
-        #expect(source.contains("await client.createSession("))
-        #expect(source.contains("backendClient.acceptCreatedSession(session, selectImmediately: false)"))
+        #expect(!viewSource.contains("case createOnly"))
+        #expect(!viewSource.contains("仅创建不执行"))
+        #expect(viewSource.contains("Button(L10n(\"创建\"))"))
+        #expect(viewSource.contains("let providerId = selectedProviderId"))
+        #expect(viewSource.contains("await client.createCorptieTask("))
+        #expect(viewSource.contains("providerId: providerId"))
+        #expect(!viewSource.contains("await client.createSession("))
+        #expect(clientSource.contains("as: CorptieTaskCreateResponse.self"))
+        #expect(clientSource.contains("acceptCreatedSession(created.session, selectImmediately: false)"))
     }
 
     @Test

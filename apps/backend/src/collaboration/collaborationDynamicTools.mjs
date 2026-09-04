@@ -90,16 +90,17 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_tasks_get", "Read one Task visible to this Session.", {
     task_id: taskIdSchema
   }, ["task_id"]),
-  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and record this Session as its creation origin. Creation never makes it a child or subtask of another Task.", {
+  tool("corptie_collaboration_tasks_create", "Create an independent Work-scoped Task and its companion Worker Session in one operation. Records this Session as creation origin; never creates a child or subtask.", {
     title: { type: "string", minLength: 1 },
     description: taskFieldsSchema.description,
     acceptance_criteria: taskFieldsSchema.acceptance_criteria,
     priority: taskFieldsSchema.priority,
     agent_id: agentIdSchema,
+    provider_id: { type: "string", minLength: 1 },
     artifact_reference: artifactReferenceSchema,
     file_reference: fileReferenceSchema,
     idempotency_key: { type: "string", minLength: 1 }
-  }, ["title", "idempotency_key"]),
+  }, ["title", "agent_id", "idempotency_key"]),
   tool("corptie_collaboration_tasks_relate", "Establish an allowed source/parent/dependency relation inside the authenticated Work; Worker relations must include its bound Task.", {
     task_id: taskIdSchema,
     target_task_id: taskIdSchema,
@@ -182,6 +183,7 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
       acceptanceCriteria: input.acceptance_criteria,
       priority: input.priority,
       agentId: input.agent_id,
+      providerId: input.provider_id,
       artifactReference: input.artifact_reference ? {
         artifactId: input.artifact_reference.artifact_id,
         relation: input.artifact_reference.relation,

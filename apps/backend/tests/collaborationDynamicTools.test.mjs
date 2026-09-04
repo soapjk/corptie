@@ -30,6 +30,7 @@ test("dynamic collaboration tools are top-level, eagerly loaded, unique, and pro
   assert.equal(Object.hasOwn(createTask.inputSchema.properties, "source_task_id"), false);
   assert.equal(createTask.inputSchema.properties.artifact_reference.required[0], "artifact_id");
   assert.equal(createTask.inputSchema.properties.file_reference.required[0], "path");
+  assert.deepEqual(createTask.inputSchema.required, ["title", "agent_id", "idempotency_key"]);
   const startTask = collaborationDynamicTools.find((entry) => entry.name === "corptie_collaboration_tasks_start");
   assert.deepEqual(startTask.inputSchema.required, [
     "task_id", "agent_id", "provider_id", "resource_version", "idempotency_key"
@@ -86,7 +87,8 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
   const calls = [];
   const client = { post: async (path, body) => { calls.push({ path, body }); return { task: { id: "task:new" } }; } };
   await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
-    title: "Referenced", idempotency_key: "create:referenced",
+    title: "Referenced", agent_id: "agent:worker", provider_id: "provider:test",
+    idempotency_key: "create:referenced",
     artifact_reference: {
       artifact_id: "artifact:spec", relation: "implementation_spec", required: true,
       version_policy: "fixed", version: 2
@@ -96,6 +98,8 @@ test("dynamic Task creation maps Artifact and file reference contracts without d
     path: "/internal/collaboration/tasks",
     body: {
       title: "Referenced",
+      agentId: "agent:worker",
+      providerId: "provider:test",
       artifactReference: {
         artifactId: "artifact:spec", relation: "implementation_spec", required: true,
         versionPolicy: "fixed", version: 2
