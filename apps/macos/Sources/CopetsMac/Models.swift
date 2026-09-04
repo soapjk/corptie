@@ -59,6 +59,19 @@ struct SessionContextReferenceEnvelope: Decodable {
     let reference: SessionContextReference
 }
 
+struct ConversationMention: Identifiable, Codable, Equatable, Sendable {
+    enum TargetType: String, Codable, Sendable {
+        case work
+        case session
+    }
+
+    let targetType: TargetType
+    let targetId: String
+    let displayName: String
+
+    var id: String { "\(targetType.rawValue):\(targetId)" }
+}
+
 struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
