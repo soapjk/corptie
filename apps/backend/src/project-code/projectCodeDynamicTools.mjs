@@ -21,9 +21,11 @@ export const projectCodeDynamicTools = Object.freeze([
     "Search only the persisted authoritative Snapshot for this Worker Session. L0 exact search has no index startup; deeper layers are capability-gated.",
     {
       snapshot_receipt_id: snapshotId,
+      snapshot_policy: { type: "string", enum: ["reuse_current", "require_exact", "create_new"], description: "Defaults to reuse_current; require_exact requires snapshot_receipt_id." },
+      response_detail: { type: "string", enum: ["compact", "full"], description: "Defaults to compact. Use full only for diagnostics and audit." },
       query: { type: "string", minLength: 1, maxLength: 500 },
       mode: { type: "string", enum: ["auto", "exact", "files", "symbols", "semantic"] },
-      paths: { type: "array", maxItems: 100, items: { type: "string", minLength: 1 } },
+      paths: { type: "array", maxItems: 100, description: "Snapshot-contained source files or directories used as search scopes.", items: { type: "string", minLength: 1 } },
       languages: { type: "array", maxItems: 32, items: { type: "string", minLength: 1 } },
       kinds: { type: "array", maxItems: 32, items: { type: "string", minLength: 1 } },
       toolset_validation_receipt_id: {
@@ -35,7 +37,7 @@ export const projectCodeDynamicTools = Object.freeze([
       min_results: { type: "integer", minimum: 1, maximum: 20 },
       timeout_ms: { type: "integer", minimum: 250, maximum: 10000 }
     },
-    ["snapshot_receipt_id", "query"]
+    ["query"]
   ),
   tool(
     "corptie_project_code_read",
@@ -45,9 +47,16 @@ export const projectCodeDynamicTools = Object.freeze([
       path: { type: "string", minLength: 1 },
       start_line: { type: "integer", minimum: 1 },
       line_count: { type: "integer", minimum: 1, maximum: 2000 },
-      max_bytes: { type: "integer", minimum: 1, maximum: 65536 }
+      max_bytes: { type: "integer", minimum: 1, maximum: 65536 },
+      max_scan_bytes: { type: "integer", minimum: 1, maximum: 67108864 }
     },
     ["snapshot_receipt_id", "path"]
+  ),
+  tool(
+    "corptie_project_code_receipt_get",
+    "Get one full persisted project-code receipt after re-authorizing it for the current Worker Session.",
+    { receipt_id: { type: "string", minLength: 1, maxLength: 128 } },
+    ["receipt_id"]
   )
 ]);
 
@@ -80,6 +89,8 @@ export async function callProjectCodeDynamicTool(service, input = {}) {
     return service.search({
       logicalSessionId,
       snapshotReceiptId: args.snapshot_receipt_id,
+      snapshotPolicy: args.snapshot_policy,
+      responseDetail: args.response_detail,
       query: args.query,
       mode: args.mode,
       paths: args.paths,
@@ -93,6 +104,9 @@ export async function callProjectCodeDynamicTool(service, input = {}) {
       signal: input.signal
     });
   }
+  if (input.tool === "corptie_project_code_receipt_get") {
+    return service.getReceipt({ logicalSessionId, receiptId: args.receipt_id });
+  }
   if (input.tool === "corptie_project_code_read") {
     return service.pointRead({
       logicalSessionId,
@@ -101,6 +115,7 @@ export async function callProjectCodeDynamicTool(service, input = {}) {
       startLine: args.start_line,
       lineCount: args.line_count,
       maxBytes: args.max_bytes,
+      maxScanBytes: args.max_scan_bytes,
       signal: input.signal
     });
   }
