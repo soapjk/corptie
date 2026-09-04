@@ -111,6 +111,35 @@ struct WorktreeManagementLoadingTests {
     }
 
     @MainActor
+    @Test func navigationSwitchesFromTheCurrentlySelectedRepositoryToTheSessionsRepository() async {
+        let recorder = RequestRecorder(
+            repositoryIds: ["repository:one", "repository:two"],
+            details: [
+                "repository:one": Self.detail(repositoryId: "repository:one", worktrees: [
+                    Self.worktree("wt:one-main", branch: "main", isMain: true)
+                ]),
+                "repository:two": Self.detail(repositoryId: "repository:two", worktrees: [
+                    Self.worktree("wt:two-main", branch: "main", isMain: true),
+                    Self.worktree("wt:two-task", branch: "feature/task")
+                ])
+            ]
+        )
+        let client = makeClient(recorder: recorder)
+
+        await client.loadRepositories()
+        let navigated = await client.navigate(to: WorktreeNavigationTarget(
+            repositoryId: "repository:two",
+            worktreeId: "wt:two-task",
+            worktreePath: "/tmp/wt:two-task"
+        ))
+
+        #expect(navigated)
+        #expect(client.selection.repositoryId == "repository:two")
+        #expect(client.selection.worktreeId == "wt:two-task")
+        #expect(client.detail?.repository.id == "repository:two")
+    }
+
+    @MainActor
     @Test func emptyWorktreeListFinishesAsLoadedWithoutInventingASelection() async {
         let recorder = RequestRecorder(details: [
             "repository:one": Self.detail(repositoryId: "repository:one", worktrees: [])

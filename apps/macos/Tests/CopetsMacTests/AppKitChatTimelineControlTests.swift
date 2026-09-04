@@ -936,6 +936,31 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(historyHarness.scrollView.contentView.bounds.minY, yBefore, accuracy: 1)
     }
 
+    func testGrowingStreamingTailCannotLoseLatestFollowToLayoutBoundsFeedback() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "growing-tail-\($0)", revision: 0, text: "Row \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(harness))
+
+        let longReply = (0..<120).map { "Streaming reply line \($0)" }.joined(separator: "\n")
+        let updated = Array(rows.dropLast()) + [
+            row(id: "growing-tail-29", revision: 1, text: longReply)
+        ]
+        harness.coordinator.apply(rows: updated)
+
+        // Deterministically model the layout-driven bounds callback arriving
+        // after the row became much taller but before the queued bottom
+        // correction. This is not a user scroll and must not revoke follow.
+        harness.coordinator.viewportDidScroll(userInitiated: false)
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+        let visibleRows = harness.tableView.rows(in: harness.tableView.visibleRect)
+        XCTAssertTrue(visibleRows.contains(updated.count - 1))
+    }
+
     func testClampedWheelAtBottomKeepsFollowingForUserMessageAppend() async {
         let harness = makeHarness(followsLatest: true, height: 180)
         let rows = (0..<30).map { row(id: "send-follow-\($0)", text: "Message \($0)") }
@@ -1038,6 +1063,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             row(id: "queued-goal-row-29", revision: 1, text: "A taller streamed Goal update\n\nwith more content")
         ]
         harness.coordinator.apply(rows: refreshed)
+        harness.coordinator.userDidBeginScrolling()
         harness.scrollView.contentView.scroll(to: .zero)
         harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
         await settleMainQueue()

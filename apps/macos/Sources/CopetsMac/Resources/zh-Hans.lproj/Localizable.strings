@@ -1320,8 +1320,6 @@
 "The relative file link has no workspace: %@" = "相对文件链接缺少工作区：%@";
 "The linked file does not exist: %@" = "链接指向的文件不存在：%@";
 "The link could not be opened: %@" = "无法打开链接：%@";
-"Open a file outside the current workspace?" = "要打开当前工作区之外的文件吗？";
-"Open" = "打开";
 "Unable to open link" = "无法打开链接";
 "Move Data Root?" = "迁移 Data Root？";
 "Migrating Data Root" = "正在迁移 Data Root";

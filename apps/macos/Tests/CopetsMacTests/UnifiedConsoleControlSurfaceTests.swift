@@ -4,6 +4,24 @@ import Testing
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
+    func workingWorkTitleUsesTimeDrivenSeamlessGradientMotion() throws {
+        #expect(ConsoleWorkOutlineMetrics.workingGradientFrameInterval == 1.0 / 24.0)
+        #expect(ConsoleWorkFlowingGradientPolicy.progress(
+            at: Date(timeIntervalSinceReferenceDate: 0)
+        ) == 0)
+        #expect(ConsoleWorkFlowingGradientPolicy.progress(
+            at: Date(timeIntervalSinceReferenceDate: ConsoleWorkOutlineMetrics.workingGradientDuration / 2)
+        ) == 0.5)
+
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(source.contains("TimelineView(.animation("))
+        #expect(source.contains("proxy.size.width * (progress - 1)"))
+        #expect(source.contains(".mask(Text(title))"))
+        #expect(source.contains("accessibilityReduceMotion"))
+        #expect(!source.contains("hasAdvancedGradient"))
+    }
+
+    @Test
     func consoleUsesCompactConsistentOuterAndColumnSpacing() throws {
         #expect(MainWindowPageLayoutMetrics.outerPadding == 6)
         #expect(MainWindowPageLayoutMetrics.columnSpacing == 6)
@@ -134,7 +152,7 @@ struct UnifiedConsoleControlSurfaceTests {
         let createSource = try source(named: "WorkCreateView.swift")
 
         #expect(createSource.contains("|| contributorAgentIds.isEmpty"))
-        #expect(createSource.contains("guard !trimmed.isEmpty, !contributorAgentIds.isEmpty"))
+        #expect(createSource.contains("guard EntityNamePolicy.isValid(name), !contributorAgentIds.isEmpty"))
         #expect(createSource.contains("请至少选择一个 Contributor Agent"))
         #expect(createSource.contains("Button(L10n(\"选择头像\"))"))
         #expect(createSource.contains("avatarPath: requestAvatarSourcePath"))
@@ -354,16 +372,18 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("@Environment(\\.accessibilityReduceMotion)"))
         #expect(source.contains("private struct ConsoleFlowingGradientWorkTitle: View"))
         #expect(source.contains("animates: !accessibilityReduceMotion"))
-        #expect(source.contains(".repeatForever(autoreverses: false)"))
-        #expect(source.contains(".foregroundStyle(flowingGradient)"))
+        #expect(source.contains("TimelineView(.animation("))
+        #expect(source.contains("workingGradientFrameInterval"))
+        #expect(source.contains("flowingTitle(progress:"))
         #expect(source.contains(".cyan, .blue, .purple, .pink, .orange, .cyan"))
-        #expect(source.contains("startPoint: UnitPoint(x: hasAdvancedGradient ? 0 : -1, y: 0.5)"))
-        #expect(source.contains("endPoint: UnitPoint(x: hasAdvancedGradient ? 2 : 1, y: 0.5)"))
+        #expect(source.contains(".offset(x: proxy.size.width * (progress - 1))"))
+        #expect(source.contains(".mask(Text(title))"))
+        #expect(source.contains(".accessibilityLabel(title)"))
         #expect(source.contains("isWorking: processingWorkIDs.contains(work.id)"))
         #expect(!source.contains("ConsoleBreathingWorkTitle"))
         #expect(!source.contains("workingPulseMinimumOpacity"))
         #expect(!source.contains("Timer.publish"))
-        #expect(!source.contains("TimelineView"))
+        #expect(!source.contains("hasAdvancedGradient"))
     }
 
     @Test
