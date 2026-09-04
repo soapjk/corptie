@@ -17,6 +17,11 @@ export class ToolMaterializationPort {
     const current = this.coordinator.store.getSessionToolCatalogMaterialization(
       sessionId, binding.providerBindingId
     );
+    const catalogVersion = this.coordinator.catalog.snapshot().catalogVersion;
+    if (hasCurrentAppliedDomains(current, requestedDomains, catalogVersion)) {
+      await this.#assertGeneration(binding);
+      return appliedView(sessionId, current);
+    }
     const desiredDomains = new Set((current?.desiredDomains ?? []).map((domain) => domain.domainId));
     for (const domain of requestedDomains) desiredDomains.add(domain);
 
@@ -50,15 +55,7 @@ export class ToolMaterializationPort {
         );
       }
     }
-    return Object.freeze({
-      status: "Applied",
-      logicalSessionId: sessionId,
-      appliedVersion: result.record.appliedVersion,
-      appliedCatalogVersion: result.record.appliedCatalogVersion,
-      appliedDomains: Object.freeze([...appliedDomains]),
-      receiptId: result.record.providerReceipt.receiptId,
-      appliedAt: result.record.appliedAt
-    });
+    return appliedView(sessionId, result.record);
   }
 
   async assertCanonicalToolApplied(logicalSessionId, canonicalName) {
@@ -92,6 +89,29 @@ export class ToolMaterializationPort {
       throw portError("SESSION_BINDING_CHANGED", "The Provider binding generation changed during Tool materialization.", 409);
     }
   }
+}
+
+function hasCurrentAppliedDomains(record, requestedDomains, catalogVersion) {
+  if (!record
+    || record.status !== "applied"
+    || record.appliedVersion !== record.desiredVersion
+    || record.appliedCatalogVersion !== catalogVersion
+    || record.desiredCatalogVersion !== catalogVersion
+    || !record.providerReceipt?.receiptId) return false;
+  const applied = new Set((record.appliedDomains ?? []).map((domain) => domain.domainId));
+  return requestedDomains.every((domain) => applied.has(domain));
+}
+
+function appliedView(logicalSessionId, record) {
+  return Object.freeze({
+    status: "Applied",
+    logicalSessionId,
+    appliedVersion: record.appliedVersion,
+    appliedCatalogVersion: record.appliedCatalogVersion,
+    appliedDomains: Object.freeze((record.appliedDomains ?? []).map((domain) => domain.domainId)),
+    receiptId: record.providerReceipt.receiptId,
+    appliedAt: record.appliedAt
+  });
 }
 
 function normalizedDomains(domains) {

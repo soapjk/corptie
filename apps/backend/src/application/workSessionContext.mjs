@@ -7,6 +7,8 @@ const encoder = new TextEncoder();
 
 export function buildWorkSessionContext({
   session, task, work, artifactIndex = null, startupReceipt = null,
+  toolDomains = [],
+  toolCatalogVersion = null,
   maxContextBytes = DEFAULT_MAX_CONTEXT_BYTES
 } = {}) {
   if (!session || session.sessionKind !== "worker" || !task) return null;
@@ -59,6 +61,7 @@ export function buildWorkSessionContext({
     "Use corptie_artifact_create for durable documents. Choose scope=work for shared Work resources or scope=task for this Task's private resources; always supply a stable idempotency_key.",
     "Every Work Session in this Work may read and manage Work-scoped Artifacts. Artifacts owned by another Task are not exposed here; this Task's Artifacts remain manageable.",
     "Use kind, category_path, tags, aliases, and keywords so later Sessions can locate the document through the Work Artifact index and full-text search.",
+    projectCodeInstructions(toolDomains, toolCatalogVersion),
     "",
     "Authoritative bound Task definition (complete JSON; no fields in this object are truncated):",
     JSON.stringify(taskDefinition),
@@ -197,6 +200,22 @@ function contextError(code, message, details = {}) {
   error.statusCode = 409;
   error.details = details;
   return error;
+}
+
+function projectCodeInstructions(toolDomains, toolCatalogVersion) {
+  if (!Array.isArray(toolDomains) || !toolDomains.includes("project-code")) return "";
+  const catalogVersion = text(toolCatalogVersion);
+  if (!catalogVersion) return "";
+  return [
+    "Code navigation policy:",
+    "- For source-code location, exact symbols, callers/imports, directory-scoped searches, and natural-language source queries, use corptie_project_code_search first.",
+    "- Read a bounded code window from a search hit with corptie_project_code_read.",
+    `- The project-code domain is already applied. Call it directly through corptie_tool_call with expected_catalog_version=${catalogVersion}; do not search or load the domain first.`,
+    "- Search arguments require query and may include mode=auto|exact|files|symbols|semantic, paths, languages, kinds, limit, min_results, timeout_ms, snapshot_policy, and response_detail.",
+    "- Read arguments require snapshot_receipt_id and path; start_line, line_count, max_bytes, and max_scan_bytes are optional.",
+    "- Fall back to Provider-native search or rg only when project-code reports warming, degraded, unavailable, timed out, stale source, or insufficient results; retain the reported reason as fallback evidence.",
+    "- This preference does not apply to builds, tests, Git operations, process inspection, or log inspection."
+  ].join("\n");
 }
 
 function validReceiptHash(receipt) {

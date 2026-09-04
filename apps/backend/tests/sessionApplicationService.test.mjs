@@ -353,22 +353,85 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
     ["bind", "session:new"],
     ["ensure", "logical:new", ["artifacts"], {
       turnExecutionId: null,
-      purpose: "session-create-finalization"
+      purpose: "session-create-finalization",
+      activeTurn: false
     }],
     ["finalize", "session:new", "authenticated"]
   ]);
   assert.equal(toolHostContexts[0].purpose, "session-bootstrap");
   assert.equal(toolHostContexts[0].sessionId, undefined);
+  assert.deepEqual(toolHostContexts[0].desiredToolDomains, ["artifacts"]);
   assert.deepEqual(toolHostContexts[1], {
     actorId: "agent:one",
     workId: "work:one",
     taskId: "task:one",
     sessionKind: "worker",
+    desiredToolDomains: ["artifacts"],
     purpose: "session-create-finalization",
     sessionId: "session:new",
     logicalSessionId: "logical:new",
     providerBindingId: "binding:new"
   });
+});
+
+test("existing Worker Session applies required domains at the next message Turn boundary", async () => {
+  const calls = [];
+  const provider = new CallbackAgentProvider({
+    id: "turn-boundary-provider",
+    displayName: "Turn Boundary Provider",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+  }, {
+    send: async (_reference, _message, context) => {
+      calls.push(["send", context.sessionContext.prompt]);
+      return { accepted: true };
+    }
+  });
+  let applied = false;
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:worker",
+      logicalSessionId: "logical:worker",
+      bindingId: "binding:worker",
+      providerId: "turn-boundary-provider",
+      providerSessionId: "native:worker",
+      metadata: {
+        session: {
+          id: "session:worker",
+          sessionKind: "worker",
+          agentId: "agent:worker",
+          workId: "work:one",
+          taskId: "task:one"
+        }
+      }
+    }),
+    resolveRequiredToolDomains: (context) => context.sessionKind === "worker"
+      ? ["artifacts", "project-code"]
+      : [],
+    toolMaterializationPort: {
+      async ensureDomainsApplied(logicalSessionId, domains, boundary) {
+        calls.push(["ensure", logicalSessionId, domains, boundary]);
+        applied = true;
+        return { appliedDomains: domains };
+      }
+    },
+    resolveMessageContext: async () => {
+      assert.equal(applied, true);
+      return { prompt: "project-code contract is applied" };
+    }
+  });
+
+  await service.sendMessage("logical:worker", "locate symbol");
+
+  assert.deepEqual(calls, [
+    ["ensure", "logical:worker", ["artifacts", "project-code"], {
+      turnExecutionId: null,
+      purpose: "conversation-turn-boundary",
+      activeTurn: false
+    }],
+    ["send", "project-code contract is applied"]
+  ]);
 });
 
 test("new Session fails closed when authenticated Tool Host finalization fails", async () => {
