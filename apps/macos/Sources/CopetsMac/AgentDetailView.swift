@@ -256,7 +256,7 @@ struct AgentDetailView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .image]
+        panel.allowedContentTypes = AvatarImageSupport.allowedContentTypes
         if panel.runModal() == .OK, let url = panel.url {
             Task { await client.setAgentAvatar(agentId: agent.agentId, sourcePath: url.path) }
         }

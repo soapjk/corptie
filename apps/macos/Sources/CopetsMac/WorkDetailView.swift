@@ -159,7 +159,7 @@ struct WorkDetailView: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.gif, .png, .jpeg, .heic, .tiff, .svg, .image]
+        panel.allowedContentTypes = AvatarImageSupport.allowedContentTypes
         if panel.runModal() == .OK, let url = panel.url {
             Task { await client.setWorkAvatar(workId: work.id, sourcePath: url.path) }
         }
