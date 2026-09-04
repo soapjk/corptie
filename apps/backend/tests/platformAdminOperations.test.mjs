@@ -18,6 +18,9 @@ async function fixture() {
   const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });
   await store.initialize();
   const workService = new WorkApplicationService({ store });
+  const contributor = store.createAgent({
+    name: "Platform fixture contributor", role: "independentContributor"
+  });
   const core = new CollaborationCore(store);
   const artifactService = new ArtifactService({ store, contentRoot: join(directory, "artifacts") });
   await artifactService.initialize();
@@ -27,9 +30,17 @@ async function fixture() {
     store, workService, artifactService, collaborationCore: core, confirmationService,
     sessionService: { listSessions: () => [], sendMessage: () => ({}) },
     listSessions: () => store.listSessions(),
-    createSession: async (input) => { started.push(input); return { id: "provider:started", ...input }; }
+    createSession: async (input) => { started.push(input); return { id: "provider:started", ...input }; },
+    createTask: async ({ taskInput }) => ({
+      task: workService.createTask(taskInput),
+      session: { id: "provider:task-session" },
+      start: { status: "ready" }
+    })
   });
-  return { directory, store, workService, core, artifactService, confirmationService, service, started };
+  return {
+    directory, store, workService, core, artifactService, confirmationService, service, started,
+    contributorAgentId: contributor.agentId
+  };
 }
 
 function bindSession(f, { id, logicalId, agentId, kind = "assistantChat", workId = null, taskId = null }) {
@@ -55,8 +66,12 @@ test("platform Artifact create is explicitly Work-scoped, Session-attributed, at
   const f = await fixture();
   try {
     bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
-    const work = f.workService.createWork({ name: "Artifact Work" });
-    const other = f.workService.createWork({ name: "Other Work" });
+    const work = f.workService.createWork({
+      name: "Artifact Work", contributorAgentIds: [f.contributorAgentId]
+    });
+    const other = f.workService.createWork({
+      name: "Other Work", contributorAgentIds: [f.contributorAgentId]
+    });
     const wrongTask = f.workService.createTask({ workId: other.id, title: "Wrong" });
     const input = { actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_artifacts_manage", arguments: { action: "create", work_id: work.id, title: "Platform evidence", content: "immutable", visibility: "work_private", idempotency_key: "artifact-create-1" } };
     const created = await f.service.execute(input);
@@ -79,7 +94,9 @@ test("high-impact Artifact actions consume a Session-and-digest-bound server con
   const f = await fixture();
   try {
     bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
-    const work = f.workService.createWork({ name: "Confirmed Work" });
+    const work = f.workService.createWork({
+      name: "Confirmed Work", contributorAgentIds: [f.contributorAgentId]
+    });
     const created = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_artifacts_manage", arguments: { action: "create", work_id: work.id, title: "Status", content: "v1", idempotency_key: "create-confirmed" } });
     const arguments_ = { action: "supersede", work_id: work.id, artifact_id: created.result.artifactId };
     await assert.rejects(() => f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_artifacts_manage", arguments: { ...arguments_, confirmed: true } }), { code: "UNKNOWN_FIELD" });

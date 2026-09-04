@@ -751,82 +751,49 @@ test("Worker creates an independent Task with Session provenance and retries ide
   }
 });
 
-test("Work Chat Task creation persists context and returns only after automatic startup", async () => {
+test("tool Task creation uses one service operation to persist the Task and bind its Session", async () => {
   const f = await fixture();
   try {
-    const agent = f.store.createAgent({
-      id: "agent:auto-start", name: "Auto Start", role: "independentContributor"
-    });
-    const work = f.workService.createWork({
-      name: "Automatic Work Chat Task", contributorAgentIds: [agent.agentId]
-    });
+    const agent = f.store.createAgent({ id: "agent:atomic-tool", name: "Atomic Tool", role: "independentContributor" });
+    const work = f.workService.createWork({ name: "Atomic Tool Work", contributorAgentIds: [agent.agentId] });
     session(f.store, f.core, {
-      providerSessionId: "provider:auto-start-source",
-      logicalSessionId: "session:auto-start-source",
-      agentId: agent.agentId,
-      kind: "workChat",
-      workId: work.id,
-      cwd: f.directory
+      providerSessionId: "provider:atomic-source", logicalSessionId: "session:atomic-source",
+      agentId: agent.agentId, kind: "workChat", workId: work.id, cwd: f.directory
     });
-    let startupCount = 0;
-    f.service.workSessionStartApplicationService.start = async (input) => {
-      startupCount += 1;
-      const task = f.store.getTask(input.taskId);
+    let startCount = 0;
+    f.service.workSessionStartApplicationService.start = async ({ taskId, assigneeAgentId }) => {
+      startCount += 1;
       session(f.store, f.core, {
-        providerSessionId: "provider:auto-start-worker",
-        logicalSessionId: "session:auto-start-worker",
-        agentId: input.assigneeAgentId,
-        kind: "worker",
-        workId: work.id,
-        taskId: task.id,
-        cwd: f.directory
+        providerSessionId: "provider:atomic-worker", logicalSessionId: "session:atomic-worker",
+        agentId: assigneeAgentId, kind: "worker", workId: work.id, taskId, cwd: f.directory
       });
-      f.store.db.run(
-        `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress',
-         execution_status='running', resource_version=resource_version+1 WHERE id=?`,
-        ["provider:auto-start-worker", task.id]
-      );
-      return { session: { id: "provider:auto-start-worker" } };
+      return { status: "ready", session: f.store.getSession("provider:atomic-worker") };
+    };
+    const input = {
+      title: "Created and started",
+      description: "Description belongs to Task context only",
+      acceptanceCriteria: "Criterion belongs to Task context only",
+      agentId: agent.agentId,
+      providerId: "codex-app-server",
+      idempotencyKey: "tool-create:atomic"
     };
 
-    const result = await f.service.createAndStartTask(
-      { sessionId: "provider:auto-start-source" },
-      agent.agentId,
-      {
-        title: "Persist structured context",
-        description: "Description belongs to Task context only",
-        acceptanceCriteria: "Criterion belongs to Task context only",
-        agentId: agent.agentId,
-        providerId: "codex-app-server",
-        idempotencyKey: "create:auto-start"
-      }
+    const created = await f.service.createTaskAndSession(
+      { sessionId: "provider:atomic-source" }, agent.agentId, input
+    );
+    const replay = await f.service.createTaskAndSession(
+      { sessionId: "provider:atomic-source" }, agent.agentId, input
     );
 
-    const stored = f.store.getTask(result.task.id);
-    assert.equal(result.phase, "started");
-    assert.equal(result.executionStatus, "running");
-    assert.equal(result.session.sessionId, "session:auto-start-worker");
-    assert.equal(stored.lifecycle_state, "in_progress");
-    assert.equal(stored.execution_status, "running");
+    const stored = f.store.getTask(created.task.id);
+    assert.equal(created.phase, "started");
+    assert.equal(created.session.sessionId, "session:atomic-worker");
+    assert.equal(stored.current_session_id, "provider:atomic-worker");
     assert.equal(stored.description, "Description belongs to Task context only");
     assert.equal(stored.acceptance_criteria, "Criterion belongs to Task context only");
-    assert.equal(startupCount, 1);
-
-    const replay = await f.service.createAndStartTask(
-      { sessionId: "provider:auto-start-source" },
-      agent.agentId,
-      {
-        title: "Persist structured context",
-        description: "Description belongs to Task context only",
-        acceptanceCriteria: "Criterion belongs to Task context only",
-        agentId: agent.agentId,
-        providerId: "codex-app-server",
-        idempotencyKey: "create:auto-start"
-      }
-    );
-    assert.equal(replay.phase, "started");
-    assert.equal(startupCount, 1);
-    assert.equal(f.workService.listTasksByWork(work.id).length, 1);
+    assert.equal(replay.task.id, created.task.id);
+    assert.equal(replay.idempotentReplay, true);
+    assert.equal(startCount, 1);
   } finally {
     await f.store.close();
     await rm(f.directory, { recursive: true, force: true });

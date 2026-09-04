@@ -29,7 +29,7 @@ try {
       symbol: null,
       kind: "semantic",
       score: Math.min(1, overlap.length / Math.max(1, queryTokens.size)),
-      snippet: ""
+      snippet: lineAt(content, line)
     });
   }
   results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
@@ -65,7 +65,16 @@ function assertRequest(value) {
 }
 
 function tokens(value) {
-  return new Set(String(value).normalize("NFKC").toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}_]+/u).filter((token) => token.length >= 2));
+  const source = String(value).normalize("NFKC");
+  const expanded = source.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ");
+  const result = new Set(expanded.toLocaleLowerCase("en-US").split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 2));
+  const concepts = [
+    ["恢复", ["restore", "resume", "recover"]], ["会话", ["session"]], ["阅读", ["read", "viewport"]], ["位置", ["position", "viewport", "scroll"]],
+    ["创建", ["create"]], ["任务", ["task"]], ["立即", ["start", "immediate"]], ["启动", ["start"]], ["工作", ["work"]],
+    ["描述", ["description"]], ["上下文", ["context", "prompt"]], ["消息", ["message", "chat"]], ["验收", ["acceptance"]]
+  ];
+  for (const [term, translations] of concepts) if (source.includes(term)) for (const token of translations) result.add(token);
+  return result;
 }
 
 function firstMatchingLine(content, overlap) {
@@ -73,6 +82,10 @@ function firstMatchingLine(content, overlap) {
   const lowered = overlap.map((token) => token.toLocaleLowerCase("en-US"));
   const index = lines.findIndex((line) => lowered.some((token) => line.toLocaleLowerCase("en-US").includes(token)));
   return index >= 0 ? index + 1 : 1;
+}
+
+function lineAt(content, line) {
+  return (content.split(/\r?\n/)[line - 1] ?? "").trim().slice(0, 240);
 }
 
 function fail(code) {

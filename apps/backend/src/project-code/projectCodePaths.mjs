@@ -30,7 +30,7 @@ export function defaultExclusionReason(relativePath, options = {}) {
   return null;
 }
 
-export async function assertContainedRegularPath(root, requestedPath, options = {}) {
+async function assertContainedPath(root, requestedPath, options = {}) {
   const canonicalRoot = await realpath(root);
   const relativePath = normalizeRelativePath(requestedPath);
   const exclusion = defaultExclusionReason(relativePath, options);
@@ -49,8 +49,34 @@ export async function assertContainedRegularPath(root, requestedPath, options = 
     throw pathError("PATH_OUTSIDE_SCOPE", "The requested path resolves outside the authoritative Worktree.", requestedPath, "SYMLINK_ESCAPE");
   }
   const info = await lstat(canonicalCandidate);
-  if (!options.allowDirectory && !info.isFile()) throw pathError("PATH_INVALID", "The requested source path is not a regular file.", requestedPath);
-  return { canonicalRoot, absolutePath: canonicalCandidate, relativePath, info };
+  const kind = info.isFile() ? "file" : info.isDirectory() ? "directory" : null;
+  if (!kind || (options.kind === "file" && kind !== "file") || (options.kind === "directory" && kind !== "directory")) {
+    throw pathError("PATH_INVALID", options.kind === "directory"
+      ? "The requested source path is not a directory."
+      : options.kind === "file"
+        ? "The requested source path is not a regular file."
+        : "The requested source path is neither a regular file nor a directory.", requestedPath);
+  }
+  return { canonicalRoot, absolutePath: canonicalCandidate, relativePath, kind, info };
+}
+
+export function assertContainedSourceFile(root, requestedPath, options = {}) {
+  return assertContainedPath(root, requestedPath, { ...options, kind: "file" });
+}
+
+export function assertContainedDirectory(root, requestedPath, options = {}) {
+  return assertContainedPath(root, requestedPath, { ...options, kind: "directory" });
+}
+
+export function assertContainedSearchScope(root, requestedPath, options = {}) {
+  return assertContainedPath(root, requestedPath, { ...options, kind: null });
+}
+
+// Compatibility alias retained for existing callers.
+export function assertContainedRegularPath(root, requestedPath, options = {}) {
+  return options.allowDirectory
+    ? assertContainedSearchScope(root, requestedPath, options)
+    : assertContainedSourceFile(root, requestedPath, options);
 }
 
 export function assertNotOtherWorktree(canonicalRoot, candidatePath, otherWorktreeRoots = []) {

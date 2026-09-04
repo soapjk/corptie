@@ -1,11 +1,13 @@
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { contractError, hashCanonical, sha256Hex } from "./projectCodeContracts.mjs";
 
 const CATALOG_SCHEMA = 1;
-const TEXT_SYMBOL_SCHEMA = 1;
+const TEXT_SYMBOL_SCHEMA = 5;
+const RANKING_VERSION = "project-code-ranking/v2";
 
 export class ProjectCodeIndexStore {
   constructor(options = {}) {
@@ -13,11 +15,28 @@ export class ProjectCodeIndexStore {
     this.dataRoot = resolve(options.dataRoot);
     this.requireExternal = options.requireExternal !== false;
     this.maxBytes = options.maxBytes ?? 8 * 1024 * 1024 * 1024;
+    this.maxCachedWorktrees = options.maxCachedWorktrees ?? 32;
     this.singleFlights = new Map();
     this.latestCatalogByWorktree = new Map();
     this.latestTextByWorktree = new Map();
     this.io = options.io ?? {};
+    this.initialization = null;
+    this.readiness = Object.freeze({ status: "uninitialized", code: null });
     this.stats = { opens: 0, builds: 0, l1Builds: 0, l2Builds: 0 };
+  }
+
+  async initialize() {
+    if (!this.initialization) {
+      this.initialization = this.#initialize().catch((error) => {
+        this.readiness = Object.freeze({ status: "unavailable", code: error?.code ?? "DATA_ROOT_UNAVAILABLE" });
+        throw error;
+      });
+    }
+    return this.initialization;
+  }
+
+  getReadiness() {
+    return this.readiness;
   }
 
   async ensureLayer(snapshot, layer, options = {}) {
@@ -30,12 +49,28 @@ export class ProjectCodeIndexStore {
   }
 
   async readLayer(snapshot, layer) {
-    await this.#verifyDataRoot();
+    await this.initialize();
     this.stats.opens += 1;
     const directory = this.#snapshotDirectory(snapshot);
     const name = layer === "L1" ? "catalog.json" : "text-symbol.json";
     try {
-      return JSON.parse(await readFile(join(directory, name), "utf8"));
+      const value = JSON.parse(await readFile(join(directory, name), "utf8"));
+      if (layer === "L2") {
+        const databasePath = join(directory, "lexical.sqlite");
+        await access(databasePath, constants.R_OK);
+        return Object.freeze({ ...value, databasePath });
+      }
+      return value;
+    } catch (error) {
+      if (error?.code === "ENOENT") return this.#readLegacyLayer(snapshot, layer);
+      throw dataRootError(error);
+    }
+  }
+
+  async #readLegacyLayer(snapshot, layer) {
+    const name = layer === "L1" ? "catalog.json" : "text-symbol.json";
+    try {
+      return JSON.parse(await readFile(join(this.#legacySnapshotDirectory(snapshot), name), "utf8"));
     } catch (error) {
       if (error?.code === "ENOENT") return null;
       throw dataRootError(error);
@@ -48,7 +83,7 @@ export class ProjectCodeIndexStore {
 
   async #ensureLayer(snapshot, layer, options) {
     throwIfAborted(options.signal);
-    await this.#verifyDataRoot();
+    await this.initialize();
     const existing = await this.readLayer(snapshot, layer);
     if (existing) return Object.freeze({ index: existing, indexHit: true, incremental: true });
     if (layer === "L2") await this.ensureLayer(snapshot, "L1", options);
@@ -66,19 +101,22 @@ export class ProjectCodeIndexStore {
         ? await buildCatalog(snapshot, layerOptions)
         : await buildTextSymbol(snapshot, await this.readLayer(snapshot, "L1"), layerOptions);
       const fileName = layer === "L1" ? "catalog.json" : "text-symbol.json";
+      await this.#reserveCapacity(value, layer);
       await atomicJson(join(staging, fileName), value);
+      if (layer === "L2") writeLexicalDatabase(join(staging, "lexical.sqlite"), value);
       await mkdir(directory, { recursive: true, mode: 0o700 });
+      if (layer === "L2") await rename(join(staging, "lexical.sqlite"), join(directory, "lexical.sqlite"));
       await rename(join(staging, fileName), join(directory, fileName));
       await rename(join(staging, "journal.json"), join(directory, "journal.json"));
       await rm(staging, { recursive: true, force: true });
       await this.#writeManifest(snapshot, layer, value);
       await atomicJson(join(directory, "journal.json"), { phase: "ready", layer, sourceFingerprint: snapshot.receipt.sourceFingerprint, generationHash: value.generationHash });
-      if (layer === "L1") this.latestCatalogByWorktree.set(snapshot.receipt.worktreeId, value);
-      else this.latestTextByWorktree.set(snapshot.receipt.worktreeId, {
+      if (layer === "L1") lruSet(this.latestCatalogByWorktree, snapshot.receipt.worktreeId, value, this.maxCachedWorktrees);
+      else lruSet(this.latestTextByWorktree, snapshot.receipt.worktreeId, {
         documentsByHash: new Map(value.documents.map((document) => [document.contentHash, document]))
-      });
-      await this.#enforceCapacity();
-      return Object.freeze({ index: value, indexHit: false, incremental: value.reusedFileCount > 0 });
+      }, this.maxCachedWorktrees);
+      const index = layer === "L2" ? Object.freeze({ ...value, databasePath: join(directory, "lexical.sqlite") }) : value;
+      return Object.freeze({ index, indexHit: false, incremental: value.reusedFileCount > 0 });
     } catch (error) {
       await rm(staging, { recursive: true, force: true }).catch(() => {});
       if (error?.name === "AbortError") throw error;
@@ -91,7 +129,7 @@ export class ProjectCodeIndexStore {
     let manifest = {};
     try { manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8")); } catch {}
     manifest = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       repositoryId: snapshot.receipt.repositoryId,
       worktreeId: snapshot.receipt.worktreeId,
       sourceFingerprint: snapshot.receipt.sourceFingerprint,
@@ -101,14 +139,30 @@ export class ProjectCodeIndexStore {
     await atomicJson(join(directory, "manifest.json"), manifest);
   }
 
-  async #verifyDataRoot() {
+  async #initialize() {
     try {
-      const root = await realpath(this.dataRoot);
-      if (this.requireExternal && process.platform === "darwin" && !root.startsWith("/Volumes/")) {
+      const parent = await realpath(dirname(this.dataRoot));
+      if (this.requireExternal && process.platform === "darwin" && !parent.startsWith("/Volumes/")) {
         throw contractError("DATA_ROOT_UNAVAILABLE", "Project-code indexes require a configured external dataRoot.", 503);
       }
+      await access(parent, constants.R_OK | constants.W_OK);
+      try {
+        const before = await lstat(this.dataRoot);
+        if (before.isSymbolicLink()) throw contractError("DATA_ROOT_UNAVAILABLE", "The project-code index root cannot be a symbolic link.", 503);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      await mkdir(this.dataRoot, { recursive: true, mode: 0o700 });
+      const root = await realpath(this.dataRoot);
+      const parentPrefix = `${parent}/`;
+      if (root !== parent && !root.startsWith(parentPrefix)) {
+        throw contractError("DATA_ROOT_UNAVAILABLE", "The project-code index root escaped its configured dataRoot.", 503);
+      }
+      const info = await lstat(root);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw contractError("DATA_ROOT_UNAVAILABLE", "The project-code index root is invalid.", 503);
       await access(root, constants.R_OK | constants.W_OK);
-      return root;
+      this.readiness = Object.freeze({ status: "ready", canonicalRoot: root, code: null });
+      return this.readiness;
     } catch (error) {
       throw dataRootError(error);
     }
@@ -117,14 +171,25 @@ export class ProjectCodeIndexStore {
   #snapshotDirectory(snapshot) {
     const repositoryHash = sha256Hex(Buffer.from(snapshot.receipt.repositoryId));
     const worktreeHash = sha256Hex(Buffer.from(snapshot.receipt.worktreeId));
+    return join(this.dataRoot, "indexes", "project-code", "v5", "repositories", repositoryHash,
+      "worktrees", worktreeHash, "generations", snapshot.receipt.sourceFingerprint);
+  }
+
+  #legacySnapshotDirectory(snapshot) {
+    const repositoryHash = sha256Hex(Buffer.from(snapshot.receipt.repositoryId));
+    const worktreeHash = sha256Hex(Buffer.from(snapshot.receipt.worktreeId));
     return join(this.dataRoot, "indexes", "project-code", "v4", "repositories", repositoryHash,
       "worktrees", worktreeHash, "snapshots", snapshot.receipt.sourceFingerprint);
   }
 
-  async #enforceCapacity() {
-    const root = join(this.dataRoot, "indexes", "project-code", "v4");
-    const bytes = await directoryBytes(root).catch(() => 0);
-    if (bytes > this.maxBytes) throw contractError("REPOSITORY_LIMIT", "Project-code index capacity limit was exceeded.", 413);
+  async #reserveCapacity(value, layer) {
+    const root = join(this.dataRoot, "indexes", "project-code", "v5");
+    const current = await directoryBytes(root).catch(() => 0);
+    const serialized = Buffer.byteLength(JSON.stringify(value));
+    const estimate = layer === "L2" ? serialized * 3 : serialized;
+    if (current + estimate > this.maxBytes) {
+      throw contractError("REPOSITORY_LIMIT", "Project-code index capacity limit was exceeded before generation publication.", 413);
+    }
   }
 }
 
@@ -172,40 +237,98 @@ async function buildTextSymbol(snapshot, catalog, options = {}) {
     }
     const candidate = snapshot.candidates.find((entry) => entry.path === file.path);
     const text = (await stableRead(candidate.absolutePath)).toString("utf8");
+    const indexed = indexSourceFile(text, file.path, file.language);
     documents.push({
       path: file.path,
       language: file.language,
       contentHash: file.contentHash,
-      tokens: tokenize(text),
-      symbols: extractSymbols(text, file.language)
+      ...indexed
     });
   }
-  const serializable = { schemaVersion: TEXT_SYMBOL_SCHEMA, sourceFingerprint: snapshot.receipt.sourceFingerprint, documents, reusedFileCount };
+  const serializable = {
+    schemaVersion: TEXT_SYMBOL_SCHEMA,
+    rankingVersion: RANKING_VERSION,
+    sourceFingerprint: snapshot.receipt.sourceFingerprint,
+    languageIndexerVersions: Object.fromEntries([...new Set(documents.map((document) => document.language))].map((language) => [language, "regex-fallback/v2"])),
+    documents,
+    fileCount: documents.length,
+    reusedFileCount
+  };
   return Object.freeze({ ...serializable, generationHash: hashCanonical(serializable) });
 }
 
 export function queryTextSymbolIndex(index, query, options = {}) {
-  const needle = query.normalize("NFC").toLocaleLowerCase("en-US");
-  const queryTokens = tokenize(needle);
+  throwIfAborted(options.signal);
+  if (!index?.databasePath) return queryLegacyTextSymbolIndex(index, query, options);
+  const database = new DatabaseSync(index.databasePath, { readOnly: true });
+  try {
+    const needle = queryIdentifier(query);
+    const tokens = expandQueryTokens(query);
+    const results = [];
+    const symbolRows = database.prepare(`SELECT f.path,s.start_line AS line,s.name AS symbol,s.kind,s.snippet,s.normalized_name
+      FROM symbols s JOIN files f ON f.file_id=s.file_id
+      WHERE s.normalized_name=? OR s.normalized_name LIKE ? LIMIT 100`).all(needle, `${needle}%`);
+    for (const row of symbolRows) results.push(resultFromRow(row, row.normalized_name === needle ? 1 : 0.92));
+    const wantsCalls = /(?:caller|usage|uses|调用|谁调用)/iu.test(query);
+    if (wantsCalls || symbolRows.length === 0) {
+      const callRows = database.prepare(`SELECT f.path,c.line,NULL AS symbol,'call' AS kind,c.snippet,c.normalized_callee
+        FROM calls c JOIN files f ON f.file_id=c.file_id
+        WHERE c.normalized_callee=? OR c.normalized_callee LIKE ? LIMIT 100`).all(needle, `${needle}%`);
+      for (const row of callRows) results.push(resultFromRow(row, wantsCalls ? 0.96 : 0.84));
+    }
+    const importRows = database.prepare(`SELECT f.path,i.line,NULL AS symbol,'import' AS kind,i.snippet,i.normalized_name
+      FROM imports i JOIN files f ON f.file_id=i.file_id
+      WHERE i.normalized_name LIKE ? LIMIT 50`).all(`%${needle}%`);
+    for (const row of importRows) results.push(resultFromRow(row, 0.8));
+    if (tokens.length > 0) {
+      const match = tokens.map((token) => `"${token.replaceAll('"', '""')}"`).join(" OR ");
+      const rows = database.prepare(`SELECT f.path,l.line,NULL AS symbol,'text' AS kind,l.snippet,bm25(lexical_fts,5.0,4.0,1.0) AS rank
+        FROM lexical_fts JOIN lexical_segments l ON l.segment_id=lexical_fts.rowid
+        JOIN files f ON f.file_id=l.file_id WHERE lexical_fts MATCH ? ORDER BY rank LIMIT 100`).all(match);
+      for (const row of rows) results.push(resultFromRow(row, Math.max(0.3, Math.min(0.78, 0.76 - Number(row.rank ?? 0) / 100))));
+    }
+    return deduplicateResults(results).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line).slice(0, options.limit ?? 50);
+  } finally { database.close(); }
+}
+
+function queryLegacyTextSymbolIndex(index, query, options = {}) {
+  const needle = normalizeIdentifier(query);
+  const queryTokens = expandQueryTokens(query);
   const results = [];
   for (const document of index?.documents ?? []) {
-    throwIfAborted(options.signal);
-    for (const symbol of document.symbols) {
-      const normalized = symbol.name.toLocaleLowerCase("en-US");
-      if (normalized === needle || normalized.includes(needle)) {
-        results.push({ path: document.path, line: symbol.line, symbol: symbol.name, kind: symbol.kind, score: normalized === needle ? 1 : 0.88, snippet: symbol.snippet });
-      }
+    for (const symbol of document.symbols ?? []) {
+      const normalized = normalizeIdentifier(symbol.name);
+      if (normalized === needle || normalized.includes(needle)) results.push({ path: document.path, line: symbol.line ?? symbol.startLine, symbol: symbol.name, kind: symbol.kind, score: normalized === needle ? 1 : 0.88, snippet: symbol.snippet });
     }
-    const overlap = queryTokens.filter((token) => document.tokens.includes(token)).length;
-    if (overlap > 0) {
-      results.push({ path: document.path, line: 1, symbol: null, kind: "text", score: Math.min(0.8, overlap / Math.max(queryTokens.length, 1)), snippet: "" });
+    for (const segment of document.segments ?? []) {
+      const overlap = queryTokens.filter((token) => segment.tokens.includes(token)).length;
+      if (overlap) results.push({ path: document.path, line: segment.line, symbol: null, kind: "text", score: Math.min(0.78, overlap / queryTokens.length), snippet: segment.snippet });
+    }
+    if (!document.segments && Array.isArray(document.tokens)) {
+      const overlap = queryTokens.filter((token) => document.tokens.includes(token)).length;
+      if (overlap) results.push({ path: document.path, line: document.symbols?.[0]?.line ?? 1,
+        symbol: null, kind: "text", score: Math.min(0.7, overlap / queryTokens.length),
+        snippet: document.symbols?.[0]?.snippet ?? "Legacy v4 document match" });
     }
   }
   return deduplicateResults(results).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path)).slice(0, options.limit ?? 50);
 }
 
-function tokenize(text) {
-  return Array.from(new Set(String(text).normalize("NFC").toLocaleLowerCase("en-US").match(/[\p{L}\p{N}_]{2,}/gu) ?? [])).slice(0, 20_000);
+function indexSourceFile(text, path, language) {
+  const symbols = extractSymbols(text, language);
+  const calls = extractCalls(text, symbols);
+  const imports = extractImports(text);
+  const symbolLines = new Set(symbols.map((symbol) => symbol.line));
+  const lines = text.split(/\r?\n/);
+  const segments = [];
+  for (let index = 0; index < lines.length && segments.length < 20_000; index += 1) {
+    const snippet = lines[index].trim().slice(0, 240);
+    if (!snippet) continue;
+    const tokens = normalizeTokens(snippet);
+    if (tokens.length === 0) continue;
+    segments.push({ line: index + 1, snippet, tokens, symbolTokens: symbolLines.has(index + 1) ? normalizeTokens(snippet) : [] });
+  }
+  return { symbols, calls, imports, segments, parserQuality: "fallback" };
 }
 
 function extractSymbols(text, language) {
@@ -218,10 +341,118 @@ function extractSymbols(text, language) {
       const prefix = text.slice(0, match.index);
       const line = prefix.split("\n").length;
       const declaration = match[1];
-      symbols.push({ name: match[2], kind: mapping[declaration] ?? declaration, line, snippet: lineAt(text, line) });
+      const name = match[2];
+      symbols.push({ name, normalizedName: normalizeIdentifier(name), qualifiedName: null, containerName: null,
+        kind: /test/i.test(name) ? "test" : mapping[declaration] ?? declaration,
+        line, startLine: line, endLine: null, signature: lineAt(text, line), snippet: lineAt(text, line) });
     }
   }
   return symbols;
+}
+
+function extractCalls(text, symbols) {
+  const declarationOffsets = new Set(symbols.map((symbol) => `${symbol.line}:${symbol.name}`));
+  const calls = [];
+  const pattern = /\b([\p{L}_$][\p{L}\p{N}_$]*)\s*\(/gu;
+  const ignored = new Set(["if", "for", "while", "switch", "catch", "function", "func", "def", "fn"]);
+  for (const match of text.matchAll(pattern)) {
+    if (ignored.has(match[1])) continue;
+    const line = text.slice(0, match.index).split("\n").length;
+    if (declarationOffsets.has(`${line}:${match[1]}`)) continue;
+    calls.push({ calleeName: match[1], normalizedCallee: normalizeIdentifier(match[1]), line, snippet: lineAt(text, line) });
+  }
+  return calls.slice(0, 50_000);
+}
+
+function extractImports(text) {
+  const imports = [];
+  const pattern = /^\s*(?:import|from|use)\s+([^;\n]+)/gmu;
+  for (const match of text.matchAll(pattern)) {
+    const line = text.slice(0, match.index).split("\n").length;
+    const importedName = match[1].trim().slice(0, 256);
+    imports.push({ importedName, normalizedName: normalizeIdentifier(importedName), line, snippet: lineAt(text, line) });
+  }
+  return imports;
+}
+
+function writeLexicalDatabase(path, index) {
+  const database = new DatabaseSync(path);
+  try {
+    database.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
+      CREATE TABLE files(file_id INTEGER PRIMARY KEY,path TEXT NOT NULL UNIQUE,language TEXT NOT NULL,content_hash TEXT NOT NULL,byte_length INTEGER NOT NULL DEFAULT 0,line_count INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE symbols(symbol_id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL,name TEXT NOT NULL,normalized_name TEXT NOT NULL,qualified_name TEXT,kind TEXT NOT NULL,container_name TEXT,start_line INTEGER NOT NULL,end_line INTEGER,signature TEXT,snippet TEXT NOT NULL);
+      CREATE INDEX symbols_exact ON symbols(normalized_name); CREATE INDEX symbols_file ON symbols(file_id,start_line);
+      CREATE TABLE calls(call_id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL,callee_name TEXT NOT NULL,normalized_callee TEXT NOT NULL,line INTEGER NOT NULL,snippet TEXT NOT NULL);
+      CREATE INDEX calls_callee ON calls(normalized_callee);
+      CREATE TABLE imports(file_id INTEGER NOT NULL,imported_name TEXT NOT NULL,normalized_name TEXT NOT NULL,line INTEGER NOT NULL,snippet TEXT NOT NULL);
+      CREATE TABLE lexical_segments(segment_id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL,line INTEGER NOT NULL,snippet TEXT NOT NULL);
+      CREATE VIRTUAL TABLE lexical_fts USING fts5(path_tokens,symbol_tokens,text_tokens,tokenize='unicode61');`);
+    const fileInsert = database.prepare("INSERT INTO files(path,language,content_hash,line_count) VALUES(?,?,?,?)");
+    const symbolInsert = database.prepare("INSERT INTO symbols(file_id,name,normalized_name,qualified_name,kind,container_name,start_line,end_line,signature,snippet) VALUES(?,?,?,?,?,?,?,?,?,?)");
+    const callInsert = database.prepare("INSERT INTO calls(file_id,callee_name,normalized_callee,line,snippet) VALUES(?,?,?,?,?)");
+    const importInsert = database.prepare("INSERT INTO imports(file_id,imported_name,normalized_name,line,snippet) VALUES(?,?,?,?,?)");
+    const segmentInsert = database.prepare("INSERT INTO lexical_segments(file_id,line,snippet) VALUES(?,?,?)");
+    const ftsInsert = database.prepare("INSERT INTO lexical_fts(rowid,path_tokens,symbol_tokens,text_tokens) VALUES(?,?,?,?)");
+    database.exec("BEGIN IMMEDIATE");
+    for (const document of index.documents) {
+      fileInsert.run(document.path, document.language, document.contentHash, document.segments.at(-1)?.line ?? 0);
+      const fileId = Number(database.prepare("SELECT last_insert_rowid() AS id").get().id);
+      for (const symbol of document.symbols) symbolInsert.run(fileId, symbol.name, symbol.normalizedName, symbol.qualifiedName, symbol.kind, symbol.containerName, symbol.startLine, symbol.endLine, symbol.signature, symbol.snippet);
+      for (const call of document.calls) callInsert.run(fileId, call.calleeName, call.normalizedCallee, call.line, call.snippet);
+      for (const item of document.imports) importInsert.run(fileId, item.importedName, item.normalizedName, item.line, item.snippet);
+      const pathTokens = normalizeTokens(document.path).join(" ");
+      for (const segment of document.segments) {
+        segmentInsert.run(fileId, segment.line, segment.snippet);
+        const segmentId = Number(database.prepare("SELECT last_insert_rowid() AS id").get().id);
+        ftsInsert.run(segmentId, pathTokens, segment.symbolTokens.join(" "), segment.tokens.join(" "));
+      }
+    }
+    database.exec("COMMIT; PRAGMA optimize;");
+    const integrity = database.prepare("PRAGMA integrity_check").get();
+    if (integrity.integrity_check !== "ok") throw contractError("DATA_ROOT_UNAVAILABLE", "The project-code lexical generation failed integrity validation.", 503);
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch {}
+    throw error;
+  } finally { database.close(); }
+}
+
+function normalizeIdentifier(value) {
+  return String(value).normalize("NFKC").toLocaleLowerCase("en-US").replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function queryIdentifier(value) {
+  const identifiers = String(value).match(/[A-Za-z_$][A-Za-z0-9_$]*/g) ?? [];
+  const ignored = new Set(["who", "calls", "caller", "usage", "uses", "find", "where"]);
+  const selected = identifiers.filter((item) => !ignored.has(item.toLocaleLowerCase("en-US"))).at(-1);
+  return normalizeIdentifier(selected ?? value);
+}
+
+function normalizeTokens(value) {
+  const expanded = String(value).normalize("NFKC").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ");
+  return [...new Set(expanded.toLocaleLowerCase("en-US").match(/[\p{L}\p{N}]{2,}/gu) ?? [])].slice(0, 20_000);
+}
+
+const bilingualConcepts = new Map([
+  ["恢复", ["restore", "resume", "recover"]], ["会话", ["session"]], ["阅读", ["read", "viewport"]], ["位置", ["position", "viewport", "scroll"]],
+  ["创建", ["create"]], ["任务", ["task"]], ["立即", ["start", "immediate"]], ["启动", ["start"]], ["工作", ["work"]],
+  ["描述", ["description"]], ["上下文", ["context", "prompt"]], ["消息", ["message", "chat"]], ["验收", ["acceptance"]],
+  ["调用", ["call", "caller", "usage"]]
+]);
+
+function expandQueryTokens(value) {
+  const tokens = normalizeTokens(value);
+  for (const [term, translations] of bilingualConcepts) if (String(value).includes(term)) tokens.push(...translations);
+  return [...new Set(tokens)].slice(0, 64);
+}
+
+function resultFromRow(row, score) {
+  return { path: row.path, line: Number(row.line), symbol: row.symbol ?? null, kind: row.kind, score, snippet: row.snippet };
+}
+
+function lruSet(map, key, value, maximum) {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > maximum) map.delete(map.keys().next().value);
 }
 
 function lineAt(text, line) {

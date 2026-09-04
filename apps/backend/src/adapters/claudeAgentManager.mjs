@@ -5,6 +5,12 @@ import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
+import {
+  claudeConnectionTestOptions,
+  claudeRuntimeEnvironment,
+  claudeSdkResultError,
+  normalizeClaudeProviderError
+} from "../agent-provider/providers/claudeProviderConfiguration.mjs";
 
 export class ClaudeAgentManager {
   constructor(options = {}) {
@@ -15,6 +21,7 @@ export class ClaudeAgentManager {
     this.onProviderEvent = options.onProviderEvent ?? null;
     this.resolveRuntimeOptions = options.resolveRuntimeOptions ?? null;
     this.queryFactory = options.query ?? query;
+    this.environment = options.environment ?? (() => process.env);
   }
 
   start(input = {}) {
@@ -64,7 +71,8 @@ export class ClaudeAgentManager {
       lastResult: null,
       turnState: "idle",
       inputQueue: [],
-      inputResolvers: []
+      inputResolvers: [],
+      streamingAssistant: null
     };
     session.runtimeOptions = normalizeClaudeRuntimeOptions({
       ...(input.runtimeOptions ?? {}),
@@ -140,7 +148,10 @@ export class ClaudeAgentManager {
           ?? Math.max(0, Math.min(100, usedTokens / contextWindow * 100))
       };
     } catch (error) {
-      console.log(`[claude-sdk] context usage unavailable id=${id}: ${error?.message || String(error)}`);
+      const failure = normalizeClaudeProviderError(error, {
+        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+      });
+      console.log(`[claude-sdk] context usage unavailable id=${id} code=${failure.code}`);
       return null;
     }
   }
@@ -153,8 +164,61 @@ export class ClaudeAgentManager {
       if (typeof readUsage !== "function") return unavailableClaudeAccountUsage(session.currentModel);
       return normalizeClaudeAccountUsage(await readUsage.call(query), session.currentModel);
     } catch (error) {
-      console.log(`[claude-sdk] account usage unavailable id=${id}: ${error?.message || String(error)}`);
+      const failure = normalizeClaudeProviderError(error, {
+        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+      });
+      console.log(`[claude-sdk] account usage unavailable id=${id} code=${failure.code}`);
       return unavailableClaudeAccountUsage(this.get(id)?.currentModel);
+    }
+  }
+
+  async testConnection(configuration = {}) {
+    const startedAt = Date.now();
+    const resolved = claudeConnectionTestOptions(configuration, {
+      environment: this.environment()
+    });
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), resolved.timeoutMs);
+    let operation = null;
+    try {
+      operation = this.queryFactory({
+        prompt: "Reply with OK.",
+        options: { ...resolved.queryOptions, abortController }
+      });
+      let providerSessionId = null;
+      let model = resolved.validation.configuration.model;
+      for await (const message of operation) {
+        providerSessionId = message?.session_id ?? providerSessionId;
+        if (message?.type === "system" && message?.subtype === "init") {
+          model = message.model ?? model;
+        }
+        if (message?.type === "assistant" && message?.error) {
+          throw { code: message.error, status: message.api_error_status };
+        }
+        if (message?.type === "result") {
+          const failure = claudeSdkResultError(message, { secretValues: resolved.secretValues });
+          if (failure) throw failure;
+          return {
+            ok: true,
+            provider: "claude-sdk",
+            model: model ?? null,
+            providerSessionId,
+            durationMs: Date.now() - startedAt,
+            authentication: resolved.validation.configuration.apiKey
+          };
+        }
+      }
+      throw new Error("Claude connection closed before returning a result.");
+    } catch (error) {
+      throw normalizeClaudeProviderError(error, { secretValues: resolved.secretValues });
+    } finally {
+      clearTimeout(timeout);
+      try {
+        await operation?.close?.();
+      } catch {
+        // Connection-test cleanup is best effort; the classified request result
+        // remains authoritative and no secret-bearing cleanup error is surfaced.
+      }
     }
   }
 
@@ -180,6 +244,7 @@ export class ClaudeAgentManager {
     session.activeTaskIds.clear();
     session.deferredResult = null;
     session.lastResult = null;
+    session.streamingAssistant = null;
     session.status = "running";
     session.phase = "input_sent";
     session.turnState = "running";
@@ -320,7 +385,10 @@ export class ClaudeAgentManager {
       } catch (error) {
         // Closing the Query below is the authoritative cancellation path. The
         // SDK can reject interrupt() when its child process has already exited.
-        console.warn(`[claude-sdk] interrupt request failed id=${session.id}: ${error?.message || String(error)}`);
+        const failure = normalizeClaudeProviderError(error, {
+          secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+        });
+        console.warn(`[claude-sdk] interrupt request failed id=${session.id} code=${failure.code}`);
       }
 
       // Claude background agents share the Query stream with their parent turn.
@@ -335,7 +403,10 @@ export class ClaudeAgentManager {
         // both contracts; calling `.catch()` on the void result does not.
         await query.close();
       } catch (error) {
-        console.warn(`[claude-sdk] query close failed id=${session.id}: ${error?.message || String(error)}`);
+        const failure = normalizeClaudeProviderError(error, {
+          secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+        });
+        console.warn(`[claude-sdk] query close failed id=${session.id} code=${failure.code}`);
       }
       if (queryTask) await queryTask.catch(() => {});
       session.query = null;
@@ -349,6 +420,7 @@ export class ClaudeAgentManager {
     session.activeTaskIds.clear();
     session.deferredResult = null;
     session.lastResult = null;
+    session.streamingAssistant = null;
     session.interruptRequested = false;
     session.turnState = "idle";
     session.phase = "ready";
@@ -398,6 +470,7 @@ export class ClaudeAgentManager {
     session.activeTaskIds.clear();
     session.deferredResult = null;
     session.lastResult = null;
+    session.streamingAssistant = null;
     session.lastInputAt = null;
     session.lastOutputAt = null;
     session.updatedAt = clearedAt;
@@ -582,7 +655,8 @@ export class ClaudeAgentManager {
       lastResult: null,
       turnState: "idle",
       inputQueue: [],
-      inputResolvers: []
+      inputResolvers: [],
+      streamingAssistant: null
     };
     session.runtimeOptions = options.runtimeOptions
       ? normalizeClaudeRuntimeOptions(options.runtimeOptions)
@@ -669,6 +743,8 @@ export class ClaudeAgentManager {
           persistSession: true,
           model: session.currentModel || undefined,
           effort: session.currentReasoningLevel || undefined,
+          env: claudeRuntimeEnvironment(this.environment()),
+          includePartialMessages: true,
           ...runtimeOptions,
           ...permissionOptions,
           canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
@@ -708,7 +784,10 @@ export class ClaudeAgentManager {
         session.updatedAt = new Date().toISOString();
       }
     } catch (error) {
-      console.error(`[claude-sdk] query failed id=${session.id}: ${error?.message || String(error)}`);
+      const failure = normalizeClaudeProviderError(error, {
+        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+      });
+      console.error(`[claude-sdk] query failed id=${session.id} code=${failure.code} retryable=${failure.retryable}`);
       const wasInterrupted = session.interruptRequested === true;
       session.query = null;
       session.queryTask = null;
@@ -726,14 +805,18 @@ export class ClaudeAgentManager {
         this.appendItem(session, {
           type: "system",
           title: "Claude Code",
-          text: error?.message || String(error),
+          text: failure.message,
           status: "failed"
         });
       }
       this.notifyTurnSettled(session, {
         turnId: session.currentTurnId,
         status: wasInterrupted ? "cancelled" : "failed",
-        error: wasInterrupted ? null : (error?.message || String(error))
+        error: wasInterrupted ? null : {
+          code: failure.code,
+          message: failure.message,
+          retryable: failure.retryable
+        }
       });
     }
   }
@@ -749,6 +832,7 @@ export class ClaudeAgentManager {
           cwd: input.cwd,
           persistSession: false,
           model: input.model || undefined,
+          env: claudeRuntimeEnvironment(this.environment()),
           permissionMode: "plan",
           maxTurns: 1,
           abortController
@@ -759,13 +843,18 @@ export class ClaudeAgentManager {
           latestText = assistantText(message.message) || latestText;
         }
         if (message?.type === "result") {
-          if (message.subtype !== "success") {
-            throw new Error(typeof message.result === "string" ? message.result : "Claude background prompt failed.");
-          }
+          const failure = claudeSdkResultError(message, {
+            secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+          });
+          if (failure) throw failure;
           latestText = (typeof message.result === "string" ? message.result.trim() : "") || latestText;
         }
       }
       return { text: latestText };
+    } catch (error) {
+      throw normalizeClaudeProviderError(error, {
+        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+      });
     } finally {
       clearTimeout(timeout);
     }
@@ -814,6 +903,11 @@ export class ClaudeAgentManager {
       return;
     }
 
+    if (message?.type === "stream_event") {
+      this.handleStreamEvent(session, message);
+      return;
+    }
+
     if (message?.type === "assistant") {
       if (session.lastResult && session.turnState !== "running") {
         // A foreground result is not necessarily the end of the Query. Claude
@@ -826,13 +920,30 @@ export class ClaudeAgentManager {
       const items = claudeAssistantContentItems(message.message);
       if (items.length > 0) {
         session.lastOutputAt = session.updatedAt;
-        for (const item of items) this.appendItem(session, item);
+        const finalText = items.filter((item) => item.type === "agentMessage")
+          .map((item) => item.text)
+          .join("\n\n")
+          .trim();
+        if (session.streamingAssistant && finalText) {
+          this.updateStreamingAssistant(session, finalText, { completed: true });
+        } else {
+          for (const item of items.filter((item) => item.type === "agentMessage")) {
+            this.appendItem(session, item);
+          }
+        }
+        for (const item of items.filter((item) => item.type !== "agentMessage")) {
+          this.appendItem(session, item);
+        }
       }
       return;
     }
 
     if (message?.type === "result") {
-      const text = typeof message.result === "string" ? message.result.trim() : "";
+      const failure = claudeSdkResultError(message, {
+        secretValues: [this.environment()?.ANTHROPIC_API_KEY].filter(Boolean)
+      });
+      const text = failure?.message
+        ?? (typeof message.result === "string" ? message.result.trim() : "");
       session.pendingChoice = null;
       session.pendingDecision = null;
       session.pendingChoices?.clear();
@@ -840,8 +951,9 @@ export class ClaudeAgentManager {
       session.interruptRequested = false;
       const result = {
         turnId: session.currentTurnId,
-        succeeded: message.subtype === "success" || wasInterrupted,
+        succeeded: !failure || wasInterrupted,
         text,
+        failure,
         notified: false
       };
       session.lastResult = result;
@@ -945,9 +1057,62 @@ export class ClaudeAgentManager {
       this.notifyTurnSettled(session, {
         turnId: result.turnId,
         status: result.succeeded ? "completed" : "failed",
-        error: result.succeeded ? null : result.text
+        error: result.succeeded ? null : {
+          code: result.failure?.code ?? "CLAUDE_REQUEST_FAILED",
+          message: result.text,
+          retryable: result.failure?.retryable === true
+        }
       });
     }
+  }
+
+  handleStreamEvent(session, message) {
+    const event = message?.event;
+    if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta") {
+      const delta = typeof event.delta.text === "string" ? event.delta.text : "";
+      if (!delta) return;
+      const nextText = `${session.streamingAssistant?.text ?? ""}${delta}`;
+      this.updateStreamingAssistant(session, nextText);
+    }
+  }
+
+  updateStreamingAssistant(session, text, options = {}) {
+    const value = String(text ?? "");
+    if (!value) return null;
+    const existing = session.streamingAssistant;
+    if (!existing) {
+      const item = this.appendItem(session, {
+        id: `${session.id}:stream:${session.currentTurnId ?? session.nextTurnSeq}`,
+        type: "agentMessage",
+        title: "Claude Code",
+        text: value,
+        presentationRole: "commentary"
+      });
+      session.streamingAssistant = { itemId: item.id, text: value };
+      return item;
+    }
+    const index = session.items.findIndex((item) => item.id === existing.itemId);
+    if (index < 0) {
+      session.streamingAssistant = null;
+      return this.updateStreamingAssistant(session, value, options);
+    }
+    const item = {
+      ...session.items[index],
+      text: value,
+      presentationRole: options.completed === true ? "final_answer" : "commentary"
+    };
+    session.items[index] = item;
+    session.streamingAssistant = options.completed === true
+      ? null
+      : { itemId: item.id, text: value };
+    this.emitProviderEvent(session, {
+      type: options.completed === true ? "assistant.message.completed" : "assistant.message.delta",
+      turnId: item.turnId,
+      itemId: item.id,
+      item,
+      occurredAt: session.updatedAt
+    });
+    return item;
   }
 
   inputStream(session) {

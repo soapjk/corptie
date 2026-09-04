@@ -40,10 +40,12 @@ export class PlatformOperationService {
       sessionRuntimeReleaseService: options.sessionRuntimeReleaseService ?? null,
       listSessions: options.listSessions ?? ((input) => options.sessionService.listSessions(input)),
       createSession: options.createSession, onEntityChanged: options.onEntityChanged ?? null,
+      createTask: options.createTask,
       idFactory: options.idFactory ?? randomUUID, clock: options.clock ?? (() => new Date().toISOString())
     });
     if (!this.store || !this.workService || !this.sessionService) throw new TypeError("PlatformOperationService requires store, workService, and sessionService.");
     if (typeof this.createSession !== "function") throw new TypeError("PlatformOperationService requires createSession().");
+    if (typeof this.createTask !== "function") throw new TypeError("PlatformOperationService requires createTask().");
   }
 
   emitEntityChanged(type, entity, action) { this.onEntityChanged?.(type, { action, entity }); return entity; }
@@ -72,7 +74,7 @@ export class PlatformOperationService {
       case "corptie_platform_capabilities": result = this.capabilities(); break;
       case "corptie_platform_agents_manage": result = await this.#agents(args); break;
       case "corptie_platform_works_manage": result = await this.#works(args); break;
-      case "corptie_platform_tasks_manage": result = await this.#tasks(args); break;
+      case "corptie_platform_tasks_manage": result = await this.#tasks(args, binding); break;
       case "corptie_platform_sessions_manage": result = await this.#sessions(args, binding); break;
       case "corptie_platform_artifacts_manage": result = await this.#artifacts(args, binding, input.tool); break;
       case "corptie_platform_collaboration_manage": result = await this.#collaboration(args, binding); break;
@@ -114,12 +116,25 @@ export class PlatformOperationService {
     }
   }
 
-  #tasks(args) {
-    assertKnown(args, ["action", "task_id", "target_task_id", "work_id", "title", "dependency_type", "patch", "idempotency_key"]);
+  async #tasks(args, binding) {
+    assertKnown(args, ["action", "task_id", "target_task_id", "work_id", "title", "agent_id", "provider_id", "dependency_type", "patch", "idempotency_key"]);
     switch (required(args.action, "action")) {
       case "list": return args.work_id ? this.workService.listTasksByWork(args.work_id) : this.workService.listTasks();
       case "get": return this.workService.getTask(required(args.task_id, "task_id"));
-      case "create": return this.workService.createTask({ ...(args.patch ?? {}), workId: required(args.work_id, "work_id"), title: required(args.title, "title") });
+      case "create": {
+        const created = await this.createTask({
+          taskInput: {
+            ...(args.patch ?? {}),
+            workId: required(args.work_id, "work_id"),
+            title: required(args.title, "title"),
+            mainAgentId: required(args.agent_id, "agent_id")
+          },
+          providerId: optional(args.provider_id),
+          sourceSessionId: binding.logicalSessionId ?? binding.actorSessionId,
+          idempotencyKey: required(args.idempotency_key, "idempotency_key")
+        });
+        return { ...created.task, session: created.session, start: created.start };
+      }
       case "update": return this.workService.updateTask(required(args.task_id, "task_id"), args.patch ?? {});
       case "delete": this.workService.deleteTask(required(args.task_id, "task_id")); return { deleted: true };
       case "dependencies": return this.workService.listDependencies(required(args.task_id, "task_id"));
@@ -221,12 +236,22 @@ export class PlatformOperationService {
       case "create_task": {
         const workId = required(args.work_id, "work_id");
         found(this.store.getWork(workId), "WORK_NOT_FOUND");
-        if (args.agent_id) found(this.store.getAgent(args.agent_id), "AGENT_NOT_FOUND");
-        return this.store.runInTransaction(() => {
-          const item = this.workService.createTask({ workId, title: required(args.title, "title"), description: args.description ?? "", acceptanceCriteria: array(args.acceptance_criteria).join("\n"), priority: args.priority ?? "medium", mainAgentId: optional(args.agent_id) });
-          this.store.db.run("UPDATE tasks SET created_by_session_id=?, idempotency_key=? WHERE id=?", [binding.actorSessionId, required(args.idempotency_key, "idempotency_key"), item.id]);
-          return this.store.getTask(item.id);
+        const agentId = required(args.agent_id, "agent_id");
+        found(this.store.getAgent(agentId), "AGENT_NOT_FOUND");
+        const created = await this.createTask({
+          taskInput: {
+            workId,
+            title: required(args.title, "title"),
+            description: args.description ?? "",
+            acceptanceCriteria: array(args.acceptance_criteria).join("\n"),
+            priority: args.priority ?? "medium",
+            mainAgentId: agentId
+          },
+          providerId: optional(args.provider_id),
+          sourceSessionId: binding.logicalSessionId ?? binding.actorSessionId,
+          idempotencyKey: required(args.idempotency_key, "idempotency_key")
         });
+        return { ...created.task, session: created.session, start: created.start };
       }
       case "start_worker": {
         return this.createSession({

@@ -79,7 +79,7 @@ export function handleCollaborationHttpRequest({
 
       if (request.method === "POST" && url.pathname === "/internal/collaboration/tasks") {
         if (!sessionCollaborationService) throw apiError("SESSION_COLLABORATION_UNAVAILABLE", "Scoped Task tools are unavailable.", 503);
-        return sendJson(response, 201, await sessionCollaborationService.createAndStartTask(
+        return sendJson(response, 201, await sessionCollaborationService.createTaskAndSession(
           sessionMetadata, actorAgentId, await readJson(request)
         ));
       }

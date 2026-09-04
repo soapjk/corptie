@@ -106,6 +106,20 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     requestBody = { ...(body ?? {}), contributorAgentIds: [contributor.agentId] };
   }
   const requestHeaders = { ...(headers ?? {}) };
+  if (method === "POST" && pathname === "/tasks") {
+    const work = services.store.getWork(requestBody.workId);
+    const mainAgentId = requestBody.mainAgentId ?? work?.contributorAgentIds?.[0]
+      ?? work?.contributor_agent_ids?.[0];
+    const sourceSessionId = requestBody.sourceSessionId ?? `session:test-task-create:${randomUUID()}`;
+    requestBody = {
+      ...requestBody,
+      mainAgentId,
+      providerId: requestBody.providerId ?? "test-provider",
+      sourceSessionId,
+      idempotencyKey: requestBody.idempotencyKey ?? requestBody.id ?? `task-create:${randomUUID()}`
+    };
+    requestHeaders["x-corptie-logical-session-id"] = sourceSessionId;
+  }
   if (method === "POST" && pathname === "/agents"
     && !Object.hasOwn(requestHeaders, "idempotency-key")) {
     requestHeaders["idempotency-key"] = randomUUID();
@@ -135,7 +149,29 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
           receipt: { status: "ready", logicalSessionId: bound.logicalSessionId ?? bound.id }
         };
       }
-    : undefined);
+    : async (input) => {
+        const task = services.workService.store.getTask(input.taskId);
+        const agent = services.workService.store.getAgent(input.assigneeAgentId);
+        const sessionId = `session:auto:${task.id}`;
+        services.workService.store.upsertSession({
+          id: sessionId,
+          title: task.title,
+          agent: agent.name,
+          agentId: agent.agentId,
+          provider: input.providerId,
+          status: "running",
+          sessionKind: "worker",
+          workId: task.work_id,
+          taskId: task.id
+        });
+        const bound = services.workService.store.bindSessionToTask(sessionId, task.id, task.work_id);
+        services.workService.store.updateTask(task.id, {
+          lifecycleState: "in_progress",
+          mainAgentId: agent.agentId,
+          executionStatus: "running"
+        });
+        return { status: "ready", session: bound, receipt: { status: "ready" } };
+      });
   const handled = handleEntityHttpRequest({
     request,
     response,
@@ -151,6 +187,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     createSession: services.createSession,
     launchSession: services.launchSession,
     startWorkSession,
+    defaultSessionProviderId: "test-provider",
     getTaskStartup: services.getTaskStartup,
     getSessionStartupBinding: services.getSessionStartupBinding,
     launchAgentSession: services.launchAgentSession,
@@ -948,7 +985,8 @@ test("POST 创建接口按客户端 ID 幂等，冲突重放返回 409 而非数
     const firstTask = await callApi({ method: "POST", pathname: "/tasks", body: taskBody, ...services });
     const retriedTask = await callApi({ method: "POST", pathname: "/tasks", body: taskBody, ...services });
     assert.equal(firstTask.statusCode, 201);
-    assert.equal(retriedTask.statusCode, 201);
+    assert.equal(retriedTask.statusCode, 200);
+    assert.equal(retriedTask.body.idempotentReplay, true);
     assert.equal(services.store.listTasks().length, 1);
   } finally {
     await services.store.close();
@@ -1032,7 +1070,7 @@ test("Work/Task HTTP validation returns structured errors without SQLite details
     });
     assert.equal(canceledStatus.statusCode, 400);
     assert.equal(canceledStatus.body.code, "INVALID_LIFECYCLE_STATE");
-    assert.equal(services.store.getTask(task.body.id).lifecycle_state, "todo");
+    assert.equal(services.store.getTask(task.body.id).lifecycle_state, "in_progress");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -1281,8 +1319,8 @@ test("POST /tasks 挂 work + 依赖环 409", async () => {
     });
     assert.equal(itemA.statusCode, 201);
     assert.equal(itemA.body.acceptanceAssessment, null);
-    assert.equal(itemA.body.creationOrigin.originType, "direct_user");
-    assert.equal(services.store.getTaskCreationOrigin(itemA.body.id).originType, "direct_user");
+    assert.equal(itemA.body.creationOrigin.originType, "session");
+    assert.equal(services.store.getTaskCreationOrigin(itemA.body.id).originType, "session");
 
     const listed = await callApi({ method: "GET", pathname: "/tasks", ...services });
     assert.equal(listed.statusCode, 200);
@@ -1773,7 +1811,7 @@ test("multiple Sessions can contribute evidence without any Session lifecycle pr
       ...services
     });
     assert.equal(passed.statusCode, 200);
-    assert.equal(passed.body.lifecycleState, "todo");
+    assert.equal(passed.body.lifecycleState, "in_progress");
     assert.equal(passed.body.completionSuggestion.recommended, true);
     assert.deepEqual(
       passed.body.completionSuggestion.results.map((result) => result.evidence[0].reference),
@@ -2392,7 +2430,7 @@ test("legacy Session creation rejects Task startup fields while Assistant Chat k
   }
 });
 
-test("Task creation persists the selected Agent and only the explicit run action launches it", async () => {
+test("Task creation atomically persists the selected Agent and launches its Session", async () => {
   const services = await createServices();
   try {
     const performance = [];
@@ -2441,24 +2479,11 @@ test("Task creation persists the selected Agent and only the explicit run action
 
     assert.equal(created.statusCode, 201);
     assert.equal(created.body.mainAgentId, agent.agentId);
-    assert.equal(created.body.executionStatus, "idle");
-    assert.equal(created.body.currentSessionId, null);
-    assert.equal(launchCount, 0, "create-only must not launch a Session");
-
-    const started = await callApi({
-      method: "POST",
-      ...workSessionStartRequest(services.store.getTask(created.body.id), agent.agentId, "test-provider", "explicit"),
-      launchSession,
-      observeTaskPerformance: (measurement) => performance.push(measurement),
-      ...services
-    });
-
-    assert.equal(started.statusCode, 201);
     assert.equal(launchCount, 1);
     const running = services.store.getTask(created.body.id);
     assert.equal(running.main_agent_id, agent.agentId);
     assert.equal(running.execution_status, "running");
-    assert.equal(running.current_session_id, started.body.session.id);
+    assert.equal(running.current_session_id, created.body.session.id);
     assert.equal(services.store.listTasksByWork(work.id).length, 1);
     assert.deepEqual(performance.map((measurement) => measurement.operation), ["task.create"]);
     assert.equal(performance[0].outcome, "succeeded");
@@ -2478,16 +2503,16 @@ test("execution failure is explicit and retrying the existing Task does not crea
       name: "Retry without duplicate",
       contributorAgentIds: [agent.agentId]
     });
-    const created = await callApi({
-      method: "POST",
-      pathname: "/tasks",
-      body: { workId: work.id, title: "Stable identity", mainAgentId: agent.agentId },
-      ...services
-    });
-
+    const taskBody = {
+      id: "task:retry-create-and-start",
+      workId: work.id,
+      title: "Stable identity",
+      mainAgentId: agent.agentId
+    };
     const failed = await callApi({
       method: "POST",
-      ...workSessionStartRequest(services.store.getTask(created.body.id), agent.agentId, "test-provider", "failure"),
+      pathname: "/tasks",
+      body: taskBody,
       launchSession: async () => {
         const error = new Error("Provider launch failed clearly");
         error.code = "PROVIDER_LAUNCH_FAILED";
@@ -2502,12 +2527,13 @@ test("execution failure is explicit and retrying the existing Task does not crea
     assert.equal(failed.body.code, "PROVIDER_LAUNCH_FAILED");
     assert.match(failed.body.error, /Provider launch failed clearly/);
     assert.equal(services.store.listTasksByWork(work.id).length, 1);
-    assert.equal(services.store.getTask(created.body.id).execution_status, "idle");
-    assert.equal(performance.length, 0);
+    assert.equal(services.store.getTask(taskBody.id).execution_status, "idle");
+    assert.equal(performance[0].outcome, "failed");
 
     const retried = await callApi({
       method: "POST",
-      ...workSessionStartRequest(services.store.getTask(created.body.id), agent.agentId, "test-provider", "retry"),
+      pathname: "/tasks",
+      body: taskBody,
       launchSession: async ({ task }) => {
         services.store.upsertSession({
           id: "session:retry",
@@ -2525,9 +2551,9 @@ test("execution failure is explicit and retrying the existing Task does not crea
       ...services
     });
 
-    assert.equal(retried.statusCode, 201);
+    assert.equal(retried.statusCode, 200);
     assert.equal(services.store.listTasksByWork(work.id).length, 1);
-    assert.equal(services.store.getTask(created.body.id).current_session_id, "session:retry");
+    assert.equal(services.store.getTask(taskBody.id).current_session_id, "session:retry");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
