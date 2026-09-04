@@ -154,6 +154,56 @@ test("restricted gateway rejects an older caller version when the Session genera
     && error.currentCatalogVersion === catalog.snapshot().catalogVersion);
 });
 
+test("fixed Tool Host bootstrap discovers and calls hot-assigned Skill MCP tools", async () => {
+  const calls = [];
+  const skillMcpGateway = {
+    search: async () => ({
+      catalogVersion: "skill-mcp:1:assigned",
+      domains: [{
+        domainId: "skill-mcp:investrace",
+        invocation: {
+          mode: "restricted_gateway",
+          gatewayTool: "corptie_tool_call",
+          expectedCatalogVersion: "skill-mcp:1:assigned"
+        },
+        tools: [{ canonicalName: "investrace_context", inputSchema: { type: "object" }, minimalExample: {} }]
+      }]
+    }),
+    execute: async (input, options) => {
+      calls.push({ input, options });
+      return { content: [{ type: "text", text: "portfolio" }] };
+    }
+  };
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry([]),
+    catalog: new HostToolCatalog([]),
+    coordinator: {
+      search: async () => ({ catalogVersion: "th2:host", domains: [], durationMs: 1 })
+    },
+    skillMcpGateway
+  });
+  const metadata = {
+    logicalSessionId: "logical:investment",
+    providerBindingId: "binding:investment",
+    providerId: "codex-app-server"
+  };
+  const discovered = await service.execute({
+    actorId: "agent:investment", metadata, tool: "corptie_tool_catalog_search",
+    arguments: { intent: "investrace portfolio" }
+  });
+  assert.equal(discovered.domains[0].domainId, "skill-mcp:investrace");
+
+  const result = await service.execute({
+    actorId: "agent:investment", metadata, tool: "corptie_tool_call",
+    arguments: {
+      tool: "investrace_context", arguments: {}, expected_catalog_version: "skill-mcp:1:assigned"
+    }
+  });
+  assert.equal(result.content[0].text, "portfolio");
+  assert.equal(calls[0].input.tool, "investrace_context");
+  assert.equal(calls[0].options.expectedCatalogVersion, "skill-mcp:1:assigned");
+});
+
 test("Tool Host telemetry records business latency and aggregate schema failures without arguments", async () => {
   const events = [];
   const catalog = new HostToolCatalog([{
