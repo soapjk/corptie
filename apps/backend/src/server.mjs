@@ -2421,6 +2421,10 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
   }),
   mergeSource: (input) => gitWorkspaces.mergeIntegrationSource(input),
   abortMerge: (input) => gitWorkspaces.abortIntegrationMerge(input),
+  rebaseSource: (input) => gitWorkspaces.rebaseIntegrationSource(input),
+  fastForwardSource: (input) => gitWorkspaces.fastForwardIntegrationSource(input),
+  prepareConvergence: (input) => gitWorkspaces.createConvergenceWorktreeForProject(input),
+  cleanupConvergence: (input) => gitWorkspaces.removeConvergenceWorktreeForProject(input),
   prepareConflictResolution: (input) => gitWorkspaces.prepareIntegrationConflictResolutionForProject({
     repositoryId: input.repositoryId,
     workingDirectory: input.mainPath,
@@ -10112,7 +10116,8 @@ function route(request, response) {
   }
   if (request.method === "POST" && worktreeManagementPreflightMatch) {
     const repositoryId = decodeURIComponent(worktreeManagementPreflightMatch[1]);
-    worktreeIntegrationJobService.preflight(repositoryId)
+    readJson(request)
+      .then((input) => worktreeIntegrationJobService.preflight(repositoryId, input))
       .then((result) => sendJson(response, 201, { job: result }))
       .catch((error) => sendJson(response, error.statusCode ?? unifiedErrorStatus(error), {
         error: error.message, code: error.code

@@ -21,6 +21,10 @@ export class WorktreeIntegrationJobService {
     this.inspectCommitProtection = options.inspectCommitProtection;
     this.mergeSource = options.mergeSource;
     this.abortMerge = options.abortMerge;
+    this.rebaseSource = options.rebaseSource ?? null;
+    this.fastForwardSource = options.fastForwardSource ?? null;
+    this.prepareConvergence = options.prepareConvergence ?? null;
+    this.cleanupConvergence = options.cleanupConvergence ?? null;
     this.prepareConflictResolution = options.prepareConflictResolution;
     this.inspectConflictResolution = options.inspectConflictResolution;
     this.launchConflictResolution = options.launchConflictResolution;
@@ -194,6 +198,10 @@ export class WorktreeIntegrationJobService {
         409
       );
     }
+    const branchOperation = normalizeBranchOperation(options);
+    if (branchOperation) {
+      return this.#branchOperationPreflight(repository, branchOperation);
+    }
     const inspection = this.#associate(await this.inspectRepository(repository.id));
     const ordered = [...inspection.worktrees].sort((left, right) => {
       if (left.isMain !== right.isMain) return left.isMain ? -1 : 1;
@@ -292,6 +300,102 @@ export class WorktreeIntegrationJobService {
       job = this.store.updateWorktreeIntegrationJob(job.id, { completedAt: new Date().toISOString() });
     }
     return presentJob(job);
+  }
+
+  async #branchOperationPreflight(repository, operation) {
+    const inspection = this.#associate(await this.inspectRepository(repository.id));
+    const byId = new Map(inspection.worktrees.map((worktree) => [worktree.worktreeId, worktree]));
+    const selectedIds = operation.type === "converge"
+      ? operation.sourceWorktreeIds
+      : [...operation.sourceWorktreeIds, operation.targetWorktreeId];
+    const uniqueIds = [...new Set(selectedIds)];
+    const missingId = uniqueIds.find((id) => !byId.has(id));
+    if (missingId) {
+      throw new WorktreeIntegrationJobError("WORKTREE_NOT_FOUND", `The selected Worktree no longer exists: ${missingId}.`, 404);
+    }
+    const target = byId.get(operation.targetWorktreeId);
+    if (!target || target.isDetached || !target.branchName) {
+      throw new WorktreeIntegrationJobError("TARGET_BRANCH_AMBIGUOUS", "Choose an available Worktree with a local branch as the target.", 409);
+    }
+    const sourceIds = operation.sourceWorktreeIds.filter((id) => id !== target.worktreeId);
+    if (sourceIds.length === 0) {
+      throw new WorktreeIntegrationJobError("SOURCE_WORKTREE_REQUIRED", "Select at least one source Worktree.");
+    }
+    const ordered = [target, ...sourceIds.map((id) => byId.get(id))];
+    const blockingRisks = [];
+    const items = [];
+    for (const [index, worktree] of ordered.entries()) {
+      const isTarget = worktree.worktreeId === target.worktreeId;
+      const risks = risksForBranchOperation(worktree, { isTarget, operationType: operation.type });
+      const shouldCommit = !isTarget && worktree.dirty === true;
+      const commitProtection = shouldCommit ? await this.inspectCommitProtection(worktree.path) : null;
+      if ((commitProtection?.localSymlinkPaths ?? []).length > 0) {
+        risks.push({
+          code: "GIT_LOCAL_AGENT_SYMLINK_NOT_COMMITTABLE",
+          message: `Local Agent configuration links cannot be committed: ${commitProtection.localSymlinkPaths.join(", ")}.`
+        });
+      }
+      blockingRisks.push(...risks.map((risk) => ({ worktreeId: worktree.worktreeId, ...risk })));
+      const label = worktree.branchName ?? worktree.path.split("/").filter(Boolean).at(-1) ?? "Worktree";
+      items.push({
+        ordinal: isTarget ? 0 : index,
+        worktreeId: worktree.worktreeId,
+        path: worktree.path,
+        branchName: worktree.branchName,
+        isMain: isTarget,
+        actualIsMain: worktree.isMain === true,
+        isTarget,
+        availability: worktree.availability,
+        sourceHeadBefore: worktree.headOid,
+        statusSummary: worktree.statusSummary ?? "",
+        changedFiles: worktree.changedFiles ?? [],
+        dirty: worktree.dirty === true,
+        aheadOfMain: worktree.aheadOfMain,
+        behindMain: worktree.behindMain,
+        mergedIntoMain: worktree.mergedIntoMain,
+        associations: worktree.associations,
+        risks,
+        commitProtection,
+        commitMessage: shouldCommit ? `Corptie: preserve changes in ${label}`.slice(0, 120) : null,
+        commitStatus: shouldCommit ? "pending" : "not_needed",
+        commitHead: null,
+        mergeStatus: isTarget ? "not_needed" : "pending",
+        mergeMainHead: null,
+        resolutionHead: null,
+        convergenceStatus: operation.type === "converge" ? "pending" : "not_needed",
+        conflictFiles: [...(worktree.conflictFiles ?? [])],
+        error: null
+      });
+    }
+    const plan = {
+      repositoryId: repository.id,
+      operationType: operation.type,
+      syncMode: operation.type === "sync" ? "one_way" : (operation.type === "converge" ? "converge" : null),
+      targetWorktreeId: target.worktreeId,
+      targetBranchName: target.branchName,
+      sourceWorktreeIds: sourceIds,
+      mainWorktreeId: target.worktreeId,
+      mainPath: target.path,
+      mainHeadBefore: target.headOid,
+      inventoryVersion: inspection.inventoryVersion,
+      validationSnapshot: planValidationSnapshot(inspection),
+      mergeOrder: sourceIds,
+      blockingRisks,
+      items
+    };
+    const planFingerprint = fingerprint(plan);
+    return presentJob(this.store.createWorktreeIntegrationJob({
+      repositoryId: repository.id,
+      planFingerprint,
+      status: "awaiting_confirmation",
+      phase: "preflight_complete",
+      details: {
+        plan,
+        currentWorktreeId: null,
+        progress: progressFor(items),
+        audit: [{ at: new Date().toISOString(), event: "branch_operation_preflight_created", planFingerprint }]
+      }
+    }));
   }
 
   async confirm(jobId, input = {}) {
@@ -463,7 +567,7 @@ export class WorktreeIntegrationJobService {
     const sourceHead = item.commitHead ?? item.sourceHeadBefore;
     return this.abortMerge({
       repositoryId: job.repositoryId,
-      mainPath: job.details.plan.mainPath,
+      mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
       sourceHead,
       expectedMainHead: expectedMainHeadBefore(job.details.plan, item.worktreeId),
       jobId: job.id
@@ -477,7 +581,20 @@ export class WorktreeIntegrationJobService {
     }
     let replacement;
     try {
-      replacement = await this.preflight(canceled.repositoryId, { ignoreJobId: canceled.id });
+      const priorPlan = canceled.details.plan ?? {};
+      const operationType = priorPlan.operationType === "merge" ? "batch_merge"
+        : priorPlan.operationType === "sync" ? "one_way_sync"
+          : priorPlan.operationType === "converge" ? "converge" : null;
+      replacement = await this.preflight(canceled.repositoryId, {
+        ignoreJobId: canceled.id,
+        ...(operationType ? {
+          operationType,
+          sourceWorktreeIds: priorPlan.operationType === "converge"
+            ? [priorPlan.targetWorktreeId, ...(priorPlan.sourceWorktreeIds ?? [])]
+            : priorPlan.sourceWorktreeIds,
+          targetWorktreeId: priorPlan.targetWorktreeId
+        } : {})
+      });
     } catch (error) {
       if (error.code !== "INTEGRATION_JOB_ACTIVE") throw error;
       replacement = this.store.listWorktreeIntegrationJobs(canceled.repositoryId)
@@ -597,7 +714,7 @@ export class WorktreeIntegrationJobService {
           try {
             preparation = await this.prepareConflictResolution({
               repositoryId: job.repositoryId,
-              mainPath: job.details.plan.mainPath,
+              mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
               jobId: job.id,
               sourceHead,
               expectedMainHead,
@@ -812,7 +929,8 @@ export class WorktreeIntegrationJobService {
       let items = job.details.plan.items;
       const completedAny = items.some((item) => ["completed", "recovered"].includes(item.commitStatus)
         || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus))
-        || job.details.conflictResolution?.status === "ready";
+        || job.details.conflictResolution?.status === "ready"
+        || job.details.convergenceWorkspace != null;
       if (!completedAny) {
         const current = await this.inspectRepository(job.repositoryId);
         const mismatch = planInspectionMismatch(job.details.plan, current);
@@ -870,9 +988,71 @@ export class WorktreeIntegrationJobService {
         if (await this.#stopIfRequested(jobId)) return;
       }
 
+      if (job.details.plan.operationType === "sync") {
+        if (typeof this.rebaseSource !== "function") {
+          throw new WorktreeIntegrationJobError("SYNC_UNSUPPORTED", "This backend cannot synchronize Worktrees yet.", 501);
+        }
+        const targetHead = job.details.plan.mainHeadBefore;
+        for (let item of items) {
+          if (item.isMain || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus)) continue;
+          if (await this.#stopIfRequested(jobId)) return;
+          const refreshed = await this.#refreshWorktreeItem(job, item.worktreeId, { requireClean: true });
+          job = refreshed.job;
+          item = refreshed.item;
+          job = this.#item(job, item.worktreeId, { mergeStatus: "running", error: null }, "rebasing", "rebase_started");
+          try {
+            const result = await this.rebaseSource({
+              path: item.path,
+              targetHead,
+              expectedSourceHead: item.commitHead ?? item.sourceHeadBefore,
+              jobId
+            });
+            job = this.#item(job, item.worktreeId, {
+              mergeStatus: result.alreadySynchronized ? "already_integrated" : "completed",
+              mergeMainHead: result.headOid,
+              conflictFiles: [],
+              error: null
+            }, "rebasing", "rebase_completed");
+          } catch (error) {
+            job = this.#item(job, item.worktreeId, {
+              mergeStatus: error.code === "REBASE_CONFLICT" ? "conflict" : "failed",
+              conflictFiles: error.conflictFiles ?? [],
+              error: error.message
+            }, "paused", "rebase_paused");
+            this.#pause(job, error);
+            return;
+          }
+          items = job.details.plan.items;
+        }
+      }
+
+      if (job.details.plan.operationType === "converge") {
+        if (typeof this.prepareConvergence !== "function") {
+          throw new WorktreeIntegrationJobError("CONVERGENCE_UNSUPPORTED", "This backend cannot prepare an isolated convergence Worktree yet.", 501);
+        }
+        let workspace = job.details.convergenceWorkspace;
+        if (!workspace) {
+          workspace = await this.prepareConvergence({
+            repositoryId: job.repositoryId,
+            workingDirectory: job.details.plan.mainPath,
+            baseHead: job.details.plan.mainHeadBefore,
+            jobId
+          });
+          job = this.#update(job, {
+            phase: "preparing_convergence",
+            details: {
+              ...job.details,
+              convergenceWorkspace: workspace,
+              plan: { ...job.details.plan, executionPath: workspace.path }
+            },
+            auditEvent: "convergence_workspace_prepared"
+          });
+        }
+      }
+
       let expectedMainHead = items.find((item) => item.isMain)?.commitHead
         ?? job.details.plan.mainHeadBefore;
-      for (let item of items) {
+      for (let item of job.details.plan.operationType === "sync" ? [] : items) {
         if (item.isMain || item.mergeStatus === "not_needed"
           || ["completed", "already_integrated", "recovered"].includes(item.mergeStatus)) {
           if (item.mergeMainHead) expectedMainHead = item.mergeMainHead;
@@ -896,7 +1076,7 @@ export class WorktreeIntegrationJobService {
           && resolution.conflictKey === expectedConflictKey) {
           const verified = await this.inspectConflictResolution({
             repositoryId: job.repositoryId,
-            mainPath: job.details.plan.mainPath,
+            mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
             workspace: resolution.workspace,
             sourceHead: originalSourceHead,
             expectedMainHead: expectedResolutionMainHead
@@ -930,7 +1110,7 @@ export class WorktreeIntegrationJobService {
           for (let attempt = 0; attempt < this.maxConflictFallbackAttempts; attempt += 1) {
             try {
               result = await this.mergeSource({
-                mainPath: job.details.plan.mainPath,
+                mainPath: job.details.plan.executionPath ?? job.details.plan.mainPath,
                 sourceHead,
                 expectedMainHead,
                 jobId
@@ -942,7 +1122,9 @@ export class WorktreeIntegrationJobService {
                 throw conflictFallbackFailure(error, "merge_source", attempt + 1);
               }
               const inspection = await this.inspectRepository(job.repositoryId);
-              const main = inspection.worktrees.find((candidate) => candidate.isMain);
+              const main = inspection.worktrees.find((candidate) =>
+                candidate.worktreeId === (job.details.plan.targetWorktreeId ?? job.details.plan.mainWorktreeId)
+              );
               if (main?.availability === "available" && main.dirty !== true && !main.operationState) {
                 expectedMainHead = main.headOid;
               }
@@ -988,6 +1170,51 @@ export class WorktreeIntegrationJobService {
         }
         items = job.details.plan.items;
         if (await this.#stopIfRequested(jobId)) return;
+      }
+      if (job.details.plan.operationType === "converge") {
+        if (typeof this.fastForwardSource !== "function") {
+          throw new WorktreeIntegrationJobError("CONVERGENCE_UNSUPPORTED", "This backend cannot converge Worktrees yet.", 501);
+        }
+        const resultHead = expectedMainHead;
+        items = job.details.plan.items;
+        for (let item of items) {
+          if (item.convergenceStatus === "completed") continue;
+          if (await this.#stopIfRequested(jobId)) return;
+          job = this.#item(job, item.worktreeId, { convergenceStatus: "running", error: null }, "fast_forwarding", "convergence_started");
+          try {
+            await this.fastForwardSource({
+              path: item.path,
+              targetHead: resultHead,
+              expectedSourceHead: item.commitHead ?? item.sourceHeadBefore,
+              jobId
+            });
+            job = this.#item(job, item.worktreeId, {
+              convergenceStatus: "completed",
+              mergeMainHead: resultHead,
+              error: null
+            }, "fast_forwarding", "convergence_completed");
+          } catch (error) {
+            job = this.#item(job, item.worktreeId, {
+              convergenceStatus: "failed",
+              error: error.message
+            }, "partial_completed", "convergence_partial");
+            this.#pause(job, error);
+            return;
+          }
+        }
+        if (typeof this.cleanupConvergence === "function" && job.details.convergenceWorkspace) {
+          await this.cleanupConvergence({
+            repositoryId: job.repositoryId,
+            workingDirectory: job.details.plan.mainPath,
+            workspace: job.details.convergenceWorkspace,
+            expectedHead: resultHead,
+            jobId
+          });
+          job = this.#update(job, {
+            details: { ...job.details, convergenceWorkspace: null },
+            auditEvent: "convergence_workspace_cleaned"
+          });
+        }
       }
       this.#update(job, {
         status: "completed",
@@ -1393,6 +1620,42 @@ function risksFor(worktree) {
   return risks;
 }
 
+function risksForBranchOperation(worktree, { isTarget, operationType }) {
+  const risks = risksFor({ ...worktree, isMain: false });
+  if (isTarget && worktree.dirty === true) {
+    risks.push({
+      code: "TARGET_UNCOMMITTED_CHANGES",
+      message: `${worktree.branchName ?? worktree.path} has uncommitted changes. Preserve them before using this branch as the operation target.`
+    });
+  }
+  if (operationType === "sync" && isTarget && worktree.headOid == null) {
+    risks.push({ code: "TARGET_HEAD_MISSING", message: "The synchronization target has no commit." });
+  }
+  return risks;
+}
+
+function normalizeBranchOperation(value) {
+  const rawType = String(value?.operationType ?? "").trim();
+  if (!rawType) return null;
+  const type = rawType === "batch_merge" ? "merge"
+    : rawType === "one_way_sync" ? "sync"
+      : rawType === "converge" ? "converge" : null;
+  if (!type) {
+    throw new WorktreeIntegrationJobError("BRANCH_OPERATION_INVALID", "Choose merge, one-way synchronization, or convergence.");
+  }
+  const sourceWorktreeIds = Array.isArray(value.sourceWorktreeIds)
+    ? [...new Set(value.sourceWorktreeIds.map((id) => String(id ?? "").trim()).filter(Boolean))]
+    : [];
+  const targetWorktreeId = String(value.targetWorktreeId ?? "").trim();
+  if (!targetWorktreeId) {
+    throw new WorktreeIntegrationJobError("TARGET_WORKTREE_REQUIRED", "Choose the target or base Worktree.");
+  }
+  if (sourceWorktreeIds.length === 0) {
+    throw new WorktreeIntegrationJobError("SOURCE_WORKTREE_REQUIRED", "Select at least one source Worktree.");
+  }
+  return { type, sourceWorktreeIds, targetWorktreeId };
+}
+
 function normalizeCommitProtectionDecisions(value) {
   if (!Array.isArray(value)) return {};
   return Object.fromEntries(value.flatMap((entry) => {
@@ -1504,8 +1767,11 @@ function progressFor(items) {
   const commitDone = items.filter((item) => ["not_needed", "completed", "recovered"].includes(item.commitStatus)).length;
   const mergeItems = items.filter((item) => !item.isMain);
   const mergeDone = mergeItems.filter((item) => ["not_needed", "completed", "already_integrated", "recovered"].includes(item.mergeStatus)).length;
-  const total = items.length + mergeItems.length;
-  return { completed: commitDone + mergeDone, total, fraction: total ? (commitDone + mergeDone) / total : 1 };
+  const convergenceItems = items.filter((item) => item.convergenceStatus && item.convergenceStatus !== "not_needed");
+  const convergenceDone = convergenceItems.filter((item) => item.convergenceStatus === "completed").length;
+  const total = items.length + mergeItems.length + convergenceItems.length;
+  const completed = commitDone + mergeDone + convergenceDone;
+  return { completed, total, fraction: total ? completed / total : 1 };
 }
 
 function completedMergeWorktreeIds(items) {

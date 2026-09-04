@@ -579,6 +579,87 @@ export class GitWorkspaceManager {
     return { merged: true, alreadyMerged: false, recovered: false, mainHead: updatedHead };
   }
 
+  async rebaseIntegrationSource(input) {
+    const operationState = await this.integrationOperationState(input.path);
+    if (operationState) {
+      const conflicts = (await this.gitOutput(input.path, ["diff", "--name-only", "--diff-filter=U"]))
+        .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+      if (operationState === "rebase" && conflicts.length === 0) {
+        try {
+          const repositoryId = this.#repositoryIdForPath(input.path);
+          if (repositoryId) this.invalidateInspectionCache(repositoryId, "git_rebase_continue");
+          await this.execFile("git", ["-C", input.path, "rebase", "--continue"], {
+            encoding: "utf8",
+            maxBuffer: 4 * 1024 * 1024,
+            env: { ...process.env, GIT_EDITOR: "true" }
+          });
+          const headOid = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
+          return { rebased: true, recovered: true, alreadySynchronized: false, headOid };
+        } catch (error) {
+          const remaining = (await this.gitOutput(input.path, ["diff", "--name-only", "--diff-filter=U"]))
+            .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+          const conflict = integrationGitError("REBASE_CONFLICT", safeGitError(error, "Could not continue the resolved rebase"));
+          conflict.conflictFiles = remaining;
+          throw conflict;
+        }
+      }
+      const error = integrationGitError(
+        operationState === "rebase" ? "REBASE_CONFLICT" : "GIT_OPERATION_IN_PROGRESS",
+        operationState === "rebase"
+          ? "Resolve or abort the rebase in this Worktree, then retry."
+          : `The source Worktree has an existing ${operationState} operation.`
+      );
+      error.conflictFiles = conflicts;
+      throw error;
+    }
+    const head = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (head !== input.expectedSourceHead) {
+      throw integrationGitError("WORKTREE_HEAD_CHANGED", "The source branch changed while synchronization was running.");
+    }
+    const status = (await this.gitOutput(input.path, ["status", "--porcelain=v1"])).trim();
+    if (status) throw integrationGitError("WORKTREE_RECHECK_DIRTY", "The source Worktree gained uncommitted changes.");
+    if (await this.gitSucceeds(input.path, ["merge-base", "--is-ancestor", input.targetHead, "HEAD"])) {
+      return { rebased: false, alreadySynchronized: true, headOid: head };
+    }
+    try {
+      await this.runGit(input.path, ["rebase", input.targetHead]);
+    } catch (error) {
+      const conflicts = (await this.gitOutput(input.path, ["diff", "--name-only", "--diff-filter=U"]))
+        .split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+      if (conflicts.length > 0) {
+        const conflict = integrationGitError("REBASE_CONFLICT", safeGitError(error, "Rebase conflict"));
+        conflict.conflictFiles = conflicts;
+        throw conflict;
+      }
+      throw integrationGitError("REBASE_FAILED", safeGitError(error, "Could not rebase the source Worktree"));
+    }
+    const updatedHead = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    return { rebased: true, alreadySynchronized: false, headOid: updatedHead };
+  }
+
+  async fastForwardIntegrationSource(input) {
+    const operationState = await this.integrationOperationState(input.path);
+    if (operationState) {
+      throw integrationGitError("GIT_OPERATION_IN_PROGRESS", `The Worktree has an existing ${operationState} operation.`);
+    }
+    const head = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (head !== input.expectedSourceHead) {
+      throw integrationGitError("WORKTREE_HEAD_CHANGED", "A selected branch changed before convergence was published.");
+    }
+    const status = (await this.gitOutput(input.path, ["status", "--porcelain=v1"])).trim();
+    if (status) throw integrationGitError("WORKTREE_RECHECK_DIRTY", "A selected Worktree gained uncommitted changes.");
+    try {
+      await this.runGit(input.path, ["merge", "--ff-only", input.targetHead]);
+    } catch (error) {
+      throw integrationGitError("CONVERGENCE_FAST_FORWARD_FAILED", safeGitError(error, "Could not fast-forward the selected branch"));
+    }
+    const updatedHead = (await this.gitOutput(input.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    if (updatedHead !== input.targetHead) {
+      throw integrationGitError("CONVERGENCE_VERIFICATION_FAILED", "The selected branch did not reach the unified commit.");
+    }
+    return { headOid: updatedHead };
+  }
+
   async abortIntegrationMerge(input) {
     const operationState = await this.integrationOperationState(input.mainPath);
     const mainHead = (await this.gitOutput(input.mainPath, ["rev-parse", "--verify", "HEAD"])).trim();
@@ -622,6 +703,72 @@ export class GitWorkspaceManager {
       );
     }
     return { aborted: true, alreadyClean: false, mainHead: restoredHead };
+  }
+
+  async createConvergenceWorktreeForProject(input) {
+    const root = absolutePath(input.workingDirectory);
+    const snapshot = await createGitWorkspaceSnapshot(root);
+    if (snapshot.repository.id !== input.repositoryId) {
+      throw integrationGitError("REPOSITORY_IDENTITY_CHANGED", "The convergence repository identity changed.");
+    }
+    const baseHead = await this.validatedCommitish(input.baseHead, root);
+    const suffix = String(input.jobId ?? Date.now())
+      .replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(-24);
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const attemptSuffix = attempt === 0 ? suffix : `${suffix}-${attempt + 1}`;
+      const branchName = `integration/converge-${attemptSuffix}`;
+      const targetPath = resolve(dirname(root), `${basename(root)}-converge-${attemptSuffix}`);
+      const occupied = snapshot.worktrees.some((worktree) => resolve(worktree.path) === targetPath || worktree.branchName === branchName)
+        || await pathExists(targetPath)
+        || await this.gitSucceeds(root, ["show-ref", "--verify", `refs/heads/${branchName}`]);
+      if (occupied) continue;
+      try {
+        await this.runGit(root, ["worktree", "add", "-b", branchName, targetPath, baseHead]);
+      } catch (error) {
+        throw integrationGitError("CONVERGENCE_WORKSPACE_CREATE_FAILED", safeGitError(error, "Could not create the convergence Worktree"));
+      }
+      const updated = await createGitWorkspaceSnapshot(targetPath);
+      this.store.upsertGitWorkspaceSnapshot(updated);
+      const created = updated.worktrees.find((worktree) =>
+        worktree.branchName === branchName
+          || resolve(worktree.canonicalPath ?? worktree.path) === resolve(targetPath)
+          || resolve(worktree.path) === resolve(targetPath)
+      );
+      const verifiedHead = created
+        ? (await this.gitOutput(created.path, ["rev-parse", "--verify", "HEAD"])).trim()
+        : null;
+      if (!created || created.availability !== "available" || created.branchName !== branchName || verifiedHead !== baseHead) {
+        throw integrationGitError(
+          "CONVERGENCE_WORKSPACE_INVALID",
+          `Git created the convergence Worktree, but its identity could not be verified (branch=${created?.branchName ?? "missing"}, availability=${created?.availability ?? "missing"}, head=${verifiedHead ?? "missing"}).`
+        );
+      }
+      return {
+        worktreeId: created.worktreeId,
+        path: created.path,
+        branchName,
+        headOid: created.headOid
+      };
+    }
+    throw integrationGitError("CONVERGENCE_WORKSPACE_NAME_OCCUPIED", "Could not allocate an isolated convergence Worktree name.");
+  }
+
+  async removeConvergenceWorktreeForProject(input) {
+    const workspace = input.workspace;
+    if (!workspace?.path || !String(workspace.branchName ?? "").startsWith("integration/converge-")) {
+      throw integrationGitError("CONVERGENCE_WORKSPACE_INVALID", "Refused to remove an unrecognized convergence Worktree.");
+    }
+    const head = (await this.gitOutput(workspace.path, ["rev-parse", "--verify", "HEAD"])).trim();
+    const status = (await this.gitOutput(workspace.path, ["status", "--porcelain=v1"])).trim();
+    const operation = await this.integrationOperationState(workspace.path);
+    if (head !== input.expectedHead || status || operation) {
+      throw integrationGitError("CONVERGENCE_WORKSPACE_NOT_CLEAN", "The convergence Worktree was preserved because its final state is not safely removable.");
+    }
+    await this.runGit(input.workingDirectory, ["worktree", "remove", workspace.path]);
+    await this.runGit(input.workingDirectory, ["branch", "-d", workspace.branchName]);
+    const updated = await createGitWorkspaceSnapshot(input.workingDirectory);
+    this.store.upsertGitWorkspaceSnapshot(updated);
+    return { removed: true };
   }
 
   async createIntegrationWorktreeForProject(input) {
