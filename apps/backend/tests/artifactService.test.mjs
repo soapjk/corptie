@@ -960,6 +960,25 @@ test("Session context is metadata-only and provider-neutral tools expose identic
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
+test("Worker Artifact indexes never expose another Task's private Artifact", async () => {
+  const f = await fixture();
+  try {
+    const own = await f.service.create(workerContext(f), {
+      title: "Own Task evidence", content: "own", idempotencyKey: "own-index"
+    });
+    const peer = await f.service.create(peerContext(f), {
+      title: "Peer Task secret", content: "peer", idempotencyKey: "peer-index"
+    });
+    const workerIndex = f.service.indexForSession(f.store.getSession("session:worker"));
+    const peerIndex = f.service.indexForSession(f.store.getSession("session:peer"));
+
+    assert.ok(workerIndex.items.some((item) => item.artifactId === own.artifactId));
+    assert.ok(!workerIndex.items.some((item) => item.artifactId === peer.artifactId));
+    assert.ok(peerIndex.items.some((item) => item.artifactId === peer.artifactId));
+    assert.ok(!peerIndex.items.some((item) => item.artifactId === own.artifactId));
+  } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
 test("repository-tracked registration requires confirmation and never creates private content", async () => {
   const f = await fixture();
   try {
