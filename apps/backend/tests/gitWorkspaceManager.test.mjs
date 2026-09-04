@@ -1546,6 +1546,82 @@ test("replanning aborts only the recorded task-owned integration merge and resto
   }
 });
 
+test("one-way synchronization rebases only the source Worktree onto the frozen target head", async () => {
+  const fixture = await createFixture("one-way-rebase", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.repository, "main.txt"), "main\n");
+    await git(["add", "main.txt"], fixture.repository);
+    await git(["commit", "-m", "main change"], fixture.repository);
+    await writeFile(join(fixture.activeWorktree, "feature.txt"), "feature\n");
+    await git(["add", "feature.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "feature change"], fixture.activeWorktree);
+    const targetHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const sourceHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+
+    const result = await manager.rebaseIntegrationSource({
+      path: fixture.activeWorktree, targetHead, expectedSourceHead: sourceHead
+    });
+
+    assert.equal(result.rebased, true);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim(), targetHead);
+    await git(["merge-base", "--is-ancestor", targetHead, "HEAD"], fixture.activeWorktree);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("multi-branch convergence uses an isolated Worktree then fast-forwards every selected branch", async () => {
+  const fixture = await createFixture("convergence", { activeFeatureWorktree: true });
+  const manager = new GitWorkspaceManager({
+    store: fixture.store,
+    transitions: { switchWorkspace: async () => assert.fail("must not switch") }
+  });
+  try {
+    await writeFile(join(fixture.repository, "main.txt"), "main\n");
+    await git(["add", "main.txt"], fixture.repository);
+    await git(["commit", "-m", "main change"], fixture.repository);
+    await writeFile(join(fixture.activeWorktree, "feature.txt"), "feature\n");
+    await git(["add", "feature.txt"], fixture.activeWorktree);
+    await git(["commit", "-m", "feature change"], fixture.activeWorktree);
+    const mainHead = (await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim();
+    const featureHead = (await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim();
+    const workspace = await manager.createConvergenceWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      baseHead: mainHead,
+      jobId: "job:test-convergence"
+    });
+    const merged = await manager.mergeIntegrationSource({
+      mainPath: workspace.path,
+      sourceHead: featureHead,
+      expectedMainHead: mainHead,
+      jobId: "job:test-convergence"
+    });
+    await manager.fastForwardIntegrationSource({
+      path: fixture.repository, targetHead: merged.mainHead, expectedSourceHead: mainHead
+    });
+    await manager.fastForwardIntegrationSource({
+      path: fixture.activeWorktree, targetHead: merged.mainHead, expectedSourceHead: featureHead
+    });
+    await manager.removeConvergenceWorktreeForProject({
+      repositoryId: fixture.repositoryId,
+      workingDirectory: fixture.repository,
+      workspace,
+      expectedHead: merged.mainHead
+    });
+
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], fixture.repository)).trim(), merged.mainHead);
+    assert.equal((await gitOutput(["rev-parse", "HEAD"], fixture.activeWorktree)).trim(), merged.mainHead);
+    await assert.rejects(() => lstat(workspace.path));
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function createFixture(label, options = {}) {
   const directory = await mkdtemp(join(tmpdir(), `corptie-git-workspace-${label}-`));
   const repository = join(directory, options.repositoryName ?? "main repo");
