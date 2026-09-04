@@ -69,6 +69,9 @@ test("discovery contracts distinguish read-only context from mutating operations
     .find((tool) => tool.canonicalName === "corptie_work_context").sideEffect, false);
   assert.equal(catalog.domainContract({}, "workspace").tools
     .find((tool) => tool.canonicalName === "corptie_create_worktree").sideEffect, true);
+  assert.equal(catalog.domainContract({}, "task-acceptance").recommendedTool, "corptie_task_get_bound");
+  assert.equal(catalog.domainContract({}, "task-acceptance").tools
+    .find((tool) => tool.canonicalName === "corptie_task_get_bound").sideEffect, false);
 });
 
 test("schema validation aggregates missing, enum, range, combination, and unknown-field issues", async () => {

@@ -8,8 +8,8 @@ const DOMAIN_PROFILES = Object.freeze({
     "corptie_collaboration_capabilities"
   ),
   "task-acceptance": profile(
-    ["task acceptance", "acceptance", "work item acceptance", "验收", "任务验收", "工作项验收"],
-    "corptie_task_report_acceptance"
+    ["task acceptance", "acceptance", "bound task", "task definition", "work item acceptance", "验收", "任务验收", "绑定任务", "任务定义", "工作项验收"],
+    "corptie_task_get_bound"
   ),
   "project-code": profile(
     ["project code", "code search", "source snapshot", "代码", "代码搜索", "源码快照"],

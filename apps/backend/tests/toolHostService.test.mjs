@@ -451,7 +451,7 @@ test("Codex, Claude, and OpenClacky Tool Host attachments receive one platform-a
   for (const id of ["codex-platform", "claude-platform", "openclacky-platform"]) assert.deepEqual(attachments.get(id).tools.map((tool) => tool.name), expected);
 });
 
-test("Codex, Claude, and OpenClacky receive one provider-neutral Task completion contract", async () => {
+test("Codex, Claude, and OpenClacky receive one provider-neutral Task read and completion contract", async () => {
   const attachments = new Map();
   const ids = ["codex-completion", "claude-completion", "openclacky-completion"];
   const providers = ids.map((id) => provider(id, [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
@@ -471,6 +471,7 @@ test("Codex, Claude, and OpenClacky receive one provider-neutral Task completion
     });
   }
   const expected = attachments.get(ids[0]).tools;
+  assert.ok(expected.some((tool) => tool.name === "corptie_task_get_bound"));
   assert.ok(expected.some((tool) => tool.name === "corptie_task_complete"));
   for (const id of ids.slice(1)) assert.deepEqual(attachments.get(id).tools, expected);
 });
