@@ -2869,9 +2869,8 @@ struct SessionDetailPanel: View {
     private var contextReferencesSection: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Label("上下文引用", systemImage: "link")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                Label(L10n("引用内容"), systemImage: "link")
+                    .detailRailSectionLabelStyle()
                 Spacer()
                 Menu {
                     Button("本地文件…", systemImage: "doc") { chooseLocalFile() }
@@ -2893,13 +2892,8 @@ struct SessionDetailPanel: View {
 
             if isLoadingContextReferences && contextReferences.isEmpty {
                 ProgressView().controlSize(.small)
-            } else if contextReferences.isEmpty {
-                Text("添加文件、网页或 Corptie 对象，作为这个会话的持续上下文。")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                VStack(spacing: 6) {
+            } else if !contextReferences.isEmpty {
+                LazyVStack(spacing: 6) {
                     ForEach(contextReferences) { reference in
                         contextReferenceRow(reference)
                     }
@@ -2955,9 +2949,7 @@ struct SessionDetailPanel: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .detailRailReferenceRowStyle()
         .opacity(reference.enabled ? 1 : 0.55)
     }
 
