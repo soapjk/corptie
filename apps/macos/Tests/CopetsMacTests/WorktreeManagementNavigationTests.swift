@@ -64,6 +64,23 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         )
     }
 
+    func testNavigationPrefersTheSessionsRepositoryBeforeLoadedProjectState() {
+        XCTAssertEqual(
+            WorktreeNavigationTarget.preferredRepositoryId(
+                sessionRepositoryId: " repository:task ",
+                loadedProjectRepositoryId: "repository:previous"
+            ),
+            "repository:task"
+        )
+        XCTAssertEqual(
+            WorktreeNavigationTarget.preferredRepositoryId(
+                sessionRepositoryId: nil,
+                loadedProjectRepositoryId: "repository:fallback"
+            ),
+            "repository:fallback"
+        )
+    }
+
     func testSessionNavigationSelectsExactWorktreeByIdBeforePathFallback() {
         var selection = WorktreeManagementSelection(repositoryId: "repository:one", worktreeId: "wt:main")
         let worktrees = [worktree("wt:main", isMain: true), worktree("wt:feature", isMain: false)]
