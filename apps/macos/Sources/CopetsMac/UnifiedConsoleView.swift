@@ -29,6 +29,12 @@ enum ConsoleNavigationMode: String, CaseIterable {
     }
 }
 
+enum ConsoleWorkOutlineMetrics {
+    static let childIndent: CGFloat = 24
+    static let groupCornerRadius: CGFloat = 8
+    static let groupHorizontalInset: CGFloat = 6
+}
+
 enum ConsoleTaskSelectionPolicy {
     static func isValidSelection(
         task: CorptieTask,
@@ -703,47 +709,69 @@ struct UnifiedConsoleView: View {
             }
 
             ForEach(entityClient.works) { work in
-                Section {
+                VStack(alignment: .leading, spacing: 2) {
+                    outlineWorkHeader(
+                        work,
+                        hasUnread: unreadSummary.workIDs.contains(work.id)
+                    )
+
                     if outlineWorkIsExpanded(work.id) {
                         if isShowingWorkerArchive {
                             let rows = archivedRowsByWorkID[work.id] ?? []
                             if rows.isEmpty {
-                                outlineEmptyRow(L10n("No Archived Sessions"))
+                                outlineWorkEmptyRow(L10n("No Archived Sessions"))
                             } else {
                                 ForEach(rows) { row in
                                     sessionRow(row)
-                                        .padding(.leading, 18)
+                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                                 }
                             }
                         } else {
                             if let row = workChatsByWorkID[work.id]?.first {
                                 workChatRow(row)
-                                    .padding(.leading, 18)
+                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
+                                    .background(outlineChildSelectionBackground(
+                                        selectionController.selectedSessionID == row.session.id
+                                    ))
                             } else {
                                 Label(L10n("Start Work Chat"), systemImage: "scope")
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(.secondary)
-                                    .padding(.leading, 18)
+                                    .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
                             }
 
                             let tasks = tasksByWorkID[work.id] ?? []
                             if tasks.isEmpty {
-                                outlineEmptyRow(L10n("No Tasks"))
+                                outlineWorkEmptyRow(L10n("No Tasks"))
                             } else {
                                 ForEach(tasks) { task in
                                     taskRow(task)
-                                        .padding(.leading, 18)
+                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
+                                        .background(outlineChildSelectionBackground(
+                                            selectedTaskId == task.id
+                                        ))
                                 }
                             }
                         }
                     }
-                } header: {
-                    outlineWorkHeader(
-                        work,
-                        hasUnread: unreadSummary.workIDs.contains(work.id)
-                    )
-                    .textCase(nil)
                 }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+                .background(
+                    Color.black.opacity(0.065),
+                    in: RoundedRectangle(
+                        cornerRadius: ConsoleWorkOutlineMetrics.groupCornerRadius,
+                        style: .continuous
+                    )
+                )
+                .listRowInsets(EdgeInsets(
+                    top: 4,
+                    leading: ConsoleWorkOutlineMetrics.groupHorizontalInset,
+                    bottom: 4,
+                    trailing: ConsoleWorkOutlineMetrics.groupHorizontalInset
+                ))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
         }
         .listStyle(.sidebar)
@@ -793,6 +821,20 @@ struct UnifiedConsoleView: View {
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
             .padding(.leading, 42)
+    }
+
+    private func outlineWorkEmptyRow(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .padding(.leading, ConsoleWorkOutlineMetrics.childIndent + 24)
+            .padding(.vertical, 4)
+    }
+
+    private func outlineChildSelectionBackground(_ isSelected: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .fill(isSelected ? Color.accentColor.opacity(0.09) : Color.clear)
+            .padding(.horizontal, 8)
     }
 
     private func outlineWorkIsExpanded(_ workID: String) -> Bool {
