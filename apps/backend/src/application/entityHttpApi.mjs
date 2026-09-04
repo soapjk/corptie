@@ -14,7 +14,7 @@ import {
 import { assertPlatformAssistantPatch, isPlatformAssistant } from "../utils/platformAssistantIdentity.mjs";
 import { presentTaskAcceptance } from "./taskAcceptance.mjs";
 import { presentMemory } from "./memoryOperationService.mjs";
-import { validateWorkInput } from "../domain/workTaskValidation.mjs";
+import { validateEntityName, validateWorkInput } from "../domain/workTaskValidation.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import os from "node:os";
 import { createTaskAndSession } from "./taskCreationApplicationService.mjs";
@@ -316,8 +316,7 @@ export function handleEntityHttpRequest({
       }
       if (request.method === "POST" && path === "/agents") {
         const input = await readJson(request);
-        const name = String(input.name ?? "").trim();
-        if (!name) throw apiError("INVALID_INPUT", "name is required.", 400);
+        const name = validateEntityName(input.name, "name", "Agent");
         const skillIds = validateSkillIds(input.skillIds);
         const requestId = boundedHeaderText(request, "x-request-id") || randomUUID();
         const idempotencyKey = boundedHeaderText(request, "idempotency-key");
@@ -430,6 +429,9 @@ export function handleEntityHttpRequest({
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
+          if (Object.prototype.hasOwnProperty.call(input, "name")) {
+            validateEntityName(input.name, "name", "Agent");
+          }
           // Fail before avatar file I/O so a mixed cosmetic + protected patch cannot leave orphaned files.
           if (isPlatformAssistant(id)) assertPlatformAssistantPatch(input);
           const skillIds = Array.isArray(input.skillIds) ? validateSkillIds(input.skillIds) : null;
@@ -629,6 +631,7 @@ export function handleEntityHttpRequest({
       }
       if (request.method === "POST" && path === "/works") {
         const input = await readJson(request);
+        validateEntityName(input.name, "name", "Work");
         const normalized = validateWorkInput(input, "create");
         if (!normalized.contributorAgentIds?.length) {
           throw apiError(
@@ -710,6 +713,9 @@ export function handleEntityHttpRequest({
         if (request.method === "PATCH") {
           workService.getWork(id);
           const input = await readJson(request);
+          if (Object.prototype.hasOwnProperty.call(input, "name")) {
+            validateEntityName(input.name, "name", "Work");
+          }
           validateWorkInput(input, "update");
           if (Object.prototype.hasOwnProperty.call(input, "avatarPath")) {
             const sourcePath = typeof input.avatarPath === "string" ? input.avatarPath.trim() : "";
@@ -768,6 +774,7 @@ export function handleEntityHttpRequest({
         const timing = beginTaskTiming("task.create");
         let phaseStartedAt = performance.now();
         const input = await readJson(request);
+        validateEntityName(input.title, "title", "Task");
         timing.taskId = typeof input.id === "string" && input.id.trim() ? input.id.trim() : null;
         timing.phases.requestParseMs = roundedMilliseconds(performance.now() - phaseStartedAt);
         phaseStartedAt = performance.now();
@@ -814,6 +821,9 @@ export function handleEntityHttpRequest({
         }
         if (request.method === "PATCH") {
           const input = await readJson(request);
+          if (Object.prototype.hasOwnProperty.call(input, "title")) {
+            validateEntityName(input.title, "title", "Task");
+          }
           if (input.lifecycleState === "done") {
             if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
             taskCompletionService.rejectNonDirectAttempt(id, { callSurface: "macos_task_patch" });
@@ -1472,20 +1482,20 @@ function draftPrompt(fieldLabel, prompt) {
 
 const FORM_DRAFT_SCHEMAS = Object.freeze({
   agent: Object.freeze({
-    name: "Short Agent name",
+    name: "Short Agent name containing only uppercase or lowercase English letters, Chinese characters, or digits; no spaces or punctuation",
     description: "Concise responsibility description",
     role: 'Exactly "independentContributor" or "assistant"',
     systemPrompt: "Detailed operating instructions for the Agent",
     capabilities: "Comma-separated capability tags"
   }),
   work: Object.freeze({
-    name: "Short work name",
+    name: "Short Work name containing only uppercase or lowercase English letters, Chinese characters, or digits; no spaces or punctuation",
     description: "Work scope and desired outcome",
     profile: 'Exactly one of "general", "software", "office", "data", or "design"',
     tags: "Comma-separated tags"
   }),
   task: Object.freeze({
-    title: "Short task title",
+    title: "Short Task title containing only uppercase or lowercase English letters, Chinese characters, or digits; no spaces or punctuation",
     description: "Concrete implementation requirements and scope",
     acceptanceCriteria: "Markdown bullet list of verifiable acceptance criteria",
     priority: 'Exactly one of "low", "medium", "high"'
@@ -1517,6 +1527,7 @@ function formDraftInstructions(formType, schema) {
     "You are Corptie's one-time structured form drafting helper, not the user's ordinary development Agent.",
     `You are filling a ${formType} creation form with exactly these JSON string fields: ${Object.keys(schema).join(", ")}.`,
     "Return ONLY one valid JSON object. Include every listed field exactly once, even when its value is an empty string.",
+    "For Agent and Work names and Task titles, use only uppercase or lowercase English letters, Chinese characters, or digits. Never use spaces, line breaks, underscores, hyphens, or other punctuation.",
     "Do not add fields, markdown fences, headings, commentary, or trailing text.",
     "Do not write files, modify Git, start services, or use collaboration, subagents, skills, or external uploads.",
     "You may read files in the working directory for context, but do not modify anything."
@@ -1528,6 +1539,7 @@ function formDraftPrompt(formType, intent, currentValues, schema) {
   return [
     `Draft all fields for the Corptie ${formType} creation form.`,
     "Preserve useful non-empty current values unless the user's request clearly replaces or improves them.",
+    "Names and titles must contain only uppercase or lowercase English letters, Chinese characters, or digits. Replace any current name or title that contains spaces or punctuation instead of preserving it.",
     formType === "work"
       ? "Use the language of the user's request. Keep names concise and describe the ideal state as an evolving direction, not a completion checklist."
       : "Use the language of the user's request. Keep names concise and acceptance criteria workly verifiable.",
@@ -1579,6 +1591,23 @@ function parseGeneratedFormDraft(text, schema) {
   }
   if (Object.hasOwn(schema, "title") && !parsed.description.trim()) {
     throw apiError("INVALID_GENERATED_DRAFT", "Generated task description must not be empty.", 502);
+  }
+  const entityNameField = Object.hasOwn(schema, "name") ? "name"
+    : Object.hasOwn(schema, "title") ? "title" : null;
+  if (entityNameField) {
+    try {
+      validateEntityName(
+        parsed[entityNameField],
+        entityNameField,
+        entityNameField === "title" ? "Task" : "Entity"
+      );
+    } catch {
+      throw apiError(
+        "INVALID_GENERATED_DRAFT",
+        `Generated ${entityNameField} may only contain English letters, Chinese characters, or digits.`,
+        502
+      );
+    }
   }
   return Object.fromEntries(expected.map((key) => [key, parsed[key].trim()]));
 }

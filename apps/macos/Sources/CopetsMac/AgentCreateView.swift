@@ -52,7 +52,10 @@ struct AgentCreateView: View {
                     presetSection
 
                     field(L10n("名称 *")) {
-                        TextField(L10n("Agent 名称"), text: $name)
+                        VStack(alignment: .leading, spacing: 4) {
+                            TextField(L10n("Agent 名称"), text: $name)
+                            EntityNameValidationMessage(value: name)
+                        }
                     }
                     field(L10n("职责描述")) {
                         TextField(L10n("如：后端接口与数据库专家"), text: $detail)
@@ -137,7 +140,7 @@ struct AgentCreateView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(
-                    name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || submission.isSubmitting
+                    !EntityNamePolicy.isValid(name) || submission.isSubmitting
                 )
             }
             .padding(16)
@@ -248,8 +251,8 @@ struct AgentCreateView: View {
     }
 
     private func create() {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard EntityNamePolicy.isValid(name) else { return }
+        let validatedName = name
         guard let idempotencyKey = submission.begin() else { return }
         let capabilities = capabilitiesText
             .split(separator: ",")
@@ -266,10 +269,10 @@ struct AgentCreateView: View {
             let taskId = "agent.create:\(idempotencyKey)"
             let started = BackgroundTaskCenter.shared.start(
                 id: taskId,
-                title: L10nFormat("创建 Agent：%@", trimmed)
+                title: L10nFormat("创建 Agent：%@", validatedName)
             ) {
                 guard await client.createAgent(
-                    name: trimmed,
+                    name: validatedName,
                     description: requestDescription,
                     role: requestRole,
                     systemPrompt: requestSystemPrompt,
@@ -280,7 +283,7 @@ struct AgentCreateView: View {
                 ) != nil else {
                     return .failure(client.errorMessage ?? L10n("Agent 创建失败，可重试。"))
                 }
-                return .success(L10nFormat("Agent“%@”已创建。", trimmed))
+                return .success(L10nFormat("Agent“%@”已创建。", validatedName))
             }
             if started { dismiss() }
             return
@@ -288,7 +291,7 @@ struct AgentCreateView: View {
 
         Task {
             if let agent = await client.createAgent(
-                name: trimmed,
+                name: validatedName,
                 description: requestDescription,
                 role: requestRole,
                 systemPrompt: requestSystemPrompt,
