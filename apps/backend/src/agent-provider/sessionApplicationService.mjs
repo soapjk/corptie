@@ -77,10 +77,17 @@ export class SessionApplicationService {
     if (hasPreparedToolHost && context.deferSessionBinding !== true) {
       throw new TypeError("A prepared Tool Host attachment is only valid for an internal route transition.");
     }
+    const bootstrapContext = this.#materializationContext({
+      ...context,
+      sessionKind: context.sessionKind ?? preparedInput.sessionKind ?? "legacy"
+    });
     const toolHost = hasPreparedToolHost
       ? context.preparedToolHost
       : this.toolHostService
-        ? await this.toolHostService.prepareSession(providerId, { purpose: "session-bootstrap", ...context })
+        ? await this.toolHostService.prepareSession(providerId, {
+            purpose: "session-bootstrap",
+            ...bootstrapContext
+          })
         : null;
     const session = await this.registry.invoke(
       providerId,
@@ -102,7 +109,7 @@ export class SessionApplicationService {
     if (!reference || !this.toolHostService || !actorId) return;
     if (!this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)) return;
     this.registry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME);
-    const finalizationContext = {
+    const finalizationContext = this.#materializationContext({
       ...context,
       purpose: "session-create-finalization",
       actorId,
@@ -114,10 +121,10 @@ export class SessionApplicationService {
       sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
       workId: context.workId ?? null,
       taskId: context.taskId ?? null
-    };
+    });
     try {
-      const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
       await this.#ensureRequiredDomains(finalizationContext);
+      const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
       await this.registry.invoke(
         providerId,
         AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
@@ -151,7 +158,7 @@ export class SessionApplicationService {
     const reference = await this.referenceFor(sessionId);
     const storedSession = reference.metadata?.session ?? null;
     const actorId = normalizedText(context.actorId ?? storedSession?.agentId);
-    const resumeContext = {
+    const resumeContext = this.#materializationContext({
       ...context,
       purpose: normalizedText(context.purpose) ?? "session-resume",
       actorId,
@@ -163,11 +170,11 @@ export class SessionApplicationService {
       ...(reference.bindingId ?? reference.providerBindingId
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {})
-    };
+    });
+    await this.#ensureRequiredDomains(resumeContext);
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, resumeContext)
       : null;
-    await this.#ensureRequiredDomains(resumeContext);
     const session = await this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
@@ -188,7 +195,7 @@ export class SessionApplicationService {
     );
     const storedSession = reference.metadata?.session ?? null;
     const actorId = normalizedText(context.actorId ?? storedSession?.agentId);
-    const materializationContext = {
+    const materializationContext = this.#materializationContext({
       actorId,
       purpose: "session",
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
@@ -199,11 +206,11 @@ export class SessionApplicationService {
       ...(reference.bindingId ?? reference.providerBindingId
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {})
-    };
+    });
+    await this.#ensureRequiredDomains(materializationContext);
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, materializationContext)
       : null;
-    await this.#ensureRequiredDomains(materializationContext);
     return this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.SESSION_EXECUTION_PREPARE,
@@ -252,8 +259,21 @@ export class SessionApplicationService {
     }
     return this.toolMaterializationPort.ensureDomainsApplied(logicalSessionId, domains, {
       turnExecutionId: context.turnExecutionId ?? context.turnId ?? null,
-      purpose: context.purpose
+      purpose: context.purpose,
+      activeTurn: context.activeTurn === true
     });
+  }
+
+  #materializationContext(context = {}) {
+    const required = this.resolveRequiredToolDomains(context);
+    const desired = Array.isArray(context.desiredToolDomains) ? context.desiredToolDomains : [];
+    return {
+      ...context,
+      desiredToolDomains: [...new Set([
+        ...desired,
+        ...(Array.isArray(required) ? required : [])
+      ].map((domain) => normalizedText(domain)).filter(Boolean))].sort()
+    };
   }
 
   // Replacement is allowed only after the caller has proved that the old
@@ -367,6 +387,19 @@ export class SessionApplicationService {
   async sendMessage(sessionId, message, context = {}) {
     const reference = await this.referenceFor(sessionId);
     await this.assertMessageDispatchAllowed?.(reference, context);
+    const storedSession = reference.metadata?.session ?? context.before ?? null;
+    await this.#ensureRequiredDomains(this.#materializationContext({
+      ...context,
+      purpose: "conversation-turn-boundary",
+      actorId: normalizedText(context.actorId ?? storedSession?.agentId),
+      sessionId: reference.sessionId,
+      logicalSessionId: reference.logicalSessionId,
+      providerBindingId: reference.bindingId,
+      sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
+      workId: storedSession?.workId ?? context.workId ?? null,
+      taskId: storedSession?.taskId ?? context.taskId ?? null,
+      activeTurn: false
+    }));
     const sessionContext = this.resolveMessageContext
       ? await this.resolveMessageContext(reference, { ...context, message })
       : null;

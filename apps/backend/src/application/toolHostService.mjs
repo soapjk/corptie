@@ -155,7 +155,7 @@ export class ToolHostService {
     const started = performance.now();
     try {
       const result = await this.#execute(input);
-      this.#recordToolCall(input, "success", performance.now() - started);
+      this.#recordToolCall(input, "success", performance.now() - started, null, result);
       return result;
     } catch (error) {
       this.#recordToolCall(input, "failed", performance.now() - started, error);
@@ -221,7 +221,21 @@ export class ToolHostService {
     return this.catalog.execute(input);
   }
 
-  #recordToolCall(input, status, durationMs, error = null) {
+  #recordToolCall(input, status, durationMs, error = null, result = null) {
+    const gatewayTool = input.tool === TOOL_RESTRICTED_GATEWAY ? input.tool : null;
+    const canonicalTool = gatewayTool
+      ? normalizedText(input.arguments?.tool) ?? input.tool
+      : input.tool;
+    const entry = this.catalog.entry(canonicalTool);
+    const search = canonicalTool === "corptie_project_code_search"
+      ? projectCodeSearchObservation(result)
+      : null;
+    const projectCodeFailure = canonicalTool === "corptie_project_code_search" && error
+      ? {
+          fallbackRecommended: true,
+          fallbackReasons: [error.code ?? "PROJECT_CODE_SEARCH_FAILED"]
+        }
+      : null;
     this.#record({
       stage: "tool-call",
       status,
@@ -231,9 +245,12 @@ export class ToolHostService {
       reason: error?.message ?? "Tool Host call completed.",
       toolCount: 1,
       details: {
-        tool: input.tool ?? null,
-        domainId: this.catalog.entry(input.tool)?.domainId ?? "tool-catalog",
+        tool: canonicalTool ?? null,
+        gatewayTool,
+        domainId: entry?.domainId ?? "tool-catalog",
         durationMs: Number(durationMs.toFixed(3)),
+        ...(search ?? {}),
+        ...(projectCodeFailure ?? {}),
         schemaValidationFailureCount: error?.code === "TOOL_ARGUMENT_SCHEMA_INVALID" ? 1 : 0,
         schemaValidationIssueCount: Array.isArray(error?.issues) ? error.issues.length : 0
       }
@@ -316,6 +333,25 @@ export class ToolHostService {
     if (typeof this.recordRuntimeEvent !== "function") return null;
     return this.recordRuntimeEvent(event);
   }
+}
+
+function projectCodeSearchObservation(result) {
+  const search = result?.search ?? result?.searchReceipt ?? null;
+  const results = Array.isArray(result?.results) ? result.results : [];
+  if (!search) return { resultCount: results.length };
+  const layers = Array.isArray(search.layers) ? search.layers : [];
+  const fallbackReasons = [...new Set(layers.flatMap((layer) => [
+    layer?.skippedReason,
+    layer?.degradedReason
+  ]).filter(Boolean))];
+  return {
+    resultCount: results.length,
+    searchOutcome: search.outcome ?? null,
+    searchErrorCode: search.errorCode ?? null,
+    searchTotalMs: search.totalMs ?? search.latency?.totalMs ?? null,
+    fallbackRecommended: results.length === 0 || fallbackReasons.length > 0,
+    fallbackReasons
+  };
 }
 
 function exactScope(input) {
