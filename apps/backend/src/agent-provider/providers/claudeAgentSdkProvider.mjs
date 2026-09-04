@@ -1,5 +1,6 @@
 import { CallbackAgentProvider } from "../callbackAgentProvider.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../contracts.mjs";
+import { validateClaudeProviderConfiguration } from "./claudeProviderConfiguration.mjs";
 
 export const CLAUDE_AGENT_SDK_PROVIDER_ID = "claude-sdk";
 export const CLAUDE_TOOL_SCHEMA_CAPABILITIES = Object.freeze({
@@ -24,6 +25,22 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     transport: "agent-sdk",
     aliases: ["claude", "claude-code", "claude_code"],
     runtime: { lifecycle: "managed" },
+    configuration: {
+      fields: [
+        {
+          id: "apiKey",
+          type: "secret",
+          label: "Anthropic API Key",
+          required: false,
+          environmentVariable: "ANTHROPIC_API_KEY",
+          persisted: false
+        },
+        { id: "model", type: "string", label: "Model", required: false, environmentVariable: "ANTHROPIC_MODEL" },
+        { id: "timeoutMs", type: "integer", label: "Connection timeout (ms)", required: false, defaultValue: "15000" },
+        { id: "maxTurns", type: "integer", label: "Maximum turns", required: false, defaultValue: "1" },
+        { id: "maxBudgetUsd", type: "number", label: "Maximum budget (USD)", required: false }
+      ]
+    },
     metadata: {
       backgroundPermissionProfiles: ["read-only"],
       toolSchemaCapabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES,
@@ -47,6 +64,8 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
+      AGENT_PROVIDER_CAPABILITIES.CONFIGURATION_VALIDATE,
+      AGENT_PROVIDER_CAPABILITIES.CONNECTION_TEST,
       ...(typeof options.listModels === "function" ? [AGENT_PROVIDER_CAPABILITIES.MODEL_LIST] : []),
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
@@ -87,6 +106,10 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     clearConversation: (reference) => manager.clear(reference.providerSessionId),
     interrupt: (reference) => manager.interrupt(reference.providerSessionId),
     respondToApproval: (reference, approval) => manager.respondToChoice(reference.providerSessionId, approval),
+    validateConfiguration: (configuration) => validateClaudeProviderConfiguration(configuration, {
+      environment: options.environment?.() ?? process.env
+    }),
+    testConnection: (configuration) => manager.testConnection(configuration),
     ...(typeof options.listModels === "function" ? { listModels: options.listModels } : {}),
     switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId),
     switchReasoning: (reference, reasoningLevel) => manager.switchReasoning(reference.providerSessionId, reasoningLevel),
