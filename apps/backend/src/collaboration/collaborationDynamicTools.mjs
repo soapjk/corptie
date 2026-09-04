@@ -77,7 +77,7 @@ function tool(name, description, properties = {}, required = []) {
 
 export const collaborationDynamicTools = Object.freeze([
   tool("corptie_collaboration_capabilities", "Read collaboration actions authorized for this exact authenticated Session. Session is the only actor and routing principal; Agent, Work, and Task are resources bound to it."),
-  tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions. Without peer filters, results stay in the authenticated Work; explicit agent_id/work_id filters may return minimal peer-Work routing descriptors with Workspace and Provider details redacted.", {
+  tool("corptie_sessions_discover", "Discover collaboration-receiving Sessions only after a direct recipient_session_name lookup returns RECIPIENT_SESSION_NOT_FOUND or RECIPIENT_SESSION_ALIAS_AMBIGUOUS. Without peer filters, results stay in the authenticated Work; explicit agent_id/work_id filters may return minimal peer-Work routing descriptors with Workspace and Provider details redacted.", {
     agent_id: agentIdSchema,
     work_id: workIdSchema,
     task_id: taskIdSchema,
@@ -119,7 +119,7 @@ export const collaborationDynamicTools = Object.freeze([
     version_policy: { type: "string", enum: ["fixed", "latest_approved"] },
     version: { type: "integer", minimum: 1 }
   }, ["task_id", "artifact_id"]),
-  tool("corptie_agents_discover", "Discover registered peer Agents and their capabilities.", {
+  tool("corptie_agents_discover", "Discover registered peer Agents and their capabilities. Do not use this tool to resolve an @Session name for Channel messaging.", {
     status: { type: "string", enum: ["available", "unavailable"] }
   }),
   tool("corptie_agents_get", "Get one registered Agent, including its current Session binding.", {
@@ -132,8 +132,8 @@ export const collaborationDynamicTools = Object.freeze([
   tool("corptie_services_describe", "Describe a service, its owner, endpoint, version, metadata, and consumers.", {
     service_id: { type: "string", minLength: 1 }
   }, ["service_id"]),
-  tool("corptie_collaboration_channel_open", "Open or reuse a durable, user-authorized, bidirectional Channel between two exact logical Sessions and send its first message. If the target Session does not exist, one confirmation may authorize target Task creation, target Session creation, Channel activation, and delivery.", {
-    recipient_session_name: { type: "string", minLength: 1 },
+  tool("corptie_collaboration_channel_open", "Send a first or follow-up message directly to an exact @Session name, opening or reusing its durable Channel. Pass recipient_session_name immediately without pre-discovery; the server resolves exact names and aliases (with or without @). Only if it returns structured not-found or ambiguity details should you discover Sessions and retry with recipient_session_id. A missing target may be created only through explicit user confirmation.", {
+    recipient_session_name: { type: "string", minLength: 1, description: "Exact Session name or alias, optionally prefixed with @. Prefer this direct route before Session discovery." },
     recipient_session_id: sessionIdSchema,
     session_agent_id: { ...agentIdSchema, description: "Agent resource used only when Corptie must create the target Worker Session." },
     target_work_id: workIdSchema,
