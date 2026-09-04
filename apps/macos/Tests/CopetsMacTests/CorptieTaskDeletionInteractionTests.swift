@@ -37,7 +37,7 @@ struct CorptieTaskDeletionInteractionTests {
         #expect(source.contains("private var workRail: some View"))
         #expect(source.contains("workPendingEdit = work"))
         #expect(source.contains("workPendingDeletion = work"))
-        #expect(source.contains("private func taskRow(_ task: CorptieTask) -> some View"))
+        #expect(source.contains("private func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View"))
         #expect(!source.contains("Button(L10n(\"Open Details\"), systemImage: \"sidebar.right\")"))
         #expect(source.contains("taskPendingEdit = task"))
         #expect(source.contains("Task { await prepareTaskDeletion(task) }"))

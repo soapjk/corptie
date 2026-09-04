@@ -188,7 +188,46 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!detail.contains("text: task.goal"))
         #expect(!overview.contains("L10n(\"WORKSPACE\")"))
         #expect(!overview.contains("workspaceName"))
+        #expect(!overview.contains("Text(task.title)"))
         #expect(!source.contains("private var workspaceName: String?"))
+
+        let overviewPosition = try #require(detail.range(of: "overviewSection"))
+        let definitionPosition = try #require(detail.range(of: "taskDefinitionSection"))
+        let executionPosition = try #require(detail.range(of: "executionAndWorkspaceSection"))
+        let resourcesPosition = try #require(detail.range(of: "taskResourcesSection"))
+        #expect(overviewPosition.lowerBound < definitionPosition.lowerBound)
+        #expect(definitionPosition.lowerBound < executionPosition.lowerBound)
+        #expect(executionPosition.lowerBound < resourcesPosition.lowerBound)
+        #expect(detail.components(separatedBy: "Divider()").count - 1 == 3)
+        #expect(source.contains("private var taskDefinitionSection: some View"))
+        #expect(source.contains("private var executionAndWorkspaceSection: some View"))
+        #expect(source.contains("private var taskResourcesSection: some View"))
+    }
+
+    @Test
+    func detailRailCompactsEmptySectionsAndSharesReferencePresentation() throws {
+        let taskSource = try source(named: "WarRoomView.swift")
+        let sessionSource = try source(named: "UnifiedConsoleView.swift")
+        let artifactSource = try source(named: "ArtifactViews.swift")
+        let styleSource = try source(named: "DetailRailStyles.swift")
+
+        #expect(taskSource.contains("if hasTaskDefinitionContent"))
+        #expect(taskSource.contains("if hasContent(task.description)"))
+        #expect(taskSource.contains("if hasContent(task.acceptanceCriteria)"))
+        #expect(taskSource.contains("if hasContent(task.verificationCriteria)"))
+        #expect(!taskSource.contains("text.isEmpty ? L10n(\"No Content\")"))
+        #expect(!taskSource.contains("Text(L10n(\"暂无记忆\"))"))
+
+        #expect(sessionSource.contains("Label(L10n(\"引用内容\"), systemImage: \"link\")"))
+        #expect(artifactSource.contains("taskId == nil ? L10n(\"Artifacts\") : L10n(\"引用内容\")"))
+        #expect(!sessionSource.contains("添加文件、网页或 Corptie 对象，作为这个会话的持续上下文。"))
+        #expect(!artifactSource.contains("Text(L10n(\"No private Artifacts are referenced.\"))"))
+
+        #expect(sessionSource.contains(".detailRailSectionLabelStyle()"))
+        #expect(sessionSource.contains(".detailRailReferenceRowStyle()"))
+        #expect(artifactSource.contains(".detailRailSectionLabelStyle()"))
+        #expect(artifactSource.contains(".detailRailReferenceRowStyle()"))
+        #expect(styleSource.contains("cornerRadius: 8, style: .continuous"))
     }
 
     @Test
