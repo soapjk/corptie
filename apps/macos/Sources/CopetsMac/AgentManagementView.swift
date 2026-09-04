@@ -277,6 +277,18 @@ struct AgentManagementView: View {
                             .onTapGesture {
                                 selectedAgentForDetail = agent
                             }
+                            .focusable()
+                            .onKeyPress(.return) {
+                                selectedAgentForDetail = agent
+                                return .handled
+                            }
+                            .onKeyPress(.space) {
+                                selectedAgentForDetail = agent
+                                return .handled
+                            }
+                            .accessibilityAction(named: Text(L10n("打开详情"))) {
+                                selectedAgentForDetail = agent
+                            }
                     }
                 }
             }

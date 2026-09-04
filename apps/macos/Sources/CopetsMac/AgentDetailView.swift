@@ -13,13 +13,12 @@ struct AgentDetailView: View {
     @State private var detail: String
     @State private var systemPrompt: String
     @State private var selectedSkillIds: Set<String>
-    @State private var showSkillRegister = false
+    @State private var showSkillPicker = false
     @State private var isSaving = false
     @State private var saveError: String?
     @State private var showDeleteConfirm = false
     @State private var showSessionCreation = false
     @State private var assistAgentId: String?
-    @State private var selectedPage = "profile"
 
     init(agent: Agent) {
         self.agent = agent
@@ -30,7 +29,7 @@ struct AgentDetailView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Button { dismiss() } label: {
                     Image(systemName: "xmark")
@@ -44,26 +43,30 @@ struct AgentDetailView: View {
                 .accessibilityLabel(L10n("Close"))
                 Spacer()
             }
-            header
-            Picker("", selection: $selectedPage) {
-                Text(L10n("Profile")).tag("profile")
-                Text(L10n("Memories")).tag("memories")
-            }
-            .pickerStyle(.segmented)
-            if selectedPage == "profile" {
-                Divider()
-                form
-                Divider()
-                actions
-                deleteButton
-            } else {
-                MemoryManagementView(scope: .owner(type: "agent", id: agent.agentId))
-                    .frame(minHeight: 390)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
+                    Divider()
+                    form
+                    Divider()
+                    actions
+                    deleteButton
+                    Divider()
+                    MemoryManagementView(
+                        scope: .owner(type: "agent", id: agent.agentId),
+                        embedsListInParentScrollView: true
+                    )
+                }
+                .padding(24)
             }
         }
-        .padding(24)
-        .frame(width: selectedPage == "profile" ? 500 : 760)
-        .frame(minHeight: selectedPage == "profile" ? nil : 580)
+        .frame(width: 760)
+        .frame(minHeight: 580, idealHeight: 680)
         .alert(L10n("删除 Agent"), isPresented: $showDeleteConfirm) {
             Button(L10n("删除"), role: .destructive) {
                 Task { await client.deleteAgent(agentId: agent.agentId) }
@@ -79,9 +82,9 @@ struct AgentDetailView: View {
                 router.openSession(session.id)
             }
         }
-        .sheet(isPresented: $showSkillRegister) {
-            SkillRegisterView { skill in
-                if let skill { selectedSkillIds.insert(skill.skillId) }
+        .sheet(isPresented: $showSkillPicker) {
+            AgentSkillPickerView(skills: client.skills, selectedSkillIds: selectedSkillIds) { selection in
+                selectedSkillIds = selection
             }
         }
         .task {
@@ -189,11 +192,11 @@ struct AgentDetailView: View {
                 } trailing: {
                     AgentAssistButton(fieldLabel: "System Prompt", text: $systemPrompt, selectedAgentId: $assistAgentId, context: "Agent 名称：\(name)；描述：\(detail)")
                 }
-                AgentSkillSelectionView(
+                AgentInstalledSkillsView(
                     skills: client.skills,
                     selectedSkillIds: $selectedSkillIds,
                     isEnabled: true,
-                    onRegister: { showSkillRegister = true }
+                    onAdd: { showSkillPicker = true }
                 )
             }
             if let saveError {
@@ -224,7 +227,7 @@ struct AgentDetailView: View {
                 .buttonStyle(.bordered)
             }
 
-            Button(L10n("保存")) {
+            Button {
                 Task {
                     isSaving = true
                     saveError = nil
@@ -249,6 +252,15 @@ struct AgentDetailView: View {
                     } else {
                         saveError = client.errorMessage ?? L10n("保存失败。")
                     }
+                }
+            } label: {
+                if isSaving {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text(L10n("保存中…"))
+                    }
+                } else {
+                    Text(L10n("保存"))
                 }
             }
             .keyboardShortcut(.defaultAction)
