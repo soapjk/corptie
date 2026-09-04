@@ -294,7 +294,10 @@ import { SessionTimelineChangePublisher } from "./application/sessionTimelineCha
 import { CodeTaskObservabilityService } from "./observability/codeTaskObservability.mjs";
 import { handleCodeTaskObservabilityHttpRequest } from "./observability/codeTaskObservabilityHttpApi.mjs";
 import { OBSERVABILITY_DEPENDENCY_PINS } from "./observability/dependencyContractManifest.mjs";
-import { resolveStableSessionIdForProviderDetail } from "./application/providerSessionIdentity.mjs";
+import {
+  resolveDurableEventSessionId,
+  resolveStableSessionIdForProviderDetail
+} from "./application/providerSessionIdentity.mjs";
 import { RunIsolationAuthorityResolver, RunIsolationExecutionCoordinator } from "./runIsolation/index.mjs";
 import {
   DEFAULT_SESSION_HISTORY_WINDOW,
@@ -3370,9 +3373,10 @@ function emitEvent(type, payload, options = {}) {
   // Deletion notifications must survive after the Session row is gone. Keep
   // their identity in the payload without attaching the durable outbox row to
   // the deleted Session's foreign key.
-  const sessionId = options.detachedSession === true
+  const requestedSessionId = options.detachedSession === true
     ? null
     : options.sessionId || sessionIdFromEventPayload(payload);
+  const sessionId = resolveDurableEventSessionId(store, requestedSessionId);
   const createdAt = now();
   const durableEventId = options.eventId || randomUUID();
   if (options.eventId && store.db && store.hasSessionEvent(options.eventId)) return null;
