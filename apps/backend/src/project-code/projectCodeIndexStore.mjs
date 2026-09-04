@@ -8,6 +8,8 @@ import { contractError, hashCanonical, sha256Hex } from "./projectCodeContracts.
 const CATALOG_SCHEMA = 1;
 const TEXT_SYMBOL_SCHEMA = 5;
 const RANKING_VERSION = "project-code-ranking/v2";
+const MAX_OPEN_QUERY_GENERATIONS = 16;
+const queryConnections = new Map();
 
 export class ProjectCodeIndexStore {
   constructor(options = {}) {
@@ -16,7 +18,9 @@ export class ProjectCodeIndexStore {
     this.requireExternal = options.requireExternal !== false;
     this.maxBytes = options.maxBytes ?? 8 * 1024 * 1024 * 1024;
     this.maxCachedWorktrees = options.maxCachedWorktrees ?? 32;
+    this.maxLoadedGenerations = options.maxLoadedGenerations ?? 4;
     this.singleFlights = new Map();
+    this.loadedLayers = new Map();
     this.latestCatalogByWorktree = new Map();
     this.latestTextByWorktree = new Map();
     this.io = options.io ?? {};
@@ -50,6 +54,13 @@ export class ProjectCodeIndexStore {
 
   async readLayer(snapshot, layer) {
     await this.initialize();
+    const cacheKey = `${snapshot.receipt.sourceFingerprint}:${layer}`;
+    const cached = this.loadedLayers.get(cacheKey);
+    if (cached) {
+      this.loadedLayers.delete(cacheKey);
+      this.loadedLayers.set(cacheKey, cached);
+      return cached;
+    }
     this.stats.opens += 1;
     const directory = this.#snapshotDirectory(snapshot);
     const name = layer === "L1" ? "catalog.json" : "text-symbol.json";
@@ -58,8 +69,11 @@ export class ProjectCodeIndexStore {
       if (layer === "L2") {
         const databasePath = join(directory, "lexical.sqlite");
         await access(databasePath, constants.R_OK);
-        return Object.freeze({ ...value, databasePath });
+        const loaded = Object.freeze({ ...value, databasePath });
+        lruSet(this.loadedLayers, cacheKey, loaded, this.maxLoadedGenerations);
+        return loaded;
       }
+      lruSet(this.loadedLayers, cacheKey, value, this.maxLoadedGenerations);
       return value;
     } catch (error) {
       if (error?.code === "ENOENT") return this.#readLegacyLayer(snapshot, layer);
@@ -116,6 +130,7 @@ export class ProjectCodeIndexStore {
         documentsByHash: new Map(value.documents.map((document) => [document.contentHash, document]))
       }, this.maxCachedWorktrees);
       const index = layer === "L2" ? Object.freeze({ ...value, databasePath: join(directory, "lexical.sqlite") }) : value;
+      lruSet(this.loadedLayers, `${snapshot.receipt.sourceFingerprint}:${layer}`, index, this.maxLoadedGenerations);
       return Object.freeze({ index, indexHit: false, incremental: value.reusedFileCount > 0 });
     } catch (error) {
       await rm(staging, { recursive: true, force: true }).catch(() => {});
@@ -260,35 +275,72 @@ async function buildTextSymbol(snapshot, catalog, options = {}) {
 export function queryTextSymbolIndex(index, query, options = {}) {
   throwIfAborted(options.signal);
   if (!index?.databasePath) return queryLegacyTextSymbolIndex(index, query, options);
-  const database = new DatabaseSync(index.databasePath, { readOnly: true });
-  try {
-    const needle = queryIdentifier(query);
-    const tokens = expandQueryTokens(query);
-    const results = [];
-    const symbolRows = database.prepare(`SELECT f.path,s.start_line AS line,s.name AS symbol,s.kind,s.snippet,s.normalized_name
-      FROM symbols s JOIN files f ON f.file_id=s.file_id
-      WHERE s.normalized_name=? OR s.normalized_name LIKE ? LIMIT 100`).all(needle, `${needle}%`);
-    for (const row of symbolRows) results.push(resultFromRow(row, row.normalized_name === needle ? 1 : 0.92));
-    const wantsCalls = /(?:caller|usage|uses|调用|谁调用)/iu.test(query);
-    if (wantsCalls || symbolRows.length === 0) {
-      const callRows = database.prepare(`SELECT f.path,c.line,NULL AS symbol,'call' AS kind,c.snippet,c.normalized_callee
-        FROM calls c JOIN files f ON f.file_id=c.file_id
-        WHERE c.normalized_callee=? OR c.normalized_callee LIKE ? LIMIT 100`).all(needle, `${needle}%`);
-      for (const row of callRows) results.push(resultFromRow(row, wantsCalls ? 0.96 : 0.84));
-    }
-    const importRows = database.prepare(`SELECT f.path,i.line,NULL AS symbol,'import' AS kind,i.snippet,i.normalized_name
-      FROM imports i JOIN files f ON f.file_id=i.file_id
-      WHERE i.normalized_name LIKE ? LIMIT 50`).all(`%${needle}%`);
+  const statements = queryStatements(index.databasePath);
+  const needle = queryIdentifier(query);
+  const tokens = options.includeText === true ? expandQueryTokens(query) : [];
+  const results = [];
+  let symbolRows = statements.symbolExact.all(needle);
+  if (symbolRows.length === 0) symbolRows = statements.symbolPrefix.all(`${needle}%`);
+  for (const row of symbolRows) results.push(resultFromRow(row, row.normalized_name === needle ? 1 : 0.92));
+  const wantsCalls = /(?:caller|usage|uses|调用|谁调用)/iu.test(query);
+  if (wantsCalls || symbolRows.length === 0) {
+    let callRows = statements.callExact.all(needle);
+    if (callRows.length === 0) callRows = statements.callPrefix.all(`${needle}%`);
+    for (const row of callRows) results.push(resultFromRow(row, wantsCalls ? 0.96 : 0.84));
+  }
+  if (/(?:import|dependency|depends|引用|依赖)/iu.test(query) || symbolRows.length === 0) {
+    let importRows = statements.importExact.all(needle);
+    if (importRows.length === 0) importRows = statements.importContains.all(`%${needle}%`);
     for (const row of importRows) results.push(resultFromRow(row, 0.8));
-    if (tokens.length > 0) {
-      const match = tokens.map((token) => `"${token.replaceAll('"', '""')}"`).join(" OR ");
-      const rows = database.prepare(`SELECT f.path,l.line,NULL AS symbol,'text' AS kind,l.snippet,bm25(lexical_fts,5.0,4.0,1.0) AS rank
-        FROM lexical_fts JOIN lexical_segments l ON l.segment_id=lexical_fts.rowid
-        JOIN files f ON f.file_id=l.file_id WHERE lexical_fts MATCH ? ORDER BY rank LIMIT 100`).all(match);
-      for (const row of rows) results.push(resultFromRow(row, Math.max(0.3, Math.min(0.78, 0.76 - Number(row.rank ?? 0) / 100))));
-    }
-    return deduplicateResults(results).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line).slice(0, options.limit ?? 50);
-  } finally { database.close(); }
+  }
+  if (tokens.length > 0) {
+    const match = tokens.map((token) => `"${token.replaceAll('"', '""')}"`).join(" OR ");
+    const rows = statements.fts.all(match);
+    for (const row of rows) results.push(resultFromRow(row, Math.max(0.3, Math.min(0.78, 0.76 - Number(row.rank ?? 0) / 100))));
+  }
+  return deduplicateResults(results).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || a.line - b.line).slice(0, options.limit ?? 50);
+}
+
+export function closeProjectCodeQueryConnections() {
+  for (const { database } of queryConnections.values()) database.close();
+  queryConnections.clear();
+}
+
+function queryStatements(databasePath) {
+  const cached = queryConnections.get(databasePath);
+  if (cached) {
+    queryConnections.delete(databasePath);
+    queryConnections.set(databasePath, cached);
+    return cached.statements;
+  }
+  const database = new DatabaseSync(databasePath, { readOnly: true });
+  database.exec("PRAGMA query_only=ON; PRAGMA cache_size=-8192; PRAGMA mmap_size=268435456;");
+  const statements = Object.freeze({
+    symbolExact: database.prepare(`SELECT f.path,s.start_line AS line,s.name AS symbol,s.kind,s.snippet,s.normalized_name
+      FROM symbols s JOIN files f ON f.file_id=s.file_id WHERE s.normalized_name=? LIMIT 100`),
+    symbolPrefix: database.prepare(`SELECT f.path,s.start_line AS line,s.name AS symbol,s.kind,s.snippet,s.normalized_name
+      FROM symbols s JOIN files f ON f.file_id=s.file_id WHERE s.normalized_name LIKE ? LIMIT 100`),
+    callExact: database.prepare(`SELECT f.path,c.line,NULL AS symbol,'call' AS kind,c.snippet,c.normalized_callee
+      FROM calls c JOIN files f ON f.file_id=c.file_id WHERE c.normalized_callee=? LIMIT 100`),
+    callPrefix: database.prepare(`SELECT f.path,c.line,NULL AS symbol,'call' AS kind,c.snippet,c.normalized_callee
+      FROM calls c JOIN files f ON f.file_id=c.file_id WHERE c.normalized_callee LIKE ? LIMIT 100`),
+    importExact: database.prepare(`SELECT f.path,i.line,NULL AS symbol,'import' AS kind,i.snippet,i.normalized_name
+      FROM imports i JOIN files f ON f.file_id=i.file_id WHERE i.normalized_name=? LIMIT 50`),
+    importContains: database.prepare(`SELECT f.path,i.line,NULL AS symbol,'import' AS kind,i.snippet,i.normalized_name
+      FROM imports i JOIN files f ON f.file_id=i.file_id WHERE i.normalized_name LIKE ? LIMIT 50`),
+    fts: database.prepare(`SELECT f.path,l.line,NULL AS symbol,'text' AS kind,l.snippet,lexical_fts.rank AS rank
+      FROM lexical_fts JOIN lexical_segments l ON l.segment_id=lexical_fts.rowid
+      JOIN files f ON f.file_id=l.file_id
+      WHERE lexical_fts MATCH ? AND lexical_fts.rank MATCH 'bm25(5.0,4.0,1.0)'
+      ORDER BY lexical_fts.rank LIMIT 100`)
+  });
+  queryConnections.set(databasePath, { database, statements });
+  while (queryConnections.size > MAX_OPEN_QUERY_GENERATIONS) {
+    const oldest = queryConnections.keys().next().value;
+    queryConnections.get(oldest).database.close();
+    queryConnections.delete(oldest);
+  }
+  return statements;
 }
 
 function queryLegacyTextSymbolIndex(index, query, options = {}) {
@@ -315,11 +367,12 @@ function queryLegacyTextSymbolIndex(index, query, options = {}) {
 }
 
 function indexSourceFile(text, path, language) {
-  const symbols = extractSymbols(text, language);
-  const calls = extractCalls(text, symbols);
-  const imports = extractImports(text);
-  const symbolLines = new Set(symbols.map((symbol) => symbol.line));
   const lines = text.split(/\r?\n/);
+  const lineOffsets = sourceLineOffsets(text);
+  const symbols = extractSymbols(text, language, lines, lineOffsets);
+  const calls = extractCalls(text, symbols, lines, lineOffsets);
+  const imports = extractImports(text, lines, lineOffsets);
+  const symbolLines = new Set(symbols.map((symbol) => symbol.line));
   const segments = [];
   for (let index = 0; index < lines.length && segments.length < 20_000; index += 1) {
     const snippet = lines[index].trim().slice(0, 240);
@@ -331,46 +384,45 @@ function indexSourceFile(text, path, language) {
   return { symbols, calls, imports, segments, parserQuality: "fallback" };
 }
 
-function extractSymbols(text, language) {
+function extractSymbols(text, language, lines, lineOffsets) {
   const patterns = language === "swift"
     ? [[/\b(class|struct|enum|protocol|func|var|let)\s+([\p{L}_][\p{L}\p{N}_]*)/gu, { func: "function", var: "property", let: "property" }]]
     : [[/\b(class|interface|enum|function|const|let|var|def|fn|func)\s+([\p{L}_$][\p{L}\p{N}_$]*)/gu, { def: "function", fn: "function", func: "function", const: "property", let: "property", var: "property", interface: "protocol" }]];
   const symbols = [];
   for (const [pattern, mapping] of patterns) {
     for (const match of text.matchAll(pattern)) {
-      const prefix = text.slice(0, match.index);
-      const line = prefix.split("\n").length;
+      const line = lineNumberAtOffset(lineOffsets, match.index);
       const declaration = match[1];
       const name = match[2];
       symbols.push({ name, normalizedName: normalizeIdentifier(name), qualifiedName: null, containerName: null,
         kind: /test/i.test(name) ? "test" : mapping[declaration] ?? declaration,
-        line, startLine: line, endLine: null, signature: lineAt(text, line), snippet: lineAt(text, line) });
+        line, startLine: line, endLine: null, signature: lineAt(lines, line), snippet: lineAt(lines, line) });
     }
   }
   return symbols;
 }
 
-function extractCalls(text, symbols) {
+function extractCalls(text, symbols, lines, lineOffsets) {
   const declarationOffsets = new Set(symbols.map((symbol) => `${symbol.line}:${symbol.name}`));
   const calls = [];
   const pattern = /\b([\p{L}_$][\p{L}\p{N}_$]*)\s*\(/gu;
   const ignored = new Set(["if", "for", "while", "switch", "catch", "function", "func", "def", "fn"]);
   for (const match of text.matchAll(pattern)) {
     if (ignored.has(match[1])) continue;
-    const line = text.slice(0, match.index).split("\n").length;
+    const line = lineNumberAtOffset(lineOffsets, match.index);
     if (declarationOffsets.has(`${line}:${match[1]}`)) continue;
-    calls.push({ calleeName: match[1], normalizedCallee: normalizeIdentifier(match[1]), line, snippet: lineAt(text, line) });
+    calls.push({ calleeName: match[1], normalizedCallee: normalizeIdentifier(match[1]), line, snippet: lineAt(lines, line) });
   }
   return calls.slice(0, 50_000);
 }
 
-function extractImports(text) {
+function extractImports(text, lines, lineOffsets) {
   const imports = [];
   const pattern = /^\s*(?:import|from|use)\s+([^;\n]+)/gmu;
   for (const match of text.matchAll(pattern)) {
-    const line = text.slice(0, match.index).split("\n").length;
+    const line = lineNumberAtOffset(lineOffsets, match.index);
     const importedName = match[1].trim().slice(0, 256);
-    imports.push({ importedName, normalizedName: normalizeIdentifier(importedName), line, snippet: lineAt(text, line) });
+    imports.push({ importedName, normalizedName: normalizeIdentifier(importedName), line, snippet: lineAt(lines, line) });
   }
   return imports;
 }
@@ -378,13 +430,17 @@ function extractImports(text) {
 function writeLexicalDatabase(path, index) {
   const database = new DatabaseSync(path);
   try {
-    database.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL;
+    // This database is built in a private staging directory and is not
+    // published until integrity_check succeeds, so rollback durability adds
+    // latency without protecting an observable generation.
+    database.exec(`PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA locking_mode=EXCLUSIVE;
       CREATE TABLE files(file_id INTEGER PRIMARY KEY,path TEXT NOT NULL UNIQUE,language TEXT NOT NULL,content_hash TEXT NOT NULL,byte_length INTEGER NOT NULL DEFAULT 0,line_count INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE symbols(symbol_id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL,name TEXT NOT NULL,normalized_name TEXT NOT NULL,qualified_name TEXT,kind TEXT NOT NULL,container_name TEXT,start_line INTEGER NOT NULL,end_line INTEGER,signature TEXT,snippet TEXT NOT NULL);
       CREATE INDEX symbols_exact ON symbols(normalized_name); CREATE INDEX symbols_file ON symbols(file_id,start_line);
       CREATE TABLE calls(call_id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL,callee_name TEXT NOT NULL,normalized_callee TEXT NOT NULL,line INTEGER NOT NULL,snippet TEXT NOT NULL);
       CREATE INDEX calls_callee ON calls(normalized_callee);
       CREATE TABLE imports(file_id INTEGER NOT NULL,imported_name TEXT NOT NULL,normalized_name TEXT NOT NULL,line INTEGER NOT NULL,snippet TEXT NOT NULL);
+      CREATE INDEX imports_name ON imports(normalized_name);
       CREATE TABLE lexical_segments(segment_id INTEGER PRIMARY KEY,file_id INTEGER NOT NULL,line INTEGER NOT NULL,snippet TEXT NOT NULL);
       CREATE VIRTUAL TABLE lexical_fts USING fts5(path_tokens,symbol_tokens,text_tokens,tokenize='unicode61');`);
     const fileInsert = database.prepare("INSERT INTO files(path,language,content_hash,line_count) VALUES(?,?,?,?)");
@@ -395,15 +451,15 @@ function writeLexicalDatabase(path, index) {
     const ftsInsert = database.prepare("INSERT INTO lexical_fts(rowid,path_tokens,symbol_tokens,text_tokens) VALUES(?,?,?,?)");
     database.exec("BEGIN IMMEDIATE");
     for (const document of index.documents) {
-      fileInsert.run(document.path, document.language, document.contentHash, document.segments.at(-1)?.line ?? 0);
-      const fileId = Number(database.prepare("SELECT last_insert_rowid() AS id").get().id);
+      const fileId = Number(fileInsert.run(
+        document.path, document.language, document.contentHash, document.segments.at(-1)?.line ?? 0
+      ).lastInsertRowid);
       for (const symbol of document.symbols) symbolInsert.run(fileId, symbol.name, symbol.normalizedName, symbol.qualifiedName, symbol.kind, symbol.containerName, symbol.startLine, symbol.endLine, symbol.signature, symbol.snippet);
       for (const call of document.calls) callInsert.run(fileId, call.calleeName, call.normalizedCallee, call.line, call.snippet);
       for (const item of document.imports) importInsert.run(fileId, item.importedName, item.normalizedName, item.line, item.snippet);
       const pathTokens = normalizeTokens(document.path).join(" ");
       for (const segment of document.segments) {
-        segmentInsert.run(fileId, segment.line, segment.snippet);
-        const segmentId = Number(database.prepare("SELECT last_insert_rowid() AS id").get().id);
+        const segmentId = Number(segmentInsert.run(fileId, segment.line, segment.snippet).lastInsertRowid);
         ftsInsert.run(segmentId, pathTokens, segment.symbolTokens.join(" "), segment.tokens.join(" "));
       }
     }
@@ -455,8 +511,27 @@ function lruSet(map, key, value, maximum) {
   while (map.size > maximum) map.delete(map.keys().next().value);
 }
 
-function lineAt(text, line) {
-  return (text.split(/\r?\n/)[line - 1] ?? "").trim().slice(0, 240);
+function sourceLineOffsets(text) {
+  const offsets = [0];
+  for (let index = 0; index < text.length; index += 1) {
+    if (text.charCodeAt(index) === 10) offsets.push(index + 1);
+  }
+  return offsets;
+}
+
+function lineNumberAtOffset(offsets, offset) {
+  let low = 0;
+  let high = offsets.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (offsets[middle] <= offset) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function lineAt(lines, line) {
+  return (lines[line - 1] ?? "").trim().slice(0, 240);
 }
 
 function deduplicateResults(results) {

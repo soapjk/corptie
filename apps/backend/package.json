@@ -11,6 +11,7 @@
     "pretest": "npm run build:native",
     "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "benchmark:scheduled-task-list": "node scripts/benchmark-scheduled-task-list.mjs",
+    "benchmark:project-code-vs-rg": "node scripts/benchmark-project-code-vs-rg.mjs",
     "benchmark:session-recovery": "node scripts/benchmark-session-recovery.mjs",
     "compact:event-storage": "node scripts/compact-event-storage.mjs",
     "build:native": "cd native && cargo build --release && cp target/release/libcorptie_native.dylib corptie_native.node",
