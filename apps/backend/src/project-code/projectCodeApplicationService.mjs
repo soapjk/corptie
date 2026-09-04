@@ -13,6 +13,8 @@ export class ProjectCodeSearchApplicationService {
     this.snapshotFlights = new Map();
     this.snapshotCache = new Map();
     this.maxCachedSnapshots = options.maxCachedSnapshots ?? 32;
+    this.prewarmFlights = new Map();
+    this.prewarmStates = new Map();
   }
 
   async createSnapshot(input = {}) {
@@ -71,6 +73,47 @@ export class ProjectCodeSearchApplicationService {
       maxBytes: input.maxBytes,
       maxScanBytes: input.maxScanBytes,
       signal: input.signal
+    });
+  }
+
+  prewarm(input = {}) {
+    const context = this.#context(input);
+    const key = [context.startupReceipt.worktreeId, context.startupReceipt.startupOperationId,
+      context.startupReceipt.bindingGeneration].join(":");
+    const running = this.prewarmFlights.get(key);
+    if (running) return running;
+    const started = performance.now();
+    this.#setPrewarmState(key, context, { status: "building", startedAt: this.now(), durationMs: null, errorCode: null });
+    const promise = this.#performPrewarm(context, started, input.sourceDeclarations ?? [])
+      .catch((error) => {
+        this.#setPrewarmState(key, context, {
+          status: "failed", startedAt: this.prewarmStates.get(key)?.startedAt ?? null,
+          durationMs: elapsedMilliseconds(started), errorCode: error?.code ?? "PROJECT_CODE_PREWARM_FAILED"
+        });
+        throw error;
+      })
+      .finally(() => this.prewarmFlights.delete(key));
+    this.prewarmFlights.set(key, promise);
+    return promise;
+  }
+
+  prewarmSummary() {
+    const states = [...this.prewarmStates.values()];
+    const latest = states.at(-1);
+    return Object.freeze({
+      building: states.filter((state) => state.status === "building").length,
+      ready: states.filter((state) => state.status === "ready").length,
+      failed: states.filter((state) => state.status === "failed").length,
+      latest: latest ? Object.freeze({
+        status: latest.status,
+        durationMs: latest.durationMs,
+        snapshotMs: latest.snapshotMs ?? null,
+        indexMs: latest.indexMs ?? null,
+        indexHit: latest.indexHit ?? false,
+        incremental: latest.incremental ?? false,
+        documentCount: latest.documentCount ?? 0,
+        errorCode: latest.errorCode
+      }) : null
     });
   }
 
@@ -163,6 +206,43 @@ export class ProjectCodeSearchApplicationService {
     while (this.snapshotCache.size > this.maxCachedSnapshots) this.snapshotCache.delete(this.snapshotCache.keys().next().value);
   }
 
+  async #performPrewarm(context, started, sourceDeclarations) {
+    const snapshotStarted = performance.now();
+    const snapshot = await this.#buildCurrentSnapshot(context, sourceDeclarations);
+    await validateProjectCodeReceipt(snapshot.receipt, "RepositorySourceSnapshotReceipt");
+    this.#persist("RepositorySourceSnapshotReceipt", snapshot.receipt, context);
+    this.#cacheSnapshot(snapshot);
+    const snapshotMs = elapsedMilliseconds(snapshotStarted);
+    const index = await this.searchService.prewarm({ snapshot });
+    const key = [context.startupReceipt.worktreeId, context.startupReceipt.startupOperationId,
+      context.startupReceipt.bindingGeneration].join(":");
+    const state = this.#setPrewarmState(key, context, {
+      status: index.status,
+      startedAt: this.prewarmStates.get(key)?.startedAt ?? null,
+      durationMs: elapsedMilliseconds(started),
+      snapshotMs,
+      indexMs: index.durationMs,
+      indexHit: index.indexHit,
+      incremental: index.incremental,
+      documentCount: index.documentCount ?? 0,
+      sourceFingerprint: snapshot.receipt.sourceFingerprint,
+      errorCode: null
+    });
+    return Object.freeze({ ...state, snapshotReceiptId: snapshot.receipt.receiptId });
+  }
+
+  #setPrewarmState(key, context, details) {
+    const state = Object.freeze({
+      worktreeId: context.startupReceipt.worktreeId,
+      logicalSessionId: context.sessionContext.logicalSessionId,
+      ...details
+    });
+    this.prewarmStates.delete(key);
+    this.prewarmStates.set(key, state);
+    while (this.prewarmStates.size > this.maxCachedSnapshots) this.prewarmStates.delete(this.prewarmStates.keys().next().value);
+    return state;
+  }
+
   async #buildCurrentSnapshot(context, sourceDeclarations, signal) {
     const key = [context.sessionContext.logicalSessionId, context.startupReceipt.startupOperationId,
       context.binding.bindingGeneration, context.binding.worktreeId, JSON.stringify(sourceDeclarations)].join(":");
@@ -223,6 +303,7 @@ function compactSearchPresentation(snapshot, result, options = {}) {
   const layers = result.receipt.layers.map((layer) => Object.freeze({
     layer: layer.layer, status: layer.status, indexHit: layer.indexHit,
     resultCount: layer.resultCount, latencyMs: layer.latencyMs,
+    skippedReason: layer.skippedReason,
     degradedReason: layer.degradedReason
   }));
   const presentedResults = [...result.results];
@@ -256,4 +337,8 @@ function zeroResultGuidance(receipt) {
   const degraded = receipt.layers.find((layer) => layer.status === "degraded");
   if (degraded) return `No results; ${degraded.layer} is degraded (${degraded.degradedReason}).`;
   return "No results in the selected Snapshot and scope; try symbols or semantic mode, or broaden paths.";
+}
+
+function elapsedMilliseconds(started) {
+  return Math.max(0, Number((performance.now() - started).toFixed(3)));
 }

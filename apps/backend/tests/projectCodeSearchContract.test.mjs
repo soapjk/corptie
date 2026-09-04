@@ -71,6 +71,70 @@ test("L1 and L2 use immutable external-dataRoot generations and single-flight bu
   }
 });
 
+test("production non-blocking L2 returns rg results while one background index warmup completes", async () => {
+  const fixture = await createProjectCodeFixture();
+  const dataRoot = await mkdtemp(join(tmpdir(), "corptie-nonblocking-index-"));
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build(fixture);
+    const store = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
+    const service = new ProjectCodeSearchService({
+      snapshotBuilder: builder,
+      indexStore: store,
+      nonBlockingIndexWarmup: true
+    });
+    const first = await service.search({
+      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "nonblocking-first",
+      query: "layeredSymbol", mode: "symbols"
+    });
+    assert.ok(first.results.some((entry) => entry.path === "Sources/tool.ts"));
+    assert.equal(first.receipt.layers[0].layer, "L2");
+    assert.equal(first.receipt.layers[0].status, "skipped");
+    assert.equal(first.receipt.layers[0].skippedReason, "INDEX_WARMING");
+    assert.equal(first.receipt.layers[1].layer, "L0");
+    await store.warmLayer(snapshot, "L2");
+    const second = await service.search({
+      snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "nonblocking-second",
+      query: "layeredSymbol", mode: "symbols"
+    });
+    assert.equal(second.receipt.layers[0].layer, "L2");
+    assert.equal(second.receipt.layers[0].status, "executed");
+    assert.ok(second.results.some((entry) => entry.symbol === "layeredSymbol"));
+    assert.equal(store.stats.l2Builds, 1);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+});
+
+test("auto search never waits for an unfinished L1 or L2 warmup", async () => {
+  const fixture = await createProjectCodeFixture();
+  try {
+    const builder = new RepositorySourceSnapshotBuilder();
+    const snapshot = await builder.build(fixture);
+    const never = new Promise(() => {});
+    const warmingStore = {
+      readyLayer: () => null,
+      warmLayer: () => never
+    };
+    const service = new ProjectCodeSearchService({
+      snapshotBuilder: builder,
+      indexStore: warmingStore,
+      nonBlockingIndexWarmup: true
+    });
+    let timeout;
+    const result = await Promise.race([
+      service.search({ snapshot, sessionContext: fixture.sessionContext,
+        searchScenarioId: "nonblocking-auto", query: "missingSymbol", mode: "auto" }),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error("search waited for index warmup")), 500); })
+    ]).finally(() => clearTimeout(timeout));
+    assert.equal(result.receipt.layers.some((layer) => layer.skippedReason === "INDEX_WARMING"), true);
+    assert.equal(result.receipt.layers.some((layer) => layer.layer === "L1" && layer.degradedReason === "INDEX_WARMING"), true);
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true });
+  }
+});
+
 test("IndexStore initializes a missing dedicated child under a verified writable parent", async () => {
   const fixture = await createProjectCodeFixture();
   const parent = await mkdtemp(join(tmpdir(), "corptie-index-parent-"));

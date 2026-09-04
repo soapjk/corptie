@@ -136,6 +136,7 @@ async function fixture(overrides = {}) {
     },
     compensateWorktree: overrides.compensateWorktree
       ?? (async () => { calls.compensate += 1; return { removed: true }; }),
+    onReady: overrides.onReady,
   });
   return { directory, store, service, calls, allocation, task };
 }
@@ -184,6 +185,28 @@ test("commits a complete hash-verifiable StartupBindingReceipt before first Turn
       ["startup.allocated", "startup.worktree_prepared", "startup.session_bound", "startup.provider_bound", "startup.provider_activated", "startup.ready"]
     );
   } finally { await cleanup(f); }
+});
+
+test("starts advisory ready work without delaying the initial Turn", async () => {
+  let observed = null;
+  let releaseReady;
+  const readyWork = new Promise((resolve) => { releaseReady = resolve; });
+  const f = await fixture({
+    onReady: (ready) => {
+      observed = ready;
+      return readyWork;
+    }
+  });
+  try {
+    const result = await f.service.start(input());
+    assert.equal(result.status, "ready");
+    assert.equal(result.turnDispatch.status, "accepted");
+    assert.equal(observed.receipt.logicalSessionId, result.receipt.logicalSessionId);
+    assert.equal(f.calls.activate, 1);
+  } finally {
+    releaseReady();
+    await cleanup(f);
+  }
 });
 
 test("Store exposes only the Revision 2 startup authority and no legacy start table", async () => {
