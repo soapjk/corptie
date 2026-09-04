@@ -70,7 +70,7 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_tasks_manage",
-    "List, inspect, create, edit, delete, or manage dependencies for Tasks.",
+    "List, inspect, edit, delete, or manage dependencies for Tasks. Creation is allowed only when the current direct user message explicitly requests a new Task and authoritative turn evidence is supplied; assistant initiative, complexity, and decomposition are not authorization.",
     {
       action: {
         type: "string",
@@ -82,6 +82,10 @@ export const platformDynamicTools = Object.freeze([
       title: { type: "string", minLength: 1 },
       agent_id: id("Assigned Independent Contributor for create."),
       provider_id: id("Optional Provider for the companion Worker Session."),
+      logical_session_id: id("Authoritative logical Session from the current direct-user evidence block."),
+      user_message_event_id: id("Authoritative direct-user message event id from the current turn."),
+      user_message_sequence: { type: "integer", minimum: 1 },
+      turn_id: id("Authoritative current delivery/turn id from the direct-user evidence block."),
       idempotency_key: { type: "string", minLength: 1, maxLength: 200 },
       dependency_type: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] },
       patch: taskPatchSchema
@@ -95,7 +99,8 @@ export const platformDynamicTools = Object.freeze([
         },
         {
           if: { properties: { action: { const: "create" } }, required: ["action"] },
-          then: { required: ["work_id", "title", "agent_id", "idempotency_key"] }
+          then: { required: ["work_id", "title", "agent_id", "logical_session_id",
+            "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key"] }
         },
         {
           if: { properties: { action: { const: "update" } }, required: ["action"] },
@@ -178,7 +183,7 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_collaboration_manage",
-    "Discover exact Session actors, create a target Task with its Worker Session in one operation, and stage formal Session-to-Session collaboration for real user confirmation.",
+    "Discover exact Session actors, create an explicitly user-requested target Task with its Worker Session, and stage formal Session-to-Session collaboration for real user confirmation. create_task requires authoritative evidence that the current direct user explicitly requested a new Task; assistant or peer judgment is not authorization.",
     {
       action: { type: "string", enum: ["discover_sessions", "get_session", "create_task", "start_worker", "request"] },
       session_id: id("Exact logical or Provider Session id."), work_id: id("Explicit target Work id."),
@@ -186,10 +191,21 @@ export const platformDynamicTools = Object.freeze([
       task_id: id("Target Task id."), title: { type: "string", minLength: 1 }, description: { type: "string" },
       acceptance_criteria: { type: "array", items: { type: "string" } }, priority: { type: "string", enum: ["low", "medium", "high", "urgent"] },
       provider_id: id("Provider resource for Worker Session creation."), summary: { type: "string", minLength: 1 },
+      logical_session_id: id("Authoritative logical Session from the current direct-user evidence block."),
+      user_message_event_id: id("Authoritative direct-user message event id from the current turn."),
+      user_message_sequence: { type: "integer", minimum: 1 },
+      turn_id: id("Authoritative current delivery/turn id from the direct-user evidence block."),
       type: { type: "string", enum: ["question", "change_request"] }, max_iterations: { type: "integer", minimum: 1 },
       idempotency_key: { type: "string", minLength: 1, maxLength: 200 }
     },
-    ["action"]
+    ["action"],
+    {
+      allOf: [{
+        if: { properties: { action: { const: "create_task" } }, required: ["action"] },
+        then: { required: ["work_id", "title", "agent_id", "logical_session_id",
+          "user_message_event_id", "user_message_sequence", "turn_id", "idempotency_key"] }
+      }]
+    }
   )
 ]);
 
