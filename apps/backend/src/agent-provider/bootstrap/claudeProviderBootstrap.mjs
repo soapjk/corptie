@@ -7,7 +7,8 @@ export function createClaudeProviderRuntime(options = {}) {
     store: options.store,
     onTurnSettled: options.onTurnSettled,
     onProviderEvent: options.onProviderEvent,
-    resolveRuntimeOptions: options.resolveRuntimeOptions
+    resolveRuntimeOptions: options.resolveRuntimeOptions,
+    environment: options.environment
   });
   const provider = createClaudeAgentSdkProvider(manager, {
     prepareSessionInput: options.prepareSessionInput,
@@ -15,7 +16,8 @@ export function createClaudeProviderRuntime(options = {}) {
     prepareWorkspaceTransition: options.prepareWorkspaceTransition,
     bindWorkspace: options.bindWorkspace,
     inspectWorkspaceBinding: options.inspectWorkspaceBinding,
-    attachTools: options.attachTools
+    attachTools: options.attachTools,
+    environment: options.environment
   });
   provider.manager = manager;
   return provider;

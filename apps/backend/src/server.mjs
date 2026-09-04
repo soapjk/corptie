@@ -128,6 +128,7 @@ import { formatTrustedChannelMessage, formatTrustedCollaborationEvent } from "./
 import { collaborationMessagePresentationRoute } from "./collaboration/collaborationPresentationRoute.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
 import { WorkApplicationService } from "./application/workApplicationService.mjs";
+import { createTaskAndSession } from "./application/taskCreationApplicationService.mjs";
 import {
   presentTaskAcceptance,
   taskExecutionPatch,
@@ -737,6 +738,7 @@ const providerSessionLifecycle = new ProviderSessionLifecycle({
 });
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
+  environment: () => process.env,
   prepareSessionInput: prepareClaudeProviderSessionInput,
   onProviderEvent: handleClaudeProviderEventSafely,
   listModels: loadClaudeModels,
@@ -1742,6 +1744,19 @@ platformOperationService = new PlatformOperationService({
     }
     return launchAgentSession({ agent, providerId, title, prompt });
   },
+  createTask: ({ taskInput, providerId, sourceSessionId, idempotencyKey }) => createTaskAndSession({
+    workService,
+    startWorkSession: (command) => workSessionStartApplicationService.start(command),
+    taskInput,
+    creationOrigin: {
+      originType: "session",
+      creatorSessionId: sourceSessionId,
+      operationId: idempotencyKey
+    },
+    sourceSessionId,
+    providerId: providerId ?? agentProviderRegistry.defaultProviderId,
+    idempotencyKey
+  }),
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
 const sessionContextReferenceService = new SessionContextReferenceService({
@@ -1767,6 +1782,9 @@ projectCodeStartupReceipts = new ProjectCodeStartupReceiptRepository({ store });
 const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
 const projectCodeIndexStore = new ProjectCodeIndexStore({
   dataRoot: join(store.dataRoot, "project-code-index")
+});
+void projectCodeIndexStore.initialize().catch((error) => {
+  console.warn(`[project-code] index store unavailable: ${error?.code ?? "DATA_ROOT_UNAVAILABLE"}`);
 });
 const projectCodeRunIsolationPort = runIsolationCoordinator
   ? new ProjectCodeRunIsolationPort({
@@ -9061,6 +9079,7 @@ function route(request, response) {
     memoryLifecycleService,
     assistantService,
     startWorkSession: (input) => workSessionStartApplicationService.start(input),
+    defaultSessionProviderId: agentProviderRegistry.defaultProviderId,
     getTaskStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
     launchAgentSession,
@@ -9178,7 +9197,17 @@ function route(request, response) {
       time: now(),
       storeReady: backendStoreReady,
       maintenance: store.migrationInProgress,
-      dataRootMigration: dataRootMigrationCoordinator.status()
+      dataRootMigration: dataRootMigrationCoordinator.status(),
+      projectCode: (() => {
+        const readiness = projectCodeIndexStore.getReadiness();
+        return {
+          l0Exact: "ready",
+          l1Catalog: readiness.status === "ready" ? "ready" : "degraded",
+          l2Symbols: readiness.status === "ready" ? "ready" : "degraded",
+          semantic: projectCodeRunIsolationPort ? "ready" : "unsupported",
+          reasonCode: readiness.status === "unavailable" ? readiness.code : null
+        };
+      })()
     });
     return;
   }
@@ -9816,6 +9845,31 @@ function route(request, response) {
       .catch((error) => {
         sendJson(response, 400, { ok: false, error: error.message });
       });
+    return;
+  }
+
+  const providerConfigurationActionMatch = url.pathname.match(
+    /^\/providers\/([^/]+)\/(configuration\/validate|connection-test)$/
+  );
+  if (request.method === "POST" && providerConfigurationActionMatch) {
+    const providerId = decodeURIComponent(providerConfigurationActionMatch[1]);
+    const action = providerConfigurationActionMatch[2];
+    readJson(request)
+      .then((input) => agentProviderRegistry.invoke(
+        providerId,
+        action === "configuration/validate"
+          ? AGENT_PROVIDER_CAPABILITIES.CONFIGURATION_VALIDATE
+          : AGENT_PROVIDER_CAPABILITIES.CONNECTION_TEST,
+        input
+      ))
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, errorStatus(error, error.statusCode ?? 400), {
+        ok: false,
+        error: error.message,
+        code: error.code ?? "PROVIDER_CONFIGURATION_FAILED",
+        retryable: error.retryable === true,
+        ...(Array.isArray(error.details) ? { details: error.details } : {})
+      }));
     return;
   }
 
@@ -10832,18 +10886,6 @@ function route(request, response) {
       clearInterval(heartbeat);
       stateSyncClients.delete(response);
     });
-    return;
-  }
-
-  if (request.method === "POST" && url.pathname === "/tasks") {
-    readJson(request)
-      .then((input) => {
-        const session = createSession(input);
-        sendJson(response, 201, { session });
-      })
-      .catch((error) => {
-        sendJson(response, 400, { error: error.message });
-      });
     return;
   }
 

@@ -1,6 +1,19 @@
 import Combine
 import Foundation
 
+private struct CorptieTaskCreateResponse: Decodable {
+    let task: CorptieTask
+    let session: TaskSession
+
+    private enum CodingKeys: String, CodingKey { case session }
+
+    init(from decoder: Decoder) throws {
+        task = try CorptieTask(from: decoder)
+        session = try decoder.container(keyedBy: CodingKeys.self)
+            .decode(TaskSession.self, forKey: .session)
+    }
+}
+
 struct EntityRefreshGeneration: Equatable {
     private(set) var current = 0
 
@@ -550,21 +563,35 @@ final class EntityAPIClient: ObservableObject {
         }
     }
 
-    // 创建 CorptieTask：POST /tasks { workId, title, mainAgentId, ... } → task
+    // 创建 CorptieTask 及其伴生 Work Session：统一 POST /tasks，一次返回两者。
     @discardableResult
     func createCorptieTask(id: String? = nil, workId: String, title: String, description: String? = nil,
                         goal: String? = nil,
                         acceptanceCriteria: String? = nil,
                         verificationCriteria: String? = nil,
                         mainAgentId: String? = nil,
-                        priority: String? = nil) async -> CorptieTask? {
+                        priority: String? = nil,
+                        providerId: String) async -> CorptieTask? {
+        guard let sourceSession = BackendClient.shared.selectedSession else {
+            errorMessage = L10n("创建 CorptieTask 需要一个已激活的源会话。")
+            return nil
+        }
+        let sourceSessionId = sourceSession.external?.logicalSessionId ?? sourceSession.id
         var request = URLRequest(url: baseURL.appending(path: "tasks"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(sourceSessionId, forHTTPHeaderField: "X-Corptie-Logical-Session-Id")
         if let id, !id.isEmpty {
             request.setValue(id, forHTTPHeaderField: "X-Corptie-Operation-Id")
         }
-        var body: [String: Any] = ["workId": workId, "title": title]
+        let operationId = id?.isEmpty == false ? id! : "task-create:\(UUID().uuidString.lowercased())"
+        var body: [String: Any] = [
+            "workId": workId,
+            "title": title,
+            "providerId": providerId,
+            "sourceSessionId": sourceSessionId,
+            "idempotencyKey": operationId
+        ]
         if let id, !id.isEmpty { body["id"] = id }
         if let description, !description.isEmpty { body["description"] = description }
         if let goal, !goal.isEmpty { body["goal"] = goal }
@@ -573,7 +600,11 @@ final class EntityAPIClient: ObservableObject {
         if let mainAgentId, !mainAgentId.isEmpty { body["mainAgentId"] = mainAgentId }
         if let priority { body["priority"] = priority }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        return await performEntityMutation(request, as: CorptieTask.self)
+        guard let created = await performEntityMutation(request, as: CorptieTaskCreateResponse.self) else {
+            return nil
+        }
+        BackendClient.shared.acceptCreatedSession(created.session, selectImmediately: false)
+        return created.task
     }
 
     func taskSnapshots(taskId: String) async -> [CorptieTaskSnapshot] {
@@ -861,9 +892,10 @@ final class EntityAPIClient: ObservableObject {
         taskId: String,
         agentId: String,
         providerId: String,
-        title: String? = nil
+        title: String? = nil,
+        sourceSession explicitSourceSession: TaskSession? = nil
     ) async -> EntitySessionLaunchResult {
-        guard let sourceSession = BackendClient.shared.selectedSession else {
+        guard let sourceSession = explicitSourceSession ?? BackendClient.shared.selectedSession else {
             let message = L10n("启动 CorptieTask 需要一个已激活的源会话。请先打开所属 Work 的会话后重试。")
             errorMessage = message
             return .failure(message: message, code: "SOURCE_SESSION_NOT_FOUND")

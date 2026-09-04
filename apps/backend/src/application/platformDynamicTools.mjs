@@ -80,6 +80,9 @@ export const platformDynamicTools = Object.freeze([
       target_task_id: id("Dependency target Task id."),
       work_id: id("Owning Work id for create or list filtering."),
       title: { type: "string", minLength: 1 },
+      agent_id: id("Assigned Independent Contributor for create."),
+      provider_id: id("Optional Provider for the companion Worker Session."),
+      idempotency_key: { type: "string", minLength: 1, maxLength: 200 },
       dependency_type: { type: "string", enum: [...COLLABORATION_RELATION_TYPES] },
       patch: taskPatchSchema
     },
@@ -92,7 +95,7 @@ export const platformDynamicTools = Object.freeze([
         },
         {
           if: { properties: { action: { const: "create" } }, required: ["action"] },
-          then: { required: ["work_id", "title"] }
+          then: { required: ["work_id", "title", "agent_id", "idempotency_key"] }
         },
         {
           if: { properties: { action: { const: "update" } }, required: ["action"] },
@@ -175,7 +178,7 @@ export const platformDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_platform_collaboration_manage",
-    "Discover exact Session actors, create target Tasks and Worker Sessions, and stage formal Session-to-Session collaboration for real user confirmation.",
+    "Discover exact Session actors, create a target Task with its Worker Session in one operation, and stage formal Session-to-Session collaboration for real user confirmation.",
     {
       action: { type: "string", enum: ["discover_sessions", "get_session", "create_task", "start_worker", "request"] },
       session_id: id("Exact logical or Provider Session id."), work_id: id("Explicit target Work id."),

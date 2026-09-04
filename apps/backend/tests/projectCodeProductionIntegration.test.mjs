@@ -53,7 +53,7 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
 
     const l0 = await catalog.execute({
       tool: "corptie_project_code_search", metadata,
-      arguments: { snapshot_receipt_id: snap.receipt.receiptId, query: "ProductionNeedle", mode: "exact" }
+      arguments: { snapshot_receipt_id: snap.receipt.receiptId, response_detail: "full", query: "ProductionNeedle", mode: "exact" }
     });
     assert.equal(l0.searchReceipt.layers[0].layer, "L0");
     assert.equal(indexStore.stats.opens, 0);
@@ -62,10 +62,32 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
       store.getProjectCodeReceipt(l0.searchReceipt.receiptId, metadata.logicalSessionId).receipt.receiptHash,
       l0.searchReceipt.receiptHash
     );
+    const createdInline = await catalog.execute({
+      tool: "corptie_project_code_search", metadata,
+      arguments: { snapshot_policy: "create_new", query: "ProductionNeedle", mode: "exact" }
+    });
+    assert.equal(createdInline.snapshot.reused, false);
+    const compact = await catalog.execute({
+      tool: "corptie_project_code_search", metadata,
+      arguments: { query: "ProductionNeedle", mode: "exact" }
+    });
+    assert.equal(Object.hasOwn(compact, "searchReceipt"), false);
+    assert.equal(compact.snapshot.reused, true);
+    assert.equal(compact.search.outcome, "success");
+    assert.ok(Buffer.byteLength(JSON.stringify(compact)) < 16 * 1024);
+    const fullReceipt = await catalog.execute({
+      tool: "corptie_project_code_receipt_get", metadata,
+      arguments: { receipt_id: compact.search.receiptId }
+    });
+    assert.equal(fullReceipt.receiptType, "SearchReceipt");
+    assert.equal(fullReceipt.receipt.receiptId, compact.search.receiptId);
+    await assert.rejects(() => application.search({ logicalSessionId: metadata.logicalSessionId,
+      snapshotPolicy: "require_exact", query: "ProductionNeedle" }),
+    (error) => error.code === "QUERY_INVALID");
 
     const l2 = await catalog.execute({
       tool: "corptie_project_code_search", metadata,
-      arguments: { snapshot_receipt_id: snap.receipt.receiptId, query: "Coordinator", mode: "symbols" }
+      arguments: { snapshot_receipt_id: snap.receipt.receiptId, response_detail: "full", query: "Coordinator", mode: "symbols" }
     });
     assert.ok(l2.searchReceipt.layers.some((layer) => layer.layer === "L2"));
     assert.equal(indexStore.stats.l2Builds, 1);
@@ -85,12 +107,13 @@ test("Project Tool Host production entry persists authoritative L0-L3 receipts t
       tool: "corptie_project_code_search", metadata,
       arguments: {
         snapshot_receipt_id: snap.receipt.receiptId,
+        response_detail: "full",
         toolset_validation_receipt_id: toolsetReceipt.receiptId,
         query: "coordination concept",
         mode: "semantic"
       }
     });
-    assert.equal(l3.searchReceipt.outcome, "success");
+    assert.equal(l3.searchReceipt.outcome, "success", l3.searchReceipt.errorCode);
     assert.equal(l3.searchReceipt.runIsolationReceiptRef.schemaVersion, 6);
     assert.equal(l3.searchReceipt.cleanupReceiptRef.schemaVersion, 4);
     assert.equal(runIsolationService.store.latestCleanupReceipt(l3.searchReceipt.runId).outcome, "cleaned");
@@ -158,6 +181,11 @@ function storeFor(fixture, receipts) {
     getProjectCodeReceipt(receiptId, logicalSessionId) {
       const record = receipts.get(receiptId);
       return record?.logicalSessionId === logicalSessionId ? structuredClone(record) : null;
+    },
+    getLatestProjectCodeSnapshot(logicalSessionId) {
+      const records = [...receipts.values()].filter((record) => record.logicalSessionId === logicalSessionId
+        && record.receiptType === "RepositorySourceSnapshotReceipt");
+      return records.length > 0 ? structuredClone(records.at(-1)) : null;
     }
   };
 }
