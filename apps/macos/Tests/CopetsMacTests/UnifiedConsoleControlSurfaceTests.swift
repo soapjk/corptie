@@ -62,10 +62,11 @@ struct UnifiedConsoleControlSurfaceTests {
         ))
         let composer = source[start.lowerBound..<end.lowerBound]
 
-        #expect(composer.contains("Mention a Work or Session"))
+        #expect(source.contains("Mention a Work or Session"))
         #expect(composer.contains("targetType: .work"))
         #expect(composer.contains("targetType: .session"))
         #expect(composer.contains("mentions: submittedMentions"))
+        #expect(!composer.contains("Button(action: beginMention)"))
         #expect(source.contains("onMentionCommand?(.move(1))"))
         #expect(source.contains("onMentionCommand?(.select)"))
         #expect(source.contains("onMentionCommand?(.dismiss)"))
