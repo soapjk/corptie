@@ -9978,17 +9978,6 @@ struct MessageComposer: View {
                 }
 
                 HStack(spacing: 2) {
-                Button(action: beginMention) {
-                    Text("@")
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(CorptiePalette.secondaryText)
-                .help(L10n("Mention a Work or Session"))
-                .accessibilityLabel(L10n("Mention a Work or Session"))
-                .padding(.leading, 4)
-
                 Button(action: chooseImages) {
                     Group {
                         if isImportingImages {
@@ -10247,13 +10236,6 @@ struct MessageComposer: View {
             }
             .prefix(10)
             .map { $0 }
-    }
-
-    private func beginMention() {
-        isFocused = true
-        mentionQuery = editorController.insertMentionTrigger()
-        mentionSelectionIndex = 0
-        hasSendableText = editorController.draft.hasSendableText
     }
 
     private func updateMentionQuery(_ query: ComposerMentionQuery?) {

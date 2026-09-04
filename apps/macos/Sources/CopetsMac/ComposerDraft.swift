@@ -121,26 +121,6 @@ final class ComposerEditorController {
         draft.updateFromEditor(text)
     }
 
-    func currentMentionQuery() -> ComposerMentionQuery? {
-        guard let textView else { return nil }
-        return ComposerMentionQuery.resolve(in: textView.string, selection: textView.selectedRange())
-    }
-
-    @discardableResult
-    func insertMentionTrigger() -> ComposerMentionQuery? {
-        guard let textView, !textView.hasMarkedText() else { return nil }
-        textView.window?.makeFirstResponder(textView)
-        let selection = textView.selectedRange()
-        let value = textView.string as NSString
-        let needsSpace = selection.location > 0
-            && UnicodeScalar(value.character(at: selection.location - 1))
-                .map { !CharacterSet.whitespacesAndNewlines.contains($0) } == true
-        let insertion = needsSpace ? " @" : "@"
-        textView.insertText(insertion, replacementRange: selection)
-        recordEditorText(textView.string)
-        return currentMentionQuery()
-    }
-
     func replaceMentionQuery(_ query: ComposerMentionQuery, with displayName: String) {
         guard let textView, !textView.hasMarkedText() else { return }
         let replacement = "@\(displayName) "
