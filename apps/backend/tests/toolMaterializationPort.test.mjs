@@ -107,6 +107,10 @@ test("public ToolMaterializationPort resolves the current binding and returns on
     assert.equal(await value.port.assertCanonicalToolApplied(
       "logical:one", "corptie_artifact_get"
     ), true);
+    const cached = await value.port.ensureDomainsApplied(
+      "logical:one", ["artifacts", "memory"], { turnExecutionId: "turn:cached" }
+    );
+    assert.deepEqual(cached.appliedDomains, ["artifacts", "memory"]);
     assert.equal(value.applyCount, 2);
   } finally {
     value.store.close();
