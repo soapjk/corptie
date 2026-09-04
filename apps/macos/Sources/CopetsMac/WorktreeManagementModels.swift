@@ -309,7 +309,8 @@ struct WorktreeIntegrationJob: Identifiable, Decodable, Equatable, Sendable {
             && currentConflictResolution?.status != "running"
     }
     var hasMergeConflict: Bool {
-        status == "paused" && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
+        status == "paused" && plan.operationType != "sync"
+            && plan.items.contains { $0.worktreeId == currentWorktreeId && $0.mergeStatus == "conflict" }
     }
 }
 
@@ -365,6 +366,12 @@ struct WorktreeConflictResolutionWorkspace: Decodable, Equatable, Sendable {
 
 struct WorktreeIntegrationPlan: Decodable, Equatable, Sendable {
     let repositoryId: String
+    let operationType: String?
+    let syncMode: String?
+    let targetWorktreeId: String?
+    let targetBranchName: String?
+    let sourceWorktreeIds: [String]?
+    let executionPath: String?
     let mainWorktreeId: String
     let mainPath: String
     let mainHeadBefore: String
@@ -409,6 +416,8 @@ struct WorktreeIntegrationItem: Identifiable, Decodable, Equatable, Sendable {
     let path: String
     let branchName: String?
     let isMain: Bool
+    let actualIsMain: Bool?
+    let isTarget: Bool?
     let availability: String
     let sourceHeadBefore: String?
     let statusSummary: String
@@ -425,6 +434,7 @@ struct WorktreeIntegrationItem: Identifiable, Decodable, Equatable, Sendable {
     let commitHead: String?
     let mergeStatus: String
     let mergeMainHead: String?
+    let convergenceStatus: String?
     let conflictFiles: [String]
     let error: String?
 }
