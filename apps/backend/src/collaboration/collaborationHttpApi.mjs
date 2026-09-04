@@ -306,9 +306,12 @@ export function handleCollaborationHttpRequest({
           recipientSessionId = core.store.getLogicalSessionByName(input.recipientSessionName)?.logicalSessionId ?? null;
         }
         if (recipientSessionId) {
-          recipientSessionId = resolveRecipientSession(sessionCollaborationService, sessionMetadata, actorAgentId, {
-            ...input, recipientSessionId
-          }).sessionId;
+          recipientSessionId = resolveChannelRecipientSession(
+            sessionCollaborationService,
+            sessionMetadata,
+            actorAgentId,
+            { ...input, recipientSessionId }
+          ).sessionId;
         } else if (!input.targetWorkId || !input.sessionAgentId) {
           throw apiError(
             "SESSION_CREATION_RESOURCES_REQUIRED",
@@ -482,6 +485,35 @@ export function handleCollaborationHttpRequest({
       });
     });
   return true;
+}
+
+export function resolveChannelRecipientSession(service, metadata, actorId, input = {}) {
+  const recipientSessionId = typeof input.recipientSessionId === "string"
+    ? input.recipientSessionId.trim()
+    : "";
+  if (!recipientSessionId) {
+    throw apiError("RECIPIENT_SESSION_ID_REQUIRED", "recipientSessionId is required.", 400);
+  }
+  const recipient = service.getSession(metadata, actorId, recipientSessionId);
+  if (!recipient.active) {
+    throw apiError(
+      "RECIPIENT_SESSION_UNAVAILABLE",
+      `The exact Channel recipient Session is unavailable: ${(recipient.routingRejectionReasons ?? []).join(", ") || "inactive"}.`,
+      409
+    );
+  }
+  const mismatches = [];
+  if (input.targetWorkId && recipient.workId !== input.targetWorkId) mismatches.push("target_work_id");
+  if (input.sessionAgentId && recipient.agentId !== input.sessionAgentId) mismatches.push("session_agent_id");
+  if (input.taskId && recipient.taskId !== input.taskId) mismatches.push("task_id");
+  if (mismatches.length > 0) {
+    throw apiError(
+      "CHANNEL_TARGET_RESOURCE_MISMATCH",
+      `The exact Channel recipient Session does not match: ${mismatches.join(", ")}.`,
+      409
+    );
+  }
+  return recipient;
 }
 
 function safeCollaborationErrorMessage(error) {
