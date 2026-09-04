@@ -86,7 +86,7 @@ struct AgentAssistButton: View {
                     Text(L10n("简单描述你想让 Agent 填写的内容，例如："))
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Text(L10n("「把 Corptie 的控制台拆成三个模块，说明重构目标和验收标准」"))
+                    Text(L10n("「把 Corptie 的工作台拆成三个模块，说明重构目标和验收标准」"))
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                         .padding(.bottom, 4)
