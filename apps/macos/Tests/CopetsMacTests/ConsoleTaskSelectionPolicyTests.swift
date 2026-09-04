@@ -39,14 +39,14 @@ struct ConsoleTaskSelectionPolicyTests {
     }
 
     @Test
-    func openingAnAssignedTaskWithoutASessionAttemptsCreation() {
+    func openingAnAssignedTaskWithoutASessionDoesNotCreateFromTheUI() {
         var task = makeTask(id: "task:target", workID: "work:current")
         task.mainAgentId = " agent:owner "
 
         #expect(ConsoleTaskOpenDecision.resolve(
             task: task,
             session: nil
-        ) == .createSession(agentID: "agent:owner"))
+        ) == .showWithoutSession)
     }
 
     @Test

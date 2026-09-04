@@ -68,6 +68,8 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var mainAgentId: String?
     var currentSessionId: String?
     var executionStatus: String?
+    var deletionStatus: String? = nil
+    var deletionError: String? = nil
     var acceptanceAssessment: CorptieTaskAcceptanceAssessment?
     var completionSuggestion: CorptieTaskCompletionSuggestion?
     var completionSource: CorptieTaskCompletionSource? = nil
@@ -271,9 +273,28 @@ struct CorptieTaskDeletionPlan: Codable, Equatable {
     let blockers: [CorptieTaskDeletionRisk]
 }
 
-struct CorptieTaskDeletionResult: Decodable {
-    let ok: Bool
+struct CorptieTaskDeletionOperation: Decodable, Equatable {
+    let operationId: String
     let taskId: String
+    let state: String
+    let stage: String
+    let errorCode: String?
+    let errorMessage: String?
+    let retryable: Bool
+    let attempt: Int
+    let createdAt: String
+    let startedAt: String?
+    let completedAt: String?
+    let updatedAt: String
+}
+
+struct CorptieTaskDeletionAcceptedEnvelope: Decodable {
+    let accepted: Bool
+    let operation: CorptieTaskDeletionOperation
+}
+
+struct CorptieTaskDeletionOperationEnvelope: Decodable {
+    let operation: CorptieTaskDeletionOperation
 }
 
 // 后端响应 envelope：GET /works → { works: [...] }；GET /tasks → { tasks: [...] }
