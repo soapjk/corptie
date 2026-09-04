@@ -70,6 +70,7 @@ struct MemoryManagementView: View {
     }
 
     let scope: Scope
+    let embedsListInParentScrollView: Bool
     @ObservedObject private var client = EntityAPIClient.shared
     @State private var memories: [MemoryItem] = []
     @State private var query = ""
@@ -81,6 +82,11 @@ struct MemoryManagementView: View {
     @State private var revokingMemory: MemoryItem?
     @State private var historyMemory: MemoryItem?
     @State private var isAddingMemory = false
+
+    init(scope: Scope, embedsListInParentScrollView: Bool = false) {
+        self.scope = scope
+        self.embedsListInParentScrollView = embedsListInParentScrollView
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -215,33 +221,41 @@ struct MemoryManagementView: View {
     }
 
     private var layeredList: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                ForEach(scopeLayersWithContent, id: \.self) { layer in
-                    if scope == .global {
-                        Label("\(layer.title) · \(memories(in: layer).count)", systemImage: layer.icon)
-                            .font(.title3.bold())
-                            .padding(.top, 4)
-                    }
-                    ForEach(MemoryOriginLayer.allCases, id: \.self) { origin in
-                        let rows = memories(in: layer, origin: origin)
-                        if !rows.isEmpty {
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack(alignment: .firstTextBaseline) {
-                                    Text(origin.title).font(.subheadline.bold())
-                                    Text("\(rows.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                                    Spacer()
-                                }
-                                Text(origin.explanation).font(.caption2).foregroundStyle(.tertiary)
-                                ForEach(rows) { memory in memoryRow(memory) }
+        Group {
+            if embedsListInParentScrollView {
+                memoryRows
+            } else {
+                ScrollView { memoryRows }
+            }
+        }
+    }
+
+    private var memoryRows: some View {
+        LazyVStack(alignment: .leading, spacing: 16) {
+            ForEach(scopeLayersWithContent, id: \.self) { layer in
+                if scope == .global {
+                    Label("\(layer.title) · \(memories(in: layer).count)", systemImage: layer.icon)
+                        .font(.title3.bold())
+                        .padding(.top, 4)
+                }
+                ForEach(MemoryOriginLayer.allCases, id: \.self) { origin in
+                    let rows = memories(in: layer, origin: origin)
+                    if !rows.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(origin.title).font(.subheadline.bold())
+                                Text("\(rows.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                Spacer()
                             }
+                            Text(origin.explanation).font(.caption2).foregroundStyle(.tertiary)
+                            ForEach(rows) { memory in memoryRow(memory) }
                         }
                     }
-                    if scope == .global { Divider() }
                 }
+                if scope == .global { Divider() }
             }
-            .padding(.vertical, 2)
         }
+        .padding(.vertical, 2)
     }
 
     private func memoryRow(_ memory: MemoryItem) -> some View {
