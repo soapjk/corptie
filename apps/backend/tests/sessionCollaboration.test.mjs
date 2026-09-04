@@ -13,6 +13,7 @@ import {
 } from "../src/application/sessionCollaborationService.mjs";
 import { containsExplicitTaskCreationIntent } from "../src/application/directUserTaskCreationAuthorization.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
+import { resolveChannelRecipientSession } from "../src/collaboration/collaborationHttpApi.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { TaskCompletionService } from "../src/application/taskCompletionService.mjs";
 
@@ -34,6 +35,59 @@ async function fixture() {
   });
   return { directory, store, core, workService, artifactService, service, launches };
 }
+
+test("Channel routing accepts an active exact Work Chat without using Worker-only Task routing", async () => {
+  const service = {
+    getSession: () => ({
+      sessionId: "logical:marketcow-work-chat",
+      agentId: "agent:marketcow",
+      sessionKind: "workChat",
+      workId: "work:marketcow",
+      taskId: null,
+      active: true,
+      routingRejectionReasons: []
+    })
+  };
+
+  const recipient = resolveChannelRecipientSession(service, {}, "agent:source", {
+    recipientSessionId: "logical:marketcow-work-chat",
+    sessionAgentId: "agent:marketcow",
+    targetWorkId: "work:marketcow"
+  });
+
+  assert.equal(recipient.sessionId, "logical:marketcow-work-chat");
+  assert.equal(recipient.sessionKind, "workChat");
+});
+
+test("Channel routing returns structured errors for inactive or contradictory exact targets", () => {
+  assert.throws(() => resolveChannelRecipientSession({
+    getSession: () => ({
+      sessionId: "logical:inactive",
+      active: false,
+      routingRejectionReasons: ["active_binding_missing"]
+    })
+  }, {}, "agent:source", {
+    recipientSessionId: "logical:inactive"
+  }), error => error.code === "RECIPIENT_SESSION_UNAVAILABLE"
+    && error.statusCode === 409
+    && error.message.includes("active_binding_missing"));
+
+  assert.throws(() => resolveChannelRecipientSession({
+    getSession: () => ({
+      sessionId: "logical:target",
+      agentId: "agent:target",
+      workId: "work:target",
+      taskId: null,
+      active: true,
+      routingRejectionReasons: []
+    })
+  }, {}, "agent:source", {
+    recipientSessionId: "logical:target",
+    targetWorkId: "work:different"
+  }), error => error.code === "CHANNEL_TARGET_RESOURCE_MISMATCH"
+    && error.statusCode === 409
+    && error.message.includes("target_work_id"));
+});
 
 function session(store, core, input) {
   store.createSession({
