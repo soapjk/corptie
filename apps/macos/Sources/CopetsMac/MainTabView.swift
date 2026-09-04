@@ -91,7 +91,7 @@ enum AppTab: String, CaseIterable, Identifiable {
 
     @MainActor var title: String {
         switch self {
-        case .console: L10n("Console")
+        case .console: L10n("Workbench")
         case .automations: L10n("Automations")
         case .worktrees: L10n("Worktrees")
         case .agents: L10n("Agents")
@@ -100,7 +100,7 @@ enum AppTab: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .console: "square.grid.2x2"
+        case .console: "circle.hexagongrid.fill"
         case .automations: "bolt.badge.clock"
         case .worktrees: "arrow.triangle.branch"
         case .agents: "person.2"

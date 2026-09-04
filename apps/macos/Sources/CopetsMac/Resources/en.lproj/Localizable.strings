@@ -518,6 +518,7 @@
 
 /* Shared navigation and entity vocabulary */
 "Console" = "Console";
+"Workbench" = "Workbench";
 "Sessions" = "Sessions";
 "Session" = "Session";
 "Chat" = "Chat";

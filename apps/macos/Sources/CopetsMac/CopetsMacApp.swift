@@ -923,7 +923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(NSMenuItem(title: L10n("Show Corptie"), action: #selector(showPanel), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Collaboration..."), action: #selector(openCollaboration), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "助手", action: #selector(openAssistant), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "控制台", action: #selector(openWarRoom), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: L10n("Workbench"), action: #selector(openWarRoom), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: L10n("Settings..."), action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: L10n("Quit Corptie"), action: #selector(quit), keyEquivalent: "q"))
@@ -935,7 +935,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         refreshStatusMenu()
         settingsWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Settings"))"
         collaborationWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Collaboration"))"
-        warRoomWindow?.title = "\(CorptieAppEnvironment.appName) 控制台"
+        warRoomWindow?.title = "\(CorptieAppEnvironment.appName) \(L10n("Workbench"))"
         assistantWindow?.title = "\(CorptieAppEnvironment.appName) 助手"
     }
 
