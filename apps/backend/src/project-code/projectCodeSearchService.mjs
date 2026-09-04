@@ -69,7 +69,9 @@ export class ProjectCodeSearchService {
       assertReceiptIdentity(input.snapshot.receipt, input.sessionContext);
       state.latency.bindingVerifyMs = elapsed(bindingStarted);
       const freshnessStarted = performance.now();
-      if (!isValidatedSnapshotLease(input.validationLease, input.snapshot)) {
+      if (isValidatedSnapshotLease(input.validationLease, input.snapshot)) {
+        await input.validationLease.verifyBefore({ signal: controller.signal });
+      } else {
         await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: controller.signal });
       }
       state.latency.snapshotVerifyMs = elapsed(freshnessStarted);
@@ -139,7 +141,9 @@ export class ProjectCodeSearchService {
     const lineCount = normalizeInteger(input.lineCount, 200, 1, 2_000, "lineCount");
     await validateProjectCodeReceipt(input.snapshot.receipt, "RepositorySourceSnapshotReceipt");
     assertReceiptIdentity(input.snapshot.receipt, input.sessionContext);
-    if (!isValidatedSnapshotLease(input.validationLease, input.snapshot)) {
+    if (isValidatedSnapshotLease(input.validationLease, input.snapshot)) {
+      await input.validationLease.verifyBefore({ signal: input.signal });
+    } else {
       await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: input.signal });
     }
     const safe = await assertContainedSourceFile(input.snapshot.canonicalWorktreePath, input.path);
