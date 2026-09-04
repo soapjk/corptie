@@ -37,6 +37,10 @@ import { createSkillPackageDiscoveryAssistant } from "./application/skillPackage
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import { confirmOrRestoreCodexToolPlan } from "./application/codexToolPlanConfirmation.mjs";
 import { appliedToolMaterializationReceipt } from "./agent-provider/toolSchemaCapabilities.mjs";
+import {
+  ProviderSessionLifecycle,
+  codexLifecycleAdapter
+} from "./application/providerSessionLifecycle.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
@@ -700,6 +704,34 @@ const workspaceTransitionManager = new ForkingWorkspaceTransitionManager({
     await commitManagedCodexWorkspaceRoute(event);
     enqueueWorkspaceContinuationSafely(event.transitionId);
   }
+});
+// Execution preparation, recovery stabilization, restart and turn-change
+// management are product orchestration, not Provider protocol. Each Provider
+// supplies the few protocol-level calls through its adapter, so product code
+// never branches on a Provider id for these operations.
+const providerSessionLifecycle = new ProviderSessionLifecycle({
+  store,
+  adapters: {
+    "codex-app-server": codexLifecycleAdapter({
+      runtime: codexRuntime,
+      ensureSessionPermissions: ensureCodexSessionPermissions,
+      withPersistedToolConfirmation: withPersistedCodexToolConfirmation,
+      collaborationThreadOptionsForSession,
+      ensureLogicalRouteForCodexSession
+    })
+  },
+  collaborationThreadOptionsForSession,
+  workspaceTransitionManager,
+  workspaceRoutePreparationCache,
+  assertWorkspaceRouteUsable,
+  prepareExternalDiff,
+  launchDiffTool,
+  writeTurnPatch,
+  safeTurnFileChanges,
+  turnDiffFor,
+  workspaceTransitionBlocksWork,
+  sessionHasActiveRun,
+  emitEvent
 });
 const claudeProviderRuntime = createClaudeProviderRuntime({
   store,
@@ -5336,6 +5368,9 @@ function prepareClaudeProviderSessionInput(input = {}) {
     model: typeof input.model === "string" && input.model.trim()
       ? input.model.trim()
       : defaults.claudeModel,
+    reasoningLevel: typeof input.reasoningLevel === "string" && input.reasoningLevel.trim()
+      ? input.reasoningLevel.trim().toLowerCase()
+      : null,
     prompt: typeof input.prompt === "string" ? input.prompt.trim() : ""
   };
 }
@@ -5827,76 +5862,16 @@ async function resumeCodexProviderSession(reference, context = {}) {
   return previous;
 }
 
-async function stabilizeCodexRecoverySession(reference, context = {}) {
-  const providerAttachment = context.toolHost?.providerAttachment;
-  if (!providerAttachment?.dynamicToolConfirmation) {
-    const error = new Error("Codex recovery stabilization requires the exact prospective Tool schema proof.");
-    error.code = "RECOVERY_TOOL_CONFIRMATION_MISSING";
-    throw error;
-  }
-  return codexRuntime.stabilizeRecoveryThread(reference.providerSessionId, {
-    cwd: context.boundCwd ?? reference.metadata?.session?.external?.cwd,
-    ...providerAttachment,
-    timeoutMs: context.timeoutMs ?? 90_000
-  });
+// Recovery stabilization is Provider-neutral orchestration. The Codex-specific
+// proof requirement lives in the adapter; see ProviderSessionLifecycle.
+function stabilizeCodexRecoverySession(reference, context = {}) {
+  return providerSessionLifecycle.stabilizeRecoverySession(reference, context);
 }
 
-async function prepareCodexProviderExecution(reference, context = {}) {
-  const startedAt = Date.now();
-  const sessionId = reference.sessionId;
-  const before = reference.metadata?.session
-    ?? store.getSession(sessionId);
-  if (!before) throw new Error("Session not found.");
-  if (sessionHasActiveRun(before) && context.bindingReadinessProbe !== true) {
-    return { prepared: true, alreadyActive: true, durationMs: Date.now() - startedAt };
-  }
-  const logicalRoute = store.getLogicalSessionByLegacySessionId(sessionId);
-  if (workspaceTransitionBlocksWork(logicalRoute)) {
-    const error = new Error("The Session is switching workspaces; execution preparation is deferred.");
-    error.code = "SESSION_BUSY";
-    throw error;
-  }
-  const threadId = logicalRoute?.activeThreadId ?? reference.providerSessionId;
-  const routeStartedAt = Date.now();
-  const routeResolution = logicalRoute
-    ? await resolvePreparedWorkspaceRoute(logicalRoute, threadId)
-    : null;
-  const routeDurationMs = Date.now() - routeStartedAt;
-  const managed = await ensureCodexSessionPermissions(sessionWithLogicalWorkspace(
-    store.getSession(sessionId) ?? before,
-    logicalRoute
-  ));
-  const activeCwd = routeResolution?.route?.cwd
-    ?? logicalRoute?.activeBinding?.boundCwd
-    ?? managed.external?.cwd;
-  const threadOptions = withPersistedCodexToolConfirmation(
-    reference,
-    context.toolHost?.providerAttachment
-      ?? await collaborationThreadOptionsForSession(sessionId)
-  );
-  const resumeStartedAt = Date.now();
-  // A freshly started Codex thread has no rollout until its first Turn. The
-  // adapter owns that protocol distinction: ensureThreadResumed treats the
-  // live fresh thread as ready, while still using thread/resume for persisted
-  // bindings after a process restart. A readiness probe must not bypass it.
-  const resumeResult = await codexRuntime.ensureThreadResumed(threadId, {
-    cwd: activeCwd,
-    runtimeWorkspaceRoots: activeCwd ? [activeCwd] : undefined,
-    ...threadOptions
-  });
-  const result = {
-    prepared: true,
-    sessionId: reference.logicalSessionId ?? sessionId,
-    providerSessionId: threadId,
-    routeCacheHit: routeResolution?.cacheHit === true,
-    threadAlreadyLoaded: resumeResult?.alreadyLoaded === true,
-    coalesced: resumeResult?.coalesced === true,
-    routeDurationMs,
-    resumeDurationMs: Date.now() - resumeStartedAt,
-    durationMs: Date.now() - startedAt
-  };
-  console.info(`[session-execution-preparation] ${JSON.stringify(result)}`);
-  return result;
+// Execution preparation is Provider-neutral orchestration. The Codex-specific
+// resume/permission protocol lives in the adapter; see ProviderSessionLifecycle.
+function prepareCodexProviderExecution(reference, context = {}) {
+  return providerSessionLifecycle.prepareExecution(reference, context);
 }
 
 async function probeCodexProviderBinding(reference, context = {}) {
@@ -6189,64 +6164,10 @@ async function respondCodexProviderApproval(reference, input = {}, context = {})
   return store.getSession(reference.sessionId) ?? summary;
 }
 
-async function manageCodexTurnChanges(reference, turnId, action) {
-  if (action !== "review" && action !== "undo") {
-    throw new Error(`Unsupported turn changes action: ${action}`);
-  }
-  const threadId = reference.providerSessionId;
-  const logicalRoute = store.getLogicalSessionByProviderThreadId(threadId);
-  const activeRoute = logicalRoute
-    ? await assertWorkspaceRouteUsable({
-        store,
-        logicalSession: logicalRoute,
-        providerThreadId: threadId,
-        allowHistorical: action === "review"
-      })
-    : null;
-  const cwd = activeRoute?.cwd
-    || reference.metadata?.session?.external?.cwd
-    || store.getSession(reference.sessionId)?.external?.cwd;
-  if (!cwd) throw new Error("The task working directory is unavailable.");
-
-  const items = store.getFileChangeItemsForTurn(reference.sessionId, turnId, "codex-app-server");
-  const changes = safeTurnFileChanges(items, cwd);
-  const diff = turnDiffFor(items, changes);
-  if (action === "review") {
-    const review = await prepareExternalDiff(cwd, threadId, turnId, changes, diff);
-    const tool = await launchDiffTool(store.settings().codeDiff?.tool, review, changes);
-    emitEvent("SessionTurnChangesReviewOpened", {
-      sessionId: reference.sessionId,
-      providerSessionId: threadId,
-      turnId,
-      tool,
-      logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
-      worktreeId: activeRoute?.worktreeId ?? null,
-      routingVersion: activeRoute?.routingVersion ?? null
-    }, { sessionId: reference.sessionId });
-    return {
-      ok: true,
-      tool,
-      logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
-      providerSessionId: threadId,
-      worktreeId: activeRoute?.worktreeId ?? null,
-      routingVersion: activeRoute?.routingVersion ?? null,
-      historical: activeRoute?.historical === true
-    };
-  }
-
-  const { patchPath } = await writeTurnPatch(threadId, turnId, diff);
-  await execFileAsync("git", ["apply", "--reverse", "--check", "--whitespace=nowarn", patchPath], { cwd });
-  await execFileAsync("git", ["apply", "--reverse", "--whitespace=nowarn", patchPath], { cwd });
-  emitEvent("SessionTurnChangesUndone", {
-    sessionId: reference.sessionId,
-    providerSessionId: threadId,
-    turnId,
-    files: changes.map((change) => change.path),
-    logicalSessionId: activeRoute?.logicalSessionId ?? reference.logicalSessionId ?? null,
-    worktreeId: activeRoute?.worktreeId ?? null,
-    routingVersion: activeRoute?.routingVersion ?? null
-  }, { sessionId: reference.sessionId });
-  return { ok: true, files: changes.map((change) => change.path) };
+// Turn-change review/undo is Provider-neutral orchestration. Only the stored
+// item normalisation knows the Provider id; see ProviderSessionLifecycle.
+function manageCodexTurnChanges(reference, turnId, action) {
+  return providerSessionLifecycle.manageTurnChanges(reference, turnId, action);
 }
 
 async function sendCodexProviderMessage(reference, value, context = {}) {
@@ -8021,32 +7942,10 @@ async function handleClaudeTurnSettled(event) {
   }
 }
 
-async function restartCodexProviderSession(reference, context = {}) {
-  const sessionId = reference.sessionId;
-  const session = reference.metadata?.session
-    ?? store.getSession(sessionId);
-  if (!session) throw new Error("Session not found.");
-  const logical = (reference.logicalSessionId
-    ? store.getLogicalSession(reference.logicalSessionId)
-    : null) ?? await ensureLogicalRouteForCodexSession(session);
-  const checkpoint = sessionTransitionCheckpoint(sessionId, logical.activeBinding?.bindingId);
-  const preservingRecovery = context.preserveContext === true
-    && context.replacementReason === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
-  const result = await workspaceTransitionManager.restartSession({
-    transitionId: context.transitionId ?? `session-restart:${randomUUID()}`,
-    logicalSessionId: logical.logicalSessionId,
-    activeTurnId: checkpoint.activeTurnId,
-    lastCompletedTurnId: checkpoint.lastCompletedTurnId,
-    ...await collaborationThreadOptionsForSession(sessionId, preservingRecovery
-      ? { prospectiveBinding: true, purpose: "session-recovery" }
-      : {})
-  });
-  emitEvent(
-    result.status === "waitingForTurn" ? "SessionRestartWaiting" : "SessionRestartCompleted",
-    { sessionId, logicalSessionId: logical.logicalSessionId, transition: result.transition },
-    { sessionId }
-  );
-  return result;
+// Session restart is Provider-neutral orchestration: it re-binds the workspace
+// route at a Turn boundary. See ProviderSessionLifecycle.
+function restartCodexProviderSession(reference, context = {}) {
+  return providerSessionLifecycle.restartSession(reference, context);
 }
 
 async function switchSessionWorkspace(sessionId, targetWorktreeId, transitionId = undefined, continuationPrompt = undefined) {

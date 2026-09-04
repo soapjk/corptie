@@ -49,6 +49,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
       ...(typeof options.listModels === "function" ? [AGENT_PROVIDER_CAPABILITIES.MODEL_LIST] : []),
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
+      AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
       AGENT_PROVIDER_CAPABILITIES.PERMISSIONS_UPDATE,
       ...(typeof options.prepareWorkspaceTransition === "function"
         ? [AGENT_PROVIDER_CAPABILITIES.WORKSPACE_TRANSITION]
@@ -88,6 +89,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     respondToApproval: (reference, approval) => manager.respondToChoice(reference.providerSessionId, approval),
     ...(typeof options.listModels === "function" ? { listModels: options.listModels } : {}),
     switchModel: (reference, modelId) => manager.switchModel(reference.providerSessionId, modelId),
+    switchReasoning: (reference, reasoningLevel) => manager.switchReasoning(reference.providerSessionId, reasoningLevel),
     updatePermissions: (reference, permissions) => manager.updatePermissions(reference.providerSessionId, permissions),
     ...(typeof options.prepareWorkspaceTransition === "function"
       ? { prepareWorkspaceTransition: options.prepareWorkspaceTransition }

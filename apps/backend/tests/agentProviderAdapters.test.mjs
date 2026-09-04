@@ -39,11 +39,21 @@ test("Claude manager is isolated behind the common Agent Provider contract", asy
     reference,
     "hello"
   );
+  assert.equal(
+    provider.descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH),
+    true
+  );
   await registry.invoke(
     "claude-sdk",
     AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
     reference,
     "claude-model"
+  );
+  await registry.invoke(
+    "claude-sdk",
+    AGENT_PROVIDER_CAPABILITIES.REASONING_SWITCH,
+    reference,
+    "high"
   );
   await registry.invoke(
     "claude-sdk",
@@ -54,6 +64,7 @@ test("Claude manager is isolated behind the common Agent Provider contract", asy
   assert.deepEqual(manager.calls, [
     ["send", "claude-native-a", "hello"],
     ["model", "claude-native-a", "claude-model"],
+    ["reasoning", "claude-native-a", "high"],
     ["rename", "claude-native-a", "Renamed"]
   ]);
 });
