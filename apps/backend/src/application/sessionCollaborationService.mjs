@@ -117,9 +117,28 @@ export class SessionCollaborationService {
       idempotencyKey: required(input.idempotencyKey, "idempotency_key"),
       persistTask: async () => persisted
     });
+    const currentTask = this.store.getTask(created.task.id);
+    const currentSession = this.#resolveSession(
+      created.session?.id ?? currentTask?.current_session_id
+    );
+    if (!currentSession) {
+      throw coded(
+        "START_SESSION_UNRESOLVED",
+        "Task creation did not resolve its companion logical Session.",
+        500
+      );
+    }
     return {
       ...created,
-      task: this.#presentTask(created.task),
+      ...this.#startReceipt(
+        currentTask,
+        currentSession,
+        currentTask.execution_status ?? "running",
+        created.idempotentReplay,
+        required(input.idempotencyKey, "idempotency_key")
+      ),
+      task: this.#presentTask(currentTask),
+      start: created.start,
       phase: "started"
     };
   }

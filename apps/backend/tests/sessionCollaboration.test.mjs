@@ -787,7 +787,7 @@ test("tool Task creation uses one service operation to persist the Task and bind
 
     const stored = f.store.getTask(created.task.id);
     assert.equal(created.phase, "started");
-    assert.equal(created.session.id, "provider:atomic-worker");
+    assert.equal(created.session.sessionId, "session:atomic-worker");
     assert.equal(stored.current_session_id, "provider:atomic-worker");
     assert.equal(stored.description, "Description belongs to Task context only");
     assert.equal(stored.acceptance_criteria, "Criterion belongs to Task context only");
