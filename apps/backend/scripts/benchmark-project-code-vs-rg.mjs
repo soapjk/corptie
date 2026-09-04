@@ -56,7 +56,7 @@ try {
   const store = benchmarkStore({ binding, sessionContext, receipts });
   const snapshotBuilder = new RepositorySourceSnapshotBuilder();
   const indexStore = new ProjectCodeIndexStore({ dataRoot, requireExternal: false });
-  const searchService = new ProjectCodeSearchService({ snapshotBuilder, indexStore });
+  const searchService = new ProjectCodeSearchService({ snapshotBuilder, indexStore, nonBlockingIndexWarmup: true });
   const application = new ProjectCodeSearchApplicationService({
     store,
     startupReceipts: { require: () => startupReceipt },
@@ -65,11 +65,8 @@ try {
   });
 
   let started = performance.now();
-  const snapshot = await application.createSnapshot({ logicalSessionId: sessionContext.logicalSessionId });
-  const snapshotMs = performance.now() - started;
-  started = performance.now();
-  await application.search(searchInput(sessionContext.logicalSessionId, queries[0]));
-  const coldFirstSearchMs = performance.now() - started;
+  const prewarm = await application.prewarm({ logicalSessionId: sessionContext.logicalSessionId });
+  const sessionReadyPrewarmMs = performance.now() - started;
   const measurements = {};
   for (const query of queries) {
     for (let index = 0; index < 5; index += 1) {
@@ -94,12 +91,17 @@ try {
   const fasterP50 = Object.values(measurements).every((value) => value.projectCodeMs.p50 < value.ripgrepMs.p50);
   const fasterP95 = Object.values(measurements).every((value) => value.projectCodeMs.p95 < value.ripgrepMs.p95);
   process.stdout.write(`${JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     repositoryRoot,
     sampleCount,
-    snapshotReceiptId: snapshot.receipt.receiptId,
-    snapshotMs: rounded(snapshotMs),
-    coldFirstSearchMs: rounded(coldFirstSearchMs),
+    snapshotReceiptId: prewarm.snapshotReceiptId,
+    sessionReadyPrewarm: {
+      totalMs: rounded(sessionReadyPrewarmMs),
+      snapshotMs: prewarm.snapshotMs,
+      indexMs: prewarm.indexMs,
+      indexHit: prewarm.indexHit,
+      excludedFromQueryComparison: true
+    },
     indexStats: indexStore.stats,
     measurements,
     comparison: {
