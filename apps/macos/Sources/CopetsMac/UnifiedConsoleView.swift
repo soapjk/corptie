@@ -34,7 +34,7 @@ enum ConsoleWorkOutlineMetrics {
     static let groupCornerRadius: CGFloat = 8
     static let groupHorizontalInset: CGFloat = 6
     static let disclosureAnimation = Animation.easeInOut(duration: 0.16)
-    static let workingPulseMinimumOpacity = 0.38
+    static let workingPulseMinimumOpacity = 0.20
     static let workingPulseDuration = 1.8
     static var workingPulseAnimation: Animation {
         .easeInOut(duration: workingPulseDuration).repeatForever(autoreverses: true)

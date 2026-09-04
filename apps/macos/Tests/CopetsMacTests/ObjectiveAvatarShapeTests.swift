@@ -48,19 +48,48 @@ struct ObjectiveAvatarShapeTests {
     }
 
     @Test
-    func workAvatarPickersAcceptSVGImages() throws {
+    func avatarPickersAcceptSVGImagesThroughTheSharedPolicy() throws {
         let sourceRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .appendingPathComponent("Sources/CopetsMac")
 
-        for fileName in ["WorkCreateView.swift", "WorkDetailView.swift"] {
+        for fileName in ["AgentDetailView.swift", "WorkCreateView.swift", "WorkDetailView.swift"] {
             let source = try String(
                 contentsOf: sourceRoot.appendingPathComponent(fileName),
                 encoding: .utf8
             )
-            #expect(source.contains(".svg"), "SVG is not selectable in \(fileName)")
+            #expect(
+                source.contains("AvatarImageSupport.allowedContentTypes"),
+                "Shared SVG-capable avatar types are not used in \(fileName)"
+            )
         }
+
+        let supportSource = try String(
+            contentsOf: sourceRoot.appendingPathComponent("AvatarImageSupport.swift"),
+            encoding: .utf8
+        )
+        #expect(supportSource.contains(".svg"))
+    }
+
+    @Test
+    func appKitLoadsSVGAvatarContent() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("corptie-avatar-svg-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let avatarURL = directory.appendingPathComponent("avatar.svg")
+        let svg = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="18">
+          <rect width="24" height="18" fill="#00aaff"/>
+        </svg>
+        """
+        try Data(svg.utf8).write(to: avatarURL, options: .atomic)
+
+        let image = try #require(AvatarImageSupport.loadImage(at: avatarURL.path))
+        #expect(image.size.width == 24)
+        #expect(image.size.height == 18)
     }
 }
