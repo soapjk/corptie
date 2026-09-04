@@ -290,20 +290,17 @@ test("Tool Host does not attach tools when a Provider does not declare support",
   assert.equal(await service.prepareSession("plain"), null);
 });
 
-test("Tool Host fails loudly when an unsupported Provider would drop assigned Skill MCP dependencies", async () => {
+test("Tool Host does not mutate an unsupported Provider for assigned Skill MCP dependencies", async () => {
   const registry = new AgentProviderRegistry([provider("plain", [])]);
   const service = new ToolHostService({
     registry,
     catalog: new HostToolCatalog(),
-    resolveMcpServers: async () => ({ compound: { type: "stdio", command: "node" } })
+    skillMcpGateway: { revision: () => "assigned" }
   });
-  await assert.rejects(
-    service.prepareSession("plain", { actorId: "agent-compound" }),
-    (error) => error.code === "MCP_PROVIDER_UNSUPPORTED" && /plain/.test(error.message)
-  );
+  assert.equal(await service.prepareSession("plain", { actorId: "agent-compound" }), null);
 });
 
-test("Tool Host rejects a Provider that attaches host tools but does not advertise Skill MCP support", async () => {
+test("Tool Host needs only its permanent attachment capability to proxy Skill MCP", async () => {
   const events = [];
   const registry = new AgentProviderRegistry([provider("host-tools-only", [
     AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
@@ -313,16 +310,15 @@ test("Tool Host rejects a Provider that attaches host tools but does not adverti
   const service = new ToolHostService({
     registry,
     catalog: new HostToolCatalog(),
-    resolveMcpServers: async () => ({ investrace: { command: "node", args: ["server.mjs"] } }),
+    skillMcpGateway: { revision: () => "assigned" },
     recordRuntimeEvent: (event) => events.push(event)
   });
-  await assert.rejects(
-    service.prepareSession("host-tools-only", { actorId: "agent:investor", sessionId: "session:1" }),
-    (error) => error.code === "MCP_PROVIDER_UNSUPPORTED" && /host-tools-only/.test(error.message)
-  );
+  const prepared = await service.prepareSession("host-tools-only", {
+    actorId: "agent:investor", sessionId: "session:1"
+  });
+  assert.deepEqual(prepared.providerAttachment.mcpServers, {});
   assert.equal(events[0].stage, "provider-materialization");
-  assert.equal(events[0].status, "failed");
-  assert.equal(events[0].errorCode, "MCP_PROVIDER_UNSUPPORTED");
+  assert.equal(events[0].status, "success");
 });
 
 test("Host Tool Catalog dispatches by tool name without Provider knowledge", async () => {
@@ -412,7 +408,7 @@ test("Codex and Claude Provider adapters configure assigned Skill MCP dependenci
   assert.equal(claude.mcpServers.corptie.command, "corptie-mcp");
 });
 
-test("Tool Host resolves Agent Skill MCP dependencies before Provider attachment", async () => {
+test("Tool Host keeps Provider-native MCP bindings stable for assigned Skill MCP dependencies", async () => {
   const calls = [];
   const registry = new AgentProviderRegistry([provider("hosted", [
     AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH,
@@ -423,13 +419,14 @@ test("Tool Host resolves Agent Skill MCP dependencies before Provider attachment
   const service = new ToolHostService({
     registry,
     catalog: new HostToolCatalog(),
-    resolveMcpServers: async ({ actorId, providerId }) => ({
-      assigned: { type: "stdio", command: "node", args: [`/${providerId}/${actorId}/server.mjs`] }
-    })
+    skillMcpGateway: {
+      revision: () => "assigned",
+      definitions: async () => [{ name: "assigned_tool", inputSchema: { type: "object" } }]
+    }
   });
   const prepared = await service.prepareSession("hosted", { actorId: "agent-compound" });
-  assert.equal(calls[0].mcpServers.assigned.command, "node");
-  assert.equal(prepared.providerAttachment.mcpServers.assigned.args[0], "/hosted/agent-compound/server.mjs");
+  assert.deepEqual(calls[0].mcpServers, {});
+  assert.deepEqual(prepared.providerAttachment.mcpServers, {});
 });
 
 test("Claude Provider maps the common attachment to MCP, skills, and project settings", () => {
