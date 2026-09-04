@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { promisify } from "node:util";
+import { StringDecoder } from "node:string_decoder";
 import { resolveExternalCommand } from "../utils/externalCommand.mjs";
 import {
   contractError,
@@ -16,13 +17,14 @@ import {
   validateProjectCodeReceipt,
 } from "./projectCodeContracts.mjs";
 import { queryTextSymbolIndex } from "./projectCodeIndexStore.mjs";
-import { assertContainedRegularPath, rejectedPathFact } from "./projectCodePaths.mjs";
+import { assertContainedSearchScope, assertContainedSourceFile, rejectedPathFact } from "./projectCodePaths.mjs";
 import { cleanupReceiptRef, runReceiptRef } from "./projectCodeRunIsolationPort.mjs";
+import { isValidatedSnapshotLease } from "./projectCodeValidationLease.mjs";
 
 const execFileAsync = promisify(execFile);
 const resultKinds = new Set(["file", "text", "class", "struct", "enum", "protocol", "function", "method", "property", "import", "call", "test", "semantic"]);
-const searchInputFields = new Set(["snapshot", "sessionContext", "searchScenarioId", "query", "mode", "paths", "languages", "kinds", "limit", "minResults", "timeoutMs", "signal", "toolsetValidationReceipt", "toolsetRequired"]);
-const pointReadInputFields = new Set(["snapshot", "sessionContext", "path", "startLine", "lineCount", "maxBytes", "signal"]);
+const searchInputFields = new Set(["snapshot", "validationLease", "sessionContext", "searchScenarioId", "query", "mode", "paths", "languages", "kinds", "limit", "minResults", "timeoutMs", "signal", "toolsetValidationReceipt", "toolsetRequired"]);
+const pointReadInputFields = new Set(["snapshot", "validationLease", "sessionContext", "path", "startLine", "lineCount", "maxBytes", "maxScanBytes", "signal"]);
 
 export class ProjectCodeSearchService {
   constructor(options = {}) {
@@ -35,6 +37,7 @@ export class ProjectCodeSearchService {
     this.receiptId = options.receiptId ?? (() => createReceiptId("search"));
     this.limiter = options.limiter ?? new ProjectCodeQueryLimiter();
     this.telemetrySink = options.telemetrySink ?? null;
+    this.maxCachedWorktrees = options.maxCachedWorktrees ?? 32;
     this.previousL2ByWorktree = new Map();
   }
 
@@ -65,23 +68,31 @@ export class ProjectCodeSearchService {
       assertReceiptIdentity(input.snapshot.receipt, input.sessionContext);
       state.latency.bindingVerifyMs = elapsed(bindingStarted);
       const freshnessStarted = performance.now();
-      await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: controller.signal });
+      if (!isValidatedSnapshotLease(input.validationLease, input.snapshot)) {
+        await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: controller.signal });
+      }
       state.latency.snapshotVerifyMs = elapsed(freshnessStarted);
       const toolsetStarted = performance.now();
       toolsetPointer = await verifyToolsetEcho(input.toolsetValidationReceipt, input.snapshot.receipt, input.toolsetRequired === true);
       state.latency.toolsetVerifyMs = elapsed(toolsetStarted);
-      const scope = (await this.#resolveScope(input.snapshot, paths, state.rejectedPaths))
+      const resolvedScope = await this.#resolveScope(input.snapshot, paths, state.rejectedPaths);
+      const scope = resolvedScope.candidates
         .filter((candidate) => filters.languages.size === 0 || filters.languages.has(candidate.language));
-      if (scope.length === 0 && paths.length > 0) {
+      if (scope.length === 0 && paths.length > 0 && resolvedScope.allowedTargets.length === 0) {
         state.outcome = "rejected";
         state.errorCode = "PATH_OUTSIDE_SCOPE";
         state.layers.push(layerFact("L0", "skipped", { skippedReason: "NO_ALLOWED_PATH" }));
       } else {
-        const execution = await this.#executeLayers({ ...input, paths, query, scope, signal: controller.signal, state });
+        const execution = await this.#executeLayers({ ...input, paths, query, scope, scopeTargets: resolvedScope.allowedTargets, signal: controller.signal, state });
         results = execution.results.filter((result) => filters.kinds.size === 0 || filters.kinds.has(result.kind));
         isolation = execution.isolation;
         state.outcome = execution.outcome;
         state.errorCode = execution.errorCode;
+      }
+      if (isValidatedSnapshotLease(input.validationLease, input.snapshot)) {
+        const postStarted = performance.now();
+        await input.validationLease.verifyAfter({ signal: controller.signal });
+        state.latency.snapshotVerifyMs += elapsed(postStarted);
       }
     } catch (error) {
       if (error?.isolation) isolation = error.isolation;
@@ -121,22 +132,35 @@ export class ProjectCodeSearchService {
   async pointRead(input) {
     assertClosedInput(input, pointReadInputFields, "point read");
     const maxBytes = normalizeInteger(input.maxBytes, 64 * 1024, 1, 64 * 1024, "maxBytes");
+    const maxScanBytes = normalizeInteger(input.maxScanBytes, 8 * 1024 * 1024, 1, 64 * 1024 * 1024, "maxScanBytes");
+    const startLine = normalizeInteger(input.startLine, 1, 1, Number.MAX_SAFE_INTEGER, "startLine");
+    const lineCount = normalizeInteger(input.lineCount, 200, 1, 2_000, "lineCount");
     await validateProjectCodeReceipt(input.snapshot.receipt, "RepositorySourceSnapshotReceipt");
     assertReceiptIdentity(input.snapshot.receipt, input.sessionContext);
-    await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: input.signal });
-    const safe = await assertContainedRegularPath(input.snapshot.canonicalWorktreePath, input.path);
+    if (!isValidatedSnapshotLease(input.validationLease, input.snapshot)) {
+      await this.snapshotBuilder.assertCurrent(input.snapshot, { signal: input.signal });
+    }
+    const safe = await assertContainedSourceFile(input.snapshot.canonicalWorktreePath, input.path);
+    if (!input.snapshot.candidates.some((candidate) => candidate.path === safe.relativePath)) {
+      throw contractError("PATH_OUTSIDE_SCOPE", "The requested source path is not contained by this Snapshot.", 403);
+    }
     const handle = await open(safe.absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
-      const content = Buffer.alloc(maxBytes);
-      const { bytesRead } = await handle.read(content, 0, maxBytes, 0);
-      const lines = content.subarray(0, bytesRead).toString("utf8").split(/\r?\n/);
-      const startLine = normalizeInteger(input.startLine, 1, 1, Number.MAX_SAFE_INTEGER, "startLine");
-      const lineCount = normalizeInteger(input.lineCount, 200, 1, 2_000, "lineCount");
+      const before = await handle.stat();
+      const window = await readLineWindow(handle, { startLine, lineCount, maxBytes, maxScanBytes, size: before.size, signal: input.signal });
+      const after = await handle.stat();
+      if (before.ino !== after.ino || before.dev !== after.dev || before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+        throw contractError("SOURCE_SNAPSHOT_STALE", "Source changed while the point-read window was being read.");
+      }
+      if (isValidatedSnapshotLease(input.validationLease, input.snapshot)) await input.validationLease.verifyAfter({ signal: input.signal });
       return Object.freeze({
         path: safe.relativePath,
         startLine,
-        lines: Object.freeze(lines.slice(startLine - 1, startLine - 1 + lineCount)),
-        truncated: bytesRead === maxBytes
+        lines: Object.freeze(window.lines),
+        nextStartLine: startLine + window.lines.length,
+        eof: window.eof,
+        truncated: window.truncatedReason !== null,
+        truncatedReason: window.truncatedReason
       });
     } finally { await handle.close(); }
   }
@@ -144,9 +168,11 @@ export class ProjectCodeSearchService {
   async #executeLayers(input) {
     const mode = normalizeMode(input.mode);
     const minResults = normalizeInteger(input.minResults, 1, 1, 20, "minResults");
-    const limit = normalizeInteger(input.limit, 20, 1, 50, "limit");
+    const limit = normalizeInteger(input.limit, 12, 1, 50, "limit");
     const all = [];
     let isolation = { runReceiptRef: null, runId: null, cleanupReceiptRef: null };
+    const autoPlan = mode === "auto" ? planAutoQuery(input.query) : null;
+    let l2Attempted = false;
     if (mode === "semantic" && !this.#l3Available(input.snapshot)) {
       throw contractError("SEMANTIC_LANGUAGE_UNVALIDATED", "L3 semantic search is unavailable for this Snapshot language set.", 503);
     }
@@ -174,12 +200,24 @@ export class ProjectCodeSearchService {
       }
     };
 
-    if (["auto", "exact"].includes(mode)) {
+    if (mode === "auto" && autoPlan === "lexical") {
+      l2Attempted = true;
+      try {
+        await runLayer("L2", () => this.#runL2(input, limit));
+      } catch (error) {
+        if (error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
+        input.state.layers.push(layerFact("L2", "degraded", { degradedReason: "DATA_ROOT_UNAVAILABLE" }));
+      }
+      if (deduplicate(all).length >= minResults) return success(deduplicate(all).slice(0, limit), isolation,
+        input.state.layers.some((fact) => fact.status === "degraded") ? "degraded" : "success");
+    }
+    if (mode === "exact" || (mode === "auto" && autoPlan === "exact")) {
       await runLayer("L0", () => this.#runL0(input.query, input.scope, {
         signal: input.signal, limit, root: input.snapshot.canonicalWorktreePath,
         targets: (input.paths?.length ?? 0) > 0
-          ? input.scope.map((entry) => entry.path)
+          ? input.scopeTargets
           : input.snapshot.declarations.length > 0 ? input.snapshot.declarations.map((entry) => entry.path) : ["."],
+        allowedPaths: new Set(input.scope.map((entry) => entry.path)),
         allowGenerated: input.snapshot.declarations.some((entry) => entry.generatedAllowed)
       }));
       if (mode === "exact" || deduplicate(all).length >= minResults) return success(deduplicate(all).slice(0, limit), isolation);
@@ -188,7 +226,7 @@ export class ProjectCodeSearchService {
       await runLayer("L1", () => this.#runL1(input, limit));
       if (mode === "files" || deduplicate(all).length >= minResults) return success(deduplicate(all).slice(0, limit), isolation);
     }
-    if (["auto", "symbols", "semantic"].includes(mode)) {
+    if (["auto", "symbols", "semantic"].includes(mode) && !l2Attempted) {
       if (mode === "semantic" && !this.indexStore) {
         input.state.layers.push(layerFact("L2", "skipped", { skippedReason: "SEMANTIC_DIRECT_L3" }));
       } else {
@@ -235,7 +273,7 @@ export class ProjectCodeSearchService {
       if (error?.code !== 1) throw error;
       stdout = error.stdout ?? "";
     }
-    const results = parseRgJson(stdout).slice(0, options.limit);
+    const results = parseRgJson(stdout).filter((result) => options.allowedPaths.has(result.path)).slice(0, options.limit);
     return { results, candidateCount: scope.length, indexHit: false, isolationRequired: false };
   }
 
@@ -246,7 +284,8 @@ export class ProjectCodeSearchService {
     }
     try {
       const built = await this.indexStore.ensureLayer(input.snapshot, "L1", { signal: input.signal });
-      const candidates = built.index.files.map((file) => ({ path: file.path, language: file.language }));
+      const allowed = new Set(input.scope.map((candidate) => candidate.path));
+      const candidates = built.index.files.filter((file) => allowed.has(file.path)).map((file) => ({ path: file.path, language: file.language }));
       return { results: fileResults(candidates, needle, limit), candidateCount: candidates.length, indexHit: built.indexHit, isolationRequired: false };
     } catch (error) {
       if (error?.code !== "DATA_ROOT_UNAVAILABLE") throw error;
@@ -258,11 +297,12 @@ export class ProjectCodeSearchService {
     if (!this.indexStore) throw contractError("DATA_ROOT_UNAVAILABLE", "L2 requires the external project-code index store.", 503);
     const previousIndex = this.previousL2ByWorktree.get(input.snapshot.receipt.worktreeId) ?? null;
     const built = await this.indexStore.ensureLayer(input.snapshot, "L2", { signal: input.signal, previousIndex });
-    this.previousL2ByWorktree.set(input.snapshot.receipt.worktreeId, {
+    lruSet(this.previousL2ByWorktree, input.snapshot.receipt.worktreeId, {
       documentsByHash: new Map(built.index.documents.map((document) => [document.contentHash, document]))
-    });
+    }, this.maxCachedWorktrees);
+    const allowed = new Set(input.scope.map((candidate) => candidate.path));
     return {
-      results: queryTextSymbolIndex(built.index, input.query, { signal: input.signal, limit }),
+      results: queryTextSymbolIndex(built.index, input.query, { signal: input.signal, limit: 50 }).filter((result) => allowed.has(result.path)).slice(0, limit),
       candidateCount: built.index.documents.length,
       indexHit: built.indexHit,
       isolationRequired: false
@@ -362,19 +402,26 @@ export class ProjectCodeSearchService {
   }
 
   async #resolveScope(snapshot, paths, rejected) {
-    if (paths.length === 0) return snapshot.candidates;
-    const allowed = [];
+    if (paths.length === 0) return { candidates: snapshot.candidates, allowedTargets: [] };
+    const allowed = new Map();
+    const allowedTargets = new Set();
     for (const path of paths) {
       try {
-        const safe = await assertContainedRegularPath(snapshot.canonicalWorktreePath, path);
-        const candidate = snapshot.candidates.find((entry) => entry.path === safe.relativePath);
-        if (candidate) allowed.push(candidate);
-        else rejected.push(rejectedPathFact(path, "PATH_NOT_IN_SNAPSHOT", { revealRelative: true }));
+        const safe = await assertContainedSearchScope(snapshot.canonicalWorktreePath, path);
+        const matches = safe.kind === "file"
+          ? snapshot.candidates.filter((entry) => entry.path === safe.relativePath)
+          : snapshot.candidates.filter((entry) => entry.path.startsWith(`${safe.relativePath}/`));
+        if (safe.kind === "file" && matches.length === 0) {
+          rejected.push(rejectedPathFact(path, "PATH_NOT_IN_SNAPSHOT", { revealRelative: true }));
+          continue;
+        }
+        allowedTargets.add(safe.relativePath);
+        for (const candidate of matches) allowed.set(candidate.path, candidate);
       } catch (error) {
         rejected.push(error.rejectedPath ?? rejectedPathFact(path, error.code ?? "PATH_INVALID"));
       }
     }
-    return allowed;
+    return { candidates: [...allowed.values()], allowedTargets: [...allowedTargets] };
   }
 
   async #createReceipt({ input, query, state, results, toolsetPointer, isolation, timeoutMs }) {
@@ -557,7 +604,7 @@ function summarizeResults(results) {
 function indexVersion(layers) {
   const l2 = layers.some((fact) => fact.layer === "L2" && ["executed", "degraded"].includes(fact.status));
   const l3 = layers.some((fact) => fact.layer === "L3" && fact.status === "executed");
-  return { catalogSchema: 1, textSymbolSchema: l2 ? 1 : null, semanticSchema: l3 ? 1 : null, generationHashes: [] };
+  return { catalogSchema: 1, textSymbolSchema: l2 ? 5 : null, semanticSchema: l3 ? 1 : null, generationHashes: [] };
 }
 
 function candidateCategories(snapshot, layers) {
@@ -615,10 +662,93 @@ function validatePaths(paths) {
   return [...new Set(paths)];
 }
 
+async function readLineWindow(handle, options) {
+  const decoder = new StringDecoder("utf8");
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  const lines = [];
+  let pending = "";
+  let currentLine = 1;
+  let position = 0;
+  let outputBytes = 0;
+  let reachedEof = false;
+  let truncatedReason = null;
+
+  const capture = (value) => {
+    if (currentLine < options.startLine) return true;
+    const remaining = options.maxBytes - outputBytes;
+    const bytes = Buffer.byteLength(value, "utf8");
+    if (bytes > remaining) {
+      lines.push(truncateUtf8(value, remaining));
+      outputBytes = options.maxBytes;
+      truncatedReason = "output_bytes";
+      return false;
+    }
+    lines.push(value);
+    outputBytes += bytes;
+    if (lines.length >= options.lineCount) {
+      truncatedReason = "line_count";
+      return false;
+    }
+    return true;
+  };
+
+  while (!truncatedReason && position < options.size && position < options.maxScanBytes) {
+    if (options.signal?.aborted) {
+      const error = new Error("Project-code point read was cancelled.");
+      error.name = "AbortError";
+      error.code = "QUERY_CANCELLED";
+      throw error;
+    }
+    const requested = Math.min(chunk.length, options.size - position, options.maxScanBytes - position);
+    const { bytesRead } = await handle.read(chunk, 0, requested, position);
+    if (bytesRead === 0) { reachedEof = true; break; }
+    position += bytesRead;
+    pending += decoder.write(chunk.subarray(0, bytesRead));
+    let newline;
+    while (!truncatedReason && (newline = pending.indexOf("\n")) !== -1) {
+      const line = pending.slice(0, newline).replace(/\r$/, "");
+      pending = pending.slice(newline + 1);
+      if (!capture(line)) break;
+      currentLine += 1;
+    }
+    if (!truncatedReason && currentLine >= options.startLine && Buffer.byteLength(pending, "utf8") > options.maxBytes - outputBytes) {
+      capture(pending);
+    }
+  }
+
+  if (!truncatedReason && position >= options.size) {
+    pending += decoder.end();
+    reachedEof = true;
+    if (pending.length > 0 && currentLine >= options.startLine) capture(pending.replace(/\r$/, ""));
+  }
+  if (!truncatedReason && !reachedEof && position >= options.maxScanBytes) {
+    if (currentLine < options.startLine) {
+      throw contractError("POINT_READ_SCAN_LIMIT", "The requested start line exceeds the point-read scan budget.", 413);
+    }
+    truncatedReason = "scan_bytes";
+  }
+  return { lines, eof: reachedEof && truncatedReason !== "line_count" && truncatedReason !== "output_bytes", truncatedReason };
+}
+
+function truncateUtf8(value, maxBytes) {
+  if (maxBytes <= 0) return "";
+  const source = Buffer.from(value, "utf8");
+  if (source.length <= maxBytes) return value;
+  let end = maxBytes;
+  while (end > 0 && (source[end] & 0b11000000) === 0b10000000) end -= 1;
+  return source.subarray(0, end).toString("utf8");
+}
+
 function normalizeMode(value) {
   const mode = value ?? "auto";
   if (!["auto", "exact", "files", "symbols", "semantic"].includes(mode)) throw contractError("UNSUPPORTED_OPTION", "Unsupported project-code search mode.", 400);
   return mode;
+}
+
+function planAutoQuery(query) {
+  const value = String(query);
+  if (/["'`{}();]|\.[A-Za-z0-9]{1,8}\b|[/\\]/u.test(value)) return "exact";
+  return "lexical";
 }
 
 function normalizeInteger(value, fallback, minimum, maximum, field) {
@@ -640,6 +770,12 @@ function deduplicate(results) {
     if (seen.has(key)) return false;
     seen.add(key); return true;
   }).sort((left, right) => right.score - left.score || left.path.localeCompare(right.path)).map(normalizeResult);
+}
+
+function lruSet(map, key, value, maximum) {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > maximum) map.delete(map.keys().next().value);
 }
 
 function normalizeResult(result) { return { ...result, snippet: singleLine(result.snippet), score: Math.max(0, Math.min(1, result.score)) }; }

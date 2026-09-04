@@ -45,13 +45,26 @@ test("missing external dataRoot does not affect L0 but fails L2 without internal
   try {
     const builder = new RepositorySourceSnapshotBuilder();
     const snapshot = await builder.build(fixture);
-    const store = new ProjectCodeIndexStore({ dataRoot: join(fixture.directory, "missing-external-root"), requireExternal: false });
+    const store = new ProjectCodeIndexStore({ dataRoot: join(fixture.directory, "missing-parent", "project-code-index"), requireExternal: false });
     const service = new ProjectCodeSearchService({ snapshotBuilder: builder, indexStore: store });
     const l0 = await service.search({ snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "fault-l0", query: "exactNeedle", mode: "exact" });
     assert.equal(l0.receipt.outcome, "success");
     const l2 = await service.search({ snapshot, sessionContext: fixture.sessionContext, searchScenarioId: "fault-l2", query: "exactNeedle", mode: "symbols" });
     assert.equal(l2.receipt.outcome, "failed");
     assert.equal(l2.receipt.errorCode, "DATA_ROOT_UNAVAILABLE");
+  } finally { await rm(fixture.directory, { recursive: true, force: true }); }
+});
+
+test("index initialization rejects a symbolic-link data root", async () => {
+  const fixture = await createProjectCodeFixture();
+  try {
+    const target = join(fixture.directory, "real-index-root");
+    await mkdir(target);
+    const linked = join(fixture.directory, "linked-index-root");
+    await symlink(target, linked);
+    const store = new ProjectCodeIndexStore({ dataRoot: linked, requireExternal: false });
+    await assert.rejects(() => store.initialize(), (error) => error.code === "DATA_ROOT_UNAVAILABLE");
+    assert.equal(store.getReadiness().status, "unavailable");
   } finally { await rm(fixture.directory, { recursive: true, force: true }); }
 });
 

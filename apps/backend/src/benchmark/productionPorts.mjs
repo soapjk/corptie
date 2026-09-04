@@ -170,6 +170,7 @@ export function createBenchmarkProductionPorts(options = {}) {
         const authority = await authorityFor(request.scope.logicalSessionId);
         const result = await projectCode.search({ logicalSessionId: request.scope.logicalSessionId,
           snapshotReceiptId: authority.snapshot.receiptId, query: "BenchmarkControlPlane", mode: "exact",
+          responseDetail: "full", snapshotPolicy: "require_exact",
           limit: 20, minResults: 1, timeoutMs: 10_000,
           searchScenarioId: searchScenarioId(request), toolsetValidationReceipt: authority.toolset, toolsetRequired: true });
         // Search itself owns these fields; a lexical S6 receipt correctly keeps

@@ -3628,6 +3628,23 @@ export class CorptieStore {
     } : null;
   }
 
+  getLatestProjectCodeSnapshot(logicalSessionId) {
+    const row = this.selectOne(
+      `SELECT * FROM project_code_receipts
+       WHERE logical_session_id=? AND receipt_type='RepositorySourceSnapshotReceipt'
+       ORDER BY created_at DESC LIMIT 1`,
+      [logicalSessionId]
+    );
+    return row ? {
+      receiptType: row.receipt_type,
+      receipt: JSON.parse(row.receipt_json),
+      sourceFingerprint: row.source_fingerprint,
+      repositoryId: row.repository_id,
+      worktreeId: row.worktree_id,
+      createdAt: row.created_at
+    } : null;
+  }
+
   getProjectCodeReceiptById(receiptId) {
     const row = this.selectOne("SELECT * FROM project_code_receipts WHERE receipt_id=?", [receiptId]);
     return row ? {
