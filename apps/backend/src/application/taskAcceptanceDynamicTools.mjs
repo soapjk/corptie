@@ -75,7 +75,7 @@ export const taskAcceptanceDynamicTools = Object.freeze([
   ),
   tool(
     "corptie_task_revise",
-    "Evolve the Task bound to this Session after the user switches to a new problem. Corptie atomically snapshots the previous Task definition and replaces the current title, goal, acceptance criteria, and verification criteria without creating another Task.",
+    "Evolve the Task bound to this Session after the user switches to a new problem. Corptie atomically snapshots the previous Task definition and replaces the current title, description, acceptance criteria, and verification criteria without creating another Task.",
     {
       expectedRevision: { type: "integer", minimum: 1 },
       next: {
@@ -84,7 +84,6 @@ export const taskAcceptanceDynamicTools = Object.freeze([
         properties: {
           title: { type: "string", minLength: 1 },
           description: { type: "string" },
-          goal: { type: "string" },
           acceptanceCriteria: { type: "string" },
           verificationCriteria: { type: "string" }
         },

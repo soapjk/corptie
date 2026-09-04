@@ -38,7 +38,7 @@ import {
   resolveSessionArchiveState
 } from "../domain/sessionArchivePolicy.mjs";
 import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
-import { migrateTaskDomainV1 } from "./taskSchemaMigration.mjs";
+import { migrateTaskDomainV1, migrateTaskGoalRemovalV1 } from "./taskSchemaMigration.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -2079,7 +2079,6 @@ export class CorptieStore {
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         acceptance_criteria TEXT NOT NULL DEFAULT '',
-        goal TEXT NOT NULL DEFAULT '',
         verification_criteria TEXT NOT NULL DEFAULT '',
         priority TEXT NOT NULL DEFAULT 'medium',
         lifecycle_state TEXT NOT NULL DEFAULT 'todo',
@@ -2100,7 +2099,6 @@ export class CorptieStore {
         version INTEGER NOT NULL CHECK (version >= 1),
         title TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
-        goal TEXT NOT NULL DEFAULT '',
         acceptance_criteria TEXT NOT NULL DEFAULT '',
         verification_criteria TEXT NOT NULL DEFAULT '',
         acceptance_assessment_json TEXT NOT NULL DEFAULT '{}',
@@ -2998,9 +2996,9 @@ export class CorptieStore {
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("agents", "work_dir", "TEXT");
     this.ensureColumn("agents", "avatar_path", "TEXT");
+    migrateTaskGoalRemovalV1(this.db);
     this.ensureColumn("tasks", "current_session_id", "TEXT");
     this.ensureColumn("tasks", "acceptance_criteria", "TEXT NOT NULL DEFAULT ''");
-    this.ensureColumn("tasks", "goal", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("tasks", "verification_criteria", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("tasks", "lifecycle_state", "TEXT NOT NULL DEFAULT 'todo'");
     this.ensureColumn("tasks", "current_snapshot_id", "TEXT");
@@ -11048,15 +11046,14 @@ export class CorptieStore {
     const origin = normalizeTaskCreationOrigin(creationOrigin);
     this.runInTransaction(() => {
       this.db.run(
-        `INSERT INTO tasks (id, work_id, title, description, goal, acceptance_criteria,
+        `INSERT INTO tasks (id, work_id, title, description, acceptance_criteria,
           verification_criteria, priority, lifecycle_state, main_agent_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           normalized.workId,
           normalized.title,
           normalized.description ?? "",
-          normalized.goal ?? "",
           normalized.acceptanceCriteria ?? "",
           normalized.verificationCriteria ?? "",
           normalized.priority ?? "medium",
@@ -12191,7 +12188,6 @@ export class CorptieStore {
     const prospective = {
       title: current.title,
       description: current.description,
-      goal: current.goal,
       acceptanceCriteria: current.acceptance_criteria,
       verificationCriteria: current.verification_criteria,
       priority: current.priority,
@@ -12215,14 +12211,13 @@ export class CorptieStore {
     this.assertTaskAssociations(prospective, work);
     const has = (key) => Object.prototype.hasOwnProperty.call(normalized, key);
     this.db.run(
-      `UPDATE tasks SET title=?, description=?, goal=?, acceptance_criteria=?, verification_criteria=?,
+      `UPDATE tasks SET title=?, description=?, acceptance_criteria=?, verification_criteria=?,
         priority=?, lifecycle_state=?, main_agent_id=?,
         execution_status=?, acceptance_assessment_json=?, resource_version=resource_version+1,
         updated_at=? WHERE id=?`,
       [
         has("title") ? normalized.title : current.title,
         has("description") ? normalized.description : current.description,
-        has("goal") ? normalized.goal : current.goal,
         has("acceptanceCriteria") ? normalized.acceptanceCriteria : current.acceptance_criteria,
         has("verificationCriteria") ? normalized.verificationCriteria : current.verification_criteria,
         has("priority") ? normalized.priority : current.priority,
@@ -12274,7 +12269,7 @@ export class CorptieStore {
     }
     const patch = validateTaskInput(input.next ?? {}, "update");
     if (!Object.keys(patch).some((key) => [
-      "title", "description", "goal", "acceptanceCriteria", "verificationCriteria"
+      "title", "description", "acceptanceCriteria", "verificationCriteria"
     ].includes(key))) {
       const error = new Error("A Task revision must change its current problem definition.");
       error.code = "TASK_REVISION_EMPTY";
@@ -12286,7 +12281,6 @@ export class CorptieStore {
       version: Number(current.revision ?? 1),
       title: current.title,
       description: current.description ?? "",
-      goal: current.goal ?? "",
       acceptanceCriteria: current.acceptance_criteria ?? "",
       verificationCriteria: current.verification_criteria ?? "",
       acceptanceAssessment: parseJson(current.acceptance_assessment_json, {}),
@@ -12299,7 +12293,6 @@ export class CorptieStore {
     snapshot.contentHash = createHash("sha256").update(JSON.stringify({
       title: snapshot.title,
       description: snapshot.description,
-      goal: snapshot.goal,
       acceptanceCriteria: snapshot.acceptanceCriteria,
       verificationCriteria: snapshot.verificationCriteria,
       acceptanceAssessment: snapshot.acceptanceAssessment,
@@ -12311,11 +12304,11 @@ export class CorptieStore {
     return this.runInTransaction(() => {
       this.db.run(
         `INSERT INTO task_snapshots (
-          id, task_id, version, title, description, goal, acceptance_criteria,
+          id, task_id, version, title, description, acceptance_criteria,
           verification_criteria, acceptance_assessment_json, completion_evidence_json,
           execution_summary, source_message_id, created_by_session_id, content_hash, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [snapshot.id, id, snapshot.version, snapshot.title, snapshot.description, snapshot.goal,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [snapshot.id, id, snapshot.version, snapshot.title, snapshot.description,
           snapshot.acceptanceCriteria, snapshot.verificationCriteria,
           JSON.stringify(snapshot.acceptanceAssessment), JSON.stringify(snapshot.completionEvidence),
           snapshot.executionSummary, snapshot.sourceMessageId, snapshot.createdBySessionId,
@@ -14982,7 +14975,6 @@ function taskSnapshotFromRow(row) {
     version: Number(row.version),
     title: row.title,
     description: row.description,
-    goal: row.goal,
     acceptanceCriteria: row.acceptance_criteria,
     verificationCriteria: row.verification_criteria,
     acceptanceAssessment,
