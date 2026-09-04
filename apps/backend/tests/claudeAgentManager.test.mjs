@@ -106,6 +106,102 @@ test("Claude sends resolved Session context without exposing it as the visible u
   assert.equal(providerMessage.message.content[0].text, "[[CORPTIE_CONTEXT_V1:17]]Reference contextFix the bug");
 });
 
+test("Claude connection test reports a verified model without exposing its ephemeral API Key", async () => {
+  const apiKey = "sk-ant-connection-key-12345678901234567890";
+  let received = null;
+  let closed = false;
+  const manager = new ClaudeAgentManager({
+    environment: () => ({ PATH: "/usr/bin" }),
+    query: (input) => {
+      received = input;
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield { type: "system", subtype: "init", session_id: "sdk-test", model: "claude-sonnet-4-6" };
+          yield { type: "result", subtype: "success", is_error: false, result: "OK", session_id: "sdk-test" };
+        },
+        close: () => { closed = true; }
+      };
+    }
+  });
+
+  const result = await manager.testConnection({ apiKey, timeoutMs: 5_000 });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.model, "claude-sonnet-4-6");
+  assert.equal(result.authentication.configured, true);
+  assert.equal(JSON.stringify(result).includes(apiKey), false);
+  assert.equal(received.options.env.ANTHROPIC_API_KEY, apiKey);
+  assert.equal(received.options.persistSession, false);
+  assert.equal(closed, true);
+});
+
+test("Claude connection test classifies a rate-limit result", async () => {
+  const manager = new ClaudeAgentManager({
+    query: () => ({
+      async *[Symbol.asyncIterator]() {
+        yield {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: ["429 rate limit exceeded"]
+        };
+      },
+      close: () => {}
+    })
+  });
+
+  await assert.rejects(
+    manager.testConnection({ timeoutMs: 5_000 }),
+    (error) => error.code === "RATE_LIMITED" && error.retryable === true
+  );
+});
+
+test("Claude emits stable incremental timeline items for SDK partial text", async () => {
+  const events = [];
+  const manager = new ClaudeAgentManager({ onProviderEvent: (event) => events.push(event) });
+  manager.start({ id: "claude-stream" });
+  manager.ensureQueryStarted = async () => {};
+  manager.enqueueInput = () => {};
+  await manager.send("claude-stream", "Stream", { turnId: "turn:stream" });
+  const session = manager.get("claude-stream");
+
+  manager.handleSdkMessage(session, {
+    type: "stream_event",
+    event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hel" } }
+  });
+  manager.handleSdkMessage(session, {
+    type: "stream_event",
+    event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "lo" } }
+  });
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "text", text: "Hello" }]));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const streamed = session.items.filter((item) => item.type === "agentMessage");
+  assert.equal(streamed.length, 1);
+  assert.equal(streamed[0].text, "Hello");
+  assert.equal(streamed[0].presentationRole, "final_answer");
+  const deltas = events.filter((event) => event.type === "assistant.message.delta");
+  assert.equal(new Set(deltas.map((event) => event.itemId)).size, 1);
+  assert.deepEqual(deltas.map((event) => event.item.text), ["Hel", "Hello"]);
+  assert.equal(events.at(-1).type, "assistant.message.completed");
+});
+
+test("Claude starts ordinary queries with partial messages and the isolated runtime environment", async () => {
+  let received = null;
+  const query = { async *[Symbol.asyncIterator]() {} };
+  const manager = new ClaudeAgentManager({
+    environment: () => ({ PATH: "/usr/bin", ANTHROPIC_API_KEY: "sk-ant-runtime-secret-1234567890" }),
+    query: (input) => { received = input; return query; }
+  });
+  manager.start({ id: "claude-runtime-options" });
+  await manager.ensureQueryStarted(manager.get("claude-runtime-options"));
+
+  assert.equal(received.options.includePartialMessages, true);
+  assert.equal(received.options.env.ANTHROPIC_API_KEY, "sk-ant-runtime-secret-1234567890");
+  assert.equal(received.options.env.CLAUDE_AGENT_SDK_CLIENT_APP, "corptie/claude-provider");
+  assert.equal(manager.detail("claude-runtime-options").rawStatus.env, undefined);
+});
+
 test("Claude sends a managed image as an SDK image block", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-claude-image-"));
   try {
