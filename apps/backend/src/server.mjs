@@ -281,6 +281,7 @@ import { ProjectCodeSearchApplicationService } from "./project-code/projectCodeA
 import { createProjectCodeHostNamespace } from "./project-code/projectCodeDynamicTools.mjs";
 import { ProjectCodeIndexStore } from "./project-code/projectCodeIndexStore.mjs";
 import { ProjectCodeSearchService } from "./project-code/projectCodeSearchService.mjs";
+import { ProjectCodeSourceRevisionMonitor } from "./project-code/projectCodeSourceRevisionMonitor.mjs";
 import { ProjectCodeRunIsolationPort } from "./project-code/projectCodeRunIsolationPort.mjs";
 import { RepositorySourceSnapshotBuilder } from "./project-code/projectCodeSnapshot.mjs";
 import { ProjectCodeStartupReceiptRepository } from "./project-code/projectCodeStartupReceiptRepository.mjs";
@@ -1802,6 +1803,7 @@ const projectCodeSnapshotBuilder = new RepositorySourceSnapshotBuilder();
 const projectCodeIndexStore = new ProjectCodeIndexStore({
   dataRoot: join(store.dataRoot, "project-code-index")
 });
+const projectCodeFreshnessMonitor = new ProjectCodeSourceRevisionMonitor();
 void projectCodeIndexStore.initialize().catch((error) => {
   console.warn(`[project-code] index store unavailable: ${error?.code ?? "DATA_ROOT_UNAVAILABLE"}`);
 });
@@ -1829,6 +1831,7 @@ projectCodeApplicationService = new ProjectCodeSearchApplicationService({
   startupReceipts: projectCodeStartupReceipts,
   snapshotBuilder: projectCodeSnapshotBuilder,
   searchService: projectCodeSearchService,
+  freshnessMonitor: projectCodeFreshnessMonitor,
   toolsetReceipts: {
     require: ({ receiptId }) => projectToolsetProduction?.resolveToolsetReceipt(receiptId) ?? null
   }
@@ -9252,7 +9255,8 @@ function route(request, response) {
           l2Symbols: readiness.status === "ready" ? "ready" : "degraded",
           semantic: projectCodeRunIsolationPort ? "ready" : "unsupported",
           reasonCode: readiness.status === "unavailable" ? readiness.code : null,
-          prewarm: projectCodeApplicationService.prewarmSummary()
+          prewarm: projectCodeApplicationService.prewarmSummary(),
+          freshness: projectCodeFreshnessMonitor.summary()
         };
       })()
     });
@@ -11529,6 +11533,7 @@ function shutdown() {
     await feishuGateway.close();
     await codexRuntime.close();
     await runIsolationCoordinator?.close();
+    projectCodeFreshnessMonitor.close();
     await closeTimelineReadPool();
     turnObservability.flush();
     await store.close({
