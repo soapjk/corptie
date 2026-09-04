@@ -115,7 +115,6 @@ export class SessionApplicationService {
       workId: context.workId ?? null,
       taskId: context.taskId ?? null
     };
-    finalizationContext.desiredToolDomains = this.#requiredToolDomains(finalizationContext);
     try {
       const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
       await this.#ensureRequiredDomains(finalizationContext);
@@ -165,7 +164,6 @@ export class SessionApplicationService {
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {})
     };
-    resumeContext.desiredToolDomains = this.#requiredToolDomains(resumeContext);
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, resumeContext)
       : null;
@@ -202,7 +200,6 @@ export class SessionApplicationService {
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {})
     };
-    materializationContext.desiredToolDomains = this.#requiredToolDomains(materializationContext);
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, materializationContext)
       : null;
@@ -245,9 +242,7 @@ export class SessionApplicationService {
 
   async #ensureRequiredDomains(context) {
     if (!this.toolMaterializationPort) return null;
-    const domains = Array.isArray(context.desiredToolDomains)
-      ? context.desiredToolDomains
-      : this.#requiredToolDomains(context);
+    const domains = this.resolveRequiredToolDomains(context);
     if (!Array.isArray(domains) || domains.length === 0) return null;
     const logicalSessionId = normalizedText(context.logicalSessionId ?? context.sessionId);
     if (!logicalSessionId) {
@@ -259,11 +254,6 @@ export class SessionApplicationService {
       turnExecutionId: context.turnExecutionId ?? context.turnId ?? null,
       purpose: context.purpose
     });
-  }
-
-  #requiredToolDomains(context) {
-    const domains = this.resolveRequiredToolDomains(context);
-    return Array.isArray(domains) ? [...new Set(domains)].sort() : [];
   }
 
   // Replacement is allowed only after the caller has proved that the old

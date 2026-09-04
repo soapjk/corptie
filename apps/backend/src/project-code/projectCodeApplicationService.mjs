@@ -27,14 +27,6 @@ export class ProjectCodeSearchApplicationService {
     return Object.freeze({ receipt: snapshot.receipt, rejectedPaths: Object.freeze(snapshot.rejectedPaths) });
   }
 
-  async find(input = {}) {
-    return this.search({
-      ...input,
-      snapshotPolicy: "create_new",
-      responseDetail: input.responseDetail ?? "full"
-    });
-  }
-
   async search(input = {}) {
     const context = this.#context(input);
     const responseDetail = normalizeChoice(input.responseDetail, "compact", ["compact", "full"], "responseDetail");

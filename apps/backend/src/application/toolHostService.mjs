@@ -62,7 +62,7 @@ export class ToolHostService {
       const capability = await providerToolSchemaCapabilities(provider, null);
       const desiredDomains = Array.isArray(context.desiredToolDomains)
         ? context.desiredToolDomains
-        : context.sessionKind === "worker" ? ["artifacts", "project-code"] : [];
+        : context.sessionKind === "worker" ? ["artifacts"] : [];
       const plan = buildToolExposurePlan({
         catalog: this.catalog,
         context: { actorId, metadata: context },
