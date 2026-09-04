@@ -754,6 +754,7 @@ final class AppTabRouter: ObservableObject {
     var selectedTab: AppTab { selectionState.selectedTab }
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
+    @Published private(set) var pendingTaskId: String?
     @Published var pendingAutomationId: String?
     @Published private(set) var pendingWorktreeTarget: WorktreeNavigationTarget?
     @Published var navigationError: String?
@@ -783,8 +784,22 @@ final class AppTabRouter: ObservableObject {
 
     func openSession(_ sessionId: String) {
         navigationError = nil
+        pendingTaskId = nil
         pendingSessionId = sessionId
         selectTab(.console)
+    }
+
+    func openTaskSession(taskId: String, sessionId: String) {
+        navigationError = nil
+        pendingTaskId = taskId
+        pendingSessionId = sessionId
+        selectTab(.console)
+    }
+
+    func consumeSessionNavigation(_ requestedSessionId: String) {
+        guard pendingSessionId == requestedSessionId else { return }
+        pendingSessionId = nil
+        pendingTaskId = nil
     }
 
     func openAutomation(_ automationId: String) {
@@ -814,6 +829,7 @@ final class AppTabRouter: ObservableObject {
     func failSessionNavigation(_ sessionId: String) {
         navigationError = L10nFormat("Session %@ could not be loaded.", sessionId)
         pendingSessionId = nil
+        pendingTaskId = nil
     }
 }
 

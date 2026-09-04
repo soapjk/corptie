@@ -37,6 +37,22 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testConflictNavigationCarriesTheExactTaskAndSessionUntilConsumed() {
+        let router = AppTabRouter()
+
+        router.openTaskSession(taskId: "task:conflict", sessionId: "session:conflict")
+
+        XCTAssertEqual(router.selectedTab, .console)
+        XCTAssertEqual(router.pendingTaskId, "task:conflict")
+        XCTAssertEqual(router.pendingSessionId, "session:conflict")
+        router.consumeSessionNavigation("session:other")
+        XCTAssertEqual(router.pendingTaskId, "task:conflict")
+        router.consumeSessionNavigation("session:conflict")
+        XCTAssertNil(router.pendingTaskId)
+        XCTAssertNil(router.pendingSessionId)
+    }
+
     func testNavigationSelectsTheAuthoritativeWorktreeIdBeforeAStalePath() {
         let target = WorktreeNavigationTarget(
             repositoryId: "repository:one",
@@ -155,7 +171,6 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementModels.swift"),
             encoding: .utf8
         )
-
         XCTAssertTrue(view.contains("L10n(\"Push to GitHub\")"))
         XCTAssertTrue(view.contains("L10n(\"Pushing to GitHub…\")"))
         XCTAssertTrue(view.contains("L10n(\"Checking GitHub…\")"))
@@ -415,10 +430,18 @@ final class WorktreeManagementNavigationTests: XCTestCase {
             contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/WorktreeManagementModels.swift"),
             encoding: .utf8
         )
+        let console = try String(
+            contentsOf: macRoot.appendingPathComponent("Sources/CopetsMac/UnifiedConsoleView.swift"),
+            encoding: .utf8
+        )
 
         XCTAssertTrue(view.contains("worktree.integrate.resolve-with-agent"))
         XCTAssertTrue(view.contains("worktree.integrate.open-conflict-agent"))
-        XCTAssertTrue(view.contains("router.openSession(sessionId)"))
+        XCTAssertTrue(view.contains("router.openTaskSession(taskId: taskId, sessionId: sessionId)"))
+        XCTAssertTrue(view.contains("openConflictSession(sessionId: sessionId, taskId: resolution.taskId)"))
+        XCTAssertTrue(view.contains("openConflictSession(sessionId: sessionId, taskId: job.conflictAutomation?.taskId)"))
+        XCTAssertTrue(console.contains("selectedTaskId = taskId ?? session.taskId"))
+        XCTAssertTrue(console.contains("router.consumeSessionNavigation(requestedSessionId)"))
         XCTAssertTrue(view.contains("Task { await client.resolveConflictWithAgent() }"))
         XCTAssertTrue(view.contains("job.currentConflictResolution"))
         XCTAssertTrue(view.contains("Let Agent Resolve Conflicts"))
