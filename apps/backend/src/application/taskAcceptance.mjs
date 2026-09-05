@@ -193,7 +193,7 @@ export function completionSuggestionForTask(task) {
   };
 }
 
-export function presentTaskAcceptance(task) {
+export function presentTaskAcceptance(task, options = {}) {
   const acceptanceAssessment = parseAcceptanceAssessment(task?.acceptance_assessment_json) ?? null;
   const completed = task.lifecycle_state === "done";
   return {
@@ -208,6 +208,7 @@ export function presentTaskAcceptance(task) {
     mainAgentId: task.main_agent_id ?? null,
     currentSessionId: task.current_session_id ?? null,
     executionStatus: task.execution_status,
+    hasPendingScheduledWake: options.hasPendingScheduledWake === true,
     deletionStatus: task.deletion_status ?? null,
     deletionError: task.deletion_error ?? null,
     acceptanceAssessment,

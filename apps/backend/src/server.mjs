@@ -2389,12 +2389,12 @@ const projectWorktreeIntegrationService = new ProjectWorktreeIntegrationService(
       entity: store.getTask(task.id)
     });
     return {
-      task: presentTaskAcceptance(finalized.task),
+      task: presentTaskForClient(finalized.task),
       session: finalized.session
     };
   },
   isSessionActive: sessionHasActiveRun,
-  presentTask: presentTaskAcceptance,
+  presentTask: presentTaskForClient,
   onEvent: (type, payload) => emitEvent(type, payload)
 });
 const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
@@ -3751,6 +3751,9 @@ function controlPlaneSnapshot() {
   const messageCursors = store.listSessionMessageCursors(residentSessionIds);
   const timelineRevisions = store.listSessionTimelineRevisions(residentSessionIds);
   const residentTasks = store.listTasks({ includeCompleted: false });
+  const pendingScheduledWakeTaskIds = new Set(store.listTaskIdsWithPendingScheduledWake({
+    environment: environmentName
+  }));
   const sessionsById = new Map(persisted.map((session) => [
     session.id,
     presentControlPlaneSession(session, {
@@ -3769,7 +3772,7 @@ function controlPlaneSnapshot() {
     sessions: sortSessionsForList([...sessionsById.values()]),
     // Completed Work Items are cold history. The Work Room loads them through
     // the explicit 50-row Task cursor API only when the user opens that view.
-    tasks: residentTasks.map(presentTaskAcceptance),
+    tasks: residentTasks.map((task) => presentTaskForClient(task, pendingScheduledWakeTaskIds)),
     works: store.listWorks(),
     agents: store.listAgents().map((agent) => ({
       ...agent,
@@ -3810,7 +3813,7 @@ function readControlPlaneEntity(entityType, entityId) {
     }
     case "task": {
       const task = store.getTask(entityId);
-      return task && task.lifecycle_state !== "done" ? presentTaskAcceptance(task) : null;
+      return task && task.lifecycle_state !== "done" ? presentTaskForClient(task) : null;
     }
     case "work": return store.getWork(entityId);
     case "agent": {
@@ -3827,6 +3830,14 @@ function readControlPlaneEntity(entityType, entityId) {
     }
     default: return null;
   }
+}
+
+function presentTaskForClient(task, pendingScheduledWakeTaskIds = null) {
+  return presentTaskAcceptance(task, {
+    hasPendingScheduledWake: pendingScheduledWakeTaskIds
+      ? pendingScheduledWakeTaskIds.has(task.id)
+      : store.hasPendingScheduledWakeForTask(task.id, { environment: environmentName })
+  });
 }
 
 function writeStateSyncFrame(response, name, data) {
@@ -5710,14 +5721,14 @@ function settleTaskForWorkspaceContinuation(transitionId) {
 
 function reportTaskAcceptanceForAgent(agentId, input = {}, metadata = {}) {
   const { sessionId, task } = resolveBoundTaskForAgent(agentId, metadata, "Task acceptance");
-  return presentTaskAcceptance(workService.recordAcceptanceAssessment(task.id, {
+  return presentTaskForClient(workService.recordAcceptanceAssessment(task.id, {
     sourceSessionId: sessionId,
     results: input.results
   }));
 }
 
 function getBoundTaskForAgent(agentId, _input = {}, metadata = {}) {
-  return presentTaskAcceptance(resolveBoundTaskForAgent(agentId, metadata, "Bound Task read").task);
+  return presentTaskForClient(resolveBoundTaskForAgent(agentId, metadata, "Bound Task read").task);
 }
 
 function resolveBoundTaskForAgent(agentId, metadata = {}, operation = "Task operation") {
@@ -5784,7 +5795,7 @@ function reviseTaskForSession(agentId, input = {}, metadata = {}) {
     createdBySessionId: session.id
   });
   return {
-    task: presentTaskAcceptance(result.task),
+    task: presentTaskForClient(result.task),
     snapshot: result.snapshot
   };
 }
@@ -5810,7 +5821,7 @@ function completeTaskForSession(agentId, input = {}, metadata = {}) {
     logicalSessionId
   });
   return {
-    task: presentTaskAcceptance(result.task),
+    task: presentTaskForClient(result.task),
     operation: result.operation,
     idempotentReplay: result.idempotentReplay
   };

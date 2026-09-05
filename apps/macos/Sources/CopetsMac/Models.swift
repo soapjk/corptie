@@ -710,7 +710,7 @@ enum Accent: String, Codable, Sendable {
 }
 
 enum CorptiePalette {
-    static let running = adaptiveColor(light: (0.24, 0.43, 0.70), dark: (0.55, 0.68, 0.86))
+    static let running = adaptiveColor(light: (0.08, 0.70, 0.34), dark: (0.62, 0.82, 0.66))
     static let softBlue = adaptiveColor(light: (0.28, 0.45, 0.70), dark: (0.50, 0.64, 0.82))
     static let connected = adaptiveColor(light: (0.08, 0.70, 0.34), dark: (0.62, 0.82, 0.66))
     static let connectedDot = adaptiveColor(light: (0.00, 0.95, 0.38), dark: (0.28, 1.00, 0.42))

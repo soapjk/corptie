@@ -1388,6 +1388,13 @@ struct UnifiedConsoleView: View {
                 Text(task.title)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
+                if task.hasPendingScheduledWake == true {
+                    Image(systemName: "alarm")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(L10n("存在等待执行的计划任务"))
+                        .help(L10n("存在等待执行的计划任务"))
+                }
                 Spacer(minLength: 0)
                 if task.deletionStatus == "deleting" {
                     ProgressView()
@@ -1535,7 +1542,7 @@ struct UnifiedConsoleView: View {
         switch status.lowercased() {
         case "completed", "complete": return .green
         case "blocked", "failed": return .red
-        case "running", "in_progress", "active": return .blue
+        case "running", "in_progress", "active": return CorptiePalette.connected
         default: return .secondary
         }
     }

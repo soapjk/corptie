@@ -914,7 +914,7 @@ export function handleEntityHttpRequest({
         return sendJson(
           response,
           200,
-          presentTaskAcceptance(workService.recordAcceptanceAssessment(id, input))
+          presentTaskWithScheduledWake(workService, workService.recordAcceptanceAssessment(id, input))
         );
       }
 
@@ -939,7 +939,7 @@ export function handleEntityHttpRequest({
         if (!taskCompletionService) throw apiError("CAPABILITY_UNAVAILABLE", "Task completion is unavailable.", 503);
         const result = taskCompletionService.completeFromMacOS(id, input);
         return sendJson(response, 200, {
-          task: presentTaskAcceptance(result.task),
+          task: presentTaskWithScheduledWake(workService, result.task),
           operation: result.operation,
           idempotentReplay: result.idempotentReplay
         });
@@ -974,7 +974,7 @@ export function handleEntityHttpRequest({
         const result = await restoreTaskExecution(id);
         return sendJson(response, 200, {
           ...result,
-          task: presentTaskAcceptance(result.task)
+          task: presentTaskWithScheduledWake(workService, result.task)
         });
       }
 
@@ -1006,9 +1006,7 @@ export function handleEntityHttpRequest({
         return sendJson(
           response,
           200,
-          presentTaskAcceptance(
-            workService.rejectTaskAcceptance(id, input)
-          )
+          presentTaskWithScheduledWake(workService, workService.rejectTaskAcceptance(id, input))
         );
       }
 
@@ -1643,9 +1641,15 @@ function validateGeneratedFormEnums(fields, schema) {
 
 function presentTaskWithOrigin(workService, task) {
   return {
-    ...presentTaskAcceptance(task),
+    ...presentTaskWithScheduledWake(workService, task),
     creationOrigin: workService.store.getTaskCreationOrigin(task.id)
   };
+}
+
+function presentTaskWithScheduledWake(workService, task) {
+  return presentTaskAcceptance(task, {
+    hasPendingScheduledWake: workService.store.hasPendingScheduledWakeForTask(task.id)
+  });
 }
 
 async function readJson(request) {

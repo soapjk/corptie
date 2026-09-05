@@ -132,7 +132,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
             return
         }
         Task {
-            _ = try? await center.requestAuthorization(options: [.alert])
+            _ = try? await center.requestAuthorization(options: [.alert, .sound])
             let content = UNMutableNotificationContent()
             content.title = L10n("Notification Test")
             content.body = L10n("Corptie task notifications are enabled.")
@@ -166,7 +166,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
             let settings = await notificationCenter.notificationSettings()
             guard settings.authorizationStatus == .notDetermined else { return }
             do {
-                let allowed = try await notificationCenter.requestAuthorization(options: [.alert])
+                let allowed = try await notificationCenter.requestAuthorization(options: [.alert, .sound])
                 Self.logger.info("Notification authorization request completed; allowed=\(allowed, privacy: .public)")
             } catch {
                 Self.logger.error("Notification authorization request failed: \(error.localizedDescription, privacy: .public)")
@@ -233,7 +233,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         let settings = await notificationCenter.notificationSettings()
         switch settings.authorizationStatus {
         case .notDetermined:
-            let allowed = try await notificationCenter.requestAuthorization(options: [.alert])
+            let allowed = try await notificationCenter.requestAuthorization(options: [.alert, .sound])
             guard allowed else { throw SessionNotificationDeliveryError.authorizationDenied }
         case .denied:
             throw SessionNotificationDeliveryError.authorizationDenied
@@ -246,6 +246,9 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         let content = UNMutableNotificationContent()
         content.title = SessionNotificationContent.title(for: event)
         content.body = SessionNotificationContent.body(for: event)
+        if SessionNotificationContent.playsSystemSound(for: event) {
+            content.sound = .default
+        }
         if let sessionID = event.session?.id {
             content.userInfo = ["sessionId": sessionID, "destination": "session"]
         } else {
@@ -280,6 +283,13 @@ enum SessionNotificationDeliveryError: LocalizedError {
 
 @MainActor
 enum SessionNotificationContent {
+    static func playsSystemSound(for event: SessionNotificationEvent) -> Bool {
+        // Aggregate notifications have no per-session sound preference of their own.
+        // Give the "all waiting / needs attention" notification a system sound while
+        // preserving the user's per-session sound choice for individual events.
+        event.kind == .allSessionsWaiting
+    }
+
     static func title(for event: SessionNotificationEvent) -> String {
         switch event.kind {
         case .completed: L10n("Task Completed")
@@ -320,7 +330,7 @@ extension SessionCompletionSoundManager {
         } else if userInfo["destination"] as? String == "overview", isOverviewVisible() {
             completionHandler([])
         } else {
-            completionHandler([.banner])
+            completionHandler([.banner, .sound])
         }
     }
 
