@@ -3438,6 +3438,60 @@ func sessionDetailContentPhase(
     return .empty
 }
 
+struct TimelineRestorationIntent: Equatable {
+    private(set) var requestedAnchorRowID: String?
+    private(set) var lastObservedPosition: AppKitChatTimelinePosition?
+    private var isAwaitingRestoration: Bool
+
+    init(initialPosition: AppKitChatTimelinePosition?) {
+        let anchorRowID = initialPosition?.followsLatest == false
+            ? initialPosition?.rowID
+            : nil
+        requestedAnchorRowID = anchorRowID
+        lastObservedPosition = nil
+        isAwaitingRestoration = anchorRowID != nil
+    }
+
+    mutating func reset(initialPosition: AppKitChatTimelinePosition?) {
+        self = TimelineRestorationIntent(initialPosition: initialPosition)
+    }
+
+    mutating func offerRestoration(_ position: AppKitChatTimelinePosition) -> Bool {
+        guard !position.followsLatest else { return false }
+        if requestedAnchorRowID == position.rowID { return true }
+        guard lastObservedPosition == nil else { return false }
+        requestedAnchorRowID = position.rowID
+        isAwaitingRestoration = true
+        return true
+    }
+
+    mutating func observeViewport(_ position: AppKitChatTimelinePosition) {
+        lastObservedPosition = position
+        if !position.followsLatest {
+            if position.rowID == requestedAnchorRowID {
+                isAwaitingRestoration = false
+            }
+            return
+        }
+        if !isAwaitingRestoration {
+            requestedAnchorRowID = nil
+        }
+    }
+
+    mutating func clearAnchor() {
+        requestedAnchorRowID = nil
+        isAwaitingRestoration = false
+    }
+}
+
+func nativeTimelineTimestampText(createdAt: String?) -> String {
+    guard let createdAt,
+          let date = ISO8601DateFormatter.corptieThreadItemDate(from: createdAt) else { return "" }
+    return date.formatted(
+        .dateTime.month(.twoDigits).day(.twoDigits).hour().minute().second()
+    )
+}
+
 struct DetailView: View {
     @ObservedObject private var backendClient: BackendClient
     @ObservedObject private var selectionController: SessionSelectionController
@@ -3466,7 +3520,7 @@ struct DetailView: View {
     @State private var displayProjectionTask: Task<Void, Never>?
     @State private var displayProjectionGeneration = 0
     @State private var pendingProjectionSourceSignature: String?
-    @State private var requestedRestorationAnchorRowID: String?
+    @State private var timelineRestorationIntent: TimelineRestorationIntent
     @State private var historyAnchorRestoreTask: Task<Void, Never>?
     @State private var earlierHistoryLoadState: EarlierHistoryLoadState
     @State private var historyRequestEpoch = 0
@@ -3522,10 +3576,8 @@ struct DetailView: View {
         _cachedItemsSignature = State(initialValue: initialCache?.signature ?? "")
         _cachedDetailSourceSignature = State(initialValue: initialCache?.sourceSignature ?? "")
         _cachedSessionId = State(initialValue: initialCache?.sessionId ?? "")
-        _requestedRestorationAnchorRowID = State(
-            initialValue: initialPosition?.followsLatest == false
-                ? initialPosition?.rowID
-                : nil
+        _timelineRestorationIntent = State(
+            initialValue: TimelineRestorationIntent(initialPosition: initialPosition)
         )
         _earlierHistoryLoadState = State(
             initialValue: backendClient.earlierHistoryLoadState(for: sessionId)
@@ -3547,6 +3599,10 @@ struct DetailView: View {
 
     private var restorationTimelinePosition: AppKitChatTimelinePosition? {
         initialTimelinePosition
+    }
+
+    private var requestedRestorationAnchorRowID: String? {
+        timelineRestorationIntent.requestedAnchorRowID
     }
 
     private var displayedDetail: CodexThreadDetail? {
@@ -3707,9 +3763,7 @@ struct DetailView: View {
             historyAnchorRestoreTask = nil
             earlierHistoryLoadState = backendClient.earlierHistoryLoadState(for: sessionId)
             historyRequestEpoch &+= 1
-            requestedRestorationAnchorRowID = restorationTimelinePosition?.followsLatest == false
-                ? restorationTimelinePosition?.rowID
-                : nil
+            timelineRestorationIntent.reset(initialPosition: restorationTimelinePosition)
             isFollowingLatest = true
             hasNewMessagesBelow = false
             visibleMessageLimit = ChatTimelineFeatureFlags.current.initialDisplayWeight
@@ -3718,7 +3772,15 @@ struct DetailView: View {
         }
         .onChange(of: restorationTimelinePosition) { _, position in
             guard let position, !position.followsLatest else { return }
-            requestedRestorationAnchorRowID = position.rowID
+            guard timelineRestorationIntent.offerRestoration(position) else {
+                // The native viewport is already authoritative. Re-publish it
+                // after hydration so a stale disk anchor cannot win again on
+                // the next render or Session switch.
+                if let observed = timelineRestorationIntent.lastObservedPosition {
+                    onTimelinePositionChange(observed)
+                }
+                return
+            }
             restoreMissingHistoryAnchorIfNeeded()
         }
         .onDisappear {
@@ -3798,7 +3860,14 @@ struct DetailView: View {
                 hasMoreHistory: selectedSession != nil && displayedDetail?.hasMoreHistory == true,
                 onUnderfilledHistory: loadEarlierMessagesForUnderfilledViewport,
                 initialPosition: effectiveInitialTimelinePosition,
-                onPositionChange: onTimelinePositionChange,
+                onPositionChange: { position in
+                    let hadRestorationAnchor = requestedRestorationAnchorRowID != nil
+                    timelineRestorationIntent.observeViewport(position)
+                    if hadRestorationAnchor && requestedRestorationAnchorRowID == nil {
+                        refreshAfterRestorationAnchorRelinquished()
+                    }
+                    onTimelinePositionChange(position)
+                },
                 scrollToTurnID: scrollTargetTurnID,
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch
@@ -3821,12 +3890,13 @@ struct DetailView: View {
             .onChange(of: isFollowingLatest) { _, followsLatest in
                 if followsLatest {
                     hasNewMessagesBelow = false
+                    relinquishRestorationAnchorIfNeeded()
                 }
             }
             .overlay(alignment: .bottomTrailing) {
                 if !isFollowingLatest {
                     Button {
-                        requestedRestorationAnchorRowID = nil
+                        timelineRestorationIntent.clearAnchor()
                         isFollowingLatest = true
                         hasNewMessagesBelow = false
                         if let currentDetail = displayedDetail {
@@ -3989,7 +4059,7 @@ struct DetailView: View {
             processDuration = executionProcessDurationText(for: items)
             processState = projectedProcessState(for: items)
             processCurrentStepTitle = processState == .running
-                ? items.last.map { NativeExecutionTimelineProjection.title(for: $0) }
+                ? items.last.map { L10n(NativeExecutionTimelineProjection.title(for: $0)) }
                 : nil
             showsHeader = false
             hoverTimestamp = ""
@@ -4041,9 +4111,7 @@ struct DetailView: View {
     }
 
     private func nativeTimelineMetadata(for item: CodexThreadItem) -> String {
-        guard let createdAt = item.createdAt,
-              let date = ISO8601DateFormatter.corptieThreadItemDate(from: createdAt) else { return "" }
-        return date.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute())
+        nativeTimelineTimestampText(createdAt: item.createdAt)
     }
 
     private func nativeTimelineText(for item: CodexThreadItem) -> String {
@@ -4270,7 +4338,7 @@ struct DetailView: View {
             // A deleted/invalid anchor degrades directly to latest. Reusing
             // the old absolute Y against a different row set is what caused
             // the visible jump to unrelated historical content.
-            requestedRestorationAnchorRowID = nil
+            timelineRestorationIntent.clearAnchor()
             updateCachedDisplayEntries(for: detail)
             return
         }
@@ -4287,9 +4355,23 @@ struct DetailView: View {
                   backendClient.selectedSession?.id == sessionId,
                   let current = displayedDetail else { return }
             if result != .found || !timelineContains(rowID: anchorRowID, in: current.items) {
-                requestedRestorationAnchorRowID = nil
+                timelineRestorationIntent.clearAnchor()
             }
             updateCachedDisplayEntries(for: current)
+        }
+    }
+
+    private func relinquishRestorationAnchorIfNeeded() {
+        guard requestedRestorationAnchorRowID != nil else { return }
+        timelineRestorationIntent.clearAnchor()
+        refreshAfterRestorationAnchorRelinquished()
+    }
+
+    private func refreshAfterRestorationAnchorRelinquished() {
+        historyAnchorRestoreTask?.cancel()
+        historyAnchorRestoreTask = nil
+        if let detail = displayedDetail {
+            updateCachedDisplayEntries(for: detail)
         }
     }
 
@@ -5718,7 +5800,7 @@ private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
 
 private func isDetailProcessItem(_ item: CodexThreadItem) -> Bool {
     switch item.type {
-    case "reasoning", "plan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning":
+    case "reasoning", "plan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction":
         return true
     default:
         return false

@@ -6,6 +6,8 @@ struct NotificationSettingsView: View {
     @ObservedObject private var preferences = SessionNotificationPreferences.shared
     @State private var authorizationStatus: UNAuthorizationStatus?
     @State private var systemNotificationsUnavailable = false
+    @State private var allSessionsWaitingSoundId =
+        SessionCompletionSoundManager.selectedAllSessionsWaitingSoundId()
 
     var body: some View {
         ScrollView {
@@ -30,6 +32,9 @@ struct NotificationSettingsView: View {
                         description: L10n("Notify once when at least one session was running and no sessions remain running."),
                         isOn: $preferences.notifyWhenAllSessionsWaiting
                     )
+                    allSessionsWaitingSoundPicker
+                        .padding(.leading, 22)
+                        .disabled(!preferences.notifyWhenAllSessionsWaiting)
                     Divider()
                     notificationToggle(
                         L10n("A session completes"),
@@ -107,6 +112,44 @@ struct NotificationSettingsView: View {
             }
         }
         .toggleStyle(.checkbox)
+    }
+
+    private var allSessionsWaitingSoundPicker: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Label(L10n("Waiting Notification Sound"), systemImage: "speaker.wave.2")
+                    .font(.system(size: 11, weight: .semibold))
+                Spacer(minLength: 12)
+                Picker("", selection: $allSessionsWaitingSoundId) {
+                    ForEach(SessionCompletionSoundManager.options) { option in
+                        Text(L10n(option.label)).tag(option.id)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 132)
+
+                Button {
+                    SessionCompletionSoundManager.previewSound(allSessionsWaitingSoundId)
+                } label: {
+                    Image(systemName: "play.fill")
+                }
+                .buttonStyle(.borderless)
+                .disabled(selectedAllSessionsWaitingSoundOption.systemSoundName == nil)
+                .accessibilityLabel(L10n("Preview"))
+                .help(L10n("Preview the selected waiting notification sound"))
+            }
+            Text(L10n("Played when all running sessions have stopped and some work still needs your attention."))
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .onChange(of: allSessionsWaitingSoundId) { _, soundId in
+            SessionCompletionSoundManager.setSelectedAllSessionsWaitingSoundId(soundId)
+        }
+    }
+
+    private var selectedAllSessionsWaitingSoundOption: SessionCompletionSoundOption {
+        SessionCompletionSoundManager.option(for: allSessionsWaitingSoundId)
     }
 
     private var authorizationLabel: String {
