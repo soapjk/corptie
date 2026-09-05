@@ -149,19 +149,6 @@ struct WorktreeManagementView: View {
                 dismissButton: .cancel(Text(L10n("OK")))
             )
         }
-        .alert(L10n(client.operationNoticeTitle), isPresented: Binding(
-            get: { client.operationNotice != nil },
-            set: { if !$0 { client.dismissOperationNotice() } }
-        )) {
-            Button(L10n("OK"), role: .cancel) { client.dismissOperationNotice() }
-        } message: {
-            Text(client.operationNotice ?? "")
-        }
-        .sheet(item: $client.cleanupResult) { result in
-            WorktreeCleanupResultView(result: result) {
-                client.cleanupResult = nil
-            }
-        }
         .alert(L10n("Worktree operation failed"), isPresented: Binding(
             get: { backendClient.isOnline && client.errorMessage != nil },
             set: { if !$0 { client.dismissError() } }
@@ -397,6 +384,19 @@ struct WorktreeManagementView: View {
             if let worktree = client.selectedWorktree {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                    if let message = client.operationNotice {
+                        WorktreeOperationFeedbackView(
+                            title: L10n(client.operationNoticeTitle),
+                            message: message,
+                            onClose: client.dismissOperationNotice
+                        )
+                    }
+                    if let result = client.cleanupResult {
+                        WorktreeCleanupResultView(
+                            result: result,
+                            onClose: client.dismissCleanupResult
+                        )
+                    }
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 5) {
                             Label(worktree.branchName ?? L10n("Detached HEAD"), systemImage: worktree.isMain ? "house.fill" : "arrow.triangle.branch")
@@ -1247,35 +1247,75 @@ struct WorktreeCleanupConfirmationView: View {
     }
 }
 
-private struct WorktreeCleanupResultView: View {
-    let result: WorktreeCleanupResult
+private struct WorktreeOperationFeedbackView: View {
+    let title: String
+    let message: String
     let onClose: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text(L10n("Worktree Cleanup Results")).font(.title2.weight(.semibold))
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.callout.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 8)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.plain)
+            .help(L10n("Close"))
+        }
+        .padding(12)
+        .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("worktree.passive-operation-feedback")
+    }
+}
+
+private struct WorktreeCleanupResultView: View {
+    let result: WorktreeCleanupResult
+    let onClose: () -> Void
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: result.counts.failed > 0 ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(result.counts.failed > 0 ? .red : .green)
+                Text(L10n("Worktree Cleanup Results")).font(.callout.weight(.semibold))
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .help(L10n("Close"))
+            }
             Text(L10nFormat(
                 "Removed: %d   Skipped: %d   Failed: %d",
                 result.counts.removed,
                 result.counts.skipped,
                 result.counts.failed
             ))
-            .font(.headline.monospacedDigit())
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+            .font(.caption.monospacedDigit())
+            DisclosureGroup(L10n("Details"), isExpanded: $isExpanded) {
+                LazyVStack(alignment: .leading, spacing: 12) {
                     resultSection(L10n("Removed"), entries: result.removed, color: .green)
                     resultSection(L10n("Skipped"), entries: result.skipped, color: .orange)
                     resultSection(L10n("Failed"), entries: result.failed, color: .red)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 6)
             }
-            HStack {
-                Spacer()
-                Button(L10n("Done"), action: onClose).keyboardShortcut(.defaultAction)
-            }
+            .font(.caption)
         }
-        .padding(24)
-        .frame(minWidth: 560, idealWidth: 680, minHeight: 360, idealHeight: 500)
+        .padding(12)
+        .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityIdentifier("worktree.passive-cleanup-result")
     }
 
     @ViewBuilder

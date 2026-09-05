@@ -1215,7 +1215,11 @@
 "Corptie will permanently remove exactly this Worktree and its local branch:\n%@\n%@" = "Corptie 将永久删除以下这个 Worktree 及其本地分支：\n%@\n%@";
 "Worktree cannot be deleted" = "无法删除 Worktree";
 "Worktree deleted" = "Worktree 已删除";
+"Changes committed" = "修改已提交";
+"Committed changes in %@." = "已提交 %@ 中的修改。";
+"Removed %@ and its local branch." = "已删除 %@ 及其本地分支。";
 "Worktree Cleanup Results" = "Worktree 清理结果";
+"Details" = "详情";
 "Removed: %d   Skipped: %d   Failed: %d" = "成功：%d   跳过：%d   失败：%d";
 "Removed" = "成功删除";
 "The main Worktree cannot be deleted." = "不能删除主 Worktree。";
