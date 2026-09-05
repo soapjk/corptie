@@ -1828,7 +1828,10 @@ struct CorptieTaskDetailView: View {
     // 终止当前运行中的会话。
     private func interruptExecution() async {
         guard let session = currentSession else { return }
-        if await client.interruptSession(sessionId: session.id) {
+        if await client.interruptSession(
+            sessionId: session.id,
+            surface: .taskDetailExecutionControl
+        ) {
             await refreshExecution()
             onRequestReload()
         } else {
