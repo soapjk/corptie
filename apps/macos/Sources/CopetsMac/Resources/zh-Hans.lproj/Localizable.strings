@@ -401,6 +401,9 @@
 "Create as “%@”" = "使用“%@”创建";
 "Create the new session with the available name “%@”?" = "是否使用可用名称“%@”创建新会话？";
 "Context" = "上下文";
+"Execution Context" = "说明";
+"Execution Action" = "操作";
+"Execution Result" = "结果";
 "Codex quota" = "Codex 额度";
 "Claude quota" = "Claude 额度";
 "Log Directory" = "日志目录";

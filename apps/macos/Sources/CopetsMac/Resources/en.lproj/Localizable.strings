@@ -67,6 +67,9 @@
 "Backend logs rotate automatically at 20 MB and keep five backups." = "Backend logs rotate automatically at 20 MB and keep five backups.";
 "协作任务" = "Collaboration Task";
 "Context" = "Context";
+"Execution Context" = "Context";
+"Execution Action" = "Action";
+"Execution Result" = "Result";
 "Codex quota" = "Codex quota";
 "Claude quota" = "Claude quota";
 "Tasks are still running" = "Tasks are still running";
