@@ -100,6 +100,27 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         }
     }
 
+    func testContextCompactionAppearsInsideExecutionProcessInsteadOfAsMessageCard() {
+        let user = item(id: "user", type: "userMessage", text: "Continue")
+        let compaction = item(
+            id: "compaction",
+            type: "contextCompaction",
+            text: "Conversation context was compacted"
+        )
+
+        let entries = makeChatDisplayEntriesForTurn([user, compaction])
+
+        XCTAssertEqual(entries.map(\.id), ["message:user", "process:turn"])
+        guard case .process(_, let processItems) = entries[1].kind else {
+            return XCTFail("Context compaction should be part of the execution process")
+        }
+        XCTAssertEqual(processItems.map(\.id), [compaction.id])
+
+        let step = try? XCTUnwrap(NativeExecutionTimelineProjection.steps(for: processItems).first)
+        XCTAssertEqual(step?.kind, .context)
+        XCTAssertEqual(step?.title, "Context compacted")
+    }
+
     func testExecutionProcessAppearsOnlyAfterItHasContent() {
         let user = item(id: "user", type: "userMessage", text: "hi", turnStatus: "inProgress")
 
