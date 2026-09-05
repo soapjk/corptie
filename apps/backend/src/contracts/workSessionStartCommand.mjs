@@ -1,6 +1,6 @@
 export const WORK_SESSION_START_FIELDS = Object.freeze([
   "taskId", "assigneeAgentId", "expectedTaskVersion", "providerId", "title",
-  "idempotencyKey", "sourceSessionId"
+  "idempotencyKey", "sourceSessionId", "dispatchInitialTurn"
 ]);
 
 const FIELDS = new Set(WORK_SESSION_START_FIELDS);
@@ -35,6 +35,9 @@ export function decodeWorkSessionStartCommand(input = {}) {
   if (!sourceSessionId || (!sourceSessionId.startsWith("session:") && !sourceSessionId.startsWith("logical:"))) {
     throw startContractError("SOURCE_SESSION_NOT_FOUND", "sourceSessionId must identify an authenticated logical Session.");
   }
+  if (input.dispatchInitialTurn != null && typeof input.dispatchInitialTurn !== "boolean") {
+    throw startContractError("INVALID_INPUT", "dispatchInitialTurn must be a boolean.");
+  }
   return Object.freeze({
     taskId,
     assigneeAgentId,
@@ -42,7 +45,8 @@ export function decodeWorkSessionStartCommand(input = {}) {
     providerId: requiredText(input.providerId, "PROVIDER_CAPABILITY_UNAVAILABLE", "providerId"),
     ...(text(input.title) ? { title: text(input.title) } : {}),
     idempotencyKey: boundedText(input.idempotencyKey, "idempotencyKey", 200),
-    sourceSessionId
+    sourceSessionId,
+    dispatchInitialTurn: input.dispatchInitialTurn !== false
   });
 }
 

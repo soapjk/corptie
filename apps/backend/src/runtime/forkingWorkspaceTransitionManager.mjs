@@ -860,7 +860,10 @@ export function isForkUnsupported(error) {
     "METHOD_NOT_FOUND",
     "UNSUPPORTED_METHOD",
     "NOT_IMPLEMENTED",
-    "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED"
+    "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED",
+    // A missing source Session cannot be forked, but this operation is still
+    // pre-Turn and can safely use the existing bounded local handoff path.
+    "PROVIDER_SESSION_UNAVAILABLE"
   ].includes(code)) {
     return true;
   }

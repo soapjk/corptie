@@ -7,6 +7,7 @@ function fixture() {
   const sessions = new Map();
   let persistCount = 0;
   let startCount = 0;
+  const startCommands = [];
   const workService = {
     store: {
       getTask: (id) => tasks.get(id) ?? null,
@@ -33,6 +34,7 @@ function fixture() {
   };
   const startWorkSession = async (command) => {
     startCount += 1;
+    startCommands.push(command);
     const session = { id: `session:${command.taskId}`, taskId: command.taskId };
     sessions.set(session.id, session);
     tasks.set(command.taskId, {
@@ -45,11 +47,12 @@ function fixture() {
   return {
     workService,
     startWorkSession,
+    startCommands,
     counts: () => ({ persistCount, startCount })
   };
 }
 
-test("canonical Task creation persists and starts one companion Session in one operation", async () => {
+test("canonical Task creation persists one deferred companion Session in one operation", async () => {
   const f = fixture();
   const created = await createTaskAndSession({
     workService: f.workService,
@@ -68,6 +71,7 @@ test("canonical Task creation persists and starts one companion Session in one o
   assert.match(created.task.id, /^task:create:[a-f0-9]{64}$/);
   assert.equal(created.task.current_session_id, created.session.id);
   assert.deepEqual(f.counts(), { persistCount: 1, startCount: 1 });
+  assert.equal(f.startCommands[0].dispatchInitialTurn, false);
 });
 
 test("canonical Task creation replays by source Session and idempotency key without duplicates", async () => {

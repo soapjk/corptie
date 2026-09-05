@@ -643,6 +643,8 @@ struct SessionNotReadyReason: Codable, Equatable, Sendable {
             L10n("The existing Provider Thread was preserved, but its Tool schema proof is no longer trusted. Start Session Recovery explicitly to replace it.")
         case "PROVIDER_BINDING_RECOVERY_REQUIRED":
             L10n("The existing Provider Thread could not be reconnected and was preserved. Start Session Recovery explicitly to replace it.")
+        case "PROVIDER_SESSION_UNAVAILABLE":
+            L10n("The Provider Session no longer exists or cannot be reached. Restart this Session to continue.")
         default:
             message
         }

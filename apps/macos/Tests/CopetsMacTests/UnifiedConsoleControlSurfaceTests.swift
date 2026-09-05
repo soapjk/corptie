@@ -113,6 +113,24 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func unavailableSessionExplainsTheDisabledComposerAndOffersRecovery() throws {
+        let source = try source(named: "FloatingRootView.swift")
+        let noticeStart = try #require(source.range(of: "private struct SessionNotReadyComposerNotice: View"))
+        let noticeEnd = try #require(source.range(
+            of: "private struct ReadOnlyComposer: View",
+            range: noticeStart.upperBound..<source.endIndex
+        ))
+        let notice = source[noticeStart.lowerBound..<noticeEnd.lowerBound]
+
+        #expect(source.contains("sessionReadinessNotice"))
+        #expect(source.contains("!session.isReady"))
+        #expect(notice.contains("session.notReadyReason?.presentationMessage"))
+        #expect(notice.contains("session.actions?.restart?.available == true"))
+        #expect(notice.contains("backendClient.restart(session: session)"))
+        #expect(notice.contains("commandState.restartingSessionIds.contains(session.id)"))
+    }
+
+    @Test
     func messageComposerOffersKeyboardAccessibleOneTurnMentions() throws {
         #expect(ComposerMentionMenuMetrics.width == 360)
         #expect(ComposerMentionMenuMetrics.height(candidateCount: 0) == 180)
