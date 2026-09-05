@@ -736,10 +736,14 @@ final class EntityAPIClient: ObservableObject {
     }
 
     // 终止会话（打断正在运行的 turn）：POST /sessions/:id/interrupt → { session }
-    func interruptSession(sessionId: String) async -> Bool {
+    func interruptSession(sessionId: String, surface: SessionInterruptSurface) async -> Bool {
         var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionId)/interrupt"))
         request.httpMethod = "POST"
         do {
+            request.setValue("application/json", forHTTPHeaderField: "content-type")
+            request.httpBody = try JSONEncoder().encode(SessionInterruptRequest(
+                source: .userAction(surface: surface)
+            ))
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
                 let envelope = try? decoder.decode(EntityErrorEnvelope.self, from: data)
