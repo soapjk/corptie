@@ -62,7 +62,8 @@ export async function createTaskAndSession({
     providerId: provider,
     title: task.title,
     idempotencyKey: `task-create:${operationKey}`,
-    sourceSessionId: source
+    sourceSessionId: source,
+    dispatchInitialTurn: false
   });
   if (started?.status && started.status !== "ready") {
     throw coded("START_NOT_READY", "Task creation did not produce a ready Session binding.", 409);

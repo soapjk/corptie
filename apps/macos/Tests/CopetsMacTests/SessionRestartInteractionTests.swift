@@ -90,17 +90,27 @@ struct SessionRestartInteractionTests {
 
     @Test
     func restartRequestCarriesAStableOperationKeyAndSurfacesFailures() throws {
-        let source = try contents(of: "BackendClient.swift")
-        let restartStart = try #require(source.range(of: "func restart(session: TaskSession)"))
-        let restartEnd = try #require(source.range(
+        let backendSource = try contents(of: "BackendClient.swift")
+        let restartStart = try #require(backendSource.range(of: "func restart(session: TaskSession)"))
+        let restartEnd = try #require(backendSource.range(
             of: "func switchProvider(session:",
-            range: restartStart.upperBound..<source.endIndex
+            range: restartStart.upperBound..<backendSource.endIndex
         ))
-        let restart = source[restartStart.lowerBound..<restartEnd.lowerBound]
+        let restart = backendSource[restartStart.lowerBound..<restartEnd.lowerBound]
 
         #expect(restart.contains("\"idempotencyKey\": \"session-restart:"))
         #expect(restart.contains("failRestartActivity(for: session.id)"))
         #expect(restart.contains("Restart failed: %@"))
+
+        let consoleSource = try contents(of: "UnifiedConsoleView.swift")
+        let taskRestartStart = try #require(consoleSource.range(of: "private func restartTask(_ task: CorptieTask)"))
+        let taskRestartEnd = try #require(consoleSource.range(
+            of: "private func openTask(",
+            range: taskRestartStart.upperBound..<consoleSource.endIndex
+        ))
+        let taskRestart = consoleSource[taskRestartStart.lowerBound..<taskRestartEnd.lowerBound]
+        #expect(taskRestart.contains("guard await entityClient.restartCorptieTask"))
+        #expect(taskRestart.contains("taskRestartError = entityClient.errorMessage"))
     }
 
     private func contents(of fileName: String) throws -> String {

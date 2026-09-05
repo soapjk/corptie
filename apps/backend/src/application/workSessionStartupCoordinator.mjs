@@ -50,7 +50,7 @@ export class WorkSessionStartupCoordinator {
 
   async start(input = {}) {
     const operation = this.#allocate(input);
-    if (operation.state === "ready") return this.#dispatchInitialTurn(operation, true);
+    if (operation.state === "ready") return this.#finishReady(operation, true);
     if (TERMINAL_FAILURE_STATES.has(operation.state)) return this.#failureView(operation);
     const running = this.inFlight.get(operation.startup_operation_id);
     if (running) return running;
@@ -91,7 +91,7 @@ export class WorkSessionStartupCoordinator {
     const operation = this.#operation(requiredText(startupOperationId, "startupOperationId"));
     if (!operation) throw coded("START_REFERENCE_INVALID", "Startup operation was not found.", 404, false);
     if (operation.state === "ready") {
-      return operation.initial_turn_state === "accepted"
+      return operation.dispatch_initial_turn === 0 || operation.initial_turn_state === "accepted"
         ? Promise.resolve(this.#readyView(operation, true))
         : this.#dispatchInitialTurn(operation, true);
     }
@@ -106,7 +106,7 @@ export class WorkSessionStartupCoordinator {
       `SELECT startup_operation_id FROM work_session_startup_operations
        WHERE (state IN ('allocated','worktree_prepared','session_bound','provider_bound','compensating')
          AND (lease_expires_at IS NULL OR lease_expires_at<=?))
-         OR (state='ready' AND initial_turn_state='pending')
+         OR (state='ready' AND dispatch_initial_turn=1 AND initial_turn_state='pending')
        ORDER BY allocated_at`,
       [now]
     );
@@ -253,9 +253,9 @@ export class WorkSessionStartupCoordinator {
         }
         const ready = this.#commitReady(operation, allocation);
         this.#notifyReady(ready);
-        return this.#dispatchInitialTurn(this.#operation(operationId), ready.idempotentReplay);
+        return this.#finishReady(this.#operation(operationId), ready.idempotentReplay);
       }
-      if (operation.state === "ready") return this.#readyView(operation, true);
+      if (operation.state === "ready") return this.#finishReady(operation, true);
       return this.#pendingView(operation);
     } catch (error) {
       operation = this.#operation(operationId);
@@ -278,6 +278,7 @@ export class WorkSessionStartupCoordinator {
       "repositoryId"
     );
     const providerId = command.providerId;
+    const dispatchInitialTurn = command.dispatchInitialTurn !== false;
     const normalized = {
       sourceSessionId,
       workId,
@@ -286,7 +287,10 @@ export class WorkSessionStartupCoordinator {
       expectedTaskVersion,
       providerId,
       repositoryId,
-      title: optionalText(command.title)
+      title: optionalText(command.title),
+      // Preserve the pre-policy fingerprint for the default behavior so
+      // startup idempotency remains compatible across upgrades.
+      ...(dispatchInitialTurn ? {} : { dispatchInitialTurn: false })
     };
     const fingerprint = sha256(canonicalJson(normalized));
     const operationId = `startup:${sha256(`${taskId}\0${idempotencyKey}`).slice(0, 32)}`;
@@ -352,12 +356,12 @@ export class WorkSessionStartupCoordinator {
         `INSERT INTO work_session_startup_operations (
           startup_operation_id, work_id, task_id, assignee_agent_id, expected_task_version, provider_id,
           repository_id, source_session_id,
-          idempotency_key, request_fingerprint, source, requested_title, state,
+          idempotency_key, request_fingerprint, source, requested_title, dispatch_initial_turn, state,
           lease_owner, lease_expires_at, correlation_id, allocated_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, 'allocated', ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, ?, 'allocated', ?, ?, ?, ?, ?)`,
         [operationId, workId, taskId, assigneeAgentId, expectedTaskVersion, providerId,
           repositoryId, sourceSessionId, idempotencyKey, fingerprint,
-          normalized.title, this.leaseOwner,
+          normalized.title, dispatchInitialTurn ? 1 : 0, this.leaseOwner,
           expiresAt(now, this.leaseTtlMs), correlationId, now, now]
       );
       result = this.store.selectOne(
@@ -624,13 +628,14 @@ export class WorkSessionStartupCoordinator {
       );
       requireSingleRowChange(this.store, "Startup operation changed before ready commit.");
       this.store.db.run(
-        `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status='running',
+        `UPDATE tasks SET current_session_id=?, lifecycle_state='in_progress', execution_status=?,
          main_agent_id=?, acceptance_assessment_json='{}',
          resource_version=resource_version+1, updated_at=?
          WHERE id=? AND resource_version=? AND lifecycle_state='todo'
            AND current_session_id IS NULL
            AND COALESCE(deletion_status, '')=''`,
-        [session.id, operation.assignee_agent_id, now, operation.task_id,
+        [session.id, operation.dispatch_initial_turn === 0 ? "idle" : "running",
+          operation.assignee_agent_id, now, operation.task_id,
           operation.expected_task_version]
       );
       requireSingleRowChange(this.store, "Task version or lifecycle changed before ready commit.");
@@ -881,6 +886,16 @@ export class WorkSessionStartupCoordinator {
     }
   }
 
+  #finishReady(operation, idempotentReplay) {
+    if (operation.dispatch_initial_turn === 0) {
+      return Promise.resolve({
+        ...this.#readyView(operation, idempotentReplay),
+        turnDispatch: { status: "deferred", errorCode: null }
+      });
+    }
+    return this.#dispatchInitialTurn(operation, idempotentReplay);
+  }
+
   async #dispatchInitialTurn(operation, idempotentReplay) {
     const ready = this.#readyView(operation, idempotentReplay);
     if (operation.initial_turn_state === "accepted") {
@@ -971,7 +986,8 @@ export class WorkSessionStartupCoordinator {
       providerId: operation.provider_id,
       title: operation.requested_title,
       idempotencyKey: operation.idempotency_key,
-      sourceSessionId: operation.source_session_id
+      sourceSessionId: operation.source_session_id,
+      dispatchInitialTurn: operation.dispatch_initial_turn !== 0
     };
   }
 

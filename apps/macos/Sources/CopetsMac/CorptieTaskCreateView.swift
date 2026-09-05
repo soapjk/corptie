@@ -326,7 +326,7 @@ struct CorptieTaskCreateView: View {
             id: requestId,
             title: L10nFormat("创建 CorptieTask：%@", requestTitle)
         ) {
-            let created = await PerfStopwatch.measure("CorptieTask.createAndStart.request") {
+            let created = await PerfStopwatch.measure("CorptieTask.create.request") {
                 await client.createCorptieTask(
                     id: requestId,
                     workId: requestWorkId,
@@ -343,7 +343,7 @@ struct CorptieTaskCreateView: View {
             }
 
             onCreated(task)
-            return .success(L10nFormat("CorptieTask“%@”已创建并开始执行。", requestTitle))
+            return .success(L10nFormat("CorptieTask“%@”已创建。发送第一条消息后开始执行。", requestTitle))
         }
         if started { dismiss() }
     }

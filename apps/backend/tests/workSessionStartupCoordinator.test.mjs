@@ -326,6 +326,27 @@ test("initial Turn failure is explicit and the same idempotency key retries with
   } finally { await cleanup(f); }
 });
 
+test("Task creation can persist a ready Session without dispatching an initial Turn", async () => {
+  const f = await fixture();
+  try {
+    const ready = await f.service.start({ ...input(), dispatchInitialTurn: false });
+    assert.equal(ready.status, "ready");
+    assert.deepEqual(ready.turnDispatch, { status: "deferred", errorCode: null });
+    assert.equal(f.calls.activate, 0);
+    assert.equal(f.store.getTask("task:one").execution_status, "idle");
+    assert.equal(
+      f.store.selectOne("SELECT dispatch_initial_turn FROM work_session_startup_operations").dispatch_initial_turn,
+      0
+    );
+    assert.equal(f.service.recoverInterruptedStarts(), 0);
+
+    const replay = await f.service.start({ ...input(), dispatchInitialTurn: false });
+    assert.equal(replay.idempotentReplay, true);
+    assert.deepEqual(replay.turnDispatch, { status: "deferred", errorCode: null });
+    assert.equal(f.calls.activate, 0);
+  } finally { await cleanup(f); }
+});
+
 test("restart recovery dispatches a ready receipt whose initial Turn was not durably accepted", async () => {
   const f = await fixture();
   try {

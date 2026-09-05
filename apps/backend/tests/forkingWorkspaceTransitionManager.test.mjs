@@ -329,15 +329,15 @@ test("a source-thread deletion failure does not roll back the committed workspac
   }
 });
 
-test("an unsupported fork falls back to a new thread with a bounded local handoff", async () => {
+test("a missing source Session falls back to a new thread with a bounded local handoff", async () => {
   const fixture = await createFixture("handoff-fallback");
   const calls = [];
   const manager = new ForkingWorkspaceTransitionManager({
     store: fixture.store,
     providerPort: {
       async forkThread() {
-        const error = new Error("thread/fork is an unknown method");
-        error.code = -32601;
+        const error = new Error("The source Provider Session no longer exists.");
+        error.code = "PROVIDER_SESSION_UNAVAILABLE";
         throw error;
       },
       async startThread(options) {
@@ -515,6 +515,9 @@ test("a cross-repository switch uses handoff without attempting a fork", async (
 
 test("fork fallback detection and handoff prompt are conservative", () => {
   assert.equal(isForkUnsupported(Object.assign(new Error("missing"), { code: -32601 })), true);
+  assert.equal(isForkUnsupported(Object.assign(new Error("source missing"), {
+    code: "PROVIDER_SESSION_UNAVAILABLE"
+  })), true);
   assert.equal(isForkUnsupported(Object.assign(new Error("schema inherited"), {
     code: "PROVIDER_TOOL_SCHEMA_FORK_UNSUPPORTED"
   })), true);
