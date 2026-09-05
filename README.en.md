@@ -5,7 +5,7 @@
 <h1 align="center">Corptie</h1>
 
 <p align="center">
-  <strong>A macOS workbench that organizes projects as Works, tracks Tasks, and keeps AI Sessions working together.</strong>
+  <strong>Burn tokens more efficiently.</strong>
 </p>
 
 <p align="center">
@@ -14,38 +14,31 @@
   <a href="README.md">简体中文</a>
 </p>
 
-Corptie brings work context, tasks, Agent roles, execution Sessions, and local workspaces into one native desktop app. Discuss requirements in Work Chat, start an execution Session for a specific Task, and carry context forward through artifacts, memories, and automations while managing progress, input, and approvals across parallel tasks.
+Corptie brings projects, tasks, Agents, and Git tools together in a highly efficient development workflow. Create a project → Link a local repository → Create specific tasks and assign them to Agents → Merge changes back into the original repository with Git. A minimal workflow backed by a full set of productivity tools.
 
-It supports software, general, office, data, and design work. Coding tasks can also use Git Worktree isolation and project code search to operate within explicit repository boundaries.
+## Core capabilities
 
-## Capabilities
-
-| Capability | How it works |
+| Capability | Description |
 | --- | --- |
-| **Work and Task** | A Work gathers context, a Workspace, and participating Agents. Tasks record requirements, priority, acceptance and verification criteria, and execution Sessions. |
-| **Work Chat and execution Sessions** | Discuss requirements within a Work and carry out concrete tasks in bound Worker Sessions, with shared controls for messages, input, approvals, interruption, and recovery. |
-| **Agents and Skills** | Configure reusable roles, working instructions, and available Skills, then select Agents for the work. |
-| **Session Channels** | First contact between two exact Sessions requires user authorization. An active Channel supports ongoing bidirectional messaging, history, and revocation. |
-| **Artifacts and memories** | Keep searchable, versioned documents. Work-scoped Artifacts are shared with Sessions in that Work; Task-scoped Artifacts stay within their owning Task. Memories retain reusable context and preferences. |
-| **Automation** | Trigger actions at a specified time, after a delay, on a fixed interval, on process exit, or when a condition is met. Inspect runs and pause, resume, or cancel automations. |
-| **Workspaces and Worktrees** | Associate work with local projects and support parallel development through Task workspace preparation, Git Worktree management, and code search. |
-| **Multiple Providers** | Integrations include Codex App Server, Claude Agent SDK, and OpenClacky through a shared Provider contract. Available operations depend on each Provider's declared capabilities. |
-| **Native desktop interaction** | SwiftUI and AppKit interfaces provide Session management, floating panels, and detachable orbs. |
+| **Work and Task** | A minimal, two-level project structure with maximum flexibility. |
+| **Collaboration tools** | Sessions created through the model can establish communication with one another and work together on tasks, without manually switching between windows to transfer context. A typical example: ask from a Session in Project A for Project B to adapt to the API changes you just made. |
+| **Agents and Skills** | Configure roles, working instructions, and available Skills, then select participating Agents according to the work's needs. |
+| **Artifacts** | Manage searchable, versioned reference files. |
+| **Layered memory** | Manage global user preferences, project memories, and short-term Task memories in separate layers, giving the model useful information while minimizing context usage. |
+| **Scheduled tasks** | Tools the model can proactively use to schedule tasks, allowing it to wake up when needed instead of waiting and polling long-running scripts. |
+| **Workspace and Worktree** | Associate work with local projects and support parallel development through Task working directory preparation, Git Worktree management, and code search. |
+| **IM support** | Quickly connect Feishu bots, with a `/sessions` command for Session management. |
 
 ## How work is organized
 
 | Concept | Meaning |
 | --- | --- |
-| **Work** | An ongoing unit of work containing context, Tasks, participating Agents, artifacts, and an optional Workspace. |
-| **Task** | A concrete piece of work belonging to one Work, with requirements, acceptance criteria, verification criteria, and a lifecycle. |
-| **Agent** | A reusable role and capability configuration. |
-| **Session** | The executor, authorization context, and message endpoint. Work Chat supports discussion; Worker Sessions execute Tasks. |
-| **Workspace / Worktree** | A local project resource and an isolated Git working directory. |
-| **Artifact** | A durable document with a scope, versions, and discovery metadata. |
-| **Channel** | Revocable, bidirectional communication authorization between two exact Sessions. |
-| **Automation** | A configuration that triggers actions based on time or events. |
-
-Sessions execute work and exchange messages. Agents, Works, Tasks, Workspaces, and Providers are resources. Channel messaging does not automatically create, delegate, or complete Tasks; Task lifecycle and acceptance are separate workflows.
+| **Work** | An ongoing unit of work, roughly equivalent to a project. You must create a Work to get started. Each Work must be bound to a local folder, preferably a Git repository. |
+| **Task** | A specific task within a Work, such as a feature request or a module under ongoing development. Each Task is inherently bound to an Agent Session. This is the main interaction point: users work with the Task's Session to get the task done. |
+| **Agent** | A reusable role resource that users can create themselves, combining memories about skills, a persona, and a collection of Skills. Assign an Agent to a Task to move the work forward. |
+| **Provider** | The source of model capabilities, such as Codex or Claude. A Provider supplies the core model capabilities; the Agent role described above is a context definition. Selecting a Provider enables an actual model to use the Agent resource to execute tasks. |
+| **Artifact** | A resource file associated with a Work or Task, managed directly by the user through Corptie and stored outside the Workspace directory. Artifacts hold intermediate material that needs to be recorded but does not belong in the final project output, such as documents containing private data or design documents the user does not want to push to GitHub. Basic version management is included. |
+| **Corptie toolset** | All Sessions created in Corptie receive core Corptie tools through context injection, including the collaboration and scheduled task tools described above. |
 
 ## Get started
 
@@ -60,7 +53,7 @@ Choose an installer from [GitHub Releases](https://github.com/soapjk/corptie/rel
 ### Your first Work
 
 1. Prepare a Contributor Agent with a role and the Skills it needs.
-2. Create a Work, describe its context, and select participating Agents. Associate a Workspace when working with a local project.
+2. Create a Work, enter its name and context, and select participating Agents. Associate a Workspace when working with a local project.
 3. Discuss requirements in Work Chat, then create a Task with a concrete goal, acceptance criteria, and verification steps.
 4. Start an execution Session for the Task. Corptie prepares and binds its working directory; coding tasks execute within the corresponding Workspace / Worktree boundary.
 5. Follow the Session's actual state and reply, approve, or interrupt as needed. Save durable material as Artifacts and configure Automation for later triggers.
