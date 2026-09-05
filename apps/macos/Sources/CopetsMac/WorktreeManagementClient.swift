@@ -14,7 +14,7 @@ final class WorktreeManagementClient: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var listLoadState: WorktreeListLoadState = .idle
     @Published private(set) var lastLoadMetrics: WorktreeLoadMetrics?
-    @Published var cleanupResult: WorktreeCleanupResult?
+    @Published private(set) var cleanupResult: WorktreeCleanupResult?
     @Published private(set) var cleanupProgress: WorktreeCleanupProgress?
     @Published private(set) var operationNotice: String?
     @Published private(set) var operationNoticeTitle = "Worktree operation completed"
@@ -159,6 +159,7 @@ final class WorktreeManagementClient: ObservableObject {
     func pushWorktreeToGitHub(_ worktree: ManagedWorktree) async {
         guard let repositoryId = selection.repositoryId,
               !pushingWorktreeIds.contains(worktree.worktreeId) else { return }
+        operationNotice = nil
         pushingWorktreeIds.insert(worktree.worktreeId)
         defer { pushingWorktreeIds.remove(worktree.worktreeId) }
         do {
@@ -188,6 +189,7 @@ final class WorktreeManagementClient: ObservableObject {
     @discardableResult
     func deleteWorktree(_ worktree: ManagedWorktree) async -> Bool {
         guard let repositoryId = selection.repositoryId else { return false }
+        operationNotice = nil
         isMutating = true
         defer { isMutating = false }
         do {
@@ -196,7 +198,10 @@ final class WorktreeManagementClient: ObservableObject {
                 body: [:]
             )
             operationNoticeTitle = "Worktree deleted"
-            operationNotice = "Removed \(envelope.result.branchName ?? envelope.result.path) and its local branch."
+            operationNotice = L10nFormat(
+                "Removed %@ and its local branch.",
+                envelope.result.branchName ?? envelope.result.path
+            )
             errorMessage = nil
             await loadRepository(repositoryId)
             return true
@@ -210,6 +215,7 @@ final class WorktreeManagementClient: ObservableObject {
         guard let repositoryId = selection.repositoryId,
               let project = detail?.project,
               !worktrees.isEmpty else { return }
+        cleanupResult = nil
         isMutating = true
         defer {
             cleanupProgress = nil
@@ -362,6 +368,7 @@ final class WorktreeManagementClient: ObservableObject {
         guard let repositoryId = selection.repositoryId,
               worktree.isMain,
               worktree.dirty == true else { return false }
+        operationNotice = nil
         isMutating = true
         defer { isMutating = false }
         do {
@@ -374,7 +381,11 @@ final class WorktreeManagementClient: ObservableObject {
                 "projects/\(repositoryId)/workspaces/\(worktree.worktreeId)/actions/commit",
                 body: body
             )
-            operationNotice = "Committed changes in \(worktree.branchName ?? "main")."
+            operationNoticeTitle = "Changes committed"
+            operationNotice = L10nFormat(
+                "Committed changes in %@.",
+                worktree.branchName ?? "main"
+            )
             errorMessage = nil
             await loadRepository(repositoryId)
             return true
@@ -568,6 +579,7 @@ final class WorktreeManagementClient: ObservableObject {
 
     func dismissError() { errorMessage = nil }
     func dismissOperationNotice() { operationNotice = nil }
+    func dismissCleanupResult() { cleanupResult = nil }
 
     private func loadRepository(
         _ id: String,
