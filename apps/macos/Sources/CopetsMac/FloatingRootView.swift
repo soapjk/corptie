@@ -3656,6 +3656,16 @@ struct DetailView: View {
         }
     }
 
+    @ViewBuilder
+    private var sessionReadinessNotice: some View {
+        if backendClient.isOnline,
+           displayedWorkspaceRecoveryStatus?.blocksSessionInput != true,
+           let session = selectedSession,
+           !session.isReady {
+            SessionNotReadyComposerNotice(session: session)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if showsHeader {
@@ -3739,6 +3749,7 @@ struct DetailView: View {
             }
 
             SessionSendFailureView()
+            sessionReadinessNotice
             sessionComposer
         }
         .padding(1)
@@ -11461,6 +11472,61 @@ private struct SessionSendFailureView: View {
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.red)
                 .lineLimit(2)
+        }
+    }
+}
+
+private struct SessionNotReadyComposerNotice: View {
+    @EnvironmentObject private var backendClient: BackendClient
+    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
+
+    let session: TaskSession
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.notReadyReason?.presentationTitle ?? L10n("Session Not Ready"))
+                    .font(.system(size: 11, weight: .bold))
+                Text(session.notReadyReason?.presentationMessage
+                    ?? L10n("This Session cannot accept messages right now."))
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(CorptiePalette.secondaryText)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            if session.actions?.restart?.available == true {
+                Button {
+                    backendClient.restart(session: session)
+                } label: {
+                    if commandState.restartingSessionIds.contains(session.id) {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text(L10n("Restart Session"))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(commandState.restartingSessionIds.contains(session.id))
+                .accessibilityLabel(L10n("Restart Session"))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.orange.opacity(0.07),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.2), lineWidth: 1)
         }
     }
 }

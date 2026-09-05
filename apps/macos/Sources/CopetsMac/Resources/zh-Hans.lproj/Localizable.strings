@@ -1430,5 +1430,12 @@
 "Preparing isolated convergence Worktree" = "正在准备隔离的统一 Worktree";
 "Publishing the unified commit" = "正在发布统一提交";
 "Partially completed" = "部分完成";
+<<<<<<< HEAD
 "存在等待执行的计划任务" = "存在等待执行的计划任务";
 "Context compacted" = "上下文已压缩";
+=======
+"CorptieTask“%@”已创建。发送第一条消息后开始执行。" = "CorptieTask“%@”已创建。发送第一条消息后开始执行。";
+"Session Not Ready" = "会话尚未就绪";
+"This Session cannot accept messages right now." = "此会话目前无法接收消息。";
+"The Provider Session no longer exists or cannot be reached. Restart this Session to continue." = "Provider 会话已不存在或无法连接。请重启此会话后继续。";
+>>>>>>> 5f0be33 (Corptie: preserve changes in task/a1b23086-4ba3-417e-b6c7-fecca076a20c)

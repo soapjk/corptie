@@ -20,7 +20,7 @@ import { CorptieStore } from "../src/store/corptieStore.mjs";
 const COMMIT = "a".repeat(40);
 const TREE = "b".repeat(40);
 
-test("Dynamic Tool and real HTTP wiring create and start one bound Worker Session", async () => {
+test("Dynamic Tool and real HTTP wiring create one deferred bound Worker Session", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-start-production-wiring-"));
   const store = new CorptieStore({
     dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json")
@@ -176,33 +176,33 @@ test("Dynamic Tool and real HTTP wiring create and start one bound Worker Sessio
       sessionScope: { sessionId: "session:source", workId: work.id }
     });
     const started = await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
-      title: "Production wiring",
+      title: "ProductionWiring",
       agent_id: agent.agentId,
       provider_id: "test-provider",
       ...creationEvidence,
       idempotency_key: "create:one"
     });
 
-    assert.equal(started.executionStatus, "running");
+    assert.equal(started.executionStatus, "idle");
     assert.equal(started.session.sessionId, "session:worker");
-    assert.deepEqual(calls, { create: 1, bind: 1, activate: 1 });
+    assert.deepEqual(calls, { create: 1, bind: 1, activate: 0 });
     const task = store.getTask(started.task.id);
     assert.equal(task.main_agent_id, agent.agentId);
     assert.equal(task.current_session_id, "provider:worker");
     assert.equal(task.lifecycle_state, "in_progress");
-    assert.equal(task.execution_status, "running");
+    assert.equal(task.execution_status, "idle");
     assert.equal(store.listSessionEvents("provider:worker").some(
       (event) => event.payload?.text === "Initial Turn"
-    ), true);
+    ), false);
 
     await callCollaborationDynamicTool(client, "corptie_collaboration_tasks_create", {
-      title: "Production wiring",
+      title: "ProductionWiring",
       agent_id: agent.agentId,
       provider_id: "test-provider",
       ...creationEvidence,
       idempotency_key: "create:one"
     });
-    assert.deepEqual(calls, { create: 1, bind: 1, activate: 1 });
+    assert.deepEqual(calls, { create: 1, bind: 1, activate: 0 });
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     await store.close();
