@@ -39,6 +39,23 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func workNavigationHeaderUsesLiteralTitleAndHostsLayoutToggleBesideSearch() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let start = try #require(source.range(of: "private var unifiedWorkOutlineSidebar: some View"))
+        let end = try #require(source.range(
+            of: "    private var workOutlineList: some View",
+            range: start.upperBound..<source.endIndex
+        ))
+        let outlineSidebar = source[start.lowerBound..<end.lowerBound]
+
+        #expect(outlineSidebar.contains("Text(verbatim: \"Work\")"))
+        let togglePosition = try #require(outlineSidebar.range(of: "navigationModeToggle"))
+        let searchPosition = try #require(outlineSidebar.range(of: "searchToggleButton"))
+        #expect(togglePosition.lowerBound < searchPosition.lowerBound)
+        #expect(!source.contains(".overlay(alignment: .bottomLeading) {\n            navigationModeToggle"))
+    }
+
+    @Test
     func automationAndWorktreePagesShareCompactCardGeometry() throws {
         let automation = try source(named: "AutomationsView.swift")
         let worktree = try source(named: "WorktreeManagementView.swift")
@@ -324,7 +341,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("taskRow(task)"))
         #expect(source.contains("Toggle(L10n(\"Navigation layout\"), isOn: usesWorkOutlineBinding)"))
         #expect(source.contains(".toggleStyle(.switch)"))
-        #expect(source.contains(".overlay(alignment: .bottomLeading)"))
+        #expect(!source.contains(".overlay(alignment: .bottomLeading)"))
         #expect(source.contains(".accessibilityValue(navigationMode.accessibilityValue)"))
     }
 
@@ -358,7 +375,7 @@ struct UnifiedConsoleControlSurfaceTests {
             separatedBy: "withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation)"
         ).count - 1 == 3)
         #expect(source.contains("Text(L10n(\"Chat\"))"))
-        #expect(source.contains("Text(L10n(\"Work\"))"))
+        #expect(source.contains("Text(verbatim: \"Work\")"))
         #expect(!source.contains("Text(L10n(\"Work & Tasks\"))"))
         #expect(!source.contains("Text(L10n(\"Assistant\"))"))
     }
