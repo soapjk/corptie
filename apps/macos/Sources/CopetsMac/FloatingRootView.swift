@@ -3888,6 +3888,8 @@ struct DetailView: View {
         var processCount: Int?
         var processDuration: String?
         var processState: AppKitChatTimelineRow.ProcessState = .completed
+        var processSteps: [NativeExecutionTimelineStep] = []
+        var processCurrentStepTitle: String?
         var showsHeader: Bool
         var hoverTimestamp: String
         let isCollaboration: Bool
@@ -3962,12 +3964,19 @@ struct DetailView: View {
                 }
             }
             let expanded = expandedTurnIds.contains(turnId)
-            let processStepsText = items.map(nativeProcessStepText).joined(separator: "\n\n")
-            rawStatusText = expanded ? processRawStatusText(for: items) : ""
-            copyText = rawStatusText.isEmpty
-                ? processStepsText
-                : processStepsText + "\n\n" + rawStatusText
-            text = expanded ? processStepsText : ""
+            if expanded {
+                processSteps = NativeExecutionTimelineProjection.steps(for: items)
+                let processStepsText = NativeExecutionTimelineProjection.plainText(for: processSteps)
+                rawStatusText = processRawStatusText(for: items)
+                copyText = rawStatusText.isEmpty
+                    ? processStepsText
+                    : processStepsText + "\n\n" + rawStatusText
+                text = processStepsText
+            } else {
+                rawStatusText = ""
+                copyText = ""
+                text = ""
+            }
             style = .process
             title = ""
             metadata = ""
@@ -3976,6 +3985,9 @@ struct DetailView: View {
             processCount = items.count
             processDuration = executionProcessDurationText(for: items)
             processState = projectedProcessState(for: items)
+            processCurrentStepTitle = processState == .running
+                ? items.last.map { NativeExecutionTimelineProjection.title(for: $0) }
+                : nil
             showsHeader = false
             hoverTimestamp = ""
             actions = []
@@ -3998,48 +4010,13 @@ struct DetailView: View {
             processCount: processCount,
             processDuration: processDuration,
             processState: processState,
+            processSteps: processSteps,
+            processCurrentStepTitle: processCurrentStepTitle,
             showsHeader: showsHeader,
             hoverTimestamp: hoverTimestamp,
             actions: actions,
             images: images
         )
-    }
-
-    private func nativeProcessStepText(for item: CodexThreadItem) -> String {
-        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let body = nativeTimelineText(for: item).trimmingCharacters(in: .whitespacesAndNewlines)
-        let presentedTitle = title.isEmpty ? nativeProcessTypeLabel(item.type) : title
-        let marker = nativeProcessStepMarker(item.type)
-        guard !body.isEmpty, body != title, !body.hasPrefix(title + "\n") else {
-            return "\(marker)  **\(presentedTitle)**"
-        }
-        return "\(marker)  **\(presentedTitle)**\n    \(body.replacingOccurrences(of: "\n", with: "\n    "))"
-    }
-
-    private func nativeProcessStepMarker(_ type: String) -> String {
-        switch type {
-        case "commandExecution": "⌘"
-        case "fileChange": "±"
-        case "webSearch": "⌕"
-        case "mcpToolCall", "dynamicToolCall": "⚙"
-        case "warning": "!"
-        case "reasoning", "plan": "◇"
-        default: "•"
-        }
-    }
-
-    private func nativeProcessTypeLabel(_ type: String) -> String {
-        switch type {
-        case "commandExecution": "Ran command"
-        case "fileChange": "Changed files"
-        case "webSearch": "Searched the web"
-        case "mcpToolCall", "dynamicToolCall": "Used tool"
-        case "reasoning": "Reasoned"
-        case "plan": "Updated plan"
-        case "warning": "Warning"
-        case "agentMessage": "Progress update"
-        default: "Execution step"
-        }
     }
 
     private func processExpansionMetadata(
@@ -4199,6 +4176,7 @@ struct DetailView: View {
                 hasher.combine(last.turnStatus)
                 hasher.combine(last.status)
                 hasher.combine(last.id)
+                hasher.combine(last.title)
             }
             if expandedTurnIds.contains(turnId) {
                 items.forEach { hasher.combine(itemSignature($0)) }
@@ -9956,6 +9934,27 @@ enum ComposerMentionMenuMetrics {
     }
 }
 
+enum ComposerMentionAnchorPolicy {
+    static let fallback = UnitPoint(x: 0.05, y: 0)
+
+    static func point(
+        for characterRect: CGRect,
+        in viewportBounds: CGRect,
+        viewportIsFlipped: Bool
+    ) -> UnitPoint {
+        guard viewportBounds.width > 0, viewportBounds.height > 0 else { return fallback }
+        let x = (characterRect.midX - viewportBounds.minX) / viewportBounds.width
+        let characterTop = viewportIsFlipped ? characterRect.minY : characterRect.maxY
+        let y = viewportIsFlipped
+            ? (characterTop - viewportBounds.minY) / viewportBounds.height
+            : (viewportBounds.maxY - characterTop) / viewportBounds.height
+        return UnitPoint(
+            x: min(max(x, 0), 1),
+            y: min(max(y, 0), 1)
+        )
+    }
+}
+
 struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var appState = AppStateStore.shared
@@ -9974,6 +9973,7 @@ struct MessageComposer: View {
     @State private var attachedImages: [ChatImageReference] = []
     @State private var isImportingImages = false
     @State private var mentionQuery: ComposerMentionQuery?
+    @State private var mentionAnchorPoint = ComposerMentionAnchorPolicy.fallback
     @State private var mentionSelectionIndex = 0
     @State private var selectedMentions: [ConversationMention] = []
 
@@ -10048,11 +10048,27 @@ struct MessageComposer: View {
                     },
                     onPasteImages: importImagesFromPasteboard,
                     onMentionQueryChange: updateMentionQuery,
+                    onMentionAnchorChange: { mentionAnchorPoint = $0 },
                     onMentionCommand: handleMentionCommand,
                     onSubmit: send
                 )
                     .frame(minWidth: 0, maxWidth: .infinity)
                     .frame(height: inputHeight)
+                    .popover(
+                        isPresented: mentionMenuPresented,
+                        attachmentAnchor: .point(mentionAnchorPoint),
+                        arrowEdge: .bottom
+                    ) {
+                        ComposerMentionMenu(
+                            candidates: mentionCandidates,
+                            selectedIndex: mentionSelectionIndex,
+                            onSelect: selectMention
+                        )
+                        .frame(
+                            width: ComposerMentionMenuMetrics.width,
+                            height: ComposerMentionMenuMetrics.height(candidateCount: mentionCandidates.count)
+                        )
+                    }
                     .padding(.leading, 10)
                     .padding(.trailing, 2)
                     .onTapGesture {
@@ -10142,21 +10158,6 @@ struct MessageComposer: View {
             )
             .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
                 importDroppedImages(providers)
-            }
-            .popover(
-                isPresented: mentionMenuPresented,
-                attachmentAnchor: .rect(.bounds),
-                arrowEdge: .bottom
-            ) {
-                ComposerMentionMenu(
-                    candidates: mentionCandidates,
-                    selectedIndex: mentionSelectionIndex,
-                    onSelect: selectMention
-                )
-                .frame(
-                    width: ComposerMentionMenuMetrics.width,
-                    height: ComposerMentionMenuMetrics.height(candidateCount: mentionCandidates.count)
-                )
             }
 
             if allowsModelSwitch, canSwitchModel {
@@ -10856,6 +10857,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
     var onContentHeightChange: (CGFloat) -> Void = { _ in }
     var onPasteImages: () -> Bool = { false }
     var onMentionQueryChange: (ComposerMentionQuery?) -> Void = { _ in }
+    var onMentionAnchorChange: (UnitPoint) -> Void = { _ in }
     var onMentionCommand: (ComposerMentionCommand) -> Bool = { _ in false }
     let onSubmit: (ComposerDraftBuffer.Submission) -> Void
 
@@ -10911,6 +10913,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onSendableTextChange: onSendableTextChange,
             onContentHeightChange: onContentHeightChange,
             onMentionQueryChange: onMentionQueryChange,
+            onMentionAnchorChange: onMentionAnchorChange,
             onMentionCommand: onMentionCommand,
             onSubmit: onSubmit
         )
@@ -10934,6 +10937,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onSendableTextChange: onSendableTextChange,
             onContentHeightChange: onContentHeightChange,
             onMentionQueryChange: onMentionQueryChange,
+            onMentionAnchorChange: onMentionAnchorChange,
             onMentionCommand: onMentionCommand,
             onSubmit: onSubmit
         )
@@ -10946,6 +10950,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
         private var onSendableTextChange: (Bool) -> Void
         private var onContentHeightChange: (CGFloat) -> Void
         private var onMentionQueryChange: (ComposerMentionQuery?) -> Void
+        private var onMentionAnchorChange: (UnitPoint) -> Void
         private var onMentionCommand: (ComposerMentionCommand) -> Bool
         private var onSubmit: (ComposerDraftBuffer.Submission) -> Void
         private var lastSendableState: Bool
@@ -10956,6 +10961,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onSendableTextChange: @escaping (Bool) -> Void,
             onContentHeightChange: @escaping (CGFloat) -> Void,
             onMentionQueryChange: @escaping (ComposerMentionQuery?) -> Void,
+            onMentionAnchorChange: @escaping (UnitPoint) -> Void,
             onMentionCommand: @escaping (ComposerMentionCommand) -> Bool,
             onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
         ) {
@@ -10964,6 +10970,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             self.onSendableTextChange = onSendableTextChange
             self.onContentHeightChange = onContentHeightChange
             self.onMentionQueryChange = onMentionQueryChange
+            self.onMentionAnchorChange = onMentionAnchorChange
             self.onMentionCommand = onMentionCommand
             self.onSubmit = onSubmit
             lastSendableState = controller.draft.hasSendableText
@@ -10981,6 +10988,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             onSendableTextChange: @escaping (Bool) -> Void,
             onContentHeightChange: @escaping (CGFloat) -> Void,
             onMentionQueryChange: @escaping (ComposerMentionQuery?) -> Void,
+            onMentionAnchorChange: @escaping (UnitPoint) -> Void,
             onMentionCommand: @escaping (ComposerMentionCommand) -> Bool,
             onSubmit: @escaping (ComposerDraftBuffer.Submission) -> Void
         ) {
@@ -10989,6 +10997,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
             self.onSendableTextChange = onSendableTextChange
             self.onContentHeightChange = onContentHeightChange
             self.onMentionQueryChange = onMentionQueryChange
+            self.onMentionAnchorChange = onMentionAnchorChange
             self.onMentionCommand = onMentionCommand
             self.onSubmit = onSubmit
             lastSendableState = controller.draft.hasSendableText
@@ -10999,7 +11008,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
                 return
             }
             controller.recordEditorText(textView.string)
-            onMentionQueryChange(ComposerMentionQuery.resolve(in: textView.string, selection: textView.selectedRange()))
+            reportMentionPresentation(of: textView)
             reportContentHeight(of: textView)
             let nextSendableState = controller.draft.hasSendableText
             guard nextSendableState != lastSendableState else {
@@ -11011,7 +11020,48 @@ private struct ComposerInputTextView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            onMentionQueryChange(ComposerMentionQuery.resolve(in: textView.string, selection: textView.selectedRange()))
+            reportMentionPresentation(of: textView)
+        }
+
+        private func reportMentionPresentation(of textView: NSTextView) {
+            let query = ComposerMentionQuery.resolve(
+                in: textView.string,
+                selection: textView.selectedRange()
+            )
+            onMentionQueryChange(query)
+            guard let query,
+                  let anchor = mentionAnchorPoint(for: query, in: textView) else { return }
+            onMentionAnchorChange(anchor)
+        }
+
+        private func mentionAnchorPoint(
+            for query: ComposerMentionQuery,
+            in textView: NSTextView
+        ) -> UnitPoint? {
+            guard let layoutManager = textView.layoutManager,
+                  let textContainer = textView.textContainer,
+                  let scrollView = textView.enclosingScrollView,
+                  query.replacementRange.location < textView.string.utf16.count else {
+                return nil
+            }
+            let characterRange = NSRange(location: query.replacementRange.location, length: 1)
+            let glyphRange = layoutManager.glyphRange(
+                forCharacterRange: characterRange,
+                actualCharacterRange: nil
+            )
+            layoutManager.ensureLayout(for: textContainer)
+            var characterRect = layoutManager.boundingRect(
+                forGlyphRange: glyphRange,
+                in: textContainer
+            )
+            characterRect.origin.x += textView.textContainerOrigin.x
+            characterRect.origin.y += textView.textContainerOrigin.y
+            let viewportRect = textView.convert(characterRect, to: scrollView)
+            return ComposerMentionAnchorPolicy.point(
+                for: viewportRect,
+                in: scrollView.bounds,
+                viewportIsFlipped: scrollView.isFlipped
+            )
         }
 
         func submit() {

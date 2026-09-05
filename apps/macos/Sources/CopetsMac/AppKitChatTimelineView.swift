@@ -313,6 +313,227 @@ enum NativeTextKitLayout {
 /// Final native row geometry, shared by all retained Session hosts. The cache
 /// key includes every input that can affect wrapping, so a row is never shown
 /// with an estimated height and corrected after the first paint.
+struct NativeExecutionTimelineStep: Identifiable, Hashable {
+    enum Kind: Hashable {
+        case context
+        case action
+        case result
+
+        var label: String {
+            switch self {
+            case .context: "Execution Context"
+            case .action: "Execution Action"
+            case .result: "Execution Result"
+            }
+        }
+    }
+
+    enum State: Hashable {
+        case running
+        case completed
+        case failed
+        case cancelled
+
+        var marker: String {
+            switch self {
+            case .running: "●"
+            case .completed: "✓"
+            case .failed: "!"
+            case .cancelled: "■"
+            }
+        }
+    }
+
+    let id: String
+    let kind: Kind
+    let state: State
+    let title: String
+    let detail: String?
+}
+
+enum NativeExecutionTimelineProjection {
+    static let detailCharacterLimit = 180
+    static let detailLineLimit = 2
+
+    static func steps(for items: [CodexThreadItem]) -> [NativeExecutionTimelineStep] {
+        let runningTurn = items.last.map { isRunningTurnStatus($0.turnStatus) } ?? false
+        return items.enumerated().map { index, item in
+            let sourceTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            return NativeExecutionTimelineStep(
+                id: item.id,
+                kind: kind(item.type),
+                state: state(item, isLatest: index == items.indices.last, runningTurn: runningTurn),
+                title: title(for: item),
+                detail: detailPreview(item.text, excludingTitle: sourceTitle)
+            )
+        }
+    }
+
+    static func title(for item: CodexThreadItem) -> String {
+        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? typeTitle(item.type) : title
+    }
+
+    static func plainText(for steps: [NativeExecutionTimelineStep]) -> String {
+        steps.map { step in
+            ["\(step.state.marker) [\(step.kind.label)] \(step.title)", step.detail]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+        }
+        .joined(separator: "\n\n")
+    }
+
+    private static func kind(_ type: String) -> NativeExecutionTimelineStep.Kind {
+        switch type {
+        case "reasoning", "plan", "agentMessage": .context
+        case "warning": .result
+        default: .action
+        }
+    }
+
+    private static func state(
+        _ item: CodexThreadItem,
+        isLatest: Bool,
+        runningTurn: Bool
+    ) -> NativeExecutionTimelineStep.State {
+        let status = normalized(item.status ?? "")
+        switch status {
+        case "failed", "error": return .failed
+        case "cancelled", "canceled", "interrupted": return .cancelled
+        case "running", "inprogress", "in_progress", "started": return .running
+        default: break
+        }
+        if item.type == "warning" { return .failed }
+        return isLatest && runningTurn ? .running : .completed
+    }
+
+    private static func detailPreview(_ text: String, excludingTitle title: String) -> String? {
+        let boundedText = text.prefix(detailCharacterLimit * 2)
+        let candidates = boundedText.split(
+            separator: "\n",
+            maxSplits: detailLineLimit + 1,
+            omittingEmptySubsequences: true
+        )
+        var lines: [String] = []
+        lines.reserveCapacity(detailLineLimit + 1)
+        for candidate in candidates {
+            let line = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !line.isEmpty { lines.append(line) }
+        }
+        if let first = lines.first,
+           !title.isEmpty,
+           first == title || first.hasPrefix(title + ":") {
+            lines.removeFirst()
+        }
+        guard !lines.isEmpty else { return nil }
+        var preview = lines.prefix(detailLineLimit).joined(separator: " · ")
+        if preview.count > detailCharacterLimit {
+            preview = String(preview.prefix(detailCharacterLimit - 1)) + "…"
+        } else if lines.count > detailLineLimit || boundedText.endIndex != text.endIndex {
+            preview += "…"
+        }
+        return preview
+    }
+
+    private static func typeTitle(_ type: String) -> String {
+        switch type {
+        case "commandExecution": "Ran command"
+        case "fileChange": "Changed files"
+        case "webSearch": "Searched the web"
+        case "mcpToolCall", "dynamicToolCall": "Used tool"
+        case "reasoning": "Reasoned"
+        case "plan": "Updated plan"
+        case "warning": "Warning"
+        case "agentMessage": "Progress update"
+        default: "Execution step"
+        }
+    }
+
+    private static func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func isRunningTurnStatus(_ value: String) -> Bool {
+        switch normalized(value) {
+        case "completed", "complete", "failed", "error", "cancelled", "canceled", "interrupted": false
+        default: true
+        }
+    }
+}
+
+@MainActor
+enum NativeExecutionTimelineAttributedText {
+    static func make(steps: [NativeExecutionTimelineStep]) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        for (index, step) in steps.enumerated() {
+            let marker = NSMutableAttributedString(
+                string: "\(step.state.marker)  ",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 10.5, weight: .bold),
+                    .foregroundColor: markerColor(step.state)
+                ]
+            )
+            result.append(marker)
+            result.append(NSAttributedString(
+                string: "\(L10n(step.kind.label).uppercased())  ",
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 8.5, weight: .bold),
+                    .foregroundColor: kindColor(step.kind)
+                ]
+            ))
+            result.append(NSAttributedString(
+                string: step.title,
+                attributes: [
+                    .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
+                    .foregroundColor: NativeTimelineCardPalette.secondaryText
+                ]
+            ))
+            if let detail = step.detail {
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.headIndent = 20
+                paragraph.firstLineHeadIndent = 20
+                paragraph.paragraphSpacingBefore = 3
+                paragraph.lineBreakMode = .byCharWrapping
+                result.append(NSAttributedString(
+                    string: "\n│  \(detail)",
+                    attributes: [
+                        .font: detailFont(step.kind),
+                        .foregroundColor: NativeTimelineCardPalette.mutedText,
+                        .paragraphStyle: paragraph
+                    ]
+                ))
+            }
+            if index < steps.count - 1 {
+                result.append(NSAttributedString(string: "\n\n"))
+            }
+        }
+        return result
+    }
+
+    private static func markerColor(_ state: NativeExecutionTimelineStep.State) -> NSColor {
+        switch state {
+        case .running: .controlAccentColor
+        case .completed: .systemGreen
+        case .failed: .systemRed
+        case .cancelled: .secondaryLabelColor
+        }
+    }
+
+    private static func kindColor(_ kind: NativeExecutionTimelineStep.Kind) -> NSColor {
+        switch kind {
+        case .context: .secondaryLabelColor
+        case .action: .controlAccentColor
+        case .result: .systemOrange
+        }
+    }
+
+    private static func detailFont(_ kind: NativeExecutionTimelineStep.Kind) -> NSFont {
+        kind == .action
+            ? .monospacedSystemFont(ofSize: 9.5, weight: .regular)
+            : .systemFont(ofSize: 10, weight: .regular)
+    }
+}
+
 @MainActor
 final class NativeTimelineLayoutCache {
     struct Layout {
@@ -334,11 +555,18 @@ final class NativeTimelineLayoutCache {
         let processCount: Int?
         let processDuration: String?
         let processState: AppKitChatTimelineRow.ProcessState
+        let processSteps: [NativeExecutionTimelineStep]
         let isExpanded: Bool
         let showsHeader: Bool
         let actionCount: Int
         let widthBucket: Int
         let imagePaths: [String]
+
+        var estimatedTextLength: Int {
+            text.utf16.count + rawStatusText.utf16.count + processSteps.reduce(into: 0) { total, step in
+                total += step.title.utf16.count + (step.detail?.utf16.count ?? 0) + 32
+            }
+        }
     }
 
     static let shared = NativeTimelineLayoutCache()
@@ -361,6 +589,7 @@ final class NativeTimelineLayoutCache {
             processCount: row.processCount,
             processDuration: row.processDuration,
             processState: row.processState,
+            processSteps: row.isExpanded ? row.processSteps : [],
             isExpanded: row.isExpanded,
             showsHeader: row.showsHeader,
             actionCount: row.actions.count,
@@ -372,7 +601,9 @@ final class NativeTimelineLayoutCache {
             return cached
         }
 
-        let attributed = NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
+        let attributed = row.nativeStyle == .process && row.isExpanded && !row.processSteps.isEmpty
+            ? NativeExecutionTimelineAttributedText.make(steps: row.processSteps)
+            : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
         let cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: normalizedWidth)
         let textHeight = row.nativeStyle == .process && !row.isExpanded
             ? 0
@@ -427,7 +658,7 @@ final class NativeTimelineLayoutCache {
         )
         values[key] = layout
         touch(key)
-        estimatedBytes += ((key.text.utf16.count + key.rawStatusText.utf16.count) * 8) + attributed.length * 8 + 192
+        estimatedBytes += (key.estimatedTextLength * 8) + attributed.length * 8 + 192
         evictIfNeeded()
         return layout
     }
@@ -445,7 +676,7 @@ final class NativeTimelineLayoutCache {
             estimatedBytes = max(
                 0,
                 estimatedBytes
-                    - ((oldest.text.utf16.count + oldest.rawStatusText.utf16.count) * 8)
+                    - (oldest.estimatedTextLength * 8)
                     - removed.attributedText.length * 8
                     - 192
             )
@@ -510,6 +741,8 @@ struct AppKitChatTimelineRow: Identifiable {
     let processCount: Int?
     let processDuration: String?
     let processState: ProcessState
+    let processSteps: [NativeExecutionTimelineStep]
+    let processCurrentStepTitle: String?
     let showsHeader: Bool
     let hoverTimestamp: String
     let actions: [Action]
@@ -537,6 +770,8 @@ struct AppKitChatTimelineRow: Identifiable {
         processCount: Int? = nil,
         processDuration: String? = nil,
         processState: ProcessState = .completed,
+        processSteps: [NativeExecutionTimelineStep] = [],
+        processCurrentStepTitle: String? = nil,
         showsHeader: Bool = true,
         hoverTimestamp: String = "",
         actions: [Action] = [],
@@ -557,6 +792,8 @@ struct AppKitChatTimelineRow: Identifiable {
         self.processCount = processCount
         self.processDuration = processDuration
         self.processState = processState
+        self.processSteps = processSteps
+        self.processCurrentStepTitle = processCurrentStepTitle
         self.showsHeader = showsHeader
         self.hoverTimestamp = hoverTimestamp
         self.actions = actions
@@ -577,10 +814,11 @@ struct AppKitChatTimelineRow: Identifiable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         switch processState {
         case .running:
+            let currentStep = processCurrentStepTitle.map { " · \($0)" } ?? ""
             if let normalizedDuration, !normalizedDuration.isEmpty {
-                return "Working for \(normalizedDuration) · \(steps)"
+                return "Working for \(normalizedDuration)\(currentStep) · \(steps)"
             }
-            return "Working… · \(steps)"
+            return "Working\(currentStep)… · \(steps)"
         case .completed:
             if let normalizedDuration, !normalizedDuration.isEmpty {
                 return "Worked for \(normalizedDuration) · \(steps)"
