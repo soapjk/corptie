@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
-const DEFAULT_MAX_CONTEXT_BYTES = 7_168;
-const DEFAULT_MAX_TURN_CONTEXT_BYTES = 8_192;
+export const WORKER_SESSION_CONTEXT_LIMITS = Object.freeze({
+  baseMaxUtf8Bytes: 16_384,
+  turnMaxUtf8Bytes: 20_480
+});
+const DEFAULT_MAX_CONTEXT_BYTES = WORKER_SESSION_CONTEXT_LIMITS.baseMaxUtf8Bytes;
+const DEFAULT_MAX_TURN_CONTEXT_BYTES = WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes;
 const encoder = new TextEncoder();
 
 export function buildWorkSessionContext({
@@ -173,9 +177,10 @@ function fitsWithOptional(prefixLines, artifacts, artifactIndex, suffix, maximum
 }
 
 function assertCoreFits(prompt, maximum, taskDefinition, requiredArtifacts) {
-  if (encoder.encode(prompt).byteLength > maximum) {
-    throw contextError("WORK_SESSION_CONTEXT_INCOMPLETE", "The non-truncatable Worker Session context exceeds the Provider-safe budget.", {
-      missingFields: [], maxUtf8Bytes: maximum, requiredUtf8Bytes: encoder.encode(prompt).byteLength
+  const requiredUtf8Bytes = encoder.encode(prompt).byteLength;
+  if (requiredUtf8Bytes > maximum) {
+    throw contextError("WORK_SESSION_CONTEXT_INCOMPLETE", `Worker Session context requires ${requiredUtf8Bytes} UTF-8 bytes, exceeding the Provider-safe budget of ${maximum} bytes.`, {
+      missingFields: [], maxUtf8Bytes: maximum, requiredUtf8Bytes
     });
   }
   assertComplete(prompt, maximum, taskDefinition, requiredArtifacts);
