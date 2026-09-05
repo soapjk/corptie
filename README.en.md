@@ -1,158 +1,146 @@
-# Corptie
-
-[中文说明](README.md) · [Product showcase](docs/product-showcase.md)
-
-**A low-distraction desktop companion for AI agents.**
-
 <p align="center">
-  <img src="apps/macos/Sources/CopetsMac/Resources/AppIcon.png" alt="Corptie app icon" width="180">
+  <img src="apps/macos/Sources/CopetsMac/Resources/AppIcon.png" alt="Corptie app icon" width="144">
 </p>
 
-Corptie turns Codex, Claude Code, and other CLI- or SDK-based agents into assistive tools that fit naturally into your wider desktop workflow. Its compact native macOS floating panel and detachable orbs keep interaction focused on the conversation itself, minimize screen intrusion, and let you assign agent tasks without repeatedly interrupting everything else you are doing. Built-in Session-to-Session messaging and task collaboration let independent execution contexts coordinate directly.
+<h1 align="center">Corptie</h1>
 
-> The goal is simple: let agents work in parallel without making you babysit every window.
+<p align="center">
+  <strong>A macOS workbench that organizes projects as Works, tracks Tasks, and keeps AI Sessions working together.</strong>
+</p>
 
-## ✨ Highlights
+<p align="center">
+  <a href="https://github.com/soapjk/corptie/releases">Downloads and releases</a>
+  ·
+  <a href="README.md">简体中文</a>
+</p>
 
-| Capability | Why it matters |
+Corptie brings work context, tasks, Agent roles, execution Sessions, and local workspaces into one native desktop app. Discuss requirements in Work Chat, start an execution Session for a specific Task, and carry context forward through artifacts, memories, and automations while managing progress, input, and approvals across parallel tasks.
+
+It supports software, general, office, data, and design work. Coding tasks can also use Git Worktree isolation and project code search to operate within explicit repository boundaries.
+
+## Capabilities
+
+| Capability | How it works |
 | --- | --- |
-| 🧭 **Multi-agent desktop cockpit** | Run and supervise several Codex, Claude Code, or other agent tasks at once, interrupting you only for input, approval, or exceptions. |
-| 📱 **Feishu remote agent gateway** | Securely pair trusted Feishu users with local sessions to create or take over sessions, exchange messages, interrupt work, and handle approvals remotely. |
-| 🤝 **Structured Session-to-Session collaboration** | Coordinate independent Sessions through exact routing, acceptance criteria, and artifacts, with confirmation, durable delivery, verification, revision, and escalation built in. |
-| 🔎 **Per-turn code review and undo** | Inspect the files changed by a Codex reply, open its patch in an external diff tool, and safely reverse only that turn when it does not conflict with newer edits. |
-| 🧠 **LLM-enhanced interaction** | Convert terminal-style choice prompts into clickable structured actions with either a Local Agent or an OpenAI-compatible endpoint. |
-| 🛡️ **Local-first, isolated runtime** | Keep agents, sessions, queues, and SQLite data on the Mac by default, while running production and development environments side by side with fully separate state. |
+| **Work and Task** | A Work gathers context, a Workspace, and participating Agents. Tasks record requirements, priority, acceptance and verification criteria, and execution Sessions. |
+| **Work Chat and execution Sessions** | Discuss requirements within a Work and carry out concrete tasks in bound Worker Sessions, with shared controls for messages, input, approvals, interruption, and recovery. |
+| **Agents and Skills** | Configure reusable roles, working instructions, and available Skills, then select Agents for the work. |
+| **Session Channels** | First contact between two exact Sessions requires user authorization. An active Channel supports ongoing bidirectional messaging, history, and revocation. |
+| **Artifacts and memories** | Keep searchable, versioned documents. Work-scoped Artifacts are shared with Sessions in that Work; Task-scoped Artifacts stay within their owning Task. Memories retain reusable context and preferences. |
+| **Automation** | Trigger actions at a specified time, after a delay, on a fixed interval, on process exit, or when a condition is met. Inspect runs and pause, resume, or cancel automations. |
+| **Workspaces and Worktrees** | Associate work with local projects and support parallel development through Task workspace preparation, Git Worktree management, and code search. |
+| **Multiple Providers** | Integrations include Codex App Server, Claude Agent SDK, and OpenClacky through a shared Provider contract. Available operations depend on each Provider's declared capabilities. |
+| **Native desktop interaction** | SwiftUI and AppKit interfaces provide Session management, floating panels, and detachable orbs. |
 
-## 🎯 Core capabilities
+## How work is organized
 
-Corptie is designed for work that does not finish instantly:
+| Concept | Meaning |
+| --- | --- |
+| **Work** | An ongoing unit of work containing context, Tasks, participating Agents, artifacts, and an optional Workspace. |
+| **Task** | A concrete piece of work belonging to one Work, with requirements, acceptance criteria, verification criteria, and a lifecycle. |
+| **Agent** | A reusable role and capability configuration. |
+| **Session** | The executor, authorization context, and message endpoint. Work Chat supports discussion; Worker Sessions execute Tasks. |
+| **Workspace / Worktree** | A local project resource and an isolated Git working directory. |
+| **Artifact** | A durable document with a scope, versions, and discovery metadata. |
+| **Channel** | Revocable, bidirectional communication authorization between two exact Sessions. |
+| **Automation** | A configuration that triggers actions based on time or events. |
 
-- Choose the agent, model, reasoning level, sandbox, and approval policy when creating a session.
-- See real states such as `running`, `needs input`, `approval required`, `complete`, and `failed`, with unified controls for replies, approvals, interruption, resume, and safe shutdown.
-- Detach a session into its own floating orb, read the latest reply, and respond without opening the main panel; choose a completion sound per session.
-- Use the Codex App Server protocol by default with a PTY Legacy fallback, or run Claude Code through the Agent SDK.
+Sessions execute work and exchange messages. Agents, Works, Tasks, Workspaces, and Providers are resources. Channel messaging does not automatically create, delegate, or complete Tasks; Task lifecycle and acceptance are separate workflows.
 
-Corptie intentionally avoids fake percentage progress. It shows the real state of the agent, the latest activity, and the places where human input is actually needed.
+## Get started
 
-## 🧩 Architecture
+### Runtime requirements
 
-Agent integrations use one Provider contract, stable logical Session identities, and capability-driven UI. Adding a Provider must not require changes to product services or common UI; see the [Agent Provider development guide](docs/agent-provider-development.md).
+- macOS 14 or later.
+- Node.js 22.13 or later with built-in `node:sqlite` support.
+- At least one available, authenticated Provider runtime: Codex, Claude Code, or OpenClacky.
 
-```text
-apps/macos
-  Native SwiftUI + AppKit frontend
-  Floating panel, detached orbs, settings, chat/detail views
+Choose an installer from [GitHub Releases](https://github.com/soapjk/corptie/releases), install and open Corptie, then check the local backend and selected Provider's availability. Model access and authentication come from the corresponding Provider runtime.
 
-apps/backend
-  Local Node.js runtime
-  HTTP API, SSE detail streams, agent adapters, unified work queue, SQLite store
+### Your first Work
 
-apps/backend/src/collaboration
-  Session collaboration state machine, resource registry, durable delivery, and verification workflow
+1. Prepare a Contributor Agent with a role and the Skills it needs.
+2. Create a Work, describe its context, and select participating Agents. Associate a Workspace when working with a local project.
+3. Discuss requirements in Work Chat, then create a Task with a concrete goal, acceptance criteria, and verification steps.
+4. Start an execution Session for the Task. Corptie prepares and binds its working directory; coding tasks execute within the corresponding Workspace / Worktree boundary.
+5. Follow the Session's actual state and reply, approve, or interrupt as needed. Save durable material as Artifacts and configure Automation for later triggers.
+6. Review the implementation, deliverables, and verification evidence before confirming completion.
 
-apps/backend/src/feishu
-  Feishu bots, user pairing, session binding, interactive cards, and approval sync
+To coordinate with another Session, request a Channel and confirm its initial authorization, then continue communicating through that Channel.
 
-scripts
-  Dev runners, production backend helpers, macOS packaging
-```
+## Local data and runtime boundaries
 
-Codex sessions use structured App Server events by default and retain a PTY compatibility mode. Both support resume, interruption, model switching, and approvals. Agent input goes through one durable work queue so user, Feishu, and peer-agent messages are not lost while a session is busy.
+Corptie's backend, SQLite state, work queue, and artifact storage run locally by default. App-managed Providers use dedicated runtime configuration and state directories; isolation details depend on the Provider.
 
-## 📱 Feishu gateway
+Local-first does not mean offline inference. Model requests, authentication, and enabled external tools may access the network according to the Provider, tools, and user configuration. Session communication authorization does not replace permissions for other actions.
 
-Feishu integration is optional. It requires `lark-cli` on the Mac and a published enterprise app with bot capability in the Feishu Open Platform.
+The production backend defaults to `127.0.0.1:47321`; development defaults to `127.0.0.1:47322`. The development rebuild script isolates backend data, presentation data, and frontend preferences by Worktree. Its path and port configuration are described below.
 
-1. In **Feishu Gateway** settings, add a bot with an App ID/App Secret or an existing `lark-cli` profile.
-2. Add trusted workspaces that remote users may start sessions in, enable the bot, and generate a six-digit pairing code.
-3. Send that code to the bot from the Feishu account you want to trust. Once paired, use interactive cards to choose a workspace and agent, then create or take over a session.
+## Develop from source
 
-App Secrets are passed to `lark-cli` encrypted storage and are not stored in the Corptie database. Card actions validate the paired user and chat before anything is forwarded to an agent.
+In addition to the runtime requirements, install a Swift 6 toolchain, Rust / Cargo, and Python 3 for the development launcher. Rust builds the backend native module.
 
-## 🤝 Cross-Session collaboration
-
-Session is the only executor and message endpoint. Agent, Objective, WorkItem, Workspace, Provider, and Service are resources. A source Session selects an exact target Session; when none exists, user confirmation first creates a WorkItem under the target Objective and then a Worker Session configured with the selected Agent resource. A formal Task, Message, and Delivery are created only after both Sessions exist.
-
-Every new collaboration request is shown to the user as a confirmation card before delivery. The Collaboration window provides inbox, verification, escalated tasks, agent/service registry, and full task timelines, with controls to cancel tasks or retry failed deliveries.
-
-See [Agent collaboration protocol and workflow](docs/agent-collaboration.md) for the state machine, message envelope, compatibility migration, and development usage.
-
-See [Corptie domain model and capability boundaries](docs/domain-model-and-capability-boundaries.md) for the canonical definitions; that document is the single source of truth.
-
-## 🚦 Environments
-
-| Environment | Backend | Data |
-| --- | ---: | --- |
-| Production | `127.0.0.1:47321` | `~/Library/Application Support/Corptie/` |
-| Development | `127.0.0.1:47322` | `~/Library/Application Support/Corptie Development/` |
-
-The two environments do not share backend config, SQLite data, frontend `UserDefaults`, transparency settings, or remembered window sizes.
-
-Corptie-managed Codex processes also use isolated runtime homes: production uses `~/.corptie/runtimes/codex/`, while development uses `~/.corptie/development/runtimes/codex/`. Neither modifies the native Codex home at `~/.codex/`. On first initialization, Corptie locally copies the existing authentication and the thread state it already manages, and creates the global `AGENTS.md` from the matching environment template when it is missing. That file identifies the environment and the resolved `CODEX_HOME`; later user edits are never overwritten by upgrades. The homes diverge after that one-time bootstrap. Every backend startup verifies and repairs Corptie's built-in Skill, and every new or resumed Agent receives the collaboration MCP configuration dynamically.
-
-## 🛠️ Develop
-
-Requirements: macOS 14+, Node.js 22.13+, Swift 6, and an installed and authenticated Codex CLI or Claude Code. Install backend dependencies before the first run:
+Install dependencies and build the native module from the repository root:
 
 ```sh
-npm install --prefix apps/backend
+npm ci --prefix apps/backend
+npm --prefix apps/backend run build:native
 ```
+
+For an initial foreground run:
 
 ```sh
 scripts/run-development.sh
 ```
 
-Useful checks:
+This entry point checks the development backend and builds the macOS debug app only if its binary is missing. It runs an existing binary directly. After implementation changes, rebuild and restart development with:
 
 ```sh
-curl "http://127.0.0.1:47322/health"
-swift build --package-path apps/macos
-node --check apps/backend/src/server.mjs
+scripts/dev-rebuild-restart.sh
 ```
 
-Create a Codex-backed PTY session:
+**The rebuild script currently requires an external volume path.** `CORPTIE_DEVELOPMENT_RUNTIME_ROOT` defaults to `/Volumes/T9/CorptieData/development-launcher`; overrides must also be under `/Volumes/`. Configure it for your actual volume, for example:
 
 ```sh
-curl -X POST "http://127.0.0.1:47322/codex/pty-sessions" \
-  -H "content-type: application/json" \
-  --data '{"title":"Codex smoke test","prompt":"Summarize this repo without editing files.","cwd":"/path/to/corptie"}'
+CORPTIE_DEVELOPMENT_RUNTIME_ROOT="/Volumes/YourVolume/CorptieData/development-launcher" \
+  scripts/dev-rebuild-restart.sh
 ```
 
-If `prompt` is empty, Corptie sends a tiny initialization prompt asking Codex to reply `Ready`, so new sessions bind and become usable immediately.
+The script compiles the Swift app and Rust module, starts the backend owned by the development app, and checks health and processes. Logs and data are stored by Worktree under the configured root; the script prints log paths. To run different Worktrees concurrently, set `CORPTIE_DEVELOPMENT_BACKEND_PORT` to an available port for this rebuild entry point.
 
-## 📦 Package
+Useful verification commands:
 
-Build the production installer:
+```sh
+npm test --prefix apps/backend
+swift test --package-path apps/macos
+curl --fail http://127.0.0.1:47322/health
+```
+
+Backend tests build the native module first. Adjust the health URL when using a custom port.
+
+### Package
+
+After installing dependencies and building the native module, run:
 
 ```sh
 scripts/package-macos-installer.sh
 ```
 
-To keep macOS privacy grants such as Screen Recording stable across upgrades,
-build with a consistent Developer ID Application identity:
+Artifacts are written to `dist/`. The current script uses the `arm64-apple-macosx` build output path. It uses ad-hoc app signing unless `CORPTIE_APP_SIGNING_IDENTITY` is set; use that variable to select a Developer ID Application certificate when available.
 
-```sh
-CORPTIE_APP_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-  scripts/package-macos-installer.sh
-```
+## Code navigation
 
-Without this variable, the script creates an ad-hoc signed app intended only
-for local development and testing. macOS may ask for Screen Recording access
-again after a rebuild or upgrade.
+| Entry point | Contents |
+| --- | --- |
+| [macOS frontend](apps/macos/Sources/CopetsMac) | Native UI for Work / Task management, Sessions, artifacts, and automations. |
+| [Backend application services](apps/backend/src/application) | Work and Task workflows, Session startup, Artifacts, memories, and Automation. |
+| [Provider layer](apps/backend/src/agent-provider) | Shared contracts, Session bindings, and Provider adapters. |
+| [Session Channel service](apps/backend/src/collaboration/sessionChannelService.mjs) | Communication authorization, message delivery, and Channel lifecycle. |
+| [Project code services](apps/backend/src/project-code) | Code snapshots, indexing, search, and reads. |
+| [Backend native module](apps/backend/native) | Rust native capabilities. |
+| [Development and packaging scripts](scripts) | Local execution, development rebuilds, verification helpers, and installers. |
 
-Build from the current checkout, verify that production has no unfinished sessions, safely stop it, install the new app, and reopen it:
-
-```sh
-scripts/rebuild-install-restart-production.sh
-```
-
-Check shutdown safety without changing anything:
-
-```sh
-scripts/rebuild-install-restart-production.sh --check-only
-```
-
-Artifacts are written to `dist/` as timestamped `.pkg` and `.dmg` files. The `.dmg` includes `Corptie.app`, an `Applications` shortcut, and a short installer readme.
+The frontend consumes shared models and declared capabilities; backend business logic organizes execution through the common Provider abstraction. Preserve the boundaries between frontend, backend, and Provider implementations when extending the product.
 
 ## License
 
