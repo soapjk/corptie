@@ -3830,6 +3830,48 @@ export class CorptieStore {
         WHERE session_kind = 'worker' AND task_id = NEW.id;
       END
     `);
+    // A scheduled wake is projected on its owning Corptie Task row. Keep that
+    // derived UI state on the ordinary Task change stream instead of adding a
+    // second collection for every client to join. Only fields that can change
+    // whether the wake is pending invalidate the Task; scheduler leases and
+    // run-history bookkeeping must not cause list-wide render churn.
+    for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
+      const suffix = operation.toLowerCase();
+      const row = operation === "DELETE" ? "OLD" : "NEW";
+      const when = operation === "UPDATE"
+        ? `WHEN OLD.logical_session_id IS NOT NEW.logical_session_id
+             OR OLD.environment IS NOT NEW.environment
+             OR OLD.status IS NOT NEW.status
+             OR OLD.next_run_at IS NOT NEW.next_run_at
+             OR OLD.expires_at IS NOT NEW.expires_at`
+        : "";
+      this.db.run(`DROP TRIGGER IF EXISTS state_sync_scheduled_session_tasks_${suffix}`);
+      this.db.run(`
+        CREATE TRIGGER state_sync_scheduled_session_tasks_${suffix}
+        AFTER ${operation} ON scheduled_session_tasks
+        ${when}
+        BEGIN
+          UPDATE state_sync_clock
+          SET revision = revision + 1
+          WHERE singleton = 1 AND EXISTS (
+            SELECT 1
+            FROM logical_sessions logical
+            JOIN sessions session ON session.id = logical.legacy_session_id
+            WHERE logical.logical_session_id = ${row}.logical_session_id
+              AND session.task_id IS NOT NULL
+          );
+          INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
+          SELECT clock.revision, 'task', session.task_id, 'upsert',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM state_sync_clock clock
+          JOIN logical_sessions logical ON logical.logical_session_id = ${row}.logical_session_id
+          JOIN sessions session ON session.id = logical.legacy_session_id
+          WHERE clock.singleton = 1 AND session.task_id IS NOT NULL;
+          DELETE FROM state_change_log
+          WHERE revision < MAX(0, (SELECT revision FROM state_sync_clock WHERE singleton = 1) - 10000);
+        END
+      `);
+    }
     // Read-receipt mutations change the client-visible Session projection but
     // must never rewrite sessions.updated_at (which drives conversation order).
     for (const operation of ["INSERT", "UPDATE"]) {
@@ -8190,6 +8232,37 @@ export class CorptieStore {
        ORDER BY created_at DESC, task_id ASC`,
       params
     ).map(scheduledSessionTaskFromRow);
+  }
+
+  listTaskIdsWithPendingScheduledWake(options = {}) {
+    const environment = options.environment ?? environmentName;
+    const timestamp = options.now ?? createdAtFromOrNow();
+    const taskId = typeof options.taskId === "string" && options.taskId ? options.taskId : null;
+    return this.selectAll(
+      `SELECT DISTINCT session.task_id
+       FROM scheduled_session_tasks scheduled
+       JOIN logical_sessions logical
+         ON logical.logical_session_id = scheduled.logical_session_id
+       JOIN sessions session ON session.id = logical.legacy_session_id
+       JOIN tasks task ON task.id = session.task_id
+       WHERE scheduled.environment = ?
+         AND scheduled.status = 'active'
+         AND scheduled.next_run_at IS NOT NULL
+         AND scheduled.expires_at > ?
+         AND logical.deleted_at IS NULL
+         AND logical.archived = 0
+         AND session.deleted_at IS NULL
+         AND session.archived = 0
+         AND task.lifecycle_state <> 'done'
+         AND COALESCE(task.deletion_status, '') <> 'deleted'
+         ${taskId ? "AND task.id = ?" : ""}
+       ORDER BY session.task_id`,
+      [environment, timestamp, ...(taskId ? [taskId] : [])]
+    ).map((row) => row.task_id);
+  }
+
+  hasPendingScheduledWakeForTask(taskId, options = {}) {
+    return this.listTaskIdsWithPendingScheduledWake({ ...options, taskId }).length > 0;
   }
 
   updateScheduledSessionTask(taskId, patch = {}, expectedVersion = null) {

@@ -1423,3 +1423,4 @@
 "Preparing isolated convergence Worktree" = "正在准备隔离的统一 Worktree";
 "Publishing the unified commit" = "正在发布统一提交";
 "Partially completed" = "部分完成";
+"存在等待执行的计划任务" = "存在等待执行的计划任务";
