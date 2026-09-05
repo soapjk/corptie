@@ -118,6 +118,23 @@ final class SessionPageBottleneckMeasurementTests: XCTestCase {
         XCTAssertLessThan(p50, 200, "full sort of 10k items should stay under 200 ms p50")
     }
 
+    func testExecutionTimelineProjectionStaysWithinOneFrame() {
+        let executionTypes: Set<String> = [
+            "reasoning", "plan", "commandExecution", "fileChange",
+            "mcpToolCall", "dynamicToolCall", "webSearch", "warning"
+        ]
+        let items = Array(standardFixture().detail.items.lazy
+            .filter { executionTypes.contains($0.type) }
+            .prefix(2_000))
+        XCTAssertFalse(items.isEmpty)
+
+        let p95 = measureP95("execution timeline projection (2000 items)", iterations: 20) {
+            _ = NativeExecutionTimelineProjection.steps(for: items)
+        }
+
+        XCTAssertLessThan(p95, 16, "projecting 2000 execution items must stay within one frame at p95")
+    }
+
     // MARK: - 2. Full display pipeline (filter + project + signature)
 
     func testFullVisibleDisplayPipelineIsBounded() {

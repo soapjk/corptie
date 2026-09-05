@@ -2,6 +2,28 @@ import XCTest
 @testable import CorptieMac
 
 final class ComposerDraftTests: XCTestCase {
+    func testMentionAnchorNormalizesTheAtGlyphPositionWithinTheEditorViewport() {
+        let point = ComposerMentionAnchorPolicy.point(
+            for: CGRect(x: 48, y: 12, width: 8, height: 16),
+            in: CGRect(x: 0, y: 0, width: 200, height: 80),
+            viewportIsFlipped: true
+        )
+
+        XCTAssertEqual(point.x, 0.26, accuracy: 0.0001)
+        XCTAssertEqual(point.y, 0.15, accuracy: 0.0001)
+    }
+
+    func testMentionAnchorConvertsAnUnflippedAppKitViewportToSwiftUICoordinates() {
+        let point = ComposerMentionAnchorPolicy.point(
+            for: CGRect(x: 48, y: 52, width: 8, height: 16),
+            in: CGRect(x: 0, y: 0, width: 200, height: 80),
+            viewportIsFlipped: false
+        )
+
+        XCTAssertEqual(point.x, 0.26, accuracy: 0.0001)
+        XCTAssertEqual(point.y, 0.15, accuracy: 0.0001)
+    }
+
     func testMentionQueryRecognizesOnlyTheActiveWhitespaceDelimitedToken() {
         XCTAssertEqual(
             ComposerMentionQuery.resolve(in: "Ask @con", selection: NSRange(location: 8, length: 0)),

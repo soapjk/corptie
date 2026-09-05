@@ -34,6 +34,51 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         )
     }
 
+    func testExecutionTimelineProjectsStableReadableContextActionAndResultSteps() {
+        let longDetail = String(repeating: "verbose output ", count: 30)
+        let items = [
+            item(id: "reasoning", type: "reasoning", text: "Inspecting the message flow"),
+            item(id: "command", type: "commandExecution", text: "swift test\n\(longDetail)"),
+            item(id: "warning", type: "warning", text: "One retry was required")
+        ]
+
+        let steps = NativeExecutionTimelineProjection.steps(for: items)
+
+        XCTAssertEqual(steps.map(\.id), ["reasoning", "command", "warning"])
+        XCTAssertEqual(steps.map(\.kind), [.context, .action, .result])
+        XCTAssertEqual(steps.last?.state, .failed)
+        XCTAssertLessThanOrEqual(steps[1].detail?.count ?? 0, NativeExecutionTimelineProjection.detailCharacterLimit)
+        XCTAssertFalse(NativeExecutionTimelineProjection.plainText(for: steps).contains("**"))
+    }
+
+    @MainActor
+    func testExpandedExecutionUsesDedicatedTimelineTypographyInsteadOfRawMarkdownMarkers() {
+        let steps = NativeExecutionTimelineProjection.steps(for: [
+            item(id: "reasoning", type: "reasoning", text: "Inspecting code"),
+            item(id: "command", type: "commandExecution", text: "swift test")
+        ])
+        let row = AppKitChatTimelineRow(
+            id: "structured-process",
+            contentRevision: 1,
+            nativeText: NativeExecutionTimelineProjection.plainText(for: steps),
+            copyText: "Inspecting code\nswift test",
+            nativeStyle: .process,
+            title: "",
+            metadata: "",
+            expandableTurnId: "turn",
+            isExpanded: true,
+            processCount: steps.count,
+            processSteps: steps,
+            showsHeader: false
+        )
+
+        let attributed = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480).attributedText
+
+        XCTAssertTrue(attributed.string.contains(L10n("Execution Context").uppercased()))
+        XCTAssertTrue(attributed.string.contains(L10n("Execution Action").uppercased()))
+        XCTAssertFalse(attributed.string.contains("**"))
+    }
+
     func testUserMessageAndExecutionProcessBecomeSeparateDisplayEntries() {
         let user = item(id: "user", type: "userMessage", text: "hi")
         let reasoning = item(id: "reasoning", type: "reasoning", text: "Thinking")
