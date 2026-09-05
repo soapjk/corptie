@@ -78,9 +78,18 @@ development-docs/
 **/.rooignore
 **/.github/copilot-instructions.md
 **/.github/instructions/
-/docs/*
-!/docs/domain-model-and-capability-boundaries.md
-!/docs/work-domain-redesign/
-!/docs/work-domain-redesign/**
 # Corptie local Agent configuration
 /.corptie/
+
+# Internal Markdown stays local; public README and bundled runtime resources remain tracked.
+/docs/
+*.[mM][dD]
+*.markdown
+*.mdown
+!/README.en.md
+!/README.md
+!/README.zh-CN.md
+!/apps/backend/resources/agent/global-instructions.development.md
+!/apps/backend/resources/agent/global-instructions.production.md
+!/apps/backend/resources/codex/skills/corptie-collaboration/SKILL.md
+!/apps/backend/resources/codex/skills/corptie-collaboration/references/project-tools-set.md
