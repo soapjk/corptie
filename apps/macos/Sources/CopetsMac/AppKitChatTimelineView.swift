@@ -370,6 +370,9 @@ enum NativeExecutionTimelineProjection {
     }
 
     static func title(for item: CodexThreadItem) -> String {
+        if item.type == "contextCompaction" {
+            return "Context compacted"
+        }
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
         return title.isEmpty ? typeTitle(item.type) : title
     }
@@ -385,7 +388,7 @@ enum NativeExecutionTimelineProjection {
 
     private static func kind(_ type: String) -> NativeExecutionTimelineStep.Kind {
         switch type {
-        case "reasoning", "plan", "agentMessage": .context
+        case "reasoning", "plan", "agentMessage", "contextCompaction": .context
         case "warning": .result
         default: .action
         }
@@ -445,6 +448,7 @@ enum NativeExecutionTimelineProjection {
         case "plan": "Updated plan"
         case "warning": "Warning"
         case "agentMessage": "Progress update"
+        case "contextCompaction": "Context compacted"
         default: "Execution step"
         }
     }
@@ -482,7 +486,7 @@ enum NativeExecutionTimelineAttributedText {
                 ]
             ))
             result.append(NSAttributedString(
-                string: step.title,
+                string: L10n(step.title),
                 attributes: [
                     .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
                     .foregroundColor: NativeTimelineCardPalette.secondaryText

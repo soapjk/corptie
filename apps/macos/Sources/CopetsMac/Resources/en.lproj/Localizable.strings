@@ -773,6 +773,9 @@
 "If the final session event also makes every session wait, Corptie sends only the combined notification." = "If the final session event also makes every session wait, Corptie sends only the combined notification.";
 "Send Test Notification" = "Send Test Notification";
 "Per-session sounds are configured in Session Settings." = "Per-session sounds are configured in Session Settings.";
+"Waiting Notification Sound" = "Waiting Notification Sound";
+"Preview the selected waiting notification sound" = "Preview the selected waiting notification sound";
+"Played when all running sessions have stopped and some work still needs your attention." = "Played when all running sessions have stopped and some work still needs your attention.";
 "System notifications allowed" = "System notifications allowed";
 "System notifications denied" = "System notifications denied";
 "System notification permission not requested" = "System notification permission not requested";
@@ -1041,3 +1044,4 @@
 "Publishing the unified commit" = "Publishing the unified commit";
 "Partially completed" = "Partially completed";
 "存在等待执行的计划任务" = "A scheduled task is waiting to run";
+"Context compacted" = "Context compacted";

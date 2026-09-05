@@ -165,18 +165,6 @@ final class SessionNotificationPolicyTests: XCTestCase {
             SessionNotificationContent.body(for: event),
             "All sessions have finished processing. Sessions needing your attention: 1."
         )
-        XCTAssertTrue(SessionNotificationContent.playsSystemSound(for: event))
-    }
-
-    func testIndividualNotificationPreservesPerSessionSoundPreference() {
-        let event = SessionNotificationEvent(
-            id: "completed",
-            kind: .completed,
-            session: snapshot("completed", .complete, lastAgentMessageSequence: 2),
-            counts: nil
-        )
-
-        XCTAssertFalse(SessionNotificationContent.playsSystemSound(for: event))
     }
 
     func testAggregateNotificationReplacesFinalIndividualNotification() {
@@ -439,6 +427,46 @@ final class SessionCompletionSoundTransitionTrackerTests: XCTestCase {
 
 @MainActor
 final class SessionCompletionSoundPreferencesTests: XCTestCase {
+    func testAllSessionsWaitingSoundDefaultsToGlass() {
+        let defaults = makeDefaults()
+
+        XCTAssertEqual(
+            SessionCompletionSoundManager.selectedAllSessionsWaitingSoundId(defaults: defaults),
+            SessionCompletionSoundManager.defaultSoundId
+        )
+        XCTAssertEqual(
+            SessionCompletionSoundManager.enabledAllSessionsWaitingSoundId(defaults: defaults),
+            SessionCompletionSoundManager.defaultSoundId
+        )
+    }
+
+    func testAllSessionsWaitingSoundCanBeChangedOrDisabled() {
+        let defaults = makeDefaults()
+        SessionCompletionSoundManager.setSelectedAllSessionsWaitingSoundId("ping", defaults: defaults)
+
+        XCTAssertEqual(
+            SessionCompletionSoundManager.enabledAllSessionsWaitingSoundId(defaults: defaults),
+            "ping"
+        )
+
+        SessionCompletionSoundManager.setSelectedAllSessionsWaitingSoundId(
+            SessionCompletionSoundManager.noneSoundId,
+            defaults: defaults
+        )
+        XCTAssertNil(SessionCompletionSoundManager.enabledAllSessionsWaitingSoundId(defaults: defaults))
+    }
+
+    func testInvalidAllSessionsWaitingSoundDoesNotReplaceTheSelection() {
+        let defaults = makeDefaults()
+        SessionCompletionSoundManager.setSelectedAllSessionsWaitingSoundId("hero", defaults: defaults)
+        SessionCompletionSoundManager.setSelectedAllSessionsWaitingSoundId("not-a-sound", defaults: defaults)
+
+        XCTAssertEqual(
+            SessionCompletionSoundManager.selectedAllSessionsWaitingSoundId(defaults: defaults),
+            "hero"
+        )
+    }
+
     func testMissingPreferenceDefaultsToOff() {
         let defaults = makeDefaults()
 
