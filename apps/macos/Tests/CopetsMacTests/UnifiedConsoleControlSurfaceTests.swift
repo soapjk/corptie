@@ -56,6 +56,22 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func taskRowShowsAnAccessibleAlarmOnlyForPendingScheduledWakeProjection() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let start = try #require(source.range(of: "private func taskRow(_ task: CorptieTask"))
+        let end = try #require(source.range(
+            of: "    @ViewBuilder\n    private func taskContextMenuContent",
+            range: start.upperBound..<source.endIndex
+        ))
+        let taskRow = source[start.lowerBound..<end.lowerBound]
+
+        #expect(taskRow.contains("if task.hasPendingScheduledWake == true"))
+        #expect(taskRow.contains("Image(systemName: \"alarm\")"))
+        #expect(taskRow.contains(".accessibilityLabel(L10n(\"存在等待执行的计划任务\"))"))
+        #expect(taskRow.contains(".help(L10n(\"存在等待执行的计划任务\"))"))
+    }
+
+    @Test
     func automationAndWorktreePagesShareCompactCardGeometry() throws {
         let automation = try source(named: "AutomationsView.swift")
         let worktree = try source(named: "WorktreeManagementView.swift")

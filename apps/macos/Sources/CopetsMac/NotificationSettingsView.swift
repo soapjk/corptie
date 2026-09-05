@@ -141,7 +141,7 @@ struct NotificationSettingsView: View {
     private func requestAuthorization() {
         guard let center = SystemNotificationCenter.currentIfAvailable() else { return }
         Task {
-            _ = try? await center.requestAuthorization(options: [.alert])
+            _ = try? await center.requestAuthorization(options: [.alert, .sound])
             await refreshAuthorizationStatus()
         }
     }

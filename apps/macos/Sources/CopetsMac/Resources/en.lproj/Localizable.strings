@@ -1036,3 +1036,4 @@
 "Preparing isolated convergence Worktree" = "Preparing isolated convergence Worktree";
 "Publishing the unified commit" = "Publishing the unified commit";
 "Partially completed" = "Partially completed";
+"存在等待执行的计划任务" = "A scheduled task is waiting to run";
