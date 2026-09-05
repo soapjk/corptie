@@ -28,6 +28,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     ]
 
     private static let storageKey = "corptie.sessionCompletionSounds"
+    private static let allSessionsWaitingSoundStorageKey = "corptie.allSessionsWaitingNotificationSound"
     private static var activeSound: NSSound?
     private static let logger = Logger(subsystem: "com.corptie.mac", category: "SessionNotifications")
 
@@ -58,7 +59,11 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         self.isSessionVisible = isSessionVisible
         self.isOverviewVisible = isOverviewVisible
         deliveryCoordinator = SessionNotificationDeliveryCoordinator(defaults: defaults) { event in
-            try await Self.deliverSystemNotification(event, notificationCenter: notificationCenter)
+            try await Self.deliverSystemNotification(
+                event,
+                notificationCenter: notificationCenter,
+                defaults: defaults
+            )
         }
         super.init()
     }
@@ -113,6 +118,31 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         return option(for: soundId).systemSoundName == nil ? nil : soundId
     }
 
+    static func selectedAllSessionsWaitingSoundId(
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults
+    ) -> String {
+        guard let soundId = defaults.string(forKey: allSessionsWaitingSoundStorageKey),
+              options.contains(where: { $0.id == soundId }) else {
+            return defaultSoundId
+        }
+        return soundId
+    }
+
+    static func setSelectedAllSessionsWaitingSoundId(
+        _ soundId: String,
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults
+    ) {
+        guard options.contains(where: { $0.id == soundId }) else { return }
+        defaults.set(soundId, forKey: allSessionsWaitingSoundStorageKey)
+    }
+
+    static func enabledAllSessionsWaitingSoundId(
+        defaults: UserDefaults = CorptieAppEnvironment.userDefaults
+    ) -> String? {
+        let soundId = selectedAllSessionsWaitingSoundId(defaults: defaults)
+        return option(for: soundId).systemSoundName == nil ? nil : soundId
+    }
+
     static func option(for soundId: String) -> SessionCompletionSoundOption {
         options.first { $0.id == soundId }
             ?? options.first { $0.id == noneSoundId }!
@@ -127,8 +157,9 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
     }
 
     static func sendTestNotification() {
+        let soundId = enabledAllSessionsWaitingSoundId()
         guard let center = SystemNotificationCenter.currentIfAvailable() else {
-            playSound(named: option(for: defaultSoundId).systemSoundName)
+            previewSound(soundId ?? noneSoundId)
             return
         }
         Task {
@@ -142,7 +173,7 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
                 trigger: nil
             ))
         }
-        playSound(named: option(for: defaultSoundId).systemSoundName)
+        previewSound(soundId ?? noneSoundId)
     }
 
     private static func playSound(named soundName: String?) {
@@ -225,7 +256,8 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
 
     private static func deliverSystemNotification(
         _ event: SessionNotificationEvent,
-        notificationCenter: UNUserNotificationCenter?
+        notificationCenter: UNUserNotificationCenter?,
+        defaults: UserDefaults
     ) async throws {
         guard let notificationCenter else {
             throw SessionNotificationDeliveryError.notificationCenterUnavailable
@@ -246,9 +278,6 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
         let content = UNMutableNotificationContent()
         content.title = SessionNotificationContent.title(for: event)
         content.body = SessionNotificationContent.body(for: event)
-        if SessionNotificationContent.playsSystemSound(for: event) {
-            content.sound = .default
-        }
         if let sessionID = event.session?.id {
             content.userInfo = ["sessionId": sessionID, "destination": "session"]
         } else {
@@ -260,6 +289,10 @@ final class SessionCompletionSoundManager: NSObject, @preconcurrency UNUserNotif
             content: content,
             trigger: nil
         ))
+        if event.kind == .allSessionsWaiting,
+           let soundId = enabledAllSessionsWaitingSoundId(defaults: defaults) {
+            previewSound(soundId)
+        }
     }
 
 }
@@ -283,13 +316,6 @@ enum SessionNotificationDeliveryError: LocalizedError {
 
 @MainActor
 enum SessionNotificationContent {
-    static func playsSystemSound(for event: SessionNotificationEvent) -> Bool {
-        // Aggregate notifications have no per-session sound preference of their own.
-        // Give the "all waiting / needs attention" notification a system sound while
-        // preserving the user's per-session sound choice for individual events.
-        event.kind == .allSessionsWaiting
-    }
-
     static func title(for event: SessionNotificationEvent) -> String {
         switch event.kind {
         case .completed: L10n("Task Completed")

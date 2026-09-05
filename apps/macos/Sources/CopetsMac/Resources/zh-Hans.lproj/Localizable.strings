@@ -1161,6 +1161,9 @@
 "If the final session event also makes every session wait, Corptie sends only the combined notification." = "如果最后一个会话事件同时使所有会话进入等待状态，Corptie 只发送一条聚合通知。";
 "Send Test Notification" = "发送测试通知";
 "Per-session sounds are configured in Session Settings." = "每个会话的提示音可在会话设置中配置。";
+"Waiting Notification Sound" = "待处理通知提示音";
+"Preview the selected waiting notification sound" = "试听所选的待处理通知提示音";
+"Played when all running sessions have stopped and some work still needs your attention." = "所有运行中的会话停止后，如果仍有工作需要你处理，就播放此提示音。";
 "System notifications allowed" = "系统通知已允许";
 "System notifications denied" = "系统通知已拒绝";
 "System notification permission not requested" = "尚未请求系统通知权限";
@@ -1424,3 +1427,4 @@
 "Publishing the unified commit" = "正在发布统一提交";
 "Partially completed" = "部分完成";
 "存在等待执行的计划任务" = "存在等待执行的计划任务";
+"Context compacted" = "上下文已压缩";
