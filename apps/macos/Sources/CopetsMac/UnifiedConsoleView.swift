@@ -635,11 +635,6 @@ struct UnifiedConsoleView: View {
         .overlay(alignment: .trailing) {
             navigationResizeHandle
         }
-        .overlay(alignment: .bottomLeading) {
-            navigationModeToggle
-                .padding(.leading, navigationMode == .workRail ? 76 : 12)
-                .padding(.bottom, 12)
-        }
     }
 
     private var navigationMode: ConsoleNavigationMode {
@@ -877,6 +872,7 @@ struct UnifiedConsoleView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 4)
+                navigationModeToggle
                 searchToggleButton
             }
             .padding(8)
@@ -912,10 +908,11 @@ struct UnifiedConsoleView: View {
     private var unifiedWorkOutlineSidebar: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(L10n("Work"))
+                Text(verbatim: "Work")
                     .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 Spacer(minLength: 4)
+                navigationModeToggle
                 searchToggleButton
             }
             .padding(8)
