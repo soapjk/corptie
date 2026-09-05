@@ -165,6 +165,18 @@ final class SessionNotificationPolicyTests: XCTestCase {
             SessionNotificationContent.body(for: event),
             "All sessions have finished processing. Sessions needing your attention: 1."
         )
+        XCTAssertTrue(SessionNotificationContent.playsSystemSound(for: event))
+    }
+
+    func testIndividualNotificationPreservesPerSessionSoundPreference() {
+        let event = SessionNotificationEvent(
+            id: "completed",
+            kind: .completed,
+            session: snapshot("completed", .complete, lastAgentMessageSequence: 2),
+            counts: nil
+        )
+
+        XCTAssertFalse(SessionNotificationContent.playsSystemSound(for: event))
     }
 
     func testAggregateNotificationReplacesFinalIndividualNotification() {
