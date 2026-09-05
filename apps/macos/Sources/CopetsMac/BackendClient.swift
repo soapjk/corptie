@@ -3736,11 +3736,14 @@ final class BackendClient: ObservableObject {
         )
     }
 
-    func interrupt(session: TaskSession) {
+    func interrupt(session: TaskSession, surface: SessionInterruptSurface) {
+        let source = SessionInterruptSource.userAction(surface: surface)
         Task {
             do {
                 var request = URLRequest(url: baseURL.appending(path: "sessions/\(session.id)/interrupt"))
                 request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "content-type")
+                request.httpBody = try JSONEncoder().encode(SessionInterruptRequest(source: source))
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let httpResponse = response as? HTTPURLResponse,
                       (200..<300).contains(httpResponse.statusCode) else {
@@ -4110,7 +4113,7 @@ final class BackendClient: ObservableObject {
         guard let selectedSession else {
             return
         }
-        interrupt(session: selectedSession)
+        interrupt(session: selectedSession, surface: .sessionDetailToolbar)
     }
 
     func switchSelectedCodexModel(to model: CodexModel) {

@@ -2910,7 +2910,10 @@ struct TaskCardView: View {
 
                     if session.canInterruptNow {
                         Button {
-                            backendClient.interrupt(session: session)
+                            backendClient.interrupt(
+                                session: session,
+                                surface: .sessionListRowControl
+                            )
                         } label: {
                             Image(systemName: "stop.fill")
                                 .font(.system(size: 9, weight: .bold))
@@ -10064,7 +10067,10 @@ struct MessageComposer: View {
                 if isRunningTurn {
                     Button {
                         guard let session else { return }
-                        backendClient.interrupt(session: session)
+                        backendClient.interrupt(
+                            session: session,
+                            surface: .sessionDetailComposerControl
+                        )
                     } label: {
                         Image(systemName: "stop.fill")
                             .font(.system(size: 9, weight: .bold))
