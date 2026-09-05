@@ -2293,6 +2293,7 @@ export class CorptieStore {
         compensation_state TEXT,
         compensation_result_json TEXT,
         initial_turn_state TEXT NOT NULL DEFAULT 'pending' CHECK (initial_turn_state IN ('pending','accepted','failed')),
+        dispatch_initial_turn INTEGER NOT NULL DEFAULT 1 CHECK (dispatch_initial_turn IN (0,1)),
         initial_turn_error_code TEXT,
         allocated_at TEXT NOT NULL,
         worktree_prepared_at TEXT,
@@ -3149,6 +3150,11 @@ export class CorptieStore {
       "work_session_startup_operations",
       "initial_turn_state",
       "TEXT NOT NULL DEFAULT 'pending'"
+    );
+    this.ensureColumn(
+      "work_session_startup_operations",
+      "dispatch_initial_turn",
+      "INTEGER NOT NULL DEFAULT 1"
     );
     this.ensureColumn("work_session_startup_operations", "initial_turn_error_code", "TEXT");
     this.ensureColumn("work_session_startup_bindings", "tool_contract_hash", "TEXT");

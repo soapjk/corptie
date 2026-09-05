@@ -80,10 +80,22 @@ test("strict WorkSessionStartCommand reaches the coordinator without aliases or 
   const f = await fixture();
   try {
     await f.service.start(command());
-    assert.deepEqual(f.calls, [command()]);
+    assert.deepEqual(f.calls, [{ ...command(), dispatchInitialTurn: true }]);
     assert.equal(Object.hasOwn(f.calls[0], "agentId"), false);
     assert.equal(Object.hasOwn(f.calls[0], "requestedAgentId"), false);
     assert.equal(Object.hasOwn(f.calls[0], "agent"), false);
+  } finally { await cleanup(f); }
+});
+
+test("strict WorkSessionStartCommand preserves an explicit deferred initial Turn", async () => {
+  const f = await fixture();
+  try {
+    await f.service.start(command({ dispatchInitialTurn: false }));
+    assert.equal(f.calls[0].dispatchInitialTurn, false);
+    await assert.rejects(
+      () => f.service.start(command({ idempotencyKey: "start:invalid", dispatchInitialTurn: "false" })),
+      { code: "INVALID_INPUT" }
+    );
   } finally { await cleanup(f); }
 });
 

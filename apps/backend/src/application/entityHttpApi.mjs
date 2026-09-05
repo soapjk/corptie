@@ -1023,7 +1023,7 @@ export function handleEntityHttpRequest({
         const input = await readJson(request);
         const allowed = new Set([
           "taskId", "assigneeAgentId", "expectedTaskVersion", "providerId", "title",
-          "idempotencyKey", "sourceSessionId"
+          "idempotencyKey", "sourceSessionId", "dispatchInitialTurn"
         ]);
         const unknown = Object.keys(input).filter((field) => !allowed.has(field));
         if (unknown.length > 0) {

@@ -3,7 +3,7 @@ import Testing
 
 struct CorptieTaskAutoStartInteractionTests {
     @Test
-    func creationAlwaysStartsACompanionWorkSession() throws {
+    func creationCreatesACompanionWorkSessionWithoutSendingAStartRequest() throws {
         let viewSource = try source(named: "CorptieTaskCreateView.swift")
         let clientSource = try source(named: "EntityAPIClient.swift")
 
@@ -14,6 +14,7 @@ struct CorptieTaskAutoStartInteractionTests {
         #expect(viewSource.contains("await client.createCorptieTask("))
         #expect(viewSource.contains("providerId: providerId"))
         #expect(!viewSource.contains("await client.createSession("))
+        #expect(viewSource.contains("发送第一条消息后开始执行"))
         #expect(clientSource.contains("as: CorptieTaskCreateResponse.self"))
         #expect(clientSource.contains("acceptCreatedSession(created.session, selectImmediately: false)"))
     }

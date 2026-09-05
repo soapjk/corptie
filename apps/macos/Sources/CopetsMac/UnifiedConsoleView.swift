@@ -385,6 +385,7 @@ struct UnifiedConsoleView: View {
     @State private var sessionPendingRename: TaskSession?
     @State private var taskDeletionPresentation: CorptieTaskDeletionPresentation?
     @State private var taskDeletionError: String?
+    @State private var taskRestartError: String?
     @State private var pendingTaskDeletionIds = Set<String>()
     @State private var pendingTaskRestartIds = Set<String>()
     @State private var isShowingWorkerArchive = false
@@ -573,20 +574,22 @@ struct UnifiedConsoleView: View {
             ))
         }
         .alert(L10n("操作失败"), isPresented: Binding(
-            get: { workDeletionError != nil || taskDeletionError != nil },
+            get: { workDeletionError != nil || taskDeletionError != nil || taskRestartError != nil },
             set: {
                 if !$0 {
                     workDeletionError = nil
                     taskDeletionError = nil
+                    taskRestartError = nil
                 }
             }
         )) {
             Button(L10n("OK"), role: .cancel) {
                 workDeletionError = nil
                 taskDeletionError = nil
+                taskRestartError = nil
             }
         } message: {
-            Text(workDeletionError ?? taskDeletionError ?? "")
+            Text(workDeletionError ?? taskDeletionError ?? taskRestartError ?? "")
         }
     }
 
@@ -1460,7 +1463,10 @@ struct UnifiedConsoleView: View {
         pendingTaskRestartIds.insert(task.id)
         Task {
             defer { pendingTaskRestartIds.remove(task.id) }
-            _ = await entityClient.restartCorptieTask(taskId: task.id)
+            guard await entityClient.restartCorptieTask(taskId: task.id) else {
+                taskRestartError = entityClient.errorMessage ?? L10n("Could not restart Task.")
+                return
+            }
         }
     }
 
