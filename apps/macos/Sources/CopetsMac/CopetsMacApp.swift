@@ -640,8 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.setActivationPolicy(.regular)
         configureApplicationIcon()
 
-        // Start the App-owned backend immediately. First-use guidance is
-        // intentionally absent until a non-blocking onboarding design exists.
+        // Start the backend immediately; the main content hosts first-run setup.
         CorptieBackendSupervisor.ensureBackendStarted()
 
         // The production backend is started alongside the app, so the first
@@ -1056,7 +1055,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let leadingChrome = MainWindowLeadingChromeAccessoryController()
         let titlebarChrome = MainWindowTitlebarAccessoryController()
         let hostingView = MainWindowSurfaceContainer(
-            rootView: MainWindowContentView().environmentObject(resizeState),
+            rootView: FirstRunSetupRoot { MainWindowContentView() }.environmentObject(resizeState),
             resizeState: resizeState
         )
         // This is a user-resizable AppKit-owned window. The SwiftUI root must
