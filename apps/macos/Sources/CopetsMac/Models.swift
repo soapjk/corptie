@@ -623,6 +623,19 @@ struct SessionNotReadyReason: Codable, Equatable, Sendable {
     let message: String
     let retryable: Bool?
 
+    var shouldOfferRestartRecovery: Bool {
+        switch code {
+        case "PROVIDER_SESSION_UNAVAILABLE",
+             "PROVIDER_EMPTY_THREAD_UNRECOVERABLE",
+             "PROVIDER_TOOL_RECOVERY_REQUIRED",
+             "PROVIDER_BINDING_RECOVERY_REQUIRED",
+             "BINDING_RUNTIME_RECOVERY_FAILED":
+            true
+        default:
+            false
+        }
+    }
+
     @MainActor var presentationTitle: String {
         switch code {
         case "BINDING_RUNTIME_VERIFYING": L10n("Reconnecting Existing Session")
