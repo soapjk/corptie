@@ -862,6 +862,11 @@
 "Sessions" = "会话";
 "Session" = "会话";
 "Chat" = "聊天";
+"归档 Task" = "归档 Task";
+"恢复 Task" = "恢复 Task";
+"查看归档 Task" = "查看归档 Task";
+"返回活动 Task" = "返回活动 Task";
+"归档失败" = "归档失败";
 "Mention a Work or Session" = "提及 Work 或会话";
 "Mention suggestions" = "提及建议";
 "Work" = "目标";

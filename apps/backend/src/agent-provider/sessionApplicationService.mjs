@@ -156,6 +156,7 @@ export class SessionApplicationService {
 
   async resumeSession(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    assertTaskNotArchived(reference);
     const storedSession = reference.metadata?.session ?? null;
     const actorId = normalizedText(context.actorId ?? storedSession?.agentId);
     const resumeContext = this.#materializationContext({
@@ -317,6 +318,7 @@ export class SessionApplicationService {
 
   async restartSession(sessionId, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    assertTaskNotArchived(reference);
     const audit = restartAudit(reference, context);
     this.observeLifecycle({ type: "SessionRestartRequested", ...audit });
     try {
@@ -386,6 +388,7 @@ export class SessionApplicationService {
 
   async sendMessage(sessionId, message, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    assertTaskNotArchived(reference);
     await this.assertMessageDispatchAllowed?.(reference, context);
     const storedSession = reference.metadata?.session ?? context.before ?? null;
     await this.#ensureRequiredDomains(this.#materializationContext({
@@ -587,6 +590,13 @@ function restartAudit(reference, context) {
 
 function normalizedText(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function assertTaskNotArchived(reference) {
+  if (reference.metadata?.session?.archiveReason !== "taskArchived") return;
+  const error = new Error("请先恢复归档 Task，再继续执行。");
+  Object.assign(error, { code: "TASK_ARCHIVED", statusCode: 409 });
+  throw error;
 }
 
 function requiredText(value, field) {
