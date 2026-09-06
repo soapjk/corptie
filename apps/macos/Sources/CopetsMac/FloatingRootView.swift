@@ -3661,8 +3661,9 @@ struct DetailView: View {
         if backendClient.isOnline,
            displayedWorkspaceRecoveryStatus?.blocksSessionInput != true,
            let session = selectedSession,
-           !session.isReady {
-            SessionNotReadyComposerNotice(session: session)
+           session.readiness == .notReady,
+           let reason = session.notReadyReason {
+            SessionNotReadyComposerNotice(session: session, reason: reason)
         }
     }
 
@@ -11481,6 +11482,7 @@ private struct SessionNotReadyComposerNotice: View {
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
 
     let session: TaskSession
+    let reason: SessionNotReadyReason
 
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
@@ -11489,10 +11491,9 @@ private struct SessionNotReadyComposerNotice: View {
                 .foregroundStyle(.orange)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(session.notReadyReason?.presentationTitle ?? L10n("Session Not Ready"))
+                Text(reason.presentationTitle)
                     .font(.system(size: 11, weight: .bold))
-                Text(session.notReadyReason?.presentationMessage
-                    ?? L10n("This Session cannot accept messages right now."))
+                Text(reason.presentationMessage)
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(CorptiePalette.secondaryText)
                     .lineLimit(2)
@@ -11500,7 +11501,8 @@ private struct SessionNotReadyComposerNotice: View {
 
             Spacer(minLength: 8)
 
-            if session.actions?.restart?.available == true {
+            if reason.shouldOfferRestartRecovery,
+               session.actions?.restart?.available == true {
                 Button {
                     backendClient.restart(session: session)
                 } label: {
