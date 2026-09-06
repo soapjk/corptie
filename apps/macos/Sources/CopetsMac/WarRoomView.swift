@@ -989,7 +989,7 @@ struct AgentRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(agent.name)
                     .font(.callout)
-                Text(L10n(agent.isAssistant ? "Assistant" : "Independent Contributor"))
+                Text(L10n(agent.isPlatformAssistant ? "Platform managed" : "Agent"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1008,7 +1008,7 @@ struct AgentRow: View {
     }
 
     private var avatarColor: Color {
-        agent.isAssistant ? .accentColor : .blue
+        agent.isPlatformAssistant ? .accentColor : .blue
     }
 
     private var statusColor: Color {
@@ -1137,7 +1137,6 @@ struct CorptieTaskDetailView: View {
         .sheet(isPresented: $showAgentPicker) {
             AgentPickerView(
                 selectedIds: $executionAgentIds,
-                roleFilter: .independentContributor,
                 allowedAgentIds: Set(contributorAgentIds),
                 onDone: { selection in
                 if let agentId = selection.first {
@@ -1150,7 +1149,6 @@ struct CorptieTaskDetailView: View {
         .sheet(isPresented: $showAgentSwitch) {
             AgentPickerView(
                 selectedIds: $executionAgentIds,
-                roleFilter: .independentContributor,
                 allowedAgentIds: Set(contributorAgentIds),
                 onDone: { selection in
                 if let agentId = selection.first {
@@ -1466,11 +1464,11 @@ struct CorptieTaskDetailView: View {
                     showAgentSwitch = true
                 } label: {
                     HStack(spacing: 7) {
-                        Image(systemName: currentAgent?.isAssistant == true ? "sparkles" : "person.fill")
+                        Image(systemName: currentAgent?.isPlatformAssistant == true ? "sparkles" : "person.fill")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.white)
                             .frame(width: 22, height: 22)
-                            .background(currentAgent?.isAssistant == true ? Color.accentColor : Color.blue, in: Circle())
+                            .background(currentAgent?.isPlatformAssistant == true ? Color.accentColor : Color.blue, in: Circle())
                         Text(currentAgent?.name ?? L10n("Select an Agent"))
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(currentAgent == nil ? .secondary : .primary)

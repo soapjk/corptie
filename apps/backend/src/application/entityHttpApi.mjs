@@ -330,7 +330,6 @@ export function handleEntityHttpRequest({
         const agentInput = {
           name,
           description: input.description ?? "",
-          role: input.role === "assistant" ? "assistant" : "independentContributor",
           systemPrompt: input.systemPrompt ?? "",
           capabilities: Array.isArray(input.capabilities) ? input.capabilities : [],
           workDir: input.workDir
@@ -347,7 +346,6 @@ export function handleEntityHttpRequest({
           userAgent: boundedHeaderText(request, "user-agent", 512),
           parameters: {
             name,
-            role: agentInput.role,
             skillIds,
             capabilities: agentInput.capabilities,
             hasDescription: Boolean(String(agentInput.description).trim()),
@@ -399,9 +397,6 @@ export function handleEntityHttpRequest({
         if (request.method === "POST") {
           const agent = workService.store.getAgent(id);
           if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
-          if (agent.role !== "assistant") {
-            throw apiError("AGENT_NOT_ASSISTANT", "只有 Assistant 类型的 Agent 才能创建自由会话。", 400);
-          }
           if (typeof launchAgentSession !== "function") {
             throw apiError("INTERNAL", "launchAgentSession is not configured.", 500);
           }
@@ -1460,7 +1455,6 @@ function agentCreationRequestHash(agentInput, skillIds) {
   const canonical = {
     name: agentInput.name,
     description: String(agentInput.description ?? ""),
-    role: agentInput.role,
     systemPrompt: String(agentInput.systemPrompt ?? ""),
     capabilities: agentInput.capabilities.map(String),
     skillIds: [...skillIds].sort(),
@@ -1497,7 +1491,6 @@ const FORM_DRAFT_SCHEMAS = Object.freeze({
   agent: Object.freeze({
     name: "Short Agent name containing only uppercase or lowercase English letters, Chinese characters, or digits; no spaces or punctuation",
     description: "Concise responsibility description",
-    role: 'Exactly "independentContributor" or "assistant"',
     systemPrompt: "Detailed operating instructions for the Agent",
     capabilities: "Comma-separated capability tags"
   }),
@@ -1626,9 +1619,6 @@ function parseGeneratedFormDraft(text, schema) {
 }
 
 function validateGeneratedFormEnums(fields, schema) {
-  if (Object.hasOwn(schema, "role") && !["independentContributor", "assistant"].includes(fields.role)) {
-    throw apiError("INVALID_GENERATED_DRAFT", "Generated role is invalid.", 502);
-  }
   if (Object.hasOwn(schema, "profile")
     && !["general", "software", "office", "data", "design"].includes(fields.profile)) {
     throw apiError("INVALID_GENERATED_DRAFT", "Generated Work profile is invalid.", 502);

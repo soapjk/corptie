@@ -4,7 +4,6 @@ enum CorptieTaskCreateFormPolicy {
     static func availableAgents(from agents: [Agent], allowedAgentIds: Set<String>) -> [Agent] {
         agents.filter {
             allowedAgentIds.contains($0.agentId)
-                && $0.isIndependentContributor
                 && $0.status == "available"
         }
     }

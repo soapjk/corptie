@@ -43,21 +43,24 @@ async function fixture() {
   };
 }
 
-function bindSession(f, { id, logicalId, agentId, kind = "assistantChat", workId = null, taskId = null }) {
+function bindSession(f, { id, logicalId, agentId, kind = "assistantChat", workId = null, taskId = null, capabilities = [] }) {
   f.store.createSession({ id, title: logicalId, agentId, sessionKind: kind, workId, taskId });
   f.store.createLogicalSessionRoute({ logicalSessionId: logicalId, legacySessionId: id, providerThreadId: `thread:${id}`, providerSessionId: id, providerId: "codex-app-server", boundCwd: f.directory, sessionName: logicalId });
   f.core.bindSession({ agentId, sessionId: id });
+  for (const capability of capabilities) f.store.grantSessionCapability(id, capability);
 }
 
-test("platform admin identity requires the protected Store Agent and exact Assistant Chat Session binding", async () => {
+test("platform administration is granted to and revoked from the exact Session", async () => {
   const f = await fixture();
   try {
     const ordinary = f.store.createAgent({ name: "Ordinary Assistant", role: "assistant" });
-    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
+    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     bindSession(f, { id: "provider:ordinary", logicalId: "session:ordinary", agentId: ordinary.agentId });
     assert.equal(resolvePlatformAdminSession(f.store, { actorId: "assistant", sessionId: "provider:platform" }).actorSessionId, "provider:platform");
     assert.throws(() => resolvePlatformAdminSession(f.store, { actorId: "assistant", sessionId: "provider:ordinary", agentKind: "platformAssistant" }), { code: "PLATFORM_ADMIN_SESSION_REQUIRED" });
-    f.store.db.run("UPDATE agents SET agent_kind='platformAssistant' WHERE agent_id=?", [ordinary.agentId]);
+    f.store.grantSessionCapability("provider:ordinary", "platform.manage", "provider:platform");
+    assert.equal(resolvePlatformAdminSession(f.store, { actorId: ordinary.agentId, sessionId: "provider:ordinary" }).actorSessionId, "provider:ordinary");
+    f.store.revokeSessionCapability("provider:ordinary", "platform.manage");
     assert.throws(() => resolvePlatformAdminSession(f.store, { actorId: ordinary.agentId, sessionId: "provider:ordinary" }), { code: "PLATFORM_ADMIN_SESSION_REQUIRED" });
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
@@ -65,7 +68,7 @@ test("platform admin identity requires the protected Store Agent and exact Assis
 test("platform Artifact create is explicitly Work-scoped, Session-attributed, atomic, strict, and idempotent", async () => {
   const f = await fixture();
   try {
-    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
+    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     const work = f.workService.createWork({
       name: "Artifact Work", contributorAgentIds: [f.contributorAgentId]
     });
@@ -93,7 +96,7 @@ test("platform Artifact create is explicitly Work-scoped, Session-attributed, at
 test("high-impact Artifact actions consume a Session-and-digest-bound server confirmation exactly once", async () => {
   const f = await fixture();
   try {
-    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
+    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     const work = f.workService.createWork({
       name: "Confirmed Work", contributorAgentIds: [f.contributorAgentId]
     });
@@ -114,7 +117,7 @@ test("platform collaboration discovers exact Sessions, starts shared-lifecycle W
     const workerAgent = f.store.createAgent({ name: "Worker", role: "independentContributor" });
     const work = f.workService.createWork({ name: "Target", contributorAgentIds: [workerAgent.agentId] });
     const task = f.workService.createTask({ workId: work.id, title: "Target work", mainAgentId: workerAgent.agentId });
-    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
+    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     bindSession(f, { id: "provider:target", logicalId: "session:target", agentId: workerAgent.agentId, kind: "worker", workId: work.id, taskId: task.id });
     const discovered = await f.service.execute({ actorId: "assistant", sessionId: "provider:platform", tool: "corptie_platform_collaboration_manage", arguments: { action: "discover_sessions", work_id: work.id } });
     assert.deepEqual(discovered.result.sessions.map((entry) => entry.sessionId), ["session:target"]);
@@ -128,16 +131,19 @@ test("platform collaboration discovers exact Sessions, starts shared-lifecycle W
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Tool Host advertises platform tools only to the protected Assistant and execution rechecks Session binding", async () => {
+test("Tool Host materializes platform tools provider-neutrally and execution rechecks the Session grant", async () => {
   const f = await fixture();
   try {
     const ordinary = f.store.createAgent({ name: "Ordinary", role: "assistant" });
-    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant" });
+    bindSession(f, { id: "provider:platform", logicalId: "session:platform", agentId: "assistant", capabilities: ["platform.manage"] });
     bindSession(f, { id: "provider:ordinary", logicalId: "session:ordinary", agentId: ordinary.agentId });
-    const catalog = new HostToolCatalog([{ id: "platform", tools: platformDynamicTools, authorize: ({ actorId }) => actorId === "assistant", execute: (input) => callPlatformDynamicTool(f.service, input) }]);
+    const catalog = new HostToolCatalog([{ id: "platform", tools: platformDynamicTools, authorize: ({ actorId, metadata }) => {
+      if (!metadata?.sessionId) return true;
+      try { resolvePlatformAdminSession(f.store, { actorId, sessionId: metadata.sessionId }); return true; } catch { return false; }
+    }, execute: (input) => callPlatformDynamicTool(f.service, input) }]);
     assert.ok(catalog.definitions({ actorId: "assistant" }).some((tool) => tool.name === "corptie_platform_artifacts_manage"));
-    assert.equal(catalog.definitions({ actorId: ordinary.agentId }).length, 0);
+    assert.ok(catalog.definitions({ actorId: ordinary.agentId }).some((tool) => tool.name === "corptie_platform_artifacts_manage"));
     await assert.rejects(() => catalog.execute({ actorId: ordinary.agentId, tool: "corptie_platform_collaboration_manage", metadata: { sessionId: "provider:ordinary", sessionKind: "assistantChat" }, arguments: { action: "discover_sessions" } }), { code: "SESSION_TOOL_FORBIDDEN" });
-    await assert.rejects(() => catalog.execute({ actorId: "assistant", tool: "corptie_platform_collaboration_manage", metadata: { sessionId: "provider:ordinary", sessionKind: "assistantChat" }, arguments: { action: "discover_sessions" } }), { code: "PLATFORM_ADMIN_SESSION_REQUIRED" });
+    await assert.rejects(() => catalog.execute({ actorId: "assistant", tool: "corptie_platform_collaboration_manage", metadata: { sessionId: "provider:ordinary", sessionKind: "assistantChat" }, arguments: { action: "discover_sessions" } }), { code: "SESSION_TOOL_FORBIDDEN" });
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
