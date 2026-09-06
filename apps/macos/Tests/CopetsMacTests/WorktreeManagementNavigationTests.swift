@@ -41,16 +41,22 @@ final class WorktreeManagementNavigationTests: XCTestCase {
     func testConflictNavigationCarriesTheExactTaskAndSessionUntilConsumed() {
         let router = AppTabRouter()
 
-        router.openTaskSession(taskId: "task:conflict", sessionId: "session:conflict")
+        router.openTaskSession(
+            taskId: "task:conflict",
+            sessionId: "session:conflict",
+            source: .userSelection
+        )
 
         XCTAssertEqual(router.selectedTab, .console)
         XCTAssertEqual(router.pendingTaskId, "task:conflict")
         XCTAssertEqual(router.pendingSessionId, "session:conflict")
+        XCTAssertEqual(router.pendingSessionNavigationSource, .userSelection)
         router.consumeSessionNavigation("session:other")
         XCTAssertEqual(router.pendingTaskId, "task:conflict")
         router.consumeSessionNavigation("session:conflict")
         XCTAssertNil(router.pendingTaskId)
         XCTAssertNil(router.pendingSessionId)
+        XCTAssertNil(router.pendingSessionNavigationSource)
     }
 
     func testNavigationSelectsTheAuthoritativeWorktreeIdBeforeAStalePath() {
@@ -459,7 +465,7 @@ final class WorktreeManagementNavigationTests: XCTestCase {
 
         XCTAssertTrue(view.contains("worktree.integrate.resolve-with-agent"))
         XCTAssertTrue(view.contains("worktree.integrate.open-conflict-agent"))
-        XCTAssertTrue(view.contains("router.openTaskSession(taskId: taskId, sessionId: sessionId)"))
+        XCTAssertTrue(view.contains("source: .userSelection"))
         XCTAssertTrue(view.contains("openConflictSession(sessionId: sessionId, taskId: resolution.taskId)"))
         XCTAssertTrue(view.contains("openConflictSession(sessionId: sessionId, taskId: job.conflictAutomation?.taskId)"))
         XCTAssertTrue(console.contains("selectedTaskId = taskId ?? session.taskId"))

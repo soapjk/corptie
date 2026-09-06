@@ -62,7 +62,7 @@ struct DetachedChatWindowTests {
 
         #expect(source.contains("func openSessionInMainWindow(sessionID: String)"))
         #expect(source.contains("openWarRoom()"))
-        #expect(source.contains("AppTabRouter.shared.openSession(sessionID)"))
+        #expect(source.contains("AppTabRouter.shared.openSession(sessionID, source: .userSelection)"))
     }
 
     @Test

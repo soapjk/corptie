@@ -507,7 +507,7 @@ struct WorktreeManagementView: View {
                                     }
                                     if let sessionId = association.sessionId {
                                         Button(association.title ?? sessionId) {
-                                            router.openSession(sessionId)
+                                            router.openSession(sessionId, source: .userSelection)
                                         }
                                         .buttonStyle(.link)
                                         .controlSize(.small)
@@ -763,9 +763,13 @@ struct WorktreeManagementView: View {
 
     private func openConflictSession(sessionId: String, taskId: String?) {
         if let taskId, !taskId.isEmpty {
-            router.openTaskSession(taskId: taskId, sessionId: sessionId)
+            router.openTaskSession(
+                taskId: taskId,
+                sessionId: sessionId,
+                source: .userSelection
+            )
         } else {
-            router.openSession(sessionId)
+            router.openSession(sessionId, source: .userSelection)
         }
     }
 

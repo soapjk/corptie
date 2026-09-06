@@ -192,7 +192,7 @@ struct AutomationsView: View {
             router.navigationError = L10n("The target Logical Session is unavailable.")
             return
         }
-        router.openSession(session.id)
+        router.openSession(session.id, source: .userSelection)
     }
 }
 
