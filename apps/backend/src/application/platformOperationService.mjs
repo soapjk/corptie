@@ -95,11 +95,11 @@ export class PlatformOperationService {
   }
 
   #agents(args) {
-    assertKnown(args, ["action", "agent_id", "name", "description", "role", "system_prompt", "capabilities", "skill_ids", "work_dir", "avatar_path", "idempotency_key"]);
+    assertKnown(args, ["action", "agent_id", "name", "description", "system_prompt", "capabilities", "skill_ids", "work_dir", "avatar_path", "idempotency_key"]);
     switch (required(args.action, "action")) {
       case "list": return this.store.listAgents();
       case "get": return found(this.store.getAgent(required(args.agent_id, "agent_id")), "AGENT_NOT_FOUND");
-      case "create": return this.emitEntityChanged("AgentChanged", this.store.createAgentWithRegistrySkills({ name: validateEntityName(required(args.name, "name"), "name", "Agent"), description: args.description ?? "", role: args.role, systemPrompt: args.system_prompt ?? "", capabilities: array(args.capabilities), workDir: optional(args.work_dir), avatarPath: optional(args.avatar_path) }, array(args.skill_ids)), "created");
+      case "create": return this.emitEntityChanged("AgentChanged", this.store.createAgentWithRegistrySkills({ name: validateEntityName(required(args.name, "name"), "name", "Agent"), description: args.description ?? "", systemPrompt: args.system_prompt ?? "", capabilities: array(args.capabilities), workDir: optional(args.work_dir), avatarPath: optional(args.avatar_path) }, array(args.skill_ids)), "created");
       case "update": {
         if (args.name !== undefined) validateEntityName(args.name, "name", "Agent");
         return this.emitEntityChanged("AgentChanged", found(this.store.updateAgentWithRegistrySkills(required(args.agent_id, "agent_id"), compact({ name: args.name, description: args.description, systemPrompt: args.system_prompt, capabilities: args.capabilities, workDir: args.work_dir, avatarPath: args.avatar_path }), Array.isArray(args.skill_ids) ? args.skill_ids : null), "AGENT_NOT_FOUND"), "updated");

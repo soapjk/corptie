@@ -62,10 +62,10 @@ export class WorkChatOperationService {
     const work = this.workService.getWork(workId);
     const contributors = new Set(work.contributorAgentIds);
     return this.store.listAgents().filter((agent) => contributors.has(agent.agentId)).map((agent) => ({
-      agentId: agent.agentId, name: agent.name, role: agent.role,
+      agentId: agent.agentId, name: agent.name,
       description: agent.description, status: agent.status,
       isContributor: true,
-      canStartTask: agent.role === "independentContributor"
+      canStartTask: agent.status === "available"
     }));
   }
 
@@ -111,8 +111,8 @@ export class WorkChatOperationService {
       const agentId = text(patch.mainAgentId, "mainAgentId");
       const agent = this.store.getAgent(agentId);
       if (!agent) throw coded("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
-      if (agent.role !== "independentContributor" || !work.contributorAgentIds.includes(agentId)) {
-        throw coded("AGENT_OUTSIDE_WORK", "Task Agent must be an Independent Contributor attached to this Work.");
+      if (!work.contributorAgentIds.includes(agentId)) {
+        throw coded("AGENT_OUTSIDE_WORK", "Task Agent must be attached to this Work.");
       }
     }
     return patch;

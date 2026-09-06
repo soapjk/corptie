@@ -57,9 +57,6 @@ export class WorkSessionStartApplicationService {
     if (!(work.contributorAgentIds ?? []).includes(command.assigneeAgentId)) {
       throw startContractError("AGENT_OUTSIDE_WORK", "Assignee Agent is not an Work contributor.");
     }
-    if (agent.role !== "independentContributor") {
-      throw startContractError("AGENT_NOT_INDEPENDENT_CONTRIBUTOR", "Assignee Agent must be an Independent Contributor.");
-    }
     const workspaceContext = this.store.getTaskWorkspaceContext(task);
     const repositoryId = workspaceContext?.repository?.id;
     if (!workspaceContext?.workspace) {

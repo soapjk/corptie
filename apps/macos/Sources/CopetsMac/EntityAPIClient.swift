@@ -53,8 +53,6 @@ final class EntityAPIClient: ObservableObject {
     @Published private(set) var worksLoadError: String?
     @Published private(set) var workspaces: [WorkspaceResource] = []
 
-    /// 仅 Assistant 类 Agent（用于「新建会话」等自由对话入口）。
-    var assistantAgents: [Agent] { agents.filter { $0.isAssistant } }
     var repositories: [GitRepository] { appState.repositories }
     var skills: [Skill] { appState.skills }
     @Published var isLoading = false
@@ -1306,7 +1304,7 @@ final class EntityAPIClient: ObservableObject {
 
     // 创建 Agent 资源包：Provider 由实际 Session 选择。
     @discardableResult
-    func createAgent(name: String, description: String? = nil, role: String = "independentContributor",
+    func createAgent(name: String, description: String? = nil,
                      systemPrompt: String? = nil, capabilities: [String] = [],
                      skillIds: [String] = [], workDir: String? = nil,
                      idempotencyKey: String = UUID().uuidString) async -> Agent? {
@@ -1316,7 +1314,7 @@ final class EntityAPIClient: ObservableObject {
         request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "X-Request-ID")
         request.setValue(CorptieInstallationIdentity.id(), forHTTPHeaderField: "X-Corptie-Device-ID")
-        var body: [String: Any] = ["name": name, "role": role]
+        var body: [String: Any] = ["name": name]
         if let description, !description.isEmpty { body["description"] = description }
         if let systemPrompt { body["systemPrompt"] = systemPrompt }
         if !capabilities.isEmpty { body["capabilities"] = capabilities }

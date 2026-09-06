@@ -6,7 +6,7 @@ enum AgentCreateSubmissionPolicy {
     }
 }
 
-// Agent 创建表单（模块 B 升级）：从已有 Agent 继承 + 基本信息 + 底层模型 + 人设与能力。
+// Agent 创建表单：从已有 Agent 继承 + 基本信息 + 人设与专长。
 // 侧栏 Agent 加号、AgentPickerView 的新建入口共用。
 
 struct AgentCreateView: View {
@@ -18,7 +18,6 @@ struct AgentCreateView: View {
     @State private var selectedBaseAgentId: String? = nil
     @State private var name = ""
     @State private var detail = ""
-    @State private var role = "independentContributor"
     @State private var systemPrompt = ""
     @State private var capabilitiesText = ""
     @State private var workDir = ""
@@ -36,12 +35,11 @@ struct AgentCreateView: View {
 
                     FormAssistPanel(
                         formType: .agent,
-                        promptHint: L10n("例如：创建一名负责 SwiftUI 客户端、重视测试和兼容性的独立贡献者。"),
+                        promptHint: L10n("例如：创建一名负责 SwiftUI 客户端、重视测试和兼容性的 Agent。"),
                         currentValues: {
                             [
                                 "name": name,
                                 "description": detail,
-                                "role": role,
                                 "systemPrompt": systemPrompt,
                                 "capabilities": capabilitiesText
                             ]
@@ -60,22 +58,6 @@ struct AgentCreateView: View {
                     field(L10n("职责描述")) {
                         TextField(L10n("如：后端接口与数据库专家"), text: $detail)
                     }
-
-                    field(L10n("类型")) {
-                        Picker("", selection: $role) {
-                            Text(L10n("独立贡献者（IC）")).tag("independentContributor")
-                            Text(L10n("助手（Assistant）")).tag("assistant")
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.segmented)
-                        .frame(maxWidth: 360, alignment: .leading)
-                    }
-
-                    Text(role == "assistant"
-                         ? "助手负责与你直接对话，承接平台元操作。"
-                         : "独立贡献者负责项目开发与生产。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
 
                     field("System Prompt") {
                         TextEditor(text: $systemPrompt)
@@ -107,12 +89,12 @@ struct AgentCreateView: View {
 
                         if showAdvanced {
                             VStack(alignment: .leading, spacing: 12) {
-                                field(L10n("能力标签（逗号分隔）")) {
+                                field(L10n("专长标签（逗号分隔）")) {
                                     TextField(L10n("如：backend, api, database"), text: $capabilitiesText)
                                 }
 
                                 field(L10n("工作目录（可选）")) {
-                                    TextField(L10n("留空则自动生成（每个助手独立，贡献者为持久化目录）"), text: $workDir)
+                                    TextField(L10n("留空则为此 Agent 自动生成独立目录"), text: $workDir)
                                 }
 
                                 skillSection
@@ -181,7 +163,7 @@ struct AgentCreateView: View {
                     HStack(spacing: 8) {
                         baseAgentChip(id: nil, label: "不继承", icon: "square.dashed")
                         ForEach(client.agents) { agent in
-                            baseAgentChip(id: agent.agentId, label: agent.name, icon: agent.isAssistant ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
+                            baseAgentChip(id: agent.agentId, label: agent.name, icon: agent.isPlatformAssistant ? "sparkles" : "person.crop.circle")
                         }
                     }
                 }
@@ -215,13 +197,11 @@ struct AgentCreateView: View {
             systemPrompt = ""
             capabilitiesText = ""
             workDir = ""
-            role = "independentContributor"
             selectedSkillIds = []
             return
         }
         name = base.name
         detail = base.description
-        role = base.role.isEmpty ? "independentContributor" : base.role
         systemPrompt = base.systemPrompt
         capabilitiesText = base.capabilities.joined(separator: ", ")
         workDir = base.workDir ?? ""
@@ -244,7 +224,6 @@ struct AgentCreateView: View {
     private func applyGeneratedFields(_ fields: [String: String]) {
         name = fields["name"] ?? name
         detail = fields["description"] ?? detail
-        role = fields["role"] ?? role
         systemPrompt = fields["systemPrompt"] ?? systemPrompt
         capabilitiesText = fields["capabilities"] ?? capabilitiesText
         if !capabilitiesText.isEmpty { showAdvanced = true }
@@ -259,7 +238,6 @@ struct AgentCreateView: View {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let requestDescription = detail
-        let requestRole = role
         let requestSystemPrompt = systemPrompt
         let requestSkillIds = Array(selectedSkillIds)
         let trimmedWorkDir = workDir.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -274,7 +252,6 @@ struct AgentCreateView: View {
                 guard await client.createAgent(
                     name: validatedName,
                     description: requestDescription,
-                    role: requestRole,
                     systemPrompt: requestSystemPrompt,
                     capabilities: capabilities,
                     skillIds: requestSkillIds,
@@ -293,7 +270,6 @@ struct AgentCreateView: View {
             if let agent = await client.createAgent(
                 name: validatedName,
                 description: requestDescription,
-                role: requestRole,
                 systemPrompt: requestSystemPrompt,
                 capabilities: capabilities,
                 skillIds: requestSkillIds,

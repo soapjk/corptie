@@ -2,16 +2,13 @@ import { mkdir, stat } from "node:fs/promises";
 import os from "node:os";
 import { join, resolve } from "node:path";
 
-// Agent 工作目录约定（03 / 15 Phase 5「角色化执行主体」的持久化地基）。
+// Agent 工作目录约定。所有 Agent 使用同一种持久化布局；执行权限由 Session 决定。
 //
 // 目录是「元数据」：路径落库（agents.work_dir），目录内容（记忆 / Skill / 制度化文件）
 // 作为普通文件落在该目录里，由各 Provider runtime 直接读取，绝不把文件内容塞进数据库。
 //
-// 约定（相对 corptieHome）：
-//   - Assistant：runtimes/assistants/<agentId>/workspace —— 同一助手下的会话共享，
-//     不同 Assistant 之间按 agentId 隔离。
-//   - 独立贡献者：runtimes/contributors/<agentId> —— 存放该 Agent 的记忆 / Skill 等持久化文件，
-//     但不作为会话的直接工作目录（会话绑定 Task，用 Task 的 workspace 目录）。
+// 约定（相对 corptieHome）：runtimes/agents/<agentId>/workspace。
+// 已落库的旧路径继续由 effectiveAgentWorkDir 保留，不迁移或删除用户数据。
 //
 // production 下 runtimes 根无 "development/" 前缀，与 corptieCodexRuntime 的布局保持一致。
 
@@ -32,10 +29,7 @@ export function resolveAgentWorkDir(agent, options = {}) {
   if (!agentId) {
     throw new Error("Agent id is required to resolve an agent work directory.");
   }
-  if (agent?.role === "assistant") {
-    return join(runtimesRoot, "assistants", encodeURIComponent(agentId), "workspace");
-  }
-  return join(runtimesRoot, "contributors", agentId);
+  return join(runtimesRoot, "agents", encodeURIComponent(agentId), "workspace");
 }
 
 // 运行时以数据库中的显式 workDir 为准；缺失时才使用按 Agent 隔离的默认目录。
@@ -45,12 +39,12 @@ export function effectiveAgentWorkDir(agent, options = {}) {
   return configured ? resolve(configured) : resolveAgentWorkDir(agent, options);
 }
 
-// Only an Assistant's exact persisted runtime workspace may be recreated from a
+// Only an Agent's exact persisted runtime workspace may be recreated from a
 // Session binding. This prevents the recovery endpoint from turning an
 // arbitrary stale boundCwd value into a recursive mkdir target.
 export function recoverableAgentWorkDir(agent, boundCwd, options = {}) {
   const bound = typeof boundCwd === "string" ? boundCwd.trim() : "";
-  if (agent?.role !== "assistant" || !bound) return null;
+  if (!agent || !bound) return null;
   const expected = effectiveAgentWorkDir(agent, options);
   return resolve(bound) === expected ? expected : null;
 }

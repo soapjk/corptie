@@ -4,14 +4,8 @@ import SwiftUI
 // 由 WorkResourcesEditor 的 Contributor Agent 加号打开；选中的 id 直接写入 selectedIds。
 
 struct AgentPickerView: View {
-    enum RoleFilter {
-        case all
-        case independentContributor
-    }
-
     @ObservedObject private var client = EntityAPIClient.shared
     @Binding var selectedIds: Set<String>
-    var roleFilter: RoleFilter = .all
     var allowedAgentIds: Set<String>? = nil
     /// 完成回调（可选）：点「完成」时把最终选中集合交回调用方；不传则仅关闭。
     var onDone: ((Set<String>) -> Void)? = nil
@@ -52,7 +46,7 @@ struct AgentPickerView: View {
                     HStack(spacing: 8) {
                         Image(systemName: selectedIds.contains(agent.agentId) ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(selectedIds.contains(agent.agentId) ? Color.accentColor : Color.secondary)
-                        Label(agent.name, systemImage: agent.isAssistant ? "sparkles" : "person")
+                        Label(agent.name, systemImage: agent.isPlatformAssistant ? "sparkles" : "person")
                         Spacer()
                     }
                     .contentShape(Rectangle())
@@ -90,12 +84,9 @@ struct AgentPickerView: View {
     }
 
     private var filteredAgents: [Agent] {
-        let roleFiltered = roleFilter == .independentContributor
-            ? client.agents.filter(\.isIndependentContributor)
-            : client.agents
         let scopeFiltered = allowedAgentIds.map { allowed in
-            roleFiltered.filter { allowed.contains($0.agentId) }
-        } ?? roleFiltered
+            client.agents.filter { allowed.contains($0.agentId) }
+        } ?? client.agents
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return scopeFiltered }
         return scopeFiltered.filter { $0.name.localizedCaseInsensitiveContains(trimmed) }
