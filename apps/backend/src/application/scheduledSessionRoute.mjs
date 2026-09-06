@@ -15,6 +15,9 @@ export function createScheduledSessionRouteResolver({ store, collaborationCore }
       routeError("ROUTE_UNAVAILABLE", `Logical Session ${logicalSessionId} has no active Provider binding.`);
     }
     const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
+    if (session?.archived) {
+      routeError("SESSION_ARCHIVED", `Session ${session.id} is archived.`);
+    }
     const agent = session ? collaborationCore.getAgentForSession(session.id) : null;
     if (!session || !agent) {
       routeError(

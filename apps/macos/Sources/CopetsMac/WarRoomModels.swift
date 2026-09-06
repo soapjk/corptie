@@ -65,6 +65,7 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var verificationCriteria: String = ""
     var priority: String
     var lifecycleState: String
+    var archived: Bool? = nil
     var mainAgentId: String?
     var currentSessionId: String?
     var executionStatus: String?
