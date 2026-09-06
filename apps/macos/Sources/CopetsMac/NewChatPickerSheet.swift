@@ -94,8 +94,6 @@ struct NewSessionCreationSheet: View {
             initialKind = .worker
         } else if fixedWork != nil {
             initialKind = .workChat
-        } else if let fixedAgent {
-            initialKind = fixedAgent.isAssistant ? .assistantChat : .worker
         } else {
             initialKind = fixedKind ?? .assistantChat
         }
