@@ -4,6 +4,27 @@ import Testing
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
+    func backgroundRefreshCannotChooseAnotherTaskAsDefault() throws {
+        #expect(ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
+            selectedTaskID: nil,
+            selectedSessionID: nil
+        ))
+        #expect(!ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
+            selectedTaskID: "task:current",
+            selectedSessionID: nil
+        ))
+        #expect(!ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
+            selectedTaskID: nil,
+            selectedSessionID: "session:current"
+        ))
+
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(!source.contains("recoverSelectionIfNeeded"))
+        #expect(source.contains("CorptieTaskCreateView(initialWorkId: taskCreationWorkID)"))
+        #expect(source.contains("selectedTaskId = task.id"))
+    }
+
+    @Test
     func workingWorkTitleUsesTimeDrivenSeamlessGradientMotion() throws {
         #expect(ConsoleWorkOutlineMetrics.workingGradientFrameInterval == 1.0 / 24.0)
         #expect(ConsoleWorkFlowingGradientPolicy.progress(
@@ -446,6 +467,21 @@ struct UnifiedConsoleControlSurfaceTests {
     }
 
     @Test
+    func chatCardCreatesOnlyAssistantChat() throws {
+        let console = try source(named: "UnifiedConsoleView.swift")
+        #expect(console.components(
+            separatedBy: "NewSessionCreationSheet(fixedKind: .assistantChat)"
+        ).count - 1 == 2)
+        #expect(!console.contains("NewSessionCreationSheet()"))
+
+        let sheet = try source(named: "NewChatPickerSheet.swift")
+        #expect(sheet.contains("let fixedKind: NewSessionKind?"))
+        #expect(sheet.contains("fixedKind: NewSessionKind? = nil"))
+        #expect(sheet.contains("if fixedKind == nil, fixedAgent == nil, fixedWork == nil"))
+        #expect(sheet.contains("fixedKind ?? .assistantChat"))
+    }
+
+    @Test
     func workChatIsAnIndependentActionBesideTheWorkTitle() throws {
         let source = try source(named: "UnifiedConsoleView.swift")
         let headerStart = try #require(source.range(of: "private struct ConsoleWorkOutlineHeader: View"))
@@ -459,7 +495,10 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(header.contains("Button(action: openChat)"))
         #expect(header.contains("Button(action: createTask)"))
         #expect(header.contains(".padding(.leading, 6)"))
-        #expect(header.contains("message.fill"))
+        #expect(header.contains("Text(L10n(\"Chat\"))"))
+        #expect(header.contains("bubble.left.fill"))
+        #expect(header.contains(".fixedSize()"))
+        #expect(header.contains("isChatHovering ? 0.13 : 0.07"))
         #expect(!header.contains("ellipsis.message"))
         #expect(!header.contains("bubble.left.and.bubble.right"))
         #expect(header.contains("if hasUnreadChat"))
@@ -479,10 +518,22 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(ConsoleNavigationCardWidthPolicy.clamped(120) == 220)
         #expect(ConsoleNavigationCardWidthPolicy.clamped(360) == 360)
         #expect(ConsoleNavigationCardWidthPolicy.clamped(800) == 520)
+        let increasingWidths = stride(from: 0.0, through: 80.0, by: 4.0).map {
+            ConsoleNavigationCardWidthPolicy.resizedWidth(
+                from: 300,
+                translation: $0
+            )
+        }
+        #expect(zip(increasingWidths, increasingWidths.dropFirst()).allSatisfy { pair in
+            pair.0 <= pair.1
+        })
 
         let source = try source(named: "UnifiedConsoleView.swift")
         #expect(source.contains("console.navigationCard.taskColumnWidth"))
-        #expect(source.contains("DragGesture(minimumDistance: 0)"))
+        #expect(source.contains("@State private var liveTaskColumnWidth: Double?"))
+        #expect(source.contains("DragGesture(\n                    minimumDistance: 0,\n                    coordinateSpace: .named(consoleNavigationResizeCoordinateSpace)"))
+        #expect(source.contains("storedTaskColumnWidth = finalWidth"))
+        #expect(!source.contains("storedTaskColumnWidth = ConsoleNavigationCardWidthPolicy.resizedWidth"))
         #expect(source.contains("NSCursor.resizeLeftRight"))
         #expect(source.contains(".overlay(alignment: .trailing) {\n            navigationResizeHandle"))
     }
@@ -518,6 +569,20 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("session.archived != true"))
         #expect(source.contains("unreadSummary.hasUnreadAssistantSessions"))
         #expect(source.contains("unreadSummary.workIDs.contains(work.id)"))
+    }
+
+    @Test
+    func expandedWorkHidesItsAggregateUnreadIndicator() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        let headerStart = try #require(source.range(of: "private struct ConsoleWorkOutlineHeader: View"))
+        let headerEnd = try #require(source.range(
+            of: "enum ConsoleTaskSelectionPolicy",
+            range: headerStart.upperBound..<source.endIndex
+        ))
+        let header = source[headerStart.lowerBound..<headerEnd.lowerBound]
+
+        #expect(header.contains("if hasUnread && !isExpanded"))
+        #expect(header.contains("if hasUnreadChat"))
     }
 
     @Test

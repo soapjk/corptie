@@ -796,7 +796,7 @@ struct CorptieTaskBoardView: View {
         .sheet(isPresented: $isCreatingWorkChat) {
             if let work {
                 NewSessionCreationSheet(fixedWork: work) { session in
-                    router.openSession(session.id)
+                    router.openSession(session.id, source: .createdSession)
                 }
             }
         }
@@ -809,7 +809,7 @@ struct CorptieTaskBoardView: View {
             sessions: backendClient.sessions
         ) {
         case .open(let sessionId):
-            router.openSession(sessionId)
+            router.openSession(sessionId, source: .userSelection)
         case .create:
             isCreatingWorkChat = true
         }
@@ -1494,7 +1494,7 @@ struct CorptieTaskDetailView: View {
 
                 if let currentSession {
                     Button {
-                        router.openSession(currentSession.id)
+                        router.openSession(currentSession.id, source: .userSelection)
                     } label: {
                         Image(systemName: "bubble.left.and.bubble.right")
                             .font(.system(size: 11, weight: .medium))

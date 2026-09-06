@@ -638,9 +638,9 @@ final class BackendClient: ObservableObject {
             return
         }
         if eventName == "AutomationSessionActivationRequested" {
-            guard let payload = data.data(using: .utf8),
-                  let event = try? JSONDecoder().decode(AutomationClientActionEnvelope.self, from: payload) else { return }
-            AppTabRouter.shared.openSession(event.payload.sessionId)
+            // Background activation must never mutate foreground navigation.
+            // The queued message wakes the Session; only an explicit user
+            // action (for example clicking its notification) may open it.
             return
         }
         if eventName == "AutomationLocalNotificationRequested" {

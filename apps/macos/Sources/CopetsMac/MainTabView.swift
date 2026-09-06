@@ -746,6 +746,13 @@ private struct MainWindowBackgroundTaskOverlay: View {
 
 // 跨 Tab 导航路由器：让「控制台 → 打开对话」能切到 Sessions Tab 并选中对应会话。
 // 同时持有侧栏可见性状态，供各 NavigationSplitView 页面共享（自定义左上角开关按钮控制）。
+enum SessionNavigationSource: Equatable {
+    case userSelection
+    case createdSession
+    case notificationClick
+    case deepLink
+}
+
 @MainActor
 final class AppTabRouter: ObservableObject {
     static let shared = AppTabRouter()
@@ -755,6 +762,7 @@ final class AppTabRouter: ObservableObject {
     // 待选中的 session id：Sessions Tab 出现后消费它并清空。
     @Published var pendingSessionId: String?
     @Published private(set) var pendingTaskId: String?
+    @Published private(set) var pendingSessionNavigationSource: SessionNavigationSource?
     @Published var pendingAutomationId: String?
     @Published private(set) var pendingWorktreeTarget: WorktreeNavigationTarget?
     @Published var navigationError: String?
@@ -782,16 +790,22 @@ final class AppTabRouter: ObservableObject {
         selectionState.selectedTab = tab
     }
 
-    func openSession(_ sessionId: String) {
+    func openSession(_ sessionId: String, source: SessionNavigationSource) {
         navigationError = nil
         pendingTaskId = nil
+        pendingSessionNavigationSource = source
         pendingSessionId = sessionId
         selectTab(.console)
     }
 
-    func openTaskSession(taskId: String, sessionId: String) {
+    func openTaskSession(
+        taskId: String,
+        sessionId: String,
+        source: SessionNavigationSource
+    ) {
         navigationError = nil
         pendingTaskId = taskId
+        pendingSessionNavigationSource = source
         pendingSessionId = sessionId
         selectTab(.console)
     }
@@ -800,6 +814,7 @@ final class AppTabRouter: ObservableObject {
         guard pendingSessionId == requestedSessionId else { return }
         pendingSessionId = nil
         pendingTaskId = nil
+        pendingSessionNavigationSource = nil
     }
 
     func openAutomation(_ automationId: String) {
@@ -830,6 +845,7 @@ final class AppTabRouter: ObservableObject {
         navigationError = L10nFormat("Session %@ could not be loaded.", sessionId)
         pendingSessionId = nil
         pendingTaskId = nil
+        pendingSessionNavigationSource = nil
     }
 }
 

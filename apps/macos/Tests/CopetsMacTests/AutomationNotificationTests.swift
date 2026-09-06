@@ -69,6 +69,24 @@ struct AutomationNotificationTests {
         #expect(router.pendingAutomationId == nil)
     }
 
+    @Test func backgroundSessionActivationNeverBecomesForegroundNavigation() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac/BackendClient.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try #require(source.range(of: "if eventName == \"AutomationSessionActivationRequested\""))
+        let end = try #require(source.range(
+            of: "if eventName == \"AutomationLocalNotificationRequested\"",
+            range: start.upperBound..<source.endIndex
+        ))
+        let activationHandler = source[start.lowerBound..<end.lowerBound]
+
+        #expect(!activationHandler.contains("openSession"))
+        #expect(activationHandler.contains("Background activation must never mutate foreground navigation"))
+    }
+
     private func envelope(eventID: String, scheduleType: String, willRetry: Bool? = nil) -> String {
         var payload: [String: Any] = [
             "task": [

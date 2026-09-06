@@ -79,7 +79,7 @@ struct AgentDetailView: View {
         .sheet(isPresented: $showSessionCreation) {
             NewSessionCreationSheet(fixedAgent: agent) { session in
                 dismiss()
-                router.openSession(session.id)
+                router.openSession(session.id, source: .createdSession)
             }
         }
         .sheet(isPresented: $showSkillPicker) {
