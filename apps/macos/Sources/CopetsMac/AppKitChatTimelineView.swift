@@ -1437,7 +1437,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             // before a user's scroll-away has propagated through the binding.
             // Sampling geometry before changing row heights prevents that
             // stale `true` from pinning the reader back to the newest card.
-            let followedLatestBeforeUpdate = followsLatest && isViewportNearBottom()
+            let followedLatestBeforeUpdate = isViewportNearBottom()
             synchronizeTableWidth()
             let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
             let hasPendingInitialViewport = pendingRestorePosition != nil || pendingInitialScrollToBottom

@@ -21,7 +21,7 @@ async function fixture(options = {}) {
     providerSessionId: "thread:one", bindingId: "binding:one",
     providerId: "fake", boundCwd: directory, sessionName: "Port Session"
   });
-  const catalog = new HostToolCatalog([
+  const catalog = options.catalog ?? new HostToolCatalog([
     {
       id: "artifacts",
       tools: [{ name: "corptie_artifact_get", inputSchema: { type: "object" } }],
@@ -71,13 +71,13 @@ async function fixture(options = {}) {
     )
   });
   return {
-    directory, store, coordinator, port,
+    directory, store, coordinator, port, providerPort,
     get binding() { return binding; },
     get applyCount() { return applyCount; }
   };
 }
 
-function receipt(input) {
+function receipt(input, overrides = {}) {
   return appliedToolMaterializationReceipt({
     providerBindingId: input.binding.providerBindingId,
     providerCapabilityRevision: input.capability.capabilityRevision,
@@ -86,7 +86,8 @@ function receipt(input) {
     appliedDomains: input.appliedDomains,
     appliedExposurePlanHash: input.plan.exposurePlanHash,
     refreshMode: input.plan.refreshMode,
-    providerRevision: "fake-provider:confirmed"
+    providerRevision: "fake-provider:confirmed",
+    ...overrides
   });
 }
 
@@ -112,6 +113,57 @@ test("public ToolMaterializationPort resolves the current binding and returns on
     );
     assert.deepEqual(cached.appliedDomains, ["artifacts", "memory"]);
     assert.equal(value.applyCount, 2);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("public Port accepts a contract-compatible definition upgrade on its first request", async () => {
+  const catalog = (field) => new HostToolCatalog([{
+    id: "artifacts",
+    tools: [{
+      name: "corptie_artifact_get",
+      inputSchema: { type: "object", properties: { [field]: { type: "string" } } }
+    }],
+    execute: () => null
+  }]);
+  const value = await fixture({
+    catalog: catalog("artifactId"),
+    capability: {
+      bootstrapAttach: true, appendInPlace: false, replaceAtTurnBoundary: false,
+      generatedMcpRefresh: false, restrictedGateway: true, bindingReplacement: false,
+      capabilityRevision: "fake:gateway:1"
+    },
+    apply: async (input) => receipt(input, {
+      providerDefinitionsHash: input.plan.providerDefinitionsHash,
+      providerContractHash: input.plan.providerContractHash,
+      providerDefinitionsCount: input.plan.providerDefinitions.length,
+      providerObservationKind: "provider_schema_accepted"
+    })
+  });
+  try {
+    await value.port.ensureDomainsApplied("logical:one", ["artifacts"]);
+    const upgradedCoordinator = new ToolHostMaterializationCoordinator({
+      store: value.store,
+      catalog: catalog("artifactName"),
+      providerPort: value.providerPort,
+      resolveBinding: async () => ({ ...value.binding })
+    });
+    const upgradedPort = new ToolMaterializationPort({
+      coordinator: upgradedCoordinator,
+      resolveCurrentBinding: async () => ({ ...value.binding })
+    });
+
+    const upgraded = await upgradedPort.ensureDomainsApplied("logical:one", ["artifacts"]);
+
+    assert.equal(upgraded.status, "Applied");
+    assert.deepEqual(upgraded.appliedDomains, ["artifacts"]);
+    assert.equal(value.applyCount, 1);
+    const stored = value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one");
+    assert.equal(stored.status, "applied");
+    assert.equal(stored.exposurePlan.definitionFreshness, "current");
+    assert.notEqual(stored.providerReceipt.appliedVersion, stored.desiredVersion);
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
