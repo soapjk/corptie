@@ -14,6 +14,8 @@ ICON_ICNS_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.icns"
 ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
 
 mkdir -p "${ARCHIVE_DIR}"
+NODE_DISTRIBUTION="$(bash "${ROOT}/scripts/prepare-bundled-node.sh")"
+export PATH="${NODE_DISTRIBUTION}/bin:${PATH}"
 
 echo "Building for production..."
 swift build --package-path "${ROOT}/apps/macos" -c "${BUILD_CFG}"
@@ -30,8 +32,20 @@ SCRIPTS_DIR="$(mktemp -d /tmp/corptie-pkg-scripts-XXXXXX)"
 trap 'rm -rf "${STAGING_ROOT}" "${Dmg_STAGING}" "${SCRIPTS_DIR}"' EXIT
 
 APP_DIR="${STAGING_ROOT}/Applications/${APP_NAME}"
-mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
+mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/Helpers"
+cp "${NODE_DISTRIBUTION}/bin/node" "${APP_DIR}/Contents/Helpers/node"
+mkdir -p "${APP_DIR}/Contents/Resources/licenses"
+cp "${NODE_DISTRIBUTION}/LICENSE" "${APP_DIR}/Contents/Resources/licenses/Node.js-LICENSE"
+printf 'Node.js %s (darwin-arm64)\n' "$(node --version)" > "${APP_DIR}/Contents/Resources/licenses/Node.js-version.txt"
 cp "${BUILD_BIN}" "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}"
+# SwiftPM can embed the build machine's Xcode toolchain as a fallback RPATH.
+# Installed apps may search only system libraries or bundle-relative locations.
+while IFS= read -r runtime_path; do
+  case "${runtime_path}" in
+    /usr/lib/*|/System/Library/*|@*) ;;
+    *) install_name_tool -delete_rpath "${runtime_path}" "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}" ;;
+  esac
+done < <(otool -l "${BUILD_BIN}" | awk '/cmd LC_RPATH/ { getline; getline; sub(/^ *path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print }')
 RESOURCE_BUNDLE="${ROOT}/apps/macos/.build/arm64-apple-macosx/${BUILD_CFG}/CorptieMac_CorptieMac.bundle"
 if [ -d "${RESOURCE_BUNDLE}" ]; then
   cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
@@ -86,12 +100,16 @@ BACKEND_SOURCE="${ROOT}/apps/backend"
 BACKEND_DEST="${APP_DIR}/Contents/Resources/backend"
 (
   cd "${BACKEND_SOURCE}"
+  npm ci --no-audit --no-fund
   npm run build:native
 )
 mkdir -p "${BACKEND_DEST}"
 cp -R "${BACKEND_SOURCE}/package.json" "${BACKEND_SOURCE}/package-lock.json" "${BACKEND_SOURCE}/src" "${BACKEND_SOURCE}/scripts" "${BACKEND_SOURCE}/resources" "${BACKEND_DEST}/"
 mkdir -p "${BACKEND_DEST}/native"
 cp "${BACKEND_SOURCE}/native/corptie_native.node" "${BACKEND_DEST}/native/"
+# Cargo embeds the build directory as LC_ID_DYLIB. Give the packaged copy a
+# relocatable identity before signing; never alter the development artifact.
+install_name_tool -id '@loader_path/corptie_native.node' "${BACKEND_DEST}/native/corptie_native.node"
 if [ -d "${BACKEND_SOURCE}/node_modules" ]; then
   # Feature worktrees may share the repository's installed dependencies through
   # a symlink. App bundles cannot be signed when that link points outside the
@@ -110,38 +128,13 @@ export CORPTIE_ENV="production"
 export CORPTIE_BACKEND_PORT="${CORPTIE_BACKEND_PORT:-47321}"
 export CORPTIE_DEFAULT_WORKSPACE="${DEFAULT_WORKSPACE}"
 
-NODE_BIN="${NODE_BIN:-}"
-supports_native_sqlite() {
-  [ -x "$1" ] && "$1" -e 'require("node:sqlite").DatabaseSync' >/dev/null 2>&1
-}
-
-if [ -n "${NODE_BIN}" ] && ! supports_native_sqlite "${NODE_BIN}"; then
-  NODE_BIN=""
-fi
-
-if [ -z "${NODE_BIN}" ]; then
-  # Never source the user's interactive shell configuration from launchd. A
-  # shell startup hook may block or recurse before the backend can start.
-  for candidate in \
-    "${HOME}"/.nvm/versions/node/*/bin/node \
-    "${HOME}"/.fnm/node-versions/*/installation/bin/node \
-    "${HOME}/.asdf/shims/node" \
-    "${HOME}/.local/share/mise/shims/node" \
-    "/opt/homebrew/bin/node" \
-    "/usr/local/bin/node" \
-    "/Applications/Codex.app/Contents/Resources/cua_node/bin/node" \
-    "$(command -v node 2>/dev/null || true)"; do
-    if [ -n "${candidate}" ] && supports_native_sqlite "${candidate}"; then
-      NODE_BIN="${candidate}"
-      break
-    fi
-  done
-fi
-
-if [ -z "${NODE_BIN}" ]; then
-  echo "Node.js 22.13 or newer with node:sqlite is required. Please install it and retry." >&2
+# Production must always use this app's runtime, regardless of NODE_BIN/PATH.
+NODE_BIN="${SCRIPT_DIR}/../Helpers/node"
+if [ ! -x "${NODE_BIN}" ]; then
+  echo "Corptie's bundled Node.js runtime is missing. Please reinstall Corptie." >&2
   exit 1
 fi
+unset NODE_OPTIONS NODE_PATH
 
 # launchd starts GUI apps with a minimal PATH.  Keep both node and npm-installed
 # CLIs (including lark-cli) discoverable in that environment.
@@ -176,14 +169,14 @@ cat > "${APP_DIR}/Contents/Resources/com.corptie.backend.plist" <<PLIST
       <key>CORPTIE_BACKEND_PORT</key>
       <string>47321</string>
       <key>CORPTIE_DEFAULT_WORKSPACE</key>
-      <string>${HOME}/corptie</string>
+      <string>__CORPTIE_USER_HOME__/corptie</string>
       <key>CORPTIE_BACKEND_BUILD_ID</key>
       <string>${BACKEND_BUILD_ID}</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>${HOME}/Library/Logs/Corptie/backend.out.log</string>
+    <string>__CORPTIE_USER_HOME__/Library/Logs/Corptie/backend.out.log</string>
     <key>StandardErrorPath</key>
-    <string>${HOME}/Library/Logs/Corptie/backend.err.log</string>
+    <string>__CORPTIE_USER_HOME__/Library/Logs/Corptie/backend.err.log</string>
   </dict>
 </plist>
 PLIST
@@ -191,20 +184,36 @@ PLIST
 xattr -cr "${STAGING_ROOT}" 2>/dev/null || true
 
 APP_SIGNING_IDENTITY="${CORPTIE_APP_SIGNING_IDENTITY:--}"
+SIGN_FLAGS=(--force --sign "${APP_SIGNING_IDENTITY}")
 if [[ "${APP_SIGNING_IDENTITY}" == "-" ]]; then
   echo "Warning: building an ad-hoc signed app; macOS privacy permissions may need to be granted again after upgrades." >&2
-  codesign --force --deep --sign - "${APP_DIR}"
 else
-  echo "Signing Corptie.app with ${APP_SIGNING_IDENTITY}..."
-  codesign \
-    --force \
-    --deep \
-    --options runtime \
-    --timestamp \
-    --sign "${APP_SIGNING_IDENTITY}" \
-    "${APP_DIR}"
+  # Timestamping contacts Apple. Release operators must authorize that service.
+  SIGN_FLAGS+=(--options runtime --timestamp)
 fi
+# Sign nested Mach-O code explicitly, before sealing the outer bundle. Native
+# addons share the app's identity, so Node does not need disabled library validation.
+while IFS= read -r -d '' native_file; do
+  if file -b "${native_file}" | /usr/bin/grep -q 'Mach-O'; then
+    case "${native_file}" in
+      *.node|*/node-pty/prebuilds/*/spawn-helper)
+        codesign "${SIGN_FLAGS[@]}" "${native_file}" ;;
+      *)
+        # Retain external Provider executable identities and entitlements.
+        # They must not become Corptie-owned permission requesters.
+        codesign --verify --strict "${native_file}"
+        ;;
+    esac
+  fi
+done < <(find "${BACKEND_DEST}" -type f -print0)
+codesign "${SIGN_FLAGS[@]}" --identifier com.corptie.backend.node \
+  --entitlements "${ROOT}/scripts/bundled-node-entitlements.plist" "${APP_DIR}/Contents/Helpers/node"
+codesign "${SIGN_FLAGS[@]}" "${APP_DIR}"
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
+# Test the actual signed runtime and packaged addons, with no system Node in PATH.
+/usr/bin/env -i HOME="${HOME}" PATH=/usr/bin:/bin \
+  "${APP_DIR}/Contents/Helpers/node" "${ROOT}/scripts/verify-bundled-node.mjs" "${APP_DIR}"
+echo "Bundled Node binary size (bytes): $(stat -f %z "${APP_DIR}/Contents/Helpers/node")"
 
 PKG_FILE="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.pkg"
 pkgbuild \
@@ -241,6 +250,8 @@ cat > "${Dmg_STAGING}/.install/Corptie-Readme.md" <<'INSTALL_README'
 - 如果提示后端未启动，先在首次设置页点击“启动后端服务”按钮
 
 后端文件已随应用一起打包在 `Corptie.app/Contents/Resources/backend`。
+Node.js 已内置，无需单独安装；外部 Agent Provider 和其工具仍需各自配置。
+Node.js 及其第三方许可证位于 `Contents/Resources/licenses/Node.js-LICENSE`。
 INSTALL_README
 
 hdiutil create "${DMG_NAME}" \
