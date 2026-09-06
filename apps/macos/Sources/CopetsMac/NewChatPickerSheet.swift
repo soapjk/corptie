@@ -60,6 +60,7 @@ struct NewSessionCreationSheet: View {
     let fixedAgent: Agent?
     let fixedWork: Work?
     let fixedCorptieTask: CorptieTask?
+    let fixedKind: NewSessionKind?
     let submitsInBackground: Bool
     var onCreated: (TaskSession) -> Void
 
@@ -79,15 +80,27 @@ struct NewSessionCreationSheet: View {
         fixedAgent: Agent? = nil,
         fixedWork: Work? = nil,
         fixedCorptieTask: CorptieTask? = nil,
+        fixedKind: NewSessionKind? = nil,
         submitsInBackground: Bool = false,
         onCreated: @escaping (TaskSession) -> Void = { _ in }
     ) {
         self.fixedAgent = fixedAgent
         self.fixedWork = fixedWork
         self.fixedCorptieTask = fixedCorptieTask
+        self.fixedKind = fixedKind
         self.submitsInBackground = submitsInBackground
         self.onCreated = onCreated
-        _kind = State(initialValue: fixedCorptieTask != nil ? .worker : (fixedWork != nil ? .workChat : (fixedAgent?.isAssistant == false ? .worker : .assistantChat)))
+        let initialKind: NewSessionKind
+        if fixedCorptieTask != nil {
+            initialKind = .worker
+        } else if fixedWork != nil {
+            initialKind = .workChat
+        } else if let fixedAgent {
+            initialKind = fixedAgent.isAssistant ? .assistantChat : .worker
+        } else {
+            initialKind = fixedKind ?? .assistantChat
+        }
+        _kind = State(initialValue: initialKind)
         _selectedAgentId = State(initialValue: fixedAgent?.agentId)
         _selectedWorkId = State(initialValue: fixedWork?.id)
         _selectedCorptieTaskId = State(initialValue: fixedCorptieTask?.id)
@@ -103,7 +116,7 @@ struct NewSessionCreationSheet: View {
             Text(L10n("新建会话"))
                 .font(.title3.bold())
 
-            if fixedAgent == nil, fixedWork == nil {
+            if fixedKind == nil, fixedAgent == nil, fixedWork == nil {
                 Picker(L10n("会话类型"), selection: $kind) {
                     ForEach(NewSessionKind.allCases) { option in
                         Text(option.title).tag(option)

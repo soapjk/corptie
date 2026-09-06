@@ -62,7 +62,7 @@ struct AgentManagementView: View {
         }
         .sheet(item: $agentForSessionCreation) { agent in
             NewSessionCreationSheet(fixedAgent: agent) { session in
-                router.openSession(session.id)
+                router.openSession(session.id, source: .createdSession)
             }
         }
         .alert(
