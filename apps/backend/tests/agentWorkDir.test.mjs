@@ -10,27 +10,24 @@ import {
   resolveAgentWorkDir
 } from "../src/runtime/agentWorkDir.mjs";
 
-test("Assistant default workspaces are isolated by agent id", () => {
+test("Agent default workspaces are isolated by agent id", () => {
   const options = { corptieHome: "/tmp/corptie-agent-work-dir", environmentName: "development" };
-  const first = resolveAgentWorkDir({ agentId: "assistant:first", role: "assistant" }, options);
-  const second = resolveAgentWorkDir({ agentId: "assistant:second", role: "assistant" }, options);
+  const first = resolveAgentWorkDir({ agentId: "agent:first" }, options);
+  const second = resolveAgentWorkDir({ agentId: "agent:second" }, options);
 
   assert.notEqual(first, second);
-  assert.match(first, /assistants\/assistant%3Afirst\/workspace$/);
-  assert.match(second, /assistants\/assistant%3Asecond\/workspace$/);
+  assert.match(first, /agents\/agent%3Afirst\/workspace$/);
+  assert.match(second, /agents\/agent%3Asecond\/workspace$/);
 });
 
-test("Workspace recovery only accepts an Assistant's exact managed work directory", () => {
+test("Workspace recovery accepts any Agent's exact managed work directory", () => {
   const options = { corptieHome: "/tmp/corptie-agent-work-dir", environmentName: "development" };
-  const agent = { agentId: "assistant:recoverable", role: "assistant" };
+  const agent = { agentId: "agent:recoverable" };
   const expected = effectiveAgentWorkDir(agent, options);
 
   assert.equal(recoverableAgentWorkDir(agent, expected, options), expected);
   assert.equal(recoverableAgentWorkDir(agent, "/tmp/unrelated-workspace", options), null);
-  assert.equal(
-    recoverableAgentWorkDir({ ...agent, role: "independentContributor" }, expected, options),
-    null
-  );
+  assert.equal(recoverableAgentWorkDir({ ...agent }, expected, options), expected);
 });
 
 test("Agent runtime uses the persisted workDir for every Provider", async () => {
@@ -38,7 +35,6 @@ test("Agent runtime uses the persisted workDir for every Provider", async () => 
   const configured = join(directory, "custom-assistant-workspace");
   const agent = {
     agentId: "assistant:custom",
-    role: "assistant",
     provider: "claude-sdk",
     workDir: configured
   };

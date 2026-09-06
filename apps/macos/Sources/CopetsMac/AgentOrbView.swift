@@ -121,17 +121,17 @@ struct AgentOrbDemoView: View {
     }
 
     static let assistant = Agent(
-        agentId: "assistant", name: "Corptie", description: "", role: "assistant",
+        agentId: "assistant", agentKind: "platformAssistant", name: "Corptie", description: "",
         status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
     static let contributor = Agent(
-        agentId: "backend-dev", name: "后端开发", description: "", role: "independentContributor",
+        agentId: "backend-dev", name: "后端开发", description: "",
         status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )
     static let claude = Agent(
-        agentId: "frontend-dev", name: "前端开发", description: "", role: "independentContributor",
+        agentId: "frontend-dev", name: "前端开发", description: "",
         status: "available", systemPrompt: "", capabilities: [],
         currentSessionId: nil, createdAt: "", updatedAt: ""
     )

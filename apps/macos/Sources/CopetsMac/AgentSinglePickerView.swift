@@ -45,7 +45,7 @@ struct AgentSinglePickerView: View {
                     HStack(spacing: 8) {
                         Image(systemName: selectedId == agent.agentId ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(selectedId == agent.agentId ? Color.accentColor : Color.secondary)
-                        Label(agent.name, systemImage: agent.isAssistant ? "sparkles" : "person")
+                        Label(agent.name, systemImage: agent.isPlatformAssistant ? "sparkles" : "person")
                         Spacer()
                     }
                     .contentShape(Rectangle())

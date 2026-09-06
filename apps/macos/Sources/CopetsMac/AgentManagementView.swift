@@ -103,6 +103,12 @@ struct AgentManagementView: View {
             HStack {
                 Text(L10n("Agents"))
                     .font(.title2.bold())
+                Text("\(client.agents.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(.quaternary, in: Capsule())
                 Spacer()
                 if showsSkillsButton {
                     Button {
@@ -134,16 +140,10 @@ struct AgentManagementView: View {
                 )
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 28) {
-                        agentSection(
-                            title: "Assistant",
-                            agents: client.agents.filter(\.isAssistant)
-                        )
-
-                        agentSection(
-                            title: "Independent Contributor",
-                            agents: client.agents.filter(\.isIndependentContributor)
-                        )
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
+                        ForEach(client.agents) { agent in
+                            agentCard(agent)
+                        }
                     }
                     .padding(AgentsSkillsLayoutMetrics.columnPadding)
                 }
@@ -232,67 +232,35 @@ struct AgentManagementView: View {
         )
     }
 
-    @ViewBuilder
-    private func agentSection(title: String, agents: [Agent]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(.headline)
-                Text("\(agents.count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(.quaternary, in: Capsule())
-            }
-
-            if agents.isEmpty {
-                Text(L10nFormat("No %@", title))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 72, alignment: .center)
-                    .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            } else {
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 16) {
-                    ForEach(agents) { agent in
-                        AgentCard(agent: agent, onStartSession: { agentForSessionCreation = agent })
-                            .contextMenu {
-                                Button(L10n("开始新会话")) {
-                                    agentForSessionCreation = agent
-                                }
-                                Button(L10n("打开详情")) {
-                                    selectedAgentForDetail = agent
-                                }
-                                Divider()
-                                Button {
-                                    NotificationCenter.default.post(
-                                        name: .showAgentOrb,
-                                        object: nil,
-                                        userInfo: ["agentId": agent.agentId]
-                                    )
-                                } label: {
-                                    Label(L10n("Show Floating Orb"), systemImage: "circle.circle")
-                                }
-                            }
-                            .onTapGesture {
-                                selectedAgentForDetail = agent
-                            }
-                            .focusable()
-                            .onKeyPress(.return) {
-                                selectedAgentForDetail = agent
-                                return .handled
-                            }
-                            .onKeyPress(.space) {
-                                selectedAgentForDetail = agent
-                                return .handled
-                            }
-                            .accessibilityAction(named: Text(L10n("打开详情"))) {
-                                selectedAgentForDetail = agent
-                            }
-                    }
+    private func agentCard(_ agent: Agent) -> some View {
+        AgentCard(agent: agent, onStartSession: { agentForSessionCreation = agent })
+            .contextMenu {
+                Button(L10n("开始新会话")) { agentForSessionCreation = agent }
+                Button(L10n("打开详情")) { selectedAgentForDetail = agent }
+                Divider()
+                Button {
+                    NotificationCenter.default.post(
+                        name: .showAgentOrb,
+                        object: nil,
+                        userInfo: ["agentId": agent.agentId]
+                    )
+                } label: {
+                    Label(L10n("Show Floating Orb"), systemImage: "circle.circle")
                 }
             }
-        }
+            .onTapGesture { selectedAgentForDetail = agent }
+            .focusable()
+            .onKeyPress(.return) {
+                selectedAgentForDetail = agent
+                return .handled
+            }
+            .onKeyPress(.space) {
+                selectedAgentForDetail = agent
+                return .handled
+            }
+            .accessibilityAction(named: Text(L10n("打开详情"))) {
+                selectedAgentForDetail = agent
+            }
     }
 
 }
@@ -342,7 +310,7 @@ struct SkillRegistryRow: View {
     }
 }
 
-// 单个 Agent 的网格卡片：Assistant 直接建聊天；IC 选择 CorptieTask 后建 Worker Session。
+// 单个 Agent 的网格卡片。所有 Agent 都可创建聊天或 Worker Session。
 struct AgentCard: View {
     let agent: Agent
     var onStartSession: (() -> Void)? = nil
@@ -366,7 +334,7 @@ struct AgentCard: View {
                     Text(agent.name)
                         .font(.headline)
                         .lineLimit(1)
-                    Text(roleLabel)
+                    Text(kindLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -394,7 +362,7 @@ struct AgentCard: View {
             }
             .frame(maxWidth: .infinity, minHeight: Metrics.descriptionHeight, maxHeight: Metrics.descriptionHeight, alignment: .topLeading)
 
-            // 能力标签
+            // 专长标签。它描述 Agent 擅长什么，不承载 Session 权限。
             FlowTags(tags: agent.capabilities)
 
             Spacer(minLength: 0)
@@ -431,11 +399,11 @@ struct AgentCard: View {
     }
 
     private var avatarColor: Color {
-        agent.isAssistant ? .accentColor : .blue
+        agent.isPlatformAssistant ? .accentColor : .blue
     }
 
-    private var roleLabel: String {
-        L10n(agent.isAssistant ? "Assistant" : "Independent Contributor")
+    private var kindLabel: String {
+        L10n(agent.isPlatformAssistant ? "Platform managed" : "Available for chat and tasks")
     }
 
     private var statusColor: Color {
@@ -461,7 +429,7 @@ struct FlowTags: View {
     var body: some View {
         Group {
             if tags.isEmpty {
-                Text(L10n("无能力标签"))
+                Text(L10n("无专长标签"))
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -502,7 +470,7 @@ struct FlowTags: View {
 
     private var allTagsPopover: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(L10n("全部能力标签"))
+            Text(L10n("全部专长标签"))
                 .font(.headline)
 
             ScrollView {

@@ -1107,6 +1107,20 @@ export class CorptieStore {
         raw_json TEXT NOT NULL DEFAULT '{}'
       );
 
+      CREATE TABLE IF NOT EXISTS session_capability_grants (
+        session_id TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        granted_at TEXT NOT NULL,
+        granted_by_session_id TEXT,
+        revoked_at TEXT,
+        PRIMARY KEY (session_id, capability),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_capability_grants_active
+      ON session_capability_grants(session_id, capability)
+      WHERE revoked_at IS NULL;
+
       CREATE TABLE IF NOT EXISTS session_items (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL,
@@ -1271,7 +1285,7 @@ export class CorptieStore {
         agent_kind TEXT NOT NULL DEFAULT 'user',
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
-        role TEXT NOT NULL DEFAULT 'independentContributor',
+        role TEXT NOT NULL DEFAULT 'agent',
         status TEXT NOT NULL DEFAULT 'available'
           CHECK (status IN ('available', 'busy', 'offline', 'inactive')),
         capabilities_json TEXT NOT NULL DEFAULT '[]',
@@ -2938,7 +2952,7 @@ export class CorptieStore {
       CREATE TABLE IF NOT EXISTS collaborator_registry (
         entry_type TEXT NOT NULL,
         entry_id TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'independentContributor',
+        role TEXT NOT NULL DEFAULT 'agent',
         capability_tags_json TEXT NOT NULL DEFAULT '[]',
         description TEXT NOT NULL DEFAULT '',
         availability TEXT NOT NULL DEFAULT 'idle',
@@ -3026,7 +3040,8 @@ export class CorptieStore {
     this.db.run("DROP INDEX IF EXISTS idx_agent_sessions_current_agent");
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active_pair
       ON agent_sessions(agent_id, session_id) WHERE unbound_at IS NULL`);
-    this.ensureColumn("agents", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
+    // Legacy compatibility column. Agent role no longer participates in product behavior.
+    this.ensureColumn("agents", "role", "TEXT NOT NULL DEFAULT 'agent'");
     this.ensureColumn("agents", "agent_kind", "TEXT NOT NULL DEFAULT 'user'");
     this.ensureColumn("agents", "system_prompt", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("agents", "work_dir", "TEXT");
@@ -3225,7 +3240,7 @@ export class CorptieStore {
     this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_session_idempotency
       ON tasks(created_by_session_id, idempotency_key)
       WHERE created_by_session_id IS NOT NULL AND idempotency_key IS NOT NULL`);
-    this.ensureColumn("collaborator_registry", "role", "TEXT NOT NULL DEFAULT 'independentContributor'");
+    this.ensureColumn("collaborator_registry", "role", "TEXT NOT NULL DEFAULT 'agent'");
     this.ensureColumn("hub_intent_cache", "agent_id", "TEXT");
     this.ensureColumn("sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("sessions", "archive_dependency_version", "INTEGER NOT NULL DEFAULT 0");
@@ -3403,8 +3418,7 @@ export class CorptieStore {
     this.db.run(`UPDATE sessions SET session_kind = 'assistantChat'
       WHERE (session_kind IS NULL OR TRIM(session_kind) = ''
           OR session_kind NOT IN ('assistantChat', 'workChat', 'worker'))
-        AND EXISTS (SELECT 1 FROM agents
-          WHERE agents.agent_id = sessions.agent_id AND agents.role = 'assistant')`);
+        AND task_id IS NULL AND work_id IS NULL`);
     this.db.run(`UPDATE sessions SET session_kind = 'legacy'
       WHERE session_kind IS NULL OR TRIM(session_kind) = ''
         OR session_kind NOT IN ('assistantChat', 'workChat', 'worker', 'legacy')`);
@@ -3570,10 +3584,20 @@ export class CorptieStore {
     this.repairRegressedTerminalSessionTurns();
     this.dropColumnIfExists("agents", "provider");
     this.ensureAssistantAgent();
-    this.migrateAssistantWorkDirs();
-    this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_assistant_work_dir
-      ON agents(work_dir COLLATE NOCASE)
-      WHERE role = 'assistant' AND work_dir IS NOT NULL AND TRIM(work_dir) <> ''`);
+    this.db.run("DROP INDEX IF EXISTS idx_agents_assistant_work_dir");
+    this.db.run("UPDATE agents SET role = 'agent' WHERE role IS NOT 'agent'");
+    // Preserve existing trusted platform Sessions without keeping authorization on Agent.
+    this.db.run(`INSERT OR IGNORE INTO session_capability_grants (
+        session_id, capability, granted_at, granted_by_session_id, revoked_at
+      )
+      SELECT sessions.id, 'platform.manage',
+             COALESCE(sessions.created_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+             NULL, NULL
+      FROM sessions
+      JOIN agents ON agents.agent_id = sessions.agent_id
+      WHERE agents.agent_kind = 'platformAssistant'
+        AND sessions.session_kind = 'assistantChat'
+        AND sessions.deleted_at IS NULL`);
     this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_archived_order ON sessions(archived, pinned DESC, sort_order ASC)");
     // Agent identity owns shared configuration and memory, not an execution slot.
     // Sessions are the concurrency boundary: each Session remains serial while
@@ -7383,6 +7407,50 @@ export class CorptieStore {
     };
   }
 
+  grantSessionCapability(sessionId, capability, grantedBySessionId = null) {
+    if (!this.getSession(sessionId)) throw new Error(`Session not found: ${sessionId}`);
+    const normalized = String(capability ?? "").trim();
+    if (!normalized) throw new TypeError("Session capability is required.");
+    this.db.run(
+      `INSERT INTO session_capability_grants (
+         session_id, capability, granted_at, granted_by_session_id, revoked_at
+       ) VALUES (?, ?, ?, ?, NULL)
+       ON CONFLICT(session_id, capability) DO UPDATE SET
+         granted_at=excluded.granted_at,
+         granted_by_session_id=excluded.granted_by_session_id,
+         revoked_at=NULL`,
+      [sessionId, normalized, createdAtFromOrNow(), grantedBySessionId]
+    );
+    this.scheduleSave();
+    return this.listSessionCapabilities(sessionId);
+  }
+
+  revokeSessionCapability(sessionId, capability) {
+    this.db.run(
+      `UPDATE session_capability_grants SET revoked_at = ?
+       WHERE session_id = ? AND capability = ? AND revoked_at IS NULL`,
+      [createdAtFromOrNow(), sessionId, String(capability ?? "").trim()]
+    );
+    this.scheduleSave();
+    return this.listSessionCapabilities(sessionId);
+  }
+
+  sessionHasCapability(sessionId, capability) {
+    return Boolean(this.selectOne(
+      `SELECT 1 FROM session_capability_grants
+       WHERE session_id = ? AND capability = ? AND revoked_at IS NULL`,
+      [sessionId, String(capability ?? "").trim()]
+    ));
+  }
+
+  listSessionCapabilities(sessionId) {
+    return this.selectAll(
+      `SELECT capability FROM session_capability_grants
+       WHERE session_id = ? AND revoked_at IS NULL ORDER BY capability ASC`,
+      [sessionId]
+    ).map((row) => row.capability);
+  }
+
   upsertSession(session) {
     const persistedAssociation = this.selectOne(
       "SELECT work_id, task_id, session_kind, deleted_at FROM sessions WHERE id = ?",
@@ -10634,7 +10702,7 @@ export class CorptieStore {
     this.scheduleSave();
   }
 
-  // ===== Agent（设计：通用角色化执行主体，role ∈ {independentContributor, assistant}）=====
+  // ===== Agent（可复用行为配置；Session 才是执行与授权上下文）=====
 
   listAgents() {
     return this.selectAll(`SELECT * FROM agents ORDER BY created_at ASC`).map(agentFromRow);
@@ -10646,7 +10714,7 @@ export class CorptieStore {
   }
 
   // 预种并自愈固定 id 的平台助手。名称和头像属于用户外观配置；
-  // 角色、Prompt、capabilities、Workspace 和 Skill 则以代码 manifest 为权威来源。
+  // 来源、Prompt、专长标签、Workspace 和 Skill 则以代码 manifest 为权威来源。
   ensureAssistantAgent() {
     // 迁移：修正历史遗留的平台助手旧名（仅限 "Copilot" 等已知旧值），幂等。
     // 注意：不能对任意非 "Corptie" 名称做统一改写，否则会覆盖用户对助手的合法重命名。
@@ -10655,27 +10723,27 @@ export class CorptieStore {
       [PLATFORM_ASSISTANT_MANIFEST.defaultName, PLATFORM_ASSISTANT_ID]
     );
     const existing = this.selectOne(`SELECT * FROM agents WHERE agent_id = ?`, [PLATFORM_ASSISTANT_ID]);
-    const defaultDir = resolveAgentWorkDir({ agentId: PLATFORM_ASSISTANT_ID, role: "assistant" }, { environmentName });
+    const defaultDir = typeof existing?.work_dir === "string" && existing.work_dir.trim()
+      ? resolve(existing.work_dir)
+      : resolveAgentWorkDir({ agentId: PLATFORM_ASSISTANT_ID }, { environmentName });
     if (existing) {
       this.db.run(
         `UPDATE agents SET
-           agent_kind = ?, description = ?, role = ?, status = 'available',
+           agent_kind = ?, description = ?, role = 'agent', status = 'available',
            capabilities_json = ?, system_prompt = ?, work_dir = ?
          WHERE agent_id = ?
-           AND (agent_kind IS NOT ? OR description IS NOT ? OR role IS NOT ?
+           AND (agent_kind IS NOT ? OR description IS NOT ? OR role IS NOT 'agent'
              OR status IS NOT 'available' OR capabilities_json IS NOT ?
              OR system_prompt IS NOT ? OR work_dir IS NOT ?)`,
         [
           AGENT_KIND.PLATFORM_ASSISTANT,
           PLATFORM_ASSISTANT_MANIFEST.description,
-          PLATFORM_ASSISTANT_MANIFEST.role,
           JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
           PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
           defaultDir,
           PLATFORM_ASSISTANT_ID,
           AGENT_KIND.PLATFORM_ASSISTANT,
           PLATFORM_ASSISTANT_MANIFEST.description,
-          PLATFORM_ASSISTANT_MANIFEST.role,
           JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
           PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
           defaultDir
@@ -10693,7 +10761,7 @@ export class CorptieStore {
         AGENT_KIND.PLATFORM_ASSISTANT,
         PLATFORM_ASSISTANT_MANIFEST.defaultName,
         PLATFORM_ASSISTANT_MANIFEST.description,
-        PLATFORM_ASSISTANT_MANIFEST.role,
+        "agent",
         "available",
         JSON.stringify(PLATFORM_ASSISTANT_MANIFEST.capabilities),
         PLATFORM_ASSISTANT_MANIFEST.systemPrompt,
@@ -10705,45 +10773,6 @@ export class CorptieStore {
     );
     this.scheduleSave();
     return this.getAgent(PLATFORM_ASSISTANT_ID);
-  }
-
-  // 旧版本把所有 Assistant 指向同一路径。升级时保留第一个占用者的目录，
-  // 其余冲突者切换到各自的默认目录；不复制共享目录内容，避免把一个助手的
-  // 历史文件继续扩散给其他助手。旧目录本身不会被删除。
-  migrateAssistantWorkDirs() {
-    const assistants = this.selectAll(
-      `SELECT * FROM agents WHERE role = 'assistant' ORDER BY created_at ASC, agent_id ASC`
-    );
-    const defaults = new Map(assistants.map((row) => [
-      row.agent_id,
-      resolveAgentWorkDir({ agentId: row.agent_id, role: "assistant" }, { environmentName })
-    ]));
-    const reservedDefaults = new Map(
-      Array.from(defaults, ([agentId, path]) => [path.toLowerCase(), agentId])
-    );
-    const claimed = new Set();
-
-    for (const row of assistants) {
-      const configured = typeof row.work_dir === "string" && row.work_dir.trim()
-        ? resolve(row.work_dir.trim())
-        : defaults.get(row.agent_id);
-      const configuredKey = configured.toLowerCase();
-      const reservedFor = reservedDefaults.get(configuredKey);
-      const target = claimed.has(configuredKey) || (reservedFor && reservedFor !== row.agent_id)
-        ? defaults.get(row.agent_id)
-        : configured;
-      const targetKey = target.toLowerCase();
-      if (claimed.has(targetKey)) {
-        throw new Error(`Unable to isolate workspace for Assistant ${row.agent_id}.`);
-      }
-      claimed.add(targetKey);
-      if (row.work_dir !== target) {
-        this.db.run(
-          `UPDATE agents SET work_dir = ?, updated_at = ? WHERE agent_id = ?`,
-          [target, createdAtFromOrNow(), row.agent_id]
-        );
-      }
-    }
   }
 
   // Agent 是可复用的执行配置，不以 Session 是否存在、运行或结束作为生命周期。
@@ -10781,16 +10810,13 @@ export class CorptieStore {
     return affected;
   }
 
-  // 创建 Agent（role 默认 independentContributor）。
-  // work_dir：显式指定则用显式值；否则按角色和 agentId 生成隔离的默认目录。
+  // 创建 Agent。work_dir 显式指定则使用该值，否则按 agentId 生成隔离目录。
   // 目录物理创建由启动期 / 会话创建期的 ensureAgentWorkDir 完成（store 仅存路径元数据）。
   createAgent(input = {}) {
     const id = input.id ?? `agent:${randomUUID()}`;
-    const role = input.role === "assistant" ? "assistant" : "independentContributor";
     const workDir = typeof input.workDir === "string" && input.workDir.trim()
       ? resolve(input.workDir.trim())
-      : resolveAgentWorkDir({ agentId: id, role }, { environmentName });
-    if (role === "assistant") this.assertAssistantWorkDirAvailable(workDir);
+      : resolveAgentWorkDir({ agentId: id }, { environmentName });
     const now = createdAtFromOrNow();
     this.db.run(
       `INSERT INTO agents (agent_id, agent_kind, name, description, role, status, capabilities_json, system_prompt, work_dir, avatar_path, current_session_id, created_at, updated_at)
@@ -10800,7 +10826,7 @@ export class CorptieStore {
         AGENT_KIND.USER,
         input.name,
         input.description ?? "",
-        role,
+        "agent",
         "available",
         JSON.stringify(input.capabilities ?? []),
         input.systemPrompt ?? "",
@@ -10817,18 +10843,15 @@ export class CorptieStore {
 
   // 更新 Agent 资源包（name/description/systemPrompt/capabilities/workDir）。
   // status 是旧版兼容列，不再是可编辑字段；Agent 持久化状态恒为 available。
-  // 强约束：role 在创建后不可变更（assistant ↔ independentContributor 定型后不可切换），
-  // 因此这里忽略任何传入的 role，始终沿用 existing.role。
+  // role 是旧版兼容列，固定为 agent 且不接受外部修改。
   updateAgent(agentId, input = {}) {
     const existing = this.getAgent(agentId);
     if (!existing) return null;
     if (isPlatformAssistant(existing)) assertPlatformAssistantPatch(input);
     const now = createdAtFromOrNow();
-    const role = existing.role;
     const workDir = typeof input.workDir === "string" && input.workDir.trim()
       ? resolve(input.workDir.trim())
       : existing.workDir;
-    if (role === "assistant") this.assertAssistantWorkDirAvailable(workDir, agentId);
     // avatarPath 需区分「未传」与「显式置空」：传入 null / 空串表示清除头像，
     // 未传（不含该键）则保持原值。其余字段沿用 ?? 回退。
     const avatarPath = Object.prototype.hasOwnProperty.call(input, "avatarPath")
@@ -10839,7 +10862,7 @@ export class CorptieStore {
       [
         input.name ?? existing.name,
         input.description ?? existing.description,
-        role,
+        "agent",
         "available",
         input.systemPrompt ?? existing.systemPrompt ?? "",
         input.capabilities != null ? JSON.stringify(input.capabilities) : JSON.stringify(existing.capabilities ?? []),
@@ -10851,20 +10874,6 @@ export class CorptieStore {
     );
     this.scheduleSave();
     return this.getAgent(agentId);
-  }
-
-  assertAssistantWorkDirAvailable(workDir, excludingAgentId = null) {
-    const existing = this.selectOne(
-      `SELECT agent_id FROM agents
-       WHERE role = 'assistant' AND work_dir = ? COLLATE NOCASE
-         AND (? IS NULL OR agent_id <> ?)
-       LIMIT 1`,
-      [resolve(workDir), excludingAgentId, excludingAgentId]
-    );
-    if (!existing) return;
-    const error = new Error("每个 Assistant 必须使用独立的 Workspace，该目录已被另一个 Assistant 占用。");
-    error.code = "ASSISTANT_WORKSPACE_CONFLICT";
-    throw error;
   }
 
   // 删除 Agent：有活跃（running）session 时抛错阻止；无则解绑保留历史 session（agent_sessions 级联删除）
@@ -10928,7 +10937,7 @@ export class CorptieStore {
         }
         for (const agentId of work.contributorAgentIds) {
           const agent = this.getAgent(agentId);
-          if (agent?.role !== "independentContributor") {
+          if (!agent || agent.status !== "available") {
             this.recordAssociationAudit({
               entityType: "work", entityId: work.id, field: "contributorAgentIds",
               receivedValue: agentId, status: "unresolved",
@@ -12530,9 +12539,9 @@ export class CorptieStore {
         `Agent not found: ${agentId}`
       );
     }
-    if (agent.role !== "independentContributor" || agent.status !== "available") {
+    if (agent.status !== "available") {
       throw associationError(
-        "AGENT_NOT_ASSIGNABLE", field, "available independentContributor Agent ID", agentId,
+        "AGENT_NOT_ASSIGNABLE", field, "available Agent ID", agentId,
         `Agent is not assignable: ${agentId}`
       );
     }
@@ -13296,7 +13305,7 @@ export class CorptieStore {
       [
         entry.entryType,
         entry.entryId,
-        entry.role ?? "independentContributor",
+        entry.role ?? "agent",
         JSON.stringify(entry.capabilityTags ?? []),
         entry.description ?? "",
         entry.availability ?? "idle",
@@ -13639,22 +13648,17 @@ export class CorptieStore {
         [row.id]
       );
     const agentIdentity = Object.hasOwn(row, "projection_binding_agent_id")
-      ? {
-          agent_id: row.projection_binding_agent_id,
-          role: row.projection_agent_role
-        }
+      ? { agent_id: row.projection_binding_agent_id }
       : this.selectOne(
-        `SELECT bindings.agent_id, agents.role
+        `SELECT bindings.agent_id
          FROM agent_sessions bindings
-         LEFT JOIN agents ON agents.agent_id = bindings.agent_id
          WHERE bindings.session_id = ? AND bindings.unbound_at IS NULL LIMIT 1`,
         [row.id]
       );
     const sessionKind = inferSessionKind({
       sessionKind: row.session_kind,
       workId: row.work_id,
-      taskId: row.task_id,
-      agentRole: agentIdentity?.role
+      taskId: row.task_id
     });
     const archiveState = resolveSessionArchiveState(
       { sessionKind, archived: Boolean(row.archived) },
@@ -13965,10 +13969,6 @@ function sessionProjectionSelectSQL() {
     (SELECT bindings.agent_id FROM agent_sessions bindings
      WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
      LIMIT 1) AS projection_binding_agent_id,
-    (SELECT agents.role FROM agent_sessions bindings
-     LEFT JOIN agents ON agents.agent_id = bindings.agent_id
-     WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
-     LIMIT 1) AS projection_agent_role,
     CASE
       WHEN EXISTS (
         SELECT 1 FROM session_turns turns
@@ -14498,7 +14498,6 @@ function agentFromRow(row) {
     agentKind: row.agent_kind ?? AGENT_KIND.USER,
     name: row.name,
     description: row.description ?? "",
-    role: row.role ?? "independentContributor",
     // 防御性规范化：即使旧客户端或外部 SQL 写入了历史值，
     // 也不允许会话生命周期重新污染 Agent 可用性。
     status: "available",
