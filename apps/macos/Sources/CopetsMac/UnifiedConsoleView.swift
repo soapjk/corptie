@@ -135,7 +135,6 @@ private struct ConsoleFlowingGradientWorkTitle: View {
 
 private struct ConsoleScheduledWakeIcon: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.scenePhase) private var scenePhase
     @State private var isVisible = false
 
     var body: some View {
@@ -145,7 +144,8 @@ private struct ConsoleScheduledWakeIcon: View {
             } else {
                 TimelineView(.animation(
                     minimumInterval: ConsoleWorkOutlineMetrics.workingGradientFrameInterval,
-                    paused: !isVisible || scenePhase != .active
+                    // AppKit-hosted windows do not reliably propagate SwiftUI scenePhase.
+                    paused: !isVisible
                 )) { context in
                     coloredIcon(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
                 }
