@@ -36,8 +36,42 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
     });
     store.bindSessionToTask("session:task-revision", task.id, work.id);
 
+    for (const next of [
+      { description: "Changed", lifecycleState: "completed" },
+      { description: "Changed", priority: "high" },
+      { description: "Changed", workId: "another-work" },
+      [], null
+    ]) {
+      assert.throws(() => store.reviseTask(task.id, {
+        expectedRevision: 1, createdBySessionId: "session:task-revision", next
+      }), { code: "TASK_REVISION_INVALID_FIELDS" });
+    }
+    assert.throws(() => store.reviseTask(task.id, {
+      expectedRevision: 1, createdBySessionId: "session:task-revision",
+      next: { description: "Finish the first problem" }
+    }), { code: "TASK_REVISION_EMPTY" });
+    assert.equal(store.getTask(task.id).revision, 1);
+    assert.equal(store.selectOne("SELECT COUNT(*) AS count FROM task_snapshots WHERE task_id=?", [task.id]).count, 0);
+
+    store.appendSessionEvent({ eventId: "user-message:revision-user", sessionId: "session:task-revision",
+      type: "SessionUserMessageCreated", producer: "user", surface: true,
+      source: { type: "desktop" }, payload: { message: { text: "Please work on the second problem." } } });
+    store.appendSessionEvent({ eventId: "user-message:revision-automation", sessionId: "session:task-revision",
+      type: "SessionUserMessageCreated", producer: "user", surface: true,
+      source: { type: "desktop", automationId: "automation:1" }, payload: {} });
+    store.appendSessionEvent({ eventId: "user-message:revision-assistant", sessionId: "session:task-revision",
+      type: "SessionUserMessageCreated", producer: "assistant", surface: true,
+      source: { type: "desktop" }, payload: {} });
+    for (const sourceMessageId of ["missing", "revision-automation", "revision-assistant"]) {
+      assert.throws(() => store.reviseTask(task.id, {
+        expectedRevision: 1, createdBySessionId: "session:task-revision", sourceMessageId,
+        next: { description: "An unauthorized definition" }
+      }), { code: "TASK_REVISION_SOURCE_INVALID" });
+    }
+
     const result = store.reviseTask(task.id, {
       expectedRevision: 1,
+      sourceMessageId: "revision-user",
       createdBySessionId: "session:task-revision",
       executionSummary: "First problem completed.",
       completionEvidence: [{ kind: "test", value: "passed" }],
@@ -55,6 +89,7 @@ test("evolving a Task atomically freezes its prior revision as an immutable snap
     assert.equal(result.task.current_snapshot_id, result.snapshot.id);
     assert.equal(result.snapshot.title, "First problem");
     assert.equal(result.snapshot.version, 1);
+    assert.equal(result.snapshot.sourceMessageId, "user-message:revision-user");
     assert.deepEqual(result.snapshot.completionEvidence, [{ kind: "test", value: "passed" }]);
     assert.throws(
       () => store.db.run("UPDATE task_snapshots SET title='mutated' WHERE id=?", [result.snapshot.id]),

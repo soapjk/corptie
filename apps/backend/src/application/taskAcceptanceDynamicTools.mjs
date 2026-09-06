@@ -91,9 +91,10 @@ export const taskAcceptanceDynamicTools = Object.freeze([
       },
       executionSummary: { type: "string" },
       completionEvidence: { type: "array", items: evidence },
-      sourceMessageId: { type: "string", minLength: 1 }
+      sourceMessageId: { type: "string", minLength: 1,
+        description: "Actual direct user message id or user-message event id in this Session that changes the Task definition. Never use assistant, collaboration or scheduled messages." }
     },
-    ["expectedRevision", "next"]
+    ["expectedRevision", "next", "sourceMessageId"]
   )
 ]);
 

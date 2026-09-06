@@ -6,6 +6,26 @@ import { CallbackAgentProvider } from "../src/agent-provider/callbackAgentProvid
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import { BackgroundAgentService, BackgroundAgentUnavailableError } from "../src/application/backgroundAgentService.mjs";
 
+test("preview gate rejects internal calls before provider invocation", async () => {
+  const calls = [];
+  const registry = new AgentProviderRegistry([provider("background", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], calls)]);
+  const service = new BackgroundAgentService({ registry, isEnabled: () => false });
+  await assert.rejects(service.run({ purpose: "summary", prompt: "private", cwd: "/isolated" }), { code: "BACKGROUND_EXECUTION_DISABLED" });
+  assert.equal(calls.length, 0);
+});
+
+test("strict provider selection cannot silently fall back", () => {
+  const registry = new AgentProviderRegistry([provider("other", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], [])]);
+  const service = new BackgroundAgentService({ registry, defaultProviderId: "other" });
+  assert.throws(() => service.selectProvider("missing", "read-only", { allowFallback: false }), BackgroundAgentUnavailableError);
+});
+
+test("read-only does not imply no-tools capability", () => {
+  const registry = new AgentProviderRegistry([provider("reader", [AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT], [])]);
+  const service = new BackgroundAgentService({ registry, defaultProviderId: "reader" });
+  assert.throws(() => service.selectProvider("reader", "read-only", { allowFallback: false, executionPolicy: "no-tools" }), BackgroundAgentUnavailableError);
+});
+
 function provider(id, capabilities, calls, metadata = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities, metadata }, {
     listSessions: () => [],

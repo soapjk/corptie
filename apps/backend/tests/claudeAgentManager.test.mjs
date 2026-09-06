@@ -5,6 +5,55 @@ import { join } from "node:path";
 import test from "node:test";
 import { ClaudeAgentManager } from "../src/adapters/claudeAgentManager.mjs";
 
+test("background no-tools disables built-ins, inherited MCP, settings and plugins, then releases the query", async () => {
+  let captured;
+  let closed = false;
+  const manager = new ClaudeAgentManager({ query: (request) => {
+    captured = request;
+    return {
+      async *[Symbol.asyncIterator]() { yield { type: "result", result: "summary" }; },
+      close() { closed = true; }
+    };
+  } });
+  assert.deepEqual(await manager.runBackgroundPrompt({
+    prompt: "input", developerInstructions: "Schema instructions", executionPolicy: "no-tools",
+    permissionProfile: "read-only"
+  }), { text: "summary" });
+  assert.deepEqual(captured.options.tools, []);
+  assert.deepEqual(captured.options.mcpServers, {});
+  assert.equal(captured.options.strictMcpConfig, true);
+  assert.deepEqual(captured.options.settingSources, []);
+  assert.deepEqual(captured.options.plugins, []);
+  assert.deepEqual(captured.options.agents, {});
+  assert.deepEqual(captured.options.hooks, {});
+  assert.equal(captured.options.systemPrompt, "Schema instructions");
+  assert.equal(captured.options.persistSession, false);
+  assert.equal((await captured.options.canUseTool("Read", {})).behavior, "deny");
+  assert.equal(closed, true);
+});
+
+test("background rejects unsupported execution policies before creating a query", async () => {
+  const manager = new ClaudeAgentManager({ query: () => { assert.fail("must not start query"); } });
+  await assert.rejects(manager.runBackgroundPrompt({ executionPolicy: "unknown" }), { code: "CAPABILITY_UNSUPPORTED" });
+  await assert.rejects(manager.runBackgroundPrompt({ executionPolicy: "no-tools", permissionProfile: "workspace-write" }), {
+    code: "CAPABILITY_UNSUPPORTED"
+  });
+});
+
+test("background cancellation rejects late output and closes the query", async () => {
+  const controller = new AbortController();
+  let closed = false;
+  const manager = new ClaudeAgentManager({ query: () => ({
+    async *[Symbol.asyncIterator]() {
+      controller.abort();
+      yield { type: "result", result: "late output" };
+    },
+    close() { closed = true; }
+  }) });
+  await assert.rejects(manager.runBackgroundPrompt({ executionPolicy: "no-tools", signal: controller.signal }));
+  assert.equal(closed, true);
+});
+
 test("Claude preserves a recovery handoff alongside ordinary system instructions", () => {
   const manager = new ClaudeAgentManager();
   manager.start({

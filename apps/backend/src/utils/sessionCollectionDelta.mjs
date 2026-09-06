@@ -2,6 +2,7 @@ const DEFAULT_HISTORY_LIMIT = 256;
 
 function stableSessionFields(previous, next) {
   const fields = [];
+  if (JSON.stringify(previous.attention) !== JSON.stringify(next.attention)) fields.push("attention");
   if (previous.title !== next.title
     || previous.agent !== next.agent
     || previous.accent !== next.accent) fields.push("identity");

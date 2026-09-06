@@ -13,6 +13,7 @@ struct SessionChangedFields: OptionSet, Equatable, Sendable {
     static let suggestedOptions = Self(rawValue: 1 << 7)
     static let ordering = Self(rawValue: 1 << 8)
     static let metadata = Self(rawValue: 1 << 9)
+    static let attention = Self(rawValue: 1 << 10)
 }
 
 struct SessionContentPatch: Equatable, Sendable {
@@ -127,6 +128,7 @@ enum SessionCollectionDiffer {
             || previous.external?.routingVersion != next.external?.routingVersion {
             fields.insert(.workspace)
         }
+        if previous.attention != next.attention { fields.insert(.attention) }
         if previous.suggestedOptions != next.suggestedOptions
             || previous.suggestedPrompt != next.suggestedPrompt {
             fields.insert(.suggestedOptions)

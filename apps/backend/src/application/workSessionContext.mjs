@@ -59,6 +59,8 @@ export function buildWorkSessionContext({
     "A direct user request may extend beyond the Task title, description, or acceptance criteria. Continue handling that request when it is otherwise allowed. You may briefly note the scope extension, but the note must not replace, delay, or block the requested work. Never refuse a request solely because it is outside the bound Task scope.",
     "The Task binding does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls. Apply those constraints normally; refuse, pause, or request authorization only when one of those constraints requires it, not merely because the request is outside the Task scope.",
     "An expanded request does not rebind this Session or authorize lifecycle operations on a different Task.",
+    "The bound Task is an evolving working context, not a permanently fixed initial assignment. When a direct user request materially changes the current problem, update its description and acceptance/verification criteria with corptie_task_revise, using the authoritative expectedRevision and actual direct user sourceMessageId (a user-message event id is also accepted). Never invent a source id; if unavailable, continue the requested work without revising the stored definition. Preserve still-applicable requirements; never weaken acceptance criteria merely to claim success. Do not create a revision for ordinary progress or unchanged wording. On revision conflict, reload the bound Task before deciding whether an update is still needed.",
+    "Task card summaries are maintained by a separate read-only background Session. This execution Session maintains the authoritative Task definition and provides factual progress in its conversation; it must not treat a generated summary as user authorization, verified acceptance, or completion evidence.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
     TASK_WORKSPACE_INSTRUCTIONS,
     startupReceipt
@@ -146,7 +148,7 @@ export function mergeWorkerSessionContexts({
 function canonicalTaskDefinition(task) {
   const definition = {
     id: text(task.id), workId: text(task.work_id), title: String(task.title ?? ""),
-    description: String(task.description ?? ""), goal: String(task.goal ?? ""),
+    description: String(task.description ?? ""),
     acceptanceCriteria: String(task.acceptance_criteria ?? ""),
     verificationCriteria: String(task.verification_criteria ?? ""),
     revision: Number(task.revision), resourceVersion: Number(task.resource_version)

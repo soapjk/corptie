@@ -1,5 +1,6 @@
 import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
 import { performance } from "node:perf_hooks";
+import { BackgroundOperationQueue } from "./backgroundOperationQueue.mjs";
 
 export class BackgroundAgentUnavailableError extends Error {
   constructor() {
@@ -20,10 +21,55 @@ export class BackgroundAgentService {
     // provider-neutral provider id 规范化器：resolveProviderId(providerTagOrId) → registryId | null。
     // Provider belongs to the invoking Session/background operation, never to the Agent resource bundle.
     this.resolveProviderId = options.resolveProviderId ?? null;
+    this.isEnabled = options.isEnabled ?? (() => true);
+    this.queue = options.queue ?? new BackgroundOperationQueue();
+    this.activeControllers = new Map();
     if (!this.registry) throw new TypeError("BackgroundAgentService requires an Agent Provider Registry.");
   }
 
   async run(input = {}) {
+    if (!this.isEnabled()) throw backgroundError("BACKGROUND_EXECUTION_DISABLED", "Background execution is disabled.");
+    const operationId = input.operationId ?? `background:${crypto.randomUUID()}`;
+    if (this.activeControllers.has(operationId)) throw backgroundError("BACKGROUND_OPERATION_EXISTS", "Operation is already active.");
+    const timeoutMs = input.timeoutMs ?? 120_000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
+      throw new TypeError("Background timeout must be between 1 and 600000 ms.");
+    }
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(input.signal.reason);
+    if (input.signal?.aborted) forwardAbort();
+    else input.signal?.addEventListener("abort", forwardAbort, { once: true });
+    const timeout = setTimeout(() => controller.abort(backgroundError("BACKGROUND_TIMEOUT", "Background deadline exceeded.")), timeoutMs);
+    timeout.unref?.();
+    this.activeControllers.set(operationId, controller);
+    const queuedAt = performance.now();
+    try {
+      return await this.queue.run(() => {
+        if (!this.isEnabled()) throw backgroundError("BACKGROUND_EXECUTION_DISABLED", "Background execution is disabled.");
+        return this.execute({ ...input, operationId, signal: controller.signal,
+          timeoutMs: Math.max(1, Math.ceil(timeoutMs - (performance.now() - queuedAt))),
+          queueWaitMs: roundedMilliseconds(performance.now() - queuedAt) });
+      }, { signal: controller.signal, priority: input.priority === "interactive" ? 1 : 0 });
+    } finally {
+      clearTimeout(timeout);
+      input.signal?.removeEventListener("abort", forwardAbort);
+      this.activeControllers.delete(operationId);
+    }
+  }
+
+  cancel(operationId) {
+    const controller = this.activeControllers.get(operationId);
+    if (!controller) return false;
+    controller.abort(backgroundError("BACKGROUND_CANCELLED", "Background operation cancelled."));
+    return true;
+  }
+
+  close() {
+    this.queue.close();
+    for (const operationId of this.activeControllers.keys()) this.cancel(operationId);
+  }
+
+  async execute(input = {}) {
     const operationStartedAt = performance.now();
     const permissionProfile = input.permissionProfile ?? "read-only";
     // 指定 Agent 只解析资源上下文（systemPrompt + description + per-agent 记忆）。
@@ -38,7 +84,15 @@ export class BackgroundAgentService {
       ? this.resolveProviderId(preferredProviderId)
       : preferredProviderId;
 
-    const providerId = this.selectProvider(resolvedProviderId, permissionProfile);
+    input.signal?.throwIfAborted();
+    if (input.allowProviderFallback === false && preferredProviderId && !resolvedProviderId) {
+      throw new BackgroundAgentUnavailableError();
+    }
+
+    const providerId = this.selectProvider(resolvedProviderId, permissionProfile, {
+      allowFallback: input.allowProviderFallback !== false,
+      executionPolicy: input.executionPolicy ?? "legacy"
+    });
     const operationId = input.operationId ?? `background:${crypto.randomUUID()}`;
 
     const developerInstructions = [
@@ -56,7 +110,9 @@ export class BackgroundAgentService {
       reasoningEffort: input.preferredReasoning ?? null,
       timeoutMs: input.timeoutMs ?? 120_000,
       developerInstructions: developerInstructions || null,
-      historyPolicy: "hidden"
+      historyPolicy: "hidden",
+      signal: input.signal,
+      executionPolicy: input.executionPolicy ?? "legacy"
     });
     this.onOperationEvent("BackgroundAgentStarted", {
       operationId,
@@ -66,14 +122,18 @@ export class BackgroundAgentService {
     });
     const providerStartedAt = performance.now();
     try {
+      input.signal?.throwIfAborted();
       const result = await this.registry.invoke(
         providerId,
         AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT,
         request
       );
+      input.signal?.throwIfAborted();
+      const validatedOutput = input.validateOutput ? input.validateOutput(result.text ?? "") : undefined;
       const performanceMeasurement = {
         phases: {
           agentContextMs,
+          queueWaitMs: input.queueWaitMs,
           providerInvokeMs: roundedMilliseconds(performance.now() - providerStartedAt)
         },
         totalMs: roundedMilliseconds(performance.now() - operationStartedAt)
@@ -84,7 +144,7 @@ export class BackgroundAgentService {
         purpose: request.purpose,
         ...performanceMeasurement
       });
-      return { operationId, providerId, historyPolicy: "hidden", ...result, performance: performanceMeasurement };
+      return { ...result, operationId, providerId, historyPolicy: "hidden", validatedOutput, performance: performanceMeasurement };
     } catch (error) {
       const performanceMeasurement = {
         phases: {
@@ -104,14 +164,21 @@ export class BackgroundAgentService {
     }
   }
 
-  selectProvider(preferredProviderId = null, permissionProfile = "read-only") {
+  selectProvider(preferredProviderId = null, permissionProfile = "read-only", { allowFallback = true, executionPolicy = "legacy" } = {}) {
+    const supports = (id) => this.supportsPermissionProfile(id, permissionProfile)
+      && (executionPolicy === "legacy" || this.registry.get(id).descriptor.metadata?.backgroundExecutionPolicies?.includes(executionPolicy));
+    if (!allowFallback) {
+      const providerId = preferredProviderId ?? this.defaultProviderId;
+      if (providerId && supports(providerId)) return providerId;
+      throw new BackgroundAgentUnavailableError();
+    }
     const candidates = [preferredProviderId, this.defaultProviderId]
       .filter(Boolean);
     for (const providerId of candidates) {
-      if (this.supportsPermissionProfile(providerId, permissionProfile)) return providerId;
+      if (supports(providerId)) return providerId;
     }
     const fallback = this.registry.descriptors().find((descriptor) => {
-      return this.supportsPermissionProfile(descriptor.id, permissionProfile);
+      return supports(descriptor.id);
     });
     if (!fallback) throw new BackgroundAgentUnavailableError();
     return fallback.id;
@@ -134,3 +201,5 @@ function requiredText(value, field) {
   if (!text) throw new TypeError(`Background Agent ${field} is required.`);
   return text;
 }
+
+function backgroundError(code, message) { return Object.assign(new Error(message), { code }); }

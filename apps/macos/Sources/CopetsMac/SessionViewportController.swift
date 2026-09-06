@@ -2,11 +2,13 @@ import Combine
 import Foundation
 
 extension Notification.Name {
+    static let consoleComposerFocusRequested = Notification.Name("consoleComposerFocusRequested")
     static let captureSessionTimelinePositions = Notification.Name("captureSessionTimelinePositions")
+    static let sessionTimelineSubmissionAccepted = Notification.Name("sessionTimelineSubmissionAccepted")
 }
 
-/// Sole semantic viewport owner for a Session surface. SQLite retains every
-/// visited Session while the in-memory hot set remains bounded.
+/// Position repository/cache, not a live viewport authority. The native host
+/// owns user intent; persisted positions are initialization candidates only.
 @MainActor
 final class SessionViewportController: ObservableObject {
     static let shared = SessionViewportController()
@@ -41,6 +43,7 @@ final class SessionViewportController: ObservableObject {
         guard positions[sessionID] == nil, loads[sessionID] == nil, let repository else { return }
         loads[sessionID] = Task { @MainActor [weak self] in
             let record = try? await repository.load(sessionID: sessionID)
+            guard !Task.isCancelled else { return }
             guard let self else { return }
             self.loads[sessionID] = nil
             let observed = self.positionsObservedDuringHydration.removeValue(forKey: sessionID)
@@ -66,6 +69,14 @@ final class SessionViewportController: ObservableObject {
                 // observation becomes this Session's initial semantic state.
                 self.store(observed, for: sessionID)
             }
+        }
+    }
+
+    func discardPendingHydration(for sessionID: String) {
+        guard let task = loads.removeValue(forKey: sessionID) else { return }
+        task.cancel()
+        if let observed = positionsObservedDuringHydration.removeValue(forKey: sessionID) {
+            store(observed, for: sessionID)
         }
     }
 
