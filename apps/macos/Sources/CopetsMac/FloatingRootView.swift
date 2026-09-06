@@ -5756,7 +5756,7 @@ private func automationEventLabel(_ type: String) -> String {
     switch type {
     case "ScheduledSessionTaskCreated": L10n("已创建")
     case "ScheduledSessionTaskDue": L10n("已触发")
-    case "ScheduledSessionRunQueued": L10n("已排队")
+    case "ScheduledSessionRunQueued": L10n("已触发")
     default: L10n("计划任务事件")
     }
 }
