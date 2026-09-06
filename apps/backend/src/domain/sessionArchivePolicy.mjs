@@ -6,10 +6,13 @@ export function isCompletedTaskStatus(status) {
   return completedTaskStatuses.has(String(status ?? "").trim().toLowerCase());
 }
 
-export function resolveSessionArchiveState(session, { taskStatus = null } = {}) {
+export function resolveSessionArchiveState(session, { taskStatus = null, taskArchived = false } = {}) {
   const sessionKind = session?.sessionKind ?? session?.session_kind ?? SESSION_KIND.legacy;
   if (sessionKind === SESSION_KIND.worker && isCompletedTaskStatus(taskStatus)) {
     return { archived: true, reason: "taskCompleted" };
+  }
+  if (sessionKind === SESSION_KIND.worker && taskArchived) {
+    return { archived: true, reason: "taskArchived" };
   }
   if (session?.archived === true || Number(session?.archived) === 1) {
     return {

@@ -9,6 +9,20 @@ import {
   validateReasoningLevelForModel
 } from "../src/agent-provider/sessionApplicationService.mjs";
 
+test("archived Tasks cannot send, resume, or restart through any Provider", async () => {
+  const service = new SessionApplicationService({
+    registry: { invoke() { assert.fail("Archived Tasks must not invoke a Provider"); } },
+    resolveSessionReference: async () => ({
+      sessionId: "session:archived", providerId: "test-provider",
+      providerSessionId: "thread:archived",
+      metadata: { session: { archiveReason: "taskArchived", archived: true } }
+    })
+  });
+  await assert.rejects(service.sendMessage("session:archived", "continue"), { code: "TASK_ARCHIVED" });
+  await assert.rejects(service.resumeSession("session:archived"), { code: "TASK_ARCHIVED" });
+  await assert.rejects(service.restartSession("session:archived"), { code: "TASK_ARCHIVED" });
+});
+
 function fixture(capabilities = [
   AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
   AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,

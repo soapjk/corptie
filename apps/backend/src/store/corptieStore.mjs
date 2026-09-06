@@ -3070,6 +3070,7 @@ export class CorptieStore {
     this.ensureColumn("tasks", "creation_reference_fingerprint", "TEXT");
     this.ensureColumn("tasks", "resource_version", "INTEGER NOT NULL DEFAULT 1");
     this.ensureColumn("tasks", "canceled_at", "TEXT");
+    this.ensureColumn("tasks", "archived", "INTEGER NOT NULL DEFAULT 0");
     this.ensureColumn("tasks", "cancel_reason", "TEXT");
     this.ensureColumn("tasks", "deletion_status", "TEXT");
     this.db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_browse_page
@@ -3852,8 +3853,9 @@ export class CorptieStore {
     this.db.run("DROP TRIGGER IF EXISTS state_sync_worker_archive_dependency_update");
     this.db.run(`
       CREATE TRIGGER state_sync_worker_archive_dependency_update
-      AFTER UPDATE OF lifecycle_state ON tasks
+      AFTER UPDATE OF lifecycle_state, archived ON tasks
       WHEN (OLD.lifecycle_state = 'done') IS NOT (NEW.lifecycle_state = 'done')
+        OR OLD.archived IS NOT NEW.archived
       BEGIN
         UPDATE sessions
         SET archive_dependency_version = archive_dependency_version + 1
@@ -6118,7 +6120,7 @@ export class CorptieStore {
            OR (sessions.session_kind = 'worker' AND EXISTS (
              SELECT 1 FROM tasks archived_task
              WHERE archived_task.id = sessions.task_id
-               AND archived_task.lifecycle_state = 'done'
+               AND (archived_task.lifecycle_state = 'done' OR archived_task.archived = 1)
            ))
          ), 0) = 0
        ORDER BY provider_session_id ASC`,
@@ -12309,6 +12311,33 @@ export class CorptieStore {
     );
   }
 
+  setTaskArchived(id, archived) {
+    const task = this.getTask(id);
+    const reject = (code, message) => {
+      const error = new Error(message);
+      Object.assign(error, { code, statusCode: 409 });
+      throw error;
+    };
+    if (!task) reject("TASK_NOT_FOUND", "Task not found.");
+    if (typeof archived !== "boolean") reject("INVALID_ARCHIVED", "archived must be a boolean.");
+    if (Boolean(task.archived) === archived) return task;
+    if (task.deletion_status === "deleting") reject("TASK_DELETING", "Task deletion is in progress.");
+    if (archived) {
+      if (task.lifecycle_state === "done") reject("TASK_COMPLETED", "Completed Tasks are already archived.");
+      if (["running", "blocked", "queued", "starting"].includes(task.execution_status)
+        || this.listSessionsByTask(id).some((session) => ["running", "processing", "blocked", "queued", "starting"].includes(session.executionStatus ?? session.status))) {
+        reject("TASK_ARCHIVE_BUSY", "请先停止 Task 执行，再归档。");
+      }
+      if (this.hasPendingScheduledWakeForTask(id)) {
+        reject("TASK_ARCHIVE_PENDING_WAKE", "请先取消等待执行的计划任务，再归档。");
+      }
+    }
+    this.db.run("UPDATE tasks SET archived=?, resource_version=resource_version+1, updated_at=? WHERE id=?",
+      [archived ? 1 : 0, createdAtFromOrNow(), id]);
+    this.scheduleSave();
+    return this.getTask(id);
+  }
+
   updateTask(id, patch = {}) {
     const current = this.getTask(id);
     if (!current) return null;
@@ -13662,7 +13691,7 @@ export class CorptieStore {
     });
     const archiveState = resolveSessionArchiveState(
       { sessionKind, archived: Boolean(row.archived) },
-      { taskStatus: row.projection_task_status }
+      { taskStatus: row.projection_task_status, taskArchived: row.projection_task_archived === 1 }
     );
     return {
       id: publicId,
@@ -14004,6 +14033,9 @@ function sessionProjectionSelectSQL() {
     (SELECT tasks.lifecycle_state FROM tasks
      WHERE tasks.id = sessions.task_id
      LIMIT 1) AS projection_task_status,
+    (SELECT tasks.archived FROM tasks
+     WHERE tasks.id = sessions.task_id
+     LIMIT 1) AS projection_task_archived,
     (SELECT cursors.sync_health
      FROM logical_sessions logical
      JOIN provider_thread_bindings bindings
@@ -14021,7 +14053,7 @@ function effectiveSessionArchivedSQL() {
     WHEN sessions.session_kind = 'worker' AND EXISTS (
       SELECT 1 FROM tasks archive_task
       WHERE archive_task.id = sessions.task_id
-        AND archive_task.lifecycle_state = 'done'
+        AND (archive_task.lifecycle_state = 'done' OR archive_task.archived = 1)
     ) THEN 1
     ELSE 0
   END`;

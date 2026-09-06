@@ -525,6 +525,11 @@
 "Sessions" = "Sessions";
 "Session" = "Session";
 "Chat" = "Chat";
+"归档 Task" = "Archive Task";
+"恢复 Task" = "Restore Task";
+"查看归档 Task" = "View Archived Tasks";
+"返回活动 Task" = "Back to Active Tasks";
+"归档失败" = "Could not archive Task.";
 "Mention a Work or Session" = "Mention a Work or Session";
 "Mention suggestions" = "Mention suggestions";
 "Agents" = "Agents";

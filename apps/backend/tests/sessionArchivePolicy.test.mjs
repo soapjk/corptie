@@ -50,7 +50,8 @@ test("Worker archive membership follows Task completion and publishes live State
   });
   try {
     await store.initialize();
-    store.createWork({ id: "work:one", name: "Work" });
+    const agent = store.createAgent({ name: "Archive", role: "independentContributor" });
+    store.createWork({ id: "work:one", name: "Work", contributorAgentIds: [agent.agentId] });
     store.createTask({
       id: "task:one",
       workId: "work:one",
@@ -115,6 +116,27 @@ test("Worker archive membership follows Task completion and publishes live State
     );
 
     let revision = sync.snapshot().revision;
+    const beforeArchive = store.getTask("task:one");
+    store.setTaskArchived("task:one", true);
+    assert.equal(store.getTask("task:one").lifecycle_state, beforeArchive.lifecycle_state);
+    assert.equal(store.getSession("session:worker").archiveReason, "taskArchived");
+    assert.deepEqual(store.listSessions({ archived: false }), []);
+    assert.deepEqual(sync.changesAfter(revision).deletes.sessions, ["session:worker"]);
+    assert.equal(store.listSessionPage({ archived: true, sessionKind: "worker", limit: 50 }).items.length, 1);
+    revision = sync.snapshot().revision;
+    store.setTaskArchived("task:one", false);
+    assert.equal(store.getTask("task:one").lifecycle_state, beforeArchive.lifecycle_state);
+    assert.equal(store.getSession("session:worker").archived, false);
+    assert.ok(sync.changesAfter(revision).upserts.sessions.some((session) => session.id === "session:worker"));
+    store.updateTask("task:one", { executionStatus: "running" });
+    assert.throws(() => store.setTaskArchived("task:one", true), { code: "TASK_ARCHIVE_BUSY" });
+    store.updateTask("task:one", { executionStatus: "idle" });
+    const originalPendingWake = store.hasPendingScheduledWakeForTask;
+    store.hasPendingScheduledWakeForTask = () => true;
+    assert.throws(() => store.setTaskArchived("task:one", true), { code: "TASK_ARCHIVE_PENDING_WAKE" });
+    store.hasPendingScheduledWakeForTask = originalPendingWake;
+    assert.equal(store.getTask("task:one").archived, 0);
+    revision = sync.snapshot().revision;
     const completionService = new TaskCompletionService({ store });
     const receipt = completionService.issueMacOSIntent("task:one", {
       requestId: "archive-completion-intent", interactionId: "archive-completion-click",
