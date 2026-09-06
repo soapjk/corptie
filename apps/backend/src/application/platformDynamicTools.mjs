@@ -48,7 +48,6 @@ export const platformDynamicTools = Object.freeze([
       agent_id: id("Agent id for get, update, or delete."),
       name: { type: "string", minLength: 1 },
       description: { type: "string" },
-      role: { type: "string", enum: ["assistant", "independentContributor"] },
       system_prompt: { type: "string" },
       capabilities: { type: "array", items: { type: "string" } },
       skill_ids: { type: "array", items: { type: "string" } },

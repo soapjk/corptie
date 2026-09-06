@@ -18,7 +18,18 @@ DEVELOPMENT_DATA_ROOT="${CORPTIE_DEVELOPMENT_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}
 RUN_ISOLATION_DATA_ROOT="${CORPTIE_RUN_ISOLATION_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/run-isolation}"
 PRESENTATION_DATA_DIR="${WORKTREE_RUNTIME_ROOT}/presentation"
 USER_DEFAULTS_SUITE="com.corptie.development.${WORKTREE_HASH}"
-BACKEND_PORT="${CORPTIE_DEVELOPMENT_BACKEND_PORT:-47322}"
+BACKEND_PORT_FILE="${WORKTREE_RUNTIME_ROOT}/backend-port"
+BACKEND_PORT_EXPLICIT=false
+if [[ -n "${CORPTIE_DEVELOPMENT_BACKEND_PORT:-}" ]]; then
+  BACKEND_PORT="${CORPTIE_DEVELOPMENT_BACKEND_PORT}"
+  BACKEND_PORT_EXPLICIT=true
+elif [[ -f "${BACKEND_PORT_FILE}" ]] && [[ "$(<"${BACKEND_PORT_FILE}")" =~ ^[0-9]+$ ]]; then
+  BACKEND_PORT="$(<"${BACKEND_PORT_FILE}")"
+else
+  # Spread Development Apps across a private loopback range. A collision is
+  # resolved below without stopping a listener owned by another Worktree.
+  BACKEND_PORT="$((48000 + 16#${WORKTREE_HASH:0:6} % 1000))"
+fi
 BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}/health"
 PRODUCTION_BACKEND_PORT=47321
 
@@ -26,6 +37,21 @@ PRODUCTION_BACKEND_PID_BEFORE="$(lsof -tiTCP:"${PRODUCTION_BACKEND_PORT}" -sTCP:
 
 mkdir -p "$(dirname "${APP_LOG}")" "${PRESENTATION_DATA_DIR}" "${DEVELOPMENT_DATA_ROOT}" \
   "${RUN_ISOLATION_DATA_ROOT}"
+
+select_available_backend_port() {
+  local start="$1"
+  local candidate
+  for offset in {0..999}; do
+    candidate="$((48000 + (start - 48000 + offset) % 1000))"
+    if ! lsof -tiTCP:"${candidate}" -sTCP:LISTEN >/dev/null 2>&1; then
+      BACKEND_PORT="${candidate}"
+      BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}/health"
+      return 0
+    fi
+  done
+  echo "No free Development backend port is available in 48000-48999." >&2
+  return 1
+}
 
 stop_pids() {
   local label="$1"
@@ -103,9 +129,15 @@ if (( ${#backend_pids[@]} > 0 )); then
 fi
 
 if lsof -tiTCP:"${BACKEND_PORT}" -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "Port ${BACKEND_PORT} is still occupied."
-  exit 1
+  if [[ "${BACKEND_PORT_EXPLICIT}" == true ]]; then
+    echo "Explicit Development port ${BACKEND_PORT} is still occupied."
+    exit 1
+  fi
+  previous_port="${BACKEND_PORT}"
+  select_available_backend_port "${BACKEND_PORT}"
+  echo "Development port ${previous_port} belongs to another process; using ${BACKEND_PORT} for this Worktree."
 fi
+printf '%s\n' "${BACKEND_PORT}" >"${BACKEND_PORT_FILE}"
 
 : >"${BACKEND_LOG}"
 : >"${APP_LOG}"
@@ -117,6 +149,7 @@ echo "Starting CorptieMac..."
   CORPTIE_BACKEND_PORT="${BACKEND_PORT}" \
   CORPTIE_DATA_ROOT="${DEVELOPMENT_DATA_ROOT}" \
   CORPTIE_RUN_ISOLATION_DATA_ROOT="${RUN_ISOLATION_DATA_ROOT}" \
+  CORPTIE_DEVELOPMENT_FIXTURES="${CORPTIE_DEVELOPMENT_FIXTURES:-1}" \
   CORPTIE_DEVELOPMENT_BACKEND_LAUNCHER="${ROOT_DIR}/scripts/start-backend-development.sh" \
   CORPTIE_DEVELOPMENT_BACKEND_LOG="${BACKEND_LOG}" \
   CORPTIE_USER_DEFAULTS_SUITE="${USER_DEFAULTS_SUITE}" \

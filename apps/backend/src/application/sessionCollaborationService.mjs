@@ -863,8 +863,8 @@ export class SessionCollaborationService {
     const agent = this.store.getAgent(agentId);
     if (!agent) throw coded("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
     const work = this.workService.getWork(workId);
-    if (agent.role !== "independentContributor" || !(work.contributorAgentIds ?? []).includes(agentId)) {
-      throw coded("AGENT_OUTSIDE_WORK", "Target Agent must be an Independent Contributor attached to the authenticated Work.");
+    if (!(work.contributorAgentIds ?? []).includes(agentId)) {
+      throw coded("AGENT_OUTSIDE_WORK", "Target Agent must be attached to the authenticated Work.");
     }
     return agent;
   }

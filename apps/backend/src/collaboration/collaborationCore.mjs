@@ -125,16 +125,16 @@ export class CollaborationCore {
         `UPDATE sessions SET
            agent_id = ?,
            session_kind = CASE
-             WHEN session_kind = 'legacy' AND ? = 'assistant' THEN 'assistantChat'
+             WHEN session_kind = 'legacy' AND work_id IS NULL AND task_id IS NULL THEN 'assistantChat'
              ELSE session_kind
            END,
            updated_at = ?
          WHERE id = ?
            AND (
              agent_id IS NOT ?
-             OR (session_kind = 'legacy' AND ? = 'assistant')
+             OR (session_kind = 'legacy' AND work_id IS NULL AND task_id IS NULL)
            )`,
-        [agent.agentId, agent.role, timestamp, sessionId, agent.agentId, agent.role]
+        [agent.agentId, timestamp, sessionId, agent.agentId]
       );
       // Re-observing an existing Provider projection must not rotate an Agent's
       // current Session through every historical active binding. Only a newly
@@ -1813,7 +1813,7 @@ export class CollaborationCore {
   }
 
   #isAssignableContributor(agent) {
-    return agent.role === "independentContributor";
+    return agent.status === "available";
   }
 
   #ensureCompatibilityWork(agent) {

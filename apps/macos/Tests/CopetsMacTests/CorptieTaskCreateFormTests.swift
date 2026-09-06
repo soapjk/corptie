@@ -3,18 +3,18 @@ import XCTest
 
 @MainActor
 final class CorptieTaskCreateFormTests: XCTestCase {
-    func testAvailableAgentsAreAssignableContributorsOnly() {
-        let available = agent(id: "agent:available", role: "independentContributor", status: "available")
-        let unavailable = agent(id: "agent:unavailable", role: "independentContributor", status: "unavailable")
-        let assistant = agent(id: "agent:assistant", role: "assistant", status: "available")
-        let outside = agent(id: "agent:outside", role: "independentContributor", status: "available")
+    func testAvailableAgentsIncludeEveryAgentAssignedToTheWork() {
+        let available = agent(id: "agent:available", status: "available")
+        let secondAvailable = agent(id: "agent:second", status: "available")
+        let unavailable = agent(id: "agent:unavailable", status: "unavailable")
+        let outside = agent(id: "agent:outside", status: "available")
 
         let result = CorptieTaskCreateFormPolicy.availableAgents(
-            from: [available, unavailable, assistant, outside],
-            allowedAgentIds: [available.agentId, unavailable.agentId, assistant.agentId]
+            from: [available, unavailable, secondAvailable, outside],
+            allowedAgentIds: [available.agentId, unavailable.agentId, secondAvailable.agentId]
         )
 
-        XCTAssertEqual(result.map(\.agentId), [available.agentId])
+        XCTAssertEqual(result.map(\.agentId), [available.agentId, secondAvailable.agentId])
     }
 
     func testMissingAgentHasExplicitValidationAndCannotSubmit() {
@@ -104,12 +104,11 @@ final class CorptieTaskCreateFormTests: XCTestCase {
         )
     }
 
-    private func agent(id: String, role: String, status: String) -> Agent {
+    private func agent(id: String, status: String) -> Agent {
         Agent(
             agentId: id,
             name: id,
             description: "",
-            role: role,
             status: status,
             systemPrompt: "",
             capabilities: [],

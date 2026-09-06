@@ -206,10 +206,10 @@ export class ProjectWorktreeIntegrationService {
     }
     const agentId = String(input.agentId ?? "").trim();
     const agent = agentId ? this.store.getAgent(agentId) : null;
-    if (!agent || agent.role !== "independentContributor") {
+    if (!agent) {
       throw new ProjectWorktreeIntegrationError(
         "INTEGRATION_AGENT_REQUIRED",
-        "Select an Independent Contributor Agent to resolve the conflicts."
+        "Select an Agent to resolve the conflicts."
       );
     }
     if (!(scope.work.contributorAgentIds ?? []).includes(agent.agentId)) {
@@ -392,11 +392,10 @@ export class ProjectWorktreeIntegrationService {
     );
     const agents = (scope.work.contributorAgentIds ?? [])
       .map((agentId) => this.store.getAgent(agentId))
-      .filter((agent) => agent?.role === "independentContributor")
+      .filter(Boolean)
       .map((agent) => ({
         agentId: agent.agentId,
-        name: agent.name,
-        role: agent.role
+        name: agent.name
       }));
     const presentedRun = presentProjectIntegrationRun(run, {
       resolveTask: (taskId) => tasks.get(taskId)

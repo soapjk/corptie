@@ -43,7 +43,6 @@ export class WorkChatContextService {
       .map((agent) => ({
         agentId: agent.agentId,
         name: boundedText(agent.name, 256),
-        role: boundedText(agent.role, 256),
         description: boundedText(agent.description, 1_024)
       }));
     const workSession = session ?? this.store.getWorkChatSession(work.id);

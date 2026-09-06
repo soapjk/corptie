@@ -50,8 +50,7 @@ enum WorkerSessionBackgroundRetryDecision: Equatable {
 }
 
 /// 统一 Session 创建入口。
-/// Assistant Chat 只绑定 Assistant；Work Chat 绑定 Work 与其 Contributor；
-/// Worker Session 强制同时绑定 CorptieTask 与 IC Agent。
+/// 任意 Agent 均可创建聊天；Work Chat 绑定 Work；Worker Session 同时绑定 Task。
 struct NewSessionCreationSheet: View {
     @ObservedObject private var client = EntityAPIClient.shared
     @ObservedObject private var backendClient = BackendClient.shared
@@ -123,11 +122,12 @@ struct NewSessionCreationSheet: View {
                     }
                 }
                 .pickerStyle(.segmented)
-            } else if let fixedAgent {
+            }
+            if let fixedAgent {
                 selectedRow(
                     title: fixedAgent.name,
-                    subtitle: fixedAgent.isAssistant ? L10n("Assistant") : L10n("Independent Contributor"),
-                    systemImage: fixedAgent.isAssistant ? "sparkles" : "person.fill"
+                    subtitle: L10n(fixedAgent.isPlatformAssistant ? "Platform managed" : "Available for chat and tasks"),
+                    systemImage: fixedAgent.isPlatformAssistant ? "sparkles" : "person.fill"
                 )
             }
 
@@ -173,8 +173,9 @@ struct NewSessionCreationSheet: View {
         .frame(width: 500, height: 620)
         .task {
             async let agents: Void = client.refreshAgents()
+            async let works: Void = client.refreshWorks()
             if backendClient.agentProviders.isEmpty { await backendClient.loadProviders() }
-            _ = await agents
+            _ = await (agents, works)
             reconcileProviderSelection()
             normalizeAgentSelection()
             applySuggestedTitle()
@@ -191,7 +192,10 @@ struct NewSessionCreationSheet: View {
             }
         }
         .onChange(of: selectedAgentId) { _, _ in applySuggestedTitle() }
-        .onChange(of: selectedCorptieTaskId) { _, _ in applySuggestedTitle() }
+        .onChange(of: selectedCorptieTaskId) { _, _ in
+            normalizeAgentSelection()
+            applySuggestedTitle()
+        }
         .onChange(of: selectedWorkId) { _, _ in
             if kind == .workChat { normalizeAgentSelection() }
         }
@@ -233,15 +237,15 @@ struct NewSessionCreationSheet: View {
     private var assistantSection: some View {
         if fixedAgent == nil {
             choiceSection(
-                title: L10n("选择 Assistant"),
-                emptyTitle: L10n("暂无可用 Assistant"),
-                emptyDescription: L10n("请先在 Agent 管理页创建 Assistant。"),
-                rows: client.assistantAgents
+                title: L10n("选择 Agent"),
+                emptyTitle: L10n("暂无可用 Agent"),
+                emptyDescription: L10n("请先在 Agent 管理页创建 Agent。"),
+                rows: workerAgents
             ) { agent in
                 agentChoiceRow(agent)
             }
         } else {
-            Text(L10n("Assistant Chat Session 不绑定 CorptieTask。"))
+            Text(L10n("聊天 Session 不绑定 Task，权限由当前 Session 单独管理。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -251,10 +255,10 @@ struct NewSessionCreationSheet: View {
     private var workerSection: some View {
         if fixedAgent == nil {
             choiceSection(
-                title: L10n("选择 Independent Contributor"),
-                emptyTitle: L10n("暂无可用 Independent Contributor"),
-                emptyDescription: L10n("请先在 Agent 管理页创建 Independent Contributor。"),
-                rows: independentContributors
+                title: L10n("选择 Agent"),
+                emptyTitle: L10n("暂无可用 Agent"),
+                emptyDescription: L10n("请先在 Agent 管理页创建 Agent。"),
+                rows: client.agents
             ) { agent in
                 agentChoiceRow(agent)
             }
@@ -357,14 +361,10 @@ struct NewSessionCreationSheet: View {
             choiceSection(
                 title: L10n("选择 Work Agent"),
                 emptyTitle: L10n("Work 暂无可用 Agent"),
-                emptyDescription: L10n("请先在 Work 详情中挂载 Independent Contributor。"),
+                emptyDescription: L10n("请先在 Work 详情中分配 Agent。"),
                 rows: workAgents
             ) { agent in agentChoiceRow(agent) }
         }
-    }
-
-    private var independentContributors: [Agent] {
-        client.agents.filter(\.isIndependentContributor)
     }
 
     private var workAgents: [Agent] {
@@ -372,6 +372,15 @@ struct NewSessionCreationSheet: View {
         guard let work else { return [] }
         let contributorIds = Set(work.contributorAgentIds)
         return client.agents.filter { contributorIds.contains($0.agentId) }
+    }
+
+    private var workerAgents: [Agent] {
+        guard let task = selectedCorptieTask,
+              let work = client.works.first(where: { $0.id == task.workId }) else {
+            return client.agents
+        }
+        let assignedIds = Set(work.contributorAgentIds)
+        return client.agents.filter { assignedIds.contains($0.agentId) }
     }
 
     private var canCreate: Bool {
@@ -428,8 +437,8 @@ struct NewSessionCreationSheet: View {
 
     private func agentChoiceRow(_ agent: Agent) -> some View {
         HStack(spacing: 10) {
-            Image(systemName: agent.isAssistant ? "sparkles" : "person.fill")
-                .foregroundStyle(agent.isAssistant ? Color.accentColor : Color.blue)
+            Image(systemName: agent.isPlatformAssistant ? "sparkles" : "person.fill")
+                .foregroundStyle(agent.isPlatformAssistant ? Color.accentColor : Color.blue)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 2) {
                 Text(agent.name).font(.body.weight(.medium))
@@ -462,17 +471,19 @@ struct NewSessionCreationSheet: View {
                 kind = .workChat
                 selectedWorkId = fixedWork.id
                 selectedAgentId = fixedWork.contributorAgentIds.contains(fixedAgent.agentId) ? fixedAgent.agentId : nil
+            } else if fixedCorptieTask != nil {
+                kind = .worker
+                selectedAgentId = fixedAgent.agentId
             } else {
                 selectedAgentId = fixedAgent.agentId
-                kind = fixedAgent.isAssistant ? .assistantChat : .worker
             }
             return
         }
         let candidates: [Agent]
         switch kind {
-        case .assistantChat: candidates = client.assistantAgents
+        case .assistantChat: candidates = client.agents
         case .workChat: candidates = workAgents
-        case .worker: candidates = independentContributors
+        case .worker: candidates = workerAgents
         }
         if !candidates.contains(where: { $0.agentId == selectedAgentId }) {
             selectedAgentId = candidates.first?.agentId

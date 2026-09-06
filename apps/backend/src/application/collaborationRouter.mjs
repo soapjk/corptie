@@ -46,11 +46,7 @@ export class CollaborationRouter {
     this.weights = { ...ROUTE_WEIGHTS, ...weights };
   }
 
-  registerAgent({ agentId, role = "independentContributor", capabilityTags = [], description = "", availability = "idle", endpoint = {} }) {
-    // 设计 14 铁律：助手 Agent（role=assistant）不入协作目录、永不参与自动路由。
-    if (role === "assistant") {
-      throw new AssistantNotRoutableError(agentId);
-    }
+  registerAgent({ agentId, role = "agent", capabilityTags = [], description = "", availability = "idle", endpoint = {} }) {
     return this.store.upsertCollaborator({
       entryType: "agent",
       entryId: agentId,
@@ -81,7 +77,6 @@ export class CollaborationRouter {
       .listCollaborators("agent")
       .filter(
         (agent) =>
-          agent.role !== "assistant" &&
           agent.entry_id !== excludeAgentId &&
           agent.availability !== "offline"
       )

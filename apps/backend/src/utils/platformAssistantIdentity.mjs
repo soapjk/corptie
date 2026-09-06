@@ -9,8 +9,7 @@ export const PLATFORM_ASSISTANT_MANIFEST = Object.freeze({
   agentId: PLATFORM_ASSISTANT_ID,
   defaultName: "Corptie",
   description: "Corptie 平台助手：代用户管理 Agent、Work、Task、Session 与其他 Corptie 产品能力。",
-  role: "assistant",
-  capabilities: Object.freeze(["platform.manage"]),
+  capabilities: Object.freeze([]),
   systemPrompt: [
     "You are Corptie's built-in platform assistant.",
     "Help the user operate Corptie itself through the authenticated corptie_platform_* host tools.",
@@ -35,13 +34,13 @@ export function resolvePlatformAdminSession(store, input = {}) {
   const agent = actorId ? store?.getAgent(actorId) : null;
   const session = sessionId ? store?.getSession(sessionId) : null;
   const sessionAgentId = session?.agentId ?? session?.agent_id ?? null;
-  if (!isPlatformAssistant(agent)
+  if (!agent
     || !session
     || sessionAgentId !== agent.agentId
-    || (session.sessionKind ?? session.session_kind) !== "assistantChat"
     || session.deletedAt
-    || session.deleted_at) {
-    const error = new Error("Platform administration requires the protected Corptie Assistant Agent and its authenticated Assistant Chat Session binding.");
+    || session.deleted_at
+    || !store.sessionHasCapability(session.id, "platform.manage")) {
+    const error = new Error("Platform administration requires an authenticated Session with the platform.manage capability.");
     error.code = "PLATFORM_ADMIN_SESSION_REQUIRED";
     throw error;
   }

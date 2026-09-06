@@ -43,6 +43,24 @@ struct AgentDetailPresentationTests {
         #expect(source.contains(".accessibilityAction(named: Text(L10n(\"打开详情\")))"))
     }
 
+    @Test("Agent management and Session creation do not branch on Assistant or Contributor roles")
+    func unifiedAgentCapabilityModel() throws {
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/CopetsMac")
+        let management = try String(contentsOf: sourceRoot.appendingPathComponent("AgentManagementView.swift"), encoding: .utf8)
+        let creation = try String(contentsOf: sourceRoot.appendingPathComponent("NewChatPickerSheet.swift"), encoding: .utf8)
+        let model = try String(contentsOf: sourceRoot.appendingPathComponent("AgentModels.swift"), encoding: .utf8)
+
+        #expect(!management.contains("filter(\\.isAssistant)"))
+        #expect(!management.contains("filter(\\.isIndependentContributor)"))
+        #expect(creation.contains("rows: client.agents"))
+        #expect(creation.contains("case .worker: candidates = workerAgents"))
+        #expect(!model.contains("var role: String"))
+    }
+
     private func skill(id: String) -> Skill {
         Skill(
             skillId: "skill:\(id)",
