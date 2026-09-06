@@ -3,19 +3,20 @@ import {
   ArtifactContextBudgetPolicy,
   estimateArtifactTokens
 } from "./artifactContextBudgetPolicy.mjs";
+import { sessionResponsibilityInstructions } from "./sessionResponsibilityInstructions.mjs";
 
 const DEFAULT_CHARACTER_BUDGET = 32_768;
 const MAX_TASKS = 80;
 const encoder = new TextEncoder();
 
 export const WORK_CHAT_REPOSITORY_CHANGE_RULE = Object.freeze([
-  "Work Chat code/repository change boundary:",
-  "- If a user request requires any code change or repository-content mutation, do not implement it in this Work Chat Session.",
-  "- Do not switch or create a worktree for that request, and do not edit, create, delete, rename, stage, commit, or otherwise mutate repository files from this Session.",
+  "Work Chat code and repository workflow (replaces earlier blanket repository-mutation prohibitions):",
+  "- By default, Work Chat does not modify code. When the user requests code changes, you may recommend doing them in a Task. This is a workflow recommendation, not a permission denial.",
+  "- If the user insists on handling code changes here, or already explicitly asks to do so in this Work Chat, carry out the request in this Session when otherwise authorized. Do not repeat the recommendation or require Task creation as a prerequisite.",
+  "- Non-code changes, including repository configuration, may be performed directly at the user's request. A file being inside a repository does not make every change to it a code change.",
   "- Never create a new Task unless the direct user explicitly asks to create one. Complexity, code changes, decomposition, parallelism, missing information, or a suggestion that work belongs elsewhere are not authorization.",
-  "- If the direct user has not explicitly requested Task creation, stay in the current conversation, explain this Session's mutation boundary when relevant, and ask the user to choose an existing Task or explicitly request a new Task. Do not infer consent.",
   "- When the direct user explicitly requests a new Task, its title, description, and acceptance criteria must record the concrete scope and verification expected. Task creation starts its Worker Session automatically; never request or perform a separate start action.",
-  "- This delegation rule applies only when code or repository content must change. Continue handling discussion, planning, status review, and other non-mutating Work work normally."
+  "- Continue handling discussion, planning, status review, and non-code Work changes normally."
 ].join("\n"));
 
 export class WorkChatContextService {
@@ -92,7 +93,7 @@ export class WorkChatContextService {
       }
     };
     const header = [
-      "You are in a Corptie Work Chat.",
+      sessionResponsibilityInstructions("workChat"),
       `Your authority is scoped to Work ${work.id}. Do not read or mutate another Work through Work Chat tools.`,
       "You may discuss and plan the Work. You may create a Task only when the direct user explicitly requests creation in the current conversation.",
       WORK_CHAT_REPOSITORY_CHANGE_RULE,
