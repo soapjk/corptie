@@ -33,9 +33,7 @@ export class ToolMaterializationPort {
       phase: "refresh"
     });
     if (result.status !== "applied"
-      || result.record?.status !== "applied"
-      || result.record.appliedVersion !== result.record.desiredVersion
-      || result.record.providerReceipt?.appliedVersion !== result.record.desiredVersion) {
+      || !hasCurrentAppliedDomains(result.record, requestedDomains, catalogVersion)) {
       throw portError(
         result.status === "blocked"
           ? "SESSION_TOOL_CATALOG_REFRESH_FAILED"

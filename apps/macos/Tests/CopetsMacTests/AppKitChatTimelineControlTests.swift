@@ -984,6 +984,31 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(visibleRows.contains(appended.count - 1))
     }
 
+    func testPhysicalBottomWinsOverStaleFollowStateWhenFinalReplyArrives() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let rows = (0..<30).map { row(id: "stale-follow-\($0)", text: "Message \($0)") }
+        harness.coordinator.apply(rows: rows)
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(harness))
+
+        // SwiftUI binding publication can lag behind AppKit geometry. The
+        // viewport is already at the lower boundary, so a stale semantic flag
+        // must not strand the completed reply below the visible document.
+        harness.coordinator.followsLatest = false
+        harness.followState.value = false
+        let completed = rows + [row(
+            id: "stale-follow-final",
+            text: (0..<20).map { "Completed reply line \($0)" }.joined(separator: "\n")
+        )]
+
+        harness.coordinator.apply(rows: completed)
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+        XCTAssertTrue(harness.tableView.rows(in: harness.tableView.visibleRect).contains(completed.count - 1))
+    }
+
     func testCompletedWheelAwayFromBottomPreservesReaderAnchorOnAppend() async {
         let harness = makeHarness(followsLatest: true, height: 180)
         let rows = (0..<30).map { row(id: "history-follow-\($0)", text: "Message \($0)") }
