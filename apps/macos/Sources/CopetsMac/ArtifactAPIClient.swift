@@ -120,6 +120,9 @@ final class ArtifactAPIClient: ObservableObject {
     }
 
     func loadMore(workId: String, taskId: String?) async {
+        guard !Task.isCancelled else { return }
+        let key = taskId.map { "task:\($0)" } ?? "work:\(workId)"
+        let token = requestTokens[key]
         let offset: Int?
         if let taskId { offset = taskNextOffsets[taskId] }
         else { offset = workNextOffsets[workId] }
@@ -136,7 +139,10 @@ final class ArtifactAPIClient: ObservableObject {
             ]
             let envelope: ArtifactListEnvelope = try await get(components.url!)
             try Self.validateArtifactEnvelope(envelope)
+            try Task.checkCancellation()
+            guard requestTokens[key] == token else { return }
             if let taskId {
+                guard taskNextOffsets[taskId] == offset else { return }
                 var known = Set((artifactsByCorptieTask[taskId] ?? []).map(\.artifactId))
                 artifactsByCorptieTask[taskId, default: []].append(
                     contentsOf: envelope.artifacts.filter { known.insert($0.artifactId).inserted }
@@ -144,6 +150,7 @@ final class ArtifactAPIClient: ObservableObject {
                 taskNextOffsets[taskId] = envelope.nextOffset
                 taskLoadStates[taskId] = .loaded(artifactsByCorptieTask[taskId] ?? [])
             } else {
+                guard workNextOffsets[workId] == offset else { return }
                 var known = Set((artifactsByWork[workId] ?? []).map(\.artifactId))
                 artifactsByWork[workId, default: []].append(
                     contentsOf: envelope.artifacts.filter { known.insert($0.artifactId).inserted }
@@ -151,8 +158,18 @@ final class ArtifactAPIClient: ObservableObject {
                 workNextOffsets[workId] = envelope.nextOffset
                 workLoadStates[workId] = .loaded(artifactsByWork[workId] ?? [])
             }
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = Self.displayMessage(for: error)
+        }
+    }
+
+    func loadRemainingTaskReferences(workId: String, taskId: String) async {
+        while !Task.isCancelled, let offset = taskNextOffsets[taskId] {
+            await loadMore(workId: workId, taskId: taskId)
+            // Errors and superseded requests must not become a retry loop.
+            guard let next = taskNextOffsets[taskId], next > offset else { return }
         }
     }
 

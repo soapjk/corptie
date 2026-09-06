@@ -10,6 +10,7 @@ struct ArtifactSectionView: View {
     @State private var showCreate = false
     @State private var importReceipt: ArtifactImportReceipt?
     @State private var isImporting = false
+    @State private var showsAllReferences = false
 
     private var loadState: ArtifactCollectionLoadState {
         if let taskId { return client.taskLoadStates[taskId] ?? .idle }
@@ -39,7 +40,7 @@ struct ArtifactSectionView: View {
 
             artifactLoadContent
 
-            if client.hasMore(workId: workId, taskId: taskId) {
+            if (taskId == nil || showsAllReferences) && client.hasMore(workId: workId, taskId: taskId) {
                 Button(L10n("Load more Artifacts")) {
                     Task { await client.loadMore(workId: workId, taskId: taskId) }
                 }
@@ -52,7 +53,11 @@ struct ArtifactSectionView: View {
                     .font(.system(size: 9)).foregroundStyle(.green)
             }
         }
-        .task(id: taskId ?? workId) { await refresh() }
+        .task(id: taskId ?? workId) { showsAllReferences = false; await refresh() }
+        .task(id: "\(taskId ?? workId):\(showsAllReferences)") {
+            guard showsAllReferences, let taskId else { return }
+            await client.loadRemainingTaskReferences(workId: workId, taskId: taskId)
+        }
         .onDisappear { if let taskId { client.cancelRefresh(taskId: taskId) } }
         .sheet(item: $selection) { artifact in
             ArtifactDetailContainer(
@@ -113,7 +118,11 @@ struct ArtifactSectionView: View {
 
     private func artifactRows(_ artifacts: [WorkArtifact]) -> some View {
         LazyVStack(spacing: 6) {
-            ForEach(artifacts) { artifact in
+            if taskId != nil && (artifacts.count > 2 || client.hasMore(workId: workId, taskId: taskId)) {
+                Button(showsAllReferences ? "收起" : "展开全部") { showsAllReferences.toggle() }
+                    .buttonStyle(.borderless).font(.caption)
+            }
+            ForEach(taskId == nil || showsAllReferences ? artifacts : Array(artifacts.prefix(2))) { artifact in
                 Button { selection = artifact } label: {
                     HStack(spacing: 7) {
                         if artifact.visibility == .repositoryTracked {

@@ -275,12 +275,13 @@ test("provider-neutral completion tool carries exact direct-user Session evidenc
 test("provider-neutral revision tool carries only the new problem definition", async () => {
   const definition = taskAcceptanceDynamicTools.find((tool) => tool.name === "corptie_task_revise");
   assert.ok(definition);
-  assert.deepEqual(new Set(definition.inputSchema.required), new Set(["expectedRevision", "next"]));
+  assert.deepEqual(new Set(definition.inputSchema.required), new Set(["expectedRevision", "next", "sourceMessageId"]));
   assert.equal(definition.inputSchema.additionalProperties, false);
   assert.equal(Object.hasOwn(definition.inputSchema.properties.next.properties, "goal"), false);
   const calls = [];
   const argumentsValue = {
     expectedRevision: 3,
+    sourceMessageId: "user-message:revision-request",
     next: { title: "Next problem", description: "Next scope" },
     executionSummary: "Previous problem completed."
   };

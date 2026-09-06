@@ -1101,7 +1101,6 @@ struct CorptieTaskDetailView: View {
     @State private var isInspectingDeletion = false
     @State private var isDeletingCorptieTask = false
     @State private var deletionFeedback: String?
-    @State private var showMemoryInspector = false
     @State private var showAcceptanceReview = false
     @State private var isRejectingAcceptance = false
     @State private var acceptanceRejectionError: String?
@@ -1245,16 +1244,15 @@ struct CorptieTaskDetailView: View {
 
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            overviewSection
-
+            TaskSummaryView(task: task)
             if hasTaskDefinitionContent {
-                Divider()
-
                 taskDefinitionSection
             }
 
-            Divider()
-            executionAndWorkspaceSection
+            if isCompleted {
+                Divider()
+                worktreeSection
+            }
 
             Divider()
 
@@ -1523,7 +1521,7 @@ struct CorptieTaskDetailView: View {
                         .foregroundStyle(.tertiary)
                 }
                 Button {
-                    showMemoryInspector = true
+                    TaskMemoryWindowManager.shared.show(taskID: task.id, title: task.title)
                 } label: {
                     Image(systemName: "arrow.up.right.square")
                 }
@@ -1546,14 +1544,6 @@ struct CorptieTaskDetailView: View {
                     .padding(.vertical, 2)
                 }
             }
-        }
-        .sheet(isPresented: $showMemoryInspector) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(L10n("CorptieTask Memories")).font(.headline)
-                MemoryManagementView(scope: .owner(type: "task", id: task.id))
-            }
-            .padding(20)
-            .frame(width: 760, height: 580)
         }
     }
 

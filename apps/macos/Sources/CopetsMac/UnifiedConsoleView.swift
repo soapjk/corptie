@@ -19,6 +19,7 @@ enum ConsoleNavigationCardWidthPolicy {
 enum ConsoleNavigationMode: String, CaseIterable {
     case workRail
     case workOutline
+    case taskCards
 
     static func resolved(_ rawValue: String) -> Self {
         Self(rawValue: rawValue) ?? .workRail
@@ -29,6 +30,7 @@ enum ConsoleNavigationMode: String, CaseIterable {
         switch self {
         case .workRail: L10n("Work icons and Task list")
         case .workOutline: L10n("Expanded Work list")
+        case .taskCards: "卡片 · 实验"
         }
     }
 }
@@ -496,6 +498,10 @@ struct UnifiedConsoleView: View {
     @State private var collapsedOutlineWorkIDs = Set<String>()
     @State private var navigationResizeStartWidth: Double?
     @State private var liveTaskColumnWidth: Double?
+    @State private var cardChatVisible = false
+    @State private var cardAttentionCount = 0
+    @State private var cardRefreshRevision = 0
+    @State private var isConversationFocused = false
     @State private var isHoveringNavigationResizeHandle = false
     private let consoleNavigationResizeCoordinateSpace = "console-navigation-resize"
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
@@ -509,10 +515,21 @@ struct UnifiedConsoleView: View {
     var body: some View {
         HStack(spacing: 0) {
             consoleNavigationCard
+                .frame(maxWidth: navigationMode == .taskCards ? .infinity : nil)
+                .frame(width: isConversationFocused && navigationMode == .taskCards ? 0 : nil)
+                .clipped()
                 .padding(.leading, MainWindowPageLayoutMetrics.outerPadding)
                 .padding(.vertical, MainWindowPageLayoutMetrics.outerPadding)
             sessionConversation
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(width: usesCompactCardRail ? 280 + 2 * MainWindowPageLayoutMetrics.outerPadding : nil)
+                .frame(maxWidth: usesCompactCardRail ? nil : .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topTrailing) {
+                    if navigationMode == .taskCards {
+                        Button(isConversationFocused ? "返回工作台" : "放大会话", systemImage: isConversationFocused ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") {
+                            isConversationFocused.toggle()
+                        }.labelStyle(.iconOnly).buttonStyle(.bordered).padding(8)
+                    }
+                }
         }
         .coordinateSpace(name: consoleNavigationResizeCoordinateSpace)
         .toolbar(removing: .sidebarToggle)
@@ -686,11 +703,18 @@ struct UnifiedConsoleView: View {
                 unifiedTaskSidebar
                     .frame(width: taskColumnWidth)
                     .background(taskColumnBackground)
-            } else {
+            } else if navigationMode == .workOutline {
                 unifiedWorkOutlineSidebar
                     .frame(width: taskColumnWidth + 64)
                     .background(taskColumnBackground)
             }
+            cardWorkspaceSidebar
+                .frame(maxWidth: .infinity)
+                .frame(width: navigationMode == .taskCards ? nil : 0)
+                .clipped()
+                .allowsHitTesting(navigationMode == .taskCards)
+                .accessibilityHidden(navigationMode != .taskCards)
+                .background(taskColumnBackground)
         }
         .frame(maxHeight: .infinity)
         .clipShape(
@@ -720,7 +744,7 @@ struct UnifiedConsoleView: View {
             y: 1
         )
         .overlay(alignment: .trailing) {
-            navigationResizeHandle
+            if navigationMode != .taskCards { navigationResizeHandle }
         }
     }
 
@@ -738,30 +762,78 @@ struct UnifiedConsoleView: View {
     }
 
     private var navigationModeToggle: some View {
-        HStack(spacing: 5) {
-            Image(systemName: navigationMode == .workOutline
-                ? "list.bullet.indent"
-                : "rectangle.split.2x1")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Toggle(L10n("Navigation layout"), isOn: usesWorkOutlineBinding)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.mini)
+        Picker("视图", selection: $navigationModeRawValue) {
+            Text("经典").tag(ConsoleNavigationMode.workRail.rawValue)
+            Text("分组").tag(ConsoleNavigationMode.workOutline.rawValue)
+            Text("卡片 · 实验").tag(ConsoleNavigationMode.taskCards.rawValue)
         }
-        .fixedSize()
-        .padding(.horizontal, 7)
-        .frame(height: 30)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.38), lineWidth: 1)
-        }
-        .help(navigationMode == .workOutline
-            ? L10n("Show Works as icons")
-            : L10n("Show Works and Tasks in one list"))
+        .pickerStyle(.menu).fixedSize().controlSize(.small)
         .accessibilityValue(navigationMode.accessibilityValue)
+    }
+
+    private var cardWorkspaceSidebar: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("Work").font(.headline)
+                if cardAttentionCount > 0 {
+                    Text("\(cardAttentionCount) 待处理")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer()
+                Button(cardChatVisible ? "返回 Tasks" : "Chat", systemImage: "bubble.left.and.bubble.right.fill") {
+                    cardChatVisible.toggle()
+                }.controlSize(.small)
+                if !cardChatVisible {
+                    Button("刷新", systemImage: "arrow.clockwise") { cardRefreshRevision &+= 1 }
+                        .labelStyle(.iconOnly).help("刷新重点 Task")
+                }
+                navigationModeToggle
+                searchToggleButton
+                Menu {
+                    if cardChatVisible {
+                        Button("新建聊天") { showNewSessionCreation = true }
+                    }
+                    Button("新建 Work") { isCreatingWork = true }
+                    Button("新建 Task") { presentTaskCreation(for: selectedWorkId) }
+                } label: { Image(systemName: "plus") }
+            }.padding(10)
+            if isSearching { sessionSearchBar.padding(.horizontal, 10) }
+            if cardChatVisible {
+                ScrollView {
+                    LazyVStack {
+                        ForEach(sessionIndexStore.rows.filter { $0.session.resolvedSessionKind == .assistantChat }) { row in
+                            Button(row.session.title) { selectSessionAfterHighlight(row.session) }
+                                .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading).padding(10)
+                        }
+                    }
+                }
+            }
+            ConsoleCardWorkspace(isActive: navigationMode == .taskCards && !cardChatVisible, works: entityClient.works, tasks: entityClient.tasks,
+                sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId, query: searchText,
+                attentionCount: $cardAttentionCount, refreshRevision: cardRefreshRevision,
+                openTask: { task, session in
+                    if let session { composerDraftRepository.requestFocus(for: session.id) }
+                    openTask(task, session: session)
+                    if session == nil, let id = task.currentSessionId {
+                        Task { @MainActor in
+                            var hydrated = await AppStateSyncController.shared.hydrateSession(id)
+                            if hydrated == nil { hydrated = await backendClient.loadArchivedSession(id: id) }
+                            guard selectedTaskId == task.id, let hydrated else { return }
+                            // A delayed history load may open the explicitly
+                            // selected Task, but must not steal a newer focus.
+                            selectSessionAfterHighlight(hydrated)
+                        }
+                    }
+                }, discuss: { work in
+                    if let session = workChatSession(for: work.id) { openWorkChat(for: work, session: session) }
+                }, createTask: { presentTaskCreation(for: $0.id) },
+                taskMenu: { task in taskContextMenuContent(for: task, session: workerSession(for: task)) })
+                .frame(height: cardChatVisible ? 0 : nil).clipped()
+        }
+        .sheet(isPresented: Binding(
+            get: { navigationMode == .taskCards && showNewSessionCreation },
+            set: { if navigationMode == .taskCards { showNewSessionCreation = $0 } }
+        )) { NewSessionCreationSheet(fixedKind: .assistantChat) }
     }
 
     private var taskColumnWidth: CGFloat {
@@ -2334,14 +2406,30 @@ struct UnifiedConsoleView: View {
 
     // MARK: - 中：对话（纸面卡片 + 常驻详情 side panel）
 
+    private var usesCompactCardRail: Bool {
+        navigationMode == .taskCards && !isConversationFocused
+    }
+
+    /// Native layout switching preserves the editor/timeline identity.
+    private var conversationLayout: AnyLayout {
+        usesCompactCardRail
+            ? AnyLayout(VStackLayout(spacing: MainWindowPageLayoutMetrics.columnSpacing))
+            : AnyLayout(HStackLayout(spacing: MainWindowPageLayoutMetrics.columnSpacing))
+    }
+
     @ViewBuilder
     private var sessionConversation: some View {
+        GeometryReader { geometry in
+        let cardHeight: CGFloat? = usesCompactCardRail
+            ? max(0, (geometry.size.height - 2 * MainWindowPageLayoutMetrics.outerPadding
+                - MainWindowPageLayoutMetrics.columnSpacing) / 2)
+            : nil
         if let session = backendClient.selectedSession,
            session.hasValidProductClassification,
            SessionCategory(session: session) == selectedCategory,
-           selectedCategory != .worker
+           navigationMode == .taskCards || selectedCategory != .worker
                 || isArchivedWorkerSession(session) == isShowingWorkerArchive {
-            HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
+            conversationLayout {
                 // One structural Detail/NSScrollView host is rebound in place.
                 // Session-specific model state changes, but native cell reuse
                 // queues and the scroll view itself are never multiplied.
@@ -2354,14 +2442,20 @@ struct UnifiedConsoleView: View {
                         viewportController.store(position, for: session.id)
                     }
                 )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
+                .frame(width: usesCompactCardRail ? 280 : nil)
+                .frame(height: cardHeight)
+                .modifier(DetailRailSurfaceModifier(enabled: usesCompactCardRail))
 
                 // 右侧竖列详情面板（固定常驻，无收起按钮，模仿 Rudder IssueDetail rail）
-                SessionDetailPanel(session: session)
+                SessionDetailPanel(session: session, railWidth: 280)
+                    .frame(maxHeight: .infinity)
+                    .frame(height: cardHeight)
+                    .frame(width: isConversationFocused && navigationMode == .taskCards ? 0 : nil).clipped()
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
         } else if let task = selectedTask {
-            HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
+            conversationLayout {
                 VStack(spacing: 12) {
                     Image(systemName: "bubble.left.and.exclamationmark.bubble.right")
                         .font(.system(size: 32, weight: .light))
@@ -2376,9 +2470,13 @@ struct UnifiedConsoleView: View {
                         .frame(maxWidth: 360)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(height: cardHeight)
+                .modifier(DetailRailSurfaceModifier(enabled: usesCompactCardRail))
 
                 SessionCorptieTaskDetailCard(taskId: task.id)
                     .frame(width: 280)
+                    .frame(maxHeight: .infinity)
+                    .frame(height: cardHeight)
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
         } else {
@@ -2387,6 +2485,7 @@ struct UnifiedConsoleView: View {
                 systemImage: "bubble.left.and.bubble.right",
                 description: Text(L10n("从左侧选择一个会话查看对话"))
             )
+        }
         }
     }
 
@@ -2869,6 +2968,7 @@ struct SessionDetailPanel: View {
     @ObservedObject private var entityClient = EntityAPIClient.shared
     private let backendClient = BackendClient.shared
     let session: TaskSession
+    var railWidth: CGFloat = 280
     @State private var contextReferenceAddMode: ContextReferenceAddMode?
     @State private var contextReferences: [SessionContextReference] = []
     @State private var isLoadingContextReferences = false
@@ -2881,7 +2981,6 @@ struct SessionDetailPanel: View {
     @State private var providerCatalogLoadFailed = false
 
     /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
-    private static let railWidth: CGFloat = 280
 
     private static let iso8601Formatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -2908,14 +3007,6 @@ struct SessionDetailPanel: View {
                 ScrollView {
                     VStack(spacing: 0) {
                         sessionCard(decoratesSurface: false, scrollsContent: false)
-                        Divider()
-                            .opacity(0.5)
-                        SessionCorptieTaskDetailCard(
-                            taskId: taskId,
-                            decoratesSurface: false,
-                            showsHeader: false,
-                            embedsInParentScroll: true
-                        )
                     }
                 }
                 .modifier(DetailRailSurfaceModifier(enabled: true))
@@ -2923,7 +3014,7 @@ struct SessionDetailPanel: View {
                 sessionCard(decoratesSurface: true)
             }
         }
-        .frame(width: Self.railWidth)
+        .frame(width: railWidth)
         .task(id: session.id) {
             await loadProviderCatalogIfNeeded()
         }
@@ -2977,13 +3068,9 @@ struct SessionDetailPanel: View {
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            statusCard
-
-            SessionMemoryDiagnosticsView(session: session)
+            if session.resolvedSessionKind != .worker { statusCard }
 
             ScheduledSessionStrip(session: session)
-
-            SessionTurnObservabilityView(sessionId: session.id)
 
             if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .workChat {
                 assistantSection
@@ -2996,9 +3083,31 @@ struct SessionDetailPanel: View {
                     .id(workId)
             }
 
+            if let taskId = session.taskId, !taskId.isEmpty {
+                SessionCorptieTaskDetailCard(
+                    taskId: taskId,
+                    decoratesSurface: false,
+                    showsHeader: false,
+                    embedsInParentScroll: true
+                )
+            }
+
+            SessionMemoryDiagnosticsView(session: session)
+            SessionTurnObservabilityView(sessionId: session.id)
+
             detailSection(title: "运行环境", systemImage: "cpu") {
-                providerPicker
-                detailFields(runtimeFields)
+                if session.resolvedSessionKind == .worker {
+                    Text("Provider: \(currentProviderDisplayName) · Agent: \(agentDisplayName)")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("Provider: \(currentProviderDisplayName) · Agent: \(agentDisplayName)")
+                    if let cwd = session.external?.cwd, !cwd.isEmpty {
+                        detailFields([("工作空间", compactPath(cwd))])
+                    }
+                } else {
+                    providerPicker
+                    detailFields(runtimeFields)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -3621,16 +3730,24 @@ private struct DetailRailSurfaceModifier: ViewModifier {
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if enabled {
-            content
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .overlay {
+        // Decorate the same content identity when switching workspace modes.
+        content
+            // A surface is also a containment boundary: a fixed frame alone
+            // does not prevent native children or overlays drawing outside it.
+            // Keep one content identity across modes; disabled surfaces have
+            // no rounded corners, as before.
+            .clipShape(RoundedRectangle(cornerRadius: enabled ? 12 : 0, style: .continuous))
+            .background {
+                if enabled {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.regularMaterial)
+                }
+            }
+            .overlay {
+                if enabled {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
                 }
-                .shadow(color: Color.black.opacity(0.055), radius: 9, x: 0, y: 3)
-        } else {
-            content
-        }
+            }
+            .shadow(color: Color.black.opacity(enabled ? 0.055 : 0), radius: enabled ? 9 : 0, x: 0, y: enabled ? 3 : 0)
     }
 }

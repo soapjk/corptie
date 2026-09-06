@@ -70,6 +70,7 @@ struct CorptieTask: Identifiable, Codable, Hashable {
     var currentSessionId: String?
     var executionStatus: String?
     var hasPendingScheduledWake: Bool? = nil
+    var userSummary: TaskUserSummary? = nil
     var deletionStatus: String? = nil
     var deletionError: String? = nil
     var acceptanceAssessment: CorptieTaskAcceptanceAssessment?

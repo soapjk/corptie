@@ -15,6 +15,10 @@ LEGACY_BACKEND_LAUNCH_LABEL="com.corptie.backend.development.${WORKTREE_HASH}"
 APP_LOG="${CORPTIE_APP_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/app.log}"
 BACKEND_LOG="${CORPTIE_BACKEND_LOG:-${WORKTREE_RUNTIME_ROOT}/logs/backend.log}"
 DEVELOPMENT_DATA_ROOT="${CORPTIE_DEVELOPMENT_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/backend-data}"
+if [[ -z "${CORPTIE_DEVELOPMENT_DATA_ROOT:-}" && -f "${WORKTREE_RUNTIME_ROOT}/preview-data/.preview-only" ]]; then
+  DEVELOPMENT_DATA_ROOT="${WORKTREE_RUNTIME_ROOT}/preview-data"
+  echo "Development preview: read-only snapshot; execution is disabled."
+fi
 RUN_ISOLATION_DATA_ROOT="${CORPTIE_RUN_ISOLATION_DATA_ROOT:-${WORKTREE_RUNTIME_ROOT}/run-isolation}"
 PRESENTATION_DATA_DIR="${WORKTREE_RUNTIME_ROOT}/presentation"
 USER_DEFAULTS_SUITE="com.corptie.development.${WORKTREE_HASH}"

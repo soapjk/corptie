@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { sessionAttention } from "../utils/sessionAttention.mjs";
+import { migrateTaskSummary } from "./taskSummaryRepository.mjs";
 import { readFileSync } from "node:fs";
 import { access, copyFile, cp, mkdir, readFile, readdir } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
@@ -3060,6 +3062,7 @@ export class CorptieStore {
     this.ensureColumn("tasks", "lifecycle_state", "TEXT NOT NULL DEFAULT 'todo'");
     this.ensureColumn("tasks", "current_snapshot_id", "TEXT");
     this.ensureColumn("tasks", "revision", "INTEGER NOT NULL DEFAULT 1");
+    migrateTaskSummary(this);
     this.ensureColumn("tasks", "execution_status", "TEXT NOT NULL DEFAULT 'idle'");
     this.ensureColumn("tasks", "acceptance_assessment_json", "TEXT NOT NULL DEFAULT '{}'");
     this.ensureColumn("tasks", "created_by_session_id", "TEXT");
@@ -12440,12 +12443,40 @@ export class CorptieStore {
       error.statusCode = 403;
       throw error;
     }
-    const patch = validateTaskInput(input.next ?? {}, "update");
-    if (!Object.keys(patch).some((key) => [
-      "title", "description", "acceptanceCriteria", "verificationCriteria"
-    ].includes(key))) {
+    let sourceMessageId = null;
+    if (input.sourceMessageId != null) {
+      const suppliedId = requiredText(input.sourceMessageId, "sourceMessageId");
+      const event = this.getSessionEvent(suppliedId) ?? this.getSessionEvent(`user-message:${suppliedId}`);
+      const source = event?.source;
+      if (!event || event.sessionId !== sessionId || event.type !== "SessionUserMessageCreated"
+        || event.producer !== "user" || event.surface !== true
+        || !["desktop", "macos", "feishu"].includes(source?.type)
+        || source.taskId || source.automationId || source.scheduledTaskId) {
+        const error = new Error("Task revision source must be a direct user message in the bound Session.");
+        error.code = "TASK_REVISION_SOURCE_INVALID";
+        error.statusCode = 403;
+        throw error;
+      }
+      sourceMessageId = event.eventId;
+    }
+    const definitionFields = {
+      title: "title", description: "description",
+      acceptanceCriteria: "acceptance_criteria", verificationCriteria: "verification_criteria"
+    };
+    const next = input.next;
+    if (!next || typeof next !== "object" || Array.isArray(next)
+      || Object.keys(next).some((key) => !Object.hasOwn(definitionFields, key))) {
+      const error = new Error("Task revisions may only change title, description, acceptanceCriteria and verificationCriteria.");
+      error.code = "TASK_REVISION_INVALID_FIELDS";
+      error.statusCode = 400;
+      throw error;
+    }
+    const patch = validateTaskInput(next, "update");
+    if (!Object.entries(patch).some(([key, value]) =>
+      Object.hasOwn(definitionFields, key) && value !== (current[definitionFields[key]] ?? ""))) {
       const error = new Error("A Task revision must change its current problem definition.");
       error.code = "TASK_REVISION_EMPTY";
+      error.statusCode = 400;
       throw error;
     }
     const snapshot = {
@@ -12459,7 +12490,7 @@ export class CorptieStore {
       acceptanceAssessment: parseJson(current.acceptance_assessment_json, {}),
       completionEvidence: Array.isArray(input.completionEvidence) ? input.completionEvidence : [],
       executionSummary: String(input.executionSummary ?? ""),
-      sourceMessageId: input.sourceMessageId ?? null,
+      sourceMessageId,
       createdBySessionId: sessionId,
       createdAt: createdAtFromOrNow()
     };
@@ -13715,6 +13746,10 @@ export class CorptieStore {
         : rawStatus.sendUnavailableReason ?? null,
       activityStatus: rawStatus.activityStatus ?? null,
       suggestedOptions,
+      suggestedPrompt: activeChoicePrompt?.prompt ?? null,
+      attention: sessionAttention({ status: displayStatus, executionStatus,
+        choice: activeChoicePrompt, failureReason: rawStatus.sendUnavailableReason,
+        updatedAt: row.updated_at }),
       updatedAt: row.updated_at,
       createdAt: row.created_at,
       accent: row.accent,
