@@ -115,7 +115,7 @@ test("Task version conflict and Work authorization failures create no startup op
   } finally { await cleanup(f); }
 });
 
-test("non-contributor and non-Independent Contributor assignees are rejected explicitly", async () => {
+test("Agents outside the Work are rejected while every assigned Agent may execute", async () => {
   const f = await fixture();
   try {
     const outside = f.store.createAgent({
@@ -124,16 +124,12 @@ test("non-contributor and non-Independent Contributor assignees are rejected exp
     await assert.rejects(() => f.service.start(command({ assigneeAgentId: outside.agentId })), {
       code: "AGENT_OUTSIDE_WORK"
     });
-    const assistant = f.store.createAgent({ id: "agent:assistant", name: "Assistant", role: "assistant" });
-    // Simulate a legacy/corrupt contributor reference so startup still fails
-    // closed even if an invalid role escaped the ordinary Work writer.
+    const second = f.store.createAgent({ id: "agent:second", name: "Second" });
     f.store.db.run(
       "INSERT INTO work_contributors (work_id, agent_id, role, is_primary, created_at) VALUES (?, ?, 'contributor', 0, ?)",
-      [f.work.id, assistant.agentId, new Date().toISOString()]
+      [f.work.id, second.agentId, new Date().toISOString()]
     );
-    await assert.rejects(() => f.service.start(command({ assigneeAgentId: assistant.agentId })), {
-      code: "AGENT_NOT_INDEPENDENT_CONTRIBUTOR"
-    });
+    await f.service.start(command({ assigneeAgentId: second.agentId }));
   } finally { await cleanup(f); }
 });
 

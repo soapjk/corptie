@@ -1,6 +1,6 @@
 import SwiftUI
 
-// Agent 详情页（模块 B）：承载重命名/编辑/设置/启停/设为助手/删除等低频管理操作。
+// Agent 详情页：承载 Profile、已安装 Skill、操作和 Memory。
 // 从侧栏 Agent 右键「打开详情」进入（sheet 弹窗）。
 
 struct AgentDetailView: View {
@@ -123,12 +123,12 @@ struct AgentDetailView: View {
                 Text(agent.name)
                     .font(.title3.bold())
                 HStack(spacing: 8) {
-                    Text(roleLabel)
+                    Text(kindLabel)
                         .font(.caption)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(Capsule().fill(roleColor.opacity(0.15)))
-                        .foregroundStyle(roleColor)
+                        .background(Capsule().fill(kindColor.opacity(0.15)))
+                        .foregroundStyle(kindColor)
                     Text(statusLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -300,12 +300,12 @@ struct AgentDetailView: View {
 
     // MARK: - 辅助
 
-    private var roleLabel: String {
-        L10n(agent.isAssistant ? "Assistant" : "Independent Contributor")
+    private var kindLabel: String {
+        L10n(agent.isPlatformAssistant ? "Platform managed" : "Agent")
     }
 
-    private var roleColor: Color {
-        agent.isAssistant ? .purple : .blue
+    private var kindColor: Color {
+        agent.isPlatformAssistant ? .purple : .blue
     }
 
     private var statusLabel: String {

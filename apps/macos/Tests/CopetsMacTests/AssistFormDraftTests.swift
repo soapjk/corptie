@@ -6,7 +6,7 @@ final class AssistFormDraftTests: XCTestCase {
         XCTAssertFalse(
             FormAssistOverwritePolicy.hasMeaningfulExistingContent(
                 formType: .agent,
-                values: ["name": "", "description": "", "role": "independentContributor"]
+                values: ["name": "", "description": "", "systemPrompt": "", "capabilities": ""]
             )
         )
         XCTAssertFalse(
@@ -47,7 +47,6 @@ final class AssistFormDraftTests: XCTestCase {
           "fields": {
             "name": "SwiftUI Agent",
             "description": "负责 macOS 客户端体验。",
-            "role": "independentContributor",
             "systemPrompt": "实现变更并运行测试。",
             "capabilities": "swiftui, testing"
           }
@@ -59,8 +58,7 @@ final class AssistFormDraftTests: XCTestCase {
           "fields": {
             "name": "统一创建页辅助填写",
             "description": "统一三个实体创建页的生成体验。",
-            "idealState": "创建体验持续一致，草稿始终可检查、可编辑。",
-            "priority": "high",
+            "profile": "创建体验持续一致，草稿始终可检查、可编辑。",
             "tags": "macos, forms"
           }
         }
@@ -70,7 +68,7 @@ final class AssistFormDraftTests: XCTestCase {
         let workDraft = try JSONDecoder().decode(AssistFormDraft.self, from: workData)
 
         XCTAssertEqual(agentDraft.formType, AssistFormType.agent.rawValue)
-        XCTAssertEqual(agentDraft.fields["role"], "independentContributor")
+        XCTAssertNil(agentDraft.fields["role"])
         XCTAssertEqual(workDraft.formType, AssistFormType.work.rawValue)
         XCTAssertNil(workDraft.fields["targetDate"])
     }
@@ -102,7 +100,6 @@ final class AssistFormDraftTests: XCTestCase {
           "fields": {
             "name": "后端 Agent",
             "description": "负责接口",
-            "role": "independentContributor",
             "systemPrompt": "维护后端。",
             "unexpected": "must fail"
           }

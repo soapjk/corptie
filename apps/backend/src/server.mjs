@@ -638,7 +638,7 @@ const hostToolCatalog = new HostToolCatalog([
     authorize: ({ actorId, metadata }) => {
       // Session creation must materialize the stable catalog before the Store
       // has a Session id. Execution still revalidates the persisted binding.
-      if (!metadata?.sessionId) return isPlatformAssistant(store.getAgent(actorId));
+      if (!metadata?.sessionId) return true;
       try {
         resolvePlatformAdminSession(store, { actorId, sessionId: metadata?.sessionId });
         return true;
@@ -2458,8 +2458,7 @@ const worktreeIntegrationJobService = new WorktreeIntegrationJobService({
       : (existingTask?.main_agent_id ? store.getAgent(existingTask.main_agent_id) : null);
     const hasRecordedPlanSession = Boolean(existingAutomation?.taskId
       || existingAutomation?.sessionId || legacyPlanTask);
-    const hasExistingPlanSession = Boolean(existingTask && existingSession
-      && existingAgent?.role === "independentContributor");
+    const hasExistingPlanSession = Boolean(existingTask && existingSession && existingAgent);
     if (hasRecordedPlanSession && !hasExistingPlanSession) {
       const error = new Error(
         "The integration plan's conflict Task or Session is no longer available. Restore that plan Session or generate a fresh plan; Corptie will not create a duplicate Task."
@@ -4525,7 +4524,7 @@ function authorizeScheduledSessionTask({ actor, logicalSessionId, environment })
   }
   const actorAgent = actor.type === "agent" ? store.getAgent(actor.id) : null;
   const boundAgent = collaborationCore.getAgentForSession(session.id);
-  if (!actorAgent || (!isPlatformAssistant(actorAgent) && boundAgent?.agentId !== actorAgent.agentId)) {
+  if (!actorAgent || boundAgent?.agentId !== actorAgent.agentId) {
     const error = new Error(`Actor ${actor.id} is not authorized for logical Session ${logicalSessionId}.`);
     error.code = "AUTHORIZATION_REVOKED";
     throw error;
@@ -5504,17 +5503,11 @@ async function createProviderWorkSession({
   return session;
 }
 
-// 实体层「自由对话」入口：仅凭 Agent（role=assistant）开聊，不绑定具体工作项。
+// 实体层自由对话入口：任意 Agent 均可创建，不绑定具体 Work 或 Task。
 // 与 startup coordinator 的低层 Session 构造端口复用 createSessionThroughApplication。
-// cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir（仅同一 Assistant 的会话共享）；
-// 目录缺失时在此幂等创建。独立贡献者必须走权威 Work Session startup coordinator，
-// 其 work_dir 只存记忆/Skill 等持久化文件，不作为会话直接工作目录。
+// cwd 不再由客户端提供，而是取自该 Agent 独占的 work_dir；Task Worker 仍走权威
+// Work Session startup coordinator，并使用 Task ExecutionSpace。
 async function launchAgentSession({ agent, providerId: requestedProviderId, title, prompt, model }) {
-  if (agent.role !== "assistant") {
-    const error = new Error("只有 Assistant 才能创建 Assistant Chat Session。");
-    error.code = "AGENT_NOT_ASSISTANT";
-    throw error;
-  }
   const providerId = resolveSessionProviderId(requestedProviderId);
   if (!providerId) {
     const error = new Error(`Session Provider（${requestedProviderId ?? "未设置"}）暂不支持执行。`);
@@ -5537,6 +5530,9 @@ async function launchAgentSession({ agent, providerId: requestedProviderId, titl
   );
   // 把自由会话归属到该 Agent，使 GET /agents/:id/sessions 与前端按 Agent 分组能定位到它。
   collaborationCore.bindSession({ agentId: agent.agentId, sessionId: session.id });
+  if (isPlatformAssistant(agent)) {
+    store.grantSessionCapability(session.id, "platform.manage");
+  }
   return store.getSession(session.id) ?? session;
 }
 
@@ -9077,8 +9073,7 @@ function route(request, response) {
         const metadata = sessionToolMetadata(session);
         const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
         const actorMatches = session && (session.agentId === actorId || boundAgent?.agentId === actorId);
-        const platformScope = session?.sessionKind === "assistantChat"
-          && isPlatformAssistant(store.getAgent(actorId));
+        const platformScope = store.sessionHasCapability(session?.id, "platform.manage");
         if (!actorId || !session || !providerBindingId || providerBindingId !== metadata.providerBindingId
           || (!platformScope && !["workChat", "worker"].includes(session.sessionKind))
           || !actorMatches) {
@@ -11277,6 +11272,10 @@ async function resumeSessionRecoveryAttemptsAtStartup() {
 // transport. The main-thread Store opens only after the migration lock is
 // released and skips the already-completed schema pass.
 await store.resolveDataPath();
+const developmentFixtureMarker = join(store.layout.stateDirectory, "development-fixtures-v1.json");
+const shouldSeedDevelopmentFixtures = environmentName === "development"
+  && process.env.CORPTIE_DEVELOPMENT_FIXTURES === "1"
+  && !pathExists(developmentFixtureMarker);
 const backendDataRootOwnership = await BackendDataRootOwnership.acquire({
   stateDirectory: store.layout.stateDirectory,
   environment: environmentName,
@@ -11288,6 +11287,39 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+if (shouldSeedDevelopmentFixtures) {
+  const designAgent = store.getAgent("agent:development-design") ?? store.createAgent({
+    id: "agent:development-design",
+    name: "产品设计",
+    description: "用于验证 Agent Profile、长文本与 Memory 的开发样例。",
+    systemPrompt: "梳理用户目标，输出清晰、可验证的产品方案。",
+    capabilities: ["product", "ux", "research"]
+  });
+  const engineeringAgent = store.getAgent("agent:development-engineering") ?? store.createAgent({
+    id: "agent:development-engineering",
+    name: "开发验证",
+    description: "用于验证聊天 Session 与 Task Worker 共用同一 Agent 的开发样例。",
+    systemPrompt: "实现变更，运行相关测试，并给出可复现证据。",
+    capabilities: ["swiftui", "backend", "testing"]
+  });
+  const bundledSkillSource = dirname(bundledCollaborationSkillPath);
+  const bundledSkill = store.listRegistrySkills().find((skill) => (
+    skill.sourceType === "local" && resolve(skill.source) === resolve(bundledSkillSource)
+  )) ?? await skillRegistryService.register({
+      name: "Corptie Collaboration",
+      description: "用于验证 Agent 已安装 Skill 列表与选择流程。",
+      sourceType: "local",
+      source: bundledSkillSource,
+      assist: false
+    });
+  store.setAgentRegistrySkills(designAgent.agentId, [bundledSkill.skillId]);
+  store.setAgentRegistrySkills(engineeringAgent.agentId, []);
+  await writeFile(developmentFixtureMarker, `${JSON.stringify({ schemaVersion: 1, seededAt: now() })}\n`, {
+    encoding: "utf8",
+    mode: 0o600
+  });
+  console.log(`[development-fixtures] seeded agents=2 skills=1 database=${store.dbPath}`);
+}
 benchmarkControlPlane.initialize();
 if (runIsolationCoordinator) {
   await mkdir(runIsolationDataRoot, { recursive: true, mode: 0o700 });
