@@ -95,6 +95,7 @@ export function handleEntityHttpRequest({
   deleteTaskSafely,
   getTaskDeletionOperation,
   restartTask,
+  setTaskArchived,
   restoreTaskExecution,
   taskCompletionService,
   resolveAgentAvailability,
@@ -816,6 +817,15 @@ export function handleEntityHttpRequest({
       }
 
       const taskMatch = path.match(/^\/tasks\/([^/]+)$/);
+      const taskArchiveMatch = path.match(/^\/tasks\/([^/]+)\/archive$/);
+      if (taskArchiveMatch && request.method === "POST") {
+        const id = decodeURIComponent(taskArchiveMatch[1]);
+        const input = await readJson(request);
+        if (typeof setTaskArchived !== "function") throw apiError("CAPABILITY_UNAVAILABLE", "Task archive is unavailable.", 503);
+        const task = await setTaskArchived(id, input.archived);
+        workService.emit("TaskChanged", task, input.archived ? "archived" : "unarchived");
+        return sendJson(response, 200, presentTaskWithOrigin(workService, task));
+      }
       if (taskMatch) {
         const id = decodeURIComponent(taskMatch[1]);
         if (request.method === "GET") {

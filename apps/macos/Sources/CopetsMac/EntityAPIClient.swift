@@ -311,6 +311,15 @@ final class EntityAPIClient: ObservableObject {
     }
 
     @discardableResult
+    func setTaskArchived(_ archived: Bool, taskId: String) async -> CorptieTask? {
+        var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/archive"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["archived": archived])
+        return await performEntityMutation(request, as: CorptieTask.self)
+    }
+
+    @discardableResult
     func restartCorptieTask(taskId: String) async -> Bool {
         var request = URLRequest(url: baseURL.appending(path: "tasks/\(taskId)/restart"))
         request.httpMethod = "POST"
