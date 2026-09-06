@@ -1226,7 +1226,10 @@ struct UnifiedConsoleView: View {
     }
 
     private var assistantSessionRows: [SessionRowModel] {
-        searchFilteredRows.filter { $0.session.resolvedSessionKind == .assistantChat }
+        let rows = searchFilteredRows.filter { $0.session.resolvedSessionKind == .assistantChat }
+        // Stable partition: keep the built-in product help Chat easy to find.
+        return rows.filter { $0.session.agentId == "assistant" }
+            + rows.filter { $0.session.agentId != "assistant" }
     }
 
     private var workChatRows: [SessionRowModel] {

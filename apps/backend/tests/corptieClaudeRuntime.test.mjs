@@ -45,3 +45,30 @@ test("Claude runtime installs the Corptie collaboration Skill as a local plugin"
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("Claude shares native gateway settings without importing native hooks or permissions", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-claude-gateway-"));
+  try {
+    const bundled = join(directory, "bundled.md");
+    const sourceSettingsPath = join(directory, "settings.json");
+    await writeFile(bundled, "# Runtime {{CORPTIE_ENVIRONMENT}}\n");
+    const native = { env: { ANTHROPIC_BASE_URL: "https://gateway.invalid", ANTHROPIC_MODEL: "gateway-model" },
+      apiKeyHelper: "local-key-helper", model: "gateway-model", hooks: { Stop: [] }, permissions: { allow: ["Bash(*)"] } };
+    await writeFile(sourceSettingsPath, JSON.stringify(native));
+    const options = { homeDir: directory, environmentName: "development", sourceSettingsPath,
+      bundledMemoryPath: bundled, bundledSkillPath: bundled, bundledProjectToolsReferencePath: bundled };
+    const runtime = await ensureCorptieClaudeRuntime(options);
+    const settings = JSON.parse(await readFile(runtime.settingsPath, "utf8"));
+    assert.deepEqual(settings, { env: native.env, model: native.model, apiKeyHelper: native.apiKeyHelper });
+    assert.equal((await lstat(runtime.settingsPath)).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(await readFile(sourceSettingsPath, "utf8")), native);
+    settings.permissions = { deny: ["Bash(rm *)"] };
+    await writeFile(runtime.settingsPath, JSON.stringify(settings));
+    await writeFile(sourceSettingsPath, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://new.invalid" } }));
+    await ensureCorptieClaudeRuntime(options);
+    assert.deepEqual(JSON.parse(await readFile(runtime.settingsPath, "utf8")), {
+      env: { ANTHROPIC_BASE_URL: "https://new.invalid" }, permissions: settings.permissions
+    });
+    assert.equal((await ensureCorptieClaudeRuntime(options)).connectionSettingsChanged, false);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
