@@ -342,6 +342,7 @@ enum ConsoleTaskSelectionPolicy {
     ) -> Bool {
         task.workId == selectedWorkID
             && task.lifecycleState != "done"
+            && task.archived != true
             && task.deletionStatus != "deleting"
     }
 
@@ -412,6 +413,7 @@ struct UnifiedConsoleView: View {
     @State private var workPendingEdit: Work?
     @State private var workPendingDeletion: Work?
     @State private var workDeletionError: String?
+    @State private var taskArchiveError: String?
     @State private var taskPendingEdit: CorptieTask?
     @State private var taskPendingRename: CorptieTask?
     @State private var sessionPendingRename: TaskSession?
@@ -605,20 +607,22 @@ struct UnifiedConsoleView: View {
             ))
         }
         .alert(L10n("操作失败"), isPresented: Binding(
-            get: { workDeletionError != nil || taskDeletionError != nil },
+            get: { workDeletionError != nil || taskDeletionError != nil || taskArchiveError != nil },
             set: {
                 if !$0 {
                     workDeletionError = nil
                     taskDeletionError = nil
+                    taskArchiveError = nil
                 }
             }
         )) {
             Button(L10n("OK"), role: .cancel) {
                 workDeletionError = nil
                 taskDeletionError = nil
+                taskArchiveError = nil
             }
         } message: {
-            Text(workDeletionError ?? taskDeletionError ?? "")
+            Text(workDeletionError ?? taskDeletionError ?? taskArchiveError ?? "")
         }
     }
 
@@ -916,6 +920,7 @@ struct UnifiedConsoleView: View {
                 Spacer(minLength: 4)
                 navigationModeToggle
                 searchToggleButton
+                taskArchiveToggle
             }
             .padding(8)
 
@@ -956,6 +961,7 @@ struct UnifiedConsoleView: View {
                 Spacer(minLength: 4)
                 navigationModeToggle
                 searchToggleButton
+                taskArchiveToggle
             }
             .padding(8)
 
@@ -1024,8 +1030,17 @@ struct UnifiedConsoleView: View {
                     DisclosureGroup(isExpanded: outlineWorkExpandedBinding(work.id)) {
                         VStack(alignment: .leading, spacing: 2) {
                             if isShowingWorkerArchive {
-                                let rows = archivedRowsByWorkID[work.id] ?? []
-                                if rows.isEmpty {
+                                let archivedTasks = archivedTasks(for: work.id)
+                                let taskIDs = Set(archivedTasks.map(\.id))
+                                let rows = (archivedRowsByWorkID[work.id] ?? []).filter {
+                                    !taskIDs.contains($0.session.taskId ?? "")
+                                }
+                                ForEach(archivedTasks) { task in
+                                    taskRow(task)
+                                        .padding(.leading, ConsoleWorkOutlineMetrics.childIndent)
+                                        .background(outlineChildSelectionBackground(selectedTaskId == task.id))
+                                }
+                                if rows.isEmpty && archivedTasks.isEmpty {
                                     outlineGroupEmptyRow(L10n("No Archived Sessions"))
                                 } else {
                                     ForEach(rows) { row in
@@ -1196,7 +1211,7 @@ struct UnifiedConsoleView: View {
 
     private var outlineTasksByWorkID: [String: [CorptieTask]] {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let activeTasks = entityClient.tasks.filter { $0.lifecycleState != "done" }
+        let activeTasks = entityClient.tasks.filter { $0.lifecycleState != "done" && $0.archived != true }
         let grouped = Dictionary(grouping: activeTasks, by: \.workId)
         return grouped.mapValues { tasks in
             tasks
@@ -1280,7 +1295,7 @@ struct UnifiedConsoleView: View {
         guard let selectedWorkId else { return [] }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         return entityClient.tasks
-            .filter { $0.workId == selectedWorkId && $0.lifecycleState != "done" }
+            .filter { $0.workId == selectedWorkId && $0.lifecycleState != "done" && $0.archived != true }
             .filter { task in
                 query.isEmpty
                     || task.title.localizedCaseInsensitiveContains(query)
@@ -1316,15 +1331,28 @@ struct UnifiedConsoleView: View {
         }
     }
 
+    private func archivedTasks(for workID: String) -> [CorptieTask] {
+        entityClient.tasks.filter {
+            $0.workId == workID && $0.archived == true
+                && (searchText.isEmpty || $0.title.localizedCaseInsensitiveContains(searchText))
+        }
+    }
+
     private func archivedWorkerSessionList(_ work: Work) -> some View {
+        let archivedTasks = archivedTasks(for: work.id)
+        let taskIDs = Set(archivedTasks.map(\.id))
         let rows = searchFilteredRows.filter { row in
             guard row.session.resolvedSessionKind == .worker else { return false }
+            guard !taskIDs.contains(row.session.taskId ?? "") else { return false }
             if row.session.workId == work.id { return true }
             guard let taskId = row.session.taskId else { return false }
             return entityClient.tasks.first(where: { $0.id == taskId })?.workId == work.id
         }
         return List {
-            if rows.isEmpty {
+            ForEach(archivedTasks) { task in
+                taskRow(task)
+            }
+            if rows.isEmpty && archivedTasks.isEmpty {
                 Text(L10n("No Archived Sessions"))
                     .foregroundStyle(.secondary)
             } else {
@@ -1415,6 +1443,7 @@ struct UnifiedConsoleView: View {
     @ViewBuilder
     private func taskRow(_ task: CorptieTask, ownsContextMenu: Bool = true) -> some View {
         let session = workerSession(for: task)
+            ?? backendClient.archivedSessions.first { $0.taskId == task.id }
         let sessionActivity = CorptieTaskBoundSessionActivity.resolve(
             task: task,
             sessions: backendClient.sessions
@@ -1490,11 +1519,27 @@ struct UnifiedConsoleView: View {
         .disabled(session?.actions?.restart?.available != true
             || pendingTaskRestartIds.contains(task.id)
             || task.deletionStatus == "deleting")
+        Button(task.archived == true ? L10n("恢复 Task") : L10n("归档 Task"), systemImage: "archivebox") {
+            Task { await setTaskArchived(task.archived != true, task: task) }
+        }
+        .disabled(task.deletionStatus == "deleting")
         Divider()
         Button(L10n("删除"), systemImage: "trash", role: .destructive) {
             Task { await prepareTaskDeletion(task) }
         }
         .disabled(pendingTaskDeletionIds.contains(task.id) || task.deletionStatus == "deleting")
+    }
+
+    private func setTaskArchived(_ archived: Bool, task: CorptieTask) async {
+        guard await entityClient.setTaskArchived(archived, taskId: task.id) != nil else {
+            taskArchiveError = entityClient.errorMessage ?? L10n("归档失败")
+            return
+        }
+        if selectedTaskId == task.id {
+            selectedTaskId = nil
+            backendClient.closeDetail()
+        }
+        await backendClient.refreshArchivedSessions(sessionKind: .worker)
     }
 
     private func restartTask(_ task: CorptieTask) {
@@ -2021,6 +2066,19 @@ struct UnifiedConsoleView: View {
     private func presentTaskCreation(for workID: String?) {
         taskCreationWorkID = workID
         isCreatingTask = true
+    }
+
+    private var taskArchiveToggle: some View {
+        Button {
+            setWorkerArchiveVisible(!isShowingWorkerArchive)
+        } label: {
+            Image(systemName: isShowingWorkerArchive ? "archivebox.fill" : "archivebox")
+                .foregroundStyle(isShowingWorkerArchive ? Color.accentColor : Color.secondary)
+                .frame(width: 24, height: 24)
+        }
+        .buttonStyle(.plain)
+        .help(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
+        .accessibilityLabel(isShowingWorkerArchive ? L10n("返回活动 Task") : L10n("查看归档 Task"))
     }
 
     private var workerSessionFunctionBar: some View {
