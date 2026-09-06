@@ -14,6 +14,7 @@ import {
 
 export class ClaudeAgentManager {
   constructor(options = {}) {
+    this.executable = options.executable;
     this.sessions = new Map();
     this.store = options.store ?? null;
     this.maxItems = options.maxItems ?? 2_000;
@@ -746,6 +747,7 @@ export class ClaudeAgentManager {
           env: claudeRuntimeEnvironment(this.environment()),
           includePartialMessages: true,
           ...runtimeOptions,
+          ...(this.executable ? { pathToClaudeCodeExecutable: this.executable() } : {}),
           ...permissionOptions,
           canUseTool: async (toolName, input, options) => this.handleToolRequest(session, toolName, input, options)
         }

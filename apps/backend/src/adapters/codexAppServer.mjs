@@ -81,7 +81,7 @@ export class CodexAppServerClient {
 
   async #initializeProcess(generation) {
     const env = typeof this.env === "function" ? this.env() : this.env;
-    const child = this.spawnProcess(this.command, this.args, {
+    const child = this.spawnProcess(typeof this.command === "function" ? this.command() : this.command, this.args, {
       stdio: ["pipe", "pipe", "pipe"],
       env
     });
@@ -745,7 +745,7 @@ export class CodexAppServerClient {
   async execResumeThread(threadId, text) {
     await this.initialize();
 
-    const childCodex = this.command;
+    const childCodex = typeof this.command === "function" ? this.command() : this.command;
     const child = spawn(childCodex, ["exec", "resume", "--json", threadId, text], {
       stdio: ["ignore", "pipe", "pipe"]
     });

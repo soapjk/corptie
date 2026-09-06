@@ -43,3 +43,24 @@ test("explicit managed ports win while production and Development stay isolated 
   assert.equal(resolveOpenClackyManagedPort("production", "47199"), 47199);
   assert.equal(resolveOpenClackyCommand("/custom/openclacky", "/unused"), "/custom/openclacky");
 });
+
+test("OpenClacky resolves the configured executable at process start", async () => {
+  let command = "/old/openclacky";
+  let launched;
+  let healthy = false;
+  const runtime = new OpenClackyServerRuntime({
+    command: () => command,
+    spawn: path => {
+      launched = path;
+      healthy = true;
+      const child = new EventEmitter();
+      child.stderr = new EventEmitter();
+      return child;
+    },
+    fetch: async () => Response.json(healthy ? { status: "ok" } : {}),
+    startupTimeoutMs: 100
+  });
+  command = "/custom path/openclacky";
+  await runtime.ensureRunning();
+  assert.equal(launched, command);
+});
