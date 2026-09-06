@@ -22,6 +22,8 @@ struct CollaborationConfirmationRequestTests {
         #expect(!action.contains("guard session != nil || selectedSession != nil else { return }"))
         #expect(action.contains("pendingCollaborationConfirmationsBySessionID.first"))
         #expect(action.contains("requestCollaborationConfirmationResolution("))
+        #expect(action.contains("resolvedItem.collaborationConfirmationStatus = approve ? \"confirmed\" : \"rejected\""))
+        #expect(action.contains("await loadSessionMessages(sourceSession)"))
         #expect(action.contains("Confirmation failed: %@"))
     }
 
