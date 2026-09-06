@@ -122,6 +122,7 @@ final class BackendClient: ObservableObject {
     private let timelineDeltaProcessor = SessionTimelineDeltaProcessor()
     var sessions: [TaskSession] { appState.sessions.filter { $0.archived != true } }
     let sessionIndexStore = SessionIndexStore()
+    let sessionRestartActivityController = SessionRestartActivityController()
 
     private static let iso8601Formatter = ISO8601DateFormatter()
 
@@ -246,7 +247,10 @@ final class BackendClient: ObservableObject {
     private(set) var isSwitchingReasoning: Bool { get { sessionCommandController.isSwitchingReasoning } set { sessionCommandController.isSwitchingReasoning = newValue } }
     private(set) var connectionTransitionSessionIds: Set<String> { get { sessionCommandController.connectionTransitionSessionIds } set { sessionCommandController.connectionTransitionSessionIds = newValue } }
     private(set) var restartingSessionIds: Set<String> { get { sessionCommandController.restartingSessionIds } set { sessionCommandController.restartingSessionIds = newValue } }
-    private(set) var restartActivityBySessionId: [String: SessionRestartActivity] { get { sessionCommandController.restartActivityBySessionId } set { sessionCommandController.restartActivityBySessionId = newValue } }
+    private(set) var restartActivityBySessionId: [String: SessionRestartActivity] {
+        get { sessionRestartActivityController.activityBySessionID }
+        set { sessionRestartActivityController.activityBySessionID = newValue }
+    }
     @Published private(set) var isLoadingArchivedSessions = false
     @Published private(set) var isLoadingMoreArchivedSessions = false
     @Published private(set) var archivedSessionsHasMore = false
@@ -3847,7 +3851,9 @@ final class BackendClient: ObservableObject {
                 sendStatusMessage = httpResponse.statusCode == 202
                     ? L10n("Session will restart after the current run finishes")
                     : L10n("Session restarted")
-                if httpResponse.statusCode != 202 {
+                if httpResponse.statusCode == 202 {
+                    deferRestartActivity(for: session.id)
+                } else {
                     completeRestartActivity(for: session.id)
                 }
             } catch {
@@ -3904,6 +3910,15 @@ final class BackendClient: ObservableObject {
             isActive: false
         )
         scheduleRestartActivityClear(for: sessionId, after: .seconds(2))
+    }
+
+    private func deferRestartActivity(for sessionId: String) {
+        restartActivityClearTasks.removeValue(forKey: sessionId)?.cancel()
+        restartActivityBySessionId[sessionId] = SessionRestartActivity(
+            text: L10n("Session will restart after the current run finishes"),
+            isActive: false
+        )
+        scheduleRestartActivityClear(for: sessionId, after: .seconds(4))
     }
 
     private func failRestartActivity(for sessionId: String) {

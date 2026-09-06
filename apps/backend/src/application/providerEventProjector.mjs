@@ -85,7 +85,7 @@ export class ProviderEventProjector {
     const finalAgentMessage = event.type === "turn.completed"
       ? finalItemForTurn({ items: projectedTurnItems }, event.turnId)
       : null;
-    const terminalOutcome = providerTerminalOutcome(event, projectedTurnItems);
+    const terminalOutcome = providerTerminalOutcome(event);
 
     const turnStatus = projectedTurnStatus(event, terminalOutcome);
     if (turnStatus && event.turnId) {
@@ -325,43 +325,16 @@ function finalItemForTurn(payload, turnId) {
   ) ?? null;
 }
 
-function providerTerminalOutcome(event, projectedTurnItems = []) {
+function providerTerminalOutcome(event) {
   const status = TERMINAL_EVENT_STATUS.get(event.type);
   if (!status) return null;
-  if (status !== "completed") {
-    return {
-      status,
-      failure: status === "failed" ? normalizeProviderFailure(event.payload?.error) : null
-    };
-  }
-  const items = projectedTurnItems.length > 0 ? projectedTurnItems : (event.payload?.items ?? []);
-  if (finalItemForTurn({ items }, event.turnId)) return { status, failure: null };
-  if (collaborationConfirmationHandoffForTurn(items, event.turnId)) {
-    return { status, failure: null };
-  }
-  const failedItem = [...items].reverse().find((item) =>
-    (!event.turnId || item?.turnId === event.turnId)
-    && item?.status === "failed"
-    && !["userMessage", "agentMessage", "reasoning"].includes(item?.type)
-  );
-  if (!failedItem) return { status, failure: null };
+  // Tool failures describe individual attempts, not the outcome of the Turn.
+  // A completed Turn may recover from an error or finish with a Channel send
+  // and no final text. Preserve the Provider's explicit terminal status.
   return {
-    status: "failed",
-    failure: {
-      code: "PROVIDER_TOOL_FAILED_WITHOUT_FINAL_RESPONSE",
-      message: `${failedItem.title || "Provider tool"} failed and the Provider ended the turn without a final response.`,
-      itemId: failedItem.id ?? null
-    }
+    status,
+    failure: status === "failed" ? normalizeProviderFailure(event.payload?.error) : null
   };
-}
-
-function collaborationConfirmationHandoffForTurn(items, turnId) {
-  return items.some((item) =>
-    (!turnId || item?.turnId === turnId)
-    && item?.type === "collaborationConfirmation"
-    && item?.presentationRole === "collaboration_confirmation"
-    && ["pending", "confirmed", "rejected"].includes(item?.status)
-  );
 }
 
 function normalizeProviderFailure(error) {
