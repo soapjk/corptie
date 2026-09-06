@@ -280,6 +280,67 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertGreaterThan(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), 130)
     }
 
+    func testConfirmedCollaborationCardReplacesSendActionWithGreenSentStatus() throws {
+        let harness = makeHarness(followsLatest: true)
+        let pending = AppKitChatTimelineRow(
+            id: "collaboration-confirmation",
+            contentRevision: 1,
+            nativeText: "**Message**\nPlease review this change.",
+            copyText: "Please review this change.",
+            nativeStyle: .agent,
+            title: "Cross-session collaboration",
+            metadata: "等待确认",
+            isCollaboration: true,
+            expandableTurnId: nil,
+            isExpanded: false,
+            showsHeader: true,
+            actions: [.init(
+                id: "confirm",
+                label: L10n("确认发送"),
+                isDestructive: false,
+                kind: .collaborationConfirmation(id: "confirmation:one", approve: true)
+            )]
+        )
+        let sent = AppKitChatTimelineRow(
+            id: "collaboration-confirmation",
+            contentRevision: 2,
+            nativeText: "**Message**\nPlease review this change.",
+            copyText: "Please review this change.",
+            nativeStyle: .agent,
+            title: "Cross-session collaboration",
+            metadata: "已发送",
+            isCollaboration: true,
+            expandableTurnId: nil,
+            isExpanded: false,
+            showsHeader: true,
+            actions: [],
+            showsCollaborationSentStatus: true
+        )
+        harness.coordinator.apply(rows: [pending])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+        let pendingCell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        XCTAssertNotNil(button(in: pendingCell, identifier: "chat.timeline.action.confirm"))
+
+        harness.coordinator.apply(rows: [sent])
+        harness.window.contentView?.layoutSubtreeIfNeeded()
+
+        let cell = try XCTUnwrap(
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+        )
+        cell.layoutSubtreeIfNeeded()
+        let status = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.collaboration-sent"))
+        let icon = try XCTUnwrap(view(in: cell, identifier: "chat.timeline.collaboration-sent-icon") as? NSImageView)
+        let label = try XCTUnwrap(textField(in: cell, identifier: "chat.timeline.collaboration-sent-label"))
+
+        XCTAssertFalse(status.isHidden)
+        XCTAssertEqual(icon.contentTintColor, .systemGreen)
+        XCTAssertEqual(label.stringValue, L10n("已发送"))
+        XCTAssertEqual(label.textColor, .systemGreen)
+        XCTAssertNil(button(in: cell, identifier: "chat.timeline.action.confirm"))
+    }
+
     func testRunningExecutionSummaryIncludesElapsedDurationWhenAvailable() throws {
         let harness = makeHarness(followsLatest: true)
         let process = AppKitChatTimelineRow(

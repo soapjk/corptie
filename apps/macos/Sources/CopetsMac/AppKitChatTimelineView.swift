@@ -563,6 +563,7 @@ final class NativeTimelineLayoutCache {
         let isExpanded: Bool
         let showsHeader: Bool
         let actionCount: Int
+        let showsCollaborationSentStatus: Bool
         let widthBucket: Int
         let imagePaths: [String]
 
@@ -597,6 +598,7 @@ final class NativeTimelineLayoutCache {
             isExpanded: row.isExpanded,
             showsHeader: row.showsHeader,
             actionCount: row.actions.count,
+            showsCollaborationSentStatus: row.showsCollaborationSentStatus,
             widthBucket: Int((normalizedWidth * 2).rounded()),
             imagePaths: row.images.map { $0.managedPath }
         )
@@ -642,6 +644,7 @@ final class NativeTimelineLayoutCache {
             } else {
                 let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
+                let sentStatusHeight: CGFloat = row.showsCollaborationSentStatus ? 30 : 0
                 let messageActionBarHeight: CGFloat = row.showsMessageActionBar ? 27 : 0
                 // Replaces the ordinary 6pt title-to-body gap with
                 // 8pt + 92pt summary + 10pt, for a net 104pt addition.
@@ -649,7 +652,7 @@ final class NativeTimelineLayoutCache {
                 let verticalChrome: CGFloat = (row.showsHeader ? 39 : 20) + collaborationRouteHeight
                 rowHeight = max(
                     row.showsHeader ? 54 : 30,
-                    textHeight + verticalChrome + footerHeight + actionHeight + messageActionBarHeight
+                    textHeight + verticalChrome + footerHeight + actionHeight + sentStatusHeight + messageActionBarHeight
                 ) + (row.images.isEmpty ? 0 : 96)
             }
         }
@@ -750,6 +753,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let showsHeader: Bool
     let hoverTimestamp: String
     let actions: [Action]
+    let showsCollaborationSentStatus: Bool
     let images: [ChatTimelineImage]
 
     var showsMessageActionBar: Bool {
@@ -779,6 +783,7 @@ struct AppKitChatTimelineRow: Identifiable {
         showsHeader: Bool = true,
         hoverTimestamp: String = "",
         actions: [Action] = [],
+        showsCollaborationSentStatus: Bool = false,
         images: [ChatTimelineImage] = []
     ) {
         self.id = id
@@ -801,6 +806,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.showsHeader = showsHeader
         self.hoverTimestamp = hoverTimestamp
         self.actions = actions
+        self.showsCollaborationSentStatus = showsCollaborationSentStatus
         self.images = images
     }
 
@@ -2404,6 +2410,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private let copyButton = NSButton()
     private let messageActionBar = NSStackView()
     private let actionStack = NSStackView()
+    private let collaborationSentStatus = NSStackView()
+    private let collaborationSentStatusIcon = NSImageView()
+    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已发送"))
     private let processSeparator = NSView()
     private let processButton = NSButton()
     private var processSeparatorHeight: NSLayoutConstraint!
@@ -2411,6 +2420,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var processButtonTopConstraint: NSLayoutConstraint!
     private var processButtonBottomConstraint: NSLayoutConstraint!
     private var actionStackHeight: NSLayoutConstraint!
+    private var collaborationSentStatusHeight: NSLayoutConstraint!
     private var cardWidthConstraint: NSLayoutConstraint!
     private var cardLeadingConstraint: NSLayoutConstraint!
     private var cardTrailingConstraint: NSLayoutConstraint!
@@ -2426,6 +2436,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private var imageStackHeightConstraint: NSLayoutConstraint!
     private var labelBottomToProcessConstraint: NSLayoutConstraint!
     private var labelBottomToActionsConstraint: NSLayoutConstraint!
+    private var labelBottomToSentStatusConstraint: NSLayoutConstraint!
     private var labelTopToProcessButtonConstraint: NSLayoutConstraint!
     private var labelBottomToCardConstraint: NSLayoutConstraint!
     private var labelHeightConstraint: NSLayoutConstraint!
@@ -2479,6 +2490,22 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         actionStack.orientation = .horizontal
         actionStack.alignment = .centerY
         actionStack.spacing = 8
+        collaborationSentStatus.translatesAutoresizingMaskIntoConstraints = false
+        collaborationSentStatus.orientation = .horizontal
+        collaborationSentStatus.alignment = .centerY
+        collaborationSentStatus.spacing = 5
+        collaborationSentStatusIcon.image = NSImage(
+            systemSymbolName: "checkmark.circle.fill",
+            accessibilityDescription: L10n("已发送")
+        )
+        collaborationSentStatusIcon.contentTintColor = .systemGreen
+        collaborationSentStatusIcon.identifier = NSUserInterfaceItemIdentifier("chat.timeline.collaboration-sent-icon")
+        collaborationSentStatusLabel.font = .systemFont(ofSize: 10, weight: .semibold)
+        collaborationSentStatusLabel.textColor = .systemGreen
+        collaborationSentStatusLabel.identifier = NSUserInterfaceItemIdentifier("chat.timeline.collaboration-sent-label")
+        collaborationSentStatus.addArrangedSubview(collaborationSentStatusIcon)
+        collaborationSentStatus.addArrangedSubview(collaborationSentStatusLabel)
+        collaborationSentStatus.identifier = NSUserInterfaceItemIdentifier("chat.timeline.collaboration-sent")
         processSeparator.translatesAutoresizingMaskIntoConstraints = false
         processSeparator.wantsLayer = true
         processButton.translatesAutoresizingMaskIntoConstraints = false
@@ -2550,6 +2577,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             rawStatusScrollView,
             disclosureButton,
             actionStack,
+            collaborationSentStatus,
             processSeparator,
             processButton
         ].forEach(cardView.addSubview)
@@ -2558,6 +2586,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         processButtonTopConstraint = processButton.topAnchor.constraint(equalTo: cardView.topAnchor, constant: 3)
         processButtonBottomConstraint = processButton.bottomAnchor.constraint(equalTo: cardView.bottomAnchor, constant: -3)
         actionStackHeight = actionStack.heightAnchor.constraint(equalToConstant: 0)
+        collaborationSentStatusHeight = collaborationSentStatus.heightAnchor.constraint(equalToConstant: 0)
         cardWidthConstraint = cardView.widthAnchor.constraint(equalToConstant: ChatBubbleWidthPolicy.maximumWidth)
         cardLeadingConstraint = cardView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
         cardTrailingConstraint = cardView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2)
@@ -2573,6 +2602,10 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         imageStackHeightConstraint = imageStack.heightAnchor.constraint(equalToConstant: 0)
         labelBottomToProcessConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: processSeparator.topAnchor, constant: -5)
         labelBottomToActionsConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: actionStack.topAnchor, constant: -4)
+        labelBottomToSentStatusConstraint = label.bottomAnchor.constraint(
+            lessThanOrEqualTo: collaborationSentStatus.topAnchor,
+            constant: -4
+        )
         labelTopToProcessButtonConstraint = label.topAnchor.constraint(equalTo: processButton.bottomAnchor, constant: 8)
         labelBottomToCardConstraint = label.bottomAnchor.constraint(lessThanOrEqualTo: cardView.bottomAnchor, constant: -10)
         labelHeightConstraint = label.heightAnchor.constraint(equalToConstant: 0)
@@ -2611,6 +2644,9 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             actionStack.trailingAnchor.constraint(lessThanOrEqualTo: cardView.trailingAnchor, constant: -10),
             actionStack.bottomAnchor.constraint(equalTo: processSeparator.topAnchor, constant: -4),
             actionStackHeight,
+            collaborationSentStatus.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
+            collaborationSentStatus.bottomAnchor.constraint(equalTo: processSeparator.topAnchor, constant: -4),
+            collaborationSentStatusHeight,
             processSeparator.leadingAnchor.constraint(equalTo: cardView.leadingAnchor, constant: 10),
             processSeparator.trailingAnchor.constraint(equalTo: cardView.trailingAnchor, constant: -10),
             processSeparator.bottomAnchor.constraint(equalTo: processButton.topAnchor),
@@ -2669,6 +2705,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         self.onToggleExpansion = onToggleExpansion
         self.onAction = onAction
         configureActions(row.actions)
+        configureCollaborationSentStatus(row.showsCollaborationSentStatus)
         configureImages(row.images, rowID: row.id)
         copiedText = row.copyText
         let showsMessageActions = row.showsMessageActionBar
@@ -2889,6 +2926,15 @@ final class AppKitChatNativeTextCell: NSTableCellView {
             button.contentTintColor = action.isDestructive ? .systemRed : .controlAccentColor
             button.toolTip = action.label
             actionStack.addArrangedSubview(button)
+        }
+    }
+
+    private func configureCollaborationSentStatus(_ isVisible: Bool) {
+        collaborationSentStatus.isHidden = !isVisible
+        collaborationSentStatusHeight.constant = isVisible ? 22 : 0
+        labelBottomToSentStatusConstraint.isActive = isVisible
+        if isVisible {
+            labelBottomToProcessConstraint.isActive = false
         }
     }
 

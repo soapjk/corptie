@@ -3990,6 +3990,7 @@ struct DetailView: View {
         let isCollaboration: Bool
         let collaborationRoute: NativeCollaborationRoutePresentation?
         let actions: [AppKitChatTimelineRow.Action]
+        let showsCollaborationSentStatus: Bool
         var images: [ChatTimelineImage] = []
         switch entry.kind {
         case .message(let item):
@@ -4042,6 +4043,8 @@ struct DetailView: View {
             processCount = nil
             processDuration = nil
             actions = nativeTimelineActions(for: item)
+            showsCollaborationSentStatus = collaboration != nil
+                && (item.collaborationConfirmationStatus ?? item.status ?? "").lowercased() == "confirmed"
             rawStatusText = ""
             isCollaboration = collaboration != nil
             collaborationRoute = collaboration?.route
@@ -4086,6 +4089,7 @@ struct DetailView: View {
             showsHeader = false
             hoverTimestamp = ""
             actions = []
+            showsCollaborationSentStatus = false
             isCollaboration = false
             collaborationRoute = nil
         }
@@ -4110,6 +4114,7 @@ struct DetailView: View {
             showsHeader: showsHeader,
             hoverTimestamp: hoverTimestamp,
             actions: actions,
+            showsCollaborationSentStatus: showsCollaborationSentStatus,
             images: images
         )
     }
@@ -5634,7 +5639,8 @@ func nativeCollaborationCardPresentation(
         ?? "queued").lowercased()
     let status: String = switch statusSource {
     case "sent", "delivered": L10n("已发送")
-    case "confirmed", "completed", "complete": L10n("已处理")
+    case "confirmed": isConfirmation ? L10n("已发送") : L10n("已处理")
+    case "completed", "complete": L10n("已处理")
     case "running", "processing": L10n("处理中")
     case "failed": L10n("处理失败")
     case "rejected", "cancelled", "canceled": L10n("已取消")
@@ -9021,6 +9027,17 @@ struct ThreadItemView: View {
                 .padding(.top, 9)
                 .padding(.bottom, 10)
                 .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            if collaborationConfirmationStatus == "confirmed" {
+                Divider()
+                    .overlay(CorptiePalette.collaborationBorder.opacity(0.42))
+                Label(L10n("已发送"), systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(CorptiePalette.connected)
+                    .padding(.horizontal, 10)
+                    .frame(height: 30, alignment: .leading)
+                    .accessibilityIdentifier("collaboration.confirmation.sent")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
