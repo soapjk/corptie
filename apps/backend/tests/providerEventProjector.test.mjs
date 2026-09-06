@@ -216,7 +216,7 @@ test("turn completion settles only its run and preserves the final reply as a se
   }
 });
 
-test("a completed Provider turn with a failed tool and no non-empty final reply is projected as failed", async () => {
+test("a completed Provider turn preserves completion despite a failed tool and empty final reply", async () => {
   const { directory, store, projector } = await fixture();
   try {
     store.createUserMessageDelivery({
@@ -261,13 +261,14 @@ test("a completed Provider turn with a failed tool and no non-empty final reply 
 
     const turn = store.getSessionTurn("session:one", binding.bindingId, "turn:one");
     const delivery = store.getMessageDelivery("delivery:failed-tool");
-    assert.equal(projected.terminalStatus, "failed");
-    assert.equal(projected.terminalFailure.code, "PROVIDER_TOOL_FAILED_WITHOUT_FINAL_RESPONSE");
-    assert.equal(turn.execution_status, "failed");
+    assert.equal(projected.terminalStatus, "completed");
+    assert.equal(projected.terminalFailure, null);
+    assert.equal(turn.execution_status, "completed");
     assert.equal(turn.final_item_id, null);
-    assert.equal(delivery.status, "failed");
-    assert.match(delivery.lastError, /Collaboration request failed/);
-    assert.equal(projected.session.status, "failed");
+    assert.equal(delivery.status, "completed");
+    assert.equal(delivery.lastError, null);
+    assert.equal(projected.session.status, "complete");
+    assert.equal(store.getItems(binding.sessionId).find((item) => item.id === "tool:failed").status, "failed");
     assert.equal(projected.surface, false);
     assert.equal(projected.hasAgentMessage, false);
   } finally {

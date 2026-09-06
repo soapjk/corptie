@@ -135,6 +135,7 @@ import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDe
 import { CollaborationDeliveryRouteResolver } from "./collaboration/collaborationDeliveryRouteResolver.mjs";
 import { formatTrustedChannelMessage, formatTrustedCollaborationEvent } from "./collaboration/trustedCollaborationEvent.mjs";
 import { collaborationMessagePresentationRoute } from "./collaboration/collaborationPresentationRoute.mjs";
+import { collaborationWorkPresentation } from "./collaboration/collaborationWorkPresentation.mjs";
 import { handleCollaborationHttpRequest } from "./collaboration/collaborationHttpApi.mjs";
 import { WorkApplicationService } from "./application/workApplicationService.mjs";
 import { createTaskAndSession } from "./application/taskCreationApplicationService.mjs";
@@ -6551,6 +6552,9 @@ function sessionChannelAuthorizationTimelineItem(channelRequest, sessionId) {
     : null;
   const sourceSession = sourceLogical?.legacySessionId ? store.getSession(sourceLogical.legacySessionId) : null;
   const recipientSession = recipientLogical?.legacySessionId ? store.getSession(recipientLogical.legacySessionId) : null;
+  const sourceWorkId = sourceSession?.workId ?? request.sourceContext?.workId ?? null;
+  const targetWorkId = recipientSession?.workId ?? request.targetWorkId ?? null;
+  const workPresentation = collaborationWorkPresentation(store, { sourceWorkId, targetWorkId });
   const status = channelRequest.status ?? "pending";
   return {
     id: `session-channel-authorization:${channelRequest.requestId}`,
@@ -6572,8 +6576,7 @@ function sessionChannelAuthorizationTimelineItem(channelRequest, sessionId) {
     collaborationRecipientSessionId: channelRequest.requestedRecipientSessionId,
     collaborationRecipientSessionTitle: recipientLogical?.sessionName ?? recipientSession?.title ?? request.title ?? null,
     collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-    collaborationSourceWorkId: sourceSession?.workId ?? request.sourceContext?.workId ?? null,
-    collaborationTargetWorkId: recipientSession?.workId ?? request.targetWorkId ?? null,
+    ...workPresentation,
     collaborationSourceTaskId: sourceSession?.taskId ?? request.sourceContext?.taskId ?? null,
     collaborationTargetTaskId: recipientSession?.taskId ?? request.taskId ?? null,
     collaborationMessageKind: request.messageKind ?? "message",
@@ -6598,6 +6601,7 @@ function sessionChannelMessageTimelineItem(payload, sessionId) {
   const resources = message.resourceContext ?? {};
   const sourceWorkId = resources.sender?.workId ?? senderSession?.workId ?? null;
   const targetWorkId = resources.recipient?.workId ?? recipientSession?.workId ?? null;
+  const workPresentation = collaborationWorkPresentation(store, { sourceWorkId, targetWorkId });
   return {
     id: `session-channel-message:${message.messageId}:outbound`,
     turnId: `session-channel-message:${message.messageId}`,
@@ -6623,10 +6627,7 @@ function sessionChannelMessageTimelineItem(payload, sessionId) {
     collaborationRecipientSessionId: message.recipientSessionId,
     collaborationRecipientSessionTitle: recipientLogical?.sessionName ?? recipientSession?.title ?? null,
     collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-    collaborationSourceWorkId: sourceWorkId,
-    collaborationSourceWorkName: sourceWorkId ? store.getWork(sourceWorkId)?.name ?? null : null,
-    collaborationTargetWorkId: targetWorkId,
-    collaborationTargetWorkName: targetWorkId ? store.getWork(targetWorkId)?.name ?? null : null,
+    ...workPresentation,
     collaborationSourceTaskId: resources.sender?.taskId ?? senderSession?.taskId ?? null,
     collaborationTargetTaskId: resources.recipient?.taskId ?? recipientSession?.taskId ?? null,
     collaborationMessageKind: message.messageKind ?? "message",
@@ -6673,6 +6674,10 @@ function collaborationPresentationForTask(task, sessionId = task.sessionId) {
     const senderSession = collaborationSessionPresentation(envelope.message.senderSessionId);
     const recipientSession = collaborationSessionPresentation(envelope.message.recipientSessionId);
     const resources = envelope.message.resourceContext ?? {};
+    const workPresentation = collaborationWorkPresentation(store, {
+      sourceWorkId: resources.sender?.workId ?? null,
+      targetWorkId: resources.recipient?.workId ?? null
+    });
     return {
       presentationRole: "collaboration",
       presentationText: envelope.message.body,
@@ -6687,8 +6692,7 @@ function collaborationPresentationForTask(task, sessionId = task.sessionId) {
       collaborationRecipientSessionId: envelope.message.recipientSessionId,
       collaborationRecipientSessionTitle: recipientSession?.title ?? null,
       collaborationRecipientSessionKind: recipientSession?.sessionKind ?? null,
-      collaborationSourceWorkId: resources.sender?.workId ?? null,
-      collaborationTargetWorkId: resources.recipient?.workId ?? null,
+      ...workPresentation,
       collaborationSourceTaskId: resources.sender?.taskId ?? null,
       collaborationTargetTaskId: resources.recipient?.taskId ?? null,
       collaborationMessageKind: envelope.message.messageKind,
@@ -6726,6 +6730,7 @@ function collaborationPresentationForTask(task, sessionId = task.sessionId) {
   const targetTask = targetTaskId ? store.getTask(targetTaskId) : null;
   const sourceWorkId = route.sourceWorkId ?? task.source?.sourceWorkId ?? null;
   const targetWorkId = route.targetWorkId ?? task.source?.targetWorkId ?? null;
+  const workPresentation = collaborationWorkPresentation(store, { sourceWorkId, targetWorkId });
   return {
     presentationRole: "collaboration",
     presentationText: envelope.message.body,
@@ -6740,10 +6745,7 @@ function collaborationPresentationForTask(task, sessionId = task.sessionId) {
     collaborationRecipientSessionId: route.targetSessionId ?? task.source?.recipientSessionId ?? sessionId ?? null,
     collaborationRecipientSessionTitle: route.targetSessionTitle ?? targetSession?.title ?? null,
     collaborationRecipientSessionKind: targetSession?.sessionKind ?? null,
-    collaborationSourceWorkId: sourceWorkId,
-    collaborationSourceWorkName: sourceWorkId ? store.getWork(sourceWorkId)?.name ?? null : null,
-    collaborationTargetWorkId: targetWorkId,
-    collaborationTargetWorkName: targetWorkId ? store.getWork(targetWorkId)?.name ?? null : null,
+    ...workPresentation,
     collaborationRequestTitle: envelope?.task.title ?? task.source?.taskTitle ?? null,
     collaborationSourceTaskId: envelope?.task.sourceTaskId ?? task.source?.sourceTaskId ?? null,
     collaborationTargetTaskId: targetTaskId,

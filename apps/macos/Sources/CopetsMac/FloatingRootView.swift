@@ -2884,21 +2884,14 @@ struct TaskCardView: View {
                 }
 
             HStack(spacing: 10) {
-                if let restartActivity = backendClient.restartActivityBySessionId[session.id] {
-                    ActivityStatusText(
-                        text: restartActivity.text,
-                        isActive: restartActivity.isActive,
-                        fontSize: 11
-                    )
-                        .frame(height: 14)
-                        .layoutPriority(-1)
-                } else if let activityStatus = session.activityStatus,
-                          !activityStatus.isEmpty,
-                          session.executionTaskStatus == .running {
-                    ActivityStatusText(text: activityStatus, isActive: true, fontSize: 11)
-                        .frame(height: 14)
-                        .layoutPriority(-1)
-                }
+                SessionActivityStatusText(
+                    sessionID: session.id,
+                    fallbackText: session.executionTaskStatus == .running ? session.activityStatus : nil,
+                    fallbackIsActive: session.executionTaskStatus == .running,
+                    fontSize: 11
+                )
+                .frame(height: 14)
+                .layoutPriority(-1)
 
                 Text(relativeTime(session.updatedAt))
                     .font(.system(size: 11, weight: .medium))
@@ -3687,6 +3680,7 @@ struct DetailView: View {
             case .live:
                 if let detail = displayedDetail {
                     ThreadMetaView(
+                        sessionID: sessionId,
                         status: selectedSession != nil
                             ? selectedSession?.executionTaskStatus ?? detail.status
                             : detail.status,
@@ -3714,6 +3708,7 @@ struct DetailView: View {
                 // the transport loading state while SSE reconnects.
                 if let session = selectedSession {
                     ThreadMetaView(
+                        sessionID: sessionId,
                         status: session.executionTaskStatus,
                         isReady: session.isReady,
                         notReadyReason: session.notReadyReason,
@@ -8492,10 +8487,9 @@ private struct DetailMessagesPlaceholder: View {
 }
 
 struct ThreadMetaView: View {
-    @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var supplementaryData = BackendClient.shared.supplementaryDataController
-    @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
     @State private var isShowingNotReadyReason = false
+    let sessionID: String
     let status: TaskStatus
     let isReady: Bool
     let notReadyReason: SessionNotReadyReason?
@@ -8536,22 +8530,13 @@ struct ThreadMetaView: View {
                 }
                 Text(status.label)
                     .foregroundStyle(status.color)
-                if let sessionId = backendClient.selectedSession?.id,
-                   let restartActivity = backendClient.restartActivityBySessionId[sessionId] {
-                    ActivityStatusText(
-                        text: restartActivity.text,
-                        isActive: restartActivity.isActive,
-                        fontSize: 9
-                    )
-                        .layoutPriority(-1)
-                } else if let activityStatus, !activityStatus.isEmpty {
-                    ActivityStatusText(
-                        text: activityStatus,
-                        isActive: status == .running,
-                        fontSize: 9
-                    )
-                        .layoutPriority(-1)
-                }
+                SessionActivityStatusText(
+                    sessionID: sessionID,
+                    fallbackText: activityStatus,
+                    fallbackIsActive: status == .running,
+                    fontSize: 9
+                )
+                .layoutPriority(-1)
             }
 
             Spacer(minLength: 8)
@@ -8561,6 +8546,33 @@ struct ThreadMetaView: View {
         .font(.system(size: 9, weight: .semibold))
         .foregroundStyle(CorptiePalette.secondaryText)
         .frame(maxWidth: .infinity)
+    }
+}
+
+private struct SessionActivityStatusText: View {
+    @ObservedObject private var restartState = BackendClient.shared.sessionRestartActivityController
+
+    let sessionID: String
+    let fallbackText: String?
+    let fallbackIsActive: Bool
+    let fontSize: CGFloat
+
+    var body: some View {
+        if let restartActivity = restartState.activityBySessionID[sessionID] {
+            ActivityStatusText(
+                text: restartActivity.text,
+                isActive: restartActivity.isActive,
+                fontSize: fontSize
+            )
+            .id("restart:\(sessionID)")
+        } else if let fallbackText, !fallbackText.isEmpty {
+            ActivityStatusText(
+                text: fallbackText,
+                isActive: fallbackIsActive,
+                fontSize: fontSize
+            )
+            .id("activity:\(sessionID)")
+        }
     }
 }
 
