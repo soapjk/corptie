@@ -91,6 +91,7 @@ struct SessionExecutionStatusTests {
         #expect(session.notReadyReason?.code == "PROVIDER_INITIALIZING")
         #expect(session.notReadyReason?.presentationTitle == L10n("Starting Provider Runtime"))
         #expect(session.notReadyReason?.presentationMessage == L10n("The Provider process is starting. This does not rebuild this Session or replace its Provider Thread."))
+        #expect(session.notReadyReason?.shouldOfferRestartRecovery == false)
     }
 
     @MainActor @Test func bindingVerificationExplicitlySaysTheExistingThreadIsPreserved() {
@@ -101,6 +102,7 @@ struct SessionExecutionStatusTests {
         )
         #expect(reason.presentationTitle == L10n("Reconnecting Existing Session"))
         #expect(reason.presentationMessage == L10n("Corptie is reconnecting the existing Provider Thread. No new Thread or context rebuild is being created."))
+        #expect(reason.shouldOfferRestartRecovery == false)
     }
 
     @MainActor @Test func unavailableProviderSessionExplainsTheRecoveryAction() {
@@ -110,5 +112,6 @@ struct SessionExecutionStatusTests {
             retryable: true
         )
         #expect(reason.presentationMessage == L10n("The Provider Session no longer exists or cannot be reached. Restart this Session to continue."))
+        #expect(reason.shouldOfferRestartRecovery)
     }
 }
