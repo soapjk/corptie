@@ -260,6 +260,21 @@ final class SessionPresentationCacheTests: XCTestCase {
         XCTAssertEqual(commandInvalidations, 1)
     }
 
+    func testSendingDoesNotInvalidateRestartPresentation() {
+        let commands = SessionCommandController()
+        let restartPresentation = SessionRestartActivityController()
+        var restartInvalidations = 0
+        let cancellable = restartPresentation.objectWillChange.sink {
+            restartInvalidations += 1
+        }
+
+        commands.isSendingMessage = true
+        commands.sendStatusMessage = "Sending..."
+
+        XCTAssertEqual(restartInvalidations, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
     func testSelectionControllerOwnsIdentityAndGeneration() {
         let selection = SessionSelectionController()
 

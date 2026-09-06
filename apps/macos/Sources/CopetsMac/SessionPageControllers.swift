@@ -76,7 +76,6 @@ final class SessionCommandController: ObservableObject {
     @Published var isSwitchingReasoning = false
     @Published var connectionTransitionSessionIds = Set<String>()
     @Published var restartingSessionIds = Set<String>()
-    @Published var restartActivityBySessionId: [String: SessionRestartActivity] = [:]
     @Published var projectWorktreeActionError: String?
     @Published var projectWorktreeActionIds = Set<String>()
     @Published var isCleaningMergedProjectWorktrees = false
@@ -93,4 +92,11 @@ final class SessionCommandController: ObservableObject {
     func begin(sessionID: String, command: String) { inFlight.insert(Key(sessionID: sessionID, command: command)) }
     func end(sessionID: String, command: String) { inFlight.remove(Key(sessionID: sessionID, command: command)) }
     func isRunning(sessionID: String, command: String) -> Bool { inFlight.contains(Key(sessionID: sessionID, command: command)) }
+}
+
+/// Restart presentation is isolated from unrelated command mutations so a
+/// normal send cannot invalidate or briefly replay restart UI.
+@MainActor
+final class SessionRestartActivityController: ObservableObject {
+    @Published var activityBySessionID: [String: SessionRestartActivity] = [:]
 }
