@@ -981,3 +981,17 @@ test("managed Provider images remain in durable live-item metadata", () => {
   assert.deepEqual(item.images, images);
   assert.deepEqual(JSON.parse(item.rawMetadataJSON).images, images);
 });
+
+test("Codex resolves the configured executable when starting its process", async () => {
+  const child = fakeCodexProcess();
+  let configured = "/old/codex";
+  let launched;
+  const client = new CodexAppServerClient({
+    command: () => configured,
+    spawnProcess: command => { launched = command; return child; }
+  });
+  configured = "/custom path/codex";
+  await client.initialize();
+  assert.equal(launched, configured);
+  client.close();
+});

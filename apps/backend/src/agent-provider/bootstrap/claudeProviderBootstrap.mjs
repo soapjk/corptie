@@ -5,6 +5,7 @@ export function createClaudeProviderRuntime(options = {}) {
   if (!options.store) throw new TypeError("Claude Provider bootstrap requires a store.");
   const manager = new ClaudeAgentManager({
     store: options.store,
+    executable: options.executable,
     onTurnSettled: options.onTurnSettled,
     onProviderEvent: options.onProviderEvent,
     resolveRuntimeOptions: options.resolveRuntimeOptions,

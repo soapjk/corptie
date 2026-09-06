@@ -1,4 +1,7 @@
 import http from "node:http";
+import { createCodexReplyProbe, createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
+import { FirstRunSetupService } from "./application/firstRunSetupService.mjs";
+import { resolveExternalCommand } from "./utils/externalCommand.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { accessSync, constants } from "node:fs";
@@ -470,7 +473,7 @@ const corptieClaudeRuntimePaths = resolveCorptieClaudeRuntimePaths({ environment
 const corptieOpenClackyRuntimePaths = resolveCorptieOpenClackyRuntimePaths({ environmentName });
 const configuredOpenClackyBaseURL = process.env.OPENCLACKY_BASE_URL?.trim() || null;
 const managedOpenClackyRuntime = configuredOpenClackyBaseURL ? null : new OpenClackyServerRuntime({
-  command: resolveOpenClackyCommand(),
+  command: () => firstRunSetup.command("openclacky", () => resolveExternalCommand("openclacky", { environmentVariables: ["OPENCLACKY_COMMAND"], extraCandidates: [resolveOpenClackyCommand()] })),
   port: resolveOpenClackyManagedPort(environmentName),
   cwd: corptieOpenClackyRuntimePaths.runtimeRoot,
   // OpenClacky 1.x stores configuration and Session state below HOME. Give the
@@ -656,11 +659,11 @@ const hostToolCatalog = new HostToolCatalog([
   }
 ]);
 let toolHostService = null;
-const codexAppServerCommand = resolveCodexCommand();
+const codexAppServerCommand = () => firstRunSetup.command("codex-app-server", resolveCodexCommand);
 const codexRuntime = createCodexProviderRuntime({
   command: codexAppServerCommand,
   env: () => ({
-    ...environmentForCommand(codexAppServerCommand),
+    ...environmentForCommand(codexAppServerCommand()),
     ...proxyEnvForProfile(store.settings().agentProxy?.codex),
     CODEX_HOME: corptieCodexRuntimePaths.codexHome
   }),
@@ -771,6 +774,7 @@ const claudeProviderRuntime = createClaudeProviderRuntime({
       attachment.metadata
     )
   ),
+  executable: () => firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude", { environmentVariables: ["CORPTIE_CLAUDE_PATH"] })),
   resolveRuntimeOptions: (providerSessionId) => claudeRuntimeOptionsForSession(providerSessionId)
 });
 const openClackyManager = new OpenClackyManager({
@@ -1046,6 +1050,87 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
   },
   additionalProviders: [openClackyProvider]
 });
+// Composition root: provider-specific executable ports are confined here.
+const firstRunSetup = new FirstRunSetupService({
+  path: () => join(store.dataRoot, "first-run-setup.json"),
+  hasWorks: () => store.listWorks().length > 0,
+  firstWorkSession: () => {
+    const work = store.listWorks()[0];
+    return work ? store.getWorkChatSession(work.id) : null;
+  },
+  findAssistantSession: () => store.listSessionsByAgent("assistant").find((session) =>
+    session.sessionKind === "assistantChat" && !session.archived && !session.deletedAt),
+  createAssistantSession: (providerId) => launchAgentSession({
+    agent: store.ensureAssistantAgent(), providerId, title: "Corptie", prompt: ""
+  }),
+  onDefaultChanged: (providerId) => {
+    if (!providerId) return;
+    agentProviderRegistry.defaultProviderId = providerId;
+    backgroundAgentService.defaultProviderId = providerId;
+    workChatOperationService.defaultProviderId = providerId;
+    sessionCollaborationService.defaultProviderId = providerId;
+  },
+  providers: [
+    { id: "codex-app-server", name: "Codex", discover: resolveCodexCommand,
+      probe: createCodexReplyProbe({ environment: async () => {
+        await ensureCorptieCodexRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+          bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
+          collaborationMcpServerPath });
+        return { ...process.env, ...proxyEnvForProfile(store.settings().agentProxy?.codex),
+          CODEX_HOME: corptieCodexRuntimePaths.codexHome };
+      } }),
+      prepare: async () => {
+        await ensureCorptieCodexRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+          bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath,
+          collaborationMcpServerPath });
+        await codexRuntime.initialize();
+        setProviderRuntimeReadiness("codex-app-server", { state: "ready" });
+      },
+      configure: async (path) => {
+        assertSetupPathChangeAllowed("codex-app-server", path);
+        if (codexAppServerCommand() !== path) codexRuntime.close();
+      } },
+    { id: "claude-sdk", name: "Claude Code", discover: () => resolveExternalCommand("claude", { environmentVariables: ["CORPTIE_CLAUDE_PATH"] }),
+      probe: createClaudeReplyProbe({ environment: async () => {
+        await ensureCorptieClaudeRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+          bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath });
+        return process.env;
+      } }),
+      prepare: async () => {
+        await ensureCorptieClaudeRuntime({ environmentName, bundledMemoryPath: bundledAgentMemoryPath,
+          bundledSkillPath: bundledCollaborationSkillPath, bundledProjectToolsReferencePath: bundledProjectToolsetReferencePath });
+        setProviderRuntimeReadiness("claude-sdk", { state: "ready" });
+      },
+      configure: async (path) => { assertSetupPathChangeAllowed("claude-sdk", path); } },
+    { id: "openclacky", name: "OpenClacky",
+      probe: createOpenClackyReplyProbe({ environment: async () => {
+        await ensureCorptieOpenClackyRuntime({ environmentName });
+        return { ...process.env, HOME: corptieOpenClackyRuntimePaths.providerHome };
+      } }),
+      prepare: async () => {
+        await ensureCorptieOpenClackyRuntime({ environmentName });
+        openClackyManager.start();
+        setProviderRuntimeReadiness("openclacky", { state: "ready" });
+      },
+      discover: () => resolveExternalCommand("openclacky", { environmentVariables: ["OPENCLACKY_COMMAND"], extraCandidates: [resolveOpenClackyCommand()] }),
+      configure: async (path) => {
+        assertSetupPathChangeAllowed("openclacky", path);
+        const current = firstRunSetup.command("openclacky", () => resolveExternalCommand("openclacky", {
+          environmentVariables: ["OPENCLACKY_COMMAND"], extraCandidates: [resolveOpenClackyCommand()]
+        }));
+        if (current !== path) managedOpenClackyRuntime?.stop();
+      } }
+  ]
+});
+function assertSetupPathChangeAllowed(providerId, path) {
+  const saved = firstRunSetup.state.providers?.[providerId];
+  const previous = saved?.configuredPath ?? (saved?.confirmed ? saved.path : null);
+  if (previous === path) return;
+  if (store.listSessions({ archived: false }).some((session) => session.external?.provider === providerId)) {
+    throw new Error("该 Provider 已有会话，请先保留当前路径完成引导。");
+  }
+}
+
 workChatOperationService = new WorkChatOperationService({
   store,
   workService,
@@ -4930,7 +5015,8 @@ async function loadCodexModels(options = {}) {
     return codexModelsCache.payload;
   }
 
-  const { stdout } = await execFileAsync(resolveCodexCommand(), ["debug", "models"], {
+  const { stdout } = await execFileAsync(codexAppServerCommand(), ["debug", "models"], {
+    env: { ...environmentForCommand(codexAppServerCommand()), CODEX_HOME: corptieCodexRuntimePaths.codexHome },
     timeout: 15_000,
     maxBuffer: 8 * 1024 * 1024
   });
@@ -4978,7 +5064,8 @@ async function loadClaudeModels(options = {}) {
 
   const warm = await startup({
     options: {
-      cwd: defaultWorkspacePath()
+      cwd: defaultWorkspacePath(),
+      pathToClaudeCodeExecutable: firstRunSetup.command("claude-sdk", () => resolveExternalCommand("claude"))
     },
     initializeTimeoutMs: 15_000
   });
@@ -10079,6 +10166,21 @@ function route(request, response) {
     return;
   }
 
+  if (url.pathname === "/first-run" && request.method === "GET") {
+    firstRunSetup.status().then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, 400, { error: error.message }));
+    return;
+  }
+  if (request.method === "POST" && ["/first-run/provider", "/first-run/check", "/first-run/assistant", "/first-run/complete"].includes(url.pathname)) {
+    readJson(request).then(async (input) => {
+      if (url.pathname === "/first-run/check") return firstRunSetup.check(input);
+      if (url.pathname === "/first-run/provider") return firstRunSetup.setEnabled(input);
+      return url.pathname === "/first-run/assistant" ? firstRunSetup.prepareAssistant() : firstRunSetup.complete();
+    }).then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, 400, { error: error.message }));
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/providers") {
     sendJson(response, 200, {
       defaultProviderId: agentProviderRegistry.defaultProviderId,
@@ -11299,6 +11401,13 @@ await migrateStoreOffMainThread({
   dataRoot: store.dataRoot
 });
 await store.initialize({ resolveDataPath: false, performMigrations: false });
+await firstRunSetup.initialize();
+if (firstRunSetup.state.defaultProviderId) {
+  agentProviderRegistry.defaultProviderId = firstRunSetup.state.defaultProviderId;
+  backgroundAgentService.defaultProviderId = firstRunSetup.state.defaultProviderId;
+  workChatOperationService.defaultProviderId = firstRunSetup.state.defaultProviderId;
+  sessionCollaborationService.defaultProviderId = firstRunSetup.state.defaultProviderId;
+}
 benchmarkControlPlane.initialize();
 if (runIsolationCoordinator) {
   await mkdir(runIsolationDataRoot, { recursive: true, mode: 0o700 });

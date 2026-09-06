@@ -37,7 +37,7 @@ export class OpenClackyServerRuntime {
     }
     this.stderrTail = "";
     this.lastExit = null;
-    const child = this.spawn(this.command, [
+    const child = this.spawn(typeof this.command === "function" ? this.command() : this.command, [
       "server", "--host", this.host, "--port", String(this.port)
     ], {
       cwd: this.cwd,

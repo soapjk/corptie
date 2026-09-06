@@ -35,6 +35,8 @@ export function resolveCorptieClaudeRuntimePaths(options = {}) {
     claudeMemoryPath: join(runtimeRoot, "CLAUDE.md"),
     sharedMemoryPath: agentMemory.sharedMemoryPath,
     credentialsPath: join(runtimeRoot, ".credentials.json"),
+    settingsPath: join(runtimeRoot, "settings.json"),
+    sourceSettingsPath: resolve(options.sourceSettingsPath ?? join(home, ".claude", "settings.json")),
     sourceCredentialsPath: resolve(options.sourceCredentialsPath ?? join(home, ".claude", ".credentials.json")),
     credentialsBootstrapMarkerPath: join(runtimeRoot, ".corptie-credentials-bootstrap-v1.json"),
     pluginPath,
@@ -69,6 +71,7 @@ export async function ensureCorptieClaudeRuntime(options = {}) {
     paths.claudeMemoryPath
   );
   const credentialsCopied = await bootstrapCredentials(paths);
+  const connectionSettingsChanged = await syncConnectionSettings(paths);
   const manifestChanged = await syncManagedContent(
     `${JSON.stringify(PLUGIN_MANIFEST, null, 2)}\n`,
     paths.manifestPath,
@@ -85,6 +88,7 @@ export async function ensureCorptieClaudeRuntime(options = {}) {
     agentMemory,
     memoryLinkChanged,
     credentialsCopied,
+    connectionSettingsChanged,
     manifestChanged,
     skillChanged,
     projectToolsReferenceChanged,
@@ -93,6 +97,28 @@ export async function ensureCorptieClaudeRuntime(options = {}) {
     memoryAvailable: await isFile(paths.claudeMemoryPath),
     credentialsAvailable: await isFile(paths.credentialsPath)
   };
+}
+
+// Native provider connection settings remain authoritative. Do not import
+// hooks, permissions, plugins or MCP configuration into Corptie Sessions.
+async function syncConnectionSettings(paths) {
+  let source;
+  try { source = JSON.parse(await readFile(paths.sourceSettingsPath, "utf8")); }
+  catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw new Error("无法读取 Claude 连接配置，请检查 settings.json。", { cause: error });
+  }
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new Error("Claude settings.json 必须是 JSON 对象。");
+  }
+  let current = {};
+  try { current = JSON.parse(await readFile(paths.settingsPath, "utf8")); }
+  catch (error) { if (error?.code !== "ENOENT") throw error; }
+  for (const key of ["env", "model", "apiKeyHelper"]) {
+    if (Object.hasOwn(source, key)) current[key] = source[key];
+    else delete current[key];
+  }
+  return syncManagedContent(`${JSON.stringify(current, null, 2)}\n`, paths.settingsPath, 0o600);
 }
 
 async function bootstrapCredentials(paths) {

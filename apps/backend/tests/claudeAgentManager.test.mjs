@@ -903,3 +903,14 @@ function sdkUser(content) {
 function sdkAssistant(content) {
   return { type: "assistant", message: { role: "assistant", content } };
 }
+
+test("Claude uses the configured executable for ordinary Session queries", async () => {
+  let options;
+  const manager = new ClaudeAgentManager({
+    executable: () => "/custom path/claude",
+    query: input => { options = input.options; return (async function* () {})(); }
+  });
+  manager.start({ id: "configured-binary", cwd: "/tmp" });
+  await manager.ensureQueryStarted(manager.get("configured-binary"));
+  assert.equal(options.pathToClaudeCodeExecutable, "/custom path/claude");
+});
