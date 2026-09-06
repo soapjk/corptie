@@ -9377,6 +9377,17 @@ function route(request, response) {
       }
       return sessionApplicationService.restartSession(task.current_session_id, context);
     },
+    setTaskArchived: async (taskId, archived) => {
+      const task = store.setTaskArchived(taskId, archived);
+      for (const session of store.listSessionsByTask(taskId)) {
+        if (archived) {
+          void sessionRuntimeReleaseService.request(session.id, "task-archived");
+        } else {
+          await sessionRuntimeReleaseService.restore(session.id);
+        }
+      }
+      return task;
+    },
     restoreTaskExecution: (taskId) => taskExecutionOrchestrator.restore(taskId),
     taskCompletionService,
     resolveAgentAvailability: (agent) => {

@@ -205,6 +205,7 @@ export function presentTaskAcceptance(task, options = {}) {
     verificationCriteria: task.verification_criteria,
     priority: task.priority,
     lifecycleState: task.lifecycle_state,
+    archived: Boolean(task.archived),
     mainAgentId: task.main_agent_id ?? null,
     currentSessionId: task.current_session_id ?? null,
     executionStatus: task.execution_status,

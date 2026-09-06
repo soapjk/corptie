@@ -1289,10 +1289,15 @@ struct CorptieTaskDetailView: View {
                         backendClient.restart(session: liveSession)
                     }
                     .disabled(liveSession.actions?.restart?.available != true)
-                    Button(L10n("Archive"), systemImage: "archivebox") {
-                        backendClient.setArchived(true, session: liveSession)
+                }
+                Button(task.archived == true ? L10n("恢复 Task") : L10n("归档 Task"), systemImage: "archivebox") {
+                    Task {
+                        if await client.setTaskArchived(task.archived != true, taskId: task.id) == nil {
+                            executionError = EntityLaunchError(message: client.errorMessage ?? L10n("归档失败"), code: nil)
+                        }
                     }
                 }
+                .disabled(task.lifecycleState == "done" || isDeletionPending)
                 Divider()
                 Button(L10n("Delete Task"), systemImage: "trash", role: .destructive) {
                     if let onRequestDeletion {

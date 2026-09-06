@@ -4,6 +4,15 @@ import Testing
 @MainActor
 struct ConsoleTaskSelectionPolicyTests {
     @Test
+    func archivedTaskIsNotAnActiveSelectionUntilRestored() {
+        var task = makeTask(id: "task:archived", workID: "work:current")
+        task.archived = true
+        #expect(!ConsoleTaskSelectionPolicy.isValidSelection(task: task, selectedWorkID: task.workId))
+        task.archived = false
+        #expect(ConsoleTaskSelectionPolicy.isValidSelection(task: task, selectedWorkID: task.workId))
+    }
+
+    @Test
     func preservesAnActiveTaskWithoutASessionAsAValidSelection() {
         let task = makeTask(id: "task:target", workID: "work:current")
 

@@ -37,6 +37,7 @@ test("production Automation route satisfies the scheduler's provider-neutral con
 test("Automation route failures retain actionable boundary error codes", async () => {
   await assert.rejects(fixture({ missingLogical: true }).resolve("logical:one"), { code: "SESSION_NOT_FOUND" });
   await assert.rejects(fixture({ logical: { archived: true } }).resolve("logical:one"), { code: "SESSION_ARCHIVED" });
+  await assert.rejects(fixture({ session: { id: "session:one", archived: true, archiveReason: "taskArchived" } }).resolve("logical:one"), { code: "SESSION_ARCHIVED" });
   await assert.rejects(fixture({ logical: { activeBinding: null } }).resolve("logical:one"), { code: "ROUTE_UNAVAILABLE" });
   await assert.rejects(fixture({ session: null }).resolve("logical:one"), { code: "SESSION_NOT_FOUND" });
   await assert.rejects(fixture({ agent: null }).resolve("logical:one"), { code: "AGENT_NOT_FOUND" });
