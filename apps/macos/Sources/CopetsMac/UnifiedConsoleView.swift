@@ -133,6 +133,46 @@ private struct ConsoleFlowingGradientWorkTitle: View {
     }
 }
 
+private struct ConsoleScheduledWakeIcon: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var isVisible = false
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                coloredIcon(progress: 0)
+            } else {
+                TimelineView(.animation(
+                    minimumInterval: ConsoleWorkOutlineMetrics.workingGradientFrameInterval,
+                    paused: !isVisible || scenePhase != .active
+                )) { context in
+                    coloredIcon(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
+                }
+            }
+        }
+        .frame(width: 12, height: 12)
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false }
+        .accessibilityLabel(L10n("存在等待执行的计划任务"))
+        .help(L10n("存在等待执行的计划任务"))
+    }
+
+    private func coloredIcon(progress: CGFloat) -> some View {
+        AngularGradient(
+            colors: [.cyan, .blue, .purple, .pink, .orange, .cyan],
+            center: .center,
+            angle: .degrees(Double(progress) * 360)
+        )
+        .frame(width: 12, height: 12)
+        .mask {
+            Image(systemName: "alarm")
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 12, height: 12)
+        }
+    }
+}
+
 private struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -269,7 +309,7 @@ private struct ConsoleWorkOutlineHeader: View {
 
             Button(action: openChat) {
                 Label {
-                    Text(L10n("Chat"))
+                    Text(L10n("讨论"))
                         .font(.system(size: 10, weight: .medium))
                 } icon: {
                     Image(systemName: "bubble.left.fill")
@@ -1104,12 +1144,20 @@ struct UnifiedConsoleView: View {
                         isOutlineAssistantCollapsed.toggle()
                     }
                 }
-                selectAssistantSpace()
             } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(width: 22)
+                    Image(systemName: "bubble.left.and.bubble.right.fill")
+                        .font(.system(size: 10, weight: .regular))
+                        .foregroundStyle(.white)
+                        .frame(
+                            width: ObjectiveAvatarGeometry.displaySize(for: 22),
+                            height: ObjectiveAvatarGeometry.displaySize(for: 22)
+                        )
+                        .background {
+                            MacOSAppIconShape()
+                                .fill(Color(red: 0.36, green: 0.32, blue: 0.86))
+                        }
+                        .frame(width: 22, height: 22)
                     Text(L10n("Chat"))
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(selectedWorkId == nil ? Color.primary : Color.secondary)
@@ -1199,7 +1247,6 @@ struct UnifiedConsoleView: View {
                         collapsedOutlineWorkIDs.insert(work.id)
                     }
                 }
-                selectWorkSpace(work.id)
             },
             openChat: {
                 guard let workChat else { return }
@@ -1474,11 +1521,7 @@ struct UnifiedConsoleView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
                 if task.hasPendingScheduledWake == true {
-                    Image(systemName: "alarm")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .accessibilityLabel(L10n("存在等待执行的计划任务"))
-                        .help(L10n("存在等待执行的计划任务"))
+                    ConsoleScheduledWakeIcon()
                 }
                 Spacer(minLength: 0)
                 if task.deletionStatus == "deleting" {
