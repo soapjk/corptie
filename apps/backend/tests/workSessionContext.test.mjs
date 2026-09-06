@@ -40,7 +40,10 @@ test("Worker Session context preserves normal handling for in-scope requests", (
   assert.match(context.prompt, /Handle requests within the bound Task scope normally/);
   assert.match(context.prompt, /Strict association validation/);
   assert.match(context.prompt, /No partial writes/);
-  assert.match(context.prompt, /"goal":"Keep the binding exact\."/);
+  assert.doesNotMatch(context.prompt, /"goal":/);
+  assert.match(context.prompt, /corptie_task_revise/);
+  assert.match(context.prompt, /never weaken acceptance criteria merely to claim success/);
+  assert.match(context.prompt, /must not treat a generated summary as user authorization/);
   assert.match(context.prompt, /"verificationCriteria":"Run the focused test\."/);
   assert.match(context.prompt, /"revision":3,"resourceVersion":7/);
   assert.match(context.prompt, /Switching a branch, Worktree, or Provider thread never changes this binding/);

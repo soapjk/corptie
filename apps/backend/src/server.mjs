@@ -36,6 +36,7 @@ import {
   storedSessionIdForListSession
 } from "./application/sessionListOrder.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
+import { TaskSummaryService } from "./application/taskSummaryService.mjs";
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
 import {
@@ -320,9 +321,15 @@ import {
 } from "./application/sessionHistoryWindow.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
+// A copied data root remains non-executable even if a later launch omits flags.
+const developmentPreview = Boolean(process.env.CORPTIE_DATA_ROOT
+  && pathExists(join(process.env.CORPTIE_DATA_ROOT, ".preview-only")));
+if (developmentPreview && environmentName !== "development") {
+  throw new Error("Preview snapshots may only be opened by Development.");
+}
 const port = Number(process.env.CORPTIE_BACKEND_PORT ?? (environmentName === "development" ? 47322 : 47321));
 const runIsolationDataRoot = process.env.CORPTIE_RUN_ISOLATION_DATA_ROOT?.trim() || null;
-const runIsolationCoordinator = runIsolationDataRoot
+const runIsolationCoordinator = runIsolationDataRoot && !developmentPreview
   ? new RunIsolationExecutionCoordinator({ dataRoot: runIsolationDataRoot })
   : null;
 // Startup/Snapshot/Toolset production owners compose their authoritative ports
@@ -1041,6 +1048,8 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
       model: input.model,
       reasoningEffort: input.reasoningEffort,
       timeoutMs: input.timeoutMs,
+      signal: input.signal,
+      executionPolicy: input.executionPolicy,
       permissionProfile: input.permissionProfile,
       developerInstructions: input.developerInstructions,
       threadSource: input.purpose
@@ -1896,6 +1905,7 @@ const sessionContextReferenceService = new SessionContextReferenceService({
   readSessionDetail: (sessionId) => readStoredSessionDetail(requireSessionReference(sessionId))
 });
 const backgroundAgentService = new BackgroundAgentService({
+  isEnabled: () => !developmentPreview,
   registry: agentProviderRegistry,
   defaultProviderId: "codex-app-server",
   resolveProviderId: (provider) => resolveSessionProviderId(provider),
@@ -1907,6 +1917,8 @@ const backgroundAgentService = new BackgroundAgentService({
     }
   }
 });
+const taskSummaryService = new TaskSummaryService({ store, backgroundAgent: backgroundAgentService,
+  isEnabled: () => !developmentPreview });
 skillRegistryService.setDiscoveryAssistant(createSkillPackageDiscoveryAssistant({
   backgroundAgent: backgroundAgentService
 }));
@@ -3562,6 +3574,9 @@ function emitEvent(type, payload, options = {}) {
   }
   if (outbox) store.markEventOutboxPublished(outbox.outbox_id, now());
   scheduleStateSyncPublish();
+  if (type === "TaskChanged" && payload?.entity?.id) {
+    taskSummaryService.request(payload.entity.id);
+  }
 
   if (sessionEvent) {
     notifySessionEventListeners(sessionEvent);
@@ -3664,6 +3679,9 @@ function publishProviderEventOutbox(rows = []) {
       } else if (row.topic === "state") {
         scheduleStateSyncPublish();
       } else if (row.topic === "provider-commands") {
+        if (row.event_type === "MessageDeliveryQueued") {
+          taskSummaryService.onCommittedMessageDelivery(envelope);
+        }
         scheduleAgentWorkDrain(envelope.sessionId);
       } else if (row.topic === "provider-events") {
         publishCommittedProviderWake(envelope?.event ?? null, row.created_at);
@@ -4030,6 +4048,7 @@ function updateMockProgress() {
 }
 
 function scheduleCodexChoiceParse(threadId, text, choiceParser, cacheKey, generation = currentChoiceGeneration(sessionIdForProviderThread(threadId))) {
+  if (developmentPreview) return;
   const parserBackoffKey = choiceParserBackoffKey(choiceParser);
   const retryAfter = Math.max(
     codexChoiceParseRetryAfter.get(cacheKey) ?? 0,
@@ -5857,6 +5876,11 @@ function resolveBoundTaskForAgent(agentId, metadata = {}, operation = "Task oper
 }
 
 function reviseTaskForSession(agentId, input = {}, metadata = {}) {
+  if (typeof input.sourceMessageId !== "string" || !input.sourceMessageId.trim()) {
+    const error = new Error("Model-initiated Task revision requires the originating direct user message id.");
+    error.code = "TASK_REVISION_SOURCE_REQUIRED";
+    throw error;
+  }
   const requestedSessionId = String(metadata.sessionId ?? "").trim();
   if (!requestedSessionId) {
     const error = new Error("Task revision requires the authenticated Session scope.");
@@ -9090,6 +9114,22 @@ function trackStartupMaintenance(promise) {
 
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (developmentPreview) {
+    // Fail closed: GET alone is insufficient (some inventory APIs probe tools).
+    const readable = ["/health", "/settings", "/first-run", "/events", "/sessions",
+      "/state/snapshot", "/state/changes", "/state/events", "/session-timelines/revisions",
+      "/works", "/tasks", "/agents", "/workspaces", "/repositories", "/artifacts", "/memories",
+      "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
+      || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|context-references|images)$/.test(url.pathname)
+      || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
+      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts|summary-policy))?$/.test(url.pathname)
+      || /^\/artifacts\/[^/]+$/.test(url.pathname);
+    if (request.method !== "GET" || !readable) {
+      sendJson(response, 403, { code: "DEVELOPMENT_PREVIEW_READ_ONLY",
+        error: "开发版数据预览：只浏览、不执行；此操作已禁用。" });
+      return;
+    }
+  }
 
   if (!backendStoreReady && !(
     request.method === "GET"
@@ -9114,6 +9154,24 @@ function route(request, response) {
       code: "DATA_ROOT_MAINTENANCE_MODE",
       operation: dataRootMigrationCoordinator.status()
     });
+    return;
+  }
+
+  const taskSummaryPolicyMatch = url.pathname.match(/^\/tasks\/([^/]+)\/summary-policy$/);
+  if (taskSummaryPolicyMatch && ["GET", "PUT"].includes(request.method)) {
+    const taskID = decodeURIComponent(taskSummaryPolicyMatch[1]);
+    Promise.resolve().then(async () => request.method === "GET"
+      ? taskSummaryService.policyStatus(taskID)
+      : taskSummaryService.setPolicy(taskID, await readJson(request)))
+      .then((result) => sendJson(response, 200, result))
+      .catch((error) => sendJson(response, error.statusCode ?? 409, { code: error.code ?? "TASK_SUMMARY_FAILED", error: error.message }));
+    return;
+  }
+  const taskSummaryRefreshMatch = url.pathname.match(/^\/tasks\/([^/]+)\/summary-refresh$/);
+  if (taskSummaryRefreshMatch && request.method === "POST") {
+    const accepted = taskSummaryService.request(decodeURIComponent(taskSummaryRefreshMatch[1]));
+    sendJson(response, accepted ? 202 : 409, { accepted,
+      ...(accepted ? {} : { code: "TASK_SUMMARY_NOT_AUTHORIZED", error: "请先启用此 Task 的自动摘要。" }) });
     return;
   }
 
@@ -9491,6 +9549,7 @@ function route(request, response) {
     sendJson(response, 200, {
       ok: true,
       service: "corptie-backend",
+      developmentPreview,
       version: "0.5.4",
       time: now(),
       storeReady: backendStoreReady,
@@ -9515,6 +9574,7 @@ function route(request, response) {
   if (request.method === "GET" && url.pathname === "/settings") {
     sendJson(response, 200, {
       ...store.settings(),
+      developmentPreview,
       dataRootMigration: dataRootMigrationCoordinator.status()
     });
     return;
@@ -11403,6 +11463,7 @@ async function resumeSessionRecoveryAttemptsAtStartup() {
 await store.resolveDataPath();
 const developmentFixtureMarker = join(store.layout.stateDirectory, "development-fixtures-v1.json");
 const shouldSeedDevelopmentFixtures = environmentName === "development"
+  && !developmentPreview
   && process.env.CORPTIE_DEVELOPMENT_FIXTURES === "1"
   && !pathExists(developmentFixtureMarker);
 const backendDataRootOwnership = await BackendDataRootOwnership.acquire({
@@ -11462,7 +11523,7 @@ if (runIsolationCoordinator) {
   await runIsolationCoordinator.initialize();
   console.log(`[run-isolation] production coordinator ready dataRootHash=${runIsolationCoordinator.service.binding.canonicalPathHash}`);
 }
-await dataRootMigrationCoordinator.initialize();
+if (!developmentPreview) await dataRootMigrationCoordinator.initialize();
 const telemetryConfiguration = turnObservability.initialize();
 console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
 // Only establish the local Artifact directories before the readiness boundary.
@@ -11530,20 +11591,22 @@ process.env.CODEX_HOME = corptieCodexRuntimePaths.codexHome;
 process.env.CLAUDE_CONFIG_DIR = corptieClaudeRuntimePaths.configDir;
 // 确保每个 Agent 的工作目录（assistant workspace / contributor 持久化目录）物理存在。
 // 路径元数据已在 store 迁移期写入 agents.work_dir，这里只做幂等的 mkdir 兜底。
-for (const agent of store.listAgents()) {
+for (const agent of developmentPreview ? [] : store.listAgents()) {
   try {
     await ensureAgentWorkDir(agent, { environmentName });
   } catch (error) {
     console.warn(`[agent-workdir] failed to ensure work dir for ${agent.agentId}: ${error?.message ?? error}`);
   }
 }
-for (const storedSession of storedSessionsAtStartup) {
+for (const storedSession of developmentPreview ? [] : storedSessionsAtStartup) {
   ensureCollaborationAgentForSession(storedSession);
 }
 // Re-delivery consumes only Corptie's committed Outbox. Startup never repairs
 // product state by reading Provider history or a Provider Session snapshot.
-publishProviderEventOutbox(store.listPendingEventOutbox(500));
-workspaceContinuationCoordinator.recover();
+if (!developmentPreview) {
+  publishProviderEventOutbox(store.listPendingEventOutbox(500));
+  workspaceContinuationCoordinator.recover();
+}
 const knownActiveWorktrees = new Map();
 for (const storedSession of storedSessionsAtStartup) {
   const logical = store.getLogicalSessionByLegacySessionId(storedSession.id);
@@ -11553,11 +11616,12 @@ for (const storedSession of storedSessionsAtStartup) {
   if (worktree) knownActiveWorktrees.set(worktree.worktreeId, worktree);
 }
 sessionEventListeners.add((event) => feishuGateway.handleSessionEvent(event));
-configureChoiceParserRuntime({
+sessionEventListeners.add((event) => taskSummaryService.onSessionEvent(event));
+if (!developmentPreview) configureChoiceParserRuntime({
   ...(store.settings().choiceParser ?? {}),
   agentProxy: store.settings().agentProxy
 });
-if (process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
+if (!developmentPreview && process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
   seedSessions();
   mockProgressTimer = setInterval(updateMockProgress, 2500);
   mockProgressTimer.unref?.();
@@ -11565,6 +11629,11 @@ if (process.env.CORPTIE_ENABLE_MOCK_SESSIONS === "1") {
 
 function startBackendRuntime() {
   console.log(`Corptie backend (${environmentName}) Store ready on http://127.0.0.1:${port}`);
+  if (developmentPreview) {
+    console.log("[development-preview] read-only browsing; recovery, providers, schedules and integrations disabled");
+    return;
+  }
+  taskSummaryService.start();
   // Store-backed APIs and state streams are the Backend readiness boundary.
   // Provider runtimes, recovery, and route verification are optional
   // capabilities: start them only after the frontend can connect, and contain
@@ -11835,6 +11904,8 @@ let shutdownPromise = null;
 function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
+    backgroundAgentService.close();
+    taskSummaryService.close();
     turnObservability.flush();
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
     if (mockProgressTimer) clearInterval(mockProgressTimer);

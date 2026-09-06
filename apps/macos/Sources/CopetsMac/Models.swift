@@ -72,6 +72,13 @@ struct ConversationMention: Identifiable, Codable, Equatable, Sendable {
     var id: String { "\(targetType.rawValue):\(targetId)" }
 }
 
+struct SessionAttention: Codable, Equatable, Sendable {
+    let kind: String
+    let reason: String?
+    let sourceId: String?
+    let updatedAt: String?
+}
+
 struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let title: String
@@ -98,6 +105,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     var lastAgentMessageSequence: Int? = nil
     var lastReadMessageSequence: Int? = nil
     var timelineRevision: Int? = nil
+    var attention: SessionAttention? = nil
     let accent: Accent
     let archived: Bool?
     var archiveReason: String? = nil
@@ -746,6 +754,7 @@ enum CorptiePalette {
     static let inputFill = adaptiveColor(light: (0.92, 0.96, 1.00, 0.08), dark: (0.10, 0.13, 0.16, 0.12))
     static let inputFillFocused = adaptiveColor(light: (0.90, 0.95, 1.00, 0.16), dark: (0.10, 0.14, 0.18, 0.18))
     static let cardPreviewText = adaptiveColor(light: (0.16, 0.18, 0.19), dark: (0.78, 0.82, 0.84))
+    static let workCardSurface = adaptiveColor(light: (0.97, 0.98, 0.99), dark: (0.24, 0.26, 0.28))
     static let userText = adaptiveColor(light: (0.22, 0.35, 0.62), dark: (0.62, 0.70, 0.84))
     static let agentText = adaptiveColor(light: (0.18, 0.48, 0.27), dark: (0.62, 0.76, 0.66))
 
