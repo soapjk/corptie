@@ -1233,12 +1233,14 @@ enum CorptieBackendSupervisor {
             // launchd opens StandardOutPath/StandardErrorPath before executing
             // the bundled launcher, so the parent directory must already exist.
             try fileManager.createDirectory(at: backendLogDir, withIntermediateDirectories: true)
-            if !fileManager.contentsEqual(atPath: bundledPlist.path, andPath: installedPlist.path) {
+            let launchAgentData = try BackendLaunchAgentConfiguration.data(
+                template: Data(contentsOf: bundledPlist),
+                home: fileManager.homeDirectoryForCurrentUser,
+                bundle: Bundle.main.bundleURL
+            )
+            if (try? Data(contentsOf: installedPlist)) != launchAgentData {
                 _ = try? runLaunchctl(["bootout", "gui/\(getuid())", installedPlist.path])
-                if fileManager.fileExists(atPath: installedPlist.path) {
-                    try fileManager.removeItem(at: installedPlist)
-                }
-                try fileManager.copyItem(at: bundledPlist, to: installedPlist)
+                try launchAgentData.write(to: installedPlist, options: .atomic)
             }
 
             if !isLaunchAgentLoaded() {
