@@ -40,7 +40,9 @@ export async function ensureCorptieAgentMemory(options = {}) {
   if (!await isFile(paths.sharedMemoryPath)) {
     let content = bundled;
     if (sourcePath && await isFile(sourcePath)) {
-      content = migrateLegacyCodexContext(await readFile(sourcePath, "utf8"), bundled);
+      content = reconcileManagedWorkspaceRules(
+        migrateLegacyCodexContext(await readFile(sourcePath, "utf8"), bundled), bundled
+      );
       migratedLegacyMemory = true;
     }
     await atomicWrite(paths.sharedMemoryPath, content, 0o600);
@@ -96,17 +98,26 @@ function renderBundledMemory(template, environmentName) {
 
 function migrateLegacyCodexContext(content, bundled) {
   if (!LEGACY_CODEX_CONTEXT.test(content)) return content;
-  const neutralContext = bundled.split(/\n# (?:Authoritative Work Session workspace|Git worktree isolation)/, 1)[0].trimEnd();
+  const neutralContext = topLevelSection(bundled, "# Corptie runtime context") ?? bundled.trimEnd();
   return content.replace(LEGACY_CODEX_CONTEXT, neutralContext);
 }
 
 function reconcileManagedWorkspaceRules(existing, bundled) {
   const replacement = topLevelSection(bundled, AUTHORITATIVE_WORKSPACE_HEADING);
   if (!replacement) {
-    // Custom/test distributions predating the managed Workspace section keep
-    // their existing memory verbatim. Official Corptie bundles are covered by
-    // a contract test and always provide this section.
-    return existing;
+    // Official bundles now inject Task binding only into Worker Sessions.
+    // Remove the obsolete managed section from existing shared runtime memory,
+    // preserving user-added sections and external-action rules.
+    if (!topLevelSection(bundled, "# Corptie runtime context")
+      || !topLevelSection(bundled, "# External actions: local-only by default")) return existing;
+    let content = existing;
+    for (const heading of [AUTHORITATIVE_WORKSPACE_HEADING, LEGACY_WORKSPACE_HEADING]) {
+      const range = topLevelSectionRange(content, heading);
+      if (!range) continue;
+      content = [content.slice(0, range.start).trimEnd(), content.slice(range.end).trim()]
+        .filter(Boolean).join("\n\n").concat("\n");
+    }
+    return content;
   }
 
   for (const heading of [AUTHORITATIVE_WORKSPACE_HEADING, LEGACY_WORKSPACE_HEADING]) {
