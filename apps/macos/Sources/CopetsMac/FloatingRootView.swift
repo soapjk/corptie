@@ -3442,6 +3442,7 @@ struct TimelineRestorationIntent: Equatable {
     private(set) var requestedAnchorRowID: String?
     private(set) var lastObservedPosition: AppKitChatTimelinePosition?
     private var isAwaitingRestoration: Bool
+    private var restorationClosed = false
 
     init(initialPosition: AppKitChatTimelinePosition?) {
         let anchorRowID = initialPosition?.followsLatest == false
@@ -3457,6 +3458,7 @@ struct TimelineRestorationIntent: Equatable {
     }
 
     mutating func offerRestoration(_ position: AppKitChatTimelinePosition) -> Bool {
+        guard !restorationClosed else { return false }
         guard !position.followsLatest else { return false }
         if requestedAnchorRowID == position.rowID { return true }
         guard lastObservedPosition == nil else { return false }
@@ -3479,6 +3481,7 @@ struct TimelineRestorationIntent: Equatable {
     }
 
     mutating func clearAnchor() {
+        restorationClosed = true
         requestedAnchorRowID = nil
         isAwaitingRestoration = false
     }
@@ -3892,6 +3895,13 @@ struct DetailView: View {
             .onChange(of: appKitDetailRevision) { _, _ in
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted)) { notification in
+                guard notification.object as? String == sessionId else { return }
+                if isFollowingLatest {
+                    timelineRestorationIntent.clearAnchor()
+                    refreshAfterRestorationAnchorRelinquished()
                 }
             }
             .onChange(of: latestTimelineContentRevision) { _, _ in
@@ -10083,6 +10093,9 @@ struct MessageComposer: View {
         self.draftRepository = draftRepository
         self.allowsModelSwitch = allowsModelSwitch
         let draft = draftRepository.draft(for: sessionId)
+        draft.sessionId = sessionId
+        _attachedImages = State(initialValue: draft.images)
+        _selectedMentions = State(initialValue: draft.mentions)
         _editorController = State(initialValue: ComposerEditorController(draft: draft))
         _hasSendableText = State(initialValue: draft.hasSendableText)
     }
@@ -10269,6 +10282,11 @@ struct MessageComposer: View {
                 Color.clear.preference(key: ComposerWidthPreferenceKey.self, value: proxy.size.width)
             }
         )
+        .onReceive(NotificationCenter.default.publisher(for: .consoleComposerFocusRequested)) { notification in
+            if notification.object as? String == sessionId { editorController.focusIfRequested() }
+        }
+        .onChange(of: attachedImages) { _, images in editorController.draft.images = images }
+        .onChange(of: selectedMentions) { _, mentions in editorController.draft.mentions = mentions }
         .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
             composerWidth = width
         }
@@ -11490,14 +11508,11 @@ private struct SessionNotReadyComposerNotice: View {
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.orange)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(reason.presentationTitle)
-                    .font(.system(size: 11, weight: .bold))
-                Text(reason.presentationMessage)
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .lineLimit(2)
-            }
+            Text(reason.code == "PROVIDER_INITIALIZING" ? "正在启动 Provider…" : reason.presentationTitle)
+                .font(.system(size: 10))
+                .foregroundStyle(CorptiePalette.secondaryText)
+                .lineLimit(1)
+                .help(reason.presentationMessage)
 
             Spacer(minLength: 8)
 
@@ -11520,7 +11535,7 @@ private struct SessionNotReadyComposerNotice: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             Color.orange.opacity(0.07),

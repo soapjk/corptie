@@ -33,6 +33,14 @@ struct ComposerMentionQuery: Equatable {
 final class ComposerDraftRepository {
     private var draftsBySessionId: [String: ComposerDraftBuffer] = [:]
 
+    func requestFocus(for sessionId: String) {
+        for draft in draftsBySessionId.values { draft.focusRequested = false }
+        let draft = draft(for: sessionId)
+        draft.focusRequested = true
+        draft.focusEventNumber = NSApp.currentEvent?.eventNumber
+        NotificationCenter.default.post(name: .consoleComposerFocusRequested, object: sessionId)
+    }
+
     func draft(for sessionId: String) -> ComposerDraftBuffer {
         if let draft = draftsBySessionId[sessionId] {
             return draft
@@ -49,6 +57,11 @@ final class ComposerDraftRepository {
 
 @MainActor
 final class ComposerDraftBuffer {
+    var focusRequested = false
+    var focusEventNumber: Int?
+    var sessionId: String?
+    var images: [ChatImageReference] = []
+    var mentions: [ConversationMention] = []
     struct Submission: Equatable {
         let text: String
         let revision: UInt64
@@ -115,6 +128,23 @@ final class ComposerEditorController {
 
     func attach(_ textView: NSTextView) {
         self.textView = textView
+        focusIfRequested()
+    }
+
+    func focusIfRequested() {
+        guard draft.focusRequested else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.draft.focusRequested,
+                  let textView = self.textView, let window = textView.window else { return }
+            guard BackendClient.shared.selectedSession?.id == self.draft.sessionId,
+                  BackendClient.shared.selectedSession?.canSendNow == true,
+                  self.draft.focusEventNumber == NSApp.currentEvent?.eventNumber else {
+                self.draft.focusRequested = false
+                return
+            }
+            self.draft.focusRequested = false
+            window.makeFirstResponder(textView)
+        }
     }
 
     func recordEditorText(_ text: String) {

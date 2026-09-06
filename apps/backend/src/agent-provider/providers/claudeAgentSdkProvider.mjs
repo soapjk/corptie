@@ -44,6 +44,7 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
     },
     metadata: {
       backgroundPermissionProfiles: ["read-only"],
+      backgroundExecutionPolicies: ["no-tools"],
       toolSchemaCapabilities: CLAUDE_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {
         revision: "claude-sdk:session-recovery:1",

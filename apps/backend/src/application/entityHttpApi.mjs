@@ -245,6 +245,7 @@ export function handleEntityHttpRequest({
           : null;
         const result = await backgroundAgentService.run({
           purpose: "assist-draft",
+          priority: "interactive",
           cwd,
           allowedRoots: [cwd],
           permissionProfile: "read-only",
@@ -290,6 +291,7 @@ export function handleEntityHttpRequest({
         phaseStartedAt = performance.now();
         const result = await backgroundAgentService.run({
           purpose: "assist-form-draft",
+          priority: "interactive",
           cwd,
           allowedRoots: [cwd],
           permissionProfile: "read-only",

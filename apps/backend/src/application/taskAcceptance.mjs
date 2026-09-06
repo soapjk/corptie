@@ -210,6 +210,7 @@ export function presentTaskAcceptance(task, options = {}) {
     currentSessionId: task.current_session_id ?? null,
     executionStatus: task.execution_status,
     hasPendingScheduledWake: options.hasPendingScheduledWake === true,
+    userSummary: presentTaskSummary(task),
     deletionStatus: task.deletion_status ?? null,
     deletionError: task.deletion_error ?? null,
     acceptanceAssessment,
@@ -248,3 +249,4 @@ export function taskExecutionPatch(task, sessionStatus) {
   // advanced by Task start/review workflows, never by Provider projection.
   return { executionStatus };
 }
+import { presentTaskSummary } from "./taskSummaryContract.mjs";

@@ -668,6 +668,14 @@ export class CodexAppServerClient {
   }
 
   async runEphemeralPrompt(options = {}) {
+    // A read-only sandbox still exposes tools. Do not silently claim the
+    // stronger policy until this adapter can disable the entire tool surface.
+    if ((options.executionPolicy ?? "legacy") !== "legacy") {
+      throw Object.assign(new Error("Codex background no-tools execution is not supported by this adapter."), {
+        code: "CAPABILITY_UNSUPPORTED"
+      });
+    }
+    options.signal?.throwIfAborted();
     const timeoutMs = options.timeoutMs ?? 120000;
     const prompt = options.prompt ?? "";
     const cwd = options.cwd ?? defaultWorkspacePath();
@@ -698,6 +706,7 @@ export class CodexAppServerClient {
       });
       threadId = started?.thread?.id ?? null;
       if (!threadId) throw new Error("Codex thread/start returned no ephemeral thread id.");
+      options.signal?.throwIfAborted();
       const turn = await this.startTurn(threadId, prompt, {
         cwd,
         approvalPolicy: "never",
@@ -708,6 +717,7 @@ export class CodexAppServerClient {
       const turnId = turn?.turn?.id ?? null;
       if (!turnId) throw new Error("Codex turn/start returned no ephemeral turn id.");
       while (Date.now() - startedAt < timeoutMs) {
+        options.signal?.throwIfAborted();
         const completed = this.notifications.slice(notificationStart).find((message) => {
           return message.method === "turn/completed"
             && message.params?.threadId === threadId

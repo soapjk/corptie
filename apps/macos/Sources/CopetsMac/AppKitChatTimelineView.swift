@@ -1021,6 +1021,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         )
     }
 
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        // The parent owns the viewport, not the table's document/fitting size.
+        // In the compact workspace a long row must wrap inside its card rather
+        // than widen the NSViewRepresentable into the neighbouring Work grid.
+        guard let width = proposal.width, let height = proposal.height,
+              width.isFinite, height.isFinite else { return nil }
+        return CGSize(width: max(0, width), height: max(0, height))
+    }
+
     func makeNSView(context: Context) -> NSScrollView {
         let tableView = Self.makeTableView()
         let scrollView = Self.makeScrollView(tableView: tableView)
@@ -1077,6 +1086,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         scrollView.contentView = NSClipView()
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
+        scrollView.verticalScroller = TimelineIntentScroller()
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.verticalScrollElasticity = .none
@@ -1103,7 +1113,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
         if context.coordinator.lastScrollToBottomRevision != scrollToBottomRevision {
             context.coordinator.lastScrollToBottomRevision = scrollToBottomRevision
-            context.coordinator.scrollToBottom()
+            context.coordinator.jumpToLatest()
         }
         if context.coordinator.lastScrollToTurnRevision != scrollToTurnRevision {
             context.coordinator.lastScrollToTurnRevision = scrollToTurnRevision
@@ -1139,11 +1149,31 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var scrollCommandGeneration = 0
         private var nearTopSuppressionGeneration = 0
         private var suppressesNearTopTrigger = false
-        private var suppressesLayoutDrivenFollowReconciliation = false
         var lastScrollToBottomRevision = Int.min
         var lastScrollToTurnRevision = Int.min
         var lastHistoryRequestEpoch = Int.min
-        var followsLatest = true
+        private enum ViewportMode { case followingLatest, readingHistory }
+        private var viewportMode: ViewportMode = .followingLatest
+        var followsLatest: Bool {
+            get { viewportMode == .followingLatest }
+            set { viewportMode = newValue ? .followingLatest : .readingHistory }
+        }
+        private enum Correction {
+            case bottom
+            case anchor(id: String, offset: CGFloat)
+        }
+        private var pendingCorrection: Correction?
+        private var correctionScheduled = false
+        private var applyingCorrection = false
+        private var diagnosticEvents: [String] = []
+
+        private func traceViewport(_ event: String) {
+            #if DEBUG
+            let entry = "\(ProcessInfo.processInfo.systemUptime) \(event) mode=\(viewportMode) epoch=\(scrollCommandGeneration) rows=\(rows.count)"
+            if diagnosticEvents.count == 128 { diagnosticEvents.removeFirst() }
+            diagnosticEvents.append(entry)
+            #endif
+        }
         private var nearTopTriggered = false
         private var hasMoreHistory = false
         private var underfilledHistoryRequestCount = 0
@@ -1231,9 +1261,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             positionPublishCorptieTask?.cancel()
             positionPublishCorptieTask = nil
             scrollCommandGeneration &+= 1
+            pendingCorrection = nil
             nearTopSuppressionGeneration &+= 1
             suppressesNearTopTrigger = false
-            suppressesLayoutDrivenFollowReconciliation = false
             representedSessionID = sessionID
             rows.removeAll(keepingCapacity: true)
             revisionsByID.removeAll(keepingCapacity: true)
@@ -1264,7 +1294,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             // owns that restoration. Only explicit history-reading positions
             // are eligible for row-anchor restoration.
             guard !position.followsLatest else { return }
-            guard position != lastRequestedRestorePosition else { return }
+            guard lastRequestedRestorePosition == nil else { return }
             restore(position: position)
         }
 
@@ -1278,6 +1308,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             if let firstLayoutScrollView = scrollView as? FirstLayoutRestoringScrollView {
                 firstLayoutScrollView.onLayout = { [weak self] in
                     self?.restoreInitialViewportSynchronouslyIfNeeded()
+                    self?.reconcileLayout()
                 }
                 firstLayoutScrollView.onUserScrollWillBegin = { [weak self] in
                     self?.userScrollEventWillBegin()
@@ -1285,9 +1316,14 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 firstLayoutScrollView.onUserScrollDidEnd = { [weak self] in
                     self?.userScrollEventDidEnd()
                 }
+                if let scroller = scrollView.verticalScroller as? TimelineIntentScroller {
+                    scroller.onBegin = firstLayoutScrollView.onUserScrollWillBegin
+                    scroller.onEnd = firstLayoutScrollView.onUserScrollDidEnd
+                }
             }
             tableView.dataSource = self
             tableView.delegate = self
+            NotificationCenter.default.addObserver(self, selector: #selector(messageSubmissionAccepted(_:)), name: .sessionTimelineSubmissionAccepted, object: nil)
             scrollView.postsFrameChangedNotifications = true
             tableView.postsFrameChangedNotifications = true
             scrollView.contentView.postsBoundsChangedNotifications = true
@@ -1429,15 +1465,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             let oldIDs = rows.map(\.id)
             let newIDs = nextRows.map(\.id)
             let oldRevisions = revisionsByID
-            let oldTailRevision = rows.last.map { "\($0.id):\($0.contentRevision)" }
-            let newTailRevision = nextRows.last.map { "\($0.id):\($0.contentRevision)" }
-            // The AppKit viewport is the source of truth while this host is
-            // mounted. SwiftUI publishes the same value asynchronously, so a
-            // high-frequency tail update (notably an active Goal) can arrive
-            // before a user's scroll-away has propagated through the binding.
-            // Sampling geometry before changing row heights prevents that
-            // stale `true` from pinning the reader back to the newest card.
-            let followedLatestBeforeUpdate = isViewportNearBottom()
+            // Preserve reader intent across the entire mutation, including
+            // geometry feedback before a coalesced correction has committed.
+            let followedLatestBeforeUpdate = followsLatest
             synchronizeTableWidth()
             let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
             let hasPendingInitialViewport = pendingRestorePosition != nil || pendingInitialScrollToBottom
@@ -1542,8 +1572,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             tableView.noteHeightOfRows(withIndexesChanged: changed)
             synchronizeDocumentHeight(in: tableView)
             if followedLatestBeforeUpdate,
-               !pendingInitialScrollToBottom,
-               oldTailRevision != newTailRevision {
+               !pendingInitialScrollToBottom {
                 scrollToBottom()
             } else if let prependAnchor {
                 restore(anchor: prependAnchor, in: tableView)
@@ -1643,7 +1672,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func scrollToBottom() {
             guard !isProcessingUserScrollEvent,
-                  let tableView else { return }
+                  tableView != nil else { return }
             // Explicit jump-to-latest and automatic follow both opt in here.
             // If the user leaves the bottom before the queued layout pass,
             // viewportDidScroll flips this back to false and the command is
@@ -1664,20 +1693,89 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
             pendingInitialScrollToBottom = false
             suppressNearTopDuringLayout()
+            enqueueCorrection(.bottom)
+        }
+
+        func jumpToLatest() {
+            claimViewportIntent()
+            scrollToBottom()
+        }
+
+        private func claimViewportIntent() {
+            traceViewport("cancel-pending=\(pendingCorrection != nil)")
             scrollCommandGeneration &+= 1
-            let generation = scrollCommandGeneration
-            DispatchQueue.main.async { [weak self, weak tableView] in
-                guard let self,
-                      self.scrollCommandGeneration == generation,
-                      let tableView,
-                      !self.rows.isEmpty else { return }
-                tableView.layoutSubtreeIfNeeded()
-                self.synchronizeDocumentHeight(in: tableView)
-                guard let clipView = self.scrollView?.contentView else { return }
-                let lastRowRect = tableView.rect(ofRow: self.rows.count - 1)
-                let bottomOrigin = max(0, lastRowRect.maxY - clipView.bounds.height)
-                clipView.scroll(to: NSPoint(x: 0, y: bottomOrigin))
-                self.scrollView?.reflectScrolledClipView(clipView)
+            pendingCorrection = nil
+            userOwnsViewport = true
+            SessionViewportController.shared.discardPendingHydration(for: representedSessionID)
+            traceViewport("user-intent")
+        }
+
+        @objc private func messageSubmissionAccepted(_ notification: Notification) {
+            guard notification.object as? String == representedSessionID else { return }
+            claimViewportIntent()
+            if followsLatest {
+                pendingRestorePosition = nil
+                scrollToBottom()
+            }
+            traceViewport("send-accepted")
+        }
+
+        /// A single coalesced effect consumes the latest data, never a captured
+        /// row index. Data updates refine the target; only user/session intent
+        /// cancels it. Layout notifications cannot change the semantic mode.
+        private func enqueueCorrection(_ correction: Correction) {
+            guard !isProcessingUserScrollEvent else { return }
+            if case .anchor = correction,
+               case let .anchor(id, _)? = pendingCorrection,
+               rows.contains(where: { $0.id == id }) {
+                // Keep the pre-mutation anchor through consecutive updates.
+            } else {
+                pendingCorrection = correction
+            }
+            guard !correctionScheduled else { return }
+            correctionScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.correctionScheduled = false
+                self.commitCorrection()
+            }
+        }
+
+        private func commitCorrection() {
+            guard !applyingCorrection, !isProcessingUserScrollEvent,
+                  let correction = pendingCorrection,
+                  let tableView, let clip = scrollView?.contentView,
+                  !rows.isEmpty, clip.bounds.height > 0 else { return }
+            pendingCorrection = nil
+            applyingCorrection = true
+            defer { applyingCorrection = false }
+            tableView.layoutSubtreeIfNeeded()
+            synchronizeDocumentHeight(in: tableView)
+            let maximumY = max(0, tableView.rect(ofRow: rows.count - 1).maxY - clip.bounds.height)
+            let y: CGFloat
+            switch correction {
+            case .bottom:
+                guard followsLatest else { return }
+                y = maximumY
+            case let .anchor(id, offset):
+                guard !followsLatest, let index = rows.firstIndex(where: { $0.id == id }) else { return }
+                y = min(maximumY, max(0, tableView.rect(ofRow: index).minY + offset))
+            }
+            clip.scroll(to: NSPoint(x: 0, y: y))
+            scrollView?.reflectScrolledClipView(clip)
+            let anchor = visibleAnchor(in: tableView)
+            traceViewport("commit y=\(y) anchor=\(anchor?.id ?? "none")")
+            schedulePositionPublish()
+        }
+
+        private func reconcileLayout() {
+            guard !applyingCorrection, !isRestoringInitialViewport,
+                  !isProcessingUserScrollEvent,
+                  pendingRestorePosition == nil, !pendingInitialScrollToBottom else { return }
+            if followsLatest, !isViewportNearBottom() {
+                enqueueCorrection(.bottom)
+            } else if let pendingCorrection {
+                enqueueCorrection(pendingCorrection)
             }
         }
 
@@ -1692,24 +1790,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func viewportDidScroll(userInitiated: Bool? = nil) {
             guard let scrollView, !rows.isEmpty else { return }
-            let eventType = NSApp.currentEvent?.type
-            let eventIsUserInitiated = eventType == .scrollWheel
-                || eventType == .leftMouseDown
-                || eventType == .leftMouseDragged
             let acceptsHistoryRequest = userInitiated
-                ?? (isProcessingUserScrollEvent || eventIsUserInitiated)
-            if acceptsHistoryRequest {
-                userDidBeginScrolling()
-            }
-            // Row remeasurement temporarily moves the bottom farther away
-            // before the queued follow correction runs. That AppKit bounds
-            // notification is geometry feedback, not reader intent: letting
-            // it clear `followsLatest` can cancel the correction and strand a
-            // streaming reply in history. A real wheel/scroller gesture still
-            // bypasses this guard and owns the viewport immediately.
-            if !acceptsHistoryRequest && suppressesLayoutDrivenFollowReconciliation {
-                return
-            }
+                ?? isProcessingUserScrollEvent
+            // Geometry feedback never changes intent, even if it arrives
+            // several run-loop turns after the mutation that caused it.
+            guard acceptsHistoryRequest else { return }
             updateFollowStateFromViewport()
 
             // 滚动到顶时触发一次历史补拉（微信/Discord 式「上滑自动加载」）。
@@ -1747,7 +1832,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             guard !isAwaitingSessionRows,
                   pendingRestorePosition == nil,
                   !pendingInitialScrollToBottom else { return }
-            scrollCommandGeneration &+= 1
+            claimViewportIntent()
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = false
             userOwnsViewport = true
@@ -1790,11 +1875,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         @objc private func containerFrameDidChange(_ notification: Notification) {
             synchronizeTableWidth()
+            reconcileLayout()
             scheduleUnderfilledHistoryEvaluation()
         }
 
         @objc private func capturePositionForTermination(_ notification: Notification) {
             publishPositionImmediately()
+            #if DEBUG
+            NSLog("[TimelineViewport %@] %@", representedSessionID, diagnosticEvents.joined(separator: "\n"))
+            #endif
         }
 
         @objc private func windowDidEndLiveResize(_ notification: Notification) {
@@ -1865,7 +1954,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 }
                 if requiresReflow {
                     lastReflowMeasurementWidth = measurementWidth
-                    if let anchor { _ = restore(anchor: anchor, in: tableView) }
+                    if followsLatest { enqueueCorrection(.bottom) }
+                    else if let anchor { _ = restore(anchor: anchor, in: tableView) }
                 }
             }
         }
@@ -1905,7 +1995,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 withIndexesChanged: IndexSet(integersIn: 0..<rows.count)
             )
             synchronizeDocumentHeight(in: tableView)
-            if let anchor { _ = restore(anchor: anchor, in: tableView) }
+            if followsLatest { enqueueCorrection(.bottom) }
+            else if let anchor { _ = restore(anchor: anchor, in: tableView) }
         }
 
         private func visibleAnchor(in tableView: NSTableView) -> (id: String, offset: CGFloat)? {
@@ -1920,20 +2011,10 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         @discardableResult
         private func restore(anchor: (id: String, offset: CGFloat), in tableView: NSTableView) -> Bool {
             guard !isProcessingUserScrollEvent,
-                  let row = rows.firstIndex(where: { $0.id == anchor.id }),
-                  let clipView = scrollView?.contentView else { return false }
+                  !followsLatest,
+                  rows.contains(where: { $0.id == anchor.id }) else { return false }
             suppressNearTopDuringLayout()
-            scrollCommandGeneration &+= 1
-            let generation = scrollCommandGeneration
-            DispatchQueue.main.async { [weak self, weak tableView, weak clipView] in
-                guard let self,
-                      self.scrollCommandGeneration == generation,
-                      let tableView,
-                      let clipView else { return }
-                let y = max(0, tableView.rect(ofRow: row).minY + anchor.offset)
-                clipView.scroll(to: NSPoint(x: 0, y: y))
-                self.scrollView?.reflectScrolledClipView(clipView)
-            }
+            enqueueCorrection(.anchor(id: anchor.id, offset: anchor.offset))
             return true
         }
 
@@ -1948,7 +2029,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                   let tableView,
                   let clipView = scrollView?.contentView,
                   let row = AppKitChatTimelineView.rowIndex(forTurnID: turnID, in: rows) else { return }
-            scrollCommandGeneration &+= 1
+            claimViewportIntent()
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = false
             suppressNearTopDuringLayout()
@@ -2048,6 +2129,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             scrollView?.reflectScrolledClipView(clipView)
             pendingRestorePosition = nil
             pendingInitialScrollToBottom = false
+            traceViewport("initial-restoration-complete")
+            schedulePositionPublish()
         }
 
         private func schedulePositionPublish() {
@@ -2070,6 +2153,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
         func publishPositionImmediately() {
+            commitCorrection()
             positionPublishCorptieTask?.cancel()
             positionPublishCorptieTask = nil
             guard let tableView, let anchor = visibleAnchor(in: tableView) else { return }
@@ -2088,11 +2172,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             nearTopSuppressionGeneration &+= 1
             let generation = nearTopSuppressionGeneration
             suppressesNearTopTrigger = true
-            suppressesLayoutDrivenFollowReconciliation = true
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.nearTopSuppressionGeneration == generation else { return }
                 self.suppressesNearTopTrigger = false
-                self.suppressesLayoutDrivenFollowReconciliation = false
             }
         }
 
@@ -2980,8 +3062,30 @@ private final class FirstLayoutRestoringScrollView: NSScrollView {
 }
 
 private final class IntrinsicHeightTableView: NSTableView {
+    override func keyDown(with event: NSEvent) {
+        guard [UInt16(116), 121, 115, 119, 125, 126].contains(event.keyCode),
+              let scroll = enclosingScrollView as? FirstLayoutRestoringScrollView else {
+            super.keyDown(with: event)
+            return
+        }
+        scroll.onUserScrollWillBegin?()
+        defer { scroll.onUserScrollDidEnd?() }
+        super.keyDown(with: event)
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         enclosingScrollView?.contentView.postsBoundsChangedNotifications = true
+    }
+}
+
+private final class TimelineIntentScroller: NSScroller {
+    var onBegin: (() -> Void)?
+    var onEnd: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onBegin?()
+        defer { onEnd?() }
+        super.mouseDown(with: event)
     }
 }

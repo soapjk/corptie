@@ -80,6 +80,7 @@ final class SessionIndexStore: ObservableObject {
     @Published private(set) var orderedIDs: [String] = []
     @Published private(set) var groupingRevision: UInt64 = 0
     @Published private(set) var filterRevision: UInt64 = 0
+    @Published private(set) var cardRevision: UInt64 = 0
     private var rowsByID: [String: SessionRowModel] = [:]
     private var isReordering = false
 
@@ -142,6 +143,7 @@ final class SessionIndexStore: ObservableObject {
         let nextByID = Dictionary(uniqueKeysWithValues: authoritativeSessions.map { ($0.id, $0) })
         var groupingChanged = patch.hasStructuralChanges
         var filterChanged = patch.hasStructuralChanges
+        var cardsChanged = patch.hasStructuralChanges
 
         for id in patch.removedIDs {
             rowsByID[id] = nil
@@ -150,6 +152,12 @@ final class SessionIndexStore: ObservableObject {
             rowsByID[insertion.session.id] = SessionRowModel(session: insertion.session)
         }
         for contentPatch in patch.updated {
+            let previous = rowsByID[contentPatch.sessionID]?.session
+            if !contentPatch.changedFields.intersection([.status, .attention, .identity, .ordering]).isEmpty
+                || previous?.lastAgentMessageSequence != contentPatch.session.lastAgentMessageSequence
+                || previous?.lastReadMessageSequence != contentPatch.session.lastReadMessageSequence {
+                cardsChanged = true
+            }
             if contentPatch.changedFields.contains(.workspace)
                 || contentPatch.changedFields.contains(.ordering)
                 || contentPatch.changedFields.contains(.metadata) {
@@ -179,6 +187,7 @@ final class SessionIndexStore: ObservableObject {
         if filterChanged {
             filterRevision &+= 1
         }
+        if cardsChanged { cardRevision &+= 1 }
     }
 
     private func applyContentOnly(_ authoritativeSessions: [TaskSession]) {

@@ -3546,6 +3546,12 @@ final class BackendClient: ObservableObject {
             && !isClearCommand
             && !resolvesCollaborationConfirmation
 
+        // Capture viewport intent before the composer shrinks or the server
+        // acknowledgement changes the row set. A later user scroll wins.
+        if presentsAcknowledgedUserMessage {
+            NotificationCenter.default.post(name: .sessionTimelineSubmissionAccepted, object: session.id)
+        }
+
         Task {
             isSendingMessage = true
             sendStatusMessage = L10n("Sending...")
