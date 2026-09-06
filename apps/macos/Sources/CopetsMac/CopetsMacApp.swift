@@ -1088,7 +1088,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func openSessionInMainWindow(sessionID: String) {
         openWarRoom()
-        AppTabRouter.shared.openSession(sessionID)
+        AppTabRouter.shared.openSession(sessionID, source: .userSelection)
     }
 
     private func applyMainWindowLevel(to window: NSWindow) {

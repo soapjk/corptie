@@ -10,6 +10,10 @@ enum ConsoleNavigationCardWidthPolicy {
     static func clamped(_ width: Double) -> Double {
         min(max(width, minimumTaskColumnWidth), maximumTaskColumnWidth)
     }
+
+    static func resizedWidth(from startWidth: Double, translation: Double) -> Double {
+        clamped(startWidth + translation)
+    }
 }
 
 enum ConsoleNavigationMode: String, CaseIterable {
@@ -237,6 +241,7 @@ private struct ConsoleWorkOutlineHeader: View {
     let createTask: () -> Void
 
     @State private var isHovering = false
+    @State private var isChatHovering = false
     @FocusState private var isCreateTaskFocused: Bool
 
     var body: some View {
@@ -263,28 +268,46 @@ private struct ConsoleWorkOutlineHeader: View {
             .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
 
             Button(action: openChat) {
-                Image(systemName: "message.fill")
-                    .font(.system(size: 11, weight: .semibold))
+                Label {
+                    Text(L10n("Chat"))
+                        .font(.system(size: 10, weight: .medium))
+                } icon: {
+                    Image(systemName: "bubble.left.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                    .labelStyle(.titleAndIcon)
                     .foregroundStyle(isChatSelected ? Color.accentColor : Color.secondary)
-                    .frame(width: 22, height: 22)
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(
+                                isChatSelected
+                                    ? Color.accentColor.opacity(0.13)
+                                    : Color.secondary.opacity(isChatHovering ? 0.13 : 0.07)
+                            )
+                    }
                     .overlay(alignment: .topTrailing) {
                         if hasUnreadChat {
                             Circle()
                                 .fill(Color.red)
                                 .frame(width: 6, height: 6)
+                                .offset(x: 1, y: -1)
                         }
                     }
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .padding(.leading, 6)
+            .fixedSize()
+            .onHover { isChatHovering = $0 }
             .accessibilityLabel(L10n("Open Work Chat"))
             .accessibilityValue(hasUnreadChat ? L10n("Unread Session") : "")
             .help(L10n("Open Work Chat"))
 
             Spacer(minLength: 4)
 
-            if hasUnread {
+            if hasUnread && !isExpanded {
                 Circle()
                     .fill(Color.red)
                     .frame(width: 8, height: 8)
@@ -348,6 +371,15 @@ enum ConsoleTaskOpenDecision: Equatable {
     }
 }
 
+enum ConsoleSelectionRefreshPolicy {
+    static func permitsAutomaticDefaultSelection(
+        selectedTaskID: String?,
+        selectedSessionID: String?
+    ) -> Bool {
+        selectedTaskID == nil && selectedSessionID == nil
+    }
+}
+
 // 统一控制台：Work/Assistant 导航、Task 列、消息列和详情列。
 //   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，纸面卡片质感）
 //   中 content  — 对话（复用旧版 DetailView，吃满剩余宽度，纸面卡片质感）
@@ -395,7 +427,7 @@ struct UnifiedConsoleView: View {
     ) private var workerGroupingModeRawValue = WorkerSessionGroupingMode.work.rawValue
     @EnvironmentObject private var router: AppTabRouter
     @EnvironmentObject private var sidebarState: TabSidebarState
-    /// 「+」新建会话：明确选择 Assistant、Work 或 Worker Session。
+    /// Chat「+」只创建 Assistant Chat；Work Chat 与 Task Session 由系统伴生创建。
     @State private var showNewSessionCreation = false
     @State private var isCreatingWork = false
     @State private var isCreatingTask = false
@@ -420,7 +452,9 @@ struct UnifiedConsoleView: View {
     @State private var isOutlineAssistantCollapsed = false
     @State private var collapsedOutlineWorkIDs = Set<String>()
     @State private var navigationResizeStartWidth: Double?
+    @State private var liveTaskColumnWidth: Double?
     @State private var isHoveringNavigationResizeHandle = false
+    private let consoleNavigationResizeCoordinateSpace = "console-navigation-resize"
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
     private static let recentSessionIdsKey = "sessions.recentSessionIds"
@@ -437,6 +471,7 @@ struct UnifiedConsoleView: View {
             sessionConversation
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .coordinateSpace(name: consoleNavigationResizeCoordinateSpace)
         .toolbar(removing: .sidebarToggle)
         .environmentObject(backendClient)
         .environmentObject(layoutState)
@@ -460,9 +495,7 @@ struct UnifiedConsoleView: View {
         }
         .onReceive(backendClient.sessionsDidChange) { sessions in
             attemptPendingSelection(sessions)
-            if !recoverSelectionIfNeeded(from: sessions) {
-                restoreConsoleContentIfNeeded()
-            }
+            restoreConsoleContentIfNeeded()
             if let selectedSessionID = backendClient.selectedSession?.id {
                 markOpenedSessionRead(sessions.first(where: { $0.id == selectedSessionID }))
             }
@@ -500,8 +533,7 @@ struct UnifiedConsoleView: View {
         .onReceive(entityClient.sessionGroupingDidChange) { _ in
             entityGroupingRevision &+= 1
             restoreConsoleSpaceIfNeeded()
-            if !recoverSelectionIfNeeded(from: backendClient.sessions),
-               selectedCategory == .worker {
+            if selectedCategory == .worker {
                 restoreConsoleContentIfNeeded()
             }
         }
@@ -678,7 +710,9 @@ struct UnifiedConsoleView: View {
     }
 
     private var taskColumnWidth: CGFloat {
-        CGFloat(ConsoleNavigationCardWidthPolicy.clamped(storedTaskColumnWidth))
+        CGFloat(ConsoleNavigationCardWidthPolicy.clamped(
+            liveTaskColumnWidth ?? storedTaskColumnWidth
+        ))
     }
 
     private var taskColumnBackground: Color {
@@ -700,15 +734,23 @@ struct UnifiedConsoleView: View {
                 (hovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
             }
             .gesture(
-                DragGesture(minimumDistance: 0)
+                DragGesture(
+                    minimumDistance: 0,
+                    coordinateSpace: .named(consoleNavigationResizeCoordinateSpace)
+                )
                     .onChanged { value in
                         let startWidth = navigationResizeStartWidth ?? storedTaskColumnWidth
                         navigationResizeStartWidth = startWidth
-                        storedTaskColumnWidth = ConsoleNavigationCardWidthPolicy.clamped(
-                            startWidth + Double(value.translation.width)
+                        liveTaskColumnWidth = ConsoleNavigationCardWidthPolicy.resizedWidth(
+                            from: startWidth,
+                            translation: Double(value.translation.width)
                         )
                     }
                     .onEnded { _ in
+                        if let finalWidth = liveTaskColumnWidth {
+                            storedTaskColumnWidth = finalWidth
+                        }
+                        liveTaskColumnWidth = nil
                         navigationResizeStartWidth = nil
                     }
             )
@@ -901,7 +943,7 @@ struct UnifiedConsoleView: View {
                 .padding(12)
         }
         .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet()
+            NewSessionCreationSheet(fixedKind: .assistantChat)
         }
     }
 
@@ -937,7 +979,7 @@ struct UnifiedConsoleView: View {
                 .padding(12)
         }
         .sheet(isPresented: $showNewSessionCreation) {
-            NewSessionCreationSheet()
+            NewSessionCreationSheet(fixedKind: .assistantChat)
         }
     }
 
@@ -1644,16 +1686,16 @@ struct UnifiedConsoleView: View {
         // Keep it authoritative across session-index refreshes instead of
         // treating the empty detail selection as a reason to jump to the
         // first Task in the Work. Once its Session appears, connect it here.
-        if let selectedTask,
-           ConsoleTaskSelectionPolicy.isValidSelection(
-               task: selectedTask,
-               selectedWorkID: selectedWorkId
-           ) {
-            if let session = workerSession(for: selectedTask) {
+        if let selectedTask, selectedTask.workId == selectedWorkId {
+            if ConsoleTaskSelectionPolicy.isValidSelection(
+                task: selectedTask,
+                selectedWorkID: selectedWorkId
+            ), let session = workerSession(for: selectedTask) {
                 if backendClient.selectedSession?.id != session.id {
                     selectSessionAfterHighlight(session)
                 }
-            } else if backendClient.selectedSession != nil {
+            } else if let selectedSession = backendClient.selectedSession,
+                      selectedSession.taskId != selectedTask.id {
                 backendClient.closeDetail()
             }
             return
@@ -1662,6 +1704,10 @@ struct UnifiedConsoleView: View {
            sessionMatchesCurrentConsoleSpace(session) {
             return
         }
+        guard ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
+            selectedTaskID: selectedTaskId,
+            selectedSessionID: selectionController.selectedSessionID
+        ) else { return }
         selectDefaultContentForCurrentSpace()
     }
 
@@ -1785,36 +1831,6 @@ struct UnifiedConsoleView: View {
 
     private static func restoredRecentSessionIds() -> [String] {
         CorptieAppEnvironment.userDefaults.stringArray(forKey: recentSessionIdsKey) ?? []
-    }
-
-    /// CorptieTask 完成会让其 Worker Session 离开活动列表。此时不再按列表顺序随意挑选，
-    /// 而是跳到用户最近打开且仍可访问的 Session，并同步切换对应分类。
-    @discardableResult
-    private func recoverSelectionIfNeeded(from sessions: [TaskSession]) -> Bool {
-        // An archive selection is intentionally absent from the resident
-        // active collection. Active State Sync updates must not evict it.
-        guard !isShowingWorkerArchive else { return false }
-        guard let current = backendClient.selectedSession else { return false }
-        guard !SessionSelectionRecoveryPolicy.isAccessible(current, sessions: sessions) else {
-            return false
-        }
-
-        guard let targetId = SessionSelectionRecoveryPolicy.recoverySessionID(
-            recentSessionIDs: Self.restoredRecentSessionIds(),
-            sessions: sessions,
-            excluding: current.id
-        ), let target = sessions.first(where: { $0.id == targetId }) else {
-            backendClient.closeDetail()
-            return true
-        }
-
-        pendingSelectionTask?.cancel()
-        let category = SessionCategory(session: target)
-        selectedCategory = category
-        isShowingWorkerArchive = false
-        Self.recordSessionId(target.id, category: category)
-        backendClient.select(session: target)
-        return true
     }
 
     // 恢复某个 Tab（SessionCategory）下的选择：优先保留仍有效的当前选择，
@@ -2726,27 +2742,6 @@ enum SessionSelectionRecoveryPolicy {
         return Array(result.prefix(historyLimit))
     }
 
-    static func isAccessible(
-        _ session: TaskSession,
-        sessions: [TaskSession]
-    ) -> Bool {
-        return session.archived != true
-            && sessions.contains(where: { $0.id == session.id && $0.archived != true })
-    }
-
-    static func recoverySessionID(
-        recentSessionIDs: [String],
-        sessions: [TaskSession],
-        excluding excludedSessionID: String
-    ) -> String? {
-        let accessibleIDs = Set(sessions.lazy.filter {
-            $0.id != excludedSessionID && isAccessible($0, sessions: sessions)
-        }.map(\.id))
-        if let recentID = recentSessionIDs.first(where: accessibleIDs.contains) {
-            return recentID
-        }
-        return sessions.first(where: { accessibleIDs.contains($0.id) })?.id
-    }
 }
 
 // 会话详细信息面板：对话区右侧一条固定竖列（参考 Rudder 的 IssueDetail rail）。
@@ -2875,6 +2870,12 @@ struct SessionDetailPanel: View {
             if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .workChat {
                 assistantSection
                 contextReferencesSection
+            }
+
+            if session.resolvedSessionKind == .workChat,
+               let workId = session.workId, !workId.isEmpty {
+                ArtifactSectionView(workId: workId, taskId: nil)
+                    .id(workId)
             }
 
             detailSection(title: "运行环境", systemImage: "cpu") {
