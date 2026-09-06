@@ -21,6 +21,15 @@ struct FirstRunSetupTests {
         #expect(try !decode(enabled: true, executable: true, checkState: "checking").canContinue)
     }
 
+    @Test
+    func startupOnlyPresentsSetupAfterExplicitConfirmation() throws {
+        #expect(!FirstRunStatus.requiresSetup(nil))
+        #expect(FirstRunStatus.requiresSetup(try decode(enabled: false, executable: false)))
+        let completed = try JSONDecoder().decode(FirstRunStatus.self, from: Data(
+            "{\"providers\":[],\"completed\":true,\"hasWorks\":false}".utf8))
+        #expect(!FirstRunStatus.requiresSetup(completed))
+    }
+
     private func decode(enabled: Bool, executable: Bool, checkState: String = "available") throws -> FirstRunStatus {
         let data = Data("""
         {"providers":[{"id":"provider","name":"Provider","path":"/tmp/provider","executable":\(executable),"enabled":\(enabled),"checkState":"\(checkState)"}],"completed":false,"hasWorks":false}

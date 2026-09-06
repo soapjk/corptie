@@ -24,6 +24,10 @@ struct FirstRunStatus: Decodable {
     let workSessionId: String?
 
     var canContinue: Bool { providers.contains { $0.enabled && $0.executable && $0.checkState == "available" } }
+
+    static func requiresSetup(_ status: FirstRunStatus?) -> Bool {
+        status?.completed == false
+    }
 }
 
 // Only startup/reconnect and explicit actions refresh this small projection.
@@ -41,7 +45,7 @@ struct FirstRunSetupRoot<Content: View>: View {
 
     var body: some View {
         Group {
-            if status?.completed == true {
+            if !FirstRunStatus.requiresSetup(status) {
                 content()
             } else if browsingHelp {
                 VStack(spacing: 0) {
