@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { TASK_WORKSPACE_INSTRUCTIONS } from "./sessionResponsibilityInstructions.mjs";
 
 export const WORKER_SESSION_CONTEXT_LIMITS = Object.freeze({
   baseMaxUtf8Bytes: 16_384,
@@ -59,6 +60,7 @@ export function buildWorkSessionContext({
     "The Task binding does not weaken or override higher-priority instructions, safety rules, authorization, permissions, confirmation requirements, or exact-target lifecycle controls. Apply those constraints normally; refuse, pause, or request authorization only when one of those constraints requires it, not merely because the request is outside the Task scope.",
     "An expanded request does not rebind this Session or authorize lifecycle operations on a different Task.",
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
+    TASK_WORKSPACE_INSTRUCTIONS,
     startupReceipt
       ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} generation=${startupReceipt.bindingGeneration} repository=${text(startupReceipt.repositoryId)} worktree=${text(startupReceipt.worktreeId)} receiptHash=${text(startupReceipt.receiptHash)}`
       : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",

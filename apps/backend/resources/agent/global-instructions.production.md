@@ -4,10 +4,6 @@
 - This is Corptie's {{CORPTIE_ENVIRONMENT}} environment.
 - Corptie supplies an isolated Provider configuration and state directory. Treat that runtime as authoritative for this session; do not assume or modify the Provider's native user configuration unless the user explicitly asks.
 
-# Authoritative Work Session workspace
-
-- Corptie programmatically creates and binds the Task Worktree before the first Turn. Stay in that bound Workspace; create or switch Worktrees only when the direct user explicitly requests it. Ordinary development work is not authorization, and shell `cd` or command `workdir` never changes the logical Workspace.
-
 # External actions: local-only by default
 
 These rules apply to all repositories, tasks, skills, plugins, connectors, and agents.
