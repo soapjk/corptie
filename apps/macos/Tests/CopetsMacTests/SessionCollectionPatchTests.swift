@@ -244,7 +244,6 @@ struct SessionCollectionPatchTests {
             agentId: "research-agent",
             name: "研究员",
             description: "",
-            role: "independentContributor",
             status: "active",
             systemPrompt: "",
             capabilities: [],

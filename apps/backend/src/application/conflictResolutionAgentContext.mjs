@@ -13,7 +13,7 @@ export function resolveConflictResolutionAgentContext(item, store) {
     const sourceTask = store.getTask(taskId);
     const work = sourceTask?.work_id ? store.getWork(sourceTask.work_id) : null;
     const agent = sourceTask?.main_agent_id ? store.getAgent(sourceTask.main_agent_id) : null;
-    if (sourceTask && work && agent?.role === "independentContributor") {
+    if (sourceTask && work && agent) {
       return { sourceTask, work, agent };
     }
   }

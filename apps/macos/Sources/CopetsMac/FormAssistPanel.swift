@@ -26,7 +26,7 @@ struct AssistFormDraft: Decodable, Equatable {
         let expected: Set<String>
         switch formType {
         case AssistFormType.agent.rawValue:
-            expected = ["name", "description", "role", "systemPrompt", "capabilities"]
+            expected = ["name", "description", "systemPrompt", "capabilities"]
         case AssistFormType.work.rawValue:
             expected = ["name", "description", "profile", "tags"]
         case AssistFormType.task.rawValue:
@@ -53,7 +53,7 @@ enum FormAssistOverwritePolicy {
         let defaults: [String: String]
         switch formType {
         case .agent:
-            defaults = ["role": "independentContributor"]
+            defaults = [:]
         case .work:
             defaults = [:]
         case .task:

@@ -24,7 +24,7 @@ struct WorkResourcesEditor: View {
             agentSection
         }
         .sheet(isPresented: $showAgentPicker) {
-            AgentPickerView(selectedIds: $contributorAgentIds, roleFilter: .independentContributor)
+            AgentPickerView(selectedIds: $contributorAgentIds)
         }
         .alert(L10n("无法添加 Workspace"), isPresented: Binding(
             get: { workspaceError != nil },
@@ -192,7 +192,7 @@ struct WorkResourcesEditor: View {
             } else {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(selectedAgents) { agent in
-                        resourceRow(label: agent.name, icon: agent.isAssistant ? "sparkles" : "person") {
+                        resourceRow(label: agent.name, icon: agent.isPlatformAssistant ? "sparkles" : "person") {
                             contributorAgentIds.remove(agent.agentId)
                         }
                     }
@@ -211,7 +211,7 @@ struct WorkResourcesEditor: View {
     }
 
     private var unresolvedAgentIds: [String] {
-        let assignable = Set(client.agents.filter(\.isIndependentContributor).map(\.agentId))
+        let assignable = Set(client.agents.map(\.agentId))
         return contributorAgentIds.filter { !assignable.contains($0) }.sorted()
     }
 

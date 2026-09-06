@@ -98,7 +98,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
   let requestBody = body;
   if (method === "POST" && pathname === "/works"
     && !Object.hasOwn(body ?? {}, "contributorAgentIds")) {
-    let contributor = services.store.listAgents().find((agent) => agent.role === "independentContributor");
+    let contributor = services.store.listAgents().find((agent) => agent.status === "available");
     contributor ??= services.store.createAgent({
       name: "Work Test Contributor",
       role: "independentContributor"
@@ -684,7 +684,6 @@ test("POST /assist/form-draft shares one structured contract across Agent and Wo
             text: JSON.stringify({
               name: "SwiftUIAgent",
               description: "负责 macOS 客户端体验。",
-              role: "independentContributor",
               systemPrompt: "实现变更并运行相关测试。",
               capabilities: "swiftui, testing"
             })
@@ -712,7 +711,6 @@ test("POST /assist/form-draft shares one structured contract across Agent and Wo
         currentValues: {
           name: "",
           description: "",
-          role: "independentContributor",
           systemPrompt: "",
           capabilities: ""
         }
@@ -738,7 +736,7 @@ test("POST /assist/form-draft shares one structured contract across Agent and Wo
     });
 
     assert.equal(agentResult.statusCode, 200);
-    assert.equal(agentResult.body.fields.role, "independentContributor");
+    assert.equal(Object.hasOwn(agentResult.body.fields, "role"), false);
     assert.equal(workResult.statusCode, 200);
     assert.equal(Object.hasOwn(workResult.body.fields, "targetDate"), false);
     assert.equal(workResult.body.fields.profile, "software");
@@ -900,7 +898,7 @@ test("POST /assist/form-draft rejects generated Work, Task, and Agent names with
       {
         formType: "agent",
         fields: {
-          name: "SwiftUI Agent", description: "维护客户端", role: "independentContributor",
+          name: "SwiftUI Agent", description: "维护客户端",
           systemPrompt: "维护客户端。", capabilities: "swiftui"
         }
       },
@@ -2235,18 +2233,19 @@ test("Memory Inspector HTTP supports global audit, tag update, revoke, and rollb
   }
 });
 
-test("GET /agents 返回带 role 的 Agent（预种助手 Corptie）", async () => {
+test("GET /agents returns unified Agents and marks the platform-managed resource", async () => {
   const services = await createServices();
   try {
     const agents = await callApi({ method: "GET", pathname: "/agents", ...services });
     assert.equal(agents.statusCode, 200);
     assert.ok(agents.body.agents.length >= 1);
 
-    const assistant = agents.body.agents.find((a) => a.role === "assistant");
+    const assistant = agents.body.agents.find((a) => a.agentKind === "platformAssistant");
     assert.ok(assistant, "预种的助手 Agent 应存在");
     assert.equal(assistant.name, "Corptie");
     assert.equal(assistant.agentId, "assistant");
     assert.equal(assistant.agentKind, "platformAssistant");
+    assert.equal(Object.hasOwn(assistant, "role"), false);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -2309,7 +2308,7 @@ test("内置 Corptie Assistant 只能改名称和头像，不能删除或改功�
     const assistant = services.store.getAgent("assistant");
     assert.equal(assistant.name, "我的Corptie");
     assert.equal(Object.hasOwn(assistant, "provider"), false);
-    assert.deepEqual(assistant.capabilities, ["platform.manage"]);
+    assert.deepEqual(assistant.capabilities, []);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
@@ -2339,7 +2338,7 @@ test("POST /assistant/chat directs Work creation to the contributor-aware form",
   }
 });
 
-test("POST /agents 创建独立贡献者 Agent", async () => {
+test("POST /agents creates a unified Agent without a role", async () => {
   const services = await createServices();
   try {
     const created = await callApi({
@@ -2350,7 +2349,7 @@ test("POST /agents 创建独立贡献者 Agent", async () => {
     });
     assert.equal(created.statusCode, 201);
     assert.equal(created.body.agent.name, "后端开发");
-    assert.equal(created.body.agent.role, "independentContributor");
+    assert.equal(Object.hasOwn(created.body.agent, "role"), false);
     assert.equal(Object.hasOwn(created.body.agent, "provider"), false);
 
     // 缺 name → 400
@@ -2488,19 +2487,19 @@ test("Agent API atomically persists and returns Skill assignments", async () => 
   }
 });
 
-test("POST /agents 为每个 Assistant 分配独立 Workspace", async () => {
+test("POST /agents gives every Agent an isolated default workspace", async () => {
   const services = await createServices();
   try {
     const first = await callApi({
       method: "POST",
       pathname: "/agents",
-      body: { name: "助手一", role: "assistant", provider: "codex-app-server" },
+      body: { name: "Agent一" },
       ...services
     });
     const second = await callApi({
       method: "POST",
       pathname: "/agents",
-      body: { name: "助手二", role: "assistant", provider: "claude-sdk" },
+      body: { name: "Agent二" },
       ...services
     });
 
@@ -2508,21 +2507,13 @@ test("POST /agents 为每个 Assistant 分配独立 Workspace", async () => {
     assert.equal(second.statusCode, 201);
     assert.notEqual(first.body.agent.workDir, second.body.agent.workDir);
 
-    const conflict = await callApi({
-      method: "PATCH",
-      pathname: `/agents/${encodeURIComponent(second.body.agent.agentId)}`,
-      body: { workDir: first.body.agent.workDir },
-      ...services
-    });
-    assert.equal(conflict.statusCode, 409);
-    assert.equal(conflict.body.code, "ASSISTANT_WORKSPACE_CONFLICT");
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
   }
 });
 
-test("legacy Session creation rejects Task startup fields while Assistant Chat keeps its dedicated route", async () => {
+test("legacy Session creation rejects Task startup fields while any Agent can create a chat Session", async () => {
   const services = await createServices();
   try {
     const work = await callApi({
@@ -2547,15 +2538,19 @@ test("legacy Session creation rejects Task startup fields while Assistant Chat k
     const contributor = await callApi({
       method: "POST", pathname: "/agents", body: { name: "贡献者" }, ...services
     });
+    let launchedAgentId = null;
     const contributorAsAssistant = await callApi({
       ...services,
       method: "POST",
       pathname: `/agents/${contributor.body.agent.agentId}/sessions`,
-      body: {},
-      launchAgentSession: async () => { throw new Error("must not launch"); }
+      body: { providerId: "codex-app-server" },
+      launchAgentSession: async ({ agent }) => {
+        launchedAgentId = agent.agentId;
+        return { id: "session:chat", agentId: agent.agentId, sessionKind: "assistantChat" };
+      }
     });
-    assert.equal(contributorAsAssistant.statusCode, 400);
-    assert.equal(contributorAsAssistant.body.code, "AGENT_NOT_ASSISTANT");
+    assert.equal(contributorAsAssistant.statusCode, 201);
+    assert.equal(launchedAgentId, contributor.body.agent.agentId);
   } finally {
     await services.store.close();
     await rm(services.directory, { recursive: true, force: true });
