@@ -137,7 +137,7 @@ struct FirstRunSetupRoot<Content: View>: View {
                     .foregroundStyle(.secondary)
                 Button(L10n("问问 Corptie")) {
                     guard let sessionId = status.assistantSessionId else { return }
-                    AppTabRouter.shared.openSession(sessionId)
+                    AppTabRouter.shared.openSession(sessionId, source: .userSelection)
                     browsingHelp = true
                 }
             }
@@ -150,7 +150,7 @@ struct FirstRunSetupRoot<Content: View>: View {
                     perform {
                         self.status = try await FirstRunSetupAPI.request("first-run/complete", body: [:])
                         if let sessionId = self.status?.workSessionId {
-                            AppTabRouter.shared.openSession(sessionId)
+                            AppTabRouter.shared.openSession(sessionId, source: .userSelection)
                         } else {
                             AppTabRouter.shared.selectTab(.console)
                         }
