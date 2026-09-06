@@ -129,3 +129,25 @@ test("concurrent Chat preparation and restart reuse the same Session", async t =
   f.setWorks();
   assert.equal((await f.service.complete()).completed, true);
 });
+
+test("existing Work skips setup and remains completed after Works are removed", async t => {
+  const f = await fixture(t);
+  await writeFile(f.options.path(), JSON.stringify({ completed: false, providers: {} }));
+  f.setWorks();
+  const restarted = new FirstRunSetupService(f.options);
+  await restarted.initialize();
+  assert.equal((await restarted.status()).completed, true);
+  const empty = new FirstRunSetupService({ ...f.options, hasWorks: () => false });
+  await empty.initialize();
+  assert.equal((await empty.status()).completed, true);
+  assert.equal(f.probes.length, 0);
+});
+
+test("new installs require setup while legacy installs without markers skip it", async t => {
+  const f = await fixture(t);
+  assert.equal((await f.service.status()).completed, false);
+  f.setWorks();
+  const legacy = new FirstRunSetupService(f.options);
+  await legacy.initialize();
+  assert.equal((await legacy.status()).completed, true);
+});

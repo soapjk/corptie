@@ -16,8 +16,11 @@ export class FirstRunSetupService {
     try { this.state = JSON.parse(await readFile(this.path(), "utf8")); }
     catch (error) {
       if (error.code !== "ENOENT") throw error;
-      this.state = { providers: {}, completed: this.hasWorks() };
+      this.state = { providers: {}, completed: false };
     }
+    // Existing installations must never re-enter onboarding on restart, even
+    // if an older build left an incomplete first-run marker behind.
+    if (!this.state.completed && this.hasWorks()) await this.save({ ...this.state, completed: true });
   }
 
   command(id, fallback) {
