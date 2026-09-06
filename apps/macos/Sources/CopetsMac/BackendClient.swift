@@ -3426,6 +3426,9 @@ final class BackendClient: ObservableObject {
             ?? pendingCollaborationConfirmationsBySessionID.first(where: {
                 $0.value.confirmationId == confirmationId
             })?.key
+        let sourceSession = session ?? sourceSessionID.flatMap { sourceSessionID in
+            sessions.first(where: { $0.id == sourceSessionID })
+        }
         Task {
             isSendingMessage = true
             defer { isSendingMessage = false }
@@ -3439,7 +3442,27 @@ final class BackendClient: ObservableObject {
                     approve: approve
                 )
                 if let sourceSessionID {
-                    pendingCollaborationConfirmationsBySessionID[sourceSessionID] = nil
+                    if let detail = cachedDetail(for: sourceSessionID) {
+                        let resolvedDetail = detailReplacingItems(detail) { item in
+                            guard item.collaborationConfirmationId == confirmationId else { return item }
+                            var resolvedItem = item
+                            resolvedItem.collaborationConfirmationStatus = approve ? "confirmed" : "rejected"
+                            return resolvedItem
+                        }
+                        storeCachedDetail(
+                            resolvedDetail,
+                            for: sourceSessionID,
+                            timelineRevision: SessionTimelineRepository.shared.timelineRevision(for: sourceSessionID)
+                        )
+                    } else {
+                        pendingCollaborationConfirmationsBySessionID[sourceSessionID] = nil
+                    }
+                }
+                // The HTTP response is authoritative, but the timeline stream may
+                // arrive a beat later. Pull the resolved revision now so the card
+                // immediately replaces its actions with the durable sent state.
+                if let sourceSession {
+                    await loadSessionMessages(sourceSession)
                 }
                 sendStatusMessage = approve ? L10n("Collaboration request sent") : L10n("Collaboration request cancelled")
             } catch {
