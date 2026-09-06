@@ -123,8 +123,10 @@ struct UnifiedConsoleControlSurfaceTests {
         let notice = source[noticeStart.lowerBound..<noticeEnd.lowerBound]
 
         #expect(source.contains("sessionReadinessNotice"))
-        #expect(source.contains("!session.isReady"))
-        #expect(notice.contains("session.notReadyReason?.presentationMessage"))
+        #expect(source.contains("session.readiness == .notReady"))
+        #expect(source.contains("let reason = session.notReadyReason"))
+        #expect(notice.contains("reason.presentationMessage"))
+        #expect(notice.contains("reason.shouldOfferRestartRecovery"))
         #expect(notice.contains("session.actions?.restart?.available == true"))
         #expect(notice.contains("backendClient.restart(session: session)"))
         #expect(notice.contains("commandState.restartingSessionIds.contains(session.id)"))
