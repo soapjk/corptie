@@ -183,7 +183,15 @@ test("Claude startup reaches the strict domain gate after an authenticated MCP o
     apply: async () => ({ status: "awaiting_provider_observation", observationKind: "mcp_tools_list" })
   });
   let resumed = false;
+  let sent = false;
+  value.store.createAgent({ id: "agent:one", name: "MCP startup test" });
   const provider = createClaudeAgentSdkProvider({
+    async send() {
+      assert.equal(resumed, true);
+      assert.equal(value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one").status, "applied");
+      sent = true;
+      return { id: "session:one" };
+    },
     async reconnect() {
       const pending = value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one");
       assert.equal(pending.status, "refreshing");
@@ -200,7 +208,10 @@ test("Claude startup reaches the strict domain gate after an authenticated MCP o
   const registry = new AgentProviderRegistry([provider]);
   const service = new SessionApplicationService({
     registry,
-    toolHostService: new ToolHostService({ registry, catalog: value.coordinator.catalog, coordinator: value.coordinator }),
+    toolHostService: new ToolHostService({
+      registry, catalog: value.coordinator.catalog, coordinator: value.coordinator,
+      recordRuntimeEvent: (event) => value.store.recordSkillRuntimeEvent(event)
+    }),
     toolMaterializationPort: value.port,
     resolveRequiredToolDomains: () => ["artifacts"],
     resolveSessionReference: async () => ({
@@ -213,6 +224,11 @@ test("Claude startup reaches the strict domain gate after an authenticated MCP o
     await service.resumeSession("session:one", { purpose: "session-create-finalization" });
     assert.equal(resumed, true);
     assert.equal(await value.port.assertCanonicalToolApplied("logical:one", "corptie_artifact_get"), true);
+    const event = value.store.selectOne("SELECT status, details_json FROM skill_runtime_events WHERE stage='provider-materialization' ORDER BY rowid DESC LIMIT 1");
+    assert.equal(event.status, "info");
+    assert.equal(JSON.parse(event.details_json).materializationStatus, "applying");
+    await service.sendMessage("session:one", "hello");
+    assert.equal(sent, true);
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
