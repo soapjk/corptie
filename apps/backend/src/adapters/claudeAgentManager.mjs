@@ -1832,6 +1832,14 @@ export function normalizeClaudeEffortLevel(value) {
 export function normalizeClaudeRuntimeOptions(input = {}) {
   if (!input || typeof input !== "object") return {};
   const result = {};
+  if (Object.hasOwn(input, "tools")) {
+    // Empty is meaningful: the SDK disables every builtin. Never discard a
+    // restrictive list or normalize invalid input into the SDK's default set.
+    if (!Array.isArray(input.tools) || input.tools.some((tool) => typeof tool !== "string" || !tool.trim())) {
+      throw new TypeError("Claude runtime tools must be an explicit array of tool names.");
+    }
+    result.tools = [...new Set(input.tools.map((tool) => tool.trim()))];
+  }
   if (input.mcpServers && typeof input.mcpServers === "object") {
     result.mcpServers = { ...input.mcpServers };
   }
