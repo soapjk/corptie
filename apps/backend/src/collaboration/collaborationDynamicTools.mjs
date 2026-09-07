@@ -262,10 +262,11 @@ export async function callCollaborationDynamicTool(client, name, input = {}) {
         coordination: {
           delivery: pendingConfirmation ? "awaiting_user_confirmation" : "push",
           waitRequired: false,
-          nextAction: "end_current_turn",
+          requiresUserAction: pendingConfirmation,
+          nextAction: pendingConfirmation ? "end_current_turn" : "continue_current_turn",
           note: pendingConfirmation
             ? "Corptie will render and resolve confirmation programmatically. Do not write a confirmation message or continue this turn."
-            : "Do not poll or wait. Corptie will push the peer response into this Agent's unified queue."
+            : "Continue the current user-requested work when independent steps remain. Sending does not require ending the turn or waiting for a peer reply. Do not resend this message or poll; Corptie pushes peer messages into this Session's unified queue. End normally if the user's request is fulfilled."
         }
       }
     : value;
