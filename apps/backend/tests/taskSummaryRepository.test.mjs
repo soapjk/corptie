@@ -18,6 +18,15 @@ test("cancelling absent summary work leaves a newly created Task untouched", () 
   assert.equal(writes.some((sql) => /UPDATE tasks\b/.test(sql)), false);
 });
 
+test("repeated capability blockers do not rewrite Task versions or job generations", () => {
+  const repository = new TaskSummaryRepository({
+    runInTransaction: (body) => body(),
+    selectOne: () => ({ status: "blocked", error_code: "BACKGROUND_AGENT_UNAVAILABLE" }),
+    db: { run: () => assert.fail("same blocker must be a no-op") }
+  });
+  repository.block("task:1", "BACKGROUND_AGENT_UNAVAILABLE");
+});
+
 test("cancelling an existing summary still invalidates its content", () => {
   const writes = [];
   const content = { focus: "Previous focus" };
