@@ -227,6 +227,14 @@ test("Turn-level merging keeps Task and direct-user evidence complete and drops 
   assert.ok(Buffer.byteLength(merged.prompt) <= WORKER_SESSION_CONTEXT_LIMITS.turnMaxUtf8Bytes);
 });
 
+test("Turn-level merging preserves required Skill MCP routing context", () => {
+  const baseContext = workerContext();
+  const skillContext = { prompt: "<skill-routing>search before failure</skill-routing>" };
+  const merged = mergeWorkerSessionContexts({ baseContext, requiredContexts: [skillContext] });
+
+  assert.match(merged.prompt, /<skill-routing>search before failure<\/skill-routing>/);
+});
+
 test("required pinned Artifacts are non-truncatable and incomplete core context fails closed", () => {
   const task = {
     id: "task:strict", work_id: "work:quality", title: "Strict", description: "x".repeat(32_768),
