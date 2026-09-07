@@ -161,6 +161,7 @@ test("dynamic Channel open maps tool input to the authenticated collaboration HT
     }
   }]);
   assert.equal(result.coordination.delivery, "awaiting_user_confirmation");
+  assert.equal(result.coordination.requiresUserAction, true);
   assert.equal(result.coordination.nextAction, "end_current_turn");
 });
 
@@ -189,7 +190,20 @@ test("dynamic Channel open reports an active exact Session route as sent", async
 
   assert.equal(result.request.status, "sent");
   assert.equal(result.coordination.delivery, "push");
-  assert.equal(result.coordination.nextAction, "end_current_turn");
+  assert.equal(result.coordination.nextAction, "continue_current_turn");
+  assert.equal(result.coordination.requiresUserAction, false);
+});
+
+test("active Channel message send allows independent work to continue", async () => {
+  const result = await callCollaborationDynamicTool({
+    post: async () => ({ message: { messageId: "message:sent" } })
+  }, "corptie_collaboration_message_send", {
+    channel_id: "channel:trusted", body: "Review this while I inspect logs.",
+    idempotency_key: "send-and-continue"
+  });
+  assert.equal(result.coordination.nextAction, "continue_current_turn");
+  assert.equal(result.coordination.requiresUserAction, false);
+  assert.equal(result.coordination.waitRequired, false);
 });
 
 test("dynamic read tools use the same backend endpoints as the MCP transport", async () => {
