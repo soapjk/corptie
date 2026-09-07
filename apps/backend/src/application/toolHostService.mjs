@@ -111,7 +111,8 @@ export class ToolHostService {
     }
     this.#record({
       stage: context.purpose === "session-resume" ? "session-recovery" : "provider-materialization",
-      status: materialization?.status === "applying" ? "applying" : "success",
+      status: materialization?.status === "applying" ? "info" : "success",
+      details: { materializationStatus: materialization?.status ?? null },
       agentId: actorId,
       sessionId: context.sessionId ?? null,
       logicalSessionId: context.logicalSessionId ?? null,
