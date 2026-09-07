@@ -1990,7 +1990,7 @@ final class BackendClient: ObservableObject {
         }
     }
 
-    func select(session: TaskSession) {
+    func select(session: TaskSession, focusComposer: Bool = false) {
         PerfStopwatch.event("会话切换.select", value: 1)
         coldTimelineLoadTask?.cancel()
         coldTimelineLoadTask = nil
@@ -1999,6 +1999,9 @@ final class BackendClient: ObservableObject {
         viewingHistoricalThreadId = nil
         selectedHistoricalDetail = nil
         let generation = sessionSelectionController.select(session.id)
+        if focusComposer && session.resolvedSessionKind == .worker {
+            ComposerDraftRepository.requestUserFocus(for: session.id)
+        }
         selectedTimelineLoadError = nil
         supplementaryDataController.select(session.id)
         retainResidentSessionCaches()
