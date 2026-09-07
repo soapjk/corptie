@@ -1380,7 +1380,7 @@ const sessionApplicationService = new SessionApplicationService({
     const contexts = [memoryContext, baseContext, mentionContext, directUserIntentContext].filter((item) => item?.prompt);
     if (contexts.length === 0) return null;
     if (session?.sessionKind === "worker") {
-      return mergeWorkerSessionContexts({ baseContext, directUserIntentContext, memoryContext });
+      return mergeWorkerSessionContexts({ baseContext, directUserIntentContext, memoryContext, mentionContext });
     }
     if (contexts.length === 1) return contexts[0];
     return {

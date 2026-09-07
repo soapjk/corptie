@@ -200,7 +200,7 @@
 "Test" = "测试";
 "Unpair" = "解除配对";
 "Use the selected permission and approval mode for future new sessions" = "将所选权限和审批模式用于今后新建的会话";
-"Work" = "工作";
+"Work" = "Work";
 "Work *" = "Work *";
 "请选择 Work" = "请选择 Work";
 "请选择 Work。" = "请选择 Work。";
@@ -869,7 +869,6 @@
 "归档失败" = "归档失败";
 "Mention a Work or Session" = "提及 Work 或会话";
 "Mention suggestions" = "提及建议";
-"Work" = "目标";
 "Acceptance Criteria" = "验收标准";
 "理想状态" = "理想状态";
 "In Progress" = "进行中";
