@@ -129,19 +129,62 @@ final class WorktreeManagementClient: ObservableObject {
 
     @discardableResult
     func navigate(to target: WorktreeNavigationTarget) async -> Bool {
-        // Refresh the selected detail so a Session Worktree created after this
-        // persistent tab was preloaded is available for ID/path matching.
-        await loadRepositories(forceSelectedReload: true)
-        if let repositoryId = target.repositoryId {
-            guard repositories.contains(where: { $0.id == repositoryId }) else { return false }
-            if selection.repositoryId != repositoryId {
-                await selectRepository(repositoryId)
-            } else if detail == nil {
-                await loadRepository(repositoryId)
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let startedAt = now()
+            let envelope: ManagedRepositoryListEnvelope = try await get("worktree-management/repositories")
+            guard !Task.isCancelled else { return false }
+            repositoryListMilliseconds = milliseconds(since: startedAt)
+            repositories = envelope.repositories
+            errorMessage = nil
+
+            let hintedRepositoryId = target.repositoryId.flatMap { targetId in
+                repositories.first(where: { $0.id == targetId })?.id
             }
+            let currentRepositoryId: String?
+            if let currentId = detail?.repository.id,
+               repositories.contains(where: { $0.id == currentId }) {
+                currentRepositoryId = currentId
+            } else {
+                currentRepositoryId = nil
+            }
+            var candidateIds: [String] = []
+            for id in [hintedRepositoryId, currentRepositoryId].compactMap({ $0 }) + repositories.map(\.id) {
+                if !candidateIds.contains(id) { candidateIds.append(id) }
+            }
+
+            for repositoryId in candidateIds {
+                guard !Task.isCancelled else { return false }
+                if selection.repositoryId != repositoryId {
+                    gitHubPushInspectionTask?.cancel()
+                    selection.repositoryId = repositoryId
+                    selection.worktreeId = nil
+                    detail = nil
+                    projectStatus = nil
+                    job = nil
+                }
+                await loadRepository(repositoryId, force: true, presentsLoadingState: false)
+                guard !Task.isCancelled else { return false }
+                guard detail?.repository.id == repositoryId,
+                      let worktrees = detail?.project.worktrees else { continue }
+                if target.worktreeId == nil, target.worktreePath == nil {
+                    lastAutomaticRefreshAt = now()
+                    return true
+                }
+                guard let match = target.matchingWorktree(in: worktrees) else { continue }
+                selection.worktreeId = match.worktreeId
+                scheduleGitHubPushInspection()
+                lastAutomaticRefreshAt = now()
+                return true
+            }
+            return false
+        } catch {
+            guard !Self.isCancellation(error) else { return false }
+            errorMessage = error.localizedDescription
+            if detail == nil { listLoadState = .failed(error.localizedDescription) }
+            return false
         }
-        guard let worktrees = detail?.project.worktrees else { return false }
-        return selection.select(target: target, worktrees: worktrees)
     }
 
     func synchronizeSelectedWorktree() async {

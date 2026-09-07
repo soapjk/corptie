@@ -764,7 +764,7 @@ final class AppTabRouter: ObservableObject {
     @Published private(set) var pendingTaskId: String?
     @Published private(set) var pendingSessionNavigationSource: SessionNavigationSource?
     @Published var pendingAutomationId: String?
-    @Published private(set) var pendingWorktreeTarget: WorktreeNavigationTarget?
+    @Published private(set) var pendingWorktreeNavigation: WorktreeNavigationRequest?
     @Published var navigationError: String?
 
     // Each resident page owns a distinct observable state. Updating one tab's
@@ -828,17 +828,21 @@ final class AppTabRouter: ObservableObject {
     }
 
     func openWorktrees(repositoryId: String?, worktreeId: String?, worktreePath: String?) {
-        pendingWorktreeTarget = WorktreeNavigationTarget(
-            repositoryId: repositoryId,
-            worktreeId: worktreeId,
-            worktreePath: worktreePath
+        pendingWorktreeNavigation = WorktreeNavigationRequest(
+            target: WorktreeNavigationTarget(
+                repositoryId: repositoryId,
+                worktreeId: worktreeId,
+                worktreePath: worktreePath
+            )
         )
         sidebarState(for: .worktrees).visibility = .all
         selectTab(.worktrees)
     }
 
-    func consumeWorktreeTarget(_ target: WorktreeNavigationTarget) {
-        if pendingWorktreeTarget == target { pendingWorktreeTarget = nil }
+    func consumeWorktreeNavigation(_ requestId: UUID) {
+        if pendingWorktreeNavigation?.id == requestId {
+            pendingWorktreeNavigation = nil
+        }
     }
 
     func failSessionNavigation(_ sessionId: String) {
@@ -905,5 +909,15 @@ struct WorktreeNavigationTarget: Equatable {
     private static func normalizedIdentifier(_ value: String?) -> String? {
         let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized?.isEmpty == false ? normalized : nil
+    }
+}
+
+struct WorktreeNavigationRequest: Equatable {
+    let id: UUID
+    let target: WorktreeNavigationTarget
+
+    init(id: UUID = UUID(), target: WorktreeNavigationTarget) {
+        self.id = id
+        self.target = target
     }
 }
