@@ -39,6 +39,32 @@ struct WorkspaceResource: Identifiable, Codable, Hashable {
     var updatedAt: String?
 
     var id: String { workspaceId }
+    var location: SSHWorkspaceLocation? = nil
+
+    var supportsWorkExecution: Bool { location == nil || location?.executionSupported == true }
+}
+
+struct SSHWorkspaceLocation: Codable, Hashable {
+    let transport: String
+    let connectionId: String
+    let hostIdentity: String
+    let hostLabel: String
+    let hostAlias: String
+    let rootPath: String
+    let identity: String
+    let connectionState: String
+    let cwdIsSandbox: Bool
+    let executionSupported: Bool
+    var lastValidatedAt: String?
+    var executionUnavailableReason: String?
+
+    @MainActor var connectionStatusText: String {
+        switch connectionState {
+        case "connected": return L10n("已连接")
+        case "disconnected": return L10n("已断开，保留远端记录")
+        default: return L10n("连接状态未知")
+        }
+    }
 }
 
 struct WorkspaceRegistrationEnvelope: Decodable, Hashable {
