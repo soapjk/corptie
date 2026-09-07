@@ -1,4 +1,4 @@
-import { AGENT_PROVIDER_CAPABILITIES } from "../agent-provider/contracts.mjs";
+import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "../agent-provider/contracts.mjs";
 import { performance } from "node:perf_hooks";
 import { BackgroundOperationQueue } from "./backgroundOperationQueue.mjs";
 
@@ -112,7 +112,8 @@ export class BackgroundAgentService {
       developerInstructions: developerInstructions || null,
       historyPolicy: "hidden",
       signal: input.signal,
-      executionPolicy: input.executionPolicy ?? "legacy"
+      executionPolicy: input.executionPolicy ?? "legacy",
+      outputSchema: input.outputSchema ?? null
     });
     this.onOperationEvent("BackgroundAgentStarted", {
       operationId,
@@ -185,7 +186,12 @@ export class BackgroundAgentService {
   }
 
   supportsPermissionProfile(providerId, permissionProfile) {
-    if (!this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT)) return false;
+    try {
+      if (!this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT)) return false;
+    } catch (error) {
+      if (error instanceof AgentProviderNotFoundError) return false;
+      throw error;
+    }
     const profiles = this.registry.get(providerId).descriptor.metadata?.backgroundPermissionProfiles;
     const supported = Array.isArray(profiles) && profiles.length > 0 ? profiles : ["read-only"];
     return supported.includes(permissionProfile);

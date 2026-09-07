@@ -11,7 +11,7 @@ test("background no-tools disables built-ins, inherited MCP, settings and plugin
   const manager = new ClaudeAgentManager({ query: (request) => {
     captured = request;
     return {
-      async *[Symbol.asyncIterator]() { yield { type: "result", result: "summary" }; },
+      async *[Symbol.asyncIterator]() { yield { type: "result", subtype: "success", is_error: false, result: "summary" }; },
       close() { closed = true; }
     };
   } });
