@@ -2,12 +2,26 @@ import AppKit
 import SwiftUI
 
 enum WorktreeAutomaticLoadPolicy {
-    static func shouldLoad(isBackendOnline: Bool, isTabSelected: Bool) -> Bool {
-        isBackendOnline && isTabSelected
+    static func shouldLoad(
+        isBackendOnline: Bool,
+        isTabSelected: Bool,
+        hasPendingNavigation: Bool = false
+    ) -> Bool {
+        isBackendOnline && isTabSelected && !hasPendingNavigation
     }
 
     static func shouldLoad(isBackendOnline: Bool, selectedTab: AppTab) -> Bool {
         shouldLoad(isBackendOnline: isBackendOnline, isTabSelected: selectedTab == .worktrees)
+    }
+}
+
+struct WorktreeNavigationTaskTrigger: Equatable {
+    let requestId: UUID?
+    let isBackendOnline: Bool
+    let isTabSelected: Bool
+
+    var canNavigate: Bool {
+        requestId != nil && isBackendOnline && isTabSelected
     }
 }
 
@@ -52,18 +66,20 @@ struct WorktreeManagementView: View {
             }
             guard WorktreeAutomaticLoadPolicy.shouldLoad(
                 isBackendOnline: backendClient.isOnline,
-                isTabSelected: sidebarState.isSelected
+                isTabSelected: sidebarState.isSelected,
+                hasPendingNavigation: router.pendingWorktreeNavigation != nil
             ) else { return }
             await client.activate()
         }
-        .task(id: router.pendingWorktreeTarget) {
-            guard backendClient.isOnline, sidebarState.isSelected else { return }
-            guard let target = router.pendingWorktreeTarget else { return }
-            if await client.navigate(to: target) {
+        .task(id: worktreeNavigationTrigger) {
+            guard worktreeNavigationTrigger.canNavigate,
+                  let request = router.pendingWorktreeNavigation else { return }
+            if await client.navigate(to: request.target) {
+                guard router.pendingWorktreeNavigation?.id == request.id else { return }
                 if let worktreeId = client.selection.worktreeId {
                     worktreeScrollRequest = WorktreeListScrollRequest(worktreeId: worktreeId)
                 }
-                router.consumeWorktreeTarget(target)
+                router.consumeWorktreeNavigation(request.id)
             }
         }
         .task(id: client.job.map { "\($0.id):\($0.shouldPoll)" }) {
@@ -161,6 +177,14 @@ struct WorktreeManagementView: View {
 
     private var worktreeReloadTrigger: String {
         "\(backendClient.isOnline):\(sidebarState.isSelected)"
+    }
+
+    private var worktreeNavigationTrigger: WorktreeNavigationTaskTrigger {
+        WorktreeNavigationTaskTrigger(
+            requestId: router.pendingWorktreeNavigation?.id,
+            isBackendOnline: backendClient.isOnline,
+            isTabSelected: sidebarState.isSelected
+        )
     }
 
     private var repositoryColumn: some View {
