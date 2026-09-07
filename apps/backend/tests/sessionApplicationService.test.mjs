@@ -365,12 +365,12 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
   assert.deepEqual(calls, [
     ["create", "bootstrap"],
     ["bind", "session:new"],
+    ["finalize", "session:new", "authenticated"],
     ["ensure", "logical:new", ["artifacts"], {
       turnExecutionId: null,
       purpose: "session-create-finalization",
       activeTurn: false
-    }],
-    ["finalize", "session:new", "authenticated"]
+    }]
   ]);
   assert.equal(toolHostContexts[0].purpose, "session-bootstrap");
   assert.equal(toolHostContexts[0].sessionId, undefined);
@@ -535,6 +535,58 @@ test("authoritative startup can defer Tool Host finalization until its ready com
 
   assert.equal(created.logicalSessionId, "logical:deferred");
   assert.deepEqual(calls, ["session-bootstrap", "create", "bind"]);
+});
+
+for (const confirmationFails of [false, true]) test(`MCP startup resumes before awaiting observation and gates readiness (failure=${confirmationFails})`, async () => {
+  const calls = [];
+  let observed = false;
+  const provider = new CallbackAgentProvider({
+    id: "mcp-provider", displayName: "MCP Provider", transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH]
+  }, {
+    attachTools: async () => ({}),
+    resumeSession: async () => {
+      calls.push("resume");
+      return { id: "session:mcp" };
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:mcp", logicalSessionId: "logical:mcp", bindingId: "binding:mcp",
+      providerId: "mcp-provider", providerSessionId: "native:mcp",
+      metadata: { session: { agentId: "agent:one", sessionKind: "worker" } }
+    }),
+    resolveRequiredToolDomains: () => ["artifacts"],
+    toolMaterializationPort: {
+      async ensureDomainsApplied(_id, domains) {
+        assert.equal(observed, true, "No applied receipt exists before Provider observation");
+        assert.deepEqual(domains, ["artifacts"]);
+        calls.push("gate");
+      }
+    },
+    toolHostService: {
+      async prepareSession(_id, context) {
+        assert.deepEqual(context.desiredToolDomains, ["artifacts"]);
+        calls.push("prepare");
+        return { providerAttachment: {}, materialization: { status: "applying" } };
+      },
+      async confirmPreparedSession() {
+        assert.deepEqual(calls, ["prepare", "resume"]);
+        calls.push("confirm");
+        if (confirmationFails) throw Object.assign(new Error("No MCP observation"), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+        observed = true;
+      }
+    }
+  });
+  const operation = service.resumeSession("session:mcp", { purpose: "session-create-finalization" });
+  if (confirmationFails) {
+    await assert.rejects(operation, { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+    assert.deepEqual(calls, ["prepare", "resume", "confirm"]);
+  } else {
+    assert.equal((await operation).id, "session:mcp");
+    assert.deepEqual(calls, ["prepare", "resume", "confirm", "gate"]);
+  }
 });
 
 test("deferred startup finalization preserves its Provider lifecycle purpose", async () => {
