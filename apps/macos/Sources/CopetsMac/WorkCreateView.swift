@@ -95,6 +95,7 @@ struct WorkCreateView: View {
                 .disabled(
                     !EntityNamePolicy.isValid(name)
                         || contributorAgentIds.isEmpty
+                        || !workspaceSupportsExecution
                 )
             }
             .padding(16)
@@ -103,7 +104,7 @@ struct WorkCreateView: View {
     }
 
     private func create() -> Bool {
-        guard EntityNamePolicy.isValid(name), !contributorAgentIds.isEmpty else { return false }
+        guard EntityNamePolicy.isValid(name), !contributorAgentIds.isEmpty, workspaceSupportsExecution else { return false }
         let validatedName = name
 
         let tags = tagsText
@@ -146,6 +147,11 @@ struct WorkCreateView: View {
         if panel.runModal() == .OK {
             avatarSourcePath = panel.url?.path
         }
+    }
+
+    private var workspaceSupportsExecution: Bool {
+        guard let workspaceId, let workspace = client.workspaces.first(where: { $0.workspaceId == workspaceId }) else { return true }
+        return workspace.supportsWorkExecution
     }
 
     private func workAvatar(path: String?, size: CGFloat) -> some View {

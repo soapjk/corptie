@@ -39,6 +39,7 @@ import {
 } from "../domain/sessionArchivePolicy.mjs";
 import { queryCallerSource, SqliteQueryObservability } from "./queryObservability.mjs";
 import { migrateTaskDomainV1, migrateTaskGoalRemovalV1 } from "./taskSchemaMigration.mjs";
+import { migrateSshWorkspaces, SshWorkspaceRepository } from "./sshWorkspaceRepository.mjs";
 
 const environmentName = normalizeEnvironment(process.env.CORPTIE_ENV);
 const appSupportName = environmentName === "development" ? "Corptie Development" : "Corptie";
@@ -2974,6 +2975,7 @@ export class CorptieStore {
         ON collaborator_registry(entry_type, availability);
     `);
 
+    migrateSshWorkspaces(this.db);
     this.migrateWorkspaceCreationRequestAuditReferences();
     this.migrateScheduledSessionConditionTasks();
     this.migrateAutomationSchedulerV1();
@@ -5262,12 +5264,27 @@ export class CorptieStore {
   }
 
   listWorkspaces() {
-    return this.selectAll("SELECT * FROM workspaces ORDER BY created_at DESC").map(workspaceFromRow);
+    const rows = this.selectAll("SELECT * FROM workspaces ORDER BY created_at DESC");
+    const locations = rows.some((row) => row.kind === "cloud") ? this.sshWorkspaces.locations() : new Map();
+    return rows.map((row) => this.presentWorkspace(row, locations.get(row.workspace_id) ?? null));
   }
 
   getWorkspace(workspaceId) {
     const row = this.selectOne("SELECT * FROM workspaces WHERE workspace_id = ?", [workspaceId]);
-    return row ? workspaceFromRow(row) : null;
+    return row ? this.presentWorkspace(row) : null;
+  }
+
+  get sshWorkspaces() {
+    return new SshWorkspaceRepository(this);
+  }
+
+  presentWorkspace(row, resolvedLocation) {
+    const workspace = workspaceFromRow(row);
+    if (row.kind !== "cloud") return workspace;
+    const location = resolvedLocation === undefined ? this.sshWorkspaces.location(row.workspace_id) : resolvedLocation;
+    if (!location) return workspace;
+    return { ...workspace, kind: "sshRemote", rootPath: location.rootPath,
+      canonicalRootPath: location.rootPath, location };
   }
 
   getGitRepositoryForWorkspace(workspaceId) {
@@ -5281,6 +5298,12 @@ export class CorptieStore {
   resolveWorkspaceRoot(workspaceId) {
     const workspace = this.getWorkspace(workspaceId);
     if (!workspace) return null;
+    if (workspace.location?.transport === "ssh") {
+      const error = new Error("SSH Workspace paths require the remote Workspace execution service; local path resolution is forbidden.");
+      error.code = "REMOTE_WORKSPACE_LOCAL_PATH_FORBIDDEN";
+      error.statusCode = 409;
+      throw error;
+    }
     return workspace.canonicalRootPath ?? workspace.rootPath ?? null;
   }
 
