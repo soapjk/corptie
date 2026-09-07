@@ -9,6 +9,9 @@ import { ToolHostMaterializationCoordinator } from "../src/application/toolHostM
 import { ToolHostService } from "../src/application/toolHostService.mjs";
 import { ToolMaterializationPort } from "../src/application/toolMaterializationPort.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
+import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
+import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
+import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 
 async function fixture(options = {}) {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-public-tool-port-"));
@@ -164,6 +167,52 @@ test("public Port accepts a contract-compatible definition upgrade on its first 
     assert.equal(stored.status, "applied");
     assert.equal(stored.exposurePlan.definitionFreshness, "current");
     assert.notEqual(stored.providerReceipt.appliedVersion, stored.desiredVersion);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
+test("Claude startup reaches the strict domain gate after an authenticated MCP observation", async () => {
+  const value = await fixture({
+    capability: {
+      bootstrapAttach: false, appendInPlace: false, replaceAtTurnBoundary: false,
+      generatedMcpRefresh: true, restrictedGateway: false, bindingReplacement: false,
+      capabilityRevision: "fake:mcp:1"
+    },
+    apply: async () => ({ status: "awaiting_provider_observation", observationKind: "mcp_tools_list" })
+  });
+  let resumed = false;
+  const provider = createClaudeAgentSdkProvider({
+    async reconnect() {
+      const pending = value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one");
+      assert.equal(pending.status, "refreshing");
+      assert.equal(pending.appliedVersion, null);
+      // The SDK's authenticated tools/list callback is the external boundary.
+      await value.coordinator.observeGeneratedMcpToolsList({
+        logicalSessionId: "logical:one", providerBindingId: "binding:one",
+        desiredVersion: pending.desiredVersion, observationId: "mcp:startup"
+      });
+      resumed = true;
+      return { id: "session:one" };
+    }
+  }, { attachTools: async () => ({ mcpServers: {} }) });
+  const registry = new AgentProviderRegistry([provider]);
+  const service = new SessionApplicationService({
+    registry,
+    toolHostService: new ToolHostService({ registry, catalog: value.coordinator.catalog, coordinator: value.coordinator }),
+    toolMaterializationPort: value.port,
+    resolveRequiredToolDomains: () => ["artifacts"],
+    resolveSessionReference: async () => ({
+      sessionId: "session:one", logicalSessionId: "logical:one", bindingId: "binding:one",
+      providerId: "claude-sdk", providerSessionId: "thread:one",
+      metadata: { session: { agentId: "agent:one", sessionKind: "workChat" } }
+    })
+  });
+  try {
+    await service.resumeSession("session:one", { purpose: "session-create-finalization" });
+    assert.equal(resumed, true);
+    assert.equal(await value.port.assertCanonicalToolApplied("logical:one", "corptie_artifact_get"), true);
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
