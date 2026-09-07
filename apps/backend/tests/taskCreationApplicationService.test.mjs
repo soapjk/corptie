@@ -52,6 +52,37 @@ function fixture() {
   };
 }
 
+test("creation starts with the committed post-event version, not the returned snapshot", async () => {
+  const f = fixture();
+  const create = f.workService.createTask;
+  f.workService.createTask = (input) => {
+    const task = create(input);
+    const snapshot = { ...task };
+    task.resource_version = 2;
+    return snapshot;
+  };
+  await createTaskAndSession({
+    ...f, taskInput: { workId: "work:one", title: "New", mainAgentId: "agent:worker" },
+    sourceSessionId: "session:source", providerId: "provider:test", idempotencyKey: "post-event"
+  });
+  assert.equal(f.startCommands[0].expectedTaskVersion, 2);
+  assert.equal(f.startCommands[0].dispatchInitialTurn, false);
+});
+
+test("a failed startup can resume the same persisted Task without a second Task", async () => {
+  const f = fixture();
+  const input = {
+    ...f, taskInput: { workId: "work:one", title: "New", mainAgentId: "agent:worker" },
+    sourceSessionId: "session:source", providerId: "provider:test", idempotencyKey: "recover"
+  };
+  await assert.rejects(createTaskAndSession({ ...input, startWorkSession: async () => {
+    throw Object.assign(new Error("Conflict"), { code: "TASK_VERSION_CONFLICT" });
+  } }), { code: "TASK_VERSION_CONFLICT" });
+  const recovered = await createTaskAndSession(input);
+  assert.ok(recovered.session);
+  assert.deepEqual(f.counts(), { persistCount: 1, startCount: 1 });
+});
+
 test("canonical Task creation persists one deferred companion Session in one operation", async () => {
   const f = fixture();
   const created = await createTaskAndSession({
