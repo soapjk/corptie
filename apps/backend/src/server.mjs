@@ -164,6 +164,10 @@ import { CollaborationRouter } from "./application/collaborationRouter.mjs";
 import { MemoryExtractor, createMemoryClassifier } from "./application/memoryExtractor.mjs";
 import { AssistantService, createAssistantIntentResolver } from "./application/assistantService.mjs";
 import { handleEntityHttpRequest } from "./application/entityHttpApi.mjs";
+import { handleSshWorkspaceHttpRequest } from "./application/sshWorkspaceHttpApi.mjs";
+import { SshConnectionService } from "./application/sshConnectionService.mjs";
+import { SshWorkspaceProbeService } from "./application/sshWorkspaceProbeService.mjs";
+import { SshWorkspaceTransport } from "./runtime/sshWorkspaceTransport.mjs";
 import { SessionContextReferenceService } from "./application/sessionContextReferenceService.mjs";
 import { resolveMessageMentionContext } from "./application/messageMentionContext.mjs";
 import { handleSessionContextReferenceHttpRequest } from "./application/sessionContextReferenceHttpApi.mjs";
@@ -384,6 +388,16 @@ const reportedUnclassifiedProviderSessionIds = new Set();
 const choiceGenerations = new Map();
 const sessionCollaborationV2Enabled = process.env.CORPTIE_SESSION_COLLABORATION_V2 !== "0";
 const store = new CorptieStore();
+let sshWorkspaceServices;
+function getSshWorkspaceServices() {
+  if (sshWorkspaceServices?.dataRoot !== store.dataRoot) {
+    const connections = new SshConnectionService({ repository: store.sshWorkspaces, referenceDirectory: join(store.dataRoot, "ssh", "references") });
+    const transport = new SshWorkspaceTransport({ resolveConnection: (id) => connections.resolve(id) });
+    sshWorkspaceServices = { dataRoot: store.dataRoot, connections,
+      probes: new SshWorkspaceProbeService({ repository: store.sshWorkspaces, transport }) };
+  }
+  return sshWorkspaceServices;
+}
 let timelineReadPool = null;
 const turnObservability = new CodeTaskObservabilityService({
   store,
@@ -9389,6 +9403,17 @@ function route(request, response) {
   }
 
   if (handleCodeTaskObservabilityHttpRequest({ request, response, url, service: turnObservability })) {
+    return;
+  }
+
+  if (url.pathname.startsWith("/ssh/")) {
+    handleSshWorkspaceHttpRequest({
+      request, response, url,
+      repository: store.sshWorkspaces,
+      ...getSshWorkspaceServices()
+    }).catch(() => {
+      if (!response.headersSent) sendJson(response, 500, { error: "SSH configuration operation failed." });
+    });
     return;
   }
 
