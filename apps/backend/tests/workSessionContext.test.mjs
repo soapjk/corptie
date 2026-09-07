@@ -237,6 +237,18 @@ test("Turn-level merging preserves required Skill MCP routing context", () => {
 
   assert.match(merged.prompt, /<skill-routing>search before failure<\/skill-routing>/);
 });
+test("Worker Turn preserves selected Work and Session identities ahead of optional memory", () => {
+  const mentionContext = { prompt: '<corptie_message_mentions>[{"targetType":"work","targetId":"work:review","displayName":"Review"},{"targetType":"session","targetId":"logical:peer","displayName":"Peer"}]</corptie_message_mentions>' };
+  const merged = mergeWorkerSessionContexts({
+    baseContext: workerContext(), mentionContext,
+    memoryContext: { prompt: "m".repeat(32_768) }
+  });
+  assert.ok(merged.prompt.includes(mentionContext.prompt));
+  assert.equal(merged.contextBudget.memoryContextOmitted, true);
+  assert.throws(() => mergeWorkerSessionContexts({
+    baseContext: workerContext(), mentionContext: { prompt: "x".repeat(64_000) }
+  }), { code: "WORK_SESSION_CONTEXT_INCOMPLETE" });
+});
 
 test("required pinned Artifacts are non-truncatable and incomplete core context fails closed", () => {
   const task = {
