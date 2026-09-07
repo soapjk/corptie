@@ -35,7 +35,13 @@ export async function createTaskAndSession({
       };
     }
   }
-  const task = persisted.task;
+  // Creation emits synchronous domain events. Use their committed projection,
+  // not the pre-event object, while refusing changes to the creation intent.
+  const task = workService.store.getTask(persisted.task?.id) ?? persisted.task;
+  assertTaskCreationReplay(task, normalizedTaskInput);
+  if (Number(task?.revision ?? 1) !== Number(persisted.task?.revision ?? 1)) {
+    throw coded("TASK_VERSION_CONFLICT", "Task definition changed during creation.", 409);
+  }
   const taskId = task?.id;
   const agentId = task?.main_agent_id ?? task?.mainAgentId;
   if (!taskId || !agentId) {

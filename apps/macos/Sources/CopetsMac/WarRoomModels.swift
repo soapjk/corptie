@@ -653,6 +653,7 @@ struct WorkSessionStartRequest: Codable, Equatable {
     let title: String?
     let idempotencyKey: String
     let sourceSessionId: String
+    var dispatchInitialTurn: Bool? = nil
 }
 
 private struct StartupAnyCodingKey: CodingKey {

@@ -464,6 +464,7 @@ struct UnifiedConsoleView: View {
     @State private var taskRestartError: String?
     @State private var pendingTaskDeletionIds = Set<String>()
     @State private var pendingTaskRestartIds = Set<String>()
+    @State private var pendingTaskChatIds = Set<String>()
     @State private var isShowingWorkerArchive = false
     @State private var submittedReadSequencesBySessionID: [String: Int] = [:]
     @AppStorage(
@@ -1682,6 +1683,31 @@ struct UnifiedConsoleView: View {
         }
     }
 
+    private func prepareTaskChat(_ task: CorptieTask) {
+        guard !pendingTaskChatIds.contains(task.id) else { return }
+        guard let agentId = task.mainAgentId,
+              let providerId = backendClient.defaultSessionProviderId else {
+            taskRestartError = L10n("无法准备聊天：请检查 Task 的 Agent 和默认 Provider 配置。")
+            return
+        }
+        pendingTaskChatIds.insert(task.id)
+        Task {
+            defer { pendingTaskChatIds.remove(task.id) }
+            let result = await entityClient.createSession(
+                taskId: task.id, agentId: agentId, providerId: providerId,
+                title: task.title, dispatchInitialTurn: false
+            )
+            guard let session = result.session else {
+                taskRestartError = result.error?.message ?? L10n("无法准备聊天，请重试。")
+                return
+            }
+            backendClient.acceptCreatedSession(session, selectImmediately: false)
+            // A slow recovery must not steal selection after the user moves on.
+            guard selectedTaskId == task.id, selectedCategory == .worker else { return }
+            selectSessionAfterHighlight(session, focusComposer: true)
+        }
+    }
+
     private func openTask(_ task: CorptieTask, session: TaskSession?) {
         selectedWorkId = task.workId
         selectedCategory = .worker
@@ -2472,11 +2498,20 @@ struct UnifiedConsoleView: View {
                     Text(task.title)
                         .font(.system(size: 18, weight: .semibold))
                         .multilineTextAlignment(.center)
-                    Text(L10n("The companion Work Session is being prepared."))
+                    Text(pendingTaskChatIds.contains(task.id)
+                         ? L10n("正在准备聊天…")
+                         : L10n("此 Task 的聊天会话尚未就绪。"))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 360)
+                    if task.currentSessionId == nil && task.archived != true
+                        && task.deletionStatus == nil && task.lifecycleState == "todo" {
+                        Button(L10n("准备聊天"), systemImage: "bubble.left") {
+                            prepareTaskChat(task)
+                        }
+                        .disabled(pendingTaskChatIds.contains(task.id))
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .frame(height: cardHeight)

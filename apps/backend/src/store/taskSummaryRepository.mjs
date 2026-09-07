@@ -137,7 +137,12 @@ export class TaskSummaryRepository {
   cancel(taskID) {
     this.store.runInTransaction(() => {
       this.store.db.run("UPDATE task_summary_jobs SET generation=generation+1, status='cancelled', finished_at=? WHERE task_id=?", [new Date().toISOString(), taskID]);
-      this.publish(taskID, "stale");
+      // A newly persisted Task has no companion Session or summary yet.
+      // Cancelling nonexistent summary work must not mutate its resource version
+      // between Task creation and the authoritative Session startup check.
+      if (this.store.getTask(taskID)?.user_summary_json != null) {
+        this.publish(taskID, "stale");
+      }
     });
   }
 
