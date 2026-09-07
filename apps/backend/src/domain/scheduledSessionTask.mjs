@@ -208,7 +208,7 @@ function normalizeRisk(value, actions, conditionSpec) {
   return {
     level,
     summary: optionalText(value?.summary) ?? (conditionSpec
-      ? "Read-only condition observer; no network or filesystem writes."
+      ? "Read-only condition observer; filesystem writes are disabled and network is limited to bounded SSH file-existence probes."
       : `${actions.length} local action${actions.length === 1 ? "" : "s"}; remote writes are disabled.`),
     remoteWrite: false,
     destructive: false
@@ -247,10 +247,23 @@ function legacyScheduleType(value) {
 }
 
 function rejectUnsafeObserverScript(script) {
-  const forbidden = /(^|[;&|]\s*)(curl|wget|ssh|scp|sftp|nc|netcat|git\s+push|rm|rmdir|mv|cp|chmod|chown|mkdir|touch|truncate|dd|tee|sed\s+-i|osascript|python\d*|ruby|perl|node|bash|zsh|sh)\b/i;
+  if (isReadOnlySshConditionScript(script)) return;
+  const forbidden = /(^|[;&|]\s*)(?:\/[^\s;&|]+\/)?(curl|wget|ssh|scp|sftp|nc|netcat|git\s+push|rm|rmdir|mv|cp|chmod|chown|mkdir|touch|truncate|dd|tee|sed\s+-i|osascript|python\d*|ruby|perl|node|bash|zsh|sh)\b/i;
   if (forbidden.test(script) || /(^|[^<])>{1,2}(?!>)/.test(script)) {
     invalid("condition.script", "contains a write, remote, or destructive command; observers are read-only");
   }
+}
+
+export function isReadOnlySshConditionScript(script) {
+  const value = String(script ?? "").trim();
+  const option = String.raw`(?:-o\s+(?:BatchMode=yes|ConnectTimeout=(?:[1-9]|[1-5][0-9]|60)))`;
+  const destination = String.raw`(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+`;
+  const path = String.raw`\/[A-Za-z0-9._:@%+=,\/-]+`;
+  const remoteTest = String.raw`(?:'test\s+-[ef]\s+${path}'|"test\s+-[ef]\s+${path}")`;
+  const pattern = new RegExp(String.raw`^\/usr\/bin\/ssh(?:\s+${option})+\s+${destination}\s+${remoteTest}$`);
+  return pattern.test(value)
+    && /(?:^|\s)-o\s+BatchMode=yes(?:\s|$)/.test(value)
+    && /(?:^|\s)-o\s+ConnectTimeout=(?:[1-9]|[1-5][0-9]|60)(?:\s|$)/.test(value);
 }
 
 export function nextIntervalRun(scheduledFor, intervalSeconds, now = new Date()) {

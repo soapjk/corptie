@@ -4,6 +4,7 @@ import { statSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import {
+  isReadOnlySshConditionScript,
   nextIntervalRun,
   validateScheduledSessionTaskInput,
   validateScheduledSessionTaskPatch
@@ -923,9 +924,11 @@ export async function executeConditionScript(spec) {
       "(deny default)",
       "(allow process*)",
       "(allow file-read*)",
+      '(allow file-write-data (literal "/dev/null"))',
+      isReadOnlySshConditionScript(spec.script) ? "(allow network-outbound)" : null,
       "(allow sysctl-read)",
       "(allow mach-lookup)"
-    ].join(" ");
+    ].filter(Boolean).join(" ");
     const command = process.platform === "darwin" ? "/usr/bin/sandbox-exec" : "/bin/zsh";
     const args = process.platform === "darwin"
       ? ["-p", sandboxProfile, "/bin/zsh", "-f", "-c", resourceWrappedScript]
