@@ -117,16 +117,17 @@ export function buildWorkSessionContext({
 export function mergeWorkerSessionContexts({
   baseContext, directUserIntentContext = null, memoryContext = null,
   requiredContexts = [],
+  mentionContext = null,
   maxContextBytes = DEFAULT_MAX_TURN_CONTEXT_BYTES
 } = {}) {
   if (!baseContext?.prompt) return null;
-  const required = [baseContext, ...requiredContexts, directUserIntentContext].filter((item) => item?.prompt);
+  const required = [baseContext, ...requiredContexts, directUserIntentContext, mentionContext].filter((item) => item?.prompt);
   const requiredPrompt = required.map((item) => item.prompt).join("\n\n");
   const requiredBytes = encoder.encode(requiredPrompt).byteLength;
   if (requiredBytes > maxContextBytes) {
     throw contextError(
       "WORK_SESSION_CONTEXT_INCOMPLETE",
-      "The complete Task context and direct-user evidence exceed the Provider-safe Turn budget.",
+      "The complete Task context, direct-user evidence and selected mentions exceed the Provider-safe Turn budget.",
       { missingFields: [], maxUtf8Bytes: maxContextBytes, requiredUtf8Bytes: requiredBytes }
     );
   }

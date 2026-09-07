@@ -1405,6 +1405,7 @@ const sessionApplicationService = new SessionApplicationService({
         baseContext,
         directUserIntentContext,
         memoryContext,
+        mentionContext,
         requiredContexts: [skillRoutingContext].filter(Boolean)
       });
     }

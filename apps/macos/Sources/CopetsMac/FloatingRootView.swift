@@ -10388,31 +10388,37 @@ struct MessageComposer: View {
             .map(\.id))
         guard activeMentionIDs.count < 8 else { return [] }
         let needle = mentionQuery.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let works = appState.works.map { work in
+        let availableSessions = appState.sessions.filter { $0.id != sessionId && $0.archived != true }
+        let sessionsByWork = Dictionary(grouping: availableSessions, by: { $0.workId ?? "" })
+        let workIDs = Set(appState.works.map(\.id))
+        func sessionCandidate(_ candidate: TaskSession, workName: String?) -> ComposerMentionCandidate {
             ComposerMentionCandidate(
+                mention: ConversationMention(targetType: .session, targetId: candidate.id, displayName: candidate.title),
+                detail: workName.map { "Session · Work: \($0)" } ?? "Session",
+                symbol: "bubble.left.and.bubble.right"
+            )
+        }
+        var candidates: [ComposerMentionCandidate] = []
+        for work in appState.works {
+            candidates.append(ComposerMentionCandidate(
                 mention: ConversationMention(targetType: .work, targetId: work.id, displayName: work.name),
                 detail: L10n("Work"),
                 symbol: "briefcase"
-            )
+            ))
+            candidates.append(contentsOf: (sessionsByWork[work.id] ?? []).map {
+                sessionCandidate($0, workName: work.name)
+            })
         }
-        let sessions = appState.sessions
-            .filter { $0.id != sessionId && $0.archived != true }
-            .map { candidate in
-                ComposerMentionCandidate(
-                    mention: ConversationMention(targetType: .session, targetId: candidate.id, displayName: candidate.title),
-                    detail: L10n("Session"),
-                    symbol: "bubble.left.and.bubble.right"
-                )
-            }
-        return (works + sessions)
+        candidates.append(contentsOf: availableSessions.filter { !workIDs.contains($0.workId ?? "") }
+            .map { sessionCandidate($0, workName: nil) })
+        return candidates
             .filter { candidate in
                 !activeMentionIDs.contains(candidate.id)
                     && (needle.isEmpty
                         || candidate.mention.displayName.localizedCaseInsensitiveContains(needle)
-                        || candidate.mention.targetId.localizedCaseInsensitiveContains(needle))
+                        || candidate.mention.targetId.localizedCaseInsensitiveContains(needle)
+                        || candidate.detail.localizedCaseInsensitiveContains(needle))
             }
-            .prefix(10)
-            .map { $0 }
     }
 
     private var mentionMenuPresented: Binding<Bool> {
@@ -10957,6 +10963,7 @@ private struct ComposerMentionMenu: View {
                                     Spacer(minLength: 0)
                                 }
                                 .padding(.horizontal, 8)
+                                .padding(.leading, candidate.mention.targetType == .session ? 12 : 0)
                                 .frame(height: 38)
                                 .background(
                                     index == selectedIndex ? CorptiePalette.softBlue.opacity(0.12) : Color.clear,
