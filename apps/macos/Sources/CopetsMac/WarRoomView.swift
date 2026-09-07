@@ -2000,7 +2000,6 @@ struct CorptieTaskDeletionConfirmationView: View {
     ) -> Void
 
     @State private var showForceConfirmation = false
-    @State private var confirmedBranch = ""
     @State private var acknowledgesDataLoss = false
     @State private var deleteWorktree = true
     @State private var artifactDisposition: CorptieTaskArtifactDisposition = .delete
@@ -2071,8 +2070,6 @@ struct CorptieTaskDeletionConfirmationView: View {
             if showForceConfirmation {
                 Text(L10n("强制删除将永久丢弃上述未提交修改、未跟踪文件和未合并提交，且无法从 Corptie 恢复。"))
                     .font(.callout.weight(.semibold)).foregroundStyle(.red)
-                TextField(L10n("输入完整分支名以确认"), text: $confirmedBranch)
-                    .textFieldStyle(.roundedBorder)
                 Toggle(L10n("我理解这些内容可能永久丢失"), isOn: $acknowledgesDataLoss)
             }
 
@@ -2084,9 +2081,9 @@ struct CorptieTaskDeletionConfirmationView: View {
                     Button(L10n("强制删除"), role: .destructive) { showForceConfirmation = true }
                 } else if showForceConfirmation {
                     Button(L10n("确认强制删除"), role: .destructive) {
-                        onDelete(true, confirmedBranch, deleteWorktree, artifactDisposition)
+                        onDelete(true, plan.worktree?.branchName, deleteWorktree, artifactDisposition)
                     }
-                    .disabled(!acknowledgesDataLoss || confirmedBranch != plan.worktree?.branchName)
+                    .disabled(!acknowledgesDataLoss)
                 } else if effectiveBlockers.isEmpty {
                     Button(L10n("确认删除"), role: .destructive) {
                         onDelete(false, nil, deleteWorktree, artifactDisposition)
@@ -2099,7 +2096,6 @@ struct CorptieTaskDeletionConfirmationView: View {
         .onChange(of: deleteWorktree) { _, enabled in
             if !enabled {
                 showForceConfirmation = false
-                confirmedBranch = ""
                 acknowledgesDataLoss = false
             }
         }
