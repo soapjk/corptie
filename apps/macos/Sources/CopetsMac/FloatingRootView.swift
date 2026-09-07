@@ -384,7 +384,7 @@ struct FloatingRootView: View {
                         row: row,
                         selectedSessionID: backendClient.selectedSession?.id,
                         select: { session in
-                            backendClient.select(session: session)
+                            backendClient.select(session: session, focusComposer: true)
                         }
                     )
                 }
@@ -893,7 +893,6 @@ struct DetailSessionRailRow: View {
 
     var body: some View {
         Button {
-            guard !isSelected else { return }
             select(session)
         } label: {
             VStack(spacing: 2) {
@@ -1002,7 +1001,7 @@ struct CompactSessionRow: View {
             if let selectionRequested {
                 selectionRequested(session)
             } else {
-                backendClient.select(session: session)
+                backendClient.select(session: session, focusComposer: true)
             }
         }
         .contextMenu {
@@ -2944,7 +2943,7 @@ struct TaskCardView: View {
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .onTapGesture {
             if Date().timeIntervalSince(lastQuickReplyInteractionAt) > 0.25 {
-                backendClient.select(session: session)
+                backendClient.select(session: session, focusComposer: true)
             }
         }
         .contextMenu {
@@ -3488,7 +3487,9 @@ func nativeTimelineTimestampText(createdAt: String?) -> String {
     )
 }
 
-struct DetailView: View {
+typealias DetailView = SessionConversationContent
+
+struct SessionConversationContent: View {
     @ObservedObject private var backendClient: BackendClient
     @ObservedObject private var selectionController: SessionSelectionController
     @EnvironmentObject private var panelLayoutState: PanelLayoutState
@@ -3531,6 +3532,7 @@ struct DetailView: View {
     let onTimelinePositionChange: (AppKitChatTimelinePosition) -> Void
     let showsHeader: Bool
     let allowsModelSwitch: Bool
+    let presentation: SessionConversationPresentation
 
     init(
         sessionId: String,
@@ -3540,7 +3542,8 @@ struct DetailView: View {
         initialTimelinePosition: AppKitChatTimelinePosition? = nil,
         onTimelinePositionChange: @escaping (AppKitChatTimelinePosition) -> Void = { _ in },
         showsHeader: Bool = true,
-        allowsModelSwitch: Bool = true
+        allowsModelSwitch: Bool = true,
+        presentation: SessionConversationPresentation = .standard
     ) {
         self.sessionId = sessionId
         self.presentationCache = presentationCache
@@ -3553,6 +3556,7 @@ struct DetailView: View {
         self.onTimelinePositionChange = onTimelinePositionChange
         self.showsHeader = showsHeader
         self.allowsModelSwitch = allowsModelSwitch
+        self.presentation = presentation
         let presentationState = presentationCache.state(for: sessionId)
         _presentationState = ObservedObject(wrappedValue: presentationState)
         let timelineState = SessionTimelineRepository.shared.state(for: sessionId)
@@ -3664,7 +3668,7 @@ struct DetailView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: presentation == .workspaceCard ? 6 : 12) {
             if showsHeader {
                 DetailHeaderView()
             }
@@ -3960,7 +3964,9 @@ struct DetailView: View {
         expansionSnapshot: Set<String>? = nil
     ) -> AppKitChatTimelineRow {
         let expandedTurnIds = expansionSnapshot ?? expandedProcessTurnIds
-        return nativeAppKitRow(entry, expandedTurnIds: expandedTurnIds)
+        var row = nativeAppKitRow(entry, expandedTurnIds: expandedTurnIds)
+        row.isWorkspaceCard = presentation == .workspaceCard
+        return row
     }
 
     private func nativeAppKitRow(
@@ -7894,7 +7900,7 @@ private struct ProjectWorktreeManagerView: View {
     private func openSession(_ association: ProjectWorktreeSession) {
         guard let sessionId = association.sessionId,
               let session = backendClient.sessions.first(where: { $0.id == sessionId }) else { return }
-        backendClient.select(session: session)
+        backendClient.select(session: session, focusComposer: true)
         ProjectWorktreeWindowManager.shared.close()
     }
 
@@ -10153,23 +10159,6 @@ struct MessageComposer: View {
                 }
 
                 HStack(spacing: 2) {
-                Button(action: chooseImages) {
-                    Group {
-                        if isImportingImages {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "photo.on.rectangle.angled")
-                                .font(.system(size: 11, weight: .semibold))
-                        }
-                    }
-                    .frame(width: 28, height: 28)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(CorptiePalette.secondaryText)
-                .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
-                .help(L10n("Attach images"))
-                .padding(.leading, 4)
-
                 ComposerInputTextView(
                     controller: editorController,
                     placeholder: "Send a instruction",
@@ -10216,26 +10205,6 @@ struct MessageComposer: View {
                     .disabled(false)
                     .layoutPriority(-1)
 
-                if isRunningTurn {
-                    Button {
-                        guard let session else { return }
-                        backendClient.interrupt(
-                            session: session,
-                            surface: .sessionDetailComposerControl
-                        )
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .frame(width: 24, height: 24)
-                            .background { ComposerGlassActionBackground(tint: .red) }
-                            .frame(width: 28, height: 28)
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.red)
-                    .help(L10n("Stop current run"))
-                }
-
                 Button {
                     sendCurrentDraft()
                 } label: {
@@ -10258,25 +10227,46 @@ struct MessageComposer: View {
                 .disabled(isSendDisabled)
                 .help(L10n("Send instruction"))
 
-                Button {
-                    scheduleSubmission = editorController.submission()
-                    isShowingScheduleSheet = true
+                Menu {
+                    Button(action: chooseImages) {
+                        Label(isImportingImages ? L10n("正在导入图片…") : L10n("Attach images"),
+                              systemImage: "photo.on.rectangle.angled")
+                    }
+                    .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
+
+                    Button {
+                        scheduleSubmission = editorController.submission()
+                        isShowingScheduleSheet = true
+                    } label: {
+                        Label(L10n("创建定时消息"), systemImage: ScheduledSessionAccessibilityID.composerSymbol)
+                    }
+                    .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
+
+                    if isRunningTurn {
+                        Divider()
+                        Button {
+                            guard let session else { return }
+                            backendClient.interrupt(session: session, surface: .sessionDetailComposerControl)
+                        } label: {
+                            Label(L10n("Stop current run"), systemImage: "stop.fill")
+                        }
+                    }
                 } label: {
-                    Image(systemName: ScheduledSessionAccessibilityID.composerSymbol)
+                    Image(systemName: "ellipsis")
                         .font(.system(size: 10, weight: .semibold))
                         .frame(width: 24, height: 24)
-                        .background { ComposerGlassActionBackground(tint: .orange) }
+                        .background { ComposerGlassActionBackground(tint: CorptiePalette.secondaryText) }
                         .frame(width: 28, height: 28)
                         .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.orange)
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .foregroundStyle(CorptiePalette.secondaryText)
                 .frame(width: 28, height: 28)
                 .fixedSize()
-                .layoutPriority(3)
-                .zIndex(3)
-                .help(L10n("创建定时消息"))
-                .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
+                .help(L10n("更多功能"))
+                .accessibilityLabel(L10n("更多功能"))
+                .accessibilityIdentifier("composer.more-actions")
                 .padding(.trailing, 4)
                 }
             }
