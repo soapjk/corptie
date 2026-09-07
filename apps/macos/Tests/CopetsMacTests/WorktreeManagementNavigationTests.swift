@@ -28,13 +28,48 @@ final class WorktreeManagementNavigationTests: XCTestCase {
 
         XCTAssertEqual(router.selectedTab, .worktrees)
         XCTAssertEqual(
-            router.pendingWorktreeTarget,
+            router.pendingWorktreeNavigation?.target,
             WorktreeNavigationTarget(
                 repositoryId: "repository:one",
                 worktreeId: "wt:feature",
                 worktreePath: "/repo-feature"
             )
         )
+    }
+
+    @MainActor
+    func testRepeatedWorktreeNavigationGetsANewRequestAndStaleCompletionCannotConsumeIt() {
+        let router = AppTabRouter()
+        router.openWorktrees(repositoryId: "repository:one", worktreeId: "wt:feature", worktreePath: "/repo-feature")
+        let firstRequestId = try! XCTUnwrap(router.pendingWorktreeNavigation?.id)
+
+        router.openWorktrees(repositoryId: "repository:one", worktreeId: "wt:feature", worktreePath: "/repo-feature")
+        let secondRequestId = try! XCTUnwrap(router.pendingWorktreeNavigation?.id)
+
+        XCTAssertNotEqual(firstRequestId, secondRequestId)
+        router.consumeWorktreeNavigation(firstRequestId)
+        XCTAssertEqual(router.pendingWorktreeNavigation?.id, secondRequestId)
+        router.consumeWorktreeNavigation(secondRequestId)
+        XCTAssertNil(router.pendingWorktreeNavigation)
+    }
+
+    func testWorktreeNavigationRetriesWhenTheTabBecomesReady() {
+        let requestId = UUID()
+        XCTAssertFalse(WorktreeNavigationTaskTrigger(
+            requestId: requestId,
+            isBackendOnline: true,
+            isTabSelected: false
+        ).canNavigate)
+        XCTAssertTrue(WorktreeNavigationTaskTrigger(
+            requestId: requestId,
+            isBackendOnline: true,
+            isTabSelected: true
+        ).canNavigate)
+        XCTAssertFalse(WorktreeAutomaticLoadPolicy.shouldLoad(
+            isBackendOnline: true,
+            isTabSelected: true,
+            hasPendingNavigation: true
+        ))
     }
 
     @MainActor
@@ -169,7 +204,9 @@ final class WorktreeManagementNavigationTests: XCTestCase {
         XCTAssertTrue(contents.contains(".task(id: worktreeReloadTrigger)"))
         XCTAssertTrue(contents.contains("guard backendClient.isOnline else"))
         XCTAssertTrue(contents.contains("WorktreeAutomaticLoadPolicy.shouldLoad("))
-        XCTAssertTrue(contents.contains("guard backendClient.isOnline, sidebarState.isSelected else"))
+        XCTAssertTrue(contents.contains(".task(id: worktreeNavigationTrigger)"))
+        XCTAssertTrue(contents.contains("guard worktreeNavigationTrigger.canNavigate"))
+        XCTAssertTrue(contents.contains("router.consumeWorktreeNavigation(request.id)"))
         XCTAssertTrue(contents.contains("ScrollViewReader { proxy in"))
         XCTAssertTrue(contents.contains(".task(id: worktreeScrollRequest)"))
         XCTAssertTrue(contents.contains("proxy.scrollTo(request.worktreeId, anchor: .center)"))
