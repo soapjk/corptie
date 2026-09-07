@@ -116,10 +116,11 @@ export function buildWorkSessionContext({
 
 export function mergeWorkerSessionContexts({
   baseContext, directUserIntentContext = null, memoryContext = null,
+  requiredContexts = [],
   maxContextBytes = DEFAULT_MAX_TURN_CONTEXT_BYTES
 } = {}) {
   if (!baseContext?.prompt) return null;
-  const required = [baseContext, directUserIntentContext].filter((item) => item?.prompt);
+  const required = [baseContext, ...requiredContexts, directUserIntentContext].filter((item) => item?.prompt);
   const requiredPrompt = required.map((item) => item.prompt).join("\n\n");
   const requiredBytes = encoder.encode(requiredPrompt).byteLength;
   if (requiredBytes > maxContextBytes) {

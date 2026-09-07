@@ -106,6 +106,8 @@ import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamic
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
+import { skillMcpTurnContext } from "./application/skillMcpTurnContext.mjs";
+import { assertSessionToolScope } from "./application/sessionToolScope.mjs";
 import { requiredToolDomainsForSession as resolveSessionToolDomainRequirements } from "./application/sessionToolDomainRequirements.mjs";
 import { ToolMaterializationPort } from "./application/toolMaterializationPort.mjs";
 import {
@@ -1378,10 +1380,19 @@ const sessionApplicationService = new SessionApplicationService({
         };
       }
     }
-    const contexts = [memoryContext, baseContext, mentionContext, directUserIntentContext].filter((item) => item?.prompt);
+    const skillRoutingContext = skillMcpTurnContext(
+      skillRegistryService.mcpAssignmentRevisionForAgent(session?.agentId)
+    );
+    const contexts = [baseContext, skillRoutingContext, mentionContext, directUserIntentContext, memoryContext]
+      .filter((item) => item?.prompt);
     if (contexts.length === 0) return null;
     if (session?.sessionKind === "worker") {
-      return mergeWorkerSessionContexts({ baseContext, directUserIntentContext, memoryContext });
+      return mergeWorkerSessionContexts({
+        baseContext,
+        directUserIntentContext,
+        memoryContext,
+        requiredContexts: [skillRoutingContext].filter(Boolean)
+      });
     }
     if (contexts.length === 1) return contexts[0];
     return {
@@ -9225,15 +9236,7 @@ function route(request, response) {
         const session = sessionId ? store.getSession(sessionId) : null;
         const metadata = sessionToolMetadata(session);
         const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
-        const actorMatches = session && (session.agentId === actorId || boundAgent?.agentId === actorId);
-        const platformScope = store.sessionHasCapability(session?.id, "platform.manage");
-        if (!actorId || !session || !providerBindingId || providerBindingId !== metadata.providerBindingId
-          || (!platformScope && !["workChat", "worker"].includes(session.sessionKind))
-          || !actorMatches) {
-          const error = new Error("Session Tool scope is invalid or no longer active.");
-          error.code = "SESSION_TOOL_SCOPE_REQUIRED";
-          throw error;
-        }
+        assertSessionToolScope({ actorId, providerBindingId, session, metadata, boundAgent });
         const result = await toolHostService.execute({
           actorId, tool: input.tool, arguments: input.arguments ?? {},
           metadata
@@ -9260,12 +9263,7 @@ function route(request, response) {
       const session = sessionId ? store.getSession(sessionId) : null;
       const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
       const metadata = sessionToolMetadata(session);
-      if (!actorId || !session || !providerBindingId || providerBindingId !== metadata.providerBindingId
-        || (session.agentId !== actorId && boundAgent?.agentId !== actorId)) {
-        const error = new Error("Session Tool catalog scope is invalid or no longer active.");
-        error.code = "SESSION_TOOL_SCOPE_REQUIRED";
-        throw error;
-      }
+      assertSessionToolScope({ actorId, providerBindingId, session, metadata, boundAgent });
       if (url.pathname.endsWith("/revision")) {
         sendJson(response, 200, { revision: toolHostService.catalogRevision({ actorId, metadata }) });
         return;
