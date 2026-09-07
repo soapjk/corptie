@@ -8861,6 +8861,13 @@ export class CorptieStore {
     return this.selectAll(
       `SELECT id, title FROM sessions
        WHERE deleted_at IS NULL
+       UNION
+       SELECT COALESCE(legacy_session_id, logical_session_id) AS id, session_name AS title
+       FROM logical_sessions WHERE session_name_key IS NOT NULL
+       UNION
+       SELECT COALESCE(s.legacy_session_id, s.logical_session_id) AS id, a.alias AS title
+       FROM session_name_aliases a
+       JOIN logical_sessions s ON s.logical_session_id=a.logical_session_id
        ORDER BY title ASC, id ASC`
     );
   }
