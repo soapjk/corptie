@@ -123,7 +123,6 @@ export class SessionApplicationService {
       taskId: context.taskId ?? null
     });
     try {
-      await this.#ensureRequiredDomains(finalizationContext);
       const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
       await this.registry.invoke(
         providerId,
@@ -134,6 +133,9 @@ export class SessionApplicationService {
       if (toolHost?.materialization?.status === "applying") {
         await this.toolHostService.confirmPreparedSession(toolHost);
       }
+      // Generated MCP catalogs are observed only after the Provider starts.
+      // Keep the strict domain gate, but run it after attachment and confirmation.
+      await this.#ensureRequiredDomains(finalizationContext);
     } catch (cause) {
       const error = new Error(`Session Tool Host finalization failed: ${cause?.message ?? cause}`);
       error.code = "SESSION_TOOL_MATERIALIZATION_FAILED";
@@ -172,7 +174,6 @@ export class SessionApplicationService {
         ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
         : {})
     });
-    await this.#ensureRequiredDomains(resumeContext);
     const toolHost = this.toolHostService && actorId
       ? await this.toolHostService.prepareSession(reference.providerId, resumeContext)
       : null;
@@ -185,6 +186,7 @@ export class SessionApplicationService {
     if (toolHost?.materialization?.status === "applying") {
       await this.toolHostService.confirmPreparedSession(toolHost);
     }
+    await this.#ensureRequiredDomains(resumeContext);
     return this.decorateLifecycleSession(reference.providerId, session, reference);
   }
 
