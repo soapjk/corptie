@@ -9,6 +9,30 @@ import {
   validateReasoningLevelForModel
 } from "../src/agent-provider/sessionApplicationService.mjs";
 
+test("binding failure removes the new Provider resource and orphan projection", async () => {
+  const calls = [];
+  const cause = Object.assign(new Error("Duplicate title"), { code: "SESSION_TITLE_CONFLICT" });
+  const service = new SessionApplicationService({
+    registry: {
+      get: () => ({}),
+      async invoke(_provider, capability, reference) {
+        if (capability === AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE) return { id: "pty:new", external: { sessionId: "new" } };
+        assert.equal(capability, AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE);
+        assert.equal(reference.providerSessionId, "new");
+        calls.push("provider-delete");
+      }
+    },
+    resolveSessionReference: async () => null,
+    bindCreatedSession: async () => { throw cause; },
+    removeSessionBinding: async ({ reference }) => {
+      assert.equal(reference.sessionId, "pty:new");
+      calls.push("projection-delete");
+    }
+  });
+  await assert.rejects(service.createSession("claude-sdk"), (error) => error === cause);
+  assert.deepEqual(calls, ["provider-delete", "projection-delete"]);
+});
+
 test("archived Tasks cannot send, resume, or restart through any Provider", async () => {
   const service = new SessionApplicationService({
     registry: { invoke() { assert.fail("Archived Tasks must not invoke a Provider"); } },

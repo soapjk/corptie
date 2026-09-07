@@ -95,9 +95,27 @@ export class SessionApplicationService {
       toolHost ? { ...preparedInput, toolHost } : preparedInput,
       context
     );
-    const reference = this.bindCreatedSession && context.deferSessionBinding !== true
-      ? await this.bindCreatedSession({ providerId, session, input: preparedInput, context })
-      : null;
+    let reference = null;
+    try {
+      reference = this.bindCreatedSession && context.deferSessionBinding !== true
+        ? await this.bindCreatedSession({ providerId, session, input: preparedInput, context })
+        : null;
+    } catch (error) {
+      // A failed bind can leave a persisted projection without an executable
+      // route. Remove only this newly created resource, preserving the cause.
+      const failedReference = {
+        sessionId: session.id,
+        providerId,
+        providerSessionId: session.external?.sessionId ?? session.external?.threadId ?? session.id
+      };
+      try {
+        await this.registry.invoke(providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE, failedReference, context);
+      } catch (cleanupError) {
+        this.observeLifecycle({ type: "SessionCreationCleanupFailed", providerId, sessionId: session.id, errorCode: cleanupError?.code ?? "PROVIDER_CLEANUP_FAILED" });
+      }
+      if (this.removeSessionBinding) await this.removeSessionBinding({ reference: failedReference });
+      throw error;
+    }
     if (context.deferToolHostFinalization !== true) {
       await this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference);
     }
