@@ -55,10 +55,26 @@ test("streaming updates do not request model summaries", () => {
   service.close();
 });
 
-test("task without explicit authorization never starts a generation", () => {
-  const service = new TaskSummaryService({ store: { selectOne: () => null }, backgroundAgent: {}, isEnabled: () => true });
-  assert.equal(service.request("task:1"), false);
+test("eligible Task requests an automatic summary without per-Task authorization", () => {
+  const service = new TaskSummaryService({ store: {}, backgroundAgent: {}, isEnabled: () => true });
+  const requested = [];
+  service.repository = { basis: () => ({ sessionID: "session:1" }), request: (id) => requested.push(id) };
+  assert.equal(service.request("task:1"), true);
+  assert.deepEqual(requested, ["task:1"]);
   assert.equal(service.running.size, 0);
-  assert.equal(service.timer, null);
+  assert.notEqual(service.timer, null);
+  service.close();
+});
+
+test("summary routing uses the current default Provider without fallback or a Task override", () => {
+  const calls = [];
+  const backgroundAgent = { defaultProviderId: "default:one", selectProvider: (...args) => {
+    calls.push(args); return args[0];
+  } };
+  const service = new TaskSummaryService({ store: {}, backgroundAgent });
+  assert.equal(service.defaultProvider(), "default:one");
+  backgroundAgent.defaultProviderId = "default:two";
+  assert.equal(service.defaultProvider(), "default:two");
+  assert.deepEqual(calls[1], ["default:two", "read-only", { allowFallback: false, executionPolicy: "no-tools" }]);
   service.close();
 });

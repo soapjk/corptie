@@ -15,14 +15,6 @@ export function migrateTaskSummary(store) {
     started_at TEXT,
     finished_at TEXT
   )`);
-  store.db.run(`CREATE TABLE IF NOT EXISTS task_summary_authorizations (
-    task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
-    provider_id TEXT NOT NULL,
-    model TEXT,
-    consent_version INTEGER NOT NULL,
-    confirmed_at TEXT NOT NULL,
-    revoked_at TEXT
-  )`);
   store.db.run(`CREATE INDEX IF NOT EXISTS task_summary_jobs_pending
     ON task_summary_jobs(status, requested_at, task_id)`);
   store.db.run(`CREATE TABLE IF NOT EXISTS task_summary_versions (
@@ -60,18 +52,13 @@ export class TaskSummaryRepository {
 
   get(taskID) { return this.store.selectOne("SELECT * FROM task_summary_jobs WHERE task_id=?", [taskID]); }
 
-  policy(taskID) {
-    return this.store.selectOne("SELECT * FROM task_summary_authorizations WHERE task_id=? AND revoked_at IS NULL AND consent_version=1", [taskID]);
-  }
-
   *pending() {
     // Keyset pages avoid starving eligible work behind the first 64 busy
     // Tasks. Unlike OFFSET, cancelling an invalid job cannot skip a later row.
     let cursor = null;
     while (true) {
       const page = this.store.selectAll(`SELECT jobs.task_id, jobs.requested_at FROM task_summary_jobs jobs
-        JOIN task_summary_authorizations auth ON auth.task_id=jobs.task_id
-        WHERE jobs.status='dirty' AND auth.revoked_at IS NULL AND auth.consent_version=1
+        WHERE jobs.status='dirty'
         ${cursor ? "AND (jobs.requested_at, jobs.task_id) > (?, ?)" : ""}
         ORDER BY jobs.requested_at, jobs.task_id LIMIT 64`,
       cursor ? [cursor.requested_at, cursor.task_id] : []);

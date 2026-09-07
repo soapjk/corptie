@@ -27,51 +27,24 @@ export class TaskSummaryService {
     if (!this.isEnabled() || this.closed) return;
     // Recover demands, not Provider executions. Never resume an old thread.
     for (const job of this.store.selectAll("SELECT task_id FROM task_summary_jobs WHERE status='running'")) {
-      if (this.repository.policy(job.task_id)) this.repository.request(job.task_id);
+      if (this.repository.basis(job.task_id)) this.repository.request(job.task_id);
       else this.repository.cancel(job.task_id);
+    }
+    for (const task of this.store.selectAll(`SELECT tasks.id FROM tasks
+      LEFT JOIN task_summary_jobs jobs ON jobs.task_id=tasks.id
+      WHERE (jobs.task_id IS NULL OR jobs.status='cancelled') AND tasks.current_session_id IS NOT NULL
+        AND COALESCE(tasks.archived,0)=0 AND tasks.lifecycle_state <> 'done'`)) {
+      if (this.repository.basis(task.id)) this.repository.request(task.id);
     }
     this.schedule();
   }
 
-  policyStatus(taskID) {
-    if (!this.store.getTask(taskID)) throw Object.assign(failure("TASK_NOT_FOUND"), { statusCode: 404 });
-    const policy = this.repository.policy(taskID);
-    const providers = this.backgroundAgent.registry.descriptors().map((provider) => {
-      let supported = false;
-      try {
-        this.backgroundAgent.selectProvider(provider.id, "read-only", { allowFallback: false, executionPolicy: "no-tools" });
-        supported = true;
-      } catch {}
-      return { id: provider.id, name: provider.displayName ?? provider.id, supported };
+  defaultProvider() {
+    const providerId = this.backgroundAgent.defaultProviderId;
+    if (!providerId) throw failure("TASK_SUMMARY_PROVIDER_UNAVAILABLE");
+    return this.backgroundAgent.selectProvider(providerId, "read-only", {
+      allowFallback: false, executionPolicy: "no-tools"
     });
-    return { enabled: Boolean(policy), preview: !this.isEnabled(), consentVersion: 1,
-      providerID: policy?.provider_id ?? null, model: policy?.model ?? null, providers };
-  }
-
-  setPolicy(taskID, input) {
-    if (!this.isEnabled() || this.closed) throw Object.assign(failure("BACKGROUND_EXECUTION_DISABLED"), { statusCode: 403 });
-    this.policyStatus(taskID);
-    if (input.enabled === false) {
-      this.store.db.run("UPDATE task_summary_authorizations SET revoked_at=? WHERE task_id=?", [new Date().toISOString(), taskID]);
-      this.cancel(taskID);
-      return this.policyStatus(taskID);
-    }
-    if (input.enabled !== true || input.confirmed !== true || input.consentVersion !== 1
-        || typeof input.providerID !== "string" || !input.providerID.trim()) {
-      throw Object.assign(failure("TASK_SUMMARY_CONFIRMATION_REQUIRED"), { statusCode: 400 });
-    }
-    if (!this.repository.basis(taskID)) throw Object.assign(failure("TASK_SUMMARY_UNAVAILABLE"), { statusCode: 409 });
-    // Authorization pins the exact service; no alias normalization or fallback.
-    this.backgroundAgent.selectProvider(input.providerID, "read-only", { allowFallback: false, executionPolicy: "no-tools" });
-    if (input.model != null && (typeof input.model !== "string" || input.model.length > 200)) {
-      throw Object.assign(failure("TASK_SUMMARY_INVALID_MODEL"), { statusCode: 400 });
-    }
-    this.store.db.run(`INSERT INTO task_summary_authorizations(task_id,provider_id,model,consent_version,confirmed_at)
-      VALUES(?,?,?,1,?) ON CONFLICT(task_id) DO UPDATE SET provider_id=excluded.provider_id,
-      model=excluded.model,consent_version=1,confirmed_at=excluded.confirmed_at,revoked_at=NULL`,
-    [taskID, input.providerID, input.model?.trim() || null, new Date().toISOString()]);
-    this.request(taskID);
-    return this.policyStatus(taskID);
   }
 
   onSessionEvent(event) {
@@ -92,7 +65,7 @@ export class TaskSummaryService {
   }
 
   request(taskID) {
-    if (this.closed || !this.isEnabled() || !this.repository.policy(taskID)) return false;
+    if (this.closed || !this.isEnabled()) return false;
     const basis = this.repository.basis(taskID);
     if (!basis) { this.cancel(taskID); return false; }
     this.repository.request(taskID);
@@ -167,32 +140,39 @@ export class TaskSummaryService {
   async generate(claim) {
     let directory;
     try {
-      const policy = this.repository.policy(claim.taskID);
-      if (!policy || !this.isEnabled()) throw failure("TASK_SUMMARY_NOT_AUTHORIZED");
+      if (!this.isEnabled() || this.closed) throw failure("BACKGROUND_EXECUTION_DISABLED");
+      const providerId = this.defaultProvider();
       // Capability check precedes both reading the transcript and creating a
       // scratch directory. No silent alternate Provider may receive this data.
-      this.backgroundAgent.selectProvider(policy.provider_id, "read-only", { allowFallback: false, executionPolicy: "no-tools" });
       const context = this.context(claim);
       const root = join(this.store.layout.runtimeDirectory, "task-summary");
       await mkdir(root, { recursive: true, mode: 0o700 });
       directory = await mkdtemp(join(root, "generation-"));
-      if (!this.isEnabled() || this.closed || !samePolicy(policy, this.repository.policy(claim.taskID))) throw failure("TASK_SUMMARY_NOT_AUTHORIZED");
+      if (!this.isEnabled() || this.closed) throw failure("BACKGROUND_EXECUTION_DISABLED");
+      if (providerId !== this.backgroundAgent.defaultProviderId) {
+        this.request(claim.taskID);
+        throw failure("TASK_SUMMARY_PROVIDER_CHANGED");
+      }
       if (this.repository.get(claim.taskID)?.generation !== claim.generation) throw failure("TASK_SUMMARY_SUPERSEDED");
       const result = await this.backgroundAgent.run({ purpose: "task-summary", operationId: claim.operationID,
         requestingSessionId: claim.basis.sessionID,
         cwd: directory, allowedRoots: [], permissionProfile: "read-only", executionPolicy: "no-tools",
-        preferredProviderId: policy.provider_id, preferredModel: policy.model,
+        preferredProviderId: providerId,
         allowProviderFallback: false, preferredReasoning: "low", timeoutMs: 60_000,
         developerInstructions: SUMMARY_INSTRUCTIONS, prompt: context.prompt,
         validateOutput: (text) => validateTaskSummaryOutput(text, context) });
-      if (!this.isEnabled() || this.closed || !samePolicy(policy, this.repository.policy(claim.taskID))) throw failure("TASK_SUMMARY_NOT_AUTHORIZED");
+      if (!this.isEnabled() || this.closed) throw failure("BACKGROUND_EXECUTION_DISABLED");
+      if (providerId !== this.backgroundAgent.defaultProviderId) {
+        this.request(claim.taskID);
+        throw failure("TASK_SUMMARY_PROVIDER_CHANGED");
+      }
       const session = this.store.getSession(claim.basis.sessionID);
       if (session?.attention && result.validatedOutput.intervention === "not_required") {
         result.validatedOutput.intervention = "unknown";
         result.validatedOutput.reason = "会话仍存在待处理状态，请查看会话确认。";
       }
       this.repository.complete(claim, result.validatedOutput, {
-        providerId: result.providerId, model: result.model ?? policy.model,
+        providerId: result.providerId, model: result.model ?? null,
         inputHash: createHash("sha256").update(SUMMARY_INSTRUCTIONS).update("\n").update(context.prompt).digest("hex")
       });
     } catch (error) {
@@ -217,5 +197,4 @@ export class TaskSummaryService {
   }
 }
 
-function samePolicy(left, right) { return Boolean(right) && JSON.stringify(left) === JSON.stringify(right); }
 function failure(code) { return Object.assign(new Error(code), { code }); }

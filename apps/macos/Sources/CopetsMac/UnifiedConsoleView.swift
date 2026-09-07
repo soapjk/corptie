@@ -812,7 +812,6 @@ struct UnifiedConsoleView: View {
                 sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId, query: searchText,
                 attentionCount: $cardAttentionCount, refreshRevision: cardRefreshRevision,
                 openTask: { task, session in
-                    if let session { composerDraftRepository.requestFocus(for: session.id) }
                     openTask(task, session: session)
                     if session == nil, let id = task.currentSessionId {
                         Task { @MainActor in
@@ -1691,7 +1690,7 @@ struct UnifiedConsoleView: View {
         case .selectSession:
             guard let session else { return }
             selectedCategory = .worker
-            selectSessionAfterHighlight(session)
+            selectSessionAfterHighlight(session, focusComposer: true)
         case .showWithoutSession:
             backendClient.closeDetail()
         }
@@ -1983,7 +1982,8 @@ struct UnifiedConsoleView: View {
             selectedWorkId = nil
             selectedTaskId = nil
         }
-        backendClient.select(session: session)
+        backendClient.select(session: session, focusComposer: router.pendingSessionNavigationSource == .userSelection
+            || router.pendingSessionNavigationSource == .createdSession)
         router.consumeSessionNavigation(requestedSessionId)
     }
 
@@ -2034,7 +2034,7 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private func selectSessionAfterHighlight(_ session: TaskSession) {
+    private func selectSessionAfterHighlight(_ session: TaskSession, focusComposer: Bool = false) {
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
         // Commit the lightweight local selection synchronously. The native
@@ -2050,7 +2050,7 @@ struct UnifiedConsoleView: View {
             selectedTaskId = session.taskId
         }
         viewportController.hydrate(session.id)
-        backendClient.select(session: session)
+        backendClient.select(session: session, focusComposer: focusComposer)
     }
 
     private var searchToggleButton: some View {
@@ -2275,7 +2275,7 @@ struct UnifiedConsoleView: View {
         let isSelected = selectionController.selectedSessionID == row.session.id
         return ConsoleSessionRow(
             row: row,
-            selectionRequested: selectSessionAfterHighlight
+            selectionRequested: { selectSessionAfterHighlight($0, focusComposer: true) }
         )
             .listRowBackground(
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
@@ -2430,9 +2430,20 @@ struct UnifiedConsoleView: View {
            navigationMode == .taskCards || selectedCategory != .worker
                 || isArchivedWorkerSession(session) == isShowingWorkerArchive {
             conversationLayout {
-                // One structural Detail/NSScrollView host is rebound in place.
-                // Session-specific model state changes, but native cell reuse
-                // queues and the scroll view itself are never multiplied.
+                // Each surface owns its layout. Session data, draft and saved
+                // viewport remain shared; only the active surface is mounted.
+                if usesCompactCardRail {
+                    WorkspaceMessagePanel(
+                        session: session,
+                        presentationCache: presentationCache,
+                        composerDraftRepository: composerDraftRepository,
+                        initialTimelinePosition: viewportController.position(for: session.id),
+                        onTimelinePositionChange: { position in
+                            viewportController.store(position, for: session.id)
+                        }
+                    )
+                    .frame(height: cardHeight)
+                } else {
                 DetailView(
                     sessionId: session.id,
                     presentationCache: presentationCache,
@@ -2443,9 +2454,7 @@ struct UnifiedConsoleView: View {
                     }
                 )
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
-                .frame(width: usesCompactCardRail ? 280 : nil)
-                .frame(height: cardHeight)
-                .modifier(DetailRailSurfaceModifier(enabled: usesCompactCardRail))
+                }
 
                 // 右侧竖列详情面板（固定常驻，无收起按钮，模仿 Rudder IssueDetail rail）
                 SessionDetailPanel(session: session, railWidth: 280)
@@ -3725,7 +3734,7 @@ private struct SessionCorptieTaskDetailCard: View {
     }
 }
 
-private struct DetailRailSurfaceModifier: ViewModifier {
+struct DetailRailSurfaceModifier: ViewModifier {
     let enabled: Bool
 
     @ViewBuilder
