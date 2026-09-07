@@ -9124,7 +9124,7 @@ function route(request, response) {
       "/automations", "/scheduled-tasks", "/scheduled-session-tasks"].includes(url.pathname)
       || /^\/sessions\/[^/]+\/(stored-snapshot|history|timeline\/window|timeline\/changes|events|usage|context-references|images)$/.test(url.pathname)
       || /^\/works\/[^/]+(?:\/(tasks|artifacts))?$/.test(url.pathname)
-      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts|summary-policy))?$/.test(url.pathname)
+      || /^\/tasks\/[^/]+(?:\/(sessions|snapshots|artifacts))?$/.test(url.pathname)
       || /^\/artifacts\/[^/]+$/.test(url.pathname);
     if (request.method !== "GET" || !readable) {
       sendJson(response, 403, { code: "DEVELOPMENT_PREVIEW_READ_ONLY",
@@ -9159,21 +9159,11 @@ function route(request, response) {
     return;
   }
 
-  const taskSummaryPolicyMatch = url.pathname.match(/^\/tasks\/([^/]+)\/summary-policy$/);
-  if (taskSummaryPolicyMatch && ["GET", "PUT"].includes(request.method)) {
-    const taskID = decodeURIComponent(taskSummaryPolicyMatch[1]);
-    Promise.resolve().then(async () => request.method === "GET"
-      ? taskSummaryService.policyStatus(taskID)
-      : taskSummaryService.setPolicy(taskID, await readJson(request)))
-      .then((result) => sendJson(response, 200, result))
-      .catch((error) => sendJson(response, error.statusCode ?? 409, { code: error.code ?? "TASK_SUMMARY_FAILED", error: error.message }));
-    return;
-  }
   const taskSummaryRefreshMatch = url.pathname.match(/^\/tasks\/([^/]+)\/summary-refresh$/);
   if (taskSummaryRefreshMatch && request.method === "POST") {
     const accepted = taskSummaryService.request(decodeURIComponent(taskSummaryRefreshMatch[1]));
     sendJson(response, accepted ? 202 : 409, { accepted,
-      ...(accepted ? {} : { code: "TASK_SUMMARY_NOT_AUTHORIZED", error: "请先启用此 Task 的自动摘要。" }) });
+      ...(accepted ? {} : { code: "TASK_SUMMARY_UNAVAILABLE", error: "此 Task 当前无法生成摘要。" }) });
     return;
   }
 

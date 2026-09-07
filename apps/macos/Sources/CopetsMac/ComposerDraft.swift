@@ -31,6 +31,22 @@ struct ComposerMentionQuery: Equatable {
 
 @MainActor
 final class ComposerDraftRepository {
+    private static var pendingFocusSessionID: String?
+    private static var focusDeadline = Date.distantPast
+
+    static func requestUserFocus(for sessionID: String) {
+        pendingFocusSessionID = sessionID
+        focusDeadline = Date().addingTimeInterval(5)
+        NotificationCenter.default.post(name: .consoleComposerFocusRequested, object: sessionID)
+    }
+
+    static func hasPendingFocus(for sessionID: String?) -> Bool {
+        sessionID != nil && pendingFocusSessionID == sessionID && Date() < focusDeadline
+    }
+
+    static func consumeFocus(for sessionID: String?) {
+        if pendingFocusSessionID == sessionID { pendingFocusSessionID = nil }
+    }
     private var draftsBySessionId: [String: ComposerDraftBuffer] = [:]
 
     func requestFocus(for sessionId: String) {
@@ -132,17 +148,18 @@ final class ComposerEditorController {
     }
 
     func focusIfRequested() {
-        guard draft.focusRequested else { return }
+        guard draft.focusRequested || ComposerDraftRepository.hasPendingFocus(for: draft.sessionId) else { return }
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.draft.focusRequested,
-                  let textView = self.textView, let window = textView.window else { return }
+            guard let self,
+                  self.draft.focusRequested || ComposerDraftRepository.hasPendingFocus(for: self.draft.sessionId),
+                  let textView = self.textView, let window = textView.window, window.isKeyWindow else { return }
             guard BackendClient.shared.selectedSession?.id == self.draft.sessionId,
-                  BackendClient.shared.selectedSession?.canSendNow == true,
-                  self.draft.focusEventNumber == NSApp.currentEvent?.eventNumber else {
+                  textView.isEditable else {
                 self.draft.focusRequested = false
                 return
             }
             self.draft.focusRequested = false
+            ComposerDraftRepository.consumeFocus(for: self.draft.sessionId)
             window.makeFirstResponder(textView)
         }
     }

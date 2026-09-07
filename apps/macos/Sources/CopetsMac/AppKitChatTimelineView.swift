@@ -565,6 +565,7 @@ final class NativeTimelineLayoutCache {
         let actionCount: Int
         let showsCollaborationSentStatus: Bool
         let widthBucket: Int
+        let isWorkspaceCard: Bool
         let imagePaths: [String]
 
         var estimatedTextLength: Int {
@@ -600,6 +601,7 @@ final class NativeTimelineLayoutCache {
             actionCount: row.actions.count,
             showsCollaborationSentStatus: row.showsCollaborationSentStatus,
             widthBucket: Int((normalizedWidth * 2).rounded()),
+            isWorkspaceCard: row.isWorkspaceCard,
             imagePaths: row.images.map { $0.managedPath }
         )
         if let cached = values[key] {
@@ -692,6 +694,7 @@ final class NativeTimelineLayoutCache {
 }
 
 struct AppKitChatTimelineRow: Identifiable {
+    var isWorkspaceCard = false
     enum ProcessState: Hashable {
         case running
         case completed
@@ -914,6 +917,9 @@ enum ChatBubbleWidthPolicy {
     }
 
     static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat) -> CGFloat {
+        if row.isWorkspaceCard {
+            return WorkspaceMessageCardLayout.cardWidth(in: availableWidth)
+        }
         let fullAvailableWidth = max(minimumWidth, availableWidth - 4)
         if row.nativeStyle == .process {
             guard !row.isExpanded else { return fullAvailableWidth }
