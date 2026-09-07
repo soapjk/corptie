@@ -129,8 +129,21 @@ export class TaskSummaryRepository {
         WHERE task_id=? AND generation=? AND operation_id=? AND status='running'`,
       [errorCode, new Date().toISOString(), claim.taskID, claim.generation, claim.operationID]);
       if (this.store.db.getRowsModified() !== 1) return false;
-      this.publish(claim.taskID, "failed");
+      this.publish(claim.taskID, "failed", undefined, errorCode);
       return true;
+    });
+  }
+
+  block(taskID, errorCode) {
+    return this.store.runInTransaction(() => {
+      const job = this.get(taskID);
+      if (job?.status === "blocked" && job.error_code === errorCode) return;
+      const time = new Date().toISOString();
+      this.store.db.run(`INSERT INTO task_summary_jobs(task_id,generation,status,error_code,requested_at,finished_at)
+        VALUES(?,1,'blocked',?,?,?) ON CONFLICT(task_id) DO UPDATE SET
+        generation=generation+1,status='blocked',error_code=excluded.error_code,finished_at=excluded.finished_at`,
+      [taskID, errorCode, time, time]);
+      this.publish(taskID, "blocked", undefined, errorCode);
     });
   }
 
@@ -146,12 +159,13 @@ export class TaskSummaryRepository {
     });
   }
 
-  publish(taskID, state, content) {
+  publish(taskID, state, content, errorCode = null) {
     const task = this.store.getTask(taskID);
     if (!task) return;
     let previous = null;
     try { previous = JSON.parse(task.user_summary_json ?? "null"); } catch {}
-    const json = JSON.stringify({ state, content: content ?? previous?.content ?? null });
+    const json = JSON.stringify({ state, content: content ?? previous?.content ?? null,
+      ...(errorCode ? { errorCode } : {}) });
     if (task.user_summary_json === json) return;
     // Do not update updated_at: summary maintenance must not reorder Tasks.
     this.store.db.run("UPDATE tasks SET user_summary_json=?, resource_version=resource_version+1 WHERE id=?", [json, taskID]);
