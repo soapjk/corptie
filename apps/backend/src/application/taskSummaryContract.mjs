@@ -2,6 +2,18 @@ import { createHash } from "node:crypto";
 
 export const TASK_SUMMARY_SCHEMA_VERSION = 1;
 export const TASK_SUMMARY_PROMPT_VERSION = "task-summary:1";
+export const TASK_SUMMARY_OUTPUT_SCHEMA = Object.freeze({
+  type: "object", additionalProperties: false,
+  required: ["focus", "progress", "intervention", "reason", "nextAction", "sourceRefs"],
+  properties: {
+    focus: { type: "string", maxLength: 120 },
+    progress: { type: "string", maxLength: 400 },
+    intervention: { type: "string", enum: ["required", "not_required", "unknown"] },
+    reason: { type: "string", maxLength: 240 },
+    nextAction: { type: "string", maxLength: 240 },
+    sourceRefs: { type: "array", minItems: 1, maxItems: 12, items: { type: "string" } }
+  }
+});
 
 export function taskSummaryDefinitionHash(task) {
   return createHash("sha256").update(JSON.stringify([

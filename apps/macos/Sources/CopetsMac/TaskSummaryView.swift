@@ -3,6 +3,7 @@ import SwiftUI
 struct TaskUserSummary: Codable, Hashable {
     let state: String
     let content: Content?
+    var errorCode: String? = nil
 
     struct Content: Codable, Hashable {
         let schemaVersion: Int
@@ -31,7 +32,16 @@ struct TaskUserSummary: Codable, Hashable {
     func stateLabel(for task: CorptieTask) -> String {
         switch state {
         case "generating": return "摘要更新中"
-        case "failed": return "摘要生成失败"
+        case "blocked", "failed":
+            switch errorCode {
+            case "BACKGROUND_AGENT_UNAVAILABLE": return "默认 Provider 暂不支持安全的后台摘要"
+            case "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED": return "当前 Provider 版本尚未通过摘要隔离验证"
+            case "TASK_SUMMARY_PROVIDER_UNAVAILABLE": return "默认 Provider 尚未就绪"
+            case "BACKGROUND_TIMEOUT": return "摘要生成超时"
+            case "TASK_SUMMARY_INVALID_OUTPUT": return "摘要结果格式不符合要求"
+            case "BACKGROUND_CANCELLED": return "摘要更新已取消"
+            default: return "摘要生成失败"
+            }
         case "ready" where isCurrent(for: task): return ""
         default: return content == nil ? "摘要待生成" : "旧摘要 · 待更新"
         }

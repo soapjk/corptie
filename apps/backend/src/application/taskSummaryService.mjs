@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { TaskSummaryRepository } from "../store/taskSummaryRepository.mjs";
-import { validateTaskSummaryOutput } from "./taskSummaryContract.mjs";
+import { TASK_SUMMARY_OUTPUT_SCHEMA, validateTaskSummaryOutput } from "./taskSummaryContract.mjs";
 
 const BOUNDARY_EVENTS = new Set(["SessionUserMessageCreated", "AgentTurnCompleted", "CodexThreadCompleted",
   "turn.completed", "turn.failed", "turn.cancelled", "AgentWorkStarted",
@@ -21,22 +21,46 @@ export class TaskSummaryService {
     this.running = new Map();
     this.timer = null;
     this.closed = false;
+    this.unverifiedRuntimeProvider = null;
   }
 
   start() {
     if (!this.isEnabled() || this.closed) return;
     // Recover demands, not Provider executions. Never resume an old thread.
     for (const job of this.store.selectAll("SELECT task_id FROM task_summary_jobs WHERE status='running'")) {
-      if (this.repository.basis(job.task_id)) this.repository.request(job.task_id);
+      if (this.repository.basis(job.task_id)) this.request(job.task_id);
       else this.repository.cancel(job.task_id);
     }
     for (const task of this.store.selectAll(`SELECT tasks.id FROM tasks
       LEFT JOIN task_summary_jobs jobs ON jobs.task_id=tasks.id
       WHERE (jobs.task_id IS NULL OR jobs.status='cancelled') AND tasks.current_session_id IS NOT NULL
         AND COALESCE(tasks.archived,0)=0 AND tasks.lifecycle_state <> 'done'`)) {
-      if (this.repository.basis(task.id)) this.repository.request(task.id);
+      if (this.repository.basis(task.id)) this.request(task.id);
     }
+    this.onProviderChanged();
     this.schedule();
+  }
+
+  onProviderChanged() {
+    if (!this.isEnabled() || this.closed) return;
+    this.unverifiedRuntimeProvider = null;
+    for (const job of this.store.selectAll(`SELECT task_id FROM task_summary_jobs
+      WHERE status='blocked' OR (status='failed' AND error_code IN
+        ('BACKGROUND_AGENT_UNAVAILABLE','TASK_SUMMARY_PROVIDER_UNAVAILABLE'))`)) {
+      this.request(job.task_id);
+    }
+  }
+
+  availabilityError() {
+    if (this.unverifiedRuntimeProvider === this.backgroundAgent.defaultProviderId
+      && this.unverifiedRuntimeProvider != null) return "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED";
+    try { this.defaultProvider(); return null; }
+    catch (error) {
+      if (["BACKGROUND_AGENT_UNAVAILABLE", "TASK_SUMMARY_PROVIDER_UNAVAILABLE"].includes(error.code)) {
+        return error.code;
+      }
+      throw error;
+    }
   }
 
   defaultProvider() {
@@ -68,6 +92,12 @@ export class TaskSummaryService {
     if (this.closed || !this.isEnabled()) return false;
     const basis = this.repository.basis(taskID);
     if (!basis) { this.cancel(taskID); return false; }
+    const unavailable = this.availabilityError();
+    if (unavailable) {
+      if (this.running.has(taskID)) this.backgroundAgent.cancel(this.running.get(taskID));
+      this.repository.block(taskID, unavailable);
+      return false;
+    }
     this.repository.request(taskID);
     const operationID = this.running.get(taskID);
     if (operationID) this.backgroundAgent.cancel(operationID);
@@ -90,6 +120,8 @@ export class TaskSummaryService {
     for (const job of this.repository.pending()) {
       const basis = this.repository.basis(job.task_id);
       if (!basis) { this.repository.cancel(job.task_id); continue; }
+      const unavailable = this.availabilityError();
+      if (unavailable) { this.repository.block(job.task_id, unavailable); continue; }
       if (BUSY.has(basis.executionStatus)) continue;
       const operationID = `task-summary:${randomUUID()}`;
       const claim = this.repository.claim(job.task_id, operationID);
@@ -139,9 +171,11 @@ export class TaskSummaryService {
 
   async generate(claim) {
     let directory;
+    let selectedProviderId;
     try {
       if (!this.isEnabled() || this.closed) throw failure("BACKGROUND_EXECUTION_DISABLED");
       const providerId = this.defaultProvider();
+      selectedProviderId = providerId;
       // Capability check precedes both reading the transcript and creating a
       // scratch directory. No silent alternate Provider may receive this data.
       const context = this.context(claim);
@@ -160,6 +194,7 @@ export class TaskSummaryService {
         preferredProviderId: providerId,
         allowProviderFallback: false, preferredReasoning: "low", timeoutMs: 60_000,
         developerInstructions: SUMMARY_INSTRUCTIONS, prompt: context.prompt,
+        outputSchema: TASK_SUMMARY_OUTPUT_SCHEMA,
         validateOutput: (text) => validateTaskSummaryOutput(text, context) });
       if (!this.isEnabled() || this.closed) throw failure("BACKGROUND_EXECUTION_DISABLED");
       if (providerId !== this.backgroundAgent.defaultProviderId) {
@@ -176,7 +211,17 @@ export class TaskSummaryService {
         inputHash: createHash("sha256").update(SUMMARY_INSTRUCTIONS).update("\n").update(context.prompt).digest("hex")
       });
     } catch (error) {
-      this.repository.fail(claim, error.code ?? "TASK_SUMMARY_FAILED");
+      if (error.code === "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
+        && selectedProviderId === this.backgroundAgent.defaultProviderId) {
+        // A version mismatch is not a transient generation error. Do not keep
+        // trying on every message; re-evaluate after a Provider change/restart.
+        this.unverifiedRuntimeProvider = this.backgroundAgent.defaultProviderId;
+        if (this.repository.get(claim.taskID)?.generation === claim.generation) {
+          this.repository.block(claim.taskID, error.code);
+        }
+      } else {
+        this.repository.fail(claim, error.code ?? "TASK_SUMMARY_FAILED");
+      }
       throw error;
     } finally {
       // Only the exact directory created by mkdtemp above is removed.

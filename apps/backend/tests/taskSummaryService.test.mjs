@@ -56,13 +56,46 @@ test("streaming updates do not request model summaries", () => {
 });
 
 test("eligible Task requests an automatic summary without per-Task authorization", () => {
-  const service = new TaskSummaryService({ store: {}, backgroundAgent: {}, isEnabled: () => true });
+  const service = new TaskSummaryService({ store: {}, backgroundAgent: {
+    defaultProviderId: "provider:test", selectProvider: (id) => id
+  }, isEnabled: () => true });
   const requested = [];
   service.repository = { basis: () => ({ sessionID: "session:1" }), request: (id) => requested.push(id) };
   assert.equal(service.request("task:1"), true);
   assert.deepEqual(requested, ["task:1"]);
   assert.equal(service.running.size, 0);
   assert.notEqual(service.timer, null);
+  service.close();
+});
+
+test("unavailable summary capability blocks before queueing or reading transcript", () => {
+  const blocked = [];
+  const service = new TaskSummaryService({ store: {}, backgroundAgent: {
+    defaultProviderId: "provider:test",
+    selectProvider: () => { throw Object.assign(new Error("Unavailable"), { code: "BACKGROUND_AGENT_UNAVAILABLE" }); }
+  }, isEnabled: () => true });
+  service.repository = {
+    basis: () => ({ sessionID: "session:1" }),
+    block: (...args) => blocked.push(args),
+    request: () => assert.fail("unsupported operation must not queue")
+  };
+  assert.equal(service.request("task:1"), false);
+  assert.deepEqual(blocked, [["task:1", "BACKGROUND_AGENT_UNAVAILABLE"]]);
+  assert.equal(service.timer, null);
+  assert.equal(service.running.size, 0);
+  service.close();
+});
+
+test("Provider change rechecks blocked demands using the new default", () => {
+  const requested = [];
+  const service = new TaskSummaryService({
+    store: { selectAll: () => [{ task_id: "task:1" }] },
+    backgroundAgent: { defaultProviderId: "provider:new", selectProvider: (id) => id },
+    isEnabled: () => true
+  });
+  service.repository = { basis: () => ({}), request: (id) => requested.push(id) };
+  service.onProviderChanged();
+  assert.deepEqual(requested, ["task:1"]);
   service.close();
 });
 
