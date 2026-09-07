@@ -83,7 +83,7 @@ const scheduledSessionTaskManageTool = Object.freeze({
           type: "object",
           additionalProperties: false,
           properties: {
-            script: { type: "string", minLength: 1, description: "Shell condition script. Exit 0 means satisfied; non-zero means keep polling." },
+            script: { type: "string", minLength: 1, description: "Read-only shell condition. Exit 0 means satisfied; non-zero means keep polling. Remote checks are limited to /usr/bin/ssh with BatchMode=yes, a 1-60 second ConnectTimeout, and one quoted test -f/-e absolute path command." },
             check_interval_seconds: { type: "integer", minimum: 1, maximum: 86400, description: "Seconds between checks; defaults to 5." },
             timeout_seconds: { type: "integer", minimum: 1, maximum: 300, description: "Maximum duration of each check; defaults to 30." },
             working_directory: { type: "string", minLength: 1, description: "Optional absolute working directory." }
