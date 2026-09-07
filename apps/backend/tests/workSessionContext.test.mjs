@@ -237,7 +237,6 @@ test("Turn-level merging preserves required Skill MCP routing context", () => {
 
   assert.match(merged.prompt, /<skill-routing>search before failure<\/skill-routing>/);
 });
-
 test("Worker Turn preserves selected Work and Session identities ahead of optional memory", () => {
   const mentionContext = { prompt: '<corptie_message_mentions>[{"targetType":"work","targetId":"work:review","displayName":"Review"},{"targetType":"session","targetId":"logical:peer","displayName":"Peer"}]</corptie_message_mentions>' };
   const merged = mergeWorkerSessionContexts({
