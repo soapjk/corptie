@@ -770,6 +770,34 @@ test("condition script execution treats nonzero as false and does not inherit ba
   }
 });
 
+test("condition runner permits SSH /dev/null setup without granting writes elsewhere", async () => {
+  const sshConfig = await executeConditionScript({
+    script: "/usr/bin/ssh -n -G localhost",
+    timeoutSeconds: 3,
+    workingDirectory: null
+  });
+  assert.equal(sshConfig.state, "matched");
+  assert.equal(sshConfig.exitCode, 0);
+  assert.match(sshConfig.stdout, /^host localhost$/m);
+  assert.doesNotMatch(sshConfig.stderr, /\/dev\/null|Operation not permitted/i);
+
+  const sshProbe = await executeConditionScript({
+    script: "/usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=1 nobody@127.0.0.1 'test -f /dev/null'",
+    timeoutSeconds: 3,
+    workingDirectory: null
+  });
+  assert.ok(Number.isInteger(sshProbe.exitCode));
+  assert.doesNotMatch(sshProbe.stderr, /\/dev\/null|Operation not permitted/i);
+
+  const deniedWrite = await executeConditionScript({
+    script: "printf blocked > ./condition-runner-must-not-write",
+    timeoutSeconds: 3,
+    workingDirectory: null
+  });
+  assert.equal(deniedWrite.state, "not_matched");
+  assert.match(deniedWrite.stderr, /operation not permitted/i);
+});
+
 test("condition scripts never execute after creator authorization is revoked", async () => {
   let executions = 0;
   const f = await fixture({
@@ -1044,6 +1072,54 @@ test("read-only observer validation rejects remote, destructive, and filesystem-
       assert.throws(() => f.service.create({
         logicalSessionId: "logical:stable", message: "unsafe", scheduleType: "condition",
         condition: { script }
+      }, f.actor), (error) => error.code === "INVALID_SCHEDULED_SESSION_TASK");
+    }
+  } finally {
+    await cleanup(f);
+  }
+});
+
+test("read-only observer accepts only bounded SSH file probes and preserves remote exit observations", async () => {
+  const observations = [
+    { state: "matched", exitCode: 0, stdout: "", stderr: "" },
+    { state: "not_matched", exitCode: 1, stdout: "", stderr: "remote marker missing\n" }
+  ];
+  const f = await fixture({ evaluateCondition: async () => observations.shift() });
+  try {
+    const script = "/usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=8 czx@u1 'test -f /mnt/p44pro/runtime/build.exit-code'";
+    const matched = f.service.create({
+      logicalSessionId: "logical:stable",
+      message: "remote build ready",
+      scheduleType: "condition",
+      condition: { script, checkIntervalSeconds: 1 }
+    }, f.actor);
+    await f.service.tick();
+    const completed = f.store.getScheduledSessionTask(matched.taskId);
+    assert.equal(completed.status, "completed");
+    assert.equal(f.store.listScheduledSessionRuns(matched.taskId)[0].conditionResult.exitCode, 0);
+
+    const pending = f.service.create({
+      logicalSessionId: "logical:stable",
+      message: "remote build pending",
+      scheduleType: "condition",
+      condition: { script: script.replace("test -f", "test -e"), checkIntervalSeconds: 1 }
+    }, f.actor);
+    await f.service.tick();
+    const storedPending = f.store.getScheduledSessionTask(pending.taskId);
+    assert.equal(storedPending.status, "active");
+    assert.equal(storedPending.conditionState.lastObservation.exitCode, 1);
+    assert.equal(storedPending.conditionState.lastObservation.stderr, "remote marker missing\n");
+
+    for (const unsafe of [
+      "/usr/bin/ssh czx@u1 'rm -f /tmp/marker'",
+      "/usr/bin/ssh -o BatchMode=yes -o ProxyCommand=evil czx@u1 'test -f /tmp/marker'",
+      "/usr/bin/ssh -o BatchMode=yes -o ConnectTimeout=8 czx@u1 'test -f /tmp/marker; touch /tmp/pwned'"
+    ]) {
+      assert.throws(() => f.service.create({
+        logicalSessionId: "logical:stable",
+        message: "unsafe ssh",
+        scheduleType: "condition",
+        condition: { script: unsafe }
       }, f.actor), (error) => error.code === "INVALID_SCHEDULED_SESSION_TASK");
     }
   } finally {
