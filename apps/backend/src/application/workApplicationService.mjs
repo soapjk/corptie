@@ -72,6 +72,13 @@ export class WorkApplicationService {
 
   createWork(input = {}) {
     const normalized = validateWorkInput(input, "create");
+    const workspace = normalized.workspaceId ? this.store.getWorkspace(normalized.workspaceId) : null;
+    if (workspace?.location?.transport === "ssh" && workspace.location.executionSupported !== true) {
+      const error = new Error("SSH Workspace execution has not been verified. Its configuration is saved, but a Work cannot execute in it yet.");
+      error.code = "SSH_EXECUTION_NOT_VERIFIED";
+      error.statusCode = 409;
+      throw error;
+    }
     if (normalized.id) {
       const existing = this.store.getWork(normalized.id);
       if (existing) {

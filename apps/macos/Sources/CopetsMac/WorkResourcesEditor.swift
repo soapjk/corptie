@@ -17,6 +17,7 @@ struct WorkResourcesEditor: View {
     @State private var workspaceError: String?
     @State private var pendingWorkspaceRegistration: WorkspaceRegistrationEnvelope?
     @State private var showGitInitializationConfirmation = false
+    @State private var showSSHWorkspaceSetup = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -25,6 +26,9 @@ struct WorkResourcesEditor: View {
         }
         .sheet(isPresented: $showAgentPicker) {
             AgentPickerView(selectedIds: $contributorAgentIds, roleFilter: .independentContributor)
+        }
+        .sheet(isPresented: $showSSHWorkspaceSetup) {
+            SSHWorkspaceSetupView(workspaceId: $workspaceId)
         }
         .alert(L10n("无法添加 Workspace"), isPresented: Binding(
             get: { workspaceError != nil },
@@ -74,10 +78,15 @@ struct WorkResourcesEditor: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if workspaceEditable {
-                    Button(action: chooseWorkspace) {
+                    Menu {
+                        Button(L10n("本机文件夹"), action: chooseWorkspace)
+                        Button(L10n("SSH 远程 Workspace")) { showSSHWorkspaceSetup = true }
+                    } label: {
                         Image(systemName: "plus.circle")
                     }
-                    .buttonStyle(.borderless)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .accessibilityLabel(L10n("选择 Workspace"))
                     .help(L10n("选择 Workspace"))
                 }
             }
@@ -101,6 +110,18 @@ struct WorkResourcesEditor: View {
                             resourceRow(label: label, icon: "folder") { workspaceId = nil }
                         } else {
                             Label(label, systemImage: "folder")
+                        }
+                    }
+                    if let location = selectedWorkspace?.location {
+                        Label("\(location.hostLabel) · \(location.connectionStatusText)", systemImage: "network")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !location.executionSupported {
+                            Text(L10n("远端执行尚未验证，暂不能创建 Work。"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let workspaceId {
+                            SSHWorkspaceInspectionView(workspaceId: workspaceId, location: location)
+                                .id(workspaceId)
                         }
                     }
                 }

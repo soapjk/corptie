@@ -3,7 +3,25 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { ClaudeAgentManager } from "../src/adapters/claudeAgentManager.mjs";
+import { ClaudeAgentManager, normalizeClaudeRuntimeOptions } from "../src/adapters/claudeAgentManager.mjs";
+
+test("Claude carries an explicit empty builtin tool set through to the SDK query", async () => {
+  let received;
+  const manager = new ClaudeAgentManager({ query: (input) => {
+    received = input.options;
+    return { async *[Symbol.asyncIterator]() {} };
+  } });
+  const tools = [];
+  manager.start({ id: "claude-no-builtins", runtimeOptions: { tools, settingSources: [] } });
+  tools.push("Bash");
+  await manager.ensureQueryStarted(manager.get("claude-no-builtins"));
+  assert.deepEqual(received.tools, []);
+  assert.deepEqual(received.settingSources, []);
+  assert.equal(Object.hasOwn(normalizeClaudeRuntimeOptions({}), "tools"), false);
+  for (const value of [null, "", {}, [null], [""]]) {
+    assert.throws(() => normalizeClaudeRuntimeOptions({ tools: value }), TypeError);
+  }
+});
 
 test("Claude preserves a recovery handoff alongside ordinary system instructions", () => {
   const manager = new ClaudeAgentManager();
