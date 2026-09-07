@@ -1050,6 +1050,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
       timeoutMs: input.timeoutMs,
       signal: input.signal,
       executionPolicy: input.executionPolicy,
+      outputSchema: input.outputSchema,
       permissionProfile: input.permissionProfile,
       developerInstructions: input.developerInstructions,
       threadSource: input.purpose
@@ -1077,6 +1078,7 @@ const firstRunSetup = new FirstRunSetupService({
     if (!providerId) return;
     agentProviderRegistry.defaultProviderId = providerId;
     backgroundAgentService.defaultProviderId = providerId;
+    taskSummaryService.onProviderChanged();
     workChatOperationService.defaultProviderId = providerId;
     sessionCollaborationService.defaultProviderId = providerId;
   },
@@ -1907,7 +1909,7 @@ const sessionContextReferenceService = new SessionContextReferenceService({
 const backgroundAgentService = new BackgroundAgentService({
   isEnabled: () => !developmentPreview,
   registry: agentProviderRegistry,
-  defaultProviderId: "codex-app-server",
+  defaultProviderId: agentProviderRegistry.defaultProviderId,
   resolveProviderId: (provider) => resolveSessionProviderId(provider),
   resolveAgentContext: (agentId, { intent } = {}) => agentContextService.buildAgentContext(agentId, { intent }),
   onOperationEvent: (type, payload) => {

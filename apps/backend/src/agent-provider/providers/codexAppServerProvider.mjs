@@ -24,6 +24,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
     runtime: { lifecycle: "managed" },
     metadata: {
       ...(options.metadata ?? {}),
+      backgroundExecutionPolicies: ["no-tools"],
       toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {
         revision: "codex-app-server:session-recovery:1",
