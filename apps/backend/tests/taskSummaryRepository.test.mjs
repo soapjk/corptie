@@ -3,6 +3,35 @@ import test from "node:test";
 import { TaskSummaryRepository } from "../src/store/taskSummaryRepository.mjs";
 import { presentTaskSummary, taskSummaryDefinitionHash, TASK_SUMMARY_PROMPT_VERSION } from "../src/application/taskSummaryContract.mjs";
 
+test("cancelling absent summary work leaves a newly created Task untouched", () => {
+  const writes = [];
+  const task = { id: "task:new", resource_version: 1, user_summary_json: null };
+  const repository = new TaskSummaryRepository({
+    getTask: () => task,
+    runInTransaction: (body) => body(),
+    db: { run: (sql) => writes.push(sql) },
+    scheduleSave: () => assert.fail("No Task change should be saved")
+  });
+  repository.cancel(task.id);
+  assert.equal(task.resource_version, 1);
+  assert.equal(task.user_summary_json, null);
+  assert.equal(writes.some((sql) => /UPDATE tasks\b/.test(sql)), false);
+});
+
+test("cancelling an existing summary still invalidates its content", () => {
+  const writes = [];
+  const content = { focus: "Previous focus" };
+  const repository = new TaskSummaryRepository({
+    getTask: () => ({ user_summary_json: JSON.stringify({ state: "ready", content }) }),
+    runInTransaction: (body) => body(),
+    db: { run: (sql, parameters) => writes.push({ sql, parameters }) },
+    scheduleSave: () => {}
+  });
+  repository.cancel("task:existing");
+  const update = writes.find(({ sql }) => /UPDATE tasks\b/.test(sql));
+  assert.deepEqual(JSON.parse(update.parameters[0]), { state: "stale", content });
+});
+
 test("read projection downgrades stale summaries without modifying persisted content", () => {
   const task = { title: "Task", description: "Definition", revision: 2,
     current_session_id: "session:1", lifecycle_state: "in_progress", execution_status: "idle" };

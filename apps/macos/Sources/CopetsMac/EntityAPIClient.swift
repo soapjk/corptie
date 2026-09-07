@@ -955,7 +955,8 @@ final class EntityAPIClient: ObservableObject {
         agentId: String,
         providerId: String,
         title: String? = nil,
-        sourceSession explicitSourceSession: TaskSession? = nil
+        sourceSession explicitSourceSession: TaskSession? = nil,
+        dispatchInitialTurn: Bool = true
     ) async -> EntitySessionLaunchResult {
         guard let task = await task(id: taskId) else {
             let message = errorMessage ?? L10n("CorptieTask 不存在或无法读取最新版本。")
@@ -976,7 +977,7 @@ final class EntityAPIClient: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(sourceSessionId, forHTTPHeaderField: "X-Corptie-Logical-Session-Id")
-        let idempotencyKey = "task-start:\(taskId):\(agentId):\(providerId)"
+        let idempotencyKey = "task-start:\(taskId):\(agentId):\(providerId)" + (dispatchInitialTurn ? "" : ":prepare-chat")
         let command = WorkSessionStartRequest(
             taskId: taskId,
             assigneeAgentId: agentId,
@@ -984,7 +985,8 @@ final class EntityAPIClient: ObservableObject {
             providerId: providerId,
             title: title,
             idempotencyKey: idempotencyKey,
-            sourceSessionId: sourceSessionId
+            sourceSessionId: sourceSessionId,
+            dispatchInitialTurn: dispatchInitialTurn ? nil : false
         )
         do {
             request.httpBody = try JSONEncoder().encode(command)
