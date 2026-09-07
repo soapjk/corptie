@@ -1054,3 +1054,42 @@
 "Session Not Ready" = "Session Not Ready";
 "This Session cannot accept messages right now." = "This Session cannot accept messages right now.";
 "The Provider Session no longer exists or cannot be reached. Restart this Session to continue." = "The Provider Session no longer exists or cannot be reached. Restart this Session to continue.";
+
+/* SSH Workspace configuration */
+"SSH 远程 Workspace" = "SSH Remote Workspace";
+"SSH 连接" = "SSH Connection";
+"请选择连接" = "Select a connection";
+"远端仓库绝对根目录" = "Absolute remote repository root";
+"目录是命令工作目录，不是安全沙箱。项目和 Worktree 保留在远端，Provider 与认证保留在本机。" = "The directory is a working directory, not a security sandbox. Projects and worktrees stay remote; the provider and authentication stay local.";
+"添加已有 OpenSSH 连接" = "Add an existing OpenSSH connection";
+"保存仅记录本机配置。尚未验证远端仓库、Provider 工具路由和进程管理，暂不能用于 Work 执行。" = "Saving stores local configuration only. The remote repository, tool routing, and process management have not been verified, so this workspace cannot run a Work yet.";
+"SSH 配置请求失败" = "SSH configuration request failed";
+"保存配置" = "Save configuration";
+"未找到具体 Host 别名。请先在本机 OpenSSH 配置中建立连接并核验主机密钥。" = "No concrete Host aliases found. Configure a local OpenSSH connection and verify its host key first.";
+"OpenSSH Host" = "OpenSSH Host";
+"请选择 Host" = "Select a Host";
+"读取本机目标与已信任指纹" = "Read local target and trusted fingerprints";
+"读取会由 OpenSSH 解析本机配置，包括已有 Match 条件；此步骤不会连接远端。" = "OpenSSH resolves the local configuration, including existing Match conditions. This step does not connect to the remote host.";
+"固定主机公钥" = "Pin host public key";
+"连接名称" = "Connection name";
+"保存此指纹的连接" = "Save connection with this fingerprint";
+"本机文件夹" = "Local folder";
+"已断开，保留远端记录" = "Disconnected; remote records retained";
+"连接状态未知" = "Connection state unknown";
+"远端执行尚未验证，暂不能创建 Work。" = "Remote execution is not verified. Work creation is unavailable.";
+
+"验证远端仓库" = "Verify remote repository";
+
+"上次观测的远端 Worktree" = "Last observed remote Worktrees";
+
+"已锁定" = "Locked";
+
+"目录状态待核实" = "Directory state needs verification";
+
+"仅显示前 20 项观测记录" = "Showing the first 20 observed entries";
+
+"连接并读取远端仓库？" = "Connect and inspect the remote repository?";
+
+"连接并验证" = "Connect and verify";
+
+"将发送只读 Python 检查代码，通过 SSH 运行 Git 读取仓库及 Worktree 清单。不会安装文件或绑定工作树；结果保存在本机，远端可能保留连接审计记录。" = "Read-only Python inspection code will be sent over SSH to run Git and read the repository and Worktree inventory. No files will be installed and no Worktree will be bound. Results are saved locally; the host may retain connection audit records.";
