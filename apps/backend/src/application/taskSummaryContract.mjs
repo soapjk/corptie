@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 export const TASK_SUMMARY_SCHEMA_VERSION = 1;
-export const TASK_SUMMARY_PROMPT_VERSION = "task-summary:3-last-reply";
+export const TASK_SUMMARY_PROMPT_VERSION = "task-summary:4-unfinished-stopped";
 export const TASK_SUMMARY_OUTPUT_SCHEMA = Object.freeze({
   type: "object", additionalProperties: false,
   required: ["focus", "progress", "intervention", "reason", "nextAction", "sourceRefs", "suggestedTitle", "messageSummary", "targetMessageId"],
