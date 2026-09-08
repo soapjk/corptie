@@ -3,35 +3,31 @@ import Foundation
 @testable import CorptieMac
 
 struct TaskCollaborationLayoutTests {
-    @Test func singleTaskWorkDoesNotRoundUpAgainAndChildFillsInterior() {
-        for available in [360.0, 600, 900] {
-            let work = WorkCardGrid.resolvedWidth(ideal: 336 + 24, available: available, gap: 12,
-                contentSized: true, fillsAvailable: false)
-            #expect(work == 360)
-            let task = WorkCardGrid.resolvedWidth(ideal: 220, available: work - 24, gap: 8,
-                contentSized: false, fillsAvailable: true)
-            #expect(task + 24 == work)
-        }
-        #expect(WorkCardGrid.resolvedWidth(ideal: 360, available: 200, gap: 12,
-            contentSized: true, fillsAvailable: false) == 200)
-    }
-    @Test func gridUsesIntegralSpansIncludingGutters() {
-        for width in [180.0, 320, 600, 900] {
-            let columns = max(1, Int((width + 12) / 192))
-            let unit = floor((width + 12) / Double(columns))
-            for ideal in [80.0, 200, 360, 800] {
-                let value = WorkCardGrid.width(ideal: ideal, available: width, gap: 12)
-                #expect(value <= width)
-                #expect(value > 0)
-                #expect(abs((value + 12) / unit - round((value + 12) / unit)) < 0.001)
-            }
+    @Test func contentWidthsUseFixedUnits() {
+        for ideal in [80.0, 200, 360, 800] {
+            let width = WorkCardGrid.width(ideal: ideal)
+            #expect(width >= 192 && width <= 792)
+            #expect(width.truncatingRemainder(dividingBy: 24) == 0)
         }
     }
-
+    @Test func resizingOnlyChangesPositionsNotCardSizes() {
+        let items = [WorkPackingEngine.Item(id: "a", size: CGSize(width: WorkCardGrid.width(ideal: 220), height: 160)),
+                     WorkPackingEngine.Item(id: "b", size: CGSize(width: WorkCardGrid.width(ideal: 310), height: 240))]
+        let contentWidth = WorkCardGrid.contentWidth(items: items, gap: 8)
+        var engine = WorkPackingEngine()
+        for viewport in [150.0, 400, 900, 300] {
+            engine.update(items: items, width: max(viewport, items.map(\.size.width).max()!), spacing: 12, selectedWorkID: nil, refreshRevision: 0)
+            #expect(engine.frames.map(\.size) == items.map(\.size))
+            #expect(WorkCardGrid.contentWidth(items: items, gap: 8) == contentWidth)
+        }
+    }
+    @Test func singleItemHasNoArtificialContentWidth() {
+        let items = [WorkPackingEngine.Item(id: "a", size: CGSize(width: 240, height: 120))]
+        #expect(WorkCardGrid.contentWidth(items: items, gap: 8) == 240)
+    }
     @Test func flowEventDecodesOnlyRequiredMetadata() throws {
         let data = Data(#"{"payload":{"message":{"messageId":"m","channelId":"c","senderSessionId":"logical:a","createdAt":"2026-09-08T00:00:00.000Z","body":"ignored"}}}"#.utf8)
         let event = try JSONDecoder().decode(TaskCollaborationFlowEvent.Envelope.self, from: data)
         #expect(event.payload.message.senderSessionId == "logical:a")
-        #expect(event.payload.message.channelId == "c")
     }
 }

@@ -86,6 +86,37 @@ test("successful summary stores exactly the content published to the card", () =
   assert.equal(published[0][1], "ready");
 });
 
+test("automatic title and summary publish together with post-rename basis and audit", () => {
+  const { repository, claim, writes, published } = fixture();
+  const task = { title: "旧标题" };
+  repository.store.getTask = () => task;
+  repository.basis = () => ({ ...claim.basis, hash: task.title === "旧标题" ? "basis:2" : "renamed" });
+  repository.store.db.run = (sql, parameters) => {
+    writes.push({ sql, parameters });
+    if (sql.startsWith("UPDATE tasks SET title=")) task.title = parameters[0];
+  };
+  assert.equal(repository.complete(claim, { suggestedTitle: "新标题" }), true);
+  assert.equal(task.title, "新标题");
+  assert.deepEqual(published[0][2].titleChange, { from: "旧标题", to: "新标题" });
+  assert.equal(published[0][2].basis.hash, "renamed");
+  assert.ok(!writes[0].sql.includes("updated_at"));
+});
+
+test("unchanged suggested title produces no title write", () => {
+  const { repository, claim, writes } = fixture();
+  repository.store.getTask = () => ({ title: "相同标题" });
+  repository.complete(claim, { suggestedTitle: "相同标题" });
+  assert.ok(writes.every(({ sql }) => !sql.startsWith("UPDATE tasks SET title=")));
+});
+
+test("manual edit during generation prevents automatic rename", () => {
+  const { repository, claim, writes } = fixture();
+  repository.basis = () => ({ hash: "user-edited-title" });
+  repository.request = () => {};
+  assert.equal(repository.complete(claim, { suggestedTitle: "过期建议" }), false);
+  assert.deepEqual(writes, []);
+});
+
 test("superseded operation cannot create history or replace the card", () => {
   const { repository, claim, writes, published } = fixture();
   repository.get = () => ({ generation: 3, operation_id: "summary:3", status: "running" });

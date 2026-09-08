@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 export const TASK_SUMMARY_SCHEMA_VERSION = 1;
-export const TASK_SUMMARY_PROMPT_VERSION = "task-summary:1";
+export const TASK_SUMMARY_PROMPT_VERSION = "task-summary:2-auto-title";
 export const TASK_SUMMARY_OUTPUT_SCHEMA = Object.freeze({
   type: "object", additionalProperties: false,
-  required: ["focus", "progress", "intervention", "reason", "nextAction", "sourceRefs"],
+  required: ["focus", "progress", "intervention", "reason", "nextAction", "sourceRefs", "suggestedTitle"],
   properties: {
+    suggestedTitle: { type: "string", maxLength: 64 },
     focus: { type: "string", maxLength: 120 },
     progress: { type: "string", maxLength: 400 },
     intervention: { type: "string", enum: ["required", "not_required", "unknown"] },
@@ -44,7 +46,7 @@ export function validateTaskSummaryOutput(text, { allowedSources, incomplete = f
   if (typeof text !== "string" || text.length > 12_000) throw invalid("Summary output exceeds its budget.");
   let value;
   try { value = JSON.parse(text); } catch { throw invalid("Summary must be a JSON object without Markdown fences."); }
-  const fields = ["focus", "progress", "intervention", "reason", "nextAction", "sourceRefs"];
+  const fields = ["focus", "progress", "intervention", "reason", "nextAction", "sourceRefs", "suggestedTitle"];
   if (!value || typeof value !== "object" || Array.isArray(value)
       || Object.keys(value).some((key) => !fields.includes(key))) throw invalid("Unexpected summary field.");
   for (const [field, limit] of [["focus", 120], ["progress", 400], ["reason", 240], ["nextAction", 240]]) {
@@ -52,6 +54,13 @@ export function validateTaskSummaryOutput(text, { allowedSources, incomplete = f
     value[field] = value[field].trim();
   }
   if (!value.focus || !value.progress) throw invalid("Summary needs a focus and progress statement.");
+  if (value.suggestedTitle !== undefined && value.suggestedTitle !== "") {
+    if (typeof value.suggestedTitle !== "string" || value.suggestedTitle.length > 64) throw invalid("Invalid suggestedTitle.");
+    try { validateEntityName(value.suggestedTitle, "title", "Task"); }
+    catch { throw invalid("Suggested title may only contain English letters, Chinese characters or digits."); }
+  }
+  // Partial context may explain uncertainty, but must not rename a Task.
+  if (incomplete) value.suggestedTitle = "";
   if (!["required", "not_required", "unknown"].includes(value.intervention)) throw invalid("Invalid intervention state.");
   if (!Array.isArray(value.sourceRefs) || value.sourceRefs.length < 1 || value.sourceRefs.length > 12
       || value.sourceRefs.some((source) => typeof source !== "string" || !allowedSources?.has(source))) {
