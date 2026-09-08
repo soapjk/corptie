@@ -16,9 +16,19 @@ let package = Package(
         .package(url: "https://github.com/tevelee/SwiftUI-Flow", exact: "3.1.1")
     ],
     targets: [
+        .target(
+            name: "RectanglePacking",
+            path: "Sources/RectanglePacking",
+            exclude: ["UPSTREAM.md", "vendor/Readme.txt"],
+            publicHeadersPath: "include",
+            // Keep the geometry kernel optimized in Development as well;
+            // Swift UI code and diagnostics retain their normal build mode.
+            cxxSettings: [.unsafeFlags(["-O2"])]
+        ),
         .executableTarget(
             name: "CorptieMac",
             dependencies: [
+                "RectanglePacking",
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Flow", package: "SwiftUI-Flow")
             ],
@@ -43,5 +53,6 @@ let package = Package(
             dependencies: ["CorptieMac"],
             path: "Tests/CopetsMacTests"
         )
-    ]
+    ],
+    cxxLanguageStandard: .cxx11
 )
