@@ -20,8 +20,14 @@ struct ConsoleAttentionPolicyTests {
     @Test func readResultWithoutActionIsHidden() {
         #expect(!ConsoleAttentionPolicy.shouldShow(.init(hasReply: true, summary: .notRequired)))
     }
-    @Test func unknownReadResultIsConservativelyRetained() {
-        #expect(ConsoleAttentionPolicy.shouldShow(.init(hasReply: true)))
+    @Test func unknownReadResultWithoutAttentionIsHidden() {
+        #expect(!ConsoleAttentionPolicy.shouldShow(.init(hasReply: true)))
+    }
+    @Test func unknownSummaryDoesNotHidePositiveAttentionSignals() {
+        #expect(ConsoleAttentionPolicy.shouldShow(.init(selected: true, hasReply: true)))
+        #expect(ConsoleAttentionPolicy.shouldShow(.init(running: true, hasReply: true)))
+        #expect(ConsoleAttentionPolicy.shouldShow(.init(unread: true, hasReply: true)))
+        #expect(ConsoleAttentionPolicy.shouldShow(.init(explicitAttention: true, hasReply: true)))
     }
     @Test func deferredIssueIsHiddenUntilItsReceiptChanges() {
         #expect(!ConsoleAttentionPolicy.shouldShow(.init(unread: true, explicitAttention: true, deferred: true)))
