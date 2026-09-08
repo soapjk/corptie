@@ -476,8 +476,11 @@ struct UnifiedConsoleView: View {
     /// Chat「+」只创建 Assistant Chat；Work Chat 与 Task Session 由系统伴生创建。
     @State private var showNewSessionCreation = false
     @State private var isCreatingWork = false
-    @State private var isCreatingTask = false
-    @State private var taskCreationWorkID: String?
+    private struct TaskCreationTarget: Identifiable {
+        let id = UUID()
+        let workID: String?
+    }
+    @State private var taskCreationTarget: TaskCreationTarget?
     /// 已收起的子分类分组 key 集合（仅内存态，跟随当前页面生命周期）。
     @State private var collapsedGroupKeys: Set<String> = []
     @State private var entityGroupingRevision: UInt64 = 0
@@ -624,8 +627,8 @@ struct UnifiedConsoleView: View {
         .sheet(isPresented: $isCreatingWork) {
             WorkCreateView()
         }
-        .sheet(isPresented: $isCreatingTask) {
-            CorptieTaskCreateView(initialWorkId: taskCreationWorkID) { task in
+        .sheet(item: $taskCreationTarget) { target in
+            CorptieTaskCreateView(initialWorkId: target.workID) { task in
                 selectedWorkId = task.workId
                 selectedTaskId = task.id
             }
@@ -2239,8 +2242,7 @@ struct UnifiedConsoleView: View {
     }
 
     private func presentTaskCreation(for workID: String?) {
-        taskCreationWorkID = workID
-        isCreatingTask = true
+        taskCreationTarget = TaskCreationTarget(workID: workID)
     }
 
     private var taskArchiveToggle: some View {

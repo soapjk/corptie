@@ -628,6 +628,8 @@ final class EntityAPIClient: ObservableObject {
                         mainAgentId: String? = nil,
                         priority: String? = nil,
                         providerId: String,
+                        model: String? = nil,
+                        reasoningLevel: String? = nil,
                         sourceSession explicitSourceSession: TaskSession? = nil) async -> CorptieTask? {
         let backendClient = BackendClient.shared
         guard let sourceSession = CorptieTaskSessionSourcePolicy.resolve(
@@ -659,6 +661,8 @@ final class EntityAPIClient: ObservableObject {
         if let verificationCriteria, !verificationCriteria.isEmpty { body["verificationCriteria"] = verificationCriteria }
         if let mainAgentId, !mainAgentId.isEmpty { body["mainAgentId"] = mainAgentId }
         if let priority { body["priority"] = priority }
+        if let model, !model.isEmpty { body["model"] = model }
+        if let reasoningLevel, !reasoningLevel.isEmpty { body["reasoningLevel"] = reasoningLevel }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         guard let created = await performEntityMutation(request, as: CorptieTaskCreateResponse.self) else {
             return nil

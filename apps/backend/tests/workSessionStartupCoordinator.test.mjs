@@ -64,7 +64,8 @@ async function fixture(overrides = {}) {
     repositoryInventoryVersion: "inventory:one", workspaceResourceVersion: 1,
     createdByStartupOperationId: null, reused: false
   };
-  const createSession = overrides.createSession ?? (async ({ providerId, workspace }) => {
+  const createSession = overrides.createSession ?? (async ({ providerId, workspace, model, reasoningLevel }) => {
+    overrides.observeSettings?.({ model, reasoningLevel });
     calls.create += 1;
     const id = `provider:worker:${calls.create}`;
     store.createSession({
@@ -147,6 +148,22 @@ function input(key = "start:one") {
     providerId: "codex-app-server", idempotencyKey: key, sourceSessionId: "session:source"
   };
 }
+
+test("startup persists model settings and delivers them through the shared Provider port", async () => {
+  const observed = [];
+  const f = await fixture({ observeSettings: value => observed.push(value) });
+  try {
+    const command = { ...input(), model: "model:test", reasoningLevel: "high" };
+    assert.equal((await f.service.start(command)).status, "ready");
+    assert.deepEqual(observed, [{ model: "model:test", reasoningLevel: "high" }]);
+    const stored = f.store.selectOne("SELECT requested_model, requested_reasoning_level FROM work_session_startup_operations");
+    assert.equal(stored.requested_model, "model:test");
+    assert.equal(stored.requested_reasoning_level, "high");
+    await f.service.start(command);
+    assert.equal(observed.length, 1);
+    await assert.rejects(f.service.start({ ...command, model: "different" }));
+  } finally { await cleanup(f); }
+});
 
 function proof(binding, providerResourceId = "resource:one") {
   return {
