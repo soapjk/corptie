@@ -41,7 +41,31 @@ export class TaskSummaryService {
       if (this.repository.basis(task.id)) this.request(task.id);
     }
     this.onProviderChanged();
+    void this.refreshOutdatedSummaries().catch(() => this.logger.warn("[task-summary] refresh scan failed"));
     this.schedule();
+  }
+
+  async refreshOutdatedSummaries() {
+    if (!this.isEnabled() || this.closed) return;
+    // One startup pass, bounded pages; executions still use the serial queue.
+    // Never repeatedly retry failures from pump() or UI rendering.
+    let cursor = "";
+    while (true) {
+      if (!this.isEnabled() || this.closed) return;
+      const page = this.store.selectAll(`SELECT tasks.id FROM tasks
+        JOIN task_summary_jobs jobs ON jobs.task_id=tasks.id
+        WHERE tasks.id > ? AND COALESCE(tasks.archived,0)=0
+          AND tasks.lifecycle_state <> 'done' AND tasks.current_session_id IS NOT NULL
+          AND jobs.status IN ('ready','failed') ORDER BY tasks.id LIMIT 64`, [cursor]);
+      for (const task of page) {
+        const basis = this.repository.basis(task.id);
+        const job = this.repository.get(task.id);
+        if (basis && (job?.basis_hash !== basis.hash || job?.status === "failed")) this.request(task.id);
+      }
+      if (page.length < 64) break;
+      cursor = page.at(-1).id;
+      await new Promise(resolve => setImmediate(resolve));
+    }
   }
 
   onProviderChanged() {
