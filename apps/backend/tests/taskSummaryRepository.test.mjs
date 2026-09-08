@@ -1,7 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TaskSummaryRepository } from "../src/store/taskSummaryRepository.mjs";
+import { TaskSummaryRepository, retainUnresolvedAttention } from "../src/store/taskSummaryRepository.mjs";
 import { presentTaskSummary, taskSummaryDefinitionHash, TASK_SUMMARY_PROMPT_VERSION } from "../src/application/taskSummaryContract.mjs";
+
+test("unknown preserves unresolved attention, explicit resolution and new scope clear it", () => {
+  const basis = { sessionID: "session:one", taskRevision: 1 };
+  const previous = { basis, intervention: "required", reason: "等待测试", nextAction: "查看效果" };
+  const retained = retainUnresolvedAttention(previous, { intervention: "unknown" }, basis);
+  assert.equal(retained.intervention, "required");
+  assert.equal(retained.nextAction, "查看效果");
+  assert.deepEqual(retainUnresolvedAttention({ basis, intervention: "unknown", retainedAttention: retained }, { intervention: "unknown" }, basis), retained);
+  assert.equal(retainUnresolvedAttention(previous, { intervention: "not_required" }, basis), null);
+  assert.equal(retainUnresolvedAttention(previous, { intervention: "unknown" }, { ...basis, taskRevision: 2 }), null);
+  assert.equal(retainUnresolvedAttention(previous, { intervention: "unknown" }, { ...basis, sessionID: "session:other" }), null);
+});
 
 test("cancelling absent summary work leaves a newly created Task untouched", () => {
   const writes = [];

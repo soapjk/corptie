@@ -3,6 +3,30 @@ import test from "node:test";
 import { TaskSummaryService } from "../src/application/taskSummaryService.mjs";
 import { TaskSummaryRepository } from "../src/store/taskSummaryRepository.mjs";
 
+test("startup refresh queues outdated and failed summaries, not current or busy jobs", async () => {
+  const requested = [];
+  const service = new TaskSummaryService({ store: { selectAll: sql => {
+    assert.match(sql, /jobs.status IN \('ready','failed'\)/);
+    assert.match(sql, /LIMIT 64/);
+    return ["old", "current", "failed"].map(id => ({ id }));
+  } }, backgroundAgent: {}, isEnabled: () => true });
+  service.repository = {
+    basis: () => ({ hash: "new" }),
+    get: id => ({ basis_hash: id === "old" ? "old" : "new", status: id === "failed" ? "failed" : "ready" })
+  };
+  service.request = id => requested.push(id);
+  await service.refreshOutdatedSummaries();
+  assert.deepEqual(requested, ["old", "failed"]);
+  service.close();
+});
+
+test("preview never scans or regenerates historical summaries", async () => {
+  const service = new TaskSummaryService({ store: new Proxy({}, { get() { assert.fail("preview read"); } }),
+    backgroundAgent: {}, isEnabled: () => false });
+  await service.refreshOutdatedSummaries();
+  service.close();
+});
+
 test("attention context isolates recent dialogue and binds the latest agent reply", () => {
   const service = new TaskSummaryService({ store: {
     getTask: () => ({ title: "任务", description: "描述", user_summary_json: "OLD_SUMMARY" }),

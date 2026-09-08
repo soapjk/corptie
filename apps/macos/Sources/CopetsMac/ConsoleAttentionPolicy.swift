@@ -21,7 +21,7 @@ enum ConsoleAttentionPolicy {
         // Pin the user's current context, and never hide active execution.
         if input.selected || input.running { return true }
         if input.deferred { return false }
-        if input.unread || input.explicitAttention || input.summary == .required { return true }
+        if input.unread || input.explicitAttention || input.summary == .required || input.summary == .attention { return true }
         // Unknown is not a positive attention signal. Keep its semantic value,
         // but do not retain an already-read Task merely for having past replies.
         return false
@@ -51,6 +51,21 @@ enum ConsoleAttentionPolicy {
         return content
     }
 
+    static func retainedDecision(current: String?, historical: String?, retained: String?, sameScope: Bool) -> Summary {
+        if current == "not_required" { return .notRequired }
+        guard sameScope else { return .unknown }
+        let decision = ["required", "attention"].contains(historical ?? "") ? historical : retained
+        return decision == "required" ? .required : decision == "attention" ? .attention : .unknown
+    }
+
+    @MainActor
+    static func attentionDecision(_ task: CorptieTask, session: TaskSession?) -> Summary {
+        let content = task.userSummary?.content
+        return retainedDecision(current: currentSummary(task, session: session)?.intervention,
+            historical: content?.intervention, retained: content?.retainedAttention?.intervention,
+            sameScope: content?.basis.taskRevision == task.revision && content?.basis.sessionID == session?.id)
+    }
+
     @MainActor
     static func receipt(_ task: CorptieTask, session: TaskSession?) -> Receipt {
         // Keep the last issue identity while its replacement is generating.
@@ -62,8 +77,8 @@ enum ConsoleAttentionPolicy {
             attentionKind: session?.attention?.kind,
             attentionSource: session?.attention?.sourceId,
             attentionReason: session?.attention?.reason,
-            summaryReason: summary?.intervention == "required" ? summary?.reason : nil,
-            summaryAction: summary?.intervention == "required" ? summary?.nextAction : nil)
+            summaryReason: ["required", "attention"].contains(summary?.intervention ?? "") ? summary?.reason : summary?.retainedAttention?.reason,
+            summaryAction: ["required", "attention"].contains(summary?.intervention ?? "") ? summary?.nextAction : summary?.retainedAttention?.nextAction)
     }
 
     @MainActor
@@ -74,7 +89,6 @@ enum ConsoleAttentionPolicy {
 
     @MainActor
     static func input(_ task: CorptieTask, session: TaskSession?, selected: Bool, deferred: Bool) -> Input {
-        let summary = currentSummary(task, session: session)
         return Input(
             excluded: task.archived == true || task.deletionStatus != nil,
             selected: selected,
@@ -84,7 +98,7 @@ enum ConsoleAttentionPolicy {
             hasReply: (session?.lastAgentMessageSequence ?? 0) > 0,
             cancelled: session?.executionTaskStatus == .cancelled,
             scheduled: task.hasPendingScheduledWake == true,
-            summary: summary?.intervention == "required" ? .required : summary?.intervention == "attention" ? .attention : summary?.intervention == "not_required" ? .notRequired : .unknown,
+            summary: attentionDecision(task, session: session),
             deferred: deferred)
     }
 }

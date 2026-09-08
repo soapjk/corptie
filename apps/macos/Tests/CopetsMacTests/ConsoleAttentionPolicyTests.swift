@@ -2,9 +2,16 @@ import Testing
 @testable import CorptieMac
 
 struct ConsoleAttentionPolicyTests {
-    @Test func attentionOnlyRemainsWhileUnread() {
+    @Test func readingDoesNotResolveAttention() {
         #expect(ConsoleAttentionPolicy.shouldShow(.init(unread: true, summary: .attention)))
-        #expect(!ConsoleAttentionPolicy.shouldShow(.init(summary: .attention)))
+        #expect(ConsoleAttentionPolicy.shouldShow(.init(summary: .attention)))
+        #expect(!ConsoleAttentionPolicy.shouldShow(.init(summary: .attention, deferred: true)))
+    }
+    @Test func staleAndUnknownPreserveAttentionButFreshResolutionClearsIt() {
+        #expect(ConsoleAttentionPolicy.retainedDecision(current: nil, historical: "required", retained: nil, sameScope: true) == .required)
+        #expect(ConsoleAttentionPolicy.retainedDecision(current: "unknown", historical: "unknown", retained: "attention", sameScope: true) == .attention)
+        #expect(ConsoleAttentionPolicy.retainedDecision(current: "not_required", historical: "required", retained: nil, sameScope: true) == .notRequired)
+        #expect(ConsoleAttentionPolicy.retainedDecision(current: nil, historical: "required", retained: nil, sameScope: false) == .unknown)
     }
     @Test func idleWithoutWorkIsHidden() {
         #expect(!ConsoleAttentionPolicy.shouldShow(.init()))

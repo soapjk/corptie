@@ -31,6 +31,14 @@ export function migrateTaskSummary(store) {
   )`);
 }
 
+export function retainUnresolvedAttention(previous, next, basis) {
+  if (next.intervention !== "unknown" || previous?.basis?.sessionID !== basis.sessionID
+    || previous?.basis?.taskRevision !== basis.taskRevision) return null;
+  const positive = ["required", "attention"].includes(previous.intervention) ? previous : previous.retainedAttention;
+  if (!["required", "attention"].includes(positive?.intervention)) return null;
+  return { intervention: positive.intervention, reason: positive.reason, nextAction: positive.nextAction };
+}
+
 export class TaskSummaryRepository {
   constructor(store) { this.store = store; }
 
@@ -122,7 +130,10 @@ export class TaskSummaryRepository {
             [summary.suggestedTitle, claim.taskID]);
         }
       }
-      const content = { ...summary, basis: titleChange ? this.basis(claim.taskID) : claim.basis,
+      let previous;
+      try { previous = JSON.parse(this.store.getTask(claim.taskID)?.user_summary_json ?? "null")?.content; } catch {}
+      const retainedAttention = retainUnresolvedAttention(previous, summary, claim.basis);
+      const content = { ...summary, ...(retainedAttention ? { retainedAttention } : {}), basis: titleChange ? this.basis(claim.taskID) : claim.basis,
         ...(titleChange ? { titleChange } : {}),
         generatedAt: time, providerID: metadata.providerId ?? null,
         model: metadata.model ?? null, operationID: claim.operationID,
