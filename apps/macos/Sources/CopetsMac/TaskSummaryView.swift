@@ -19,6 +19,13 @@ struct TaskUserSummary: Codable, Hashable {
         let basis: Basis
         var messageSummary: String? = nil
         var targetMessageId: String? = nil
+        var retainedAttention: RetainedAttention? = nil
+    }
+
+    struct RetainedAttention: Codable, Hashable {
+        let intervention: String
+        let reason: String
+        let nextAction: String
     }
 
     struct Basis: Codable, Hashable {
@@ -82,6 +89,10 @@ struct TaskSummaryView: View {
                         Text(content.reason).font(.system(size: 10)).foregroundStyle(.secondary)
                     } else if summary.isCurrent(for: task) {
                         Text(content.intervention == "attention" ? "只需关注，无需操作" : content.intervention == "not_required" ? "无需操作" : "是否需要介入尚未明确")
+                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                    }
+                    if let retained = content.retainedAttention, content.basis.taskRevision == task.revision {
+                        Text("上次关注尚未确认解决：\(retained.reason)")
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                     Text("更新：\(content.generatedAt)")

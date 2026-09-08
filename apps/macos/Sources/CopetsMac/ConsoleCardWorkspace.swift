@@ -275,6 +275,18 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @ViewBuilder
     private func interventionSummary(_ task: CorptieTask, session: TaskSession?) -> some View {
         let summary = ConsoleAttentionPolicy.currentSummary(task, session: session)
+        let decision = ConsoleAttentionPolicy.attentionDecision(task, session: session)
+        if summary?.intervention != "required", summary?.intervention != "attention",
+           decision == .required || decision == .attention {
+            Text("上次关注事项尚未确认解决 · 判断待更新")
+                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            if let content = task.userSummary?.content {
+                let reason = content.retainedAttention?.reason ?? content.reason
+                if !reason.isEmpty {
+                    Text("上次关注：\(reason)").font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
+                }
+            }
+        }
         if let preview = summary?.messageSummary, !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             Text(preview).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
         } else if ConsoleAttentionPolicy.requiresSystemAction(session) || (session.map(isSessionUnread) ?? false) {
