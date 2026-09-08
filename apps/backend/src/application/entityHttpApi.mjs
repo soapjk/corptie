@@ -786,6 +786,7 @@ export function handleEntityHttpRequest({
         const providerId = input.providerId ?? defaultSessionProviderId;
         const idempotencyKey = input.idempotencyKey ?? input.id;
         const { providerId: _providerId, sourceSessionId: _sourceSessionId,
+          model, reasoningLevel,
           idempotencyKey: _idempotencyKey, ...taskInput } = input;
         const created = await createTaskAndSession({
           workService,
@@ -798,6 +799,8 @@ export function handleEntityHttpRequest({
           },
           sourceSessionId,
           providerId,
+          model,
+          reasoningLevel,
           idempotencyKey
         });
         const presented = presentTaskWithOrigin(workService, created.task);

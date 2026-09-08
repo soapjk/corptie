@@ -2286,6 +2286,8 @@ export class CorptieStore {
         request_fingerprint TEXT NOT NULL,
         source TEXT NOT NULL DEFAULT 'application',
         requested_title TEXT,
+        requested_model TEXT,
+        requested_reasoning_level TEXT,
         initial_prompt TEXT,
         replacing_session_id TEXT,
         state TEXT NOT NULL CHECK (state IN (
@@ -3167,6 +3169,8 @@ export class CorptieStore {
       "INTEGER NOT NULL DEFAULT 1"
     );
     this.ensureColumn("work_session_startup_operations", "error_stage", "TEXT");
+    this.ensureColumn("work_session_startup_operations", "requested_model", "TEXT");
+    this.ensureColumn("work_session_startup_operations", "requested_reasoning_level", "TEXT");
     this.ensureColumn(
       "work_session_startup_operations",
       "initial_turn_state",
