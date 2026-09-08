@@ -22,7 +22,9 @@ enum ConsoleAttentionPolicy {
         if input.selected || input.running { return true }
         if input.deferred { return false }
         if input.unread || input.explicitAttention || input.summary == .required { return true }
-        return input.hasReply && input.summary == .unknown && !input.cancelled && !input.scheduled
+        // Unknown is not a positive attention signal. Keep its semantic value,
+        // but do not retain an already-read Task merely for having past replies.
+        return false
     }
 
     /// Read receipts and timestamps are intentionally absent: reading or

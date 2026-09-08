@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { TASK_SUMMARY_PROMPT_VERSION, taskSummaryDefinitionHash } from "../application/taskSummaryContract.mjs";
+import { validateEntityName } from "../domain/workTaskValidation.mjs";
 
 export function migrateTaskSummary(store) {
   store.ensureColumn("tasks", "user_summary_json", "TEXT");
@@ -107,7 +108,22 @@ export class TaskSummaryRepository {
         return false;
       }
       const time = new Date().toISOString();
-      const content = { ...summary, basis: claim.basis,
+      let titleChange = null;
+      if (summary.suggestedTitle) {
+        validateEntityName(summary.suggestedTitle, "title", "Task");
+        if (summary.suggestedTitle.length > 64) throw new Error("Suggested title exceeds limit.");
+        const task = this.store.getTask(claim.taskID);
+        if (task.title !== summary.suggestedTitle) {
+          titleChange = { from: task.title, to: summary.suggestedTitle };
+          // Local product-owned projection, not a tool granted to the background
+          // Session. Same transaction and stale-result checks as the summary.
+          // Do not touch updated_at or trigger another summary generation.
+          this.store.db.run("UPDATE tasks SET title=?, resource_version=resource_version+1 WHERE id=?",
+            [summary.suggestedTitle, claim.taskID]);
+        }
+      }
+      const content = { ...summary, basis: titleChange ? this.basis(claim.taskID) : claim.basis,
+        ...(titleChange ? { titleChange } : {}),
         generatedAt: time, providerID: metadata.providerId ?? null,
         model: metadata.model ?? null, operationID: claim.operationID,
         generation: claim.generation, inputHash: metadata.inputHash ?? null };
