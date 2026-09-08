@@ -7,6 +7,8 @@ export async function createTaskAndSession({
   creationOrigin,
   sourceSessionId,
   providerId,
+  model,
+  reasoningLevel,
   idempotencyKey,
   persistTask = null
 }) {
@@ -66,6 +68,8 @@ export async function createTaskAndSession({
     assigneeAgentId: agentId,
     expectedTaskVersion: Number(task.resource_version ?? task.resourceVersion ?? 1),
     providerId: provider,
+    ...(model != null ? { model } : {}),
+    ...(reasoningLevel != null ? { reasoningLevel } : {}),
     title: task.title,
     idempotencyKey: `task-create:${operationKey}`,
     sourceSessionId: source,

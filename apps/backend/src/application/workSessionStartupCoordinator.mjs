@@ -288,6 +288,8 @@ export class WorkSessionStartupCoordinator {
       providerId,
       repositoryId,
       title: optionalText(command.title),
+      ...(command.model ? { model: command.model } : {}),
+      ...(command.reasoningLevel ? { reasoningLevel: command.reasoningLevel } : {}),
       // Preserve the pre-policy fingerprint for the default behavior so
       // startup idempotency remains compatible across upgrades.
       ...(dispatchInitialTurn ? {} : { dispatchInitialTurn: false })
@@ -356,12 +358,12 @@ export class WorkSessionStartupCoordinator {
         `INSERT INTO work_session_startup_operations (
           startup_operation_id, work_id, task_id, assignee_agent_id, expected_task_version, provider_id,
           repository_id, source_session_id,
-          idempotency_key, request_fingerprint, source, requested_title, dispatch_initial_turn, state,
+          idempotency_key, request_fingerprint, source, requested_title, requested_model, requested_reasoning_level, dispatch_initial_turn, state,
           lease_owner, lease_expires_at, correlation_id, allocated_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, ?, 'allocated', ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'application', ?, ?, ?, ?, 'allocated', ?, ?, ?, ?, ?)`,
         [operationId, workId, taskId, assigneeAgentId, expectedTaskVersion, providerId,
           repositoryId, sourceSessionId, idempotencyKey, fingerprint,
-          normalized.title, dispatchInitialTurn ? 1 : 0, this.leaseOwner,
+          normalized.title, command.model ?? null, command.reasoningLevel ?? null, dispatchInitialTurn ? 1 : 0, this.leaseOwner,
           expiresAt(now, this.leaseTtlMs), correlationId, now, now]
       );
       result = this.store.selectOne(
@@ -985,6 +987,8 @@ export class WorkSessionStartupCoordinator {
       expectedTaskVersion: operation.expected_task_version,
       providerId: operation.provider_id,
       title: operation.requested_title,
+      ...(operation.requested_model ? { model: operation.requested_model } : {}),
+      ...(operation.requested_reasoning_level ? { reasoningLevel: operation.requested_reasoning_level } : {}),
       idempotencyKey: operation.idempotency_key,
       sourceSessionId: operation.source_session_id,
       dispatchInitialTurn: operation.dispatch_initial_turn !== 0

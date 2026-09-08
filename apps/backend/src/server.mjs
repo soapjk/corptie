@@ -2322,7 +2322,7 @@ const providerWorkspaceBindingService = new ProviderWorkspaceBindingService({
 });
 const providerWorkSessionPort = new ProviderWorkSessionPort({
   workspaceBinding: providerWorkspaceBindingService,
-  createSession: ({ taskId, assigneeAgentId, providerId, title, workspace }) => {
+  createSession: ({ taskId, assigneeAgentId, providerId, title, model, reasoningLevel, workspace }) => {
     const task = workService.getTask(taskId);
     const agent = store.getAgent(assigneeAgentId);
     return createProviderWorkSession({
@@ -2333,6 +2333,8 @@ const providerWorkSessionPort = new ProviderWorkSessionPort({
       workId: task.work_id,
       providerId,
       title,
+      model,
+      reasoningLevel,
       workingDirectory: workspace.canonicalWorktreePath,
       autoUniqueTitle: true,
       deferInitialPromptUntilBound: true,
@@ -5604,6 +5606,8 @@ async function createProviderWorkSession({
   workId,
   providerId: requestedProviderId,
   title,
+  model,
+  reasoningLevel,
   prompt: requestedPrompt,
   workingDirectory = null,
   autoUniqueTitle = false,
@@ -5644,6 +5648,8 @@ async function createProviderWorkSession({
       agent: assigneeName,
       sessionKind: "worker",
       autoUniqueTitle,
+      ...(model ? { model } : {}),
+      ...(reasoningLevel ? { reasoningLevel } : {}),
       ...(sandbox ? { sandbox } : {}),
       ...(approvalPolicy ? { approvalPolicy } : {}),
       ...(Array.isArray(runtimeWorkspaceRoots) ? { runtimeWorkspaceRoots } : {})

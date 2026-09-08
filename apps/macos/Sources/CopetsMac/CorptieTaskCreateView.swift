@@ -62,6 +62,13 @@ struct CorptieTaskCreateView: View {
     @State private var selectedWorkId: String?
     @State private var selectedAgentId: String?
     @State private var selectedProviderId = ""
+    @State private var selectedModelId = ""
+    @State private var selectedReasoningLevel = ""
+    @State private var models: [CodexModel] = []
+    @State private var modelProviderId = ""
+    @State private var modelLoading = false
+    @State private var modelError: String?
+    @State private var defaultReasoningLevel: String?
     @State private var creationId = "task:\(UUID().uuidString.lowercased())"
     @State private var submissionError: String?
 
@@ -72,6 +79,7 @@ struct CorptieTaskCreateView: View {
     }
 
     var body: some View {
+        ScrollView {
         VStack(alignment: .leading, spacing: 16) {
             Text(L10n("新建 Task"))
                 .font(.title3.bold())
@@ -151,11 +159,13 @@ struct CorptieTaskCreateView: View {
                     submit()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canSubmit || selectedProviderId.isEmpty)
+                .disabled(!canSubmit || selectedProviderId.isEmpty || modelLoading)
             }
         }
         .padding(20)
+        }
         .frame(width: 500)
+        .frame(maxHeight: 740)
         .task {
             async let agents: Void = client.refreshAgents()
             async let works: Void = client.refreshWorks()
@@ -167,6 +177,8 @@ struct CorptieTaskCreateView: View {
         .onChange(of: client.works) { _, _ in reconcileWorkSelection() }
         .onChange(of: selectedWorkId) { _, _ in reconcileAgentSelection() }
         .onChange(of: backendClient.agentProviders) { _, _ in reconcileProviderSelection() }
+        .task(id: selectedProviderId) { await loadModelChoices() }
+        .onChange(of: selectedModelId) { _, _ in reconcileReasoning() }
     }
 
     private var availableWorks: [Work] {
@@ -273,7 +285,65 @@ struct CorptieTaskCreateView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+            if modelLoading {
+                ProgressView("加载模型…").controlSize(.small)
+            } else if modelProviderId == selectedProviderId, !models.isEmpty {
+                Picker("模型", selection: $selectedModelId) {
+                    Text("Provider 默认").tag("")
+                    ForEach(models) { Text($0.name).tag($0.id) }
+                }
+                if selectedProvider?.supports("configuration.reasoning.switch") == true,
+                   let levels = models.first(where: { $0.id == selectedModelId })?.reasoningLevels, !levels.isEmpty {
+                    Picker("推理强度", selection: $selectedReasoningLevel) {
+                        Text("模型默认").tag("")
+                        ForEach(levels, id: \.self) { Text($0).tag($0) }
+                    }
+                }
+            }
+            if let modelError {
+                Text(modelError).font(.caption).foregroundStyle(.secondary)
+                Button("重试加载模型") { Task { await loadModelChoices() } }
+            }
         }
+    }
+
+    private var selectedProvider: AgentProviderDescriptor? {
+        creatableProviders.first { $0.id == selectedProviderId }
+    }
+
+    private func loadModelChoices() async {
+        let provider = selectedProviderId
+        models = []; selectedModelId = ""; selectedReasoningLevel = ""
+        defaultReasoningLevel = nil; modelProviderId = ""; modelError = nil
+        modelLoading = false
+        guard selectedProvider?.supports("configuration.model.list") == true else { return }
+        modelLoading = true
+        do {
+            let url = CorptieAppEnvironment.backendBaseURL.appending(path: "providers/\(provider)/models")
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            let result = try JSONDecoder().decode(CodexModelsResponse.self, from: data)
+            guard !Task.isCancelled, selectedProviderId == provider else { return }
+            models = result.models
+            modelProviderId = provider
+            defaultReasoningLevel = result.currentReasoningLevel
+            selectedModelId = NewSessionModelSelection.preferredModelId(savedModelId: nil,
+                providerDefaultModelId: result.currentModel, models: models)
+            reconcileReasoning()
+            modelLoading = false
+        } catch {
+            guard !Task.isCancelled, selectedProviderId == provider else { return }
+            modelLoading = false
+            modelError = "模型列表暂不可用；可重试，或使用 Provider 默认配置创建。"
+        }
+    }
+
+    private func reconcileReasoning() {
+        let model = models.first { $0.id == selectedModelId }
+        guard selectedProvider?.supports("configuration.reasoning.switch") == true,
+              !(model?.reasoningLevels?.isEmpty ?? true) else { selectedReasoningLevel = ""; return }
+        selectedReasoningLevel = NewSessionModelSelection.preferredReasoningLevel(savedReasoningLevel: nil,
+            providerDefaultReasoningLevel: defaultReasoningLevel, model: model)
     }
 
     private func reconcileProviderSelection() {
@@ -285,6 +355,7 @@ struct CorptieTaskCreateView: View {
     }
 
     private func reconcileWorkSelection() {
+        guard !availableWorks.isEmpty else { return }
         if let selectedWorkId,
            availableWorks.contains(where: { $0.id == selectedWorkId }) {
             return
@@ -321,6 +392,8 @@ struct CorptieTaskCreateView: View {
         let requestAcceptanceCriteria = acceptanceCriteria
         let requestPriority = priority
         let providerId = selectedProviderId
+        let model = modelProviderId == providerId ? selectedModelId : ""
+        let reasoningLevel = modelProviderId == providerId ? selectedReasoningLevel : ""
         let started = BackgroundTaskCenter.shared.start(
             id: requestId,
             title: L10nFormat("创建 CorptieTask：%@", requestTitle)
@@ -334,7 +407,9 @@ struct CorptieTaskCreateView: View {
                     acceptanceCriteria: requestAcceptanceCriteria.isEmpty ? nil : requestAcceptanceCriteria,
                     mainAgentId: selectedAgentId,
                     priority: requestPriority,
-                    providerId: providerId
+                    providerId: providerId,
+                    model: model.isEmpty ? nil : model,
+                    reasoningLevel: reasoningLevel.isEmpty ? nil : reasoningLevel
                 )
             }
             guard let task = created else {
