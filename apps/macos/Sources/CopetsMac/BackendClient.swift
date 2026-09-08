@@ -325,6 +325,7 @@ final class BackendClient: ObservableObject {
         set { sessionCommandController.scheduledTaskError = newValue }
     }
     let sessionReplacements = PassthroughSubject<SessionReplacement, Never>()
+    let collaborationFlowEvents = PassthroughSubject<TaskCollaborationFlowEvent, Never>()
     let automationTerminalEvents = PassthroughSubject<AutomationTerminalNotificationEvent, Never>()
 
     private let baseURL = CorptieAppEnvironment.backendBaseURL
@@ -594,6 +595,10 @@ final class BackendClient: ObservableObject {
     }
 
     private func handleGlobalEvent(_ eventName: String, data: String) async {
+        if eventName == "SessionChannelMessageSent", let bytes = data.data(using: .utf8),
+           let envelope = try? JSONDecoder().decode(TaskCollaborationFlowEvent.Envelope.self, from: bytes) {
+            collaborationFlowEvents.send(envelope.payload.message)
+        }
         if eventName == "BackendStoreReady" {
             // Startup requests are allowed to receive a retryable 503 while the
             // migration Worker is running. Reissue their authoritative reads as
