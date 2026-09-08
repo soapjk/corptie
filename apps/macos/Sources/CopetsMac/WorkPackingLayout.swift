@@ -2,6 +2,7 @@ import SwiftUI
 import RectanglePacking
 
 struct WorkPackingID: LayoutValueKey { static let defaultValue = "" }
+struct WorkPackingContentWidth: LayoutValueKey { static let defaultValue = false }
 
 /// Only the outer Work surface uses packing. No timers, preferences, per-card
 /// observers or transcript reads participate in geometry.
@@ -9,6 +10,7 @@ struct WorkPackingLayout: Layout {
     var selectedWorkID: String?
     var refreshRevision: Int
     var spacing: CGFloat = 12
+    var fillsSingleItem = false
 
     struct Cache {
         var measured = false
@@ -39,11 +41,23 @@ struct WorkPackingLayout: Layout {
     }
 
     private func update(width proposed: CGFloat?, subviews: Subviews, cache: inout Cache) {
-        let width = max(1, floor(proposed?.isFinite == true ? proposed! : 360))
+        // An unspecified proposal asks for content size, not a fixed 360-point card.
+        let naturalWidth: CGFloat
+        if proposed?.isFinite == true {
+            naturalWidth = proposed!
+        } else {
+            naturalWidth = min(540, subviews.reduce(CGFloat(0)) { sum, view in
+                let ideal = view.sizeThatFits(.unspecified).width
+                return sum + min(336, max(1, ideal.isFinite ? ideal : 336)) + spacing
+            } - (subviews.isEmpty ? 0 : spacing))
+        }
+        let width = max(1, floor(naturalWidth))
         if !cache.measured || cache.measuredWidth != width || cache.engine.refreshRevision != refreshRevision {
             let items = subviews.map { view -> WorkPackingEngine.Item in
                 let ideal = view.sizeThatFits(.unspecified)
-                let itemWidth = min(width, max(1, ceil(ideal.width.isFinite ? ideal.width : width)))
+                let itemWidth = WorkCardGrid.resolvedWidth(ideal: ideal.width, available: width, gap: spacing,
+                    contentSized: view[WorkPackingContentWidth.self],
+                    fillsAvailable: fillsSingleItem && subviews.count == 1)
                 let measured = view.sizeThatFits(ProposedViewSize(width: itemWidth, height: nil))
                 return .init(id: view[WorkPackingID.self],
                     size: CGSize(width: itemWidth, height: max(1, ceil(measured.height.isFinite ? measured.height : 1))))
@@ -53,6 +67,22 @@ struct WorkPackingLayout: Layout {
             cache.measuredWidth = width
             cache.measured = true
         }
+    }
+}
+
+enum WorkCardGrid {
+    static func resolvedWidth(ideal: CGFloat, available: CGFloat, gap: CGFloat,
+                              contentSized: Bool, fillsAvailable: Bool) -> CGFloat {
+        if fillsAvailable { return available }
+        if contentSized { return min(available, max(1, ceil(ideal.isFinite ? ideal : available))) }
+        return width(ideal: ideal, available: available, gap: gap)
+    }
+    static func width(ideal: CGFloat, available: CGFloat, gap: CGFloat) -> CGFloat {
+        let columns = max(1, Int((available + gap) / (180 + gap)))
+        let unit = floor((available + gap) / CGFloat(columns))
+        let desired = ideal.isFinite ? max(1, ideal) : available
+        let span = min(columns, 3, max(1, Int(ceil((desired + gap) / unit))))
+        return min(available, CGFloat(span) * unit - gap)
     }
 }
 

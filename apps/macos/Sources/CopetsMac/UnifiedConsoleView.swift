@@ -3127,10 +3127,7 @@ struct SessionDetailPanel: View {
 
             detailSection(title: "运行环境", systemImage: "cpu") {
                 if session.resolvedSessionKind == .worker {
-                    Text("Provider: \(currentProviderDisplayName) · Agent: \(agentDisplayName)")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .help("Provider: \(currentProviderDisplayName) · Agent: \(agentDisplayName)")
+                    compactProviderPicker
                     if let cwd = session.external?.cwd, !cwd.isEmpty {
                         detailFields([("工作空间", compactPath(cwd))])
                     }
@@ -3314,6 +3311,58 @@ struct SessionDetailPanel: View {
         }
     }
 
+    private var compactProviderPicker: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Menu {
+                    providerMenuItems
+                    if alternativeProviders.isEmpty {
+                        Text(isLoadingProviderCatalog ? L10n("正在加载 Provider…") : L10n("没有其他可用 Provider"))
+                        Button(L10n("重新加载 Provider")) {
+                            Task { await reloadProviderCatalog() }
+                        }
+                    }
+                } label: {
+                    Text("Provider: \(currentProviderDisplayName)")
+                        .lineLimit(1)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(isSwitchingProvider || session.external?.providerSwitchInFlight == true)
+                .accessibilityLabel(L10n("切换 Provider"))
+                Text("· Agent: \(agentDisplayName)").lineLimit(1)
+            }
+            .font(.system(size: 10))
+            .foregroundStyle(.secondary)
+            if isSwitchingProvider || session.external?.providerSwitchInFlight == true {
+                Text(L10n("正在切换 Provider…")).font(.caption2)
+            }
+            if providerCatalogLoadFailed {
+                Text(L10n("Provider 列表加载失败，请点击菜单重试")).font(.caption2).foregroundStyle(.secondary)
+            }
+            if let providerSwitchError {
+                Text(providerSwitchError).font(.caption2).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var providerMenuItems: some View {
+        ForEach(creatableProviders) { provider in
+            Button {
+                guard !provider.matches(session.external?.provider) else { return }
+                pendingProviderId = provider.id
+                showProviderSwitchConfirmation = true
+            } label: {
+                if provider.matches(session.external?.provider) {
+                    Label(provider.displayName, systemImage: "checkmark")
+                } else {
+                    Text(provider.displayName)
+                }
+            }
+            .disabled(provider.matches(session.external?.provider))
+        }
+    }
+
     private var providerPicker: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Provider")
@@ -3346,20 +3395,7 @@ struct SessionDetailPanel: View {
                 }
             } else {
                 Menu {
-                    ForEach(creatableProviders) { provider in
-                        Button {
-                            guard !provider.matches(session.external?.provider) else { return }
-                            pendingProviderId = provider.id
-                            showProviderSwitchConfirmation = true
-                        } label: {
-                            if provider.matches(session.external?.provider) {
-                                Label(provider.displayName, systemImage: "checkmark")
-                            } else {
-                                Text(provider.displayName)
-                            }
-                        }
-                        .disabled(provider.matches(session.external?.provider))
-                    }
+                    providerMenuItems
                 } label: {
                     HStack {
                         Text(currentProviderDisplayName)

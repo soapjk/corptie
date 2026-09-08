@@ -82,6 +82,9 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     }
                                 }
                                 .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: packingAnimationKey)
+                                .overlayPreferenceValue(TaskCardAnchors.self) { anchors in
+                                    TaskCollaborationOverlay(anchors: anchors, active: isActive)
+                                }
                             }
                         }.padding(10)
                     }
@@ -177,10 +180,13 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
     private func group(_ work: Work) -> some View {
         return CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) }) {
-            HFlow(alignment: .top, spacing: 8) {
-                ForEach(displayedTasks(for: work)) { task in card(task).flexibility(.minimum) }
+            WorkPackingLayout(selectedWorkID: nil, refreshRevision: refreshRevision, spacing: 8, fillsSingleItem: true) {
+                ForEach(displayedTasks(for: work)) { task in
+                    card(task).layoutValue(key: WorkPackingID.self, value: task.id)
+                }
             }
         }
+        .layoutValue(key: WorkPackingContentWidth.self, value: displayedTasks(for: work).count == 1)
     }
 
     private func card(_ task: CorptieTask) -> some View {
@@ -200,13 +206,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 interventionSummary(task, session: session)
                 Text(status(task, session)).font(.caption2).foregroundStyle(attention == nil ? Color.secondary : .orange)
             }
-            .frame(maxWidth: 316, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .padding(10)
             .background(selectedTaskID == task.id ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedTaskID == task.id ? Color.accentColor : .clear))
             .contentShape(Rectangle())
-        }.buttonStyle(.plain).disabled(task.deletionStatus == "deleting").contextMenu {
+        }.anchorPreference(key: TaskCardAnchors.self, value: .bounds) { [task.id: $0] }
+        .buttonStyle(.plain).disabled(task.deletionStatus == "deleting").contextMenu {
             Button("暂不处理") {
                 deferred[task.id] = ConsoleAttentionPolicy.receipt(task, session: session)
                 if let data = try? JSONEncoder().encode(deferred) {
@@ -324,7 +331,7 @@ private struct CompactWorkCard<Content: View>: View {
             content
         }
         .padding(12)
-        .frame(maxWidth: 360, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .background(CorptiePalette.workCardSurface, in: RoundedRectangle(cornerRadius: 12))
         .overlay {
