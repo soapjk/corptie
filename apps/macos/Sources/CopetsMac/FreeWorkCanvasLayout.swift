@@ -16,6 +16,7 @@ struct WorkCanvasOrigins: PreferenceKey {
 struct FreeWorkCanvasLayout: Layout {
     let positions: [String: CGPoint]
     let viewport: CGSize
+    var frozenFrames: [String: CGRect] = [:]
     struct Cache {
         var items: [WorkPackingEngine.Item] = []
         var measured = false
@@ -26,6 +27,12 @@ struct FreeWorkCanvasLayout: Layout {
     func makeCache(subviews: Subviews) -> Cache { Cache() }
     func updateCache(_ cache: inout Cache, subviews: Subviews) { cache.measured = false }
     private func frames(_ subviews: Subviews, _ cache: inout Cache) -> [CGRect] {
+        // Offsets can invalidate SwiftUI Layout's cache. During a drag, never
+        // remeasure the card trees: positions/sizes are the drag-start snapshot.
+        if !frozenFrames.isEmpty {
+            let frozen = subviews.compactMap { frozenFrames[$0[WorkPackingID.self]] }
+            if frozen.count == subviews.count { return frozen }
+        }
         let remeasure = !cache.measured
         if remeasure {
             cache.items = subviews.map { view in
@@ -78,12 +85,9 @@ enum FreeWorkCanvasGeometry {
             return rect
         }
     }
-    static func permitsMove(_ frame: CGRect, by delta: CGSize, obstacles: [CGRect]) -> Bool {
-        let proposed = frame.offsetBy(dx: delta.width, dy: delta.height)
-        return !obstacles.contains { conflicts($0, proposed) }
-    }
     private static func conflicts(_ a: CGRect, _ b: CGRect) -> Bool {
-        a.minX < b.maxX + 12 && b.minX < a.maxX + 12 && a.minY < b.maxY + 12 && b.minY < a.maxY + 12
+        let gap = 12.0
+        return a.minX < b.maxX + gap && b.minX < a.maxX + gap && a.minY < b.maxY + gap && b.minY < a.maxY + gap
     }
     static func moved(_ origin: CGPoint, by delta: CGSize) -> CGPoint {
         // Canvas starts at its top-left boundary; coordinates are never grid-rounded.
