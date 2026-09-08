@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TaskSummaryService } from "../src/application/taskSummaryService.mjs";
+import { TaskSummaryService, SUMMARY_INSTRUCTIONS } from "../src/application/taskSummaryService.mjs";
 import { TaskSummaryRepository } from "../src/store/taskSummaryRepository.mjs";
+
+test("attention instructions include unfinished stopped work without requiring authorization", () => {
+  assert.match(SUMMARY_INSTRUCTIONS, /当前目标明确未达成，并且执行已经停住/);
+  assert.match(SUMMARY_INSTRUCTIONS, /completed仅表示执行回合结束/);
+  assert.match(SUMMARY_INSTRUCTIONS, /不得把模型可以做的工作转嫁/);
+  assert.match(SUMMARY_INSTRUCTIONS, /不催促继续已取消的旧目标/);
+  assert.doesNotMatch(SUMMARY_INSTRUCTIONS, /required只用于/);
+});
 
 test("startup refresh queues outdated and failed summaries, not current or busy jobs", async () => {
   const requested = [];

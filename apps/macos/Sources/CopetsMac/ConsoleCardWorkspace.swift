@@ -217,11 +217,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 canvasPositions[work.id] = FreeWorkCanvasGeometry.moved(canvasPositions[work.id] ?? .zero, by: delta)
                 saveCanvasPositions()
             }) {
-            WorkPackingLayout(selectedWorkID: nil, refreshRevision: refreshRevision, spacing: 8, contentLayout: true) {
+            VStack(alignment: .leading, spacing: 8) {
                 ForEach(displayedTasks(for: work)) { task in
-                    card(task).layoutValue(key: WorkPackingID.self, value: task.id)
+                    ContentSizedTaskCardLayout {
+                        card(task)
+                    }
                 }
             }
+            .fixedSize(horizontal: true, vertical: true)
         }
     }
 
