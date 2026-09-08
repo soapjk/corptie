@@ -17,6 +17,8 @@ struct TaskUserSummary: Codable, Hashable {
         let providerID: String?
         let model: String?
         let basis: Basis
+        var messageSummary: String? = nil
+        var targetMessageId: String? = nil
     }
 
     struct Basis: Codable, Hashable {
@@ -73,12 +75,13 @@ struct TaskSummaryView: View {
                         .foregroundStyle(task.summaryNeedsIntervention ? Color.orange : Color.secondary)
                 } else {
                     Text(content.focus).font(.system(size: 12, weight: .medium))
-                    Text(content.progress).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(content.messageSummary?.isEmpty == false ? content.messageSummary! : content.progress)
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                     if task.summaryNeedsIntervention {
                         Text("需要你：\(content.nextAction)").font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
                         Text(content.reason).font(.system(size: 10)).foregroundStyle(.secondary)
                     } else if summary.isCurrent(for: task) {
-                        Text(content.intervention == "not_required" ? "暂不需要介入" : "是否需要介入尚未明确")
+                        Text(content.intervention == "attention" ? "只需关注，无需操作" : content.intervention == "not_required" ? "无需操作" : "是否需要介入尚未明确")
                             .font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                     Text("更新：\(content.generatedAt)")

@@ -6,6 +6,22 @@ const context = { allowedSources: new Set(["task:definition:2", "message:1"]) };
 const example = { focus: "调整消息卡片", progress: "已实现边界约束，待用户查看。",
   intervention: "required", reason: "需要人工确认布局。", nextAction: "检查消息是否仍越界。", sourceRefs: ["message:1"] };
 
+test("latest reply classification is bound to its cited message", () => {
+  const output = { ...example, intervention: "attention", nextAction: "", messageSummary: "布局修改已完成。", targetMessageId: "message:1" };
+  const bound = { ...context, targetMessageId: "message:1" };
+  assert.equal(validateTaskSummaryOutput(JSON.stringify(output), bound).intervention, "attention");
+  for (const patch of [{ targetMessageId: "old" }, { sourceRefs: [] }, { sourceRefs: {} }, { messageSummary: "" }, { nextAction: "必须点击" }]) {
+    assert.throws(() => validateTaskSummaryOutput(JSON.stringify({ ...output, ...patch }), bound), { code: "TASK_SUMMARY_INVALID_OUTPUT" });
+  }
+});
+
+test("without an agent reply the result remains unknown", () => {
+  const output = { ...example, messageSummary: "", targetMessageId: "", sourceRefs: ["task:definition:2"] };
+  const result = validateTaskSummaryOutput(JSON.stringify(output), { ...context, targetMessageId: null });
+  assert.equal(result.intervention, "unknown");
+  assert.equal(result.nextAction, "");
+});
+
 test("automatic title uses valid bounded names and empty means keep current", () => {
   for (const suggestedTitle of ["", "优化工作台UI2"]) {
     assert.equal(validateTaskSummaryOutput(JSON.stringify({ ...example, suggestedTitle }), context).suggestedTitle, suggestedTitle);

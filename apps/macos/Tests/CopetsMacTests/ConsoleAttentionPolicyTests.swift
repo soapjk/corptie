@@ -2,6 +2,10 @@ import Testing
 @testable import CorptieMac
 
 struct ConsoleAttentionPolicyTests {
+    @Test func attentionOnlyRemainsWhileUnread() {
+        #expect(ConsoleAttentionPolicy.shouldShow(.init(unread: true, summary: .attention)))
+        #expect(!ConsoleAttentionPolicy.shouldShow(.init(summary: .attention)))
+    }
     @Test func idleWithoutWorkIsHidden() {
         #expect(!ConsoleAttentionPolicy.shouldShow(.init()))
     }
