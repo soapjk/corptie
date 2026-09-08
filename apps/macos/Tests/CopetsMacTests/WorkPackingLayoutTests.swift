@@ -4,9 +4,10 @@ import Testing
 
 struct WorkPackingLayoutTests {
     @Test func verticalTaskWidthsKeepContentGridAndMaximum() {
-        #expect(WorkCardGrid.width(ideal: 100, maximum: 384) == 192)
-        #expect(WorkCardGrid.width(ideal: 221, maximum: 384) == 240)
-        #expect(WorkCardGrid.width(ideal: 900, maximum: 384) == 384)
+        #expect(ContentSizedTaskCardLayout.cardWidth(ideal: 100) == 192)
+        #expect(ContentSizedTaskCardLayout.cardWidth(ideal: 221) == 240)
+        #expect(ContentSizedTaskCardLayout.cardWidth(ideal: 900) == 264)
+        #expect(ContentSizedTaskCardLayout.cardWidth(ideal: .infinity) == 192)
     }
     private func item(_ id: String, _ width: CGFloat, _ height: CGFloat) -> WorkPackingEngine.Item {
         .init(id: id, size: CGSize(width: width, height: height))
