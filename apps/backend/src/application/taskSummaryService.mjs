@@ -52,7 +52,7 @@ export class TaskSummaryService {
   }
 
   availabilityError() {
-    if (this.unverifiedRuntimeProvider === this.backgroundAgent.defaultProviderId
+    if (this.unverifiedRuntimeProvider === this.configuredProviderId()
       && this.unverifiedRuntimeProvider != null) return "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED";
     try { this.defaultProvider(); return null; }
     catch (error) {
@@ -64,7 +64,7 @@ export class TaskSummaryService {
   }
 
   defaultProvider() {
-    const providerId = this.backgroundAgent.defaultProviderId;
+    const providerId = this.configuredProviderId();
     if (!providerId) throw failure("TASK_SUMMARY_PROVIDER_UNAVAILABLE");
     return this.backgroundAgent.selectProvider(providerId, "read-only", {
       allowFallback: false, executionPolicy: "no-tools"
@@ -75,6 +75,10 @@ export class TaskSummaryService {
     if (!this.isEnabled() || !BOUNDARY_EVENTS.has(event.type)) return;
     const session = this.store.getSession(event.sessionId);
     if (session?.taskId) this.request(session.taskId);
+  }
+
+  configuredProviderId() {
+    return this.backgroundAgent.capabilityProviderId?.() ?? this.backgroundAgent.defaultProviderId;
   }
 
   onCommittedMessageDelivery(envelope) {
@@ -183,7 +187,7 @@ export class TaskSummaryService {
       await mkdir(root, { recursive: true, mode: 0o700 });
       directory = await mkdtemp(join(root, "generation-"));
       if (!this.isEnabled() || this.closed) throw failure("BACKGROUND_EXECUTION_DISABLED");
-      if (providerId !== this.backgroundAgent.defaultProviderId) {
+      if (providerId !== this.configuredProviderId()) {
         this.request(claim.taskID);
         throw failure("TASK_SUMMARY_PROVIDER_CHANGED");
       }
@@ -197,7 +201,7 @@ export class TaskSummaryService {
         outputSchema: TASK_SUMMARY_OUTPUT_SCHEMA,
         validateOutput: (text) => validateTaskSummaryOutput(text, context) });
       if (!this.isEnabled() || this.closed) throw failure("BACKGROUND_EXECUTION_DISABLED");
-      if (providerId !== this.backgroundAgent.defaultProviderId) {
+      if (providerId !== this.configuredProviderId()) {
         this.request(claim.taskID);
         throw failure("TASK_SUMMARY_PROVIDER_CHANGED");
       }
@@ -212,10 +216,10 @@ export class TaskSummaryService {
       });
     } catch (error) {
       if (error.code === "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
-        && selectedProviderId === this.backgroundAgent.defaultProviderId) {
+        && selectedProviderId === this.configuredProviderId()) {
         // A version mismatch is not a transient generation error. Do not keep
         // trying on every message; re-evaluate after a Provider change/restart.
-        this.unverifiedRuntimeProvider = this.backgroundAgent.defaultProviderId;
+        this.unverifiedRuntimeProvider = this.configuredProviderId();
         if (this.repository.get(claim.taskID)?.generation === claim.generation) {
           this.repository.block(claim.taskID, error.code);
         }

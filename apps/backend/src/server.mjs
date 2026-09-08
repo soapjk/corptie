@@ -36,6 +36,7 @@ import {
   storedSessionIdForListSession
 } from "./application/sessionListOrder.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
+import { FoundationModelSettings } from "./application/foundationModelSettings.mjs";
 import { TaskSummaryService } from "./application/taskSummaryService.mjs";
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
@@ -1936,7 +1937,9 @@ const sessionContextReferenceService = new SessionContextReferenceService({
   store,
   readSessionDetail: (sessionId) => readStoredSessionDetail(requireSessionReference(sessionId))
 });
+const foundationModelSettings = new FoundationModelSettings(store.dataRoot);
 const backgroundAgentService = new BackgroundAgentService({
+  getModelSettings: () => foundationModelSettings.value,
   isEnabled: () => !developmentPreview,
   registry: agentProviderRegistry,
   defaultProviderId: agentProviderRegistry.defaultProviderId,
@@ -9147,6 +9150,10 @@ function trackStartupMaintenance(promise) {
 
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (request.method === "GET" && url.pathname === "/settings/foundation-model") {
+    sendJson(response, 200, foundationModelSettings.publicValue());
+    return;
+  }
   if (developmentPreview) {
     // Fail closed: GET alone is insufficient (some inventory APIs probe tools).
     const readable = ["/health", "/settings", "/first-run", "/events", "/sessions",
@@ -9164,6 +9171,21 @@ function route(request, response) {
     }
   }
 
+  if (request.method === "PUT" && url.pathname === "/settings/foundation-model") {
+    if (!backendStoreReady || store.migrationInProgress) {
+      sendJson(response, 503, { error: "Backend is initializing or in maintenance mode.", retryable: true });
+      return;
+    }
+    readJson(request).then((input) => {
+      if (input.mode === "provider") agentProviderRegistry.get(input.providerId);
+      const value = foundationModelSettings.save(input);
+      backgroundAgentService.cancelCapabilityOperations();
+      for (const taskID of taskSummaryService.running.keys()) taskSummaryService.request(taskID);
+      taskSummaryService.onProviderChanged();
+      sendJson(response, 200, value);
+    }).catch(() => sendJson(response, 400, { error: "模型设置无效，请检查 Provider、模型和 API 地址。" }));
+    return;
+  }
   if (!backendStoreReady && !(
     request.method === "GET"
     && ["/health", "/events", "/settings"].includes(url.pathname)
