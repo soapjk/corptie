@@ -18,6 +18,19 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     let createTask: (Work) -> Void
     let taskMenu: (CorptieTask) -> TaskMenu
     @State private var members: [String: [String]] = [:]
+    @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
+    @State private var frontWorkID: String?
+    private static var canvasKey: String { "console.freeWorkCanvas.positions.v1" }
+    private static func loadCanvasPositions() -> [String: CGPoint] {
+        guard let data = CorptieAppEnvironment.userDefaults.data(forKey: canvasKey),
+              let positions = try? JSONDecoder().decode([String: CGPoint].self, from: data) else { return [:] }
+        return positions.filter { $0.value.x.isFinite && $0.value.y.isFinite && $0.value.x >= 0 && $0.value.y >= 0 }
+    }
+    private func saveCanvasPositions() {
+        if let data = try? JSONEncoder().encode(canvasPositions) {
+            CorptieAppEnvironment.userDefaults.set(data, forKey: Self.canvasKey)
+        }
+    }
     @State private var retainedTasks: [String: CorptieTask] = [:]
     @State private var sessionByTask: [String: TaskSession] = [:]
     @State private var workOrder: [String] = []
@@ -54,7 +67,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                     }
                     .padding(.horizontal, 10)
             }
-                    ScrollView {
+                    GeometryReader { viewport in
+                    ScrollView([.horizontal, .vertical]) {
                         LazyVStack(alignment: .leading, spacing: 12) {
                             if orderedWorks.isEmpty {
                                 Text(query.isEmpty ? "暂无需要关注的 Task" : "没有匹配的重点 Task")
@@ -70,23 +84,40 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 }
                                 if isLoading { ProgressView().controlSize(.small) }
                             } else {
-                                WorkPackingLayout(
-                                    selectedWorkID: selectedTaskID.flatMap { retainedTasks[$0]?.workId },
-                                    refreshRevision: refreshRevision
+                                FreeWorkCanvasLayout(
+                                    positions: canvasPositions,
+                                    viewport: CGSize(width: max(1, viewport.size.width - 20), height: max(1, viewport.size.height - 20))
                                 ) {
                                     ForEach(orderedWorks) { work in
                                         group(work)
                                             .geometryGroup()
                                             .transition(.opacity)
+                                            .anchorPreference(key: WorkCanvasAnchors.self, value: .bounds) { [work.id: $0] }
+                                            .zIndex(frontWorkID == work.id ? 1 : 0)
                                             .layoutValue(key: WorkPackingID.self, value: work.id).id(work.id)
                                     }
                                 }
-                                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: packingAnimationKey)
+                                .coordinateSpace(name: "freeWorkCanvas")
+                                .backgroundPreferenceValue(WorkCanvasAnchors.self) { anchors in
+                                    GeometryReader { geometry in
+                                        Color.clear.preference(key: WorkCanvasOrigins.self,
+                                            value: anchors.mapValues { geometry[$0].origin })
+                                    }
+                                }
+                                .onPreferenceChange(WorkCanvasOrigins.self) { origins in
+                                    let missing = origins.filter { canvasPositions[$0.key] == nil }
+                                    if !missing.isEmpty {
+                                        canvasPositions.merge(missing, uniquingKeysWith: { old, _ in old })
+                                        saveCanvasPositions()
+                                    }
+                                }
                                 .overlayPreferenceValue(TaskCardAnchors.self) { anchors in
                                     TaskCollaborationOverlay(anchors: anchors, active: isActive)
                                 }
                             }
                         }.padding(10)
+                        .frame(minWidth: viewport.size.width, minHeight: viewport.size.height, alignment: .topLeading)
+                    }
                     }
         }
         .onAppear { if isActive { rebuild(reset: false) } }
@@ -179,24 +210,36 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func group(_ work: Work) -> some View {
-        return CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) }) {
-            WorkPackingLayout(selectedWorkID: nil, refreshRevision: refreshRevision, spacing: 8, fillsSingleItem: true) {
+        return CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) },
+            origin: canvasPositions[work.id] ?? .zero,
+            beginDrag: { frontWorkID = work.id },
+            finishDrag: { delta in
+                canvasPositions[work.id] = FreeWorkCanvasGeometry.moved(canvasPositions[work.id] ?? .zero, by: delta)
+                saveCanvasPositions()
+            }) {
+            WorkPackingLayout(selectedWorkID: nil, refreshRevision: refreshRevision, spacing: 8, contentLayout: true) {
                 ForEach(displayedTasks(for: work)) { task in
                     card(task).layoutValue(key: WorkPackingID.self, value: task.id)
                 }
             }
         }
-        .layoutValue(key: WorkPackingContentWidth.self, value: displayedTasks(for: work).count == 1)
     }
 
     private func card(_ task: CorptieTask) -> some View {
         let session = sessionByTask[task.id] ?? sessions.first { $0.id == task.currentSessionId }
-        let attention = session?.attention
+        let execution = session?.executionTaskStatus ?? task.executionStatus.flatMap(TaskStatus.init(rawValue:))
+        let needsAttention = session?.attention != nil || ConsoleAttentionPolicy.currentSummary(task, session: session)?.intervention == "required"
         return Button {
             openTask(task, session)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
+                    Circle()
+                        .fill(execution == .running ? CorptiePalette.running : execution == .failed ? Color.red :
+                            (needsAttention || execution == .blocked) ? Color.orange : Color.secondary.opacity(0.65))
+                        .frame(width: 7, height: 7)
+                        .help(status(task, session))
+                        .accessibilityLabel(status(task, session))
                     Text(task.title).font(.system(size: 13, weight: .semibold)).lineLimit(3)
                     if task.hasPendingScheduledWake == true {
                         Image(systemName: "alarm").foregroundStyle(.orange).help("存在有效的待执行计划任务")
@@ -204,13 +247,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                     if let session, isSessionUnread(session) { Circle().fill(.red).frame(width: 6, height: 6) }
                 }
                 interventionSummary(task, session: session)
-                Text(status(task, session)).font(.caption2).foregroundStyle(attention == nil ? Color.secondary : .orange)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .padding(10)
             .background(selectedTaskID == task.id ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedTaskID == task.id ? Color.accentColor : .clear))
+            .overlay(RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.accentColor.opacity(selectedTaskID == task.id ? 0.85 : 0.22), lineWidth: selectedTaskID == task.id ? 1.5 : 1)
+                .allowsHitTesting(false))
             .contentShape(Rectangle())
         }.anchorPreference(key: TaskCardAnchors.self, value: .bounds) { [task.id: $0] }
         .buttonStyle(.plain).disabled(task.deletionStatus == "deleting").contextMenu {
@@ -232,6 +276,9 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     private func interventionSummary(_ task: CorptieTask, session: TaskSession?) -> some View {
         let summary = ConsoleAttentionPolicy.currentSummary(task, session: session)
         if summary?.intervention == "required", let summary {
+            if !summary.progress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(summary.progress).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
+            }
             if !summary.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(summary.reason).font(.system(size: 12)).foregroundStyle(.orange).lineLimit(3)
             }
@@ -241,14 +288,22 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 Text("需要介入，请进入会话查看").font(.caption).foregroundStyle(.secondary)
             }
         } else if let reason = session?.attention?.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            messagePreview(session, excluding: reason)
             Text(reason).font(.system(size: 12)).foregroundStyle(.orange).lineLimit(3)
         } else if session?.attention != nil || session?.executionTaskStatus == .blocked || session?.executionTaskStatus == .failed {
+            messagePreview(session)
             Text("需要查看会话，具体原因尚未提供").font(.caption).foregroundStyle(.secondary)
-        } else if summary?.intervention == "not_required" {
-            Text("暂不需要介入").font(.caption).foregroundStyle(.secondary)
-        } else {
-            Text(session?.executionTaskStatus == .running ? "执行中，等待结果" : "是否需要介入尚未明确")
-                .font(.caption).foregroundStyle(.secondary)
+        } else if let session, isSessionUnread(session) {
+            messagePreview(session)
+        }
+    }
+
+    @ViewBuilder
+    private func messagePreview(_ session: TaskSession?, excluding: String = "") -> some View {
+        let preview = String((session?.summary ?? "").prefix(600)).trimmingCharacters(in: .whitespacesAndNewlines)
+        if !preview.isEmpty && preview != excluding {
+            Text("会话预览：\(preview)")
+                .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
         }
     }
 
@@ -262,7 +317,11 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         case "blocked": return "执行受阻 · 原因待确认"
         default: break
         }
-        if session?.executionTaskStatus == .running { return "执行中" }
+        let execution = session?.executionTaskStatus ?? task.executionStatus.flatMap(TaskStatus.init(rawValue:))
+        if execution == .running { return "执行中" }
+        if execution == .failed { return "执行失败" }
+        if execution == .blocked { return "执行受阻" }
+        if ConsoleAttentionPolicy.currentSummary(task, session: session)?.intervention == "required" { return "需要介入" }
         if task.hasPendingScheduledWake == true { return "等待计划唤醒" }
         if session?.executionTaskStatus == .cancelled { return "已停止" }
         return session == nil ? "尚无可用会话" : "当前未执行"
@@ -302,15 +361,22 @@ private struct CompactWorkCard<Content: View>: View {
     let work: Work
     let discuss: () -> Void
     let createTask: () -> Void
+    let origin: CGPoint
+    let beginDrag: () -> Void
+    let finishDrag: (CGSize) -> Void
     @ViewBuilder let content: Content
+    @State private var dragOffset = CGSize.zero
+    @State private var dragging = false
     @State private var isHovering = false
     @FocusState private var isCreateTaskFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                ObjectiveAvatarView(objectiveID: work.id, name: work.name, avatarPath: work.avatarPath, size: 22)
-                Text(work.name).font(.headline).lineLimit(3)
+                HStack(spacing: 6) {
+                    ObjectiveAvatarView(objectiveID: work.id, name: work.name, avatarPath: work.avatarPath, size: 14)
+                    Text(work.name).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(2)
+                }
                 Button("讨论", action: discuss)
                     .font(.system(size: 10))
                     .controlSize(.mini)
@@ -319,7 +385,7 @@ private struct CompactWorkCard<Content: View>: View {
                 Button(action: createTask) {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 24, height: 24)
+                        .frame(width: 20, height: 18)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -330,16 +396,31 @@ private struct CompactWorkCard<Content: View>: View {
             }
             content
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .background(CorptiePalette.workCardSurface, in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.3), lineWidth: 1)
+                .strokeBorder(Color.accentColor.opacity(0.30), lineWidth: 1)
                 .allowsHitTesting(false)
         }
         .onHover { isHovering = $0 }
+        .contentShape(Rectangle())
+        // Apply to the whole card, including Task buttons. The nonzero distance
+        // leaves ordinary clicks intact; a recognized drag takes precedence.
+        .highPriorityGesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("freeWorkCanvas"))
+            .onChanged { value in
+                if !dragging { dragging = true; beginDrag() }
+                let point = FreeWorkCanvasGeometry.moved(origin, by: value.translation)
+                dragOffset = CGSize(width: point.x - origin.x, height: point.y - origin.y)
+            }
+            .onEnded { _ in
+                finishDrag(dragOffset)
+                dragOffset = .zero; dragging = false
+            }, including: .all)
+        .offset(dragOffset)
     }
 }
 

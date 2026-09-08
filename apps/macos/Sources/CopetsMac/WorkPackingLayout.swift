@@ -2,7 +2,6 @@ import SwiftUI
 import RectanglePacking
 
 struct WorkPackingID: LayoutValueKey { static let defaultValue = "" }
-struct WorkPackingContentWidth: LayoutValueKey { static let defaultValue = false }
 
 /// Only the outer Work surface uses packing. No timers, preferences, per-card
 /// observers or transcript reads participate in geometry.
@@ -10,12 +9,15 @@ struct WorkPackingLayout: Layout {
     var selectedWorkID: String?
     var refreshRevision: Int
     var spacing: CGFloat = 12
-    var fillsSingleItem = false
+    var contentLayout = false
+    var availableWidth: CGFloat? = nil
 
     struct Cache {
         var measured = false
         var measuredWidth: CGFloat = -1
         var engine = WorkPackingEngine()
+        var items: [WorkPackingEngine.Item] = []
+        var contentWidth: CGFloat = 0
     }
 
     func makeCache(subviews: Subviews) -> Cache { Cache() }
@@ -41,28 +43,23 @@ struct WorkPackingLayout: Layout {
     }
 
     private func update(width proposed: CGFloat?, subviews: Subviews, cache: inout Cache) {
-        // An unspecified proposal asks for content size, not a fixed 360-point card.
-        let naturalWidth: CGFloat
-        if proposed?.isFinite == true {
-            naturalWidth = proposed!
-        } else {
-            naturalWidth = min(540, subviews.reduce(CGFloat(0)) { sum, view in
-                let ideal = view.sizeThatFits(.unspecified).width
-                return sum + min(336, max(1, ideal.isFinite ? ideal : 336)) + spacing
-            } - (subviews.isEmpty ? 0 : spacing))
-        }
-        let width = max(1, floor(naturalWidth))
-        if !cache.measured || cache.measuredWidth != width || cache.engine.refreshRevision != refreshRevision {
-            let items = subviews.map { view -> WorkPackingEngine.Item in
+        if !cache.measured {
+            cache.items = subviews.map { view -> WorkPackingEngine.Item in
                 let ideal = view.sizeThatFits(.unspecified)
-                let itemWidth = WorkCardGrid.resolvedWidth(ideal: ideal.width, available: width, gap: spacing,
-                    contentSized: view[WorkPackingContentWidth.self],
-                    fillsAvailable: fillsSingleItem && subviews.count == 1)
+                let itemWidth = WorkCardGrid.width(ideal: ideal.width, maximum: contentLayout ? 384 : 792)
                 let measured = view.sizeThatFits(ProposedViewSize(width: itemWidth, height: nil))
                 return .init(id: view[WorkPackingID.self],
                     size: CGSize(width: itemWidth, height: max(1, ceil(measured.height.isFinite ? measured.height : 1))))
             }
-            cache.engine.update(items: items, width: width, spacing: spacing,
+            cache.contentWidth = contentLayout ? WorkCardGrid.contentWidth(items: cache.items, gap: spacing)
+                : (cache.items.map(\.size.width).max() ?? 192)
+            cache.measured = true
+        }
+        let requested = availableWidth ?? proposed ?? cache.contentWidth
+        let width = contentLayout ? cache.contentWidth : max(cache.items.map(\.size.width).max() ?? 1,
+            requested.isFinite ? floor(requested) : cache.contentWidth)
+        do {
+            cache.engine.update(items: cache.items, width: width, spacing: spacing,
                 selectedWorkID: selectedWorkID, refreshRevision: refreshRevision)
             cache.measuredWidth = width
             cache.measured = true
@@ -71,18 +68,23 @@ struct WorkPackingLayout: Layout {
 }
 
 enum WorkCardGrid {
-    static func resolvedWidth(ideal: CGFloat, available: CGFloat, gap: CGFloat,
-                              contentSized: Bool, fillsAvailable: Bool) -> CGFloat {
-        if fillsAvailable { return available }
-        if contentSized { return min(available, max(1, ceil(ideal.isFinite ? ideal : available))) }
-        return width(ideal: ideal, available: available, gap: gap)
+    static func width(ideal: CGFloat, maximum: CGFloat = 792) -> CGFloat {
+        min(maximum, max(192, ceil((ideal.isFinite ? ideal : 192) / 24) * 24))
     }
-    static func width(ideal: CGFloat, available: CGFloat, gap: CGFloat) -> CGFloat {
-        let columns = max(1, Int((available + gap) / (180 + gap)))
-        let unit = floor((available + gap) / CGFloat(columns))
-        let desired = ideal.isFinite ? max(1, ideal) : available
-        let span = min(columns, 3, max(1, Int(ceil((desired + gap) / unit))))
-        return min(available, CGFloat(span) * unit - gap)
+    static func contentWidth(items: [WorkPackingEngine.Item], gap: CGFloat) -> CGFloat {
+        let minimum = items.map(\.size.width).max() ?? 192
+        guard items.count > 1 else { return minimum }
+        // Bounded content-only alternatives; never use the viewport to size a Work.
+        let candidates = Set([minimum, max(minimum, 384), max(minimum, 576), max(minimum, 768)]).sorted()
+        if items.count > 64 { return candidates.last! }
+        var best = minimum, area = CGFloat.infinity
+        for candidate in candidates {
+            var engine = WorkPackingEngine()
+            engine.update(items: items, width: candidate, spacing: gap, selectedWorkID: nil, refreshRevision: 0)
+            let score = candidate * engine.height
+            if score < area { area = score; best = candidate }
+        }
+        return best
     }
 }
 
