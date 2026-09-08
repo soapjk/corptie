@@ -1,6 +1,7 @@
 import http from "node:http";
 import { createCodexReplyProbe, createClaudeReplyProbe, createOpenClackyReplyProbe } from "./agent-provider/providers/providerReplyProbe.mjs";
 import { FirstRunSetupService } from "./application/firstRunSetupService.mjs";
+import { buildDirectUserMessageEvidence } from "./application/directUserMessageEvidence.mjs";
 import { resolveExternalCommand } from "./utils/externalCommand.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
@@ -1384,16 +1385,7 @@ const sessionApplicationService = new SessionApplicationService({
     // Provider-native thread context remains Provider-owned. Ordinary sends
     // contain only this turn's Corptie product context and never replay chat
     // history from either Provider or session_items.
-    let directUserIntentContext = null;
-    const sourceMessageId = messageContext.source?.messageId;
-    if (sourceMessageId && messageContext.source?.type === "desktop") {
-      const event = store.getSessionEvent(`user-message:${sourceMessageId}`);
-      if (event?.type === "SessionUserMessageCreated" && reference.logicalSessionId) {
-        directUserIntentContext = {
-          prompt: `<corptie_direct_user_message_evidence logical_session_id="${reference.logicalSessionId}" event_id="${event.eventId}" sequence="${event.sequence}" turn_id="${event.payload?.deliveryId ?? ""}">\nThis evidence identifies only this direct user turn. Use it with corptie_task_complete only when the user explicitly asks to complete one exact Task.\n</corptie_direct_user_message_evidence>`
-        };
-      }
-    }
+    const directUserIntentContext = buildDirectUserMessageEvidence(store, reference, messageContext);
     const skillRoutingContext = skillMcpTurnContext(
       skillRegistryService.mcpAssignmentRevisionForAgent(session?.agentId)
     );
