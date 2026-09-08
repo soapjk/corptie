@@ -1,6 +1,7 @@
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "../agent-provider/contracts.mjs";
 import { performance } from "node:perf_hooks";
 import { BackgroundOperationQueue } from "./backgroundOperationQueue.mjs";
+import { FOUNDATION_API_ID, FOUNDATION_PURPOSES, invokeFoundationAPI } from "./foundationModelSettings.mjs";
 
 export class BackgroundAgentUnavailableError extends Error {
   constructor() {
@@ -14,6 +15,7 @@ export class BackgroundAgentService {
   constructor(options = {}) {
     this.registry = options.registry;
     this.defaultProviderId = options.defaultProviderId ?? null;
+    this.getModelSettings = options.getModelSettings ?? (() => ({ mode: "default" }));
     this.onOperationEvent = options.onOperationEvent ?? (() => {});
     // provider-neutral Agent 上下文解析器：resolveAgentContext(agentId, { intent }) → { agent, instructions }。
     // 由组合根注入（agentContextService），BackgroundAgentService 不依赖具体 Provider 或 store。
@@ -24,10 +26,17 @@ export class BackgroundAgentService {
     this.isEnabled = options.isEnabled ?? (() => true);
     this.queue = options.queue ?? new BackgroundOperationQueue();
     this.activeControllers = new Map();
+    this.activePurposes = new Map();
     if (!this.registry) throw new TypeError("BackgroundAgentService requires an Agent Provider Registry.");
   }
 
   async run(input = {}) {
+    const config = { ...this.getModelSettings() };
+    if (FOUNDATION_PURPOSES.has(input.purpose) && config.mode !== "default") {
+      input = { ...input, preferredProviderId: config.mode === "api" ? FOUNDATION_API_ID : config.providerId,
+        preferredModel: config.model || null, preferredReasoning: config.reasoning || null,
+        allowProviderFallback: false, ...(config.mode === "api" ? { foundationAPI: config } : {}) };
+    }
     if (!this.isEnabled()) throw backgroundError("BACKGROUND_EXECUTION_DISABLED", "Background execution is disabled.");
     const operationId = input.operationId ?? `background:${crypto.randomUUID()}`;
     if (this.activeControllers.has(operationId)) throw backgroundError("BACKGROUND_OPERATION_EXISTS", "Operation is already active.");
@@ -42,6 +51,7 @@ export class BackgroundAgentService {
     const timeout = setTimeout(() => controller.abort(backgroundError("BACKGROUND_TIMEOUT", "Background deadline exceeded.")), timeoutMs);
     timeout.unref?.();
     this.activeControllers.set(operationId, controller);
+    this.activePurposes.set(operationId, input.purpose);
     const queuedAt = performance.now();
     try {
       return await this.queue.run(() => {
@@ -54,6 +64,7 @@ export class BackgroundAgentService {
       clearTimeout(timeout);
       input.signal?.removeEventListener("abort", forwardAbort);
       this.activeControllers.delete(operationId);
+      this.activePurposes.delete(operationId);
     }
   }
 
@@ -64,6 +75,12 @@ export class BackgroundAgentService {
     return true;
   }
 
+  cancelCapabilityOperations() {
+    for (const [id, purpose] of this.activePurposes) {
+      if (FOUNDATION_PURPOSES.has(purpose)) this.cancel(id);
+    }
+  }
+
   close() {
     this.queue.close();
     for (const operationId of this.activeControllers.keys()) this.cancel(operationId);
@@ -72,6 +89,7 @@ export class BackgroundAgentService {
   async execute(input = {}) {
     const operationStartedAt = performance.now();
     const permissionProfile = input.permissionProfile ?? "read-only";
+    if (input.foundationAPI && permissionProfile !== "read-only") throw new BackgroundAgentUnavailableError();
     // 指定 Agent 只解析资源上下文（systemPrompt + description + per-agent 记忆）。
     // Runtime routing comes exclusively from the invoking Session/request or the background default.
     const agentContext = input.agentId && typeof this.resolveAgentContext === "function"
@@ -80,7 +98,7 @@ export class BackgroundAgentService {
     const agentContextMs = roundedMilliseconds(performance.now() - operationStartedAt);
     const preferredProviderId = input.preferredProviderId ?? null;
 
-    const resolvedProviderId = this.resolveProviderId
+    const resolvedProviderId = input.foundationAPI ? FOUNDATION_API_ID : this.resolveProviderId
       ? this.resolveProviderId(preferredProviderId)
       : preferredProviderId;
 
@@ -89,7 +107,7 @@ export class BackgroundAgentService {
       throw new BackgroundAgentUnavailableError();
     }
 
-    const providerId = this.selectProvider(resolvedProviderId, permissionProfile, {
+    const providerId = input.foundationAPI ? FOUNDATION_API_ID : this.selectProvider(resolvedProviderId, permissionProfile, {
       allowFallback: input.allowProviderFallback !== false,
       executionPolicy: input.executionPolicy ?? "legacy"
     });
@@ -124,7 +142,7 @@ export class BackgroundAgentService {
     const providerStartedAt = performance.now();
     try {
       input.signal?.throwIfAborted();
-      const result = await this.registry.invoke(
+      const result = input.foundationAPI ? await invokeFoundationAPI(input.foundationAPI, request) : await this.registry.invoke(
         providerId,
         AGENT_PROVIDER_CAPABILITIES.BACKGROUND_PROMPT,
         request
@@ -166,6 +184,7 @@ export class BackgroundAgentService {
   }
 
   selectProvider(preferredProviderId = null, permissionProfile = "read-only", { allowFallback = true, executionPolicy = "legacy" } = {}) {
+    if (preferredProviderId === FOUNDATION_API_ID && this.getModelSettings().mode === "api" && permissionProfile === "read-only") return FOUNDATION_API_ID;
     const supports = (id) => this.supportsPermissionProfile(id, permissionProfile)
       && (executionPolicy === "legacy" || this.registry.get(id).descriptor.metadata?.backgroundExecutionPolicies?.includes(executionPolicy));
     if (!allowFallback) {
@@ -195,6 +214,11 @@ export class BackgroundAgentService {
     const profiles = this.registry.get(providerId).descriptor.metadata?.backgroundPermissionProfiles;
     const supported = Array.isArray(profiles) && profiles.length > 0 ? profiles : ["read-only"];
     return supported.includes(permissionProfile);
+  }
+
+  capabilityProviderId() {
+    const settings = this.getModelSettings();
+    return settings.mode === "api" ? FOUNDATION_API_ID : settings.mode === "provider" ? settings.providerId : this.defaultProviderId;
   }
 }
 

@@ -1911,6 +1911,8 @@ struct SettingsView: View {
                 .frame(width: 180)
             }
 
+            FoundationModelSettingsView()
+            DisclosureGroup("终端选项解析（兼容设置）") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Toggle(L10n("Use LLM-enhanced interactions"), isOn: llmInteractionEnabled)
@@ -2001,6 +2003,7 @@ struct SettingsView: View {
                 .onChange(of: choiceParser) { _, _ in
                     choiceParserStatus = .idle
                 }
+            }
             }
 
             if let error = backendClient.lastError {
