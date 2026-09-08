@@ -573,6 +573,7 @@ struct UnifiedConsoleView: View {
             }
         }
         .onReceive(backendClient.sessionsDidChange) { sessions in
+            guard sidebarState.isSelected else { return }
             attemptPendingSelection(sessions)
             restoreConsoleContentIfNeeded()
             if let selectedSessionID = backendClient.selectedSession?.id {
@@ -581,23 +582,23 @@ struct UnifiedConsoleView: View {
         }
         .onReceive(backendClient.$archivedSessions) { sessions in
             archivedSessionIndexStore.replaceAll(with: sessions)
-            guard isShowingWorkerArchive else { return }
+            guard sidebarState.isSelected, router.pendingSessionId == nil,
+                  isShowingWorkerArchive else { return }
             restoreSelection(for: .worker)
         }
         .onChange(of: router.pendingSessionId) { _, _ in
             attemptPendingSelection(backendClient.sessions)
         }
-        .onReceive(selectionController.$selectedSessionID) { _ in
-            let session = backendClient.selectedSession
-            if let session {
-                let category = SessionCategory(session: session)
+        .onReceive(selectionController.$selectedSessionID) { sessionID in
+            // @Published emits before storing the new value. Use the emitted
+            // identity and never write back into the selection publisher.
+            guard let sessionID,
+                  let session = backendClient.sessions.first(where: { $0.id == sessionID })
+                    ?? backendClient.archivedSessions.first(where: { $0.id == sessionID }) else { return }
+            synchronizeConsoleSelection(with: session)
+            Self.recordSessionId(session.id, category: SessionCategory(session: session))
+            if sidebarState.isSelected {
                 viewportController.hydrate(session.id)
-                Self.recordSessionId(session.id, category: category)
-                selectionController.select(session.id)
-                selectedCategory = category
-                if selectedCategory == .worker {
-                    isShowingWorkerArchive = isArchivedWorkerSession(session)
-                }
                 markOpenedSessionRead(session)
             }
         }
@@ -611,6 +612,7 @@ struct UnifiedConsoleView: View {
         }
         .onReceive(entityClient.sessionGroupingDidChange) { _ in
             entityGroupingRevision &+= 1
+            guard sidebarState.isSelected, router.pendingSessionId == nil else { return }
             restoreConsoleSpaceIfNeeded()
             if selectedCategory == .worker {
                 restoreConsoleContentIfNeeded()
@@ -1822,19 +1824,16 @@ struct UnifiedConsoleView: View {
     }
 
     private func restoreConsoleSpaceIfNeeded() {
+        guard sidebarState.isSelected, router.pendingSessionId == nil else { return }
+        if let session = backendClient.selectedSession {
+            synchronizeConsoleSelection(with: session)
+            return
+        }
         if let selectedWorkId,
            entityClient.works.contains(where: { $0.id == selectedWorkId }) {
             return
         }
-        if let session = backendClient.selectedSession,
-           session.resolvedSessionKind != .assistantChat,
-           let workId = session.workId,
-           entityClient.works.contains(where: { $0.id == workId }) {
-            selectedWorkId = workId
-            selectedCategory = SessionCategory(session: session)
-            selectedTaskId = session.taskId
-            return
-        }
+        guard selectionController.selectedSessionID == nil else { return }
         selectedWorkId = entityClient.works.first?.id
         selectedCategory = selectedWorkId == nil ? .assistant : .worker
         selectDefaultContentForCurrentSpace()
@@ -1902,6 +1901,15 @@ struct UnifiedConsoleView: View {
     }
 
     private func restoreConsoleContentIfNeeded() {
+        guard sidebarState.isSelected, router.pendingSessionId == nil else { return }
+        // A committed Session selection wins over stale page-local Task state.
+        // Only attach a newly created Session when no Session is selected.
+        if let session = backendClient.selectedSession {
+            synchronizeConsoleSelection(with: session)
+            return
+        }
+        // Keep an unresolved selected identity while its data is hydrating.
+        guard selectionController.selectedSessionID == nil else { return }
         // A Task without a Session is still an explicit, valid user selection.
         // Keep it authoritative across session-index refreshes instead of
         // treating the empty detail selection as a reason to jump to the
@@ -1914,14 +1922,7 @@ struct UnifiedConsoleView: View {
                 if backendClient.selectedSession?.id != session.id {
                     selectSessionAfterHighlight(session)
                 }
-            } else if let selectedSession = backendClient.selectedSession,
-                      selectedSession.taskId != selectedTask.id {
-                backendClient.closeDetail()
             }
-            return
-        }
-        if let session = backendClient.selectedSession,
-           sessionMatchesCurrentConsoleSpace(session) {
             return
         }
         guard ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
@@ -1931,13 +1932,11 @@ struct UnifiedConsoleView: View {
         selectDefaultContentForCurrentSpace()
     }
 
-    private func sessionMatchesCurrentConsoleSpace(_ session: TaskSession) -> Bool {
-        if let selectedWorkId {
-            return session.workId == selectedWorkId
-                && (session.resolvedSessionKind == .worker
-                    || session.resolvedSessionKind == .workChat)
-        }
-        return session.resolvedSessionKind == .assistantChat
+    private func synchronizeConsoleSelection(with session: TaskSession) {
+        selectedCategory = SessionCategory(session: session)
+        selectedWorkId = session.resolvedSessionKind == .assistantChat ? nil : session.workId
+        selectedTaskId = session.resolvedSessionKind == .worker ? session.taskId : nil
+        isShowingWorkerArchive = selectedCategory == .worker && isArchivedWorkerSession(session)
     }
 
     private func activateSessions() {
