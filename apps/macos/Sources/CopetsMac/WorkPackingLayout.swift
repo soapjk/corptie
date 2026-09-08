@@ -3,6 +3,27 @@ import RectanglePacking
 
 struct WorkPackingID: LayoutValueKey { static let defaultValue = "" }
 
+/// Size one Task from its content, independently of siblings and the viewport.
+/// Arrangement belongs to SwiftUI's VStack, not the rectangle packing engine.
+struct ContentSizedTaskCardLayout: Layout {
+    func makeCache(subviews: Subviews) -> CGSize? { nil }
+    func updateCache(_ cache: inout CGSize?, subviews: Subviews) { cache = nil }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout CGSize?) -> CGSize {
+        if let cache { return cache }
+        guard let child = subviews.first else { return .zero }
+        let width = WorkCardGrid.width(ideal: child.sizeThatFits(.unspecified).width, maximum: 384)
+        let measured = child.sizeThatFits(ProposedViewSize(width: width, height: nil))
+        let size = CGSize(width: width, height: max(1, ceil(measured.height.isFinite ? measured.height : 1)))
+        cache = size
+        return size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout CGSize?) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+    }
+}
+
 /// Only the outer Work surface uses packing. No timers, preferences, per-card
 /// observers or transcript reads participate in geometry.
 struct WorkPackingLayout: Layout {
