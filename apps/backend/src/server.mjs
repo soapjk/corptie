@@ -37,6 +37,7 @@ import {
 } from "./application/sessionListOrder.mjs";
 import { BackgroundAgentService } from "./application/backgroundAgentService.mjs";
 import { FoundationModelSettings } from "./application/foundationModelSettings.mjs";
+import { taskCollaborationEdges } from "./application/taskCollaborationEdges.mjs";
 import { TaskSummaryService } from "./application/taskSummaryService.mjs";
 import { createSkillPackageDiscoveryAssistant } from "./application/skillPackageDiscoveryAssistant.mjs";
 import { HostToolCatalog } from "./application/hostToolCatalog.mjs";
@@ -9150,6 +9151,14 @@ function trackStartupMaintenance(promise) {
 
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (request.method === "GET" && url.pathname === "/collaboration/task-edges") {
+    if (!backendStoreReady || store.migrationInProgress) {
+      sendJson(response, 503, { error: "Store unavailable" });
+    } else {
+      sendJson(response, 200, { edges: taskCollaborationEdges(store) });
+    }
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/settings/foundation-model") {
     sendJson(response, 200, foundationModelSettings.publicValue());
     return;
