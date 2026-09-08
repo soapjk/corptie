@@ -2,7 +2,7 @@ import Foundation
 
 /// Presentation policy only: never completes, interrupts or archives a Task.
 enum ConsoleAttentionPolicy {
-    enum Summary: String { case required, notRequired, unknown }
+    enum Summary: String { case required, attention, notRequired, unknown }
     struct Input {
         var excluded = false
         var selected = false
@@ -67,6 +67,12 @@ enum ConsoleAttentionPolicy {
     }
 
     @MainActor
+    static func requiresSystemAction(_ session: TaskSession?) -> Bool {
+        session?.attention?.kind == "choice" ||
+        (session?.executionTaskStatus == .blocked && !(session?.suggestedOptions?.isEmpty ?? true))
+    }
+
+    @MainActor
     static func input(_ task: CorptieTask, session: TaskSession?, selected: Bool, deferred: Bool) -> Input {
         let summary = currentSummary(task, session: session)
         return Input(
@@ -74,11 +80,11 @@ enum ConsoleAttentionPolicy {
             selected: selected,
             running: session?.executionTaskStatus == .running || (session == nil && task.executionStatus == "running"),
             unread: (session?.lastAgentMessageSequence ?? 0) > (session?.lastReadMessageSequence ?? 0),
-            explicitAttention: session?.attention != nil || session?.executionTaskStatus == .blocked || session?.executionTaskStatus == .failed,
+            explicitAttention: requiresSystemAction(session),
             hasReply: (session?.lastAgentMessageSequence ?? 0) > 0,
             cancelled: session?.executionTaskStatus == .cancelled,
             scheduled: task.hasPendingScheduledWake == true,
-            summary: summary?.intervention == "required" ? .required : summary?.intervention == "not_required" ? .notRequired : .unknown,
+            summary: summary?.intervention == "required" ? .required : summary?.intervention == "attention" ? .attention : summary?.intervention == "not_required" ? .notRequired : .unknown,
             deferred: deferred)
     }
 }

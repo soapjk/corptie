@@ -275,10 +275,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @ViewBuilder
     private func interventionSummary(_ task: CorptieTask, session: TaskSession?) -> some View {
         let summary = ConsoleAttentionPolicy.currentSummary(task, session: session)
+        if let preview = summary?.messageSummary, !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text(preview).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
+        } else if ConsoleAttentionPolicy.requiresSystemAction(session) || (session.map(isSessionUnread) ?? false) {
+            messagePreview(session)
+        }
         if summary?.intervention == "required", let summary {
-            if !summary.progress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(summary.progress).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
-            }
             if !summary.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text(summary.reason).font(.system(size: 12)).foregroundStyle(.orange).lineLimit(3)
             }
@@ -287,14 +289,9 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
             } else {
                 Text("需要介入，请进入会话查看").font(.caption).foregroundStyle(.secondary)
             }
-        } else if let reason = session?.attention?.reason, !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            messagePreview(session, excluding: reason)
-            Text(reason).font(.system(size: 12)).foregroundStyle(.orange).lineLimit(3)
-        } else if session?.attention != nil || session?.executionTaskStatus == .blocked || session?.executionTaskStatus == .failed {
-            messagePreview(session)
-            Text("需要查看会话，具体原因尚未提供").font(.caption).foregroundStyle(.secondary)
-        } else if let session, isSessionUnread(session) {
-            messagePreview(session)
+        } else if ConsoleAttentionPolicy.requiresSystemAction(session) {
+            Text(session?.attention?.reason ?? "请处理会话中的选择或授权请求")
+                .font(.system(size: 12)).foregroundStyle(.orange).lineLimit(3)
         }
     }
 
