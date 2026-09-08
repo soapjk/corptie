@@ -4,6 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ClaudeAgentManager, normalizeClaudeRuntimeOptions } from "../src/adapters/claudeAgentManager.mjs";
+test("rejected live model switch leaves the previous selection intact", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "model-switch-rejected", model: "old" });
+  const session = manager.get("model-switch-rejected");
+  session.query = { setModel: async () => { throw new Error("rejected"); } };
+  await assert.rejects(manager.switchModel(session.id, "new"), /rejected/);
+  assert.equal(session.currentModel, "old");
+  session.query = null;
+  session.status = "failed";
+  const result = await manager.switchModel(session.id, "new");
+  assert.equal(result.external.currentModel, "new");
+  assert.equal(result.capabilities.canSend, true);
+});
 
 test("Claude carries an explicit empty builtin tool set through to the SDK query", async () => {
   let received;
