@@ -59,6 +59,7 @@ extension CorptieTask {
 struct TaskSummaryView: View {
     let task: CorptieTask
     var compact = false
+    var expandsWidth = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 3 : 7) {
@@ -92,6 +93,6 @@ struct TaskSummaryView: View {
                     .font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: expandsWidth ? .infinity : nil, alignment: .leading)
     }
 }
