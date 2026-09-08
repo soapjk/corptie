@@ -1,6 +1,6 @@
 export const WORK_SESSION_START_FIELDS = Object.freeze([
   "taskId", "assigneeAgentId", "expectedTaskVersion", "providerId", "title",
-  "idempotencyKey", "sourceSessionId", "dispatchInitialTurn"
+  "idempotencyKey", "sourceSessionId", "dispatchInitialTurn", "model", "reasoningLevel"
 ]);
 
 const FIELDS = new Set(WORK_SESSION_START_FIELDS);
@@ -43,11 +43,21 @@ export function decodeWorkSessionStartCommand(input = {}) {
     assigneeAgentId,
     expectedTaskVersion,
     providerId: requiredText(input.providerId, "PROVIDER_CAPABILITY_UNAVAILABLE", "providerId"),
+    ...optionalSetting(input, "model"),
+    ...optionalSetting(input, "reasoningLevel"),
     ...(text(input.title) ? { title: text(input.title) } : {}),
     idempotencyKey: boundedText(input.idempotencyKey, "idempotencyKey", 200),
     sourceSessionId,
     dispatchInitialTurn: input.dispatchInitialTurn !== false
   });
+}
+
+function optionalSetting(input, field) {
+  if (input[field] == null) return {};
+  if (typeof input[field] !== "string" || !input[field].trim() || input[field].length > 200) {
+    throw startContractError("INVALID_INPUT", `${field} must be a non-empty string of at most 200 characters.`);
+  }
+  return { [field]: input[field].trim() };
 }
 
 export function startContractError(code, message, details = undefined) {

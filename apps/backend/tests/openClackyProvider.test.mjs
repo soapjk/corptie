@@ -29,6 +29,20 @@ test("OpenClacky Provider exposes the shared command contract", () => {
   assert.equal(descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.SESSION_FAILED_BINDING_RECOVERY), true);
 });
 
+test("OpenClacky applies creation reasoning before returning the Session", async () => {
+  const requests = [];
+  const manager = new OpenClackyManager({
+    fetch: async (url, init = {}) => {
+      requests.push({ path: new URL(url).pathname, method: init.method ?? "GET", body: init.body && JSON.parse(init.body) });
+      return Response.json({ session: { id: "chosen", name: "Chosen", status: "idle", working_dir: "/tmp" } });
+    }, WebSocket: FakeWebSocket
+  });
+  await manager.create({ title: "Chosen", cwd: "/tmp", reasoningLevel: "high" });
+  const patch = requests.find(row => row.method === "PATCH");
+  assert.equal(patch.path, "/api/sessions/chosen/reasoning_effort");
+  assert.deepEqual(patch.body, { reasoning_effort: "high" });
+});
+
 test("OpenClacky validates create/send state through REST and sends content through its realtime transport", async () => {
   FakeWebSocket.instances.length = 0;
   const requests = [];

@@ -176,7 +176,11 @@ export class OpenClackyManager {
     // asynchronous workspace/bootstrap initialization. Read the authoritative
     // Session once before returning so the route coordinator never commits a
     // failed target binding as if it were ready.
-    const initialized = await this.refreshOne(sessionId);
+    let initialized = await this.refreshOne(sessionId);
+    // Apply through the existing configuration endpoint before any initial
+    // prompt. The bootstrap endpoint does not declare a reasoning field.
+    const reasoningLevel = optionalText(input.reasoningLevel);
+    if (reasoningLevel) initialized = await this.switchReasoning(sessionId, reasoningLevel);
     const prompt = optionalText(input.prompt);
     if (prompt) this.sendSocket(sessionId, { type: "message", session_id: sessionId, content: prompt });
     this.onSessionChanged?.({ type: "created", session: initialized });

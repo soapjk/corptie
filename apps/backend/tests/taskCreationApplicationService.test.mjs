@@ -52,6 +52,20 @@ function fixture() {
   };
 }
 
+test("creation forwards selected model and reasoning to the companion Session", async () => {
+  for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) {
+    const f = fixture();
+    await createTaskAndSession({ ...f,
+      taskInput: { workId: "work:one", title: "New", mainAgentId: "agent:worker" },
+      sourceSessionId: "session:source", providerId, idempotencyKey: "settings",
+      model: "model:test", reasoningLevel: "high"
+    });
+    assert.equal(f.startCommands[0].providerId, providerId);
+    assert.equal(f.startCommands[0].model, "model:test");
+    assert.equal(f.startCommands[0].reasoningLevel, "high");
+  }
+});
+
 test("creation starts with the committed post-event version, not the returned snapshot", async () => {
   const f = fixture();
   const create = f.workService.createTask;
