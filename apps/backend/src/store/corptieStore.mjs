@@ -14953,7 +14953,12 @@ function capabilitiesForStoredProvider(provider = "", status = "") {
 
 export function normalizedStoredProviderCapabilities(provider = "", status = "", persisted = null) {
   const fallback = capabilitiesForStoredProvider(provider, status);
-  if (provider === "claude-sdk") return fallback;
+  if (provider === "claude-sdk") return {
+    ...fallback,
+    // A failed Turn is not a failed Session. Respect the current execution
+    // projection, including an explicit denial for a broken Provider binding.
+    ...(typeof persisted?.canSend === "boolean" ? { canSend: persisted.canSend } : {})
+  };
   if (provider === "codex-app-server") {
     return {
       ...fallback,

@@ -299,6 +299,9 @@ function finiteUsageNumber(value) {
 
 function projectedTurnStatus(event, terminalOutcome = null) {
   if (terminalOutcome) return terminalOutcome.status;
+  // Configuration notices belong to the timeline, not to an executing Turn.
+  // Adapters may deliver them through the item stream while no Turn is active.
+  if (ITEM_EVENT_TYPES.has(event.type) && event.payload?.item?.type === "system") return null;
   if (event.type === "approval.requested") return "blocked";
   if (event.type === "turn.started" || ITEM_EVENT_TYPES.has(event.type)) return "running";
   return null;
