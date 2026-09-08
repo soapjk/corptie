@@ -16,13 +16,6 @@ struct FreeWorkCanvasTests {
             #expect(frames.map(\.size) == items.map(\.size))
         }
     }
-    @Test func rejectsOverlappingDragButAllowsFreeLegalPositions() {
-        let frame = CGRect(x: 0, y: 0, width: 100, height: 100)
-        let obstacle = CGRect(x: 200, y: 0, width: 100, height: 100)
-        #expect(!FreeWorkCanvasGeometry.permitsMove(frame, by: CGSize(width: 120, height: 0), obstacles: [obstacle]))
-        #expect(FreeWorkCanvasGeometry.permitsMove(frame, by: CGSize(width: 87.25, height: 0), obstacles: [obstacle]))
-        #expect(FreeWorkCanvasGeometry.permitsMove(frame, by: CGSize(width: 88, height: 0), obstacles: [obstacle]))
-    }
     @Test func contentGrowthResolvesChainsOfOverlaps() {
         let items = (0..<20).map { WorkPackingEngine.Item(id: String($0), size: CGSize(width: 240, height: 300)) }
         let positions = Dictionary(uniqueKeysWithValues: items.map { ($0.id, CGPoint(x: 12.5, y: 20)) })

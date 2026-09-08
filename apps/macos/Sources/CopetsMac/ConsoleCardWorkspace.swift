@@ -22,7 +22,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @State private var clickHistory = TaskCardClickHistory()
     @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
     @State private var frontWorkID: String?
-    @State private var draggingWorkID: String?
+    @State private var canvasDrag = WorkCanvasDragController()
     @State private var canvasFrames: [String: CGRect] = [:]
     private static var canvasKey: String { "console.freeWorkCanvas.positions.v1" }
     private static func loadCanvasPositions() -> [String: CGPoint] {
@@ -90,11 +90,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                             } else {
                                 FreeWorkCanvasLayout(
                                     positions: canvasPositions,
-                                    viewport: CGSize(width: max(1, viewport.size.width - 20), height: max(1, viewport.size.height - 20))
+                                    viewport: CGSize(width: max(1, viewport.size.width - 20), height: max(1, viewport.size.height - 20)),
+                                    frozenFrames: canvasDrag.snapshot
                                 ) {
                                     ForEach(orderedWorks) { work in
                                         group(work)
                                             .geometryGroup()
+                                            .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: work.id),
+                                                frozenSize: canvasDrag.snapshot[work.id]?.size))
                                             .transition(.opacity)
                                             .anchorPreference(key: WorkCanvasAnchors.self, value: .bounds) { [work.id: $0] }
                                             .zIndex(frontWorkID == work.id ? 1 : 0)
@@ -105,11 +108,11 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 .backgroundPreferenceValue(WorkCanvasAnchors.self) { anchors in
                                     GeometryReader { geometry in
                                         Color.clear.preference(key: WorkCanvasOrigins.self,
-                                            value: anchors.mapValues { geometry[$0] })
+                                            value: canvasDrag.activeID == nil ? anchors.mapValues { geometry[$0] } : canvasFrames)
                                     }
                                 }
                                 .onPreferenceChange(WorkCanvasOrigins.self) { frames in
-                                    guard draggingWorkID == nil else { return }
+                                    guard canvasDrag.activeID == nil else { return }
                                     if canvasFrames != frames { canvasFrames = frames }
                                     let changed = frames.mapValues(\.origin).filter { canvasPositions[$0.key] != $0.value }
                                     if !changed.isEmpty {
@@ -127,8 +130,13 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                     }
         }
         .onAppear { if isActive { rebuild(reset: false) } }
+        .onDisappear { canvasDrag.cancel() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in canvasDrag.cancel() }
+        .onChange(of: orderedWorks.map(\.id)) { _, _ in canvasDrag.cancel() }
         .onChange(of: refreshRevision) { _, _ in if isActive { rebuild(reset: true) } }
-        .onChange(of: isActive) { _, active in if active { rebuild(reset: false) } }
+        .onChange(of: isActive) { _, active in
+            if active { rebuild(reset: false) } else { canvasDrag.cancel() }
+        }
         .onReceive(AppStateStore.shared.$isReachable.removeDuplicates()) { reachable = $0 }
         .onReceive(AppStateStore.shared.$syncError.removeDuplicates()) { syncError = $0 }
         .onChange(of: tasks) { _, _ in if isActive { rebuild(reset: false) } }
@@ -217,17 +225,17 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
     private func group(_ work: Work) -> some View {
         return CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) },
-            origin: canvasPositions[work.id] ?? .zero,
-            beginDrag: { frontWorkID = work.id; draggingWorkID = work.id },
-            permitsDrag: { delta in
-                guard let frame = canvasFrames[work.id] else { return false }
-                return FreeWorkCanvasGeometry.permitsMove(frame, by: delta,
-                    obstacles: canvasFrames.filter { $0.key != work.id }.map(\.value))
+            beginDrag: {
+                if canvasDrag.begin(id: work.id, frames: canvasFrames, reducedMotion: reduceMotion) { frontWorkID = work.id }
             },
-            finishDrag: { delta in
-                canvasPositions[work.id] = FreeWorkCanvasGeometry.moved(canvasPositions[work.id] ?? .zero, by: delta)
-                draggingWorkID = nil
-                saveCanvasPositions()
+            updateDrag: { canvasDrag.update(id: work.id, translation: $0) },
+            cancelDrag: { canvasDrag.cancel() },
+            finishDrag: {
+                canvasDrag.finish(id: work.id) { frames in
+                    canvasPositions.merge(frames.mapValues(\.origin), uniquingKeysWith: { _, new in new })
+                    canvasFrames = frames
+                    saveCanvasPositions()
+                }
             }) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(displayedTasks(for: work)) { task in
@@ -380,13 +388,13 @@ private struct CompactWorkCard<Content: View>: View {
     let work: Work
     let discuss: () -> Void
     let createTask: () -> Void
-    let origin: CGPoint
     let beginDrag: () -> Void
-    let permitsDrag: (CGSize) -> Bool
-    let finishDrag: (CGSize) -> Void
+    let updateDrag: (CGSize) -> Void
+    let cancelDrag: () -> Void
+    let finishDrag: () -> Void
     @ViewBuilder let content: Content
-    @State private var dragOffset = CGSize.zero
     @State private var dragging = false
+    @GestureState private var gestureActive = false
     @State private var isHovering = false
     @FocusState private var isCreateTaskFocused: Bool
 
@@ -431,17 +439,20 @@ private struct CompactWorkCard<Content: View>: View {
         // Apply to the whole card, including Task buttons. The nonzero distance
         // leaves ordinary clicks intact; a recognized drag takes precedence.
         .highPriorityGesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("freeWorkCanvas"))
+            .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
                 if !dragging { dragging = true; beginDrag() }
-                let point = FreeWorkCanvasGeometry.moved(origin, by: value.translation)
-                let proposed = CGSize(width: point.x - origin.x, height: point.y - origin.y)
-                if permitsDrag(proposed) { dragOffset = proposed }
+                updateDrag(value.translation)
             }
-            .onEnded { _ in
-                finishDrag(dragOffset)
-                dragOffset = .zero; dragging = false
+            .onEnded { value in
+                updateDrag(value.translation)
+                finishDrag()
+                dragging = false
             }, including: .all)
-        .offset(dragOffset)
+        .onChange(of: gestureActive) { _, active in
+            if !active && dragging { dragging = false; cancelDrag() }
+        }
+        .onDisappear { dragging = false }
     }
 }
 
