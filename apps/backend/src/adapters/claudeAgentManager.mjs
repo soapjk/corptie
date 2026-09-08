@@ -300,11 +300,12 @@ export class ClaudeAgentManager {
     if (!nextModel) {
       throw new Error("Model is required");
     }
-    session.currentModel = nextModel;
-    session.updatedAt = new Date().toISOString();
     if (session.query) {
       await session.query.setModel(nextModel);
     }
+    // Do not publish a model which the live Query rejected.
+    session.currentModel = nextModel;
+    session.updatedAt = new Date().toISOString();
     this.appendItem(session, {
       type: "system",
       title: "Claude Code",

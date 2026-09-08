@@ -11,8 +11,29 @@ import {
   activeStoredSessionProjections,
   canonicalSessionIdFromEventPayload,
   persistProviderSessionProjection,
+  persistSessionModelSelection,
   visibleStoredSessionProjections
 } from "../src/application/providerSessionProjection.mjs";
+
+test("Claude failed Turn preserves explicit retry capability without bypassing a binding denial", () => {
+  assert.equal(normalizedStoredProviderCapabilities("claude-sdk", "failed", { canSend: true }).canSend, true);
+  assert.equal(normalizedStoredProviderCapabilities("claude-sdk", "failed", { canSend: false }).canSend, false);
+  assert.equal(normalizedStoredProviderCapabilities("claude-sdk", "failed", null).canSend, false);
+});
+
+test("model selection persists for every Provider without rewriting execution or ownership", () => {
+  for (const provider of ["claude-sdk", "codex-app-server", "openclacky"]) {
+    let row = { id: "session:one", provider, status: "failed", taskId: "task:one",
+      capabilities: { canSend: true }, external: { currentModel: "old", activeTurnId: null } };
+    const store = { getSession: () => row, upsertSession: (next) => { row = next; } };
+    persistSessionModelSelection(store, { reference: { sessionId: row.id }, modelId: "new", providerSession: {} });
+    assert.equal(row.currentModel, "new");
+    assert.equal(row.external.currentModel, "new");
+    assert.equal(row.status, "failed");
+    assert.equal(row.taskId, "task:one");
+    assert.equal(row.capabilities.canSend, true);
+  }
+});
 
 test("resident Session projection excludes archives and restored rows rejoin", () => {
   let archived = true;
@@ -92,6 +113,11 @@ test("a newly created Provider Session persists provider-neutral entity ownershi
     assert.equal(stored.sessionKind, "worker");
     assert.equal(stored.workId, work.id);
     assert.equal(stored.taskId, task.id);
+    persistSessionModelSelection(store, {
+      reference: { sessionId: stored.id }, modelId: "recovery-model", providerSession: {}
+    });
+    assert.equal(store.getSession(stored.id).external.currentModel, "recovery-model");
+    assert.equal(store.getSession(stored.id).taskId, task.id);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

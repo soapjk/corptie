@@ -17,6 +17,7 @@ export class SessionApplicationService {
     this.bindCreatedSession = options.bindCreatedSession ?? null;
     this.removeSessionBinding = options.removeSessionBinding ?? null;
     this.persistRenamedSession = options.persistRenamedSession ?? null;
+    this.persistModelSelection = options.persistModelSelection ?? null;
     this.resolveMessageContext = options.resolveMessageContext ?? null;
     this.assertMessageDispatchAllowed = options.assertMessageDispatchAllowed ?? null;
     this.recoverUnavailableSession = options.recoverUnavailableSession ?? null;
@@ -486,13 +487,16 @@ export class SessionApplicationService {
 
   async switchModel(sessionId, modelId, context = {}) {
     const reference = await this.referenceFor(sessionId);
-    return this.registry.invoke(
+    const providerSession = await this.registry.invoke(
       reference.providerId,
       AGENT_PROVIDER_CAPABILITIES.MODEL_SWITCH,
       reference,
       modelId,
       context
     );
+    return this.persistModelSelection
+      ? await this.persistModelSelection({ reference, modelId, providerSession, context })
+      : providerSession;
   }
 
   async switchReasoning(sessionId, level, context = {}) {
