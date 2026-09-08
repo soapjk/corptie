@@ -6,13 +6,16 @@ struct WorkPackingID: LayoutValueKey { static let defaultValue = "" }
 /// Size one Task from its content, independently of siblings and the viewport.
 /// Arrangement belongs to SwiftUI's VStack, not the rectangle packing engine.
 struct ContentSizedTaskCardLayout: Layout {
+    static func cardWidth(ideal: CGFloat) -> CGFloat {
+        WorkCardGrid.width(ideal: ideal, maximum: 264)
+    }
     func makeCache(subviews: Subviews) -> CGSize? { nil }
     func updateCache(_ cache: inout CGSize?, subviews: Subviews) { cache = nil }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout CGSize?) -> CGSize {
         if let cache { return cache }
         guard let child = subviews.first else { return .zero }
-        let width = WorkCardGrid.width(ideal: child.sizeThatFits(.unspecified).width, maximum: 384)
+        let width = Self.cardWidth(ideal: child.sizeThatFits(.unspecified).width)
         let measured = child.sizeThatFits(ProposedViewSize(width: width, height: nil))
         let size = CGSize(width: width, height: max(1, ceil(measured.height.isFinite ? measured.height : 1)))
         cache = size
