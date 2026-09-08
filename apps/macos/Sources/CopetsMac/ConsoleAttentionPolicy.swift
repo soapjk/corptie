@@ -18,9 +18,10 @@ enum ConsoleAttentionPolicy {
 
     static func shouldShow(_ input: Input) -> Bool {
         guard !input.excluded else { return false }
-        // Pin the user's current context, and never hide active execution.
-        if input.selected || input.running { return true }
+        // Active execution remains protected; explicit deferral beats selection.
+        if input.running { return true }
         if input.deferred { return false }
+        if input.selected { return true }
         if input.unread || input.explicitAttention || input.summary == .required || input.summary == .attention { return true }
         // Unknown is not a positive attention signal. Keep its semantic value,
         // but do not retain an already-read Task merely for having past replies.
@@ -100,5 +101,27 @@ enum ConsoleAttentionPolicy {
             scheduled: task.hasPendingScheduledWake == true,
             summary: attentionDecision(task, session: session),
             deferred: deferred)
+    }
+}
+
+/// Only explicit card clicks enter this bounded, local navigation history.
+struct TaskCardClickHistory {
+    private(set) var ids: [String] = []
+    mutating func visit(_ id: String) {
+        ids.removeAll { $0 == id }
+        ids.append(id)
+        if ids.count > 64 { ids.removeFirst(ids.count - 64) }
+    }
+    mutating func dismiss(_ id: String, eligible: Set<String>) -> String? {
+        ids.removeAll { $0 == id || !eligible.contains($0) }
+        return ids.last
+    }
+}
+
+enum TaskCardSituationText {
+    static func compact(_ reason: String, historical: Bool) -> String {
+        let text = reason.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let bounded = text.count > 100 ? String(text.prefix(100)) + "…" : text
+        return (historical ? "待确认 · " : "") + (bounded.isEmpty ? "需要介入" : bounded)
     }
 }

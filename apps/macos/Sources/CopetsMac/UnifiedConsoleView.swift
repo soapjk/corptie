@@ -417,9 +417,10 @@ enum ConsoleTaskOpenDecision: Equatable {
 enum ConsoleSelectionRefreshPolicy {
     static func permitsAutomaticDefaultSelection(
         selectedTaskID: String?,
-        selectedSessionID: String?
+        selectedSessionID: String?,
+        explicitlyCleared: Bool = false
     ) -> Bool {
-        selectedTaskID == nil && selectedSessionID == nil
+        !explicitlyCleared && selectedTaskID == nil && selectedSessionID == nil
     }
 }
 
@@ -504,6 +505,7 @@ struct UnifiedConsoleView: View {
     @State private var liveTaskColumnWidth: Double?
     @State private var cardChatVisible = false
     @State private var cardAttentionCount = 0
+    @State private var cardSelectionExplicitlyCleared = false
     @State private var cardRefreshRevision = 0
     @State private var showsCardTaskDetails = false
     @State private var isHoveringNavigationResizeHandle = false
@@ -847,6 +849,12 @@ struct UnifiedConsoleView: View {
                             selectSessionAfterHighlight(hydrated)
                         }
                     }
+                }, clearSelection: {
+                    cardSelectionExplicitlyCleared = true
+                    pendingSelectionTask?.cancel()
+                    pendingSelectionTask = nil
+                    selectedTaskId = nil
+                    backendClient.closeDetail()
                 }, discuss: { work in
                     if let session = workChatSession(for: work.id) { openWorkChat(for: work, session: session) }
                 }, createTask: { presentTaskCreation(for: $0.id) },
@@ -1732,6 +1740,7 @@ struct UnifiedConsoleView: View {
     }
 
     private func openTask(_ task: CorptieTask, session: TaskSession?) {
+        cardSelectionExplicitlyCleared = false
         selectedWorkId = task.workId
         selectedCategory = .worker
         selectedTaskId = task.id
@@ -1930,7 +1939,8 @@ struct UnifiedConsoleView: View {
         }
         guard ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
             selectedTaskID: selectedTaskId,
-            selectedSessionID: selectionController.selectedSessionID
+            selectedSessionID: selectionController.selectedSessionID,
+            explicitlyCleared: navigationMode == .taskCards && cardSelectionExplicitlyCleared
         ) else { return }
         selectDefaultContentForCurrentSpace()
     }
@@ -2081,6 +2091,7 @@ struct UnifiedConsoleView: View {
     }
 
     private func selectSessionAfterHighlight(_ session: TaskSession, focusComposer: Bool = false) {
+        cardSelectionExplicitlyCleared = false
         pendingSelectionTask?.cancel()
         pendingSelectionTask = nil
         // Commit the lightweight local selection synchronously. The native
