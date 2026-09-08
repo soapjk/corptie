@@ -3,6 +3,30 @@ import test from "node:test";
 import { TaskSummaryService } from "../src/application/taskSummaryService.mjs";
 import { TaskSummaryRepository } from "../src/store/taskSummaryRepository.mjs";
 
+test("attention context isolates recent dialogue and binds the latest agent reply", () => {
+  const service = new TaskSummaryService({ store: {
+    getTask: () => ({ title: "任务", description: "描述", user_summary_json: "OLD_SUMMARY" }),
+    selectAll: (sql) => {
+      assert.match(sql, /type IN \('agentMessage','userMessage'\)/);
+      assert.match(sql, /LIMIT 9/);
+      return [
+        { id: "user:2", type: "userMessage", text: "已经确认", created_at: "3" },
+        { id: "agent:1", type: "agentMessage", text: "请确认", created_at: "2" },
+        { id: "user:1", type: "userMessage", text: "开始", created_at: "1" }
+      ];
+    }
+  }, backgroundAgent: {}, isEnabled: () => true });
+  const context = service.context({ taskID: "task:1", basis: { sessionID: "session:1", taskRevision: 1 } });
+  const prompt = JSON.parse(context.prompt);
+  assert.equal(context.targetMessageId, "agent:1");
+  assert.equal(prompt.latestUserMessage.id, "user:2");
+  assert.equal(prompt.latestAgentMessage.text, "请确认");
+  assert.equal(context.incomplete, false);
+  assert.equal(context.allowedSources.has("agent:1"), true);
+  assert.equal(context.prompt.includes("OLD_SUMMARY"), false);
+  service.close();
+});
+
 test("pending jobs use stable lazy pages instead of stopping at 64 busy Tasks", () => {
   const calls = [];
   const first = Array.from({ length: 64 }, (_, index) => ({ task_id: `task:${index}`, requested_at: "same-time" }));
