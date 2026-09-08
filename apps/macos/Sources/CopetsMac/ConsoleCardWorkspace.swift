@@ -257,7 +257,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                         .frame(width: 7, height: 7)
                         .help(status(task, session))
                         .accessibilityLabel(status(task, session))
-                    Text(task.title).font(.system(size: 13, weight: .semibold)).lineLimit(3)
+                    Text(task.title).font(.system(size: 13, weight: .semibold)).lineLimit(2).help(task.title)
                     if task.hasPendingScheduledWake == true {
                         Image(systemName: "alarm").foregroundStyle(.orange).help("存在有效的待执行计划任务")
                     }
@@ -321,7 +321,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 current ? (summary?.reason ?? "") :
                 (task.userSummary?.content?.retainedAttention?.reason ?? task.userSummary?.content?.reason ?? "")
             let text = TaskCardSituationText.compact(reason, historical: !current && !systemAction)
-            Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
                 .help(reason)
         }
     }
