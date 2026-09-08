@@ -49,6 +49,7 @@ import {
   codexLifecycleAdapter
 } from "./application/providerSessionLifecycle.mjs";
 import { PlatformOperationService } from "./application/platformOperationService.mjs";
+import { inspectFailedStartupDeletion } from "./application/failedStartupDeletionInspection.mjs";
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
 import { SessionChannelService } from "./collaboration/sessionChannelService.mjs";
@@ -56,6 +57,7 @@ import {
   activeStoredSessionProjections,
   canonicalSessionIdFromEventPayload,
   persistProviderSessionProjection,
+  persistSessionModelSelection,
   visibleStoredSessionProjections
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
@@ -1449,6 +1451,7 @@ const sessionApplicationService = new SessionApplicationService({
       external: providerSession?.external ?? stored.external
     } : providerSession;
   },
+  persistModelSelection: (input) => persistSessionModelSelection(store, input),
   removeSessionBinding: async ({ reference }) => {
     collaborationCore.detachSession(reference.sessionId);
     collaborationCore.detachSession(reference.providerSessionId);
@@ -8627,7 +8630,7 @@ async function inspectTaskWorktree(taskId) {
   }
   const logical = store.getLogicalSessionByLegacySessionId(session.id);
   if (!logical?.activeBinding) {
-    return { status: "unavailable", sessionId: session.id, worktree: null, canReclaim: false, blocker: "NO_WORKSPACE_ROUTE" };
+    return inspectFailedStartupDeletion({ task, session, store, gitWorkspaces, isBusy: sessionHasActiveRun });
   }
   if (!logical.activeWorkspaceId) {
     return {

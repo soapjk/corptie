@@ -22,6 +22,22 @@ async function fixture() {
   return { directory, store, projector: new ProviderEventProjector({ store }) };
 }
 
+test("a model change notice cannot create an unsettled Turn before the first message", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ binding, event: event("tool.started", {
+      payload: { item: { id: "model-change", turnId: "turn:one", type: "system",
+        title: "Model", text: "Switched model", turnStatus: "complete" } }
+    }) });
+    assert.equal(store.listUnsettledSessionTurns(binding.sessionId).length, 0);
+    assert.equal(store.getSession(binding.sessionId).status, "complete");
+    assert.ok(store.getItems(binding.sessionId).some(item => item.id === "model-change"));
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a Provider user item arriving before send returns updates the durable product message instead of inserting an alias", async () => {
   const { directory, store, projector } = await fixture();
   try {

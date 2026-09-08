@@ -40,6 +40,20 @@ export function persistProviderSessionProjection(store, session, {
   return store.getSession(session.id);
 }
 
+export function persistSessionModelSelection(store, { reference, modelId, providerSession }) {
+  const stored = store.getSession(reference.sessionId);
+  if (!stored) throw Object.assign(new Error("Session no longer exists."), { code: "SESSION_NOT_FOUND" });
+  // Only configuration is updated here. Turn status and authorization remain
+  // owned by their existing projections; a model change is not a successful Turn.
+  store.upsertSession({
+    ...stored,
+    currentModel: modelId,
+    external: { ...stored.external, currentModel: modelId },
+    updatedAt: new Date().toISOString()
+  });
+  return { ...providerSession, ...store.getSession(reference.sessionId) };
+}
+
 export function canonicalSessionIdFromEventPayload(payload = {}, {
   resolveStableSessionId = null
 } = {}) {

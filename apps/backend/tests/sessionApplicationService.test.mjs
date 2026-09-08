@@ -9,6 +9,25 @@ import {
   validateReasoningLevelForModel
 } from "../src/agent-provider/sessionApplicationService.mjs";
 
+test("model selection persists only after the Provider acknowledges it", async () => {
+  const calls = [];
+  let reject = false;
+  const service = new SessionApplicationService({
+    registry: { invoke: async () => {
+      if (reject) throw new Error("model rejected");
+      calls.push("acknowledged");
+      return { id: "session:one" };
+    } },
+    resolveSessionReference: async () => ({ sessionId: "session:one", providerId: "any-provider", providerSessionId: "native:one" }),
+    persistModelSelection: async ({ modelId }) => { calls.push(modelId); return { persisted: true }; }
+  });
+  assert.deepEqual(await service.switchModel("session:one", "new"), { persisted: true });
+  assert.deepEqual(calls, ["acknowledged", "new"]);
+  reject = true;
+  await assert.rejects(service.switchModel("session:one", "bad"), /model rejected/);
+  assert.deepEqual(calls, ["acknowledged", "new"]);
+});
+
 test("binding failure removes the new Provider resource and orphan projection", async () => {
   const calls = [];
   const cause = Object.assign(new Error("Duplicate title"), { code: "SESSION_TITLE_CONFLICT" });
