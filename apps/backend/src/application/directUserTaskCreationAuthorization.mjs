@@ -1,4 +1,5 @@
-const DIRECT_MESSAGE_SOURCES = new Set(["desktop", "macos", "feishu", "dsh"]);
+// IMgateway is transport-neutral; feishu remains a legacy persisted adapter source.
+const DIRECT_MESSAGE_SOURCES = new Set(["desktop", "macos", "imgateway", "feishu", "dsh"]);
 
 export function authorizeDirectUserTaskCreation(input = {}) {
   const logicalSessionId = required(input.logicalSessionId, "logical_session_id");
@@ -29,7 +30,7 @@ export function authorizeDirectUserTaskCreation(input = {}) {
   return { logicalSessionId, eventId: event.eventId, sequence: event.sequence, turnId };
 }
 
-function directUserTaskCreationRejection(event) {
+export function directUserTaskCreationRejection(event) {
   const sourceType = String(event?.source?.type ?? "");
   const direct = event?.type === "SessionUserMessageCreated"
     && event.producer === "user"
