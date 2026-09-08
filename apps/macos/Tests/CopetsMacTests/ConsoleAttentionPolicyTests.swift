@@ -2,6 +2,11 @@ import Testing
 @testable import CorptieMac
 
 struct ConsoleAttentionPolicyTests {
+    @Test func situationTextIsBoundedAndMarksHistoricalJudgments() {
+        #expect(TaskCardSituationText.compact("等待\n 用户确认", historical: false) == "等待 用户确认")
+        #expect(TaskCardSituationText.compact("", historical: true) == "待确认 · 需要介入")
+        #expect(TaskCardSituationText.compact(String(repeating: "文", count: 200), historical: false).count == 101)
+    }
     @Test func readingDoesNotResolveAttention() {
         #expect(ConsoleAttentionPolicy.shouldShow(.init(unread: true, summary: .attention)))
         #expect(ConsoleAttentionPolicy.shouldShow(.init(summary: .attention)))
@@ -44,9 +49,26 @@ struct ConsoleAttentionPolicyTests {
         #expect(!ConsoleAttentionPolicy.shouldShow(.init(unread: true, explicitAttention: true, deferred: true)))
         #expect(ConsoleAttentionPolicy.shouldShow(.init(unread: true, explicitAttention: true, deferred: false)))
     }
-    @Test func currentTaskRemainsUntilUserSwitches() {
-        #expect(ConsoleAttentionPolicy.shouldShow(.init(selected: true, deferred: true)))
+    @Test func deferralImmediatelyRemovesCurrentTask() {
+        #expect(!ConsoleAttentionPolicy.shouldShow(.init(selected: true, deferred: true)))
         #expect(!ConsoleAttentionPolicy.shouldShow(.init(selected: false, deferred: true)))
+        #expect(!ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
+            selectedTaskID: nil, selectedSessionID: nil, explicitlyCleared: true))
+    }
+    @Test func deferralReturnsThroughExplicitClickHistory() {
+        var history = TaskCardClickHistory()
+        history.visit("a"); history.visit("b"); history.visit("c")
+        #expect(history.dismiss("c", eligible: ["a", "b"]) == "b")
+        #expect(history.dismiss("b", eligible: ["a"]) == "a")
+        #expect(history.dismiss("a", eligible: []) == nil)
+    }
+    @Test func historySkipsUnavailableCardsAndDeduplicatesRepeatedClicks() {
+        var history = TaskCardClickHistory()
+        history.visit("a"); history.visit("b"); history.visit("b"); history.visit("c")
+        #expect(history.ids == ["a", "b", "c"])
+        #expect(history.dismiss("c", eligible: ["a"]) == "a")
+        for index in 0..<1000 { history.visit(String(index)) }
+        #expect(history.ids.count == 64)
     }
     @Test func cancelledOrScheduledWorkIsNotInventedAttention() {
         #expect(!ConsoleAttentionPolicy.shouldShow(.init(hasReply: true, cancelled: true)))

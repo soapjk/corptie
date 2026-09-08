@@ -3,16 +3,42 @@ import Foundation
 @testable import CorptieMac
 
 struct FreeWorkCanvasTests {
-    @Test func positionsStayExactAcrossResizeAndAllowOverlap() {
+    @Test func repairsOldOverlapWithoutResizingCardsOrSnappingCoordinates() {
         let items = [WorkPackingEngine.Item(id: "a", size: CGSize(width: 240, height: 120)),
                      WorkPackingEngine.Item(id: "b", size: CGSize(width: 360, height: 200))]
         let positions = ["a": CGPoint(x: 17.25, y: 39.75), "b": CGPoint(x: 17.25, y: 39.75)]
         for width in [200.0, 600, 1000] {
             let frames = FreeWorkCanvasGeometry.frames(items: items, positions: positions, initialWidth: width)
             #expect(frames[0].origin == positions["a"]!)
-            #expect(frames[1].origin == positions["b"]!)
-            #expect(frames[0].intersects(frames[1]))
+            #expect(frames[1].minX == positions["b"]!.x)
+            #expect(frames[1].minY == frames[0].maxY + 12)
+            #expect(!frames[0].intersects(frames[1]))
+            #expect(frames.map(\.size) == items.map(\.size))
         }
+    }
+    @Test func rejectsOverlappingDragButAllowsFreeLegalPositions() {
+        let frame = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let obstacle = CGRect(x: 200, y: 0, width: 100, height: 100)
+        #expect(!FreeWorkCanvasGeometry.permitsMove(frame, by: CGSize(width: 120, height: 0), obstacles: [obstacle]))
+        #expect(FreeWorkCanvasGeometry.permitsMove(frame, by: CGSize(width: 87.25, height: 0), obstacles: [obstacle]))
+        #expect(FreeWorkCanvasGeometry.permitsMove(frame, by: CGSize(width: 88, height: 0), obstacles: [obstacle]))
+    }
+    @Test func contentGrowthResolvesChainsOfOverlaps() {
+        let items = (0..<20).map { WorkPackingEngine.Item(id: String($0), size: CGSize(width: 240, height: 300)) }
+        let positions = Dictionary(uniqueKeysWithValues: items.map { ($0.id, CGPoint(x: 12.5, y: 20)) })
+        let frames = FreeWorkCanvasGeometry.frames(items: items, positions: positions, initialWidth: 800)
+        for i in frames.indices {
+            for j in frames.indices where j > i { #expect(!frames[i].intersects(frames[j])) }
+        }
+        #expect(frames.last!.maxY == CGFloat(20 + 20 * 300 + 19 * 12))
+    }
+    @Test func reportsCollisionLayoutCost() {
+        let items = (0..<200).map { WorkPackingEngine.Item(id: String($0), size: CGSize(width: 240, height: 160)) }
+        let positions = Dictionary(uniqueKeysWithValues: items.map { ($0.id, CGPoint(x: 10, y: 10)) })
+        let start = ContinuousClock.now
+        let frames = FreeWorkCanvasGeometry.frames(items: items, positions: positions, initialWidth: 800)
+        print("Collision layout, 200 cards: \(start.duration(to: .now))")
+        #expect(frames.count == 200)
     }
     @Test func movesDoNotSnapOrDisplaceOtherCards() {
         let result = FreeWorkCanvasGeometry.moved(CGPoint(x: 20, y: 30), by: CGSize(width: 3.75, height: 9.25))

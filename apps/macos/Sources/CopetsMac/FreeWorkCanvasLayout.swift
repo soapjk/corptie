@@ -7,8 +7,8 @@ struct WorkCanvasAnchors: PreferenceKey {
     }
 }
 struct WorkCanvasOrigins: PreferenceKey {
-    static var defaultValue: [String: CGPoint] { [:] }
-    static func reduce(value: inout [String: CGPoint], nextValue: () -> [String: CGPoint]) {
+    static var defaultValue: [String: CGRect] { [:] }
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
         value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }
@@ -19,11 +19,15 @@ struct FreeWorkCanvasLayout: Layout {
     struct Cache {
         var items: [WorkPackingEngine.Item] = []
         var measured = false
+        var resolved: [CGRect] = []
+        var positions: [String: CGPoint] = [:]
+        var viewportWidth: CGFloat = -1
     }
     func makeCache(subviews: Subviews) -> Cache { Cache() }
     func updateCache(_ cache: inout Cache, subviews: Subviews) { cache.measured = false }
     private func frames(_ subviews: Subviews, _ cache: inout Cache) -> [CGRect] {
-        if !cache.measured {
+        let remeasure = !cache.measured
+        if remeasure {
             cache.items = subviews.map { view in
                 let width = WorkCardGrid.width(ideal: view.sizeThatFits(.unspecified).width)
                 let size = view.sizeThatFits(.init(width: width, height: nil))
@@ -31,7 +35,11 @@ struct FreeWorkCanvasLayout: Layout {
             }
             cache.measured = true
         }
-        return FreeWorkCanvasGeometry.frames(items: cache.items, positions: positions, initialWidth: viewport.width)
+        if remeasure || cache.positions != positions || cache.viewportWidth != viewport.width {
+            cache.resolved = FreeWorkCanvasGeometry.frames(items: cache.items, positions: positions, initialWidth: viewport.width)
+            cache.positions = positions; cache.viewportWidth = viewport.width
+        }
+        return cache.resolved
     }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let rects = frames(subviews, &cache)
@@ -57,12 +65,25 @@ enum FreeWorkCanvasGeometry {
             return packing.frames
         }
         var bottom = items.compactMap { item in positions[item.id].map { $0.y + item.size.height } }.max() ?? 0
+        var placed: [CGRect] = []
         return items.map { item in
-            if let point = positions[item.id] { return CGRect(origin: point, size: item.size) }
-            let rect = CGRect(x: 0, y: bottom + 12, width: item.size.width, height: item.size.height)
-            bottom = rect.maxY
+            var rect = CGRect(origin: positions[item.id] ?? CGPoint(x: 0, y: bottom + 12), size: item.size)
+            // Sweep top-to-bottom; y only increases, without iterative packing.
+            // Keep every non-conflicting free coordinate and card size exact.
+            for obstacle in placed.sorted(by: { $0.minY < $1.minY }) where conflicts(obstacle, rect) {
+                rect.origin.y = obstacle.maxY + 12
+            }
+            placed.append(rect)
+            bottom = max(bottom, rect.maxY)
             return rect
         }
+    }
+    static func permitsMove(_ frame: CGRect, by delta: CGSize, obstacles: [CGRect]) -> Bool {
+        let proposed = frame.offsetBy(dx: delta.width, dy: delta.height)
+        return !obstacles.contains { conflicts($0, proposed) }
+    }
+    private static func conflicts(_ a: CGRect, _ b: CGRect) -> Bool {
+        a.minX < b.maxX + 12 && b.minX < a.maxX + 12 && a.minY < b.maxY + 12 && b.minY < a.maxY + 12
     }
     static func moved(_ origin: CGPoint, by delta: CGSize) -> CGPoint {
         // Canvas starts at its top-left boundary; coordinates are never grid-rounded.

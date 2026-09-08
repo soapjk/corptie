@@ -14,12 +14,16 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @Binding var attentionCount: Int
     let refreshRevision: Int
     let openTask: (CorptieTask, TaskSession?) -> Void
+    let clearSelection: () -> Void
     let discuss: (Work) -> Void
     let createTask: (Work) -> Void
     let taskMenu: (CorptieTask) -> TaskMenu
     @State private var members: [String: [String]] = [:]
+    @State private var clickHistory = TaskCardClickHistory()
     @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
     @State private var frontWorkID: String?
+    @State private var draggingWorkID: String?
+    @State private var canvasFrames: [String: CGRect] = [:]
     private static var canvasKey: String { "console.freeWorkCanvas.positions.v1" }
     private static func loadCanvasPositions() -> [String: CGPoint] {
         guard let data = CorptieAppEnvironment.userDefaults.data(forKey: canvasKey),
@@ -76,7 +80,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                             }
                             if let browsing {
                                 Text(browsing.name).font(.headline)
-                                ForEach(pageTasks) { task in card(task) }
+                                ForEach(pageTasks.filter { !isDeferred($0) }) { task in card(task) }
                                 if let loadError { Text(loadError).foregroundStyle(.red) }
                                 if hasMore || loadError != nil {
                                     Button(isLoading ? "加载中…" : "加载更多") { loadPage(browsing, reset: false) }
@@ -101,13 +105,15 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 .backgroundPreferenceValue(WorkCanvasAnchors.self) { anchors in
                                     GeometryReader { geometry in
                                         Color.clear.preference(key: WorkCanvasOrigins.self,
-                                            value: anchors.mapValues { geometry[$0].origin })
+                                            value: anchors.mapValues { geometry[$0] })
                                     }
                                 }
-                                .onPreferenceChange(WorkCanvasOrigins.self) { origins in
-                                    let missing = origins.filter { canvasPositions[$0.key] == nil }
-                                    if !missing.isEmpty {
-                                        canvasPositions.merge(missing, uniquingKeysWith: { old, _ in old })
+                                .onPreferenceChange(WorkCanvasOrigins.self) { frames in
+                                    guard draggingWorkID == nil else { return }
+                                    if canvasFrames != frames { canvasFrames = frames }
+                                    let changed = frames.mapValues(\.origin).filter { canvasPositions[$0.key] != $0.value }
+                                    if !changed.isEmpty {
+                                        canvasPositions.merge(changed, uniquingKeysWith: { _, new in new })
                                         saveCanvasPositions()
                                     }
                                 }
@@ -212,9 +218,15 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     private func group(_ work: Work) -> some View {
         return CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) },
             origin: canvasPositions[work.id] ?? .zero,
-            beginDrag: { frontWorkID = work.id },
+            beginDrag: { frontWorkID = work.id; draggingWorkID = work.id },
+            permitsDrag: { delta in
+                guard let frame = canvasFrames[work.id] else { return false }
+                return FreeWorkCanvasGeometry.permitsMove(frame, by: delta,
+                    obstacles: canvasFrames.filter { $0.key != work.id }.map(\.value))
+            },
             finishDrag: { delta in
                 canvasPositions[work.id] = FreeWorkCanvasGeometry.moved(canvasPositions[work.id] ?? .zero, by: delta)
+                draggingWorkID = nil
                 saveCanvasPositions()
             }) {
             VStack(alignment: .leading, spacing: 8) {
@@ -233,6 +245,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         let execution = session?.executionTaskStatus ?? task.executionStatus.flatMap(TaskStatus.init(rawValue:))
         let needsAttention = session?.attention != nil || ConsoleAttentionPolicy.currentSummary(task, session: session)?.intervention == "required"
         return Button {
+            if let selectedTaskID { clickHistory.visit(selectedTaskID) }
+            clickHistory.visit(task.id)
             openTask(task, session)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
@@ -266,56 +280,49 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                 if let data = try? JSONEncoder().encode(deferred) {
                     CorptieAppEnvironment.userDefaults.set(data, forKey: Self.deferredKey)
                 }
+                if selectedTaskID == task.id { returnAfterDeferring(task.id) }
                 rebuild(reset: false)
             }
             .disabled(ConsoleAttentionPolicy.input(task, session: session, selected: false, deferred: false).running)
-            .help("仅从本机重点面板暂缓；新回复或新事项出现后重新显示。当前 Task 在切换后移出。")
+            .help("立即从本机重点面板移出；若正在浏览，返回上次点击的可用卡片。新回复或新事项出现后重新显示。")
             Divider()
             taskMenu(task)
         }
+    }
+
+    private func isDeferred(_ task: CorptieTask) -> Bool {
+        guard let receipt = deferred[task.id] else { return false }
+        let session = sessionByTask[task.id] ?? sessions.first { $0.id == task.currentSessionId }
+        return receipt == ConsoleAttentionPolicy.receipt(task, session: session)
+    }
+
+    private func returnAfterDeferring(_ id: String) {
+        let workIDs = Set(works.map(\.id))
+        let candidates = Dictionary((tasks + pageTasks).filter { task in
+            task.id != id && task.archived != true && task.deletionStatus == nil
+                && workIDs.contains(task.workId) && !isDeferred(task)
+                && (query.isEmpty || task.title.localizedCaseInsensitiveContains(query)
+                    || works.first(where: { $0.id == task.workId })?.name.localizedCaseInsensitiveContains(query) == true)
+        }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        guard let previous = clickHistory.dismiss(id, eligible: Set(candidates.keys)),
+              let task = candidates[previous] else { clearSelection(); return }
+        let session = sessionByTask[task.id] ?? sessions.first { $0.id == task.currentSessionId }
+        openTask(task, session)
     }
 
     @ViewBuilder
     private func interventionSummary(_ task: CorptieTask, session: TaskSession?) -> some View {
         let summary = ConsoleAttentionPolicy.currentSummary(task, session: session)
         let decision = ConsoleAttentionPolicy.attentionDecision(task, session: session)
-        if summary?.intervention != "required", summary?.intervention != "attention",
-           decision == .required || decision == .attention {
-            Text("上次关注事项尚未确认解决 · 判断待更新")
-                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-            if let content = task.userSummary?.content {
-                let reason = content.retainedAttention?.reason ?? content.reason
-                if !reason.isEmpty {
-                    Text("上次关注：\(reason)").font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
-                }
-            }
-        }
-        if let preview = summary?.messageSummary, !preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Text(preview).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
-        } else if ConsoleAttentionPolicy.requiresSystemAction(session) || (session.map(isSessionUnread) ?? false) {
-            messagePreview(session)
-        }
-        if summary?.intervention == "required", let summary {
-            if !summary.reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(summary.reason).font(.system(size: 12)).foregroundStyle(.orange).lineLimit(3)
-            }
-            if !summary.nextAction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("需要你：\(summary.nextAction)").font(.system(size: 12, weight: .medium)).lineLimit(3)
-            } else {
-                Text("需要介入，请进入会话查看").font(.caption).foregroundStyle(.secondary)
-            }
-        } else if ConsoleAttentionPolicy.requiresSystemAction(session) {
-            Text(session?.attention?.reason ?? "请处理会话中的选择或授权请求")
-                .font(.system(size: 12)).foregroundStyle(.orange).lineLimit(3)
-        }
-    }
-
-    @ViewBuilder
-    private func messagePreview(_ session: TaskSession?, excluding: String = "") -> some View {
-        let preview = String((session?.summary ?? "").prefix(600)).trimmingCharacters(in: .whitespacesAndNewlines)
-        if !preview.isEmpty && preview != excluding {
-            Text("会话预览：\(preview)")
-                .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(3)
+        let systemAction = ConsoleAttentionPolicy.requiresSystemAction(session)
+        if decision == .required || systemAction {
+            let current = summary?.intervention == "required"
+            let reason = systemAction ? (session?.attention?.reason ?? "等待选择或授权") :
+                current ? (summary?.reason ?? "") :
+                (task.userSummary?.content?.retainedAttention?.reason ?? task.userSummary?.content?.reason ?? "")
+            let text = TaskCardSituationText.compact(reason, historical: !current && !systemAction)
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
+                .help(reason)
         }
     }
 
@@ -375,6 +382,7 @@ private struct CompactWorkCard<Content: View>: View {
     let createTask: () -> Void
     let origin: CGPoint
     let beginDrag: () -> Void
+    let permitsDrag: (CGSize) -> Bool
     let finishDrag: (CGSize) -> Void
     @ViewBuilder let content: Content
     @State private var dragOffset = CGSize.zero
@@ -426,7 +434,8 @@ private struct CompactWorkCard<Content: View>: View {
             .onChanged { value in
                 if !dragging { dragging = true; beginDrag() }
                 let point = FreeWorkCanvasGeometry.moved(origin, by: value.translation)
-                dragOffset = CGSize(width: point.x - origin.x, height: point.y - origin.y)
+                let proposed = CGSize(width: point.x - origin.x, height: point.y - origin.y)
+                if permitsDrag(proposed) { dragOffset = proposed }
             }
             .onEnded { _ in
                 finishDrag(dragOffset)
