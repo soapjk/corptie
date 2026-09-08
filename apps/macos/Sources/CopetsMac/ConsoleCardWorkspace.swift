@@ -4,6 +4,7 @@ import Flow
 /// No transcript reads or per-card observers. Index on collection changes,
 /// derive attention membership without changing the selected conversation.
 struct ConsoleCardWorkspace<TaskMenu: View>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var isActive = true
     let works: [Work]
     let tasks: [CorptieTask]
@@ -69,11 +70,18 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 }
                                 if isLoading { ProgressView().controlSize(.small) }
                             } else {
-                                HFlow(alignment: .top, spacing: 12) {
+                                WorkPackingLayout(
+                                    selectedWorkID: selectedTaskID.flatMap { retainedTasks[$0]?.workId },
+                                    refreshRevision: refreshRevision
+                                ) {
                                     ForEach(orderedWorks) { work in
-                                        group(work).flexibility(.minimum).id(work.id)
+                                        group(work)
+                                            .geometryGroup()
+                                            .transition(.opacity)
+                                            .layoutValue(key: WorkPackingID.self, value: work.id).id(work.id)
                                     }
                                 }
+                                .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: packingAnimationKey)
                             }
                         }.padding(10)
                     }
@@ -92,6 +100,13 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     private var orderedWorks: [Work] {
         let index = Dictionary(uniqueKeysWithValues: works.map { ($0.id, $0) })
         return workOrder.compactMap { index[$0] }.filter { !displayedTasks(for: $0).isEmpty }
+    }
+
+    // Animate structural changes, not streaming messages, hover or container width.
+    private var packingAnimationKey: [[String]] {
+        orderedWorks.map { work in
+            [work.id, work.name] + displayedTasks(for: work).flatMap { [$0.id, $0.title] }
+        }
     }
 
     private func rebuild(reset: Bool) {

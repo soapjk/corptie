@@ -10498,8 +10498,7 @@ struct MessageComposer: View {
         importImageFiles(Array(panel.urls.prefix(max(0, 8 - attachedImages.count))), preserveOriginal: true)
     }
 
-    private func importImagesFromPasteboard() -> Bool {
-        let pasteboard = NSPasteboard.general
+    private func importImagesFromPasteboard(_ pasteboard: NSPasteboard) -> Bool {
         let urls = (pasteboard.readObjects(forClasses: [NSURL.self], options: [
             .urlReadingFileURLsOnly: true,
             .urlReadingContentsConformToTypes: [UTType.image.identifier]
@@ -10999,7 +10998,7 @@ private struct ComposerInputTextView: NSViewRepresentable {
     var onFocusChange: (Bool) -> Void = { _ in }
     var onSendableTextChange: (Bool) -> Void = { _ in }
     var onContentHeightChange: (CGFloat) -> Void = { _ in }
-    var onPasteImages: () -> Bool = { false }
+    var onPasteImages: (NSPasteboard) -> Bool = { _ in false }
     var onMentionQueryChange: (ComposerMentionQuery?) -> Void = { _ in }
     var onMentionAnchorChange: (UnitPoint) -> Void = { _ in }
     var onMentionCommand: (ComposerMentionCommand) -> Bool = { _ in false }
@@ -11227,9 +11226,8 @@ private struct ComposerInputTextView: NSViewRepresentable {
         }
     }
 
-    final class ComposerSubmitTextView: NSTextView {
+    final class ComposerSubmitTextView: ComposerPasteTextView {
         var onSubmit: (() -> Void)?
-        var onPasteImages: (() -> Bool)?
         var onMentionCommand: ((ComposerMentionCommand) -> Bool)?
         var onFocusChange: ((Bool) -> Void)?
         var placeholder = "" {
@@ -11254,11 +11252,6 @@ private struct ComposerInputTextView: NSViewRepresentable {
                 return
             }
             super.keyDown(with: event)
-        }
-
-        override func paste(_ sender: Any?) {
-            if onPasteImages?() == true { return }
-            super.paste(sender)
         }
 
         override func becomeFirstResponder() -> Bool {
