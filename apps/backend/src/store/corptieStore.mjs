@@ -14961,7 +14961,10 @@ export function normalizedStoredProviderCapabilities(provider = "", status = "",
     ...fallback,
     // A failed Turn is not a failed Session. Respect the current execution
     // projection, including an explicit denial for a broken Provider binding.
-    ...(typeof persisted?.canSend === "boolean" ? { canSend: persisted.canSend } : {})
+    ...(typeof persisted?.canSend === "boolean" ? { canSend: persisted.canSend } : {}),
+    // Interrupt availability comes from the execution projection. The legacy
+    // fallback must not hide an active Turn (or override an explicit denial).
+    ...(typeof persisted?.canInterrupt === "boolean" ? { canInterrupt: persisted.canInterrupt } : {})
   };
   if (provider === "codex-app-server") {
     return {
