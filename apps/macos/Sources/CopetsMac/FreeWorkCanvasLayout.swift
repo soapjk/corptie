@@ -1,16 +1,9 @@
 import SwiftUI
 
-struct WorkCanvasAnchors: PreferenceKey {
-    static var defaultValue: [String: Anchor<CGRect>] { [:] }
-    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
-}
-struct WorkCanvasOrigins: PreferenceKey {
-    static var defaultValue: [String: CGRect] { [:] }
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
-    }
+/// Non-observable output of Layout. Reading it on mouse-down cannot invalidate
+/// SwiftUI's graph, unlike feeding rendered anchors back into @State.
+final class WorkCanvasLayoutSnapshot {
+    var frames: [String: CGRect] = [:]
 }
 
 struct FreeWorkCanvasLayout: Layout {
@@ -18,6 +11,7 @@ struct FreeWorkCanvasLayout: Layout {
     let viewport: CGSize
     var worldOrigin: CGPoint = .zero
     var frozenFrames: [String: CGRect] = [:]
+    var snapshot: WorkCanvasLayoutSnapshot? = nil
     struct Cache {
         var items: [WorkPackingEngine.Item] = []
         var measured = false
@@ -44,7 +38,11 @@ struct FreeWorkCanvasLayout: Layout {
             cache.measured = true
         }
         if remeasure || cache.positions != positions || cache.viewportWidth != viewport.width {
-            cache.resolved = FreeWorkCanvasGeometry.frames(items: cache.items, positions: positions, initialWidth: viewport.width)
+            // Retain initial placement across window resizing, without saving
+            // geometry from a rendering callback. Explicit drop positions win.
+            let established = (snapshot?.frames.mapValues(\.origin) ?? [:])
+                .merging(positions, uniquingKeysWith: { _, explicit in explicit })
+            cache.resolved = FreeWorkCanvasGeometry.frames(items: cache.items, positions: established, initialWidth: viewport.width)
             cache.positions = positions; cache.viewportWidth = viewport.width
         }
         return cache.resolved
@@ -60,6 +58,11 @@ struct FreeWorkCanvasLayout: Layout {
             let rect = rects[index]
             view.place(at: CGPoint(x: bounds.minX + rect.minX - worldOrigin.x, y: bounds.minY + rect.minY - worldOrigin.y), anchor: .topLeading,
                        proposal: ProposedViewSize(rect.size))
+        }
+        if frozenFrames.isEmpty {
+            snapshot?.frames = Dictionary(uniqueKeysWithValues: zip(subviews, rects).map {
+                ($0.0[WorkPackingID.self], $0.1)
+            })
         }
     }
 }
