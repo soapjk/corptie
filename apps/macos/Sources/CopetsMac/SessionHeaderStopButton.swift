@@ -15,7 +15,12 @@ struct SessionHeaderStopButton: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.red)
                     .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
+                    .background(Color.red.opacity(0.22), in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
+                    .contentShape(Circle())
             }
             .buttonStyle(.borderless)
             .disabled(!backendClient.isOnline)
