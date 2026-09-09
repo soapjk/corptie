@@ -9,14 +9,17 @@ import test from "node:test";
 import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
 import { SessionCollaborationService } from "../src/application/sessionCollaborationService.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
-import { callCollaborationDynamicTool } from "../src/collaboration/collaborationDynamicTools.mjs";
+import { callCollaborationDynamicTool, collaborationDynamicTools } from "../src/collaboration/collaborationDynamicTools.mjs";
+import { HostToolCatalog } from "../src/application/hostToolCatalog.mjs";
+import { authorizeCollaborationTool } from "../src/collaboration/collaborationToolAuthorization.mjs";
 import { handleCollaborationHttpRequest } from "../src/collaboration/collaborationHttpApi.mjs";
 import { SessionChannelService } from "../src/collaboration/sessionChannelService.mjs";
 import { CollaborationHttpClient } from "../src/mcp/collaborationHttpClient.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-test("explicit @Session aliases route in one HTTP call across confirmation, reuse, missing, and ambiguity", async () => {
-  const value = await fixture();
+for (const sessionKind of ["assistantChat", "workChat", "worker"]) {
+test(`${sessionKind}: catalog-to-HTTP Channel routing confirms, reuses, and rejects invalid targets`, async () => {
+  const value = await fixture(sessionKind);
   try {
     const direct = await measuredOpen(value, {
       recipient_session_name: "@automation工具维护",
@@ -82,6 +85,7 @@ test("explicit @Session aliases route in one HTTP call across confirmation, reus
     await rm(value.directory, { recursive: true, force: true });
   }
 });
+}
 
 test("bundled Skill and runtime instruction use exact-alias-first routing", async () => {
   const skill = await readFile(new URL(
@@ -101,7 +105,8 @@ async function measuredOpen(value, args) {
   const before = value.callCount();
   const lookupsBefore = value.aliasLookupCount();
   const started = performance.now();
-  const result = await callCollaborationDynamicTool(value.client, "corptie_collaboration_channel_open", args);
+  assert.ok(value.catalog.definitions({ metadata: value.metadata }).some(tool => tool.name === "corptie_collaboration_channel_open"));
+  const result = await value.catalog.execute({ metadata: value.metadata, tool: "corptie_collaboration_channel_open", arguments: args });
   return {
     result,
     calls: value.callCount() - before,
@@ -129,7 +134,7 @@ async function measuredOpenError(value, args) {
   };
 }
 
-async function fixture() {
+async function fixture(sessionKind = "worker") {
   const directory = await mkdtemp(join(tmpdir(), "corptie-channel-direct-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"), configPath: join(directory, "config.json")
@@ -153,7 +158,9 @@ async function fixture() {
   });
   bind(store, core, directory, {
     logicalSessionId: "logical:source", providerSessionId: "provider:source",
-    sessionName: "source-session", agentId: source.agentId, workId: sourceWork.id, taskId: "task:source"
+    sessionName: "source-session", agentId: source.agentId, sessionKind,
+    workId: sessionKind === "assistantChat" ? null : sourceWork.id,
+    taskId: sessionKind === "worker" ? "task:source" : null
   });
   bind(store, core, directory, {
     logicalSessionId: "logical:automation", providerSessionId: "provider:automation",
@@ -180,13 +187,22 @@ async function fixture() {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   let calls = 0;
+  const metadata = { sessionId: "provider:source", sessionKind,
+    workId: sessionKind === "assistantChat" ? null : sourceWork.id,
+    taskId: sessionKind === "worker" ? "task:source" : null };
   const client = new CollaborationHttpClient({
     baseUrl: `http://127.0.0.1:${server.address().port}`,
     agentId: source.agentId,
-    sessionScope: { sessionId: "provider:source", workId: sourceWork.id, taskId: "task:source" },
+    sessionScope: metadata,
     fetch: (...args) => { calls += 1; return fetch(...args); }
   });
+  const catalog = new HostToolCatalog([{
+    id: "collaboration", tools: collaborationDynamicTools,
+    authorize: authorizeCollaborationTool,
+    execute: input => callCollaborationDynamicTool(client, input.tool, input.arguments)
+  }]);
   return {
+    catalog, metadata,
     directory, store, server, channels, staged, client,
     callCount: () => calls,
     aliasLookupCount: () => aliasLookups
@@ -194,12 +210,12 @@ async function fixture() {
 }
 
 function bind(store, core, directory, input) {
-  store.createTask({
+  if (input.taskId) store.createTask({
     id: input.taskId, workId: input.workId, title: input.taskId, mainAgentId: input.agentId
   }, { originType: "direct_user" });
   store.createSession({
     id: input.providerSessionId, title: input.sessionName, agentId: input.agentId,
-    sessionKind: "worker", workId: input.workId, taskId: input.taskId, cwd: directory
+    sessionKind: input.sessionKind ?? "worker", workId: input.workId, taskId: input.taskId, cwd: directory
   });
   store.createLogicalSessionRoute({
     logicalSessionId: input.logicalSessionId, legacySessionId: input.providerSessionId,

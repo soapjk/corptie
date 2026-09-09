@@ -51,11 +51,17 @@ export class SessionCollaborationService {
       sessionKind: scope.session.sessionKind,
       workId: scope.session.workId,
       taskId: scope.session.taskId,
-      actions: ["sessions.discover", "sessions.get", "tasks.list", "tasks.get", "tasks.result",
-        ...(!requestDenial ? ["collaboration.request"] : []), ...(canCreate
-        ? ["tasks.create", "tasks.relate", "tasks.share_artifact", "tasks.cancel"]
+      actions: ["sessions.discover", "sessions.get", "channels.open", "channels.list", "channels.get",
+        "channels.message_send", "channels.revoke", ...(scope.session.workId ? ["tasks.list", "tasks.get"] : []), ...(canCreate
+        ? ["tasks.create", "tasks.relate", "tasks.share_artifact"]
         : [])],
-      denials: requestDenial ? { "collaboration.request": requestDenial } : {},
+      denials: requestDenial ? { "tasks.create": requestDenial } : {},
+      channelPolicy: {
+        actor: "authenticated_session",
+        firstUse: "user_confirmation",
+        activeChannel: "endpoint_members_only",
+        createsTaskImplicitly: false
+      },
       destructiveActions: [],
       arbitraryUpdate: false
     };
@@ -490,7 +496,11 @@ export class SessionCollaborationService {
       const work = this.workService.getWork(scope.session.workId);
       return agentId === scope.agent.agentId || (work.contributorAgentIds ?? []).includes(agentId);
     }
-    if (!scope.session.workId) return agentId === scope.agent.agentId;
+    if (!scope.session.workId && !options.explicitPeerLookup) return agentId === scope.agent.agentId;
+    if (options.explicitPeerLookup && session.sessionKind === "assistantChat") {
+      const logical = this.store.getLogicalSessionByLegacySessionId(session.id);
+      return (!session.archived || options.includeArchived) && logical?.activeBinding?.state === "active";
+    }
     if (!options.explicitPeerLookup
       || !session.workId
       || (session.archived && !options.includeArchived)) return false;
@@ -511,7 +521,9 @@ export class SessionCollaborationService {
     const binding = logical?.activeBinding ?? null;
     const agentId = session.agentId ?? this.collaborationCore.getAgentForSession(session.id)?.agentId ?? null;
     const sameWork = Boolean(scope.session.workId && session.workId === scope.session.workId);
-    const peerWork = Boolean(scope.session.workId && session.workId && !sameWork);
+    // Exact cross-scope lookup exposes a route, never another Session's
+    // Provider or Workspace details, including callers without a Work.
+    const peerWork = session.id !== scope.session.id && !sameWork;
     const eligibility = collaborationSessionEligibility(this.store, session);
     return {
       sessionId: logical?.logicalSessionId ?? session.logicalSessionId ?? session.id,

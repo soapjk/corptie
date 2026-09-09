@@ -133,9 +133,11 @@ export class HostToolCatalog {
         source: normalizedSource(rawDefinition?.source ?? source),
         eligibleSurfaces: normalizedSurfaces(rawDefinition?.eligibleSurfaces ?? eligibleSurfaces),
         execute: namespace.execute,
+        // Resource operation policy must not hide a tool's contract. Explicit
+        // discovery policy is reserved for integration availability, not scope.
         authorizeDiscover: typeof namespace.authorizeDiscover === "function"
           ? namespace.authorizeDiscover
-          : (typeof namespace.authorize === "function" ? namespace.authorize : null),
+          : null,
         authorizeExecute: typeof namespace.authorizeExecute === "function"
           ? namespace.authorizeExecute
           : (typeof namespace.authorize === "function" ? namespace.authorize : null)
