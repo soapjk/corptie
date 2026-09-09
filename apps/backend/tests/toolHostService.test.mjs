@@ -453,7 +453,7 @@ test("Host Tool Catalog dispatches by tool name without Provider knowledge", asy
   );
 });
 
-test("Host Tool Catalog hides and rejects actor-restricted tools at both authorization layers", async () => {
+test("Host Tool Catalog exposes contracts independently of resource operation authorization", async () => {
   const catalog = new HostToolCatalog([{
     id: "platform",
     tools: [{ name: "corptie_platform_agents_list" }],
@@ -461,7 +461,10 @@ test("Host Tool Catalog hides and rejects actor-restricted tools at both authori
     execute: () => ({ ok: true })
   }]);
 
-  assert.deepEqual(catalog.definitions({ actorId: "ordinary-agent" }), []);
+  for (const sessionKind of ["assistantChat", "workChat", "worker"]) {
+    assert.deepEqual(catalog.definitions({ actorId: "ordinary-agent", metadata: { sessionKind } })
+      .map((tool) => tool.name), ["corptie_platform_agents_list"]);
+  }
   assert.deepEqual(catalog.definitions({ actorId: "assistant" }).map((tool) => tool.name), [
     "corptie_platform_agents_list"
   ]);
