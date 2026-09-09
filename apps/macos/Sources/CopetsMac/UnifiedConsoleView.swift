@@ -135,7 +135,9 @@ private struct ConsoleFlowingGradientWorkTitle: View {
     }
 }
 
-private struct ConsoleScheduledWakeIcon: View {
+/// Shared by list rows and experimental Task cards; animate only the icon.
+struct ConsoleScheduledWakeIcon: View {
+    var isActive = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isVisible = false
 
@@ -147,7 +149,7 @@ private struct ConsoleScheduledWakeIcon: View {
                 TimelineView(.animation(
                     minimumInterval: ConsoleWorkOutlineMetrics.workingGradientFrameInterval,
                     // AppKit-hosted windows do not reliably propagate SwiftUI scenePhase.
-                    paused: !isVisible
+                    paused: !isVisible || !isActive
                 )) { context in
                     coloredIcon(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
                 }
