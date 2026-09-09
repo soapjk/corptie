@@ -53,6 +53,7 @@ import { PlatformOperationService } from "./application/platformOperationService
 import { PlatformConfirmationService } from "./application/platformConfirmationService.mjs";
 import { SessionCollaborationService } from "./application/sessionCollaborationService.mjs";
 import { SessionChannelService } from "./collaboration/sessionChannelService.mjs";
+import { authorizeCollaborationTool } from "./collaboration/collaborationToolAuthorization.mjs";
 import {
   activeStoredSessionProjections,
   canonicalSessionIdFromEventPayload,
@@ -607,16 +608,7 @@ const hostToolCatalog = new HostToolCatalog([
       : collaborationDynamicTools.filter((tool) => !tool.name.startsWith("corptie_sessions_")
         && !tool.name.startsWith("corptie_collaboration_tasks_")
         && tool.name !== "corptie_collaboration_capabilities"),
-    authorize: ({ tool, metadata }) => {
-      if (tool === "corptie_collaboration_channel_open"
-        || tool.startsWith("corptie_collaboration_tasks_")) {
-        return ["workChat", "worker"].includes(metadata?.sessionKind) && Boolean(metadata?.workId);
-      }
-      if (tool === "corptie_collaboration_capabilities" || tool.startsWith("corptie_sessions_")) {
-        return Boolean(metadata?.sessionId);
-      }
-      return true;
-    },
+    authorize: authorizeCollaborationTool,
     execute: (input) => {
       const client = new CollaborationHttpClient({
         agentId: input.actorId,
