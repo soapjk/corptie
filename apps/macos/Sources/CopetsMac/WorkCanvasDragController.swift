@@ -56,16 +56,7 @@ final class WorkCanvasDragController {
     }
 
     static func landingFrames(_ frames: [String: CGRect], active: String) -> [String: CGRect] {
-        guard frames[active] != nil else { return frames }
-        // The dropped card owns its exact free coordinate. Reuse the existing
-        // deterministic canvas collision layout for other cards.
-        let ids = [active] + frames.keys.filter { $0 != active }.sorted {
-            let a = frames[$0]!, b = frames[$1]!
-            return a.minY == b.minY ? $0 < $1 : a.minY < b.minY
-        }
-        let items = ids.map { WorkPackingEngine.Item(id: $0, size: frames[$0]!.size) }
-        let resolved = FreeWorkCanvasGeometry.frames(items: items, positions: frames.mapValues(\.origin), initialWidth: 1)
-        return Dictionary(uniqueKeysWithValues: zip(ids, resolved))
+        WorkCanvasDropGeometry.resolve(frames, active: active)
     }
 
     func finish(id: String, onSettled: @escaping ([String: CGRect]) -> Void) {

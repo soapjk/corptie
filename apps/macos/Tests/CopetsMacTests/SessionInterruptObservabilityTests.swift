@@ -29,7 +29,14 @@ struct SessionInterruptObservabilityTests {
         let taskSource = try source(named: "WarRoomView.swift")
 
         #expect(rootSource.contains("surface: .sessionListRowControl"))
-        #expect(rootSource.contains("surface: .sessionDetailComposerControl"))
+        let headerSource = try source(named: "SessionHeaderStopButton.swift")
+        #expect(headerSource.contains("surface: .sessionDetailToolbar"))
+        #expect(headerSource.contains("session.executionTaskStatus == .running && session.canInterruptNow"))
+        #expect(headerSource.contains(".disabled(!backendClient.isOnline)"))
+        #expect(!rootSource.contains("surface: .sessionDetailComposerControl"))
+        for name in ["FloatingRootView.swift", "WorkspaceMessagePanel.swift", "DetachedChatWindowManager.swift"] {
+            #expect(try source(named: name).contains("SessionHeaderStopButton(session: session)"))
+        }
         #expect(taskSource.contains("surface: .taskDetailExecutionControl"))
     }
 
