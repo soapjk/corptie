@@ -19,6 +19,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     let createTask: (Work) -> Void
     let taskMenu: (CorptieTask) -> TaskMenu
     @State private var members: [String: [String]] = [:]
+    @ObservedObject private var displayPreferences = TaskCardDisplayPreferences.shared
     @State private var clickHistory = TaskCardClickHistory()
     @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
     @State private var frontWorkID: String?
@@ -135,6 +136,17 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                     }
         }
         .onAppear { if isActive { rebuild(reset: false) } }
+        .onChange(of: displayPreferences.taskIDs) { _, fixedIDs in
+            // Fixing a Task supersedes a prior local dismissal of the same issue.
+            let next = deferred.filter { !fixedIDs.contains($0.key) }
+            if next != deferred {
+                deferred = next
+                if let data = try? JSONEncoder().encode(next) {
+                    CorptieAppEnvironment.userDefaults.set(data, forKey: Self.deferredKey)
+                }
+            }
+            if isActive { rebuild(reset: false) }
+        }
         .onDisappear { canvasDrag.cancel() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in canvasDrag.cancel() }
         .onChange(of: orderedWorks.map(\.id)) { _, _ in canvasDrag.cancel() }
@@ -208,10 +220,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
             let wanted = candidates.filter { task in
                 let session = bindings[task.id]
                 let receipt = ConsoleAttentionPolicy.receipt(task, session: session)
-                let input = ConsoleAttentionPolicy.input(task, session: session,
+                var input = ConsoleAttentionPolicy.input(task, session: session,
                     selected: task.id == selectedTaskID, deferred: deferred[task.id] == receipt)
+                let automaticallyVisible = ConsoleAttentionPolicy.shouldShow(input)
+                input.fixedDisplay = displayPreferences.taskIDs.contains(task.id)
                 if ConsoleAttentionPolicy.shouldShow(input) {
-                    if !input.running && !input.deferred { nextAttentionCount += 1 }
+                    if automaticallyVisible && !input.running && !input.deferred { nextAttentionCount += 1 }
                     return true
                 }
                 return false
@@ -276,6 +290,13 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                         .help(status(task, session))
                         .accessibilityLabel(status(task, session))
                     Text(task.title).font(.system(size: 13, weight: .semibold)).lineLimit(2).help(task.title)
+                    if displayPreferences.taskIDs.contains(task.id) {
+                        Image(systemName: "bookmark.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                            .help("已固定展示")
+                            .accessibilityLabel("已固定展示")
+                    }
                     if task.hasPendingScheduledWake == true {
                         Image(systemName: "alarm").foregroundStyle(.orange).help("存在有效的待执行计划任务")
                     }
@@ -294,6 +315,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         }.anchorPreference(key: TaskCardAnchors.self, value: .bounds) { [task.id: $0] }
         .buttonStyle(.plain).disabled(task.deletionStatus == "deleting").contextMenu {
             Button("暂不处理") {
+                displayPreferences.setFixed(false, taskID: task.id)
                 deferred[task.id] = ConsoleAttentionPolicy.receipt(task, session: session)
                 if let data = try? JSONEncoder().encode(deferred) {
                     CorptieAppEnvironment.userDefaults.set(data, forKey: Self.deferredKey)
@@ -309,6 +331,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func isDeferred(_ task: CorptieTask) -> Bool {
+        if displayPreferences.taskIDs.contains(task.id) { return false }
         guard let receipt = deferred[task.id] else { return false }
         let session = sessionByTask[task.id] ?? sessions.first { $0.id == task.currentSessionId }
         return receipt == ConsoleAttentionPolicy.receipt(task, session: session)
