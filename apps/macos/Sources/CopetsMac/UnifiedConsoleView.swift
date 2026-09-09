@@ -1665,6 +1665,8 @@ struct UnifiedConsoleView: View {
         for task: CorptieTask,
         session: TaskSession?
     ) -> some View {
+        TaskFixedDisplayMenuItem(task: task)
+        Divider()
         Button(L10n("Rename"), systemImage: "pencil") {
             taskPendingRename = task
         }
