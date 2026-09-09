@@ -509,7 +509,6 @@ struct UnifiedConsoleView: View {
     @State private var cardAttentionCount = 0
     @State private var cardSelectionExplicitlyCleared = false
     @State private var cardRefreshRevision = 0
-    @State private var showsCardTaskDetails = false
     @State private var isHoveringNavigationResizeHandle = false
     private let consoleNavigationResizeCoordinateSpace = "console-navigation-resize"
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
@@ -534,15 +533,12 @@ struct UnifiedConsoleView: View {
                             HStack {
                                 Text("当前对话").font(.caption).foregroundStyle(.secondary)
                                 Spacer()
-                                Toggle("详情", isOn: $showsCardTaskDetails)
-                                    .toggleStyle(.button).controlSize(.small)
-                                    .help("显示或隐藏 Task Info")
                             }
                             .padding(.horizontal, MainWindowPageLayoutMetrics.outerPadding)
                             .padding(.top, 8)
                             sessionConversation
                         }
-                        .frame(minWidth: showsCardTaskDetails ? 680 : 400, maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 680, maxWidth: .infinity, maxHeight: .infinity)
                             .clipped()
                     }
                 }
@@ -2475,7 +2471,7 @@ struct UnifiedConsoleView: View {
                 || isArchivedWorkerSession(session) == isShowingWorkerArchive {
             HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing) {
                 // All navigation modes share the full conversation surface.
-                // Toggling details does not replace the editor or timeline.
+                // Keep details present without replacing the editor or timeline.
                 DetailView(
                     sessionId: session.id,
                     presentationCache: presentationCache,
@@ -2487,10 +2483,8 @@ struct UnifiedConsoleView: View {
                 )
                 .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: .top)
 
-                if navigationMode != .taskCards || showsCardTaskDetails {
                 SessionDetailPanel(session: session, railWidth: 280)
                     .frame(maxHeight: .infinity)
-                }
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
         } else if let task = selectedTask {
@@ -2520,11 +2514,9 @@ struct UnifiedConsoleView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .modifier(DetailRailSurfaceModifier(enabled: navigationMode == .taskCards))
 
-                if navigationMode != .taskCards || showsCardTaskDetails {
                 SessionCorptieTaskDetailCard(taskId: task.id)
                     .frame(width: 280)
                     .frame(maxHeight: .infinity)
-                }
             }
             .padding(MainWindowPageLayoutMetrics.outerPadding)
         } else {
