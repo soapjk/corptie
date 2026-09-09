@@ -4,6 +4,16 @@ import Testing
 
 struct UnifiedConsoleControlSurfaceTests {
     @Test
+    func experimentalDetailsRemainOpenWithoutToggleState() throws {
+        let source = try source(named: "UnifiedConsoleView.swift")
+        #expect(!source.contains("showsCardTaskDetails"))
+        #expect(!source.contains("显示或隐藏 Task Info"))
+        #expect(source.contains("SessionDetailPanel(session: session, railWidth: 280)"))
+        #expect(source.contains("SessionCorptieTaskDetailCard(taskId: task.id)"))
+        #expect(source.contains(".frame(minWidth: 680, maxWidth: .infinity, maxHeight: .infinity)"))
+    }
+
+    @Test
     func backgroundRefreshCannotChooseAnotherTaskAsDefault() throws {
         #expect(ConsoleSelectionRefreshPolicy.permitsAutomaticDefaultSelection(
             selectedTaskID: nil,
