@@ -87,9 +87,18 @@ struct UnifiedConsoleControlSurfaceTests {
         let taskRow = source[start.lowerBound..<end.lowerBound]
 
         #expect(taskRow.contains("if task.hasPendingScheduledWake == true"))
-        #expect(taskRow.contains("Image(systemName: \"alarm\")"))
-        #expect(taskRow.contains(".accessibilityLabel(L10n(\"存在等待执行的计划任务\"))"))
-        #expect(taskRow.contains(".help(L10n(\"存在等待执行的计划任务\"))"))
+        #expect(taskRow.contains("ConsoleScheduledWakeIcon()"))
+        let iconStart = try #require(source.range(of: "struct ConsoleScheduledWakeIcon: View"))
+        let iconEnd = try #require(source.range(of: "private struct ConsoleWorkOutlineDisclosureStyle"))
+        let icon = source[iconStart.lowerBound..<iconEnd.lowerBound]
+        #expect(icon.contains("Image(systemName: \"alarm\")"))
+        #expect(icon.contains(".accessibilityLabel(L10n(\"存在等待执行的计划任务\"))"))
+        #expect(icon.contains(".help(L10n(\"存在等待执行的计划任务\"))"))
+        #expect(icon.contains("AngularGradient("))
+        #expect(icon.contains("paused: !isVisible || !isActive"))
+        #expect(icon.contains("if reduceMotion"))
+        let cards = try self.source(named: "ConsoleCardWorkspace.swift")
+        #expect(cards.contains("if task.hasPendingScheduledWake == true {\n                        ConsoleScheduledWakeIcon(isActive: isActive)"))
     }
 
     @Test
