@@ -5,6 +5,7 @@ import { createdAtFromOrNow } from "../utils/timestamps.mjs";
 import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
+import { recoverClaudeSessionIdentity } from "./claudeSessionIdentity.mjs";
 import {
   claudeConnectionTestOptions,
   claudeRuntimeEnvironment,
@@ -102,6 +103,18 @@ export class ClaudeAgentManager {
 
   get(id) {
     return this.sessions.get(id) ?? null;
+  }
+
+  storedSession(id) {
+    return this.store?.getSession(`pty:${id}`) ?? this.store?.getSession(id) ?? null;
+  }
+
+  persistSessionIdentity(session) {
+    const stored = this.storedSession(session.id);
+    if (!stored || !session.agentSessionId || !this.store?.upsertSession) return;
+    if (stored.external?.agentSessionId === session.agentSessionId) return;
+    this.store.upsertSession({ ...stored, agentSessionId: session.agentSessionId,
+      external: { ...stored.external, agentSessionId: session.agentSessionId } });
   }
 
   has(id) {
@@ -604,12 +617,23 @@ export class ClaudeAgentManager {
       }
       return this.toSessionSummary(session);
     }
-    const stored = this.store?.getSession(id);
+    const stored = this.storedSession(id);
     if (!stored || stored.external?.provider !== "claude-sdk") {
       return null;
     }
     const raw = stored.rawStatus ?? {};
-    const agentSessionId = stored.external?.agentSessionId ?? raw.agentSessionId ?? null;
+    const storedItems = this.store?.getItems(stored.id, this.maxItems, "claude-sdk") ?? [];
+    let agentSessionId = stored.external?.agentSessionId ?? raw.agentSessionId ?? null;
+    if (!agentSessionId && storedItems.some(item => ["agentMessage", "userMessage"].includes(item.type))) {
+      const logical = this.store?.getLogicalSessionByLegacySessionId?.(stored.id);
+      agentSessionId = await recoverClaudeSessionIdentity({
+        configDirectory: this.environment()?.CLAUDE_CONFIG_DIR,
+        cwd: stored.external?.cwd, logicalSessionId: logical?.logicalSessionId
+      });
+      if (!agentSessionId) throw Object.assign(new Error("Claude Session identity could not be verified; refusing to start a new conversation."), {
+        code: "PROVIDER_SESSION_UNAVAILABLE"
+      });
+    }
     const session = {
       id,
       title: stored.title || "Claude Code",
@@ -643,7 +667,7 @@ export class ClaudeAgentManager {
       lastOutputAt: raw.lastOutputAt ?? null,
       nextItemSeq: Number(raw.nextItemSeq ?? 1),
       nextTurnSeq: Number(raw.nextTurnSeq ?? 1),
-      currentTurnId: raw.currentTurnId ?? null,
+      currentTurnId: null,
       items: [],
       pendingChoice: null,
       pendingDecision: null,
@@ -663,13 +687,13 @@ export class ClaudeAgentManager {
     session.runtimeOptions = options.runtimeOptions
       ? normalizeClaudeRuntimeOptions(options.runtimeOptions)
       : null;
-    const storedItems = this.store?.getItems(id, this.maxItems, "claude-sdk") ?? [];
     // Product history is Corptie-owned. Reconnect restores only the durable
     // Corptie Timeline and never imports the Provider-native transcript.
     session.items = storedItems.slice(-this.maxItems);
     session.nextItemSeq = Math.max(session.nextItemSeq, nextSeqFromItems(session.items));
     session.nextTurnSeq = Math.max(session.nextTurnSeq, nextTurnSeqFromItems(session.id, session.items));
     this.sessions.set(id, session);
+    this.persistSessionIdentity(session);
     const startQuery = options.startQuery !== false;
     console.log(`[claude-sdk] reconnecting id=${id} resume=${agentSessionId ?? "fresh"} startQuery=${startQuery}`);
     if (agentSessionId && startQuery) void this.ensureQueryStarted(session);
@@ -920,10 +944,12 @@ export class ClaudeAgentManager {
     console.log(`[claude-sdk] message id=${session.id} type=${message?.type ?? "unknown"} subtype=${message?.subtype ?? ""}`);
     if (message?.session_id && !session.agentSessionId) {
       session.agentSessionId = message.session_id;
+      this.persistSessionIdentity(session);
     }
 
     if (message?.type === "system" && message?.subtype === "init") {
       session.agentSessionId = message.session_id ?? session.agentSessionId;
+      this.persistSessionIdentity(session);
       session.currentModel = message.model ?? session.currentModel;
       session.phase = "ready";
       return;
