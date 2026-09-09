@@ -22,13 +22,42 @@ struct WorkCanvasCamera: Equatable {
     }
 }
 
-private struct WorkCanvasScaleKey: EnvironmentKey {
-    static let defaultValue: CGFloat = 1
+/// Read only by gesture callbacks. Its identity is stable in the environment;
+/// changing zoom must not invalidate every card's body or layout measurement.
+@MainActor final class WorkCanvasInteractionTransform {
+    var scale: CGFloat = 1
+}
+
+@Observable @MainActor
+final class WorkCanvasViewportState {
+    private(set) var camera = WorkCanvasCamera()
+    let interactionTransform = WorkCanvasInteractionTransform()
+
+    func zoom(by factor: CGFloat, at point: CGPoint) {
+        var next = camera
+        next.zoom(by: factor, at: point)
+        guard next != camera else { return }
+        interactionTransform.scale = next.scale
+        camera = next
+    }
+
+    func pan(by delta: CGSize) {
+        camera.translation.x += delta.width
+        camera.translation.y += delta.height
+    }
+
+    func reset() {
+        interactionTransform.scale = 1
+        camera = WorkCanvasCamera()
+    }
+}
+private struct WorkCanvasTransformKey: EnvironmentKey {
+    static let defaultValue: WorkCanvasInteractionTransform? = nil
 }
 extension EnvironmentValues {
-    var workCanvasScale: CGFloat {
-        get { self[WorkCanvasScaleKey.self] }
-        set { self[WorkCanvasScaleKey.self] = newValue }
+    var workCanvasInteractionTransform: WorkCanvasInteractionTransform? {
+        get { self[WorkCanvasTransformKey.self] }
+        set { self[WorkCanvasTransformKey.self] = newValue }
     }
 }
 
@@ -39,8 +68,20 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
     let isActive: Bool
     let cardDragging: Bool
     @ViewBuilder let content: Content
-    @State private var camera = WorkCanvasCamera()
+    @State private var viewportState: WorkCanvasViewportState
     @GestureState private var pan = CGSize.zero
+
+    init(origin: CGPoint, isActive: Bool, cardDragging: Bool,
+         viewportState: WorkCanvasViewportState = WorkCanvasViewportState(),
+         @ViewBuilder content: () -> Content) {
+        self.origin = origin
+        self.isActive = isActive
+        self.cardDragging = cardDragging
+        self.content = content()
+        _viewportState = State(initialValue: viewportState)
+    }
+
+    private var camera: WorkCanvasCamera { viewportState.camera }
 
     var body: some View {
         GeometryReader { viewport in
@@ -49,12 +90,11 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
                     .gesture(DragGesture(minimumDistance: 3, coordinateSpace: .global)
                         .updating($pan) { value, state, _ in state = value.translation }
                         .onEnded { value in
-                            camera.translation.x += value.translation.width
-                            camera.translation.y += value.translation.height
+                            viewportState.pan(by: value.translation)
                         })
                     .accessibilityLabel("Work 画布，滚轮缩放，拖动空白处平移")
                 content
-                    .environment(\.workCanvasScale, camera.scale)
+                    .environment(\.workCanvasInteractionTransform, viewportState.interactionTransform)
                     .fixedSize()
                     .scaleEffect(camera.scale, anchor: .topLeading)
                     .offset(x: camera.translation.x + pan.width + origin.x * camera.scale,
@@ -64,7 +104,7 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
             .contentShape(Rectangle())
             .clipped()
             .background(CanvasWheelInput(enabled: isActive && !cardDragging && pan == .zero) { point, delta in
-                camera.zoom(by: exp(delta * 0.008), at: point)
+                viewportState.zoom(by: exp(delta * 0.008), at: point)
             })
             // Resolve transformed anchors in screen space. The drawing surface
             // stays viewport-sized even when world coordinates are far apart.
@@ -72,7 +112,9 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
                 TaskCollaborationOverlay(anchors: anchors, active: isActive).clipped()
             }
             .overlay(alignment: .bottomTrailing) {
-                Button("\(Int((camera.scale * 100).rounded()))%") { camera = WorkCanvasCamera() }
+                Button("\(Int((camera.scale * 100).rounded()))%") {
+                    viewportState.reset()
+                }
                     .font(.caption2.monospacedDigit()).buttonStyle(.bordered).controlSize(.mini)
                     .help("重置画布位置与缩放").padding(8)
             }

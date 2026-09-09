@@ -24,7 +24,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @State private var canvasPositions: [String: CGPoint] = Self.loadCanvasPositions()
     @State private var frontWorkID: String?
     @State private var canvasDrag = WorkCanvasDragController()
-    @State private var canvasFrames: [String: CGRect] = [:]
+    @State private var layoutSnapshot = WorkCanvasLayoutSnapshot()
     private static var canvasKey: String { "console.freeWorkCanvas.positions.v1" }
     private static func loadCanvasPositions() -> [String: CGPoint] {
         guard let data = CorptieAppEnvironment.userDefaults.data(forKey: canvasKey),
@@ -93,7 +93,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     positions: canvasPositions,
                                     viewport: CGSize(width: max(1, viewport.size.width - 20), height: max(1, viewport.size.height - 20)),
                                     worldOrigin: canvasOrigin,
-                                    frozenFrames: canvasDrag.snapshot
+                                    frozenFrames: canvasDrag.snapshot,
+                                    snapshot: layoutSnapshot
                                 ) {
                                     ForEach(orderedWorks) { work in
                                         group(work)
@@ -101,29 +102,11 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                             .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: work.id),
                                                 frozenSize: canvasDrag.snapshot[work.id]?.size))
                                             .transition(.opacity)
-                                            .anchorPreference(key: WorkCanvasAnchors.self, value: .bounds) { [work.id: $0] }
                                             .zIndex(frontWorkID == work.id ? 1 : 0)
                                             .layoutValue(key: WorkPackingID.self, value: work.id).id(work.id)
                                     }
                                 }
                                 .coordinateSpace(name: "freeWorkCanvas")
-                                .backgroundPreferenceValue(WorkCanvasAnchors.self) { anchors in
-                                    GeometryReader { geometry in
-                                        Color.clear.preference(key: WorkCanvasOrigins.self,
-                                            value: canvasDrag.activeID == nil ? anchors.mapValues {
-                                                geometry[$0].offsetBy(dx: canvasOrigin.x, dy: canvasOrigin.y)
-                                            } : canvasFrames)
-                                    }
-                                }
-                                .onPreferenceChange(WorkCanvasOrigins.self) { frames in
-                                    guard canvasDrag.activeID == nil else { return }
-                                    if canvasFrames != frames { canvasFrames = frames }
-                                    let changed = frames.mapValues(\.origin).filter { canvasPositions[$0.key] != $0.value }
-                                    if !changed.isEmpty {
-                                        canvasPositions.merge(changed, uniquingKeysWith: { _, new in new })
-                                        saveCanvasPositions()
-                                    }
-                                }
                               }
                               .overlay(alignment: .topLeading) {
                                 if orderedWorks.isEmpty {
@@ -250,14 +233,14 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     private func group(_ work: Work) -> some View {
         return CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) },
             beginDrag: {
-                if canvasDrag.begin(id: work.id, frames: canvasFrames, reducedMotion: reduceMotion) { frontWorkID = work.id }
+                if canvasDrag.begin(id: work.id, frames: layoutSnapshot.frames, reducedMotion: reduceMotion) { frontWorkID = work.id }
             },
             updateDrag: { canvasDrag.update(id: work.id, translation: $0) },
             cancelDrag: { canvasDrag.cancel() },
             finishDrag: {
                 canvasDrag.finish(id: work.id) { frames in
                     canvasPositions.merge(frames.mapValues(\.origin), uniquingKeysWith: { _, new in new })
-                    canvasFrames = frames
+                    layoutSnapshot.frames = frames
                     saveCanvasPositions()
                 }
             }) {
@@ -298,7 +281,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                             .accessibilityLabel("已固定展示")
                     }
                     if task.hasPendingScheduledWake == true {
-                        Image(systemName: "alarm").foregroundStyle(.orange).help("存在有效的待执行计划任务")
+                        ConsoleScheduledWakeIcon(isActive: isActive)
                     }
                     if let session, isSessionUnread(session) { Circle().fill(.red).frame(width: 6, height: 6) }
                 }
@@ -418,7 +401,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
 /// Keep hover state within one Work card, not the workspace projection.
 private struct CompactWorkCard<Content: View>: View {
-    @Environment(\.workCanvasScale) private var canvasScale
+    @Environment(\.workCanvasInteractionTransform) private var interactionTransform
     let work: Work
     let discuss: () -> Void
     let createTask: () -> Void
@@ -476,10 +459,10 @@ private struct CompactWorkCard<Content: View>: View {
             .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
                 if !dragging { dragging = true; beginDrag() }
-                updateDrag(WorkCanvasCamera.worldDelta(value.translation, scale: canvasScale))
+                updateDrag(WorkCanvasCamera.worldDelta(value.translation, scale: interactionTransform?.scale ?? 1))
             }
             .onEnded { value in
-                updateDrag(WorkCanvasCamera.worldDelta(value.translation, scale: canvasScale))
+                updateDrag(WorkCanvasCamera.worldDelta(value.translation, scale: interactionTransform?.scale ?? 1))
                 finishDrag()
                 dragging = false
             }, including: .all)
