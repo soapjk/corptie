@@ -259,7 +259,7 @@ test("Claude emits stable incremental timeline items for SDK partial text", asyn
   const streamed = session.items.filter((item) => item.type === "agentMessage");
   assert.equal(streamed.length, 1);
   assert.equal(streamed[0].text, "Hello");
-  assert.equal(streamed[0].presentationRole, "final_answer");
+  assert.equal(streamed[0].presentationRole, "commentary");
   const deltas = events.filter((event) => event.type === "assistant.message.delta");
   assert.equal(new Set(deltas.map((event) => event.itemId)).size, 1);
   assert.deepEqual(deltas.map((event) => event.item.text), ["Hel", "Hello"]);

@@ -259,6 +259,7 @@ export class ClaudeAgentManager {
     session.deferredResult = null;
     session.lastResult = null;
     session.streamingAssistant = null;
+    session.toolContinuationItemIds = new Set();
     session.status = "running";
     session.phase = "input_sent";
     session.turnState = "running";
@@ -980,11 +981,17 @@ export class ClaudeAgentManager {
           this.updateStreamingAssistant(session, finalText, { completed: true });
         } else {
           for (const item of items.filter((item) => item.type === "agentMessage")) {
-            this.appendItem(session, item);
+            this.appendItem(session, { ...item, presentationRole: "commentary" });
           }
         }
         for (const item of items.filter((item) => item.type !== "agentMessage")) {
           this.appendItem(session, item);
+        }
+        if (finalText && message.message?.stop_reason === "tool_use") {
+          const lastText = session.items.findLast(item => item.turnId === session.currentTurnId && item.type === "agentMessage");
+          if (lastText) lastText.presentationRole = "commentary";
+          session.toolContinuationItemIds ??= new Set();
+          if (lastText) session.toolContinuationItemIds.add(lastText.id);
         }
       }
       return;
@@ -1134,7 +1141,9 @@ export class ClaudeAgentManager {
     const existing = session.streamingAssistant;
     if (!existing) {
       const item = this.appendItem(session, {
-        id: `${session.id}:stream:${session.currentTurnId ?? session.nextTurnSeq}`,
+        // A Turn can contain many assistant messages separated by tool calls.
+        // Only deltas of this message share an id, never the entire Turn.
+        id: `${session.id}:stream:${session.currentTurnId ?? session.nextTurnSeq}:${session.nextItemSeq}`,
         type: "agentMessage",
         title: "Claude Code",
         text: value,
@@ -1151,7 +1160,9 @@ export class ClaudeAgentManager {
     const item = {
       ...session.items[index],
       text: value,
-      presentationRole: options.completed === true ? "final_answer" : "commentary"
+      // SDK assistant completion closes a message, not the product Turn.
+      // Formal-answer promotion happens only when the Turn settles.
+      presentationRole: "commentary"
     };
     session.items[index] = item;
     session.streamingAssistant = options.completed === true
@@ -1533,12 +1544,12 @@ function finalizeClaudeTurnItems(session, turnId, turnStatus) {
   session.items = session.items.map((item, index) => {
     if (item.turnId !== turnId) return item;
     if (item.type === "agentMessage") agentIndexes.push(index);
-    if (item.type !== "userMessage") lastContentIndex = index;
+    if (!["userMessage", "reasoning", "system"].includes(item.type)) lastContentIndex = index;
     return { ...item, turnStatus };
   });
   const lastAgentIndex = agentIndexes.at(-1);
-  const finalAgentIndex = lastAgentIndex === lastContentIndex ? lastAgentIndex : null;
-  if (finalAgentIndex == null) return;
+  const finalAgentIndex = lastAgentIndex === lastContentIndex
+    && !session.toolContinuationItemIds?.has(session.items[lastAgentIndex]?.id) ? lastAgentIndex : null;
   session.items = session.items.map((item, index) => {
     if (item.turnId !== turnId || item.type !== "agentMessage") return item;
     return {
