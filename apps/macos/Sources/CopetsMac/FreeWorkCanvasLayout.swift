@@ -16,6 +16,7 @@ struct WorkCanvasOrigins: PreferenceKey {
 struct FreeWorkCanvasLayout: Layout {
     let positions: [String: CGPoint]
     let viewport: CGSize
+    var worldOrigin: CGPoint = .zero
     var frozenFrames: [String: CGRect] = [:]
     struct Cache {
         var items: [WorkPackingEngine.Item] = []
@@ -50,14 +51,14 @@ struct FreeWorkCanvasLayout: Layout {
     }
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let rects = frames(subviews, &cache)
-        return CGSize(width: max(viewport.width, (rects.map(\.maxX).max() ?? 0) + 80),
-                      height: max(viewport.height, (rects.map(\.maxY).max() ?? 0) + 80))
+        return CGSize(width: max(viewport.width, (rects.map(\.maxX).max() ?? 0) - worldOrigin.x + 80),
+                      height: max(viewport.height, (rects.map(\.maxY).max() ?? 0) - worldOrigin.y + 80))
     }
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         let rects = frames(subviews, &cache)
         for (index, view) in subviews.enumerated() {
             let rect = rects[index]
-            view.place(at: CGPoint(x: bounds.minX + rect.minX, y: bounds.minY + rect.minY), anchor: .topLeading,
+            view.place(at: CGPoint(x: bounds.minX + rect.minX - worldOrigin.x, y: bounds.minY + rect.minY - worldOrigin.y), anchor: .topLeading,
                        proposal: ProposedViewSize(rect.size))
         }
     }
@@ -90,7 +91,6 @@ enum FreeWorkCanvasGeometry {
         return a.minX < b.maxX + gap && b.minX < a.maxX + gap && a.minY < b.maxY + gap && b.minY < a.maxY + gap
     }
     static func moved(_ origin: CGPoint, by delta: CGSize) -> CGPoint {
-        // Canvas starts at its top-left boundary; coordinates are never grid-rounded.
-        CGPoint(x: max(0, origin.x + delta.width), y: max(0, origin.y + delta.height))
+        CGPoint(x: origin.x + delta.width, y: origin.y + delta.height)
     }
 }

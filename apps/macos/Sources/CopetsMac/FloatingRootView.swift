@@ -6067,6 +6067,10 @@ struct DetailHeaderView: View {
                 .help(L10n("Open workspace"))
                 .accessibilityLabel(L10n("Open workspace"))
                 .accessibilityIdentifier("session.detail.actions")
+
+                if let session = backendClient.selectedSession {
+                    SessionHeaderStopButton(session: session)
+                }
             }
         }
         .task(id: workspaceRouteIdentity) {
@@ -10242,15 +10246,6 @@ struct MessageComposer: View {
                     }
                     .accessibilityIdentifier(ScheduledSessionAccessibilityID.composerEntry)
 
-                    if isRunningTurn {
-                        Divider()
-                        Button {
-                            guard let session else { return }
-                            backendClient.interrupt(session: session, surface: .sessionDetailComposerControl)
-                        } label: {
-                            Label(L10n("Stop current run"), systemImage: "stop.fill")
-                        }
-                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 10, weight: .semibold))
@@ -10469,9 +10464,6 @@ struct MessageComposer: View {
         isFocused = true
     }
 
-    private var isRunningTurn: Bool {
-        session?.executionTaskStatus == .running && session?.canInterruptNow == true
-    }
 
     private var isSendDisabled: Bool {
         return (!hasSendableText && attachedImages.isEmpty)
