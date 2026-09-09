@@ -14,10 +14,12 @@ enum ConsoleAttentionPolicy {
         var scheduled = false
         var summary: Summary = .unknown
         var deferred = false
+        var fixedDisplay = false
     }
 
     static func shouldShow(_ input: Input) -> Bool {
         guard !input.excluded else { return false }
+        if input.fixedDisplay { return true }
         // Active execution remains protected; explicit deferral beats selection.
         if input.running { return true }
         if input.deferred { return false }
