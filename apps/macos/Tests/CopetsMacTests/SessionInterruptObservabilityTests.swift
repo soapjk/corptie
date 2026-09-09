@@ -40,6 +40,19 @@ struct SessionInterruptObservabilityTests {
         #expect(taskSource.contains("surface: .taskDetailExecutionControl"))
     }
 
+    @Test
+    func stopButtonHasDefinedCircleAndPrecedesDetachButton() throws {
+        let button = try source(named: "SessionHeaderStopButton.swift")
+        #expect(button.contains(".background(Color.red.opacity(0.22), in: Circle())"))
+        #expect(button.contains("Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)"))
+        let root = try source(named: "FloatingRootView.swift")
+        let start = try #require(root.range(of: "struct DetailHeaderView: View"))
+        let header = root[start.lowerBound...]
+        let stop = try #require(header.range(of: "SessionHeaderStopButton(session: session)"))
+        let detach = try #require(header.range(of: "DetachedChatWindowManager.shared.show(session: session)"))
+        #expect(stop.lowerBound < detach.lowerBound)
+    }
+
     private func source(named name: String) throws -> String {
         let testsURL = URL(fileURLWithPath: #filePath)
         let packageRoot = testsURL
