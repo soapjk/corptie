@@ -166,6 +166,9 @@ private struct DetachedChatWindowView: View {
                     .lineLimit(1)
 
                 Spacer(minLength: 0)
+                if let session {
+                    SessionHeaderStopButton(session: session)
+                }
             }
             .padding(.horizontal, 10)
             .frame(height: 38)

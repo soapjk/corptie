@@ -28,7 +28,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     private static func loadCanvasPositions() -> [String: CGPoint] {
         guard let data = CorptieAppEnvironment.userDefaults.data(forKey: canvasKey),
               let positions = try? JSONDecoder().decode([String: CGPoint].self, from: data) else { return [:] }
-        return positions.filter { $0.value.x.isFinite && $0.value.y.isFinite && $0.value.x >= 0 && $0.value.y >= 0 }
+        return positions.filter { $0.value.x.isFinite && $0.value.y.isFinite }
     }
     private func saveCanvasPositions() {
         if let data = try? JSONEncoder().encode(canvasPositions) {
@@ -72,13 +72,9 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                     .padding(.horizontal, 10)
             }
                     GeometryReader { viewport in
-                    ScrollView([.horizontal, .vertical]) {
-                        LazyVStack(alignment: .leading, spacing: 12) {
-                            if orderedWorks.isEmpty {
-                                Text(query.isEmpty ? "暂无需要关注的 Task" : "没有匹配的重点 Task")
-                                    .font(.caption).foregroundStyle(.secondary).padding(12)
-                            }
                             if let browsing {
+                              ScrollView {
+                               LazyVStack(alignment: .leading, spacing: 12) {
                                 Text(browsing.name).font(.headline)
                                 ForEach(pageTasks.filter { !isDeferred($0) }) { task in card(task) }
                                 if let loadError { Text(loadError).foregroundStyle(.red) }
@@ -87,10 +83,15 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                         .disabled(isLoading)
                                 }
                                 if isLoading { ProgressView().controlSize(.small) }
+                               }.padding(10)
+                              }
                             } else {
+                              InfiniteWorkCanvasViewport(origin: canvasOrigin, isActive: isActive,
+                                                         cardDragging: canvasDrag.activeID != nil) {
                                 FreeWorkCanvasLayout(
                                     positions: canvasPositions,
                                     viewport: CGSize(width: max(1, viewport.size.width - 20), height: max(1, viewport.size.height - 20)),
+                                    worldOrigin: canvasOrigin,
                                     frozenFrames: canvasDrag.snapshot
                                 ) {
                                     ForEach(orderedWorks) { work in
@@ -108,7 +109,9 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                 .backgroundPreferenceValue(WorkCanvasAnchors.self) { anchors in
                                     GeometryReader { geometry in
                                         Color.clear.preference(key: WorkCanvasOrigins.self,
-                                            value: canvasDrag.activeID == nil ? anchors.mapValues { geometry[$0] } : canvasFrames)
+                                            value: canvasDrag.activeID == nil ? anchors.mapValues {
+                                                geometry[$0].offsetBy(dx: canvasOrigin.x, dy: canvasOrigin.y)
+                                            } : canvasFrames)
                                     }
                                 }
                                 .onPreferenceChange(WorkCanvasOrigins.self) { frames in
@@ -120,13 +123,15 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                         saveCanvasPositions()
                                     }
                                 }
-                                .overlayPreferenceValue(TaskCardAnchors.self) { anchors in
-                                    TaskCollaborationOverlay(anchors: anchors, active: isActive)
+                              }
+                              .overlay(alignment: .topLeading) {
+                                if orderedWorks.isEmpty {
+                                    Text(query.isEmpty ? "暂无需要关注的 Task" : "没有匹配的重点 Task")
+                                        .font(.caption).foregroundStyle(.secondary).padding(12)
+                                        .allowsHitTesting(false)
                                 }
+                              }
                             }
-                        }.padding(10)
-                        .frame(minWidth: viewport.size.width, minHeight: viewport.size.height, alignment: .topLeading)
-                    }
                     }
         }
         .onAppear { if isActive { rebuild(reset: false) } }
@@ -143,6 +148,11 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         .onChange(of: sessions.map(CardSessionKey.init)) { _, _ in if isActive { rebuild(reset: false) } }
         .onChange(of: selectedTaskID) { _, _ in if isActive { rebuild(reset: false) } }
         .onChange(of: works) { _, _ in if isActive { rebuild(reset: false) } }
+    }
+
+    private var canvasOrigin: CGPoint {
+        let points = canvasDrag.snapshot.isEmpty ? Array(canvasPositions.values) : canvasDrag.snapshot.values.map(\.origin)
+        return CGPoint(x: min(0, points.map(\.x).min() ?? 0), y: min(0, points.map(\.y).min() ?? 0))
     }
 
     private var orderedWorks: [Work] {
@@ -385,6 +395,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
 /// Keep hover state within one Work card, not the workspace projection.
 private struct CompactWorkCard<Content: View>: View {
+    @Environment(\.workCanvasScale) private var canvasScale
     let work: Work
     let discuss: () -> Void
     let createTask: () -> Void
@@ -438,14 +449,14 @@ private struct CompactWorkCard<Content: View>: View {
         .contentShape(Rectangle())
         // Apply to the whole card, including Task buttons. The nonzero distance
         // leaves ordinary clicks intact; a recognized drag takes precedence.
-        .highPriorityGesture(DragGesture(minimumDistance: 4, coordinateSpace: .named("freeWorkCanvas"))
+        .highPriorityGesture(DragGesture(minimumDistance: 4, coordinateSpace: .global)
             .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
                 if !dragging { dragging = true; beginDrag() }
-                updateDrag(value.translation)
+                updateDrag(WorkCanvasCamera.worldDelta(value.translation, scale: canvasScale))
             }
             .onEnded { value in
-                updateDrag(value.translation)
+                updateDrag(WorkCanvasCamera.worldDelta(value.translation, scale: canvasScale))
                 finishDrag()
                 dragging = false
             }, including: .all)
