@@ -6030,6 +6030,10 @@ struct DetailHeaderView: View {
             }
 
             if backendClient.selectedSession != nil {
+                if let session = backendClient.selectedSession {
+                    SessionHeaderStopButton(session: session)
+                }
+
                 Button {
                     guard let session = backendClient.selectedSession else { return }
                     DetachedChatWindowManager.shared.show(session: session)
@@ -6068,9 +6072,6 @@ struct DetailHeaderView: View {
                 .accessibilityLabel(L10n("Open workspace"))
                 .accessibilityIdentifier("session.detail.actions")
 
-                if let session = backendClient.selectedSession {
-                    SessionHeaderStopButton(session: session)
-                }
             }
         }
         .task(id: workspaceRouteIdentity) {
