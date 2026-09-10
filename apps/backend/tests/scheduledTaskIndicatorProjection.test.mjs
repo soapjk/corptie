@@ -66,6 +66,39 @@ function createSchedule(store, overrides = {}) {
   });
 }
 
+test("Chat wake indicator needs no Task and publishes cancellation to the Session", async () => {
+  const f = await fixture();
+  try {
+    const options = { environment: "development", now: "2026-09-05T00:00:00.000Z" };
+    for (const kind of ["assistantChat", "workChat"]) {
+      const id = `session:${kind}`;
+      const logicalSessionId = `logical:${kind}`;
+      f.store.createSession({ id, title: kind, sessionKind: kind, status: "complete",
+        workId: kind === "workChat" ? "work:one" : null, agentId: "agent:owner" });
+      f.store.createLogicalSessionRoute({ logicalSessionId, legacySessionId: id,
+        providerId: "test-provider", providerThreadId: id, providerSessionId: id,
+        boundCwd: f.directory, sessionName: kind });
+      const revision = f.store.stateRevision();
+      createSchedule(f.store, { taskId: `schedule:${kind}`, logicalSessionId });
+      assert.ok(f.store.listSessionIdsWithPendingScheduledWake(options).includes(id));
+      assert.deepEqual(f.store.stateChangesAfter(revision).map(c => [c.entityType, c.entityId]), [["session", id]]);
+      assert.equal(f.store.listSessionIdsWithPendingScheduledWake({ ...options, environment: "production" }).includes(id), false);
+      f.store.updateScheduledSessionTask(`schedule:${kind}`, { status: "cancelled", nextRunAt: null });
+      assert.equal(f.store.listSessionIdsWithPendingScheduledWake(options).includes(id), false);
+      for (const status of ["completed", "error", "expired"]) {
+        createSchedule(f.store, { taskId: `schedule:${kind}:${status}`, logicalSessionId, status });
+        f.store.updateScheduledSessionTask(`schedule:${kind}:${status}`, { status });
+      }
+      createSchedule(f.store, { taskId: `schedule:${kind}:past-expiry`, logicalSessionId, expiresAt: options.now });
+      createSchedule(f.store, { taskId: `schedule:${kind}:consumed`, logicalSessionId, nextRunAt: null });
+      assert.equal(f.store.listSessionIdsWithPendingScheduledWake(options).includes(id), false);
+    }
+  } finally {
+    await f.store.close();
+    await rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("Task scheduled-wake projection only exposes active unexpired pending plans", async () => {
   const f = await fixture();
   try {
@@ -84,7 +117,7 @@ test("Task scheduled-wake projection only exposes active unexpired pending plans
     }).hasPendingScheduledWake, true);
     assert.deepEqual(
       f.store.stateChangesAfter(revision).map((change) => [change.entityType, change.entityId]),
-      [["task", f.task.id]]
+      [["session", "session:one"], ["task", f.task.id]]
     );
 
     f.store.updateScheduledSessionTask("scheduled:one", {

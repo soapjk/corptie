@@ -3899,6 +3899,19 @@ export class CorptieStore {
             FROM logical_sessions logical
             JOIN sessions session ON session.id = logical.legacy_session_id
             WHERE logical.logical_session_id = ${row}.logical_session_id
+          );
+          INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
+          SELECT clock.revision, 'session', session.id, 'upsert',
+                 strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          FROM state_sync_clock clock
+          JOIN logical_sessions logical ON logical.logical_session_id = ${row}.logical_session_id
+          JOIN sessions session ON session.id = logical.legacy_session_id
+          WHERE clock.singleton = 1;
+          UPDATE state_sync_clock SET revision = revision + 1
+          WHERE singleton = 1 AND EXISTS (
+            SELECT 1 FROM logical_sessions logical
+            JOIN sessions session ON session.id = logical.legacy_session_id
+            WHERE logical.logical_session_id = ${row}.logical_session_id
               AND session.task_id IS NOT NULL
           );
           INSERT INTO state_change_log (revision, entity_type, entity_id, operation, changed_at)
@@ -8369,6 +8382,22 @@ export class CorptieStore {
 
   hasPendingScheduledWakeForTask(taskId, options = {}) {
     return this.listTaskIdsWithPendingScheduledWake({ ...options, taskId }).length > 0;
+  }
+
+  listSessionIdsWithPendingScheduledWake(options = {}) {
+    return this.selectAll(
+      `SELECT DISTINCT session.id
+       FROM scheduled_session_tasks scheduled
+       JOIN logical_sessions logical ON logical.logical_session_id = scheduled.logical_session_id
+       JOIN sessions session ON session.id = logical.legacy_session_id
+       WHERE scheduled.environment = ? AND scheduled.status = 'active'
+         AND scheduled.next_run_at IS NOT NULL AND scheduled.expires_at > ?
+         AND logical.deleted_at IS NULL AND logical.archived = 0
+         AND session.deleted_at IS NULL AND session.archived = 0
+         ${options.sessionId ? "AND session.id = ?" : ""}`,
+      [options.environment ?? environmentName, options.now ?? createdAtFromOrNow(),
+        ...(options.sessionId ? [options.sessionId] : [])]
+    ).map((row) => row.id);
   }
 
   updateScheduledSessionTask(taskId, patch = {}, expectedVersion = null) {

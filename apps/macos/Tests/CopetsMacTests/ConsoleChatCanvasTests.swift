@@ -3,12 +3,31 @@ import Testing
 @testable import CorptieMac
 
 struct ConsoleChatCanvasTests {
+    @Test func discussionBorderUsesOwnSessionAndIsolatesAnimation() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/CopetsMac")
+        let canvas = try String(contentsOf: root.appendingPathComponent("ConsoleCardWorkspace.swift"), encoding: .utf8)
+        let outline = try String(contentsOf: root.appendingPathComponent("UnifiedConsoleView.swift"), encoding: .utf8)
+        let border = try String(contentsOf: root.appendingPathComponent("ConsoleDiscussionActivityBorder.swift"), encoding: .utf8)
+        #expect(outline.contains("isChatRunning: workChat?.executionTaskStatus == .running"))
+        #expect(canvas.contains("session.archived != true && session.resolvedSessionKind == .workChat"))
+        #expect(canvas.contains("ConsoleDiscussionActivityBorder(isRunning: isChatRunning, isActive: isActive)"))
+        #expect(border.contains("paused: !isVisible || !isActive || reduceMotion"))
+        #expect(border.contains(".allowsHitTesting(false)"))
+        #expect(border.contains(".strokeBorder(AngularGradient("))
+        #expect(!border.contains("GeometryReader"))
+        #expect(ConsoleWorkFlowingGradientPolicy.progress(at: Date(timeIntervalSinceReferenceDate: 0.5))
+            != ConsoleWorkFlowingGradientPolicy.progress(at: Date(timeIntervalSinceReferenceDate: 1)))
+    }
+
     @Test func runningTaskTitleReusesWorkGradientWithoutChangingStatusRules() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Sources/CopetsMac")
         let canvas = try String(contentsOf: root.appendingPathComponent("ConsoleCardWorkspace.swift"), encoding: .utf8)
         let shared = try String(contentsOf: root.appendingPathComponent("UnifiedConsoleView.swift"), encoding: .utf8)
-        #expect(canvas.contains("ConsoleWorkTitle(title: task.title, isWorking: execution == .running, isActive: isActive)"))
+        let label = try String(contentsOf: root.appendingPathComponent("ConsoleConversationCardLabel.swift"), encoding: .utf8)
+        #expect(canvas.contains("ConsoleConversationCardLabel(title: task.title"))
+        #expect(label.contains("ConsoleWorkTitle(title: title, isWorking: execution == .running, isActive: isActive)"))
         #expect(shared.contains("animates: !accessibilityReduceMotion && isActive"))
         #expect(shared.contains("paused: !isVisible"))
     }
@@ -43,7 +62,10 @@ struct ConsoleChatCanvasTests {
         #expect(canvas.contains(".modifier(groupInteraction(for: Self.chatCardID))"))
         #expect(canvas.contains(".modifier(groupInteraction(for: work.id))"))
         #expect(chat.contains("ForEach(sessions)"))
-        #expect(chat.contains("CompactSessionRow(session: session"))
+        #expect(chat.contains("ConsoleConversationCardLabel(title: session.title"))
+        #expect(chat.contains("session.hasPendingScheduledWake == true"))
+        #expect(chat.contains("SessionContextMenuContent(session: session"))
+        #expect(chat.contains("session.attention?.reason ?? session.summary"))
         #expect(!chat.contains("ConsoleAttentionPolicy"))
     }
 }
