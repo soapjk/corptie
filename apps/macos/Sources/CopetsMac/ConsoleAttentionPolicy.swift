@@ -127,3 +127,21 @@ enum TaskCardSituationText {
         return (historical ? "待确认 · " : "") + (bounded.isEmpty ? "需要介入" : bounded)
     }
 }
+
+enum TaskCardSummaryPreview {
+    static func text(content: TaskUserSummary.Content?, isCurrent: Bool,
+                     sessionSummary: String?, description: String) -> String {
+        func firstText(_ candidates: [String?]) -> String? {
+            candidates.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .first { !$0.isEmpty }
+        }
+        if let content, content.schemaVersion == 1,
+           let summary = firstText([content.messageSummary, content.progress, content.focus]) {
+            return (isCurrent ? "" : "旧摘要 · 待更新 · ") + TaskCardSituationText.compact(summary, historical: false)
+        }
+        if let fallback = firstText([sessionSummary, description]) {
+            return TaskCardSituationText.compact(fallback, historical: false)
+        }
+        return "摘要待生成"
+    }
+}

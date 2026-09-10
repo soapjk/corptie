@@ -2418,7 +2418,8 @@ final class AppKitChatNativeTextCell: NSTableCellView {
     private let actionStack = NSStackView()
     private let collaborationSentStatus = NSStackView()
     private let collaborationSentStatusIcon = NSImageView()
-    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已发送"))
+    // This footer acknowledges confirmation, not transport delivery.
+    private let collaborationSentStatusLabel = NSTextField(labelWithString: L10n("已确认 · 不代表消息已送达"))
     private let processSeparator = NSView()
     private let processButton = NSButton()
     private var processSeparatorHeight: NSLayoutConstraint!
@@ -2502,7 +2503,7 @@ final class AppKitChatNativeTextCell: NSTableCellView {
         collaborationSentStatus.spacing = 5
         collaborationSentStatusIcon.image = NSImage(
             systemSymbolName: "checkmark.circle.fill",
-            accessibilityDescription: L10n("已发送")
+            accessibilityDescription: L10n("已确认")
         )
         collaborationSentStatusIcon.contentTintColor = .systemGreen
         collaborationSentStatusIcon.identifier = NSUserInterfaceItemIdentifier("chat.timeline.collaboration-sent-icon")

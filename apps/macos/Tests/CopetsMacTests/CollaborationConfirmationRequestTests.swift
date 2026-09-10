@@ -22,7 +22,8 @@ struct CollaborationConfirmationRequestTests {
         #expect(!action.contains("guard session != nil || selectedSession != nil else { return }"))
         #expect(action.contains("pendingCollaborationConfirmationsBySessionID.first"))
         #expect(action.contains("requestCollaborationConfirmationResolution("))
-        #expect(action.contains("resolvedItem.collaborationConfirmationStatus = approve ? \"confirmed\" : \"rejected\""))
+        #expect(action.contains("resolvedItem.collaborationConfirmationStatus = resolutionStatus"))
+        #expect(!action.contains("Collaboration request sent"))
         #expect(action.contains("await loadSessionMessages(sourceSession)"))
         #expect(action.contains("Confirmation failed: %@"))
     }
@@ -35,12 +36,53 @@ struct CollaborationConfirmationRequestTests {
             return (200, #"{"confirmation":{"status":"confirmed"}}"#)
         }
 
-        try await BackendClient.requestCollaborationConfirmationResolution(
+        let status = try await BackendClient.requestCollaborationConfirmationResolution(
             at: URL(string: "http://127.0.0.1:9999")!,
             confirmationId: "confirmation:one",
             approve: true,
             urlSession: session
         )
+        #expect(status == "confirmed")
+    }
+
+    @Test func channelAuthorizationAndRejectionUseActualResponse() async throws {
+        for approve in [true, false] {
+            let expected = approve ? "confirmed" : "rejected"
+            CollaborationConfirmationURLProtocol.handler = { _ in
+                (200, "{\"request\":{\"status\":\"\(expected)\"}}")
+            }
+            let status = try await BackendClient.requestCollaborationConfirmationResolution(
+                at: URL(string: "http://127.0.0.1:9999")!,
+                confirmationId: "channel:one", approve: approve, urlSession: makeSession()
+            )
+            #expect(status == expected)
+        }
+    }
+
+    @Test func httpSuccessWithoutMatchingConfirmationIsNotSuccess() async {
+        for body in ["{}", "invalid", #"{"request":{"status":"pending"}}"#,
+                     #"{"confirmation":{"status":"rejected"}}"#] {
+            CollaborationConfirmationURLProtocol.handler = { _ in (200, body) }
+            do {
+                try await BackendClient.requestCollaborationConfirmationResolution(
+                    at: URL(string: "http://127.0.0.1:9999")!,
+                    confirmationId: "channel:one", approve: true, urlSession: makeSession()
+                )
+                Issue.record("Invalid confirmation response was accepted: \(body)")
+            } catch {}
+        }
+    }
+
+    @Test func confirmationPresentationDoesNotClaimDelivery() throws {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "Sources/CopetsMac")
+        let swiftUI = try String(contentsOf: root.appending(path: "FloatingRootView.swift"), encoding: .utf8)
+        let appKit = try String(contentsOf: root.appending(path: "AppKitChatTimelineView.swift"), encoding: .utf8)
+        #expect(!swiftUI.contains("case \"confirmed\": isConfirmation ? L10n(\"已发送\")"))
+        #expect(!swiftUI.contains("isSessionChannelAuthorization ? \"已授权\" : \"已发送\""))
+        #expect(!swiftUI.contains("collaboration.confirmation.sent"))
+        #expect(appKit.contains("NSTextField(labelWithString: L10n(\"已确认 · 不代表消息已送达\"))"))
     }
 
     @Test func confirmationFailureSurfacesTheBackendReason() async {
