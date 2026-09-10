@@ -10,6 +10,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     let tasks: [CorptieTask]
     let sessions: [TaskSession]
     let selectedTaskID: String?
+    var selectedSessionID: String? = nil
     let query: String
     @Binding var attentionCount: Int
     let refreshRevision: Int
@@ -40,6 +41,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
     @State private var retainedTasks: [String: CorptieTask] = [:]
     @State private var sessionByTask: [String: TaskSession] = [:]
+    @State private var runningDiscussionWorkIDs = Set<String>()
     @State private var workOrder: [String] = []
     @State private var browsing: Work?
     @State private var pageTasks: [CorptieTask] = []
@@ -98,7 +100,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     frozenFrames: canvasDrag.snapshot,
                                     snapshot: layoutSnapshot
                                 ) {
-                                    ConsoleChatCanvasCard(sessions: chatSessions, openChat: openChat, createChat: createChat)
+                                    ConsoleChatCanvasCard(sessions: chatSessions, selectedSessionID: selectedSessionID,
+                                        isActive: isActive, openChat: openChat, createChat: createChat)
                                         .modifier(groupInteraction(for: Self.chatCardID))
                                         .geometryGroup()
                                         .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: Self.chatCardID),
@@ -171,6 +174,10 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func rebuild(reset: Bool) {
+        runningDiscussionWorkIDs = Set(sessions.compactMap { session in
+            session.archived != true && session.resolvedSessionKind == .workChat
+                && session.executionTaskStatus == .running ? session.workId : nil
+        })
         let byID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         var latest: [String: TaskSession] = [:]
         for session in sessions where session.archived != true {
@@ -239,7 +246,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func group(_ work: Work) -> some View {
-        CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) }) {
+        CompactWorkCard(work: work, isChatRunning: runningDiscussionWorkIDs.contains(work.id),
+                        isActive: isActive, discuss: { discuss(work) }, createTask: { createTask(work) }) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(displayedTasks(for: work)) { task in
                     ContentSizedTaskCardLayout { card(task) }
@@ -275,38 +283,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
             clickHistory.visit(task.id)
             openTask(task, session)
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Circle()
-                        .fill(execution == .running ? CorptiePalette.running : execution == .failed ? Color.red :
-                            (needsAttention || execution == .blocked) ? Color.orange : Color.secondary.opacity(0.65))
-                        .frame(width: 7, height: 7)
-                        .help(status(task, session))
-                        .accessibilityLabel(status(task, session))
-                    ConsoleWorkTitle(title: task.title, isWorking: execution == .running, isActive: isActive)
-                        .font(.system(size: 13, weight: .semibold)).lineLimit(2).help(task.title)
-                    if displayPreferences.taskIDs.contains(task.id) {
-                        Image(systemName: "bookmark.fill")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(Color.accentColor)
-                            .help("已固定展示")
-                            .accessibilityLabel("已固定展示")
-                    }
-                    if task.hasPendingScheduledWake == true {
-                        ConsoleScheduledWakeIcon(isActive: isActive)
-                    }
-                    if let session, isSessionUnread(session) { Circle().fill(.red).frame(width: 6, height: 6) }
-                }
+            ConsoleConversationCardLabel(title: task.title, execution: execution, needsAttention: needsAttention,
+                status: status(task, session), isSelected: selectedTaskID == task.id,
+                isFixed: displayPreferences.taskIDs.contains(task.id), hasScheduledWake: task.hasPendingScheduledWake == true,
+                isUnread: session.map(isSessionUnread) ?? false, isActive: isActive) {
                 interventionSummary(task, session: session)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(10)
-            .background(selectedTaskID == task.id ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.accentColor.opacity(selectedTaskID == task.id ? 0.85 : 0.22), lineWidth: selectedTaskID == task.id ? 1.5 : 1)
-                .allowsHitTesting(false))
-            .contentShape(Rectangle())
         }.anchorPreference(key: TaskCardAnchors.self, value: .bounds) { [task.id: $0] }
         .buttonStyle(.plain).disabled(task.deletionStatus == "deleting").contextMenu {
             Button("暂不处理") {
@@ -419,6 +401,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 /// Keep hover state within one Work card, not the workspace projection.
 private struct CompactWorkCard<Content: View>: View {
     let work: Work
+    let isChatRunning: Bool
+    let isActive: Bool
     let discuss: () -> Void
     let createTask: () -> Void
     @ViewBuilder let content: Content
@@ -436,6 +420,7 @@ private struct CompactWorkCard<Content: View>: View {
                     .font(.system(size: 10))
                     .controlSize(.mini)
                     .fixedSize()
+                    .overlay { ConsoleDiscussionActivityBorder(isRunning: isChatRunning, isActive: isActive) }
                     .help("打开 Work 讨论")
                 Button(action: createTask) {
                     Image(systemName: "plus")
@@ -499,6 +484,8 @@ struct CanvasGroupCardModifier: ViewModifier {
 
 private struct CardSessionKey: Equatable {
     let id: String
+    let workID: String?
+    let isWorkChat: Bool
     let taskID: String?
     let status: TaskStatus
     let attention: SessionAttention?
@@ -509,6 +496,8 @@ private struct CardSessionKey: Equatable {
 
     init(_ session: TaskSession) {
         id = session.id
+        workID = session.workId
+        isWorkChat = session.resolvedSessionKind == .workChat
         taskID = session.taskId
         status = session.executionTaskStatus
         attention = session.attention
