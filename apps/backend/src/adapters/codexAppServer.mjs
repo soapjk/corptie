@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { executeCodexSlashCommand } from "./codexSlashCommands.mjs";
 import { createHash } from "node:crypto";
 import { codexPermissionsFromThread } from "../utils/codexPermissions.mjs";
 import { createInterface } from "node:readline";
@@ -155,6 +156,13 @@ export class CodexAppServerClient {
   async setThreadName(threadId, name) {
     await this.initialize();
     return this.request("thread/name/set", { threadId, name });
+  }
+
+  async executeCommand(threadId, command) {
+    await this.initialize();
+    return executeCodexSlashCommand(
+      (method, params) => this.request(method, params), threadId, command
+    );
   }
 
   // Product history reads remain Store-only. This transport read is exposed
