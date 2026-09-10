@@ -3637,7 +3637,7 @@ final class BackendClient: ObservableObject {
                 // backend creates the MessageDelivery and its session_items
                 // projection in one transaction before returning success, so
                 // only a 2xx acknowledgement may make this local echo visible.
-                if presentsAcknowledgedUserMessage {
+                if presentsAcknowledgedUserMessage && decoded?.mode != "session-command" {
                     appendAcknowledgedUserMessage(
                         trimmed,
                         images: images,
@@ -3647,7 +3647,9 @@ final class BackendClient: ObservableObject {
                     )
                 }
                 onSuccess()
-                if decoded?.cleared == true {
+                if decoded?.mode == "session-command" {
+                    sendStatusMessage = decoded?.warning
+                } else if decoded?.cleared == true {
                     sendStatusMessage = L10n("Conversation cleared")
                     if let replacement = decoded?.session,
                        replacement.id != session.id {
