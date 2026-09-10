@@ -280,7 +280,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertGreaterThan(harness.coordinator.tableView(harness.tableView, heightOfRow: 0), 130)
     }
 
-    func testConfirmedCollaborationCardReplacesSendActionWithGreenSentStatus() throws {
+    func testConfirmedCollaborationCardAcknowledgesConfirmationNotDelivery() throws {
         let harness = makeHarness(followsLatest: true)
         let pending = AppKitChatTimelineRow(
             id: "collaboration-confirmation",
@@ -308,7 +308,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
             copyText: "Please review this change.",
             nativeStyle: .agent,
             title: "Cross-session collaboration",
-            metadata: "已发送",
+            metadata: "已确认",
             isCollaboration: true,
             expandableTurnId: nil,
             isExpanded: false,
@@ -336,7 +336,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         XCTAssertFalse(status.isHidden)
         XCTAssertEqual(icon.contentTintColor, .systemGreen)
-        XCTAssertEqual(label.stringValue, L10n("已发送"))
+        XCTAssertEqual(label.stringValue, L10n("已确认 · 不代表消息已送达"))
         XCTAssertEqual(label.textColor, .systemGreen)
         XCTAssertNil(button(in: cell, identifier: "chat.timeline.action.confirm"))
     }

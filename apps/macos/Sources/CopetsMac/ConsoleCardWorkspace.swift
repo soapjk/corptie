@@ -13,6 +13,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     let query: String
     @Binding var attentionCount: Int
     let refreshRevision: Int
+    let openChat: (TaskSession) -> Void
+    let createChat: () -> Void
     let openTask: (CorptieTask, TaskSession?) -> Void
     let clearSelection: () -> Void
     let discuss: (Work) -> Void
@@ -96,6 +98,13 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     frozenFrames: canvasDrag.snapshot,
                                     snapshot: layoutSnapshot
                                 ) {
+                                    ConsoleChatCanvasCard(sessions: chatSessions, openChat: openChat, createChat: createChat)
+                                        .modifier(groupInteraction(for: Self.chatCardID))
+                                        .geometryGroup()
+                                        .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: Self.chatCardID),
+                                            frozenSize: canvasDrag.snapshot[Self.chatCardID]?.size))
+                                        .zIndex(frontWorkID == Self.chatCardID ? 1 : 0)
+                                        .layoutValue(key: WorkPackingID.self, value: Self.chatCardID).id(Self.chatCardID)
                                     ForEach(orderedWorks) { work in
                                         group(work)
                                             .geometryGroup()
@@ -107,13 +116,6 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     }
                                 }
                                 .coordinateSpace(name: "freeWorkCanvas")
-                              }
-                              .overlay(alignment: .topLeading) {
-                                if orderedWorks.isEmpty {
-                                    Text(query.isEmpty ? "暂无需要关注的 Task" : "没有匹配的重点 Task")
-                                        .font(.caption).foregroundStyle(.secondary).padding(12)
-                                        .allowsHitTesting(false)
-                                }
                               }
                             }
                     }
@@ -148,6 +150,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     private var canvasOrigin: CGPoint {
         let points = canvasDrag.snapshot.isEmpty ? Array(canvasPositions.values) : canvasDrag.snapshot.values.map(\.origin)
         return CGPoint(x: min(0, points.map(\.x).min() ?? 0), y: min(0, points.map(\.y).min() ?? 0))
+    }
+
+    private static var chatCardID: String { "canvas:assistant-chats" }
+    private var chatSessions: [TaskSession] {
+        sessions.filter { $0.resolvedSessionKind == .assistantChat && $0.archived != true
+            && (query.isEmpty || $0.title.localizedCaseInsensitiveContains(query)) }
     }
 
     private var orderedWorks: [Work] {
@@ -231,28 +239,31 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     }
 
     private func group(_ work: Work) -> some View {
-        return CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) },
-            beginDrag: {
-                if canvasDrag.begin(id: work.id, frames: layoutSnapshot.frames, reducedMotion: reduceMotion) { frontWorkID = work.id }
-            },
-            updateDrag: { canvasDrag.update(id: work.id, translation: $0) },
-            cancelDrag: { canvasDrag.cancel() },
-            finishDrag: {
-                canvasDrag.finish(id: work.id) { frames in
-                    canvasPositions.merge(frames.mapValues(\.origin), uniquingKeysWith: { _, new in new })
-                    layoutSnapshot.frames = frames
-                    saveCanvasPositions()
-                }
-            }) {
+        CompactWorkCard(work: work, discuss: { discuss(work) }, createTask: { createTask(work) }) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(displayedTasks(for: work)) { task in
-                    ContentSizedTaskCardLayout {
-                        card(task)
-                    }
+                    ContentSizedTaskCardLayout { card(task) }
                 }
             }
             .fixedSize(horizontal: true, vertical: true)
         }
+        .modifier(groupInteraction(for: work.id))
+    }
+
+    private func groupInteraction(for id: String) -> CanvasGroupCardModifier {
+        CanvasGroupCardModifier(
+            beginDrag: {
+                if canvasDrag.begin(id: id, frames: layoutSnapshot.frames, reducedMotion: reduceMotion) { frontWorkID = id }
+            },
+            updateDrag: { canvasDrag.update(id: id, translation: $0) },
+            cancelDrag: { canvasDrag.cancel() },
+            finishDrag: {
+                canvasDrag.finish(id: id) { frames in
+                    canvasPositions.merge(frames.mapValues(\.origin), uniquingKeysWith: { _, new in new })
+                    layoutSnapshot.frames = frames
+                    saveCanvasPositions()
+                }
+            })
     }
 
     private func card(_ task: CorptieTask) -> some View {
@@ -272,7 +283,8 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                         .frame(width: 7, height: 7)
                         .help(status(task, session))
                         .accessibilityLabel(status(task, session))
-                    Text(task.title).font(.system(size: 13, weight: .semibold)).lineLimit(2).help(task.title)
+                    ConsoleWorkTitle(title: task.title, isWorking: execution == .running, isActive: isActive)
+                        .font(.system(size: 13, weight: .semibold)).lineLimit(2).help(task.title)
                     if displayPreferences.taskIDs.contains(task.id) {
                         Image(systemName: "bookmark.fill")
                             .font(.system(size: 10, weight: .semibold))
@@ -347,6 +359,11 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
             let text = TaskCardSituationText.compact(reason, historical: !current && !systemAction)
             Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
                 .help(reason)
+        } else {
+            let text = TaskCardSummaryPreview.text(content: task.userSummary?.content,
+                isCurrent: summary != nil, sessionSummary: session?.summary, description: task.description)
+            Text(text).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(4)
+                .help(text)
         }
     }
 
@@ -401,17 +418,10 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
 /// Keep hover state within one Work card, not the workspace projection.
 private struct CompactWorkCard<Content: View>: View {
-    @Environment(\.workCanvasInteractionTransform) private var interactionTransform
     let work: Work
     let discuss: () -> Void
     let createTask: () -> Void
-    let beginDrag: () -> Void
-    let updateDrag: (CGSize) -> Void
-    let cancelDrag: () -> Void
-    let finishDrag: () -> Void
     @ViewBuilder let content: Content
-    @State private var dragging = false
-    @GestureState private var gestureActive = false
     @State private var isHovering = false
     @FocusState private var isCreateTaskFocused: Bool
 
@@ -441,7 +451,22 @@ private struct CompactWorkCard<Content: View>: View {
             }
             content
         }
-        .padding(.horizontal, 12)
+        .onHover { isHovering = $0 }
+    }
+}
+
+/// Work and Chat share the same surface and whole-card drag interaction.
+struct CanvasGroupCardModifier: ViewModifier {
+    @Environment(\.workCanvasInteractionTransform) private var interactionTransform
+    let beginDrag: () -> Void
+    let updateDrag: (CGSize) -> Void
+    let cancelDrag: () -> Void
+    let finishDrag: () -> Void
+    @State private var dragging = false
+    @GestureState private var gestureActive = false
+
+    func body(content: Content) -> some View {
+        content.padding(.horizontal, 12)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
@@ -451,7 +476,6 @@ private struct CompactWorkCard<Content: View>: View {
                 .strokeBorder(Color.accentColor.opacity(0.30), lineWidth: 1)
                 .allowsHitTesting(false)
         }
-        .onHover { isHovering = $0 }
         .contentShape(Rectangle())
         // Apply to the whole card, including Task buttons. The nonzero distance
         // leaves ordinary clicks intact; a recognized drag takes precedence.

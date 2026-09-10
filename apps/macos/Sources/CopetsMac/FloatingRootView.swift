@@ -5640,7 +5640,9 @@ func nativeCollaborationCardPresentation(
         ?? "queued").lowercased()
     let status: String = switch statusSource {
     case "sent", "delivered": L10n("已发送")
-    case "confirmed": isConfirmation ? L10n("已发送") : L10n("已处理")
+    case "confirmed": isConfirmation
+        ? (item.collaborationAuthorizationKind == "session_channel" ? L10n("已授权") : L10n("已确认"))
+        : L10n("已处理")
     case "completed", "complete": L10n("已处理")
     case "running", "processing": L10n("处理中")
     case "failed": L10n("处理失败")
@@ -9055,12 +9057,12 @@ struct ThreadItemView: View {
             if collaborationConfirmationStatus == "confirmed" {
                 Divider()
                     .overlay(CorptiePalette.collaborationBorder.opacity(0.42))
-                Label(L10n("已发送"), systemImage: "checkmark.circle.fill")
+                Label(L10n("已确认 · 不代表消息已送达"), systemImage: "checkmark.circle.fill")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(CorptiePalette.connected)
                     .padding(.horizontal, 10)
                     .frame(height: 30, alignment: .leading)
-                    .accessibilityIdentifier("collaboration.confirmation.sent")
+                    .accessibilityIdentifier("collaboration.confirmation.confirmed")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -9136,7 +9138,7 @@ struct ThreadItemView: View {
 
     private var collaborationConfirmationStatusLabel: String {
         switch collaborationConfirmationStatus {
-        case "confirmed": isSessionChannelAuthorization ? "已授权" : "已发送"
+        case "confirmed": isSessionChannelAuthorization ? "已授权" : "已确认"
         case "rejected": "已取消"
         default: "等待确认"
         }

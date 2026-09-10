@@ -3446,9 +3446,9 @@ final class BackendClient: ObservableObject {
             defer { isSendingMessage = false }
             do {
                 sendStatusMessage = approve
-                    ? L10n("Sending collaboration request…")
+                    ? L10n("正在确认协作请求…")
                     : L10n("Cancelling collaboration request…")
-                try await Self.requestCollaborationConfirmationResolution(
+                let resolutionStatus = try await Self.requestCollaborationConfirmationResolution(
                     at: baseURL,
                     confirmationId: confirmationId,
                     approve: approve
@@ -3458,7 +3458,7 @@ final class BackendClient: ObservableObject {
                         let resolvedDetail = detailReplacingItems(detail) { item in
                             guard item.collaborationConfirmationId == confirmationId else { return item }
                             var resolvedItem = item
-                            resolvedItem.collaborationConfirmationStatus = approve ? "confirmed" : "rejected"
+                            resolvedItem.collaborationConfirmationStatus = resolutionStatus
                             return resolvedItem
                         }
                         storeCachedDetail(
@@ -3472,11 +3472,11 @@ final class BackendClient: ObservableObject {
                 }
                 // The HTTP response is authoritative, but the timeline stream may
                 // arrive a beat later. Pull the resolved revision now so the card
-                // immediately replaces its actions with the durable sent state.
+                // replaces its actions with confirmation, never a delivery receipt.
                 if let sourceSession {
                     await loadSessionMessages(sourceSession)
                 }
-                sendStatusMessage = approve ? L10n("Collaboration request sent") : L10n("Collaboration request cancelled")
+                sendStatusMessage = approve ? L10n("协作请求已确认，不代表消息已送达") : L10n("Collaboration request cancelled")
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Confirmation failed: %@", error.localizedDescription)
@@ -3484,12 +3484,13 @@ final class BackendClient: ObservableObject {
         }
     }
 
+    @discardableResult
     nonisolated static func requestCollaborationConfirmationResolution(
         at baseURL: URL,
         confirmationId: String,
         approve: Bool,
         urlSession: URLSession = .shared
-    ) async throws {
+    ) async throws -> String {
         let action = approve ? "confirm" : "reject"
         var request = URLRequest(
             url: baseURL.appending(path: "collaboration/confirmations/\(confirmationId)/\(action)")
@@ -3503,6 +3504,13 @@ final class BackendClient: ObservableObject {
                 payload?["error"] as? String ?? "Could not resolve collaboration confirmation."
             )
         }
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let resolution = (payload?["request"] ?? payload?["confirmation"]) as? [String: Any]
+        guard let status = resolution?["status"] as? String,
+              status == (approve ? "confirmed" : "rejected") else {
+            throw BackendError.message("协作确认结果无效，请刷新后重试。")
+        }
+        return status
     }
 
     @discardableResult
