@@ -284,6 +284,7 @@ private struct ConsoleWorkOutlineHeader: View {
     let isWorking: Bool
     let hasUnread: Bool
     let isChatSelected: Bool
+    let isChatRunning: Bool
     let hasUnreadChat: Bool
     let toggleExpanded: () -> Void
     let openChat: () -> Void
@@ -344,6 +345,7 @@ private struct ConsoleWorkOutlineHeader: View {
                                 .offset(x: 1, y: -1)
                         }
                     }
+                    .overlay { ConsoleDiscussionActivityBorder(isRunning: isChatRunning) }
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -820,7 +822,8 @@ struct UnifiedConsoleView: View {
             }.padding(10)
             if isSearching { sessionSearchBar.padding(.horizontal, 10) }
             ConsoleCardWorkspace(isActive: navigationMode == .taskCards, works: entityClient.works, tasks: entityClient.tasks,
-                sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId, query: searchText,
+                sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId,
+                selectedSessionID: selectionController.selectedSessionID, query: searchText,
                 attentionCount: $cardAttentionCount, refreshRevision: cardRefreshRevision,
                 openChat: { selectSessionAfterHighlight($0) }, createChat: { showNewSessionCreation = true },
                 openTask: { task, session in
@@ -1326,6 +1329,7 @@ struct UnifiedConsoleView: View {
             isWorking: isWorking,
             hasUnread: hasUnread,
             isChatSelected: selectionController.selectedSessionID == workChat?.id,
+            isChatRunning: workChat?.executionTaskStatus == .running,
             hasUnreadChat: workChat.map(isSessionUnread) ?? false,
             toggleExpanded: {
                 withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {

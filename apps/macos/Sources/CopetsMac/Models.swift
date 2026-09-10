@@ -90,6 +90,7 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     let status: TaskStatus
     var executionStatus: String? = nil
     var deliveryStatus: String? = nil
+    var hasPendingScheduledWake: Bool? = nil
     var providerConnectionStatus: String? = nil
     var syncHealth: String? = nil
     var transitionState: String? = nil
