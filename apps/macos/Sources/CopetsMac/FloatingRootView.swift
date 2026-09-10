@@ -3751,7 +3751,9 @@ struct SessionConversationContent: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            SessionSendFailureView()
+            if let session = selectedSession {
+                SessionSendFailureView(sessionID: session.id)
+            }
             sessionReadinessNotice
             sessionComposer
         }
@@ -11497,14 +11499,16 @@ private struct QuickReplyField: View {
 /// projection or reconstructing the AppKit scroll surface.
 private struct SessionSendFailureView: View {
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
+    let sessionID: String
 
     var body: some View {
-        if let message = commandState.sendStatusMessage,
-           message.hasPrefix("Send failed") || message.contains("read-only") {
+        if let message = commandState.sendFailures[sessionID] {
             Text(message)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.red)
-                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+                .accessibilityIdentifier("session.send-failure")
         }
     }
 }
