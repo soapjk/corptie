@@ -38,6 +38,9 @@ const CODEX_APP_SERVER_CAPABILITIES = Object.freeze([
 export function createAgentProviderRuntimeRegistry(options = {}) {
   const codexCapabilities = [
     ...CODEX_APP_SERVER_CAPABILITIES,
+    ...(typeof options.codexOperations?.executeCommand === "function"
+      ? [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND]
+      : []),
     ...(typeof options.codexOperations?.disconnectSession === "function"
       ? [AGENT_PROVIDER_CAPABILITIES.SESSION_DISCONNECT]
       : []),
