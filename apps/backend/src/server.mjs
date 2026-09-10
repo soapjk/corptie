@@ -137,7 +137,7 @@ import {
   createAgentProviderRuntimeRegistry
 } from "./agent-provider/bootstrap/agentProviderBootstrap.mjs";
 import { FeishuGatewayManager, formatFeishuFailureForLog } from "./feishu/feishuGatewayManager.mjs";
-import { isClearCommand } from "./commands/unifiedCommands.mjs";
+import { isClearCommand, parseSlashCommand } from "./commands/unifiedCommands.mjs";
 import { CollaborationCore } from "./collaboration/collaborationCore.mjs";
 import { CollaborationDeliveryDispatcher } from "./collaboration/collaborationDeliveryDispatcher.mjs";
 import { CollaborationDeliveryRouteResolver } from "./collaboration/collaborationDeliveryRouteResolver.mjs";
@@ -1009,6 +1009,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     renameSession: renameCodexProviderSession,
     listModels: loadCodexModels,
     send: sendCodexProviderMessage,
+    executeCommand: (reference, command) => codexRuntime.executeCommand(reference.providerSessionId, command),
     clearConversation: (reference, context = {}) => clearCodexAppServerSession(
       reference.sessionId,
       reference.metadata.session,
@@ -3643,6 +3644,9 @@ function emitEvent(type, payload, options = {}) {
 
 function productTimelineItemsForEvent(type, payload, sessionEvent, sessionId) {
   const items = automationTimelineItems([sessionEvent]);
+  if (type === "SessionCommandCompleted" && payload?.item) {
+    items.push(payload.item);
+  }
   if (["AgentWorkQueued", "AgentWorkStarted", "AgentWorkCompleted", "AgentWorkFailed"].includes(type)) {
     const item = agentWorkTimelineItem(payload?.task, sessionId, payload?.queuePosition);
     if (item) items.push(item);
@@ -6885,6 +6889,36 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
     error.code = "SESSION_NOT_READY";
     error.reason = bindingVerification.readiness?.reasonCode ?? "PROVIDER_SESSION_UNAVAILABLE";
     throw error;
+  }
+
+  const slashCommand = parseSlashCommand(value);
+  if (slashCommand && !(isClearCommand(value) && message.images.length === 0) && options.fromAgentWorkQueue !== true && !options.agentTask
+      && ["desktop", "feishu"].includes(source.type)) {
+    if (message.images.length > 0) {
+      throw Object.assign(new Error("斜杠命令不支持附带图片，请单独发送命令。"), {
+        code: "INVALID_COMMAND_ARGUMENTS", statusCode: 400
+      });
+    }
+    if (workspaceTransitionBlocksWork(store.getLogicalSessionByLegacySessionId(routedSessionId))) {
+      throw Object.assign(new Error("会话正在切换工作目录，请完成后再执行命令。"), {
+        code: "SESSION_BUSY", statusCode: 409
+      });
+    }
+    if (["compact", "review", "model", "reasoning", "rename"].includes(slashCommand.name)
+        && (sessionHasActiveRun(before) || store.listUnsettledSessionTurns(routedSessionId).length > 0)) {
+      throw Object.assign(new Error(`/${slashCommand.name} 请在当前执行结束后使用。`), {
+        code: "SESSION_BUSY", statusCode: 409
+      });
+    }
+    const result = await sessionApplicationService.executeCommand(sessionId, slashCommand, { before, source });
+    const id = `command:${randomUUID()}`;
+    const item = {
+      id, turnId: id, turnStatus: "completed", type: "commandExecution",
+      title: `/${slashCommand.name}`, text: result.text, status: "completed", createdAt: now(),
+      sourceType: "session_command"
+    };
+    emitEvent("SessionCommandCompleted", { item }, { sessionId: routedSessionId, source });
+    return { accepted: true, mode: "session-command", sessionId: publicSessionId, warning: result.text };
   }
 
   if (options.fromAgentWorkQueue !== true) {
