@@ -407,6 +407,43 @@ export class SessionApplicationService {
       : providerSession;
   }
 
+  async executeCommand(sessionId, command, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    assertTaskNotArchived(reference);
+    this.registry.requireCapability(reference.providerId, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND);
+    await this.assertMessageDispatchAllowed?.(reference, context);
+    const args = command.arguments;
+    if (command.name === "model") {
+      if (!args) {
+        const catalog = await this.listModelsForSession(sessionId);
+        return { text: JSON.stringify(catalog, null, 2) };
+      }
+      await this.switchModel(sessionId, args, context);
+      return { text: `模型已切换为 ${args}` };
+    }
+    if (command.name === "reasoning" || command.name === "rename") {
+      if (!args) throw Object.assign(new Error(`/${command.name} 需要参数。`), { statusCode: 400 });
+      if (command.name === "rename") await this.renameSession(sessionId, args, context);
+      else await this.switchReasoning(sessionId, args, context);
+      return { text: `/${command.name} 已应用：${args}` };
+    }
+    if (command.name === "status") {
+      if (args) throw Object.assign(new Error("/status 不接受参数。"), { statusCode: 400 });
+      const session = reference.metadata?.session;
+      return { text: `Session：${reference.logicalSessionId ?? reference.sessionId}\n模型：${session?.external?.currentModel ?? "默认"}\n状态：${session?.status ?? "未知"}` };
+    }
+    // Read/stop/pause operations must not materialize tools or replace a binding
+    // underneath a running turn. Only commands that can start work need preparation.
+    if (["compact", "review"].includes(command.name)
+        || (command.name === "goal" && args && !["pause", "clear"].includes(args))) {
+      await this.prepareExecution(sessionId, context);
+    }
+    // Resolve again after preparation: never send control RPCs to a stale binding.
+    const prepared = await this.referenceFor(sessionId);
+    return this.registry.invoke(prepared.providerId, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND,
+      prepared, command, context);
+  }
+
   async sendMessage(sessionId, message, context = {}) {
     const reference = await this.referenceFor(sessionId);
     assertTaskNotArchived(reference);
