@@ -1,5 +1,21 @@
 const TRACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
+// Error messages/stacks can contain submitted text, credentials or tool arguments.
+// Log only bounded structural fields and a source location, never the raw error.
+export function logSessionMessageFailure(trace, error, status, stage, options = {}) {
+  const token = (value) => typeof value === "string" && /^[A-Za-z0-9_.:-]{1,100}$/.test(value) ? value : null;
+  const source = typeof error?.stack === "string"
+    ? error.stack.split("\n").slice(1).join("\n").match(/([A-Za-z0-9_.-]+\.mjs:\d+:\d+)/)?.[1] ?? null
+    : null;
+  return logSessionMessageLatency(trace, "server_request_failed", {
+    failureStage: token(error?.commandStage) ?? token(stage),
+    httpStatus: status,
+    errorCode: token(error?.code),
+    errorType: token(error?.name),
+    source
+  }, { ...options, logger: options.logger ?? console.error });
+}
+
 export function normalizeSessionMessageLatencyTrace(input = {}, defaults = {}) {
   if (!input || typeof input !== "object") input = {};
   if (!defaults || typeof defaults !== "object") defaults = {};
