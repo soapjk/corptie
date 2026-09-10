@@ -436,12 +436,22 @@ export class SessionApplicationService {
     // underneath a running turn. Only commands that can start work need preparation.
     if (["compact", "review"].includes(command.name)
         || (command.name === "goal" && args && !["pause", "clear"].includes(args))) {
-      await this.prepareExecution(sessionId, context);
+      try {
+        await this.prepareExecution(sessionId, context);
+      } catch (error) {
+        error.commandStage = "command_prepare";
+        throw error;
+      }
     }
     // Resolve again after preparation: never send control RPCs to a stale binding.
     const prepared = await this.referenceFor(sessionId);
-    return this.registry.invoke(prepared.providerId, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND,
-      prepared, command, context);
+    try {
+      return await this.registry.invoke(prepared.providerId, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND,
+        prepared, command, context);
+    } catch (error) {
+      error.commandStage = "command_execute";
+      throw error;
+    }
   }
 
   async sendMessage(sessionId, message, context = {}) {

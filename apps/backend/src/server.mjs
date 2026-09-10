@@ -285,6 +285,7 @@ import {
 } from "./utils/agentWorkQueue.mjs";
 import {
   logSessionMessageLatency,
+  logSessionMessageFailure,
   normalizeSessionMessageLatencyTrace,
   sessionMessageLatencyTraceFromHeaders
 } from "./utils/sessionMessageLatency.mjs";
@@ -10063,8 +10064,10 @@ function route(request, response) {
       serverReceivedAtMs: Date.now()
     });
     logSessionMessageLatency(latencyTrace, "server_request_received");
+    let failureStage = "request_parse";
     readJson(request)
       .then((input) => {
+        failureStage = "message_dispatch";
         logSessionMessageLatency(latencyTrace, "server_request_parsed");
         return sendUnifiedSessionMessage(
           sessionId,
@@ -10074,11 +10077,16 @@ function route(request, response) {
         );
       })
       .then((result) => sendJson(response, 202, result))
-      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
-        error: error.message,
-        code: error.code,
-        ...(error.details && typeof error.details === "object" ? { details: error.details } : {})
-      }));
+      .catch((error) => {
+        const status = unifiedErrorStatus(error);
+        logSessionMessageFailure(latencyTrace, error, status, failureStage);
+        sendJson(response, status, {
+          error: error.message,
+          code: error.code,
+          traceId: latencyTrace?.traceId,
+          ...(error.details && typeof error.details === "object" ? { details: error.details } : {})
+        });
+      });
     return;
   }
 
