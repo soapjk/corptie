@@ -3883,9 +3883,11 @@ function controlPlaneSnapshot() {
   const pendingScheduledWakeTaskIds = new Set(store.listTaskIdsWithPendingScheduledWake({
     environment: environmentName
   }));
+  const pendingWakeSessionIds = new Set(store.listSessionIdsWithPendingScheduledWake({ environment: environmentName }));
   const sessionsById = new Map(persisted.map((session) => [
     session.id,
     presentControlPlaneSession(session, {
+      hasPendingScheduledWake: pendingWakeSessionIds.has(session.id),
       latestMessageTime: latestMessageTimes.get(session.id),
       messageCursor: messageCursors.get(session.id),
       timelineRevision: timelineRevisions.get(session.id)
@@ -3918,12 +3920,15 @@ function controlPlaneSnapshot() {
 }
 
 function presentControlPlaneSession(session, {
+  hasPendingScheduledWake = store.listSessionIdsWithPendingScheduledWake({
+    environment: environmentName, sessionId: session.id
+  }).length > 0,
   latestMessageTime = null,
   messageCursor = null,
   timelineRevision = 0
 } = {}) {
   return withSessionMessageCursors(
-    withLastMessageTimestamp(decorateSessionForClient(session), latestMessageTime),
+    withLastMessageTimestamp({ ...decorateSessionForClient(session), hasPendingScheduledWake }, latestMessageTime),
     messageCursor,
     timelineRevision
   );
