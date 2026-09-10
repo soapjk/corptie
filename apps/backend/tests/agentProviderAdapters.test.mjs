@@ -5,6 +5,44 @@ import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
 import { createAgentProviderRuntimeRegistry } from "../src/agent-provider/bootstrap/agentProviderBootstrap.mjs";
 import { CodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
+import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
+import { executeCodexSlashCommand } from "../src/adapters/codexSlashCommands.mjs";
+import { parseSlashCommand } from "../src/commands/unifiedCommands.mjs";
+
+test("production bootstrap routes slash goal through the application service to native RPC", async () => {
+  const calls = [];
+  const runtime = new CodexProviderRuntime({ client: {
+    executeCommand: (threadId, command) => executeCodexSlashCommand(async (method, params) => {
+      calls.push({ method, params });
+      return { goal: { objective: params.objective, status: params.status, tokensUsed: 0 } };
+    }, threadId, command)
+  } });
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: {
+      ...recordingCodexOperations(),
+      send: () => assert.fail("commands must not dispatch an ordinary message"),
+      executeCommand: (reference, command) => runtime.executeCommand(reference.providerSessionId, command)
+    }
+  });
+  const service = new SessionApplicationService({ registry, resolveSessionReference: () => ({
+    sessionId: "session:test", providerId: "codex-app-server", providerSessionId: "thread:test"
+  }) });
+  const result = await service.executeCommand("session:test", parseSlashCommand("/goal 完成剩余任务"));
+  assert.deepEqual(calls, [{ method: "thread/goal/set", params: {
+    threadId: "thread:test", objective: "完成剩余任务", status: "active"
+  } }]);
+  assert.match(result.text, /完成剩余任务/);
+  assert.equal(registry.supports("claude-sdk", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND), false);
+});
+
+test("bootstrap does not advertise command execution without an implementation", () => {
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: recordingCodexOperations()
+  });
+  assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND), false);
+});
 
 function recordingManager(provider = "claude-sdk") {
   const calls = [];
