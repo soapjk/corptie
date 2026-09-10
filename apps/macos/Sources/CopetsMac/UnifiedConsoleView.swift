@@ -65,17 +65,19 @@ enum ConsoleWorkActivityPolicy {
     }
 }
 
-private struct ConsoleWorkTitle: View {
+/// Shared running-title treatment for Work groups and experimental Task cards.
+struct ConsoleWorkTitle: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     let title: String
     let isWorking: Bool
+    var isActive = true
 
     var body: some View {
         if isWorking {
             ConsoleFlowingGradientWorkTitle(
                 title: title,
-                animates: !accessibilityReduceMotion
+                animates: !accessibilityReduceMotion && isActive
             )
         } else {
             Text(title)
@@ -86,16 +88,19 @@ private struct ConsoleWorkTitle: View {
 private struct ConsoleFlowingGradientWorkTitle: View {
     let title: String
     let animates: Bool
+    @State private var isVisible = false
 
     @ViewBuilder
     var body: some View {
         if animates {
             TimelineView(.animation(
                 minimumInterval: ConsoleWorkOutlineMetrics.workingGradientFrameInterval,
-                paused: false
+                paused: !isVisible
             )) { context in
                 flowingTitle(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
             }
+            .onAppear { isVisible = true }
+            .onDisappear { isVisible = false }
         } else {
             Text(title)
                 .foregroundStyle(staticGradient)
@@ -505,7 +510,6 @@ struct UnifiedConsoleView: View {
     @State private var collapsedOutlineWorkIDs = Set<String>()
     @State private var navigationResizeStartWidth: Double?
     @State private var liveTaskColumnWidth: Double?
-    @State private var cardChatVisible = false
     @State private var cardAttentionCount = 0
     @State private var cardSelectionExplicitlyCleared = false
     @State private var cardRefreshRevision = 0
@@ -804,37 +808,21 @@ struct UnifiedConsoleView: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer()
-                Button(cardChatVisible ? "返回 Tasks" : "Chat", systemImage: "bubble.left.and.bubble.right.fill") {
-                    cardChatVisible.toggle()
-                }.controlSize(.small)
-                if !cardChatVisible {
-                    Button("刷新", systemImage: "arrow.clockwise") { cardRefreshRevision &+= 1 }
-                        .labelStyle(.iconOnly).help("刷新重点 Task")
-                }
+                Button("刷新", systemImage: "arrow.clockwise") { cardRefreshRevision &+= 1 }
+                    .labelStyle(.iconOnly).help("刷新重点 Task")
                 navigationModeToggle
                 searchToggleButton
                 Menu {
-                    if cardChatVisible {
-                        Button("新建聊天") { showNewSessionCreation = true }
-                    }
+                    Button("新建聊天") { showNewSessionCreation = true }
                     Button("新建 Work") { isCreatingWork = true }
                     Button("新建 Task") { presentTaskCreation(for: selectedWorkId) }
                 } label: { Image(systemName: "plus") }
             }.padding(10)
             if isSearching { sessionSearchBar.padding(.horizontal, 10) }
-            if cardChatVisible {
-                ScrollView {
-                    LazyVStack {
-                        ForEach(sessionIndexStore.rows.filter { $0.session.resolvedSessionKind == .assistantChat }) { row in
-                            Button(row.session.title) { selectSessionAfterHighlight(row.session) }
-                                .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                        }
-                    }
-                }
-            }
-            ConsoleCardWorkspace(isActive: navigationMode == .taskCards && !cardChatVisible, works: entityClient.works, tasks: entityClient.tasks,
+            ConsoleCardWorkspace(isActive: navigationMode == .taskCards, works: entityClient.works, tasks: entityClient.tasks,
                 sessions: sessionIndexStore.rows.map(\.session), selectedTaskID: selectedTaskId, query: searchText,
                 attentionCount: $cardAttentionCount, refreshRevision: cardRefreshRevision,
+                openChat: { selectSessionAfterHighlight($0) }, createChat: { showNewSessionCreation = true },
                 openTask: { task, session in
                     openTask(task, session: session)
                     if session == nil, let id = task.currentSessionId {
@@ -857,7 +845,6 @@ struct UnifiedConsoleView: View {
                     if let session = workChatSession(for: work.id) { openWorkChat(for: work, session: session) }
                 }, createTask: { presentTaskCreation(for: $0.id) },
                 taskMenu: { task in taskContextMenuContent(for: task, session: workerSession(for: task)) })
-                .frame(height: cardChatVisible ? 0 : nil).clipped()
         }
         .sheet(isPresented: Binding(
             get: { navigationMode == .taskCards && showNewSessionCreation },

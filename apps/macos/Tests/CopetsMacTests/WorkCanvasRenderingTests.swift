@@ -66,7 +66,7 @@ private struct ProbeCard: View {
     var body: some View {
         let _ = probe.builds += 1
         HStack {
-            Text("Task sample")
+            ConsoleWorkTitle(title: "Task sample", isWorking: true)
             ConsoleScheduledWakeIcon()
         }.frame(width: 240, height: 100)
             .gesture(DragGesture().onChanged { value in
