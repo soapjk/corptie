@@ -70,6 +70,12 @@ final class SessionCommandController: ObservableObject {
     @Published private(set) var inFlight: Set<Key> = []
     @Published var isSendingMessage = false
     @Published var sendStatusMessage: String?
+    @Published private(set) var sendFailures: [String: String] = [:]
+
+    func setSendFailure(_ message: String?, sessionID: String) {
+        if sendFailures[sessionID] == message { return }
+        sendFailures[sessionID] = message
+    }
     @Published var scheduledTaskMutationIds = Set<String>()
     @Published var scheduledTaskError: String?
     @Published var isSwitchingModel = false

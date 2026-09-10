@@ -23,8 +23,9 @@ const DEFAULT_RECOVERY_STABILIZE_TIMEOUT_MS = 90_000;
  * present an honest unavailable reason.
  */
 function resolveAdapter(adapters, providerId, operation) {
-  const adapter = adapters?.[providerId]?.[operation];
-  if (typeof adapter === "function") return adapter;
+  const adapter = adapters?.[providerId];
+  // Callers need the adapter's companion methods and its original receiver.
+  if (typeof adapter?.[operation] === "function") return adapter;
   const error = new Error(
     `Provider ${providerId} does not implement ${operation}.`
   );

@@ -3370,6 +3370,9 @@ final class BackendClient: ObservableObject {
             sendStatusMessage = selectedNotReadyReason?.message
                 ?? selectedDetail?.sendUnavailableReason
                 ?? "This Session is not ready to accept messages."
+            if let session = selectedSession {
+                sessionCommandController.setSendFailure(sendStatusMessage, sessionID: session.id)
+            }
             return false
         }
 
@@ -3597,6 +3600,7 @@ final class BackendClient: ObservableObject {
 
         Task {
             isSendingMessage = true
+            sessionCommandController.setSendFailure(nil, sessionID: session.id)
             sendStatusMessage = L10n("Sending...")
             defer { isSendingMessage = false }
 
@@ -3638,7 +3642,7 @@ final class BackendClient: ObservableObject {
                 guard (200..<300).contains(httpResponse.statusCode) else {
                     let message = decoded?.error ?? String(data: data, encoding: .utf8) ?? "Bad server response"
                     let hint = decoded?.hint.map { "\n\($0)" } ?? ""
-                    throw BackendError.message("\(message)\(hint)")
+                    throw BackendError.message("\(message)\(hint)\nHTTP \(httpResponse.statusCode) · \(latencyTrace.traceId)")
                 }
 
                 // A Timeline row is product state, not a send animation. The
@@ -3684,10 +3688,12 @@ final class BackendClient: ObservableObject {
             } catch {
                 lastError = error.localizedDescription
                 sendStatusMessage = L10nFormat("Send failed: %@", error.localizedDescription)
+                latencyTrace.log(stage: "send_failed")
+                sessionCommandController.setSendFailure(sendStatusMessage, sessionID: session.id)
+                onFailure()
                 if selectedSession?.id == session.id {
                     await loadWorkspaceRecoveryStatus(for: session)
                 }
-                onFailure()
             }
         }
         return true
