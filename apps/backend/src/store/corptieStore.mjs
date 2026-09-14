@@ -11136,6 +11136,16 @@ export class CorptieStore {
       .map((row) => workFromRow(row, this.listWorkContributors(row.id)));
   }
 
+  listClientWorkPage({ limit, cursor }) {
+    const rows = this.selectAll(
+      `SELECT id, name, status, updated_at FROM works WHERE status = 'active'
+       ${cursor ? "AND (updated_at < ? OR (updated_at = ? AND id < ?))" : ""}
+       ORDER BY updated_at DESC, id DESC LIMIT ?`,
+      [...(cursor ? [cursor.updatedAt, cursor.updatedAt, cursor.id] : []), limit + 1]);
+    const items = rows.slice(0, limit), tail = items.at(-1), hasMore = rows.length > limit;
+    return { items, hasMore, nextCursor: hasMore ? { id: tail.id, updatedAt: tail.updated_at } : null };
+  }
+
   getWork(id) {
     const row = this.selectOne(`SELECT * FROM works WHERE id = ?`, [id]);
     return row ? workFromRow(row, this.listWorkContributors(id)) : null;

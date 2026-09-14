@@ -28,6 +28,9 @@ apps/backend/data/
 .build/
 DerivedData/
 Packages/
+# Source packages (case-insensitive macOS filesystems also match Packages/).
+!/packages/
+!/packages/CorptieClientCore/
 *.xcodeproj/project.xcworkspace/xcuserdata/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/

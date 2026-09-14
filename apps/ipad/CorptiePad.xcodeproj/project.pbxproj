@@ -1,0 +1,374 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		129D4D742EC56F4DED49DB8E /* PadAppShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = BABDB8CF2882D7BBC96B929D /* PadAppShell.swift */; };
+		25598408CFA5385FBC971453 /* CorptieClientCore in Frameworks */ = {isa = PBXBuildFile; productRef = 45964AF0B8F8330BB128FCB0 /* CorptieClientCore */; };
+		262B2D784B5515EB0D7B0237 /* PadControlView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 084B1BA8B2BDB5FA42FB8196 /* PadControlView.swift */; };
+		28D1EB31F6E99C9AFDE70C23 /* PadWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B3CEEC41CE2EF0B70FB07AB /* PadWorkspace.swift */; };
+		4150D545D515139A2E745D2E /* CorptiePadApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3286D96146BFCA5F3A190064 /* CorptiePadApp.swift */; };
+		52416C24E5FC0207E008EFCE /* PadControlStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEEB41418B7183068BED5DA3 /* PadControlStore.swift */; };
+		89ED196CC19F355810CA73BA /* PadConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32C2BC07E2084682EFDE2A29 /* PadConnection.swift */; };
+		9F0181F5AAD4E7F60432000D /* CorptieClientSecurity in Frameworks */ = {isa = PBXBuildFile; productRef = 03E374D113FBFDC7EE8A9FCF /* CorptieClientSecurity */; };
+		D63C1DEE7FFD71B6DA095C13 /* PadRealtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BD7A7F7895D087F0661832F /* PadRealtime.swift */; };
+		F7B203311F769B293E665531 /* PairingScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEFC733B6DD2C64DB027A7FF /* PairingScannerView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		084B1BA8B2BDB5FA42FB8196 /* PadControlView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadControlView.swift; sourceTree = "<group>"; };
+		3286D96146BFCA5F3A190064 /* CorptiePadApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CorptiePadApp.swift; sourceTree = "<group>"; };
+		32C2BC07E2084682EFDE2A29 /* PadConnection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadConnection.swift; sourceTree = "<group>"; };
+		5BD7A7F7895D087F0661832F /* PadRealtime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadRealtime.swift; sourceTree = "<group>"; };
+		7B3CEEC41CE2EF0B70FB07AB /* PadWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadWorkspace.swift; sourceTree = "<group>"; };
+		AEEB41418B7183068BED5DA3 /* PadControlStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadControlStore.swift; sourceTree = "<group>"; };
+		BABDB8CF2882D7BBC96B929D /* PadAppShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadAppShell.swift; sourceTree = "<group>"; };
+		C58EDD96BAC59D754ED10CDA /* CorptiePad.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CorptiePad.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		EA09F1A57B1FE419D9113B8A /* CorptieClientCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CorptieClientCore; path = ../../packages/CorptieClientCore; sourceTree = SOURCE_ROOT; };
+		EEFC733B6DD2C64DB027A7FF /* PairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingScannerView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		53E3EC186365ABD07299A275 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				25598408CFA5385FBC971453 /* CorptieClientCore in Frameworks */,
+				9F0181F5AAD4E7F60432000D /* CorptieClientSecurity in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		01E6CA80EBB8254ED4052161 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				EA09F1A57B1FE419D9113B8A /* CorptieClientCore */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		C5A2AC096A7CEFC4384171B7 = {
+			isa = PBXGroup;
+			children = (
+				01E6CA80EBB8254ED4052161 /* Packages */,
+				CA8EF583672D06279AE8E2FB /* Sources */,
+				DF1AE4339BC8840C6CE3193E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		CA8EF583672D06279AE8E2FB /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				3286D96146BFCA5F3A190064 /* CorptiePadApp.swift */,
+				BABDB8CF2882D7BBC96B929D /* PadAppShell.swift */,
+				32C2BC07E2084682EFDE2A29 /* PadConnection.swift */,
+				AEEB41418B7183068BED5DA3 /* PadControlStore.swift */,
+				084B1BA8B2BDB5FA42FB8196 /* PadControlView.swift */,
+				5BD7A7F7895D087F0661832F /* PadRealtime.swift */,
+				7B3CEEC41CE2EF0B70FB07AB /* PadWorkspace.swift */,
+				EEFC733B6DD2C64DB027A7FF /* PairingScannerView.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		DF1AE4339BC8840C6CE3193E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C58EDD96BAC59D754ED10CDA /* CorptiePad.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		6272E55DBA36D2FFB9E6BDD9 /* CorptiePad */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 900428CBB499649ED4D626A9 /* Build configuration list for PBXNativeTarget "CorptiePad" */;
+			buildPhases = (
+				41DF2FE0E1C4465D4E769562 /* Sources */,
+				53E3EC186365ABD07299A275 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CorptiePad;
+			packageProductDependencies = (
+				45964AF0B8F8330BB128FCB0 /* CorptieClientCore */,
+				03E374D113FBFDC7EE8A9FCF /* CorptieClientSecurity */,
+			);
+			productName = CorptiePad;
+			productReference = C58EDD96BAC59D754ED10CDA /* CorptiePad.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		4B5E37462AC46931E981446C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = 994BE7C4288A9CE6501370E6 /* Build configuration list for PBXProject "CorptiePad" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = C5A2AC096A7CEFC4384171B7;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6CF9B5F54313F8EE0C164BC9 /* XCLocalSwiftPackageReference "../../packages/CorptieClientCore" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = DF1AE4339BC8840C6CE3193E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				6272E55DBA36D2FFB9E6BDD9 /* CorptiePad */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		41DF2FE0E1C4465D4E769562 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4150D545D515139A2E745D2E /* CorptiePadApp.swift in Sources */,
+				129D4D742EC56F4DED49DB8E /* PadAppShell.swift in Sources */,
+				89ED196CC19F355810CA73BA /* PadConnection.swift in Sources */,
+				52416C24E5FC0207E008EFCE /* PadControlStore.swift in Sources */,
+				262B2D784B5515EB0D7B0237 /* PadControlView.swift in Sources */,
+				D63C1DEE7FFD71B6DA095C13 /* PadRealtime.swift in Sources */,
+				28D1EB31F6E99C9AFDE70C23 /* PadWorkspace.swift in Sources */,
+				F7B203311F769B293E665531 /* PairingScannerView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		2BF8EDCBFD745D76A2E09385 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		3888CF956A5DEE48B20EFC93 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		8C76A2EDB6B3B2F29DF984FA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Corptie;
+				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接你指定的 Mac，浏览并操作 Corptie 会话。";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.corptie.ipad.development;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		C3DB4BF3892B1F5B2E555D04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = Corptie;
+				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "连接你指定的 Mac，浏览并操作 Corptie 会话。";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.corptie.ipad.development;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		900428CBB499649ED4D626A9 /* Build configuration list for PBXNativeTarget "CorptiePad" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8C76A2EDB6B3B2F29DF984FA /* Debug */,
+				C3DB4BF3892B1F5B2E555D04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		994BE7C4288A9CE6501370E6 /* Build configuration list for PBXProject "CorptiePad" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3888CF956A5DEE48B20EFC93 /* Debug */,
+				2BF8EDCBFD745D76A2E09385 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		6CF9B5F54313F8EE0C164BC9 /* XCLocalSwiftPackageReference "../../packages/CorptieClientCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../packages/CorptieClientCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		03E374D113FBFDC7EE8A9FCF /* CorptieClientSecurity */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CorptieClientSecurity;
+		};
+		45964AF0B8F8330BB128FCB0 /* CorptieClientCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = CorptieClientCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 4B5E37462AC46931E981446C /* Project object */;
+}
