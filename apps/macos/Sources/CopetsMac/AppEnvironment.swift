@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 
 @MainActor
 enum CorptieAppEnvironment {
@@ -31,6 +32,9 @@ enum CorptieAppEnvironment {
     }()
 
     static let backendBaseURL = URL(string: "http://127.0.0.1:\(backendPort)")!
+    // Remote switching stays disabled until all API/resource paths are migrated.
+    static let backendEndpoint = try! BackendEndpoint(backendBaseURL)
+    static let backendTransport = try! BackendTransport(endpoint: backendEndpoint)
 
     static let developmentBackendConfiguration: DevelopmentBackendConfiguration? = {
         CorptieProcessLifecycle.developmentBackendConfiguration(

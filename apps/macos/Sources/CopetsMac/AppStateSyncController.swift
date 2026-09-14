@@ -21,6 +21,7 @@ final class AppStateSyncController {
 
     private let store = AppStateStore.shared
     private let baseURL = CorptieAppEnvironment.backendBaseURL
+    private let transport = CorptieAppEnvironment.backendTransport
     private var streamTask: Task<Void, Never>?
     private var streamWatchdogTask: Task<Void, Never>?
     private var streamGeneration: UInt64 = 0
@@ -80,9 +81,8 @@ final class AppStateSyncController {
         snapshotRequestGeneration &+= 1
         let requestGeneration = snapshotRequestGeneration
         do {
-            let (data, response) = try await URLSession.shared.data(
-                from: baseURL.appending(path: "state/snapshot")
-            )
+            let (data, response) = try await transport.data(for:
+                URLRequest(url: baseURL.appending(path: "state/snapshot")))
             try Self.requireSuccess(response)
             let snapshot = try decoder.decode(StateSnapshotEnvelope.self, from: data)
             guard requestGeneration == snapshotRequestGeneration else { return }
@@ -148,7 +148,7 @@ final class AppStateSyncController {
             components.queryItems = [URLQueryItem(name: "after", value: String(store.revision))]
             var request = URLRequest(url: components.url!)
             request.timeoutInterval = .infinity
-            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            let (bytes, response) = try await transport.bytes(for: request)
             try Self.requireSuccess(response)
             guard generation == streamGeneration else { return }
             store.reportStateStreamConnected()

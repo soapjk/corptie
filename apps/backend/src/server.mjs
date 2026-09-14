@@ -110,6 +110,11 @@ import { createArtifactEvidencePort } from "./benchmark/ports.mjs";
 import { createBenchmarkProductionPorts } from "./benchmark/productionPorts.mjs";
 import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamicTool } from "./application/artifactDynamicTools.mjs";
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
+import { clientCapabilities } from "./application/clientCapabilities.mjs";
+import { startConfiguredDeviceGateway } from "./application/clientDeviceGateway.mjs";
+import { ClientReadAPI } from "./application/clientReadAPI.mjs";
+import { ClientControlReadAPI } from "./application/clientControlReadAPI.mjs";
+import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
 import { skillMcpTurnContext } from "./application/skillMcpTurnContext.mjs";
@@ -370,6 +375,7 @@ let mockProgressTimer = null;
 let stateSyncService = null;
 let sessionBindingReadinessProbe = null;
 let backendStoreReady = false;
+let clientDeviceGateway = null;
 const sessionStateDiagnostics = new SessionStateDiagnostics();
 let taskExecutionOrchestrator = null;
 let sessionWorkspaceOperations = null;
@@ -3534,6 +3540,9 @@ function seedSessions() {
 }
 
 function emitEvent(type, payload, options = {}) {
+  if (/^(Worktree|GitRepository|ScheduledSession|Automation|Agent|Skill)/.test(type)) {
+    clientDeviceGateway?.events.invalidate({ control: true });
+  }
   // Provider terminal notifications may be replayed after reconnect. A stable
   // event id makes the entire product event idempotent, including global SSE,
   // the durable timeline, unread cursors, and downstream work orchestration.
@@ -4012,6 +4021,7 @@ function publishStateChangesIfNeeded() {
 }
 
 function scheduleStateSyncPublish() {
+  clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
   if (stateSyncClients.size === 0 || stateSyncPublishTimer) return;
   // Collapse a burst of Provider item/progress events into one revision-aware
   // delivery. This avoids rebuilding the control-plane projection once per
@@ -4024,6 +4034,7 @@ function scheduleStateSyncPublish() {
 }
 
 function scheduleTimelineChangePublish(change = {}) {
+  clientDeviceGateway?.events.invalidate({ sessionId: change.sessionId });
   timelineChangePublisher?.schedule(change);
 }
 
@@ -9146,6 +9157,15 @@ function trackStartupMaintenance(promise) {
 
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
+  if (url.pathname.startsWith("/internal/client-devices")) {
+    if (!clientDeviceGateway) sendJson(response, 503, { code: "REMOTE_ACCESS_DISABLED" });
+    else void clientDeviceGateway.handleAdmin(request, response);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/client-capabilities") {
+    sendJson(response, 200, clientCapabilities());
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/collaboration/task-edges") {
     if (!backendStoreReady || store.migrationInProgress) {
       sendJson(response, 503, { error: "Store unavailable" });
@@ -11681,6 +11701,19 @@ function startBackendRuntime() {
     return;
   }
   taskSummaryService.start();
+  void startConfiguredDeviceGateway({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
+    readAPI: new ClientReadAPI(store),
+    controlAPI: new ClientControlReadAPI({ lists: {
+      automations: () => store.listScheduledSessionTasks({ environment: environmentName }),
+      agents: () => store.listAgents(), skills: () => store.listRegistrySkills(),
+      repositories: () => worktreeIntegrationJobService.repositories()
+    }, repository: id => worktreeIntegrationJobService.repository(id),
+    resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
+    sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
+      send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
+      actions: session => decorateSessionForClient(session).actions ?? {} }) })
+    .then(gateway => { clientDeviceGateway = gateway; })
+    .catch(() => console.error("[client-devices] remote gateway unavailable; check explicit TLS configuration"));
   // Store-backed APIs and state streams are the Backend readiness boundary.
   // Provider runtimes, recovery, and route verification are optional
   // capabilities: start them only after the frontend can connect, and contain
@@ -11952,6 +11985,7 @@ function shutdown() {
   if (shutdownPromise) return shutdownPromise;
   shutdownPromise = (async () => {
     backgroundAgentService.close();
+    await clientDeviceGateway?.close();
     taskSummaryService.close();
     turnObservability.flush();
     if (agentWorkQueueInterval) clearInterval(agentWorkQueueInterval);
