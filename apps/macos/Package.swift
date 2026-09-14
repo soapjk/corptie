@@ -12,6 +12,7 @@ let package = Package(
         .executable(name: "CorptieMac", targets: ["CorptieMac"])
     ],
     dependencies: [
+        .package(path: "../../packages/CorptieClientCore"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.1"),
         .package(url: "https://github.com/tevelee/SwiftUI-Flow", exact: "3.1.1")
     ],
@@ -28,6 +29,7 @@ let package = Package(
         .executableTarget(
             name: "CorptieMac",
             dependencies: [
+                .product(name: "CorptieClientCore", package: "CorptieClientCore"),
                 "RectanglePacking",
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Flow", package: "SwiftUI-Flow")
