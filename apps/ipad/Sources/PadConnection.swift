@@ -15,6 +15,7 @@ final class PadConnection {
     var notice = ""
     private var endpoint: BackendEndpoint?
     private var credentials: DeviceCredentials?
+    private var pairingCertificate: String?
     private let vault = DeviceCredentialVault()
     private var refreshTask: Task<DeviceCredentials, Error>?
     private var cachedTransport: BackendTransport?
@@ -34,6 +35,14 @@ final class PadConnection {
     }
 
     static func explain(_ error: Error) -> String {
+        if let error = error as? DevicePairingFailure {
+            switch error.code {
+            case "PAIRING_DENIED": return "Mac 已拒绝此设备。请核对设备后重新扫码。"
+            case "PAIRING_EXPIRED": return "配对已过期，请重新扫描 Mac 上的二维码。"
+            case "PAIRING_NOT_APPROVED": return "等待 Mac 批准设备…"
+            default: return "配对信息已失效，请重新扫码。"
+            }
+        }
         if let error = error as? ClientConnectionError {
             switch error {
             case .httpStatus(401): return "凭据无效或已过期，请重新连接；不要重复发送消息。"
@@ -56,7 +65,7 @@ final class PadConnection {
     func requestPairing() async {
         await perform {
             let endpoint = try configuredEndpoint()
-            claim = try await DevicePairingClient(endpoint: endpoint).claim(pairingId: pairingID, pairingSecret: secret, name: "Corptie iPad")
+            claim = try await DevicePairingClient(endpoint: endpoint, certificate: pairingCertificate).claim(pairingId: pairingID, pairingSecret: secret, name: "Corptie iPad")
             self.endpoint = endpoint
             secret = ""
             notice = "请在 Mac 的设备设置中批准，然后点击完成配对。"
@@ -69,16 +78,45 @@ final class PadConnection {
         let code = try DevicePairingCode.decode(payload)
         address = code.address; serverID = code.serverId
         pairingID = code.pairingId; secret = code.pairingSecret
+        pairingCertificate = code.certificate
         notice = "已识别 Mac，正在申请配对。"
     }
 
     func finishPairing() async {
         await perform {
             guard let endpoint, let claim else { return }
-            credentials = try await vault.exchangeAndStore(claim: claim, endpoint: endpoint, expectedServerId: serverID)
+            credentials = try await vault.exchangeAndStore(claim: claim, endpoint: endpoint, expectedServerId: serverID, certificate: pairingCertificate)
             self.claim = nil
             remember(endpoint)
             connected = true
+        }
+    }
+
+    func waitForApproval() async {
+        guard let pending = claim, let endpoint else { return }
+        while !Task.isCancelled && claim?.pairingId == pending.pairingId && !connected {
+            do {
+                try await Task.sleep(for: .seconds(2))
+                guard !busy else { continue }
+                guard pending.expiresAt > Date().timeIntervalSince1970 * 1000 else {
+                    notice = "配对已过期，请重新扫码。"; claim = nil; return
+                }
+                busy = true
+                defer { busy = false }
+                credentials = try await vault.exchangeAndStore(claim: pending, endpoint: endpoint,
+                    expectedServerId: serverID, certificate: pairingCertificate)
+                remember(endpoint)
+                claim = nil; connected = true
+                return
+            } catch is CancellationError { return }
+            catch let error as DevicePairingFailure where error.code == "PAIRING_NOT_APPROVED" {
+                notice = "等待 Mac 批准设备…"
+            } catch {
+                notice = Self.explain(error)
+                if let error = error as? DevicePairingFailure,
+                   ["PAIRING_DENIED", "PAIRING_EXPIRED", "PAIRING_INVALID"].contains(error.code) { claim = nil }
+                return
+            }
         }
     }
 
@@ -112,7 +150,8 @@ final class PadConnection {
             if refreshTask == nil {
                 let saved = credentials, expectedID = serverID, vault = vault
                 refreshTask = Task {
-                    let updated = try await DevicePairingClient(endpoint: endpoint).refresh(saved)
+                    var updated = try await DevicePairingClient(endpoint: endpoint, certificate: saved.certificate).refresh(saved)
+                    updated.certificate = saved.certificate
                     try await vault.save(updated, endpoint: endpoint, expectedServerId: expectedID)
                     return updated
                 }
@@ -124,7 +163,7 @@ final class PadConnection {
             self.credentials = credentials
         }
         if cachedTransport == nil || cachedToken != credentials.accessToken {
-            cachedTransport = try BackendTransport(endpoint: endpoint, bearerToken: credentials.accessToken)
+            cachedTransport = try BackendTransport(endpoint: endpoint, bearerToken: credentials.accessToken, certificate: credentials.certificate)
             cachedToken = credentials.accessToken
         }
         return cachedTransport!

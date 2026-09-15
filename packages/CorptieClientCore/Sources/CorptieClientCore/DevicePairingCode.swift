@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// An ephemeral invitation, never an access token. Camera payloads are untrusted
 /// until decoded and validated. Do not persist/log this value or open it as a URL.
@@ -10,15 +11,17 @@ public struct DevicePairingCode: Codable, Sendable, Equatable {
     public let pairingId: String
     public let pairingSecret: String
     public let expiresAt: Double
+    public let certificate: String?
 
-    public init(address: String, serverId: String, pairingId: String, pairingSecret: String, expiresAt: Double) {
-        type = "corptie-device-pairing"; version = 1
+    public init(address: String, serverId: String, pairingId: String, pairingSecret: String, expiresAt: Double, certificate: String? = nil) {
+        type = "corptie-device-pairing"; version = certificate == nil ? 1 : 2
         self.address = address; self.serverId = serverId; self.pairingId = pairingId
         self.pairingSecret = pairingSecret; self.expiresAt = expiresAt
+        self.certificate = certificate
     }
 
     public func validate(now: Date = .now) throws {
-        guard type == "corptie-device-pairing", version == 1,
+        guard type == "corptie-device-pairing", [1, 2].contains(version),
               let url = URL(string: address), url.scheme == "https",
               let endpoint = try? BackendEndpoint(url), !endpoint.isLoopback,
               !["0.0.0.0", "::", "[::]"].contains(url.host?.lowercased() ?? ""),
@@ -29,6 +32,10 @@ public struct DevicePairingCode: Codable, Sendable, Equatable {
               pairingSecret.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0)
                   || (48...57).contains($0) || $0 == 45 || $0 == 95 }),
               address.utf8.count <= 512, expiresAt.isFinite else { throw CodeError.invalid }
+        if version == 2 {
+            guard let certificate, let data = Data(base64Encoded: certificate), data.count <= 1000,
+                  SecCertificateCreateWithData(nil, data as CFData) != nil else { throw CodeError.invalid }
+        } else if certificate != nil { throw CodeError.invalid }
         guard expiresAt > now.timeIntervalSince1970 * 1000 else { throw CodeError.expired }
         // A QR invitation may live only briefly, not become a reusable credential.
         guard expiresAt <= now.timeIntervalSince1970 * 1000 + 360_000 else { throw CodeError.invalid }

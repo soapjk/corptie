@@ -4,12 +4,12 @@ import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs"
 import { requireDevicePermission } from "./clientSessionAPI.mjs";
 import { ClientEventStream } from "./clientEventStream.mjs";
 
-const reply = (response, status, body) => {
+export const reply = (response, status, body) => {
   response.writeHead(status, { "content-type": "application/json", "cache-control": "no-store",
     "x-content-type-options": "nosniff" });
   response.end(JSON.stringify(body));
 };
-const bearer = request => /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization ?? "")?.[1];
+export const bearer = request => /^Bearer ([A-Za-z0-9_-]{43})$/.exec(request.headers.authorization ?? "")?.[1];
 async function body(request, maxBytes = 4096) {
   if (!/^application\/json(?:;|$)/i.test(request.headers["content-type"] ?? "")) throw deviceError("JSON_REQUIRED", 415);
   let size = 0;
@@ -157,6 +157,7 @@ export class ClientDeviceGateway {
     this.events.close();
     this.authority.listeners.delete(this.onRevoke);
     if (!this.server?.listening) return;
+    for (const socket of this.sockets.keys()) socket.destroy();
     this.server.closeAllConnections();
     await new Promise(resolve => this.server.close(resolve));
   }

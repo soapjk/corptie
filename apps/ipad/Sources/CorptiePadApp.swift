@@ -29,28 +29,40 @@ struct PairingView: View {
                     Text("在 Mac 的设备接入设置中生成二维码，扫码后无需手填连接信息。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
-                Section("你的 Mac") {
+                if !connection.serverID.isEmpty {
+                    Section("已配对的 Mac") {
+                        Text(connection.address).font(.footnote)
+                        Button("连接") { Task { await connection.reconnect() } }
+                    }.disabled(connection.claim != nil)
+                }
+                DisclosureGroup("手动连接（高级）") {
                     TextField("HTTPS 地址（含端口）", text: $connection.address)
                         .keyboardType(.URL)
+                        .disabled(connection.claim != nil)
                     TextField("Server ID（来自 Mac）", text: $connection.serverID)
+                        .disabled(connection.claim != nil)
                     Button("连接已配对的 Mac") { Task { await connection.reconnect() } }
-                }
-                .disabled(connection.claim != nil)
-                Section("首次配对") {
                     TextField("Pairing ID", text: $connection.pairingID)
                         .disabled(connection.claim != nil)
                     SecureField("配对密钥", text: $connection.secret)
                         .disabled(connection.claim != nil)
                     if connection.claim != nil {
-                        Button("Mac 已批准，完成配对") { Task { await connection.finishPairing() } }
+                        Button("重试完成配对") { Task { await connection.finishPairing() } }
                         Button("重新填写配对信息") { connection.claim = nil }
                     } else {
                         Button("请求配对") { Task { await connection.requestPairing() } }
                             .disabled(connection.pairingID.isEmpty || connection.secret.isEmpty)
                     }
                 }
+                if connection.claim != nil {
+                    Section {
+                        Text("等待 Mac 批准，批准后将自动连接。")
+                        Button("重试连接") { Task { await connection.finishPairing() } }
+                        Button("取消配对") { connection.claim = nil }
+                    }
+                }
                 Section {
-                    Text("需要 Mac 已开启 HTTPS 接入，并使用此设备信任的证书。不接受跳过证书校验。设备默认只读，额外页面与消息操作需在 Mac 上授权。")
+                    Text("在 Mac 点击开启设备接入即可。扫码会验证 Mac 的证书，无需安装系统证书；请允许局域网访问。设备默认只读，额外权限需在 Mac 上授予。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !connection.notice.isEmpty { Text(connection.notice).font(.callout) }
                     if connection.busy { ProgressView("连接中") }
@@ -60,6 +72,7 @@ struct PairingView: View {
             .autocorrectionDisabled()
             .disabled(connection.busy)
             .navigationTitle("连接 Corptie")
+            .task(id: connection.claim?.pairingId) { await connection.waitForApproval() }
             .sheet(item: $scanner, onDismiss: consumeScan) { _ in
                 PairingScannerView(onScan: { scannedPayload = $0 })
             }

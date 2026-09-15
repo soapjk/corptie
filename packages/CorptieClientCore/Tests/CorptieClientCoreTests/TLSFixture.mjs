@@ -1,0 +1,13 @@
+import https from "node:https";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { prepareLocalTLS } from "../../../../apps/backend/src/application/clientDeviceSetup.mjs";
+const directory = await mkdtemp(join(tmpdir(), "corptie-swift-tls-"));
+const tls = await prepareLocalTLS(directory, ["127.0.0.1"]);
+const otherDirectory = await mkdtemp(join(tmpdir(), "corptie-swift-other-tls-"));
+const otherTLS = await prepareLocalTLS(otherDirectory, ["127.0.0.1"]);
+const server = https.createServer(tls, (_, response) => { response.writeHead(200); response.end("ok"); });
+await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+console.log(JSON.stringify({ port: server.address().port, certificate: tls.certificate, otherCertificate: otherTLS.certificate }));
+process.on("SIGTERM", async () => { server.closeAllConnections(); server.close(); await rm(directory, { recursive: true, force: true }); await rm(otherDirectory, { recursive: true, force: true }); process.exit(0); });
