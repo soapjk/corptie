@@ -1,9 +1,17 @@
 import SwiftUI
+import os
 
 /// Non-observable output of Layout. Reading it on mouse-down cannot invalidate
 /// SwiftUI's graph, unlike feeding rendered anchors back into @State.
-final class WorkCanvasLayoutSnapshot {
-    var frames: [String: CGRect] = [:]
+final class WorkCanvasLayoutSnapshot: Sendable {
+    // Layout is Sendable; its output may be written while an interaction reads
+    // the previous frames. Publish and copy each complete snapshot under a lock.
+    private let storage = OSAllocatedUnfairLock(initialState: [String: CGRect]())
+
+    var frames: [String: CGRect] {
+        get { storage.withLock { $0 } }
+        set { storage.withLock { $0 = newValue } }
+    }
 }
 
 struct FreeWorkCanvasLayout: Layout {

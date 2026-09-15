@@ -20,7 +20,7 @@ let package = Package(
         .target(
             name: "RectanglePacking",
             path: "Sources/RectanglePacking",
-            exclude: ["UPSTREAM.md", "vendor/Readme.txt"],
+            exclude: ["vendor/Readme.txt"],
             publicHeadersPath: "include",
             // Keep the geometry kernel optimized in Development as well;
             // Swift UI code and diagnostics retain their normal build mode.
