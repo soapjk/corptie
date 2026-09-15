@@ -9,6 +9,7 @@ BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
 HEALTH_TIMEOUT_SECONDS="${CORPTIE_PRODUCTION_HEALTH_TIMEOUT_SECONDS:-180}"
 LAUNCH_AGENT_LABEL="com.corptie.backend"
 LAUNCH_AGENT_PLIST="${HOME}/Library/LaunchAgents/${LAUNCH_AGENT_LABEL}.plist"
+LAUNCH_AGENT_STAGED_PLIST=""
 BACKEND_LOG_DIR="${HOME}/Library/Logs/Corptie"
 BACKEND_STDOUT_LOG="${BACKEND_LOG_DIR}/backend.out.log"
 BACKEND_STDERR_LOG="${BACKEND_LOG_DIR}/backend.err.log"
@@ -272,12 +273,42 @@ stop_production() {
   STOPPED_PRODUCTION=true
 }
 
+install_and_start_production_backend() {
+  local bundled_plist="${APP_PATH}/Contents/Resources/${LAUNCH_AGENT_LABEL}.plist"
+  local launcher="${APP_PATH}/Contents/Resources/corptie-backend-launch.sh"
+  local default_workspace="${CORPTIE_DEFAULT_WORKSPACE:-${HOME}/corptie}"
+
+  [[ -f "${bundled_plist}" && -x "${launcher}" ]] || {
+    echo "The installed app does not contain its production backend LaunchAgent resources." >&2
+    return 1
+  }
+
+  mkdir -p "$(dirname "${LAUNCH_AGENT_PLIST}")" "${BACKEND_LOG_DIR}" "${default_workspace}"
+  LAUNCH_AGENT_STAGED_PLIST="${LAUNCH_AGENT_PLIST}.new.$$"
+  cp "${bundled_plist}" "${LAUNCH_AGENT_STAGED_PLIST}"
+  plutil -replace ProgramArguments -json "[\"${launcher}\"]" "${LAUNCH_AGENT_STAGED_PLIST}"
+  plutil -replace EnvironmentVariables.CORPTIE_DEFAULT_WORKSPACE \
+    -string "${default_workspace}" "${LAUNCH_AGENT_STAGED_PLIST}"
+  plutil -replace StandardOutPath -string "${BACKEND_STDOUT_LOG}" "${LAUNCH_AGENT_STAGED_PLIST}"
+  plutil -replace StandardErrorPath -string "${BACKEND_STDERR_LOG}" "${LAUNCH_AGENT_STAGED_PLIST}"
+  plutil -convert xml1 "${LAUNCH_AGENT_STAGED_PLIST}"
+
+  launchctl bootout "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" >/dev/null 2>&1 \
+    || launchctl bootout "gui/$(id -u)" "${LAUNCH_AGENT_PLIST}" >/dev/null 2>&1 \
+    || true
+  mv "${LAUNCH_AGENT_STAGED_PLIST}" "${LAUNCH_AGENT_PLIST}"
+  LAUNCH_AGENT_STAGED_PLIST=""
+  launchctl bootstrap "gui/$(id -u)" "${LAUNCH_AGENT_PLIST}"
+  launchctl kickstart "gui/$(id -u)/${LAUNCH_AGENT_LABEL}"
+}
+
 cleanup() {
   local status=$?
   if [[ -n "${MOUNT_POINT}" ]]; then
     hdiutil detach "${MOUNT_POINT}" -quiet >/dev/null 2>&1 || true
   fi
   [[ -z "${STAGED_APP}" ]] || rm -rf "${STAGED_APP}" 2>/dev/null || true
+  [[ -z "${LAUNCH_AGENT_STAGED_PLIST}" ]] || rm -f "${LAUNCH_AGENT_STAGED_PLIST}" 2>/dev/null || true
   [[ -z "${BUILD_LOG}" ]] || rm -f "${BUILD_LOG}" 2>/dev/null || true
   if [[ "${FINISHED}" != true && -n "${OLD_APP}" && -d "${OLD_APP}" ]]; then
     local app_pids=() pid
@@ -375,8 +406,8 @@ STAGED_APP=""
 hdiutil detach "${MOUNT_POINT}" -quiet
 MOUNT_POINT=""
 
-echo "Opening the newly installed Corptie app..."
-open -na "${APP_PATH}"
+echo "Starting the newly installed production backend before opening Corptie..."
+install_and_start_production_backend
 health_attempts=$((HEALTH_TIMEOUT_SECONDS * 2))
 for ((attempt = 1; attempt <= health_attempts; attempt += 1)); do
   if curl --fail --silent --max-time 1 "${BACKEND_URL}/health" \
@@ -395,6 +426,8 @@ for ((attempt = 1; attempt <= health_attempts; attempt += 1)); do
         );
       });
       ' >/dev/null 2>&1; then
+    echo "Opening the newly installed Corptie app..."
+    open -na "${APP_PATH}"
     FINISHED=true
     [[ -z "${OLD_APP}" ]] || rm -rf "${OLD_APP}"
     OLD_APP=""
@@ -416,7 +449,7 @@ for ((attempt = 1; attempt <= health_attempts; attempt += 1)); do
   sleep 0.5
 done
 
-echo "The new app opened, but its production backend did not become healthy at ${BACKEND_URL}." >&2
+echo "The newly installed production backend did not become healthy at ${BACKEND_URL}." >&2
 echo "Production backend diagnostics:" >&2
 launchctl print "gui/$(id -u)/${LAUNCH_AGENT_LABEL}" 2>&1 | tail -80 >&2 || true
 if [[ -f "${BACKEND_STDERR_LOG}" ]]; then
