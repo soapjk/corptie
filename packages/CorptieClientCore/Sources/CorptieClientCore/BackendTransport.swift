@@ -1,4 +1,9 @@
 import Foundation
+import Security
+
+public struct DevicePairingFailure: Error, Sendable {
+    public let code: String
+}
 
 /// Explicit endpoint ownership: no global URLSession overrides or automatic mutation retries.
 public final class BackendTransport: Sendable {
@@ -8,7 +13,7 @@ public final class BackendTransport: Sendable {
     private let pairingOnly: Bool
 
     public init(endpoint: BackendEndpoint, bearerToken: String? = nil, pairingOnly: Bool = false,
-                configuration: URLSessionConfiguration = .ephemeral) throws {
+                configuration: URLSessionConfiguration = .ephemeral, certificate: String? = nil) throws {
         if let bearerToken {
             guard !bearerToken.isEmpty,
                   bearerToken.unicodeScalars.allSatisfy({ $0.value >= 33 && $0.value <= 126 }) else {
@@ -25,7 +30,13 @@ public final class BackendTransport: Sendable {
         config.httpShouldSetCookies = false
         config.urlCredentialStorage = nil
         config.urlCache = nil
-        self.session = URLSession(configuration: config, delegate: NoRedirects(), delegateQueue: nil)
+        let pin = try certificate.map { value -> Data in
+            guard endpoint.baseURL.scheme == "https", let data = Data(base64Encoded: value),
+                  SecCertificateCreateWithData(nil, data as CFData) != nil else { throw ClientConnectionError.invalidCredential }
+            return data
+        }
+        self.session = URLSession(configuration: config,
+            delegate: NoRedirects(host: endpoint.baseURL.host!, certificate: pin), delegateQueue: nil)
     }
 
     deinit { session.invalidateAndCancel() }
@@ -47,6 +58,10 @@ public final class BackendTransport: Sendable {
 
     public func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let (data, response) = try await session.data(for: prepare(request))
+        if pairingOnly, let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode),
+           let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
+            throw DevicePairingFailure(code: code)
+        }
         return (data, try Self.requireSuccess(response))
     }
 
@@ -63,6 +78,29 @@ public final class BackendTransport: Sendable {
 }
 
 private final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
+    let host: String
+    let certificate: Data?
+    init(host: String, certificate: Data?) { self.host = host; self.certificate = certificate }
+
+    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
+                    completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+              let certificate else { completionHandler(.performDefaultHandling, nil); return }
+        guard challenge.protectionSpace.host.lowercased() == host.lowercased(),
+              let trust = challenge.protectionSpace.serverTrust,
+              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate], let leaf = chain.first,
+              (SecCertificateCopyData(leaf) as Data) == certificate,
+              let anchor = SecCertificateCreateWithData(nil, certificate as CFData),
+              SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString)) == errSecSuccess,
+              SecTrustSetAnchorCertificates(trust, [anchor] as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+              SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess,
+              SecTrustEvaluateWithError(trust, nil) else {
+            completionHandler(.cancelAuthenticationChallenge, nil); return
+        }
+        completionHandler(.useCredential, URLCredential(trust: trust))
+    }
+
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest) async -> URLRequest? {

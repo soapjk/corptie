@@ -10,6 +10,6 @@ let package = Package(
         .target(name: "CorptieClientCore"),
         .target(name: "CorptieClientSecurity", dependencies: ["CorptieClientCore"]),
         .testTarget(name: "CorptieClientSecurityTests", dependencies: ["CorptieClientSecurity"]),
-        .testTarget(name: "CorptieClientCoreTests", dependencies: ["CorptieClientCore"])
+        .testTarget(name: "CorptieClientCoreTests", dependencies: ["CorptieClientCore"], exclude: ["TLSFixture.mjs"])
     ]
 )

@@ -22,21 +22,24 @@ struct DevicePairingQRCodeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("iPad 可访问的 HTTPS 地址（含端口）", text: $address)
-                .textFieldStyle(.roundedBorder)
-            Button("显示配对二维码") { generate() }
+            if invite.address == nil {
+                TextField("iPad 可访问的 HTTPS 地址（含端口）", text: $address)
+                    .textFieldStyle(.roundedBorder)
+                Button("显示配对二维码") { generate() }
+            }
             if let image {
                 Image(decorative: image, scale: 1)
                     .interpolation(.none).resizable().scaledToFit()
                     .frame(width: 280, height: 280).padding(20).background(.white)
                     .accessibilityLabel("一次性配对二维码，请使用 Corptie iPad 客户端扫描")
-                Text("在 iPad 点击「扫码配对 Mac」。随后在此页刷新申请并批准，再在 iPad 完成配对。")
+                Text("在手机或 iPad 点击「扫码配对 Mac」，然后在此页批准设备。两台设备需要处于同一局域网。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Text(notice).font(.caption).foregroundStyle(.secondary)
         }
-        .onChange(of: address) { image = nil }
+        .onChange(of: address) { if invite.address == nil { image = nil } }
         .task(id: invite.pairingId) {
+            if let configured = invite.address { address = configured; generate() }
             let seconds = max(0, invite.expiresAt / 1000 - Date().timeIntervalSince1970)
             do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
             image = nil; notice = "二维码已过期，请重新生成配对信息。"
@@ -47,9 +50,9 @@ struct DevicePairingQRCodeView: View {
         do {
             let code = DevicePairingCode(address: address.trimmingCharacters(in: .whitespacesAndNewlines),
                 serverId: invite.serverId, pairingId: invite.pairingId,
-                pairingSecret: invite.pairingSecret, expiresAt: invite.expiresAt)
+                pairingSecret: invite.pairingSecret, expiresAt: invite.expiresAt, certificate: invite.certificate)
             image = DevicePairingQRImage.make(try code.encoded())
-            notice = image == nil ? "二维码生成失败，请重试。" : "5 分钟内有效，请勿分享截图。需要设备信任该 HTTPS 证书。"
+            notice = image == nil ? "二维码生成失败，请重试。" : "5 分钟内有效，请勿分享截图。扫码会校验这台 Mac 的安全身份。"
         } catch DevicePairingCode.CodeError.expired {
             image = nil; notice = "二维码已过期，请重新生成配对信息。"
         } catch {

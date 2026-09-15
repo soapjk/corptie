@@ -9,6 +9,7 @@ public struct DevicePairingClaim: Codable, Sendable {
 
 /// Secrets must be stored by the platform Keychain owner, never UserDefaults or logs.
 public struct DeviceCredentials: Codable, Sendable {
+    public var certificate: String?
     public let serverId: String
     public let deviceId: String
     public let accessToken: String
@@ -19,9 +20,9 @@ public struct DeviceCredentials: Codable, Sendable {
 
 public struct DevicePairingClient: Sendable {
     private let transport: BackendTransport
-    public init(endpoint: BackendEndpoint) throws {
+    public init(endpoint: BackendEndpoint, certificate: String? = nil) throws {
         guard endpoint.baseURL.scheme == "https" else { throw ClientConnectionError.insecureRemoteEndpoint }
-        transport = try BackendTransport(endpoint: endpoint, pairingOnly: true)
+        transport = try BackendTransport(endpoint: endpoint, pairingOnly: true, certificate: certificate)
     }
 
     public func claim(pairingId: String, pairingSecret: String, name: String) async throws -> DevicePairingClaim {

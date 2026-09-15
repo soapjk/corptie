@@ -59,8 +59,9 @@ public actor DeviceCredentialVault {
     }
 
     /// The UI must keep the expected server identity from its trusted pairing information.
-    public func exchangeAndStore(claim: DevicePairingClaim, endpoint: BackendEndpoint, expectedServerId: String) async throws -> DeviceCredentials {
-        let credentials = try await DevicePairingClient(endpoint: endpoint).exchange(claim)
+    public func exchangeAndStore(claim: DevicePairingClaim, endpoint: BackendEndpoint, expectedServerId: String, certificate: String? = nil) async throws -> DeviceCredentials {
+        var credentials = try await DevicePairingClient(endpoint: endpoint, certificate: certificate).exchange(claim)
+        credentials.certificate = certificate
         try save(credentials, endpoint: endpoint, expectedServerId: expectedServerId)
         return credentials
     }
