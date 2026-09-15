@@ -112,6 +112,7 @@ import { artifactDynamicTools, authorizeArtifactDynamicTool, callArtifactDynamic
 import { handleArtifactHttpRequest } from "./application/artifactHttpApi.mjs";
 import { clientCapabilities } from "./application/clientCapabilities.mjs";
 import { startConfiguredDeviceGateway } from "./application/clientDeviceGateway.mjs";
+import { createDeviceSetup } from "./application/clientDeviceSetup.mjs";
 import { ClientReadAPI } from "./application/clientReadAPI.mjs";
 import { ClientControlReadAPI } from "./application/clientControlReadAPI.mjs";
 import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
@@ -9193,7 +9194,11 @@ function trackStartupMaintenance(promise) {
 function route(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`);
   if (url.pathname.startsWith("/internal/client-devices")) {
-    if (!clientDeviceGateway) sendJson(response, 503, { code: "REMOTE_ACCESS_DISABLED" });
+    if (!clientDeviceGateway && request.method === "GET" && url.pathname === "/internal/client-devices"
+        && !request.headers.origin) sendJson(response, 200, {
+      state: developmentPreview ? "preview" : "initializing", devices: [], pending: []
+    });
+    else if (!clientDeviceGateway) sendJson(response, 503, { code: "REMOTE_ACCESS_DISABLED" });
     else void clientDeviceGateway.handleAdmin(request, response);
     return;
   }
@@ -11743,7 +11748,8 @@ function startBackendRuntime() {
     return;
   }
   taskSummaryService.start();
-  void startConfiguredDeviceGateway({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
+  const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
+  void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
     readAPI: new ClientReadAPI(store),
     controlAPI: new ClientControlReadAPI({ lists: {
       automations: () => store.listScheduledSessionTasks({ environment: environmentName }),
