@@ -1,4 +1,5 @@
 import AppKit
+import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -2529,6 +2530,7 @@ private struct NewPtyAgentTaskSheet: View {
         panel.directoryURL = URL(fileURLWithPath: cwd.isEmpty ? backendClient.defaultWorkspacePath : cwd)
 
         if panel.runModal() == .OK, let url = panel.url {
+            WorkspaceAccessStore.shared.authorize(url)
             cwd = url.path
         }
     }
@@ -10121,6 +10123,8 @@ struct MessageComposer: View {
     @State private var scheduleSubmission: ComposerDraftBuffer.Submission?
     @State private var attachedImages: [ChatImageReference] = []
     @State private var isImportingImages = false
+    @State private var isShowingPhotoPicker = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @State private var mentionQuery: ComposerMentionQuery?
     @State private var mentionAnchorPoint = ComposerMentionAnchorPolicy.fallback
     @State private var mentionSelectionIndex = 0
@@ -10235,9 +10239,16 @@ struct MessageComposer: View {
                 .help(L10n("Send instruction"))
 
                 Menu {
-                    Button(action: chooseImages) {
-                        Label(isImportingImages ? L10n("正在导入图片…") : L10n("Attach images"),
-                              systemImage: "photo.on.rectangle.angled")
+                    Button {
+                        isShowingPhotoPicker = true
+                    } label: {
+                        Label(isImportingImages ? L10n("正在导入图片…") : L10n("从照片选择"),
+                              systemImage: "photo.on.rectangle")
+                    }
+                    .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
+
+                    Button(action: chooseImageFiles) {
+                        Label(L10n("从文件选择"), systemImage: "folder")
                     }
                     .disabled(!canAttachImages || isImportingImages || attachedImages.count >= 8)
 
@@ -10303,6 +10314,16 @@ struct MessageComposer: View {
             if notification.object as? String == sessionId { editorController.focusIfRequested() }
         }
         .onChange(of: attachedImages) { _, images in editorController.draft.images = images }
+        .photosPicker(
+            isPresented: $isShowingPhotoPicker,
+            selection: $selectedPhotoItems,
+            maxSelectionCount: max(1, 8 - attachedImages.count),
+            matching: .images,
+            preferredItemEncoding: .current
+        )
+        .onChange(of: selectedPhotoItems) { _, items in
+            importPhotoItems(items)
+        }
         .onChange(of: selectedMentions) { _, mentions in editorController.draft.mentions = mentions }
         .onPreferenceChange(ComposerWidthPreferenceKey.self) { width in
             composerWidth = width
@@ -10484,13 +10505,42 @@ struct MessageComposer: View {
         session?.capabilities?.canSendImages == true
     }
 
-    private func chooseImages() {
+    private func chooseImageFiles() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK else { return }
         importImageFiles(Array(panel.urls.prefix(max(0, 8 - attachedImages.count))), preserveOriginal: true)
+    }
+
+    private func importPhotoItems(_ items: [PhotosPickerItem]) {
+        guard let session, !items.isEmpty else { return }
+        let capacity = max(0, 8 - attachedImages.count)
+        isImportingImages = true
+        Task {
+            defer {
+                isImportingImages = false
+                selectedPhotoItems = []
+            }
+            for item in items.prefix(capacity) {
+                let temporaryURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("corptie-photo-\(UUID().uuidString).image")
+                do {
+                    guard let data = try await item.loadTransferable(type: Data.self) else { continue }
+                    try data.write(to: temporaryURL, options: .atomic)
+                    let image = try await backendClient.importChatImage(
+                        at: temporaryURL,
+                        to: session,
+                        preserveOriginal: false
+                    )
+                    if !attachedImages.contains(image) { attachedImages.append(image) }
+                } catch {
+                    backendClient.presentChatImageError(error)
+                }
+                try? FileManager.default.removeItem(at: temporaryURL)
+            }
+        }
     }
 
     private func importImagesFromPasteboard(_ pasteboard: NSPasteboard) -> Bool {

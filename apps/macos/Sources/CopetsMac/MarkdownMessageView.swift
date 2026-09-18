@@ -267,6 +267,41 @@ struct MessageMarkdownImageReference: Equatable {
     let url: URL
 }
 
+/// Pure path parsing used while building message rows. This deliberately does
+/// not touch the file system: existence and file-kind checks belong to the
+/// explicit click path in `MessageLinkResolver`.
+enum MessageLinkSyntax {
+    static func localFileURL(for path: String, baseDirectory: String?) -> URL? {
+        let withoutLocation = path.replacingOccurrences(
+            of: #":\d+(?::\d+)?$"#,
+            with: "",
+            options: .regularExpression
+        )
+        let decoded = withoutLocation.removingPercentEncoding ?? withoutLocation
+        let expanded = (decoded as NSString).expandingTildeInPath
+        if expanded.hasPrefix("/") {
+            return URL(fileURLWithPath: expanded).standardizedFileURL
+        }
+        guard let baseDirectory = normalizedBaseDirectory(baseDirectory) else { return nil }
+        return URL(fileURLWithPath: baseDirectory, isDirectory: true)
+            .appendingPathComponent(expanded)
+            .standardizedFileURL
+    }
+
+    static func isContained(_ url: URL, in baseDirectory: String?) -> Bool {
+        guard let baseDirectory = normalizedBaseDirectory(baseDirectory) else { return false }
+        let root = URL(fileURLWithPath: baseDirectory, isDirectory: true).standardizedFileURL.pathComponents
+        let candidate = url.standardizedFileURL.pathComponents
+        return candidate.count >= root.count && Array(candidate.prefix(root.count)) == root
+    }
+
+    private static func normalizedBaseDirectory(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+}
+
 /// Extracts explicit Markdown images so the native AppKit message row can feed
 /// them into the same cached thumbnail pipeline as managed chat attachments.
 /// Parsing is intentionally bounded and skips fenced code examples.
@@ -278,7 +313,7 @@ enum MessageMarkdownImageResolver {
     static func references(
         in markdown: String,
         baseDirectory: String?,
-        fileManager: FileManager = .default
+        fileManager _: FileManager = .default
     ) -> [MessageMarkdownImageReference] {
         guard markdown.contains("![") else { return [] }
         var inFence = false
@@ -299,21 +334,32 @@ enum MessageMarkdownImageResolver {
                     .first(where: { $0.location != NSNotFound })
                     .flatMap { Range($0, in: line) }
                     .map { String(line[$0]) }
-                guard let destination,
-                      let rawURL = URL(string: destination),
-                      case .success(let target) = MessageLinkResolver.resolve(
-                        rawURL,
-                        baseDirectory: baseDirectory,
-                        fileManager: fileManager
-                      ),
-                      target.kind == .file || (
-                        target.kind == .web
-                            && ["http", "https"].contains(target.url.scheme?.lowercased() ?? "")
-                      ),
-                      seen.insert(target.url).inserted else { continue }
+                guard let destination else { continue }
+                let targetURL: URL?
+                if let remoteURL = URL(string: destination),
+                   ["http", "https"].contains(remoteURL.scheme?.lowercased() ?? "") {
+                    targetURL = remoteURL
+                } else {
+                    let rawPath: String
+                    if let fileURL = URL(string: destination), fileURL.isFileURL {
+                        rawPath = fileURL.path
+                    } else {
+                        rawPath = destination
+                    }
+                    let localURL = MessageLinkSyntax.localFileURL(
+                        for: rawPath,
+                        baseDirectory: baseDirectory
+                    )
+                    // Automatic image rendering is limited to the authorized
+                    // Workspace. External files are only accessed after a user click.
+                    targetURL = localURL.flatMap {
+                        MessageLinkSyntax.isContained($0, in: baseDirectory) ? $0 : nil
+                    }
+                }
+                guard let targetURL, seen.insert(targetURL).inserted else { continue }
                 references.append(MessageMarkdownImageReference(
                     source: destination,
-                    url: target.url
+                    url: targetURL
                 ))
                 if references.count == 4 { return references }
             }
@@ -418,7 +464,7 @@ enum ClickableMessageText {
             } else if candidate.lowercased().hasPrefix("file://") {
                 destination = URL(string: candidate)
             } else {
-                destination = existingFileURL(for: candidate, baseDirectory: baseDirectory)
+                destination = MessageLinkSyntax.localFileURL(for: candidate, baseDirectory: baseDirectory)
             }
             guard let destination else { continue }
 
@@ -430,25 +476,6 @@ enum ClickableMessageText {
             result.replaceSubrange(range, with: "[\(label)](<\(destination.absoluteString)>)\(suffix)")
         }
         return result
-    }
-
-    private static func existingFileURL(for path: String, baseDirectory: String?) -> URL? {
-        let pathWithoutLocation = path.replacingOccurrences(
-            of: #":\d+(?::\d+)?$"#,
-            with: "",
-            options: .regularExpression
-        )
-        let expanded = (pathWithoutLocation as NSString).expandingTildeInPath
-        let url: URL
-        if expanded.hasPrefix("/") {
-            url = URL(fileURLWithPath: expanded)
-        } else if let baseDirectory, !baseDirectory.isEmpty {
-            url = URL(fileURLWithPath: baseDirectory, isDirectory: true).appendingPathComponent(expanded)
-        } else {
-            return nil
-        }
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return url.standardizedFileURL
     }
 
     private static func trimmingTrailingPunctuation(from value: String) -> String {
@@ -464,9 +491,8 @@ enum ClickableMessageText {
 }
 
 /// 缓存链接重写结果。此前 `ClickableMessageText.markdown` 在每次消息行重建时都会
-/// 重跑两个正则 + 对文件路径候选做磁盘 IO，而结果并未缓存（`NativeMarkdownTextCache`
-/// 只缓存了后续的 attributed-string 转换）。这里补上输入侧缓存，与 MarkdownUI 的
-/// `MarkdownRenderCache` 对称。
+/// 重跑两个正则；文件路径解析本身保持纯字符串操作，真正的磁盘检查只发生在点击后。
+/// 这里补上输入侧缓存，与 MarkdownUI 的 `MarkdownRenderCache` 对称。
 @MainActor
 final class ClickableMessageTextCache {
     private struct Key: Hashable {
