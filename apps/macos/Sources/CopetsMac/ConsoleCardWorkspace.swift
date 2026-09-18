@@ -103,14 +103,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
                                     ConsoleChatCanvasCard(sessions: chatSessions, selectedSessionID: selectedSessionID,
                                         isActive: isActive, openChat: openChat, createChat: createChat)
                                         .modifier(groupInteraction(for: Self.chatCardID))
-                                        .geometryGroup()
                                         .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: Self.chatCardID),
                                             frozenSize: canvasDrag.snapshot[Self.chatCardID]?.size))
                                         .zIndex(frontWorkID == Self.chatCardID ? 1 : 0)
                                         .layoutValue(key: WorkPackingID.self, value: Self.chatCardID).id(Self.chatCardID)
                                     ForEach(orderedWorks) { work in
                                         group(work)
-                                            .geometryGroup()
                                             .modifier(WorkCanvasMotionModifier(motion: canvasDrag.motion(for: work.id),
                                                 frozenSize: canvasDrag.snapshot[work.id]?.size))
                                             .transition(.opacity)
@@ -363,6 +361,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
         if execution == .running { return "执行中" }
         if execution == .failed { return "执行失败" }
         if execution == .blocked { return "执行受阻" }
+        if ConsoleAttentionPolicy.awaitsInitialInstruction(task, session: session) { return "等待接收指令" }
         if ConsoleAttentionPolicy.currentSummary(task, session: session)?.intervention == "required" { return "需要介入" }
         if task.hasPendingScheduledWake == true { return "等待计划唤醒" }
         if session?.executionTaskStatus == .cancelled { return "已停止" }
@@ -422,6 +421,7 @@ private struct CompactWorkCard<Content: View>: View {
                     .fixedSize()
                     .overlay { ConsoleDiscussionActivityBorder(isRunning: isChatRunning, isActive: isActive) }
                     .help("打开 Work 讨论")
+                Spacer(minLength: 8)
                 Button(action: createTask) {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .semibold))
@@ -434,6 +434,7 @@ private struct CompactWorkCard<Content: View>: View {
                 .accessibilityLabel(L10nFormat("Create Task in %@", work.name))
                 .help(L10nFormat("Create Task in %@", work.name))
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             content
         }
         .onHover { isHovering = $0 }

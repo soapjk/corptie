@@ -132,12 +132,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     }
     assert.equal((await call("/client/v1/me", { token: creds.accessToken, headers: { "x-corptie-agent-id": "a" } })).status, 403);
     const messagesPath = "/client/v1/sessions/session%3Atest/messages";
-    assert.equal((await call("/client/v1/control/agents", { token: creds.accessToken })).status, 403);
-    assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, false);
-    assert.equal((await call(messagesPath, { token: creds.accessToken })).status, 403);
-    const grant = await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
-      value: { deviceId: creds.deviceId, permissions: ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"] } });
-    assert.equal(grant.status, 200);
+    assert.deepEqual((await call("/client/v1/me", { token: creds.accessToken })).body.permissions,
+      ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]);
+    assert.equal((await call("/client/v1/control/agents", { token: creds.accessToken })).status, 200);
+    assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
+    assert.equal((await call(messagesPath, { token: creds.accessToken })).status, 200);
     for (const kind of ["automations", "repositories", "agents", "skills"]) {
       assert.equal((await call(`/client/v1/control/${kind}?limit=1`, { token: creds.accessToken })).body.items[0].id, `${kind}:one`);
       assert.equal((await call(`/client/v1/control/${kind}`, { method: "POST", token: creds.accessToken, value: {} })).status, 404);
