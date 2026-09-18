@@ -1,13 +1,32 @@
 #!/usr/bin/env bash
 
 corptie_validate_macos_signing_config() {
-  local identity="${CORPTIE_APP_SIGNING_IDENTITY:--}"
+  local identity="${1:-${CORPTIE_APP_SIGNING_IDENTITY:--}}"
   if [[ "${identity}" == "-" && "${CORPTIE_ALLOW_ADHOC_PACKAGE:-0}" != "1" ]]; then
     echo "Error: refusing to package Corptie with an ad-hoc signature." >&2
     echo "Set CORPTIE_APP_SIGNING_IDENTITY to a stable Apple signing identity." >&2
     echo "For an intentional local-only artifact, explicitly set CORPTIE_ALLOW_ADHOC_PACKAGE=1." >&2
     return 64
   fi
+}
+
+corptie_resolve_macos_signing_identity() {
+  if [[ -n "${CORPTIE_APP_SIGNING_IDENTITY:-}" ]]; then
+    printf '%s\n' "${CORPTIE_APP_SIGNING_IDENTITY}"
+    return 0
+  fi
+
+  local identities=()
+  while IFS= read -r identity; do
+    [[ -n "${identity}" ]] && identities+=("${identity}")
+  done < <(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/^[[:space:]]*[0-9][0-9]*) [A-F0-9]* "\(Apple Development:.*\)"$/\1/p')
+
+  if [[ ${#identities[@]} -eq 1 ]]; then
+    printf '%s\n' "${identities[0]}"
+    return 0
+  fi
+  printf '%s\n' '-'
 }
 
 corptie_verify_signed_bundle_identity() {

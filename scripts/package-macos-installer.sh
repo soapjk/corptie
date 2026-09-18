@@ -184,13 +184,15 @@ PLIST
 xattr -cr "${STAGING_ROOT}" 2>/dev/null || true
 
 source "${ROOT}/scripts/macos-signing-policy.sh"
-corptie_validate_macos_signing_config
-APP_SIGNING_IDENTITY="${CORPTIE_APP_SIGNING_IDENTITY:--}"
+APP_SIGNING_IDENTITY="$(corptie_resolve_macos_signing_identity)"
+corptie_validate_macos_signing_config "${APP_SIGNING_IDENTITY}"
 SIGN_FLAGS=(--force --sign "${APP_SIGNING_IDENTITY}")
 if [[ "${APP_SIGNING_IDENTITY}" == "-" ]]; then
   echo "Warning: building an ad-hoc signed app; macOS privacy permissions may need to be granted again after upgrades." >&2
 else
-  # Timestamping contacts Apple. Release operators must authorize that service.
+  echo "Signing app and bundled backend with: ${APP_SIGNING_IDENTITY}"
+  # A secure timestamp preserves the signing-time validity of the available
+  # Apple Development certificate. This does not imply notarization.
   SIGN_FLAGS+=(--options runtime --timestamp)
 fi
 # Sign nested Mach-O code explicitly, before sealing the outer bundle. Native
