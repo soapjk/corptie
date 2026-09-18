@@ -640,6 +640,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.setActivationPolicy(.regular)
         configureApplicationIcon()
 
+        // Restore only roots that were explicitly selected before the backend
+        // starts. No launch-time directory enumeration is performed here.
+        WorkspaceAccessStore.shared.restore()
+
         // Start the backend immediately; the main content hosts first-run setup.
         CorptieBackendSupervisor.ensureBackendStarted()
 
@@ -2533,6 +2537,7 @@ struct SettingsView: View {
         panel.prompt = L10n("Add Workspace")
         guard panel.runModal() == .OK else { return }
         for url in panel.urls {
+            WorkspaceAccessStore.shared.authorize(url)
             let path = url.standardizedFileURL.path
             if !gateway.trustedWorkspaces.contains(path) {
                 gateway.trustedWorkspaces.append(path)
@@ -2636,6 +2641,7 @@ struct SettingsView: View {
         panel.directoryURL = URL(fileURLWithPath: dataRoot.isEmpty ? defaultDataRoot : dataRoot)
 
         if panel.runModal() == .OK, let url = panel.url {
+            WorkspaceAccessStore.shared.authorize(url)
             dataRoot = url.path
         }
     }
