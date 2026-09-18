@@ -145,6 +145,7 @@ struct WorkResourcesEditor: View {
         panel.message = "选择 Work 使用的文件夹"
         panel.prompt = "添加"
         if panel.runModal() == .OK, let url = panel.url {
+            WorkspaceAccessStore.shared.authorize(url)
             Task {
                 switch await client.registerWorkspace(path: url.path) {
                 case .success(let registration) where registration.gitCapability == "ready":

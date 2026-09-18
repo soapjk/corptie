@@ -183,6 +183,8 @@ PLIST
 
 xattr -cr "${STAGING_ROOT}" 2>/dev/null || true
 
+source "${ROOT}/scripts/macos-signing-policy.sh"
+corptie_validate_macos_signing_config
 APP_SIGNING_IDENTITY="${CORPTIE_APP_SIGNING_IDENTITY:--}"
 SIGN_FLAGS=(--force --sign "${APP_SIGNING_IDENTITY}")
 if [[ "${APP_SIGNING_IDENTITY}" == "-" ]]; then
@@ -210,6 +212,9 @@ codesign "${SIGN_FLAGS[@]}" --identifier com.corptie.backend.node \
   --entitlements "${ROOT}/scripts/bundled-node-entitlements.plist" "${APP_DIR}/Contents/Helpers/node"
 codesign "${SIGN_FLAGS[@]}" "${APP_DIR}"
 codesign --verify --deep --strict --verbose=2 "${APP_DIR}"
+if [[ "${APP_SIGNING_IDENTITY}" != "-" ]]; then
+  corptie_verify_signed_bundle_identity "${APP_DIR}"
+fi
 # Test the actual signed runtime and packaged addons, with no system Node in PATH.
 /usr/bin/env -i HOME="${HOME}" PATH=/usr/bin:/bin \
   "${APP_DIR}/Contents/Helpers/node" "${ROOT}/scripts/verify-bundled-node.mjs" "${APP_DIR}"
