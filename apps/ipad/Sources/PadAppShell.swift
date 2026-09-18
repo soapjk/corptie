@@ -85,8 +85,8 @@ private struct PadSettingsView: View {
                     Button("断开连接", role: .destructive) { connection.disconnect(); dismiss() }
                         .disabled(connection.busy)
                 }
-                Section("权限与版本") {
-                    Text("在 Mac 设置的设备接入中管理本机权限。")
+                Section("功能与版本") {
+                    Text("连接获批后，移动端当前支持的功能会直接可用，无需再次设置权限。")
                     Text("当前移动版：四页浏览、实时消息、发送与停止。自动化编辑、Git 操作与 Agent / Skill 编辑尚未接入。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }

@@ -9,6 +9,7 @@ enum ConsoleAttentionPolicy {
         var running = false
         var unread = false
         var explicitAttention = false
+        var awaitingInitialInstruction = false
         var hasReply = false
         var cancelled = false
         var scheduled = false
@@ -24,7 +25,8 @@ enum ConsoleAttentionPolicy {
         if input.running { return true }
         if input.deferred { return false }
         if input.selected { return true }
-        if input.unread || input.explicitAttention || input.summary == .required || input.summary == .attention { return true }
+        if input.unread || input.explicitAttention || input.awaitingInitialInstruction ||
+            input.summary == .required || input.summary == .attention { return true }
         // Unknown is not a positive attention signal. Keep its semantic value,
         // but do not retain an already-read Task merely for having past replies.
         return false
@@ -90,6 +92,21 @@ enum ConsoleAttentionPolicy {
         (session?.executionTaskStatus == .blocked && !(session?.suggestedOptions?.isEmpty ?? true))
     }
 
+    /// A Task with no conversation activity is actionable: it is waiting for
+    /// the user's first instruction. A temporarily missing companion Session
+    /// is treated the same way so state-sync ordering cannot hide a new Task.
+    @MainActor
+    static func awaitsInitialInstruction(_ task: CorptieTask, session: TaskSession?) -> Bool {
+        guard task.archived != true, task.deletionStatus == nil,
+              task.lifecycleState != "done" else { return false }
+        if session?.executionTaskStatus == .running ||
+            (session == nil && task.executionStatus == "running") { return false }
+        guard let session else { return true }
+        let messageAt = session.lastMessageAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (session.timelineRevision ?? 0) == 0 &&
+            (session.lastAgentMessageSequence ?? 0) == 0 && messageAt.isEmpty
+    }
+
     @MainActor
     static func input(_ task: CorptieTask, session: TaskSession?, selected: Bool, deferred: Bool) -> Input {
         return Input(
@@ -98,6 +115,7 @@ enum ConsoleAttentionPolicy {
             running: session?.executionTaskStatus == .running || (session == nil && task.executionStatus == "running"),
             unread: (session?.lastAgentMessageSequence ?? 0) > (session?.lastReadMessageSequence ?? 0),
             explicitAttention: requiresSystemAction(session),
+            awaitingInitialInstruction: awaitsInitialInstruction(task, session: session),
             hasReply: (session?.lastAgentMessageSequence ?? 0) > 0,
             cancelled: session?.executionTaskStatus == .cancelled,
             scheduled: task.hasPendingScheduledWake == true,

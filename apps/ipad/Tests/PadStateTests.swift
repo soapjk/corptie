@@ -31,6 +31,18 @@ struct PadStateTests {
         #expect(rows.map(\.value) == [3, 2, 4])
     }
 
+    @Test func missingSessionIsOnlyUnavailableAfterInventoryIsComplete() throws {
+        let workspace = PadWorkspace()
+        workspace.sessionCursor = "more"
+        #expect(!workspace.sessionIsKnownUnavailable("session:missing"))
+        workspace.sessionCursor = nil
+        #expect(workspace.sessionIsKnownUnavailable("session:missing"))
+        let session = try JSONDecoder().decode(ClientSession.self, from: Data(#"{"id":"session:known","title":"Known","sessionKind":"worker","executionStatus":"completed","updatedAt":"now"}"#.utf8))
+        workspace.sessions = [session]
+        workspace.rebuildGroups()
+        #expect(!workspace.sessionIsKnownUnavailable("session:known"))
+    }
+
     @Test func restartRetainsUnknownCommandAndOnlyMatchingReceiptClearsDraft() throws {
         let name = "corptie-ipad-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!

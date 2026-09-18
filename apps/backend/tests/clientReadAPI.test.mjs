@@ -39,5 +39,11 @@ test("real Store inventory is paginated and excludes private implementation fiel
     }
     const workCursor = api.list("works", new URLSearchParams("limit=1")).nextCursor;
     assert.throws(() => api.list("sessions", new URLSearchParams({ cursor: workCursor })), { code: "INVALID_CURSOR" });
+
+    const task = store.listTaskPage({ limit: 10, includeCompleted: true }).items[0];
+    store.db.run("UPDATE tasks SET current_session_id = ? WHERE id = ?", ["session:One", task.id]);
+    store.db.run("UPDATE sessions SET archived = 1 WHERE id = ?", ["session:One"]);
+    const projected = api.list("tasks", new URLSearchParams("limit=10")).items.find(item => item.id === task.id);
+    assert.equal(projected.currentSessionId, null, "an effectively archived worker Session is never advertised as openable");
   } finally { await store.close(); await rm(directory, { recursive: true, force: true }); }
 });

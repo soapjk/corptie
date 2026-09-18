@@ -31,7 +31,9 @@ struct WorkCanvasCamera: Equatable {
 @Observable @MainActor
 final class WorkCanvasViewportState {
     private(set) var camera = WorkCanvasCamera()
+    private(set) var renderScaleMultiplier: CGFloat = 1
     let interactionTransform = WorkCanvasInteractionTransform()
+    private var renderScaleUpdate: Task<Void, Never>?
 
     func zoom(by factor: CGFloat, at point: CGPoint) {
         var next = camera
@@ -39,6 +41,7 @@ final class WorkCanvasViewportState {
         guard next != camera else { return }
         interactionTransform.scale = next.scale
         camera = next
+        settleRendering(at: next.scale)
     }
 
     func pan(by delta: CGSize) {
@@ -47,8 +50,26 @@ final class WorkCanvasViewportState {
     }
 
     func reset() {
+        renderScaleUpdate?.cancel()
+        renderScaleUpdate = nil
+        renderScaleMultiplier = 1
         interactionTransform.scale = 1
         camera = WorkCanvasCamera()
+    }
+
+    private func settleRendering(at scale: CGFloat) {
+        renderScaleUpdate?.cancel()
+        let multiplier = max(1, scale)
+        if multiplier == 1 {
+            renderScaleUpdate = nil
+            renderScaleMultiplier = 1
+            return
+        }
+        renderScaleUpdate = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            self?.renderScaleMultiplier = multiplier
+        }
     }
 }
 private struct WorkCanvasTransformKey: EnvironmentKey {
@@ -64,6 +85,7 @@ extension EnvironmentValues {
 /// Only this small view observes camera movement. No packing, persistence,
 /// transcript projection or bitmap rasterization is performed on wheel events.
 struct InfiniteWorkCanvasViewport<Content: View>: View {
+    @Environment(\.displayScale) private var displayScale
     let origin: CGPoint
     let isActive: Bool
     let cardDragging: Bool
@@ -95,6 +117,9 @@ struct InfiniteWorkCanvasViewport<Content: View>: View {
                     .accessibilityLabel("Work 画布，滚轮缩放，拖动空白处平移")
                 content
                     .environment(\.workCanvasInteractionTransform, viewportState.interactionTransform)
+                    // Keep wheel updates compositor-only, then redraw leaf
+                    // content once at the settled zoom's pixel density.
+                    .environment(\.displayScale, displayScale * viewportState.renderScaleMultiplier)
                     .fixedSize()
                     .scaleEffect(camera.scale, anchor: .topLeading)
                     .offset(x: camera.translation.x + pan.width + origin.x * camera.scale,
