@@ -2,9 +2,13 @@ import { deviceError } from "./clientDeviceAuthority.mjs";
 
 const projectors = {
   works: row => ({ id: row.id, name: row.name, status: row.status, updatedAt: row.updated_at }),
-  tasks: row => ({ id: row.id, title: row.title, workId: row.work_id,
+  tasks: (row, store) => ({ id: row.id, title: row.title, workId: row.work_id,
     lifecycleState: row.lifecycle_state, executionStatus: row.execution_status,
-    currentSessionId: row.current_session_id ?? null, updatedAt: row.updated_at }),
+    currentSessionId: (() => {
+      if (!row.current_session_id) return null;
+      const session = store.getSession(row.current_session_id);
+      return session && session.archived !== true ? row.current_session_id : null;
+    })(), updatedAt: row.updated_at }),
   sessions: row => ({ id: row.id, title: row.title, workId: row.workId ?? null,
     taskId: row.taskId ?? null, sessionKind: row.sessionKind, executionStatus: row.executionStatus ?? row.status,
     updatedAt: row.updatedAt }),
@@ -35,7 +39,7 @@ export class ClientReadAPI {
     const page = kind === "works" ? this.store.listClientWorkPage({ limit, cursor })
       : kind === "tasks" ? this.store.listTaskPage({ limit, cursor, includeCompleted: true })
         : this.store.listSessionPage({ limit, cursor, archived: false });
-    return { schemaVersion: 1, items: page.items.map(projectors[kind]), hasMore: page.hasMore,
+    return { schemaVersion: 1, items: page.items.map(row => projectors[kind](row, this.store)), hasMore: page.hasMore,
       nextCursor: page.nextCursor ? Buffer.from(JSON.stringify({ version: 1, kind, position: page.nextCursor })).toString("base64url") : null };
   }
 }

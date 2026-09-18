@@ -5,6 +5,7 @@ import { join } from "node:path";
 const token = () => randomBytes(32).toString("base64url");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const validToken = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
+export const CLIENT_DEVICE_PERMISSIONS = ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"];
 export const deviceError = (code, status = 401) => Object.assign(new Error(code), { code, status });
 
 /** Device credentials authorize client access, never impersonate a Session or Agent. */
@@ -112,6 +113,7 @@ export class ClientDeviceAuthority {
       const result = await this.change(state => {
         if (state.devices.length >= 100) throw deviceError("DEVICE_LIMIT", 409);
         const device = { id: randomUUID(), name: item.name, createdAt: this.now(), revoked: false,
+          permissions: [...CLIENT_DEVICE_PERMISSIONS],
           refreshExpiresAt: this.now() + 30 * 86400_000 };
         state.devices.push(device);
         return this.issue(device, state.serverId);
@@ -145,11 +147,11 @@ export class ClientDeviceAuthority {
     const device = this.state.devices.find(d => d.accessHash === hash(accessToken));
     if (!device || device.revoked || device.accessExpiresAt <= this.now()) throw deviceError("INVALID_CREDENTIAL");
     return { deviceId: device.id, name: device.name, serverId: this.state.serverId,
-      permissions: device.permissions ?? ["inventory.read"] };
+      permissions: device.permissions ?? [...CLIENT_DEVICE_PERMISSIONS] };
   }
 
   async setPermissions(id, permissions) {
-    const allowed = ["inventory.read", "messages.read", "messages.write", "sessions.stop", "control.read"];
+    const allowed = CLIENT_DEVICE_PERMISSIONS;
     if (!Array.isArray(permissions) || permissions.length > allowed.length
         || permissions.some(p => !allowed.includes(p))) throw deviceError("INVALID_PERMISSIONS", 400);
     await this.change(state => {
@@ -174,7 +176,7 @@ export class ClientDeviceAuthority {
 
   list() {
     return { devices: this.state.devices.map(({ id, name, createdAt, revoked, permissions }) => ({ id, name, createdAt, revoked,
-      permissions: permissions ?? ["inventory.read"] })),
+      permissions: permissions ?? [...CLIENT_DEVICE_PERMISSIONS] })),
       pending: [...this.pending].filter(([, p]) => p.expiresAt > this.now() && p.status === "pending")
         .map(([pairingId, p]) => ({ pairingId, name: p.name, expiresAt: p.expiresAt })) };
   }
