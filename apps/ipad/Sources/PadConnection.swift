@@ -47,6 +47,7 @@ final class PadConnection {
             switch error {
             case .httpStatus(401): return "凭据无效或已过期，请重新连接；不要重复发送消息。"
             case .httpStatus(403): return "尚未批准配对，或设备没有此操作的权限。请在 Mac 上确认。"
+            case .httpStatus(404): return "这个会话已归档或不再可用，请选择其他 Task。"
             case .httpStatus(409): return "会话状态或请求发生冲突。请刷新并核对命令回执。"
             default: break
             }

@@ -3,6 +3,19 @@ import Testing
 @testable import CorptieMac
 
 struct WorkCanvasCameraTests {
+    @MainActor
+    @Test func settledZoomRaisesRenderResolutionWithoutOversamplingZoomedOutContent() async throws {
+        let state = WorkCanvasViewportState()
+        state.zoom(by: 2, at: .zero)
+        #expect(state.renderScaleMultiplier == 1)
+        try await Task.sleep(for: .milliseconds(180))
+        #expect(state.renderScaleMultiplier == 2)
+
+        state.zoom(by: 0.25, at: .zero)
+        #expect(state.camera.scale == 0.5)
+        #expect(state.renderScaleMultiplier == 1)
+    }
+
     @Test func zoomKeepsWorldPointUnderPointerIncludingLimits() {
         var camera = WorkCanvasCamera()
         camera.translation = CGPoint(x: -1200, y: 480)

@@ -62,7 +62,7 @@ struct PairingView: View {
                     }
                 }
                 Section {
-                    Text("在 Mac 点击开启设备接入即可。扫码会验证 Mac 的证书，无需安装系统证书；请允许局域网访问。设备默认只读，额外权限需在 Mac 上授予。")
+                    Text("在 Mac 点击开启设备接入即可。扫码会验证 Mac 的证书，无需安装系统证书；请允许局域网访问。批准后会直接开启移动端当前支持的全部功能。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if !connection.notice.isEmpty { Text(connection.notice).font(.callout) }
                     if connection.busy { ProgressView("连接中") }
@@ -97,26 +97,38 @@ struct WorkspaceView: View {
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
     let settings: () -> Void
+    @State private var expandedWorkIDs: Set<String> = []
+    @State private var initializedExpansion = false
     var body: some View {
         NavigationSplitView {
             List(selection: $workspace.selection) {
                 ForEach(workspace.works) { work in
-                    Section(work.name) {
+                    DisclosureGroup(isExpanded: expansion(for: work.id)) {
                         ForEach(workspace.tasksByWork[work.id] ?? []) { task in
-                            if let sessionID = task.currentSessionId {
+                            if let sessionID = task.currentSessionId, !workspace.sessionIsKnownUnavailable(sessionID) {
                                 NavigationLink(value: sessionID) { ExecutionLabel(title: task.title, status: task.executionStatus) }
                             } else {
-                                Label(task.title, systemImage: "checklist").foregroundStyle(.secondary)
+                                HStack {
+                                    ExecutionLabel(title: task.title, status: task.executionStatus)
+                                    Spacer()
+                                    Text("会话不可用").font(.caption2).foregroundStyle(.tertiary)
+                                }
                             }
                         }
                         ForEach(workspace.discussionsByWork[work.id] ?? []) { session in
                             NavigationLink(value: session.id) { ExecutionLabel(title: "讨论", status: session.executionStatus) }
                         }
+                    } label: {
+                        Label(work.name, systemImage: "shippingbox.fill")
+                            .font(.headline).contentShape(Rectangle())
                     }
                 }
-                Section("会话 · 已加载") {
-                    ForEach(workspace.sessions) { session in
+                let independentSessions = workspace.sessions.filter { $0.workId == nil }
+                if !independentSessions.isEmpty {
+                    Section("聊天") {
+                    ForEach(independentSessions) { session in
                         NavigationLink(value: session.id) { ExecutionLabel(title: session.title, status: session.executionStatus) }
+                    }
                     }
                 }
                 if workspace.workCursor != nil || workspace.taskCursor != nil || workspace.sessionCursor != nil {
@@ -124,6 +136,7 @@ struct WorkspaceView: View {
                 }
             }
             .disabled(connection.busy)
+            .listStyle(.sidebar)
             .navigationTitle("工作台")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -143,6 +156,12 @@ struct WorkspaceView: View {
                     description: Text("消息与状态自动更新；第一版暂不支持图片。"))
             }
         }
+        .onChange(of: workspace.works.map(\.id), initial: true) { _, ids in
+            if !initializedExpansion, !ids.isEmpty {
+                expandedWorkIDs = Set(ids)
+                initializedExpansion = true
+            }
+        }
         .safeAreaInset(edge: .top) {
             if connection.busy { ProgressView().accessibilityLabel("正在加载") }
             if !connection.notice.isEmpty {
@@ -150,6 +169,14 @@ struct WorkspaceView: View {
                     .background(.regularMaterial)
             }
         }
+    }
+
+    private func expansion(for workID: String) -> Binding<Bool> {
+        Binding(get: { expandedWorkIDs.contains(workID) }, set: { expanded in
+            withAnimation(.snappy(duration: 0.22)) {
+                if expanded { expandedWorkIDs.insert(workID) } else { expandedWorkIDs.remove(workID) }
+            }
+        })
     }
 }
 
@@ -165,27 +192,27 @@ struct ConversationView: View {
     }
     var body: some View {
         ScrollViewReader { reader in
-            List {
-                if workspace.before != nil {
-                    Button("加载更早消息") { Task { await workspace.load(connection, older: true) } }
-                        .disabled(connection.busy)
-                }
-                ForEach(workspace.messages) { message in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(message.type == "userMessage" ? "你" : "会话消息")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text(message.text.isEmpty ? "此消息类型暂不支持展示" : message.text)
-                            .textSelection(.enabled)
+            VStack(spacing: 0) {
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        if workspace.before != nil {
+                            Button("加载更早消息") { Task { await workspace.load(connection, older: true) } }
+                                .buttonStyle(.bordered).disabled(connection.busy)
+                        }
+                        ForEach(workspace.messages) { message in
+                            MobileMessageBubble(message: message).id(message.id)
+                        }
+                        Color.clear.frame(height: 1).id("latest")
+                            .onAppear { followLatest = true }
+                            .onDisappear { followLatest = false }
                     }
-                    .padding(.vertical, 4)
-                    .id(message.id)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
                 }
-                Color.clear.frame(height: 1).id("latest")
-                    .onAppear { followLatest = true }
-                    .onDisappear { followLatest = false }
+                .scrollDismissesKeyboard(.interactively)
+                Divider()
+                composer
             }
-            .listStyle(.plain)
-            .safeAreaInset(edge: .bottom) { composer }
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationTitle(workspace.sessionsByID[sessionID]?.title ?? "Task 会话")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -221,9 +248,8 @@ struct ConversationView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(workspace.liveStatus).font(.caption).foregroundStyle(.secondary)
-            if !workspace.status.isEmpty { Text(workspace.status).font(.caption) }
+        VStack(alignment: .leading, spacing: 6) {
+            if !workspace.status.isEmpty { Text(workspace.status).font(.caption).foregroundStyle(.secondary) }
             if let pending = workspace.pending {
                 Text("有待核对的\(pending.kind == "send" ? "发送" : "停止")请求：\(pending.sessionID)")
                     .font(.caption).textSelection(.enabled)
@@ -233,9 +259,11 @@ struct ConversationView: View {
                     Button("已人工核对…") { confirmForget = true }.disabled(connection.busy)
                 }
             }
-            HStack(alignment: .bottom) {
-                TextField("消息", text: draft, axis: .vertical).lineLimit(1...6)
-                    .textFieldStyle(.roundedBorder).focused($focused)
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("发消息…", text: draft, axis: .vertical).lineLimit(1...6)
+                    .padding(.horizontal, 13).padding(.vertical, 10)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .focused($focused)
                     .disabled(connection.busy)
                 Button("发送", systemImage: "arrow.up.circle.fill") {
                     Task { await workspace.command(connection, stop: false) }
@@ -247,7 +275,28 @@ struct ConversationView: View {
                     || draft.wrappedValue.utf16.count > 16000)
             }
         }
-        .padding().background(.bar)
+        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8).background(.bar)
+    }
+}
+
+private struct MobileMessageBubble: View {
+    let message: ClientMessage
+    private var fromUser: Bool { message.type == "userMessage" }
+    var body: some View {
+        HStack(alignment: .bottom) {
+            if fromUser { Spacer(minLength: 54) }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(fromUser ? "你" : "Corptie").font(.caption2).foregroundStyle(.secondary)
+                Text(message.text.isEmpty ? "此消息类型暂不支持展示" : message.text)
+                    .textSelection(.enabled).font(.body)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .background(fromUser ? Color.accentColor.opacity(0.18) : Color(uiColor: .secondarySystemGroupedBackground),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(.separator.opacity(fromUser ? 0 : 0.45), lineWidth: 0.5))
+            if !fromUser { Spacer(minLength: 54) }
+        }.frame(maxWidth: .infinity)
     }
 }
 

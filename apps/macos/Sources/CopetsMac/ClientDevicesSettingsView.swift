@@ -71,13 +71,12 @@ struct ClientDevicesSettingsView: View {
         let id: String
         let name: String
         let revoke: Bool
-        var permissions: [String]? = nil
     }
 
     var body: some View {
         Form {
             Section("连接手机或 iPad") {
-                Text("让同一局域网内的设备访问这台 Mac。扫码验证身份后，仍需你批准；配对默认仅允许读取列表。")
+                Text("让同一局域网内的设备访问这台 Mac。扫码验证身份后，仍需你批准；批准后可使用移动端当前支持的全部功能。")
                     .font(.callout).foregroundStyle(.secondary)
                 Text(statusText).font(.callout)
                 HStack {
@@ -135,12 +134,8 @@ struct ClientDevicesSettingsView: View {
                             Spacer()
                             if item.revoked { Text("已撤销").foregroundStyle(.secondary) }
                             else {
-                                Menu("权限") {
-                                    Button("仅列表") { confirmation = Action(id: item.id, name: item.name, revoke: false, permissions: ["inventory.read"]) }
-                                    Button("四个页面与消息只读") { confirmation = Action(id: item.id, name: item.name, revoke: false, permissions: ["inventory.read", "control.read", "messages.read"]) }
-                                    Button("四个页面，允许消息发送与停止") { confirmation = Action(id: item.id, name: item.name, revoke: false, permissions: ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]) }
-                                }
-                                .help((item.permissions ?? ["inventory.read"]).joined(separator: ", "))
+                                Label("完整移动端权限", systemImage: "checkmark.shield.fill")
+                                    .font(.caption).foregroundStyle(.secondary)
                                 Button("撤销", role: .destructive) { confirmation = Action(id: item.id, name: item.name, revoke: true) }
                             }
                         }
@@ -165,23 +160,21 @@ struct ClientDevicesSettingsView: View {
         } message: {
             Text("将更新本机证书并撤销已配对设备。手机和 iPad 需要重新扫码配对；不会删除工作或会话。")
         }
-        .alert(confirmation?.permissions != nil ? "更改设备权限？" : (confirmation?.revoke == true ? "撤销设备访问？" : "批准设备访问？"),
+        .alert(confirmation?.revoke == true ? "撤销设备访问？" : "批准设备访问？",
                isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } })) {
             if let action = confirmation {
                 Button("取消", role: .cancel) { confirmation = nil }
-                Button(action.permissions != nil ? "确认更改" : (action.revoke ? "撤销" : "批准")) {
+                Button(action.revoke ? "撤销" : "批准") {
                     confirmation = nil
                     Task {
-                        if let permissions = action.permissions { await setPermissions(action.id, permissions) }
-                        else if action.revoke { await revoke(action.id) }
+                        if action.revoke { await revoke(action.id) }
                         else { await decide(action.id, approved: true) }
                     }
                 }
             }
         } message: {
             Text("\(confirmation?.name ?? "")\n\(confirmation?.id ?? "")\n" +
-                 (confirmation?.permissions.map { "将替换为以下权限：\($0.joined(separator: ", "))。现有连接会关闭；消息写入权限允许设备通过此 Mac 执行会话操作。" }
-                  ?? (confirmation?.revoke == true ? "设备将失去访问权限，现有连接也会关闭。" : "仅批准你正在配对的设备。它将能够读取此服务器的工作与会话列表。")))
+                 (confirmation?.revoke == true ? "设备将失去访问权限，现有连接也会关闭。" : "仅批准你正在配对的设备。批准后可使用移动端当前支持的全部功能，包括消息发送、停止与 Worktree 浏览。"))
         }
     }
 
@@ -251,12 +244,6 @@ struct ClientDevicesSettingsView: View {
     private func revoke(_ id: String) async {
         await perform { root in
             _ = try await LocalDeviceAdminClient.request(dataRoot: root, action: "revoke", body: ["deviceId": id])
-            inventory = try JSONDecoder().decode(ClientDeviceInventory.self, from: await LocalDeviceAdminClient.request(dataRoot: root))
-        }
-    }
-    private func setPermissions(_ id: String, _ permissions: [String]) async {
-        await perform { root in
-            _ = try await LocalDeviceAdminClient.request(dataRoot: root, action: "permissions", body: ["deviceId": id], permissions: permissions)
             inventory = try JSONDecoder().decode(ClientDeviceInventory.self, from: await LocalDeviceAdminClient.request(dataRoot: root))
         }
     }

@@ -80,6 +80,10 @@ final class PadWorkspace {
         sessionsByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
     }
 
+    func sessionIsKnownUnavailable(_ id: String) -> Bool {
+        sessionCursor == nil && sessionsByID[id] == nil
+    }
+
     static func merge<T: Identifiable>(_ old: [T], _ new: [T]) -> [T] where T.ID == String {
         let replacements = Dictionary(new.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let existing = Set(old.map(\.id))

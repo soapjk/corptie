@@ -21,6 +21,13 @@ struct ConsoleAttentionPolicyTests {
     @Test func idleWithoutWorkIsHidden() {
         #expect(!ConsoleAttentionPolicy.shouldShow(.init()))
     }
+    @Test func taskAwaitingItsFirstInstructionIsVisible() {
+        #expect(ConsoleAttentionPolicy.shouldShow(.init(awaitingInitialInstruction: true)))
+        #expect(!ConsoleAttentionPolicy.shouldShow(.init(
+            awaitingInitialInstruction: true, deferred: true)))
+        #expect(!ConsoleAttentionPolicy.shouldShow(.init(
+            excluded: true, awaitingInitialInstruction: true)))
+    }
     @Test func runningIsVisibleEvenWhenDeferred() {
         #expect(ConsoleAttentionPolicy.shouldShow(.init(running: true, deferred: true)))
     }
