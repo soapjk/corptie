@@ -179,14 +179,41 @@ final class MessageLinkResolverTests: XCTestCase {
         }
     }
 
-    func testMarkdownImageResolverIgnoresMissingFilesAndNonImageLinks() throws {
+    func testMarkdownImageResolverDoesNotProbeMissingWorkspaceImage() throws {
         try withTemporaryDirectory { directory in
             let references = MessageMarkdownImageResolver.references(
                 in: "[document](https://example.com/doc) ![missing](missing.png)",
                 baseDirectory: directory.path
             )
 
+            XCTAssertEqual(
+                references.map(\.url),
+                [directory.appendingPathComponent("missing.png").standardizedFileURL]
+            )
+        }
+    }
+
+    func testMarkdownImageResolverDoesNotAutomaticallyLoadExternalLocalFile() throws {
+        try withTemporaryDirectory { directory in
+            let external = directory.deletingLastPathComponent().appendingPathComponent("private.png")
+            let references = MessageMarkdownImageResolver.references(
+                in: "![external](<\(external.path)>)",
+                baseDirectory: directory.path
+            )
+
             XCTAssertTrue(references.isEmpty)
+        }
+    }
+
+    func testLinkRewriteDoesNotRequireLocalFileToExist() throws {
+        try withTemporaryDirectory { directory in
+            let missing = directory.appendingPathComponent("never-created.txt")
+            let rewritten = ClickableMessageText.rewriteLinks(
+                in: missing.path,
+                baseDirectory: directory.path
+            )
+
+            XCTAssertTrue(rewritten.contains(missing.absoluteString))
         }
     }
 
