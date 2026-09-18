@@ -42,6 +42,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
     @State private var retainedTasks: [String: CorptieTask] = [:]
     @State private var sessionByTask: [String: TaskSession] = [:]
     @State private var runningDiscussionWorkIDs = Set<String>()
+    @State private var discussionSessionIDByWork: [String: String] = [:]
     @State private var workOrder: [String] = []
     @State private var browsing: Work?
     @State private var pageTasks: [CorptieTask] = []
@@ -176,6 +177,12 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
             session.archived != true && session.resolvedSessionKind == .workChat
                 && session.executionTaskStatus == .running ? session.workId : nil
         })
+        var discussionSessions: [String: String] = [:]
+        for session in sessions where session.archived != true && session.resolvedSessionKind == .workChat {
+            guard let workID = session.workId, discussionSessions[workID] == nil else { continue }
+            discussionSessions[workID] = session.id
+        }
+        discussionSessionIDByWork = discussionSessions
         let byID = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
         var latest: [String: TaskSession] = [:]
         for session in sessions where session.archived != true {
@@ -245,6 +252,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 
     private func group(_ work: Work) -> some View {
         CompactWorkCard(work: work, isChatRunning: runningDiscussionWorkIDs.contains(work.id),
+                        isChatSelected: discussionSessionIDByWork[work.id].map { selectedSessionID == $0 } ?? false,
                         isActive: isActive, discuss: { discuss(work) }, createTask: { createTask(work) }) {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(displayedTasks(for: work)) { task in
@@ -401,6 +409,7 @@ struct ConsoleCardWorkspace<TaskMenu: View>: View {
 private struct CompactWorkCard<Content: View>: View {
     let work: Work
     let isChatRunning: Bool
+    let isChatSelected: Bool
     let isActive: Bool
     let discuss: () -> Void
     let createTask: () -> Void
@@ -415,11 +424,22 @@ private struct CompactWorkCard<Content: View>: View {
                     ObjectiveAvatarView(objectiveID: work.id, name: work.name, avatarPath: work.avatarPath, size: 14)
                     Text(work.name).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(2)
                 }
-                Button("讨论", action: discuss)
-                    .font(.system(size: 10))
-                    .controlSize(.mini)
+                Button(action: discuss) {
+                    Text("讨论")
+                        .font(.system(size: 10, weight: isChatSelected ? .semibold : .regular))
+                        .foregroundStyle(isChatSelected ? Color.accentColor : Color.secondary)
+                        .padding(.horizontal, 7)
+                        .frame(height: 19)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(isChatSelected ? Color.accentColor.opacity(0.16) : Color.secondary.opacity(0.07))
+                        }
+                        .contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain)
                     .fixedSize()
                     .overlay { ConsoleDiscussionActivityBorder(isRunning: isChatRunning, isActive: isActive) }
+                    .accessibilityValue(isChatSelected ? L10n("Selected") : "")
                     .help("打开 Work 讨论")
                 Spacer(minLength: 8)
                 Button(action: createTask) {
