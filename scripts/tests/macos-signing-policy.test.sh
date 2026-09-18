@@ -15,4 +15,8 @@ CORPTIE_APP_SIGNING_IDENTITY=- CORPTIE_ALLOW_ADHOC_PACKAGE=1 \
 CORPTIE_APP_SIGNING_IDENTITY="Apple Development: Example (TEAMID)" \
   corptie_validate_macos_signing_config
 
+resolved="$(CORPTIE_APP_SIGNING_IDENTITY="Apple Development: Example (TEAMID)" \
+  corptie_resolve_macos_signing_identity)"
+[[ "${resolved}" == "Apple Development: Example (TEAMID)" ]]
+
 echo "macOS signing policy tests passed"
