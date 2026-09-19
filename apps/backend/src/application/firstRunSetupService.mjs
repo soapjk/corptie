@@ -150,8 +150,8 @@ export class FirstRunSetupService {
   complete() {
     return this.serialize(async () => {
       const status = await this.status();
-      if (!status.providers.some((p) => p.enabled) || !status.hasWorks || !status.assistantSessionId) {
-        throw new Error("请先启用 Provider、准备 Corptie Chat，并创建第一个 Work。");
+      if (!status.providers.some((p) => p.enabled) || !status.assistantSessionId) {
+        throw new Error("请先启用至少一个可用 Provider，并准备 Corptie Chat。");
       }
       await this.save({ ...this.state, completed: true });
       return this.status();
