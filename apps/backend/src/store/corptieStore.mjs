@@ -6963,6 +6963,11 @@ export class CorptieStore {
          WHERE logical_session_id = ?`,
         [input.phase || "waitingForTurn", timestamp, logicalSessionId]
       );
+      this.db.run(
+        `UPDATE sessions SET archive_dependency_version = archive_dependency_version + 1
+         WHERE id = (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id = ?)`,
+        [logicalSessionId]
+      );
       this.db.run("COMMIT");
     } catch (error) {
       this.db.run("ROLLBACK");
@@ -7025,6 +7030,11 @@ export class CorptieStore {
         `UPDATE logical_sessions SET transition_state = ?, updated_at = ?
          WHERE logical_session_id = ?`,
         [["committed", "failed"].includes(update.phase) ? null : update.phase, timestamp, transition.logicalSessionId]
+      );
+      this.db.run(
+        `UPDATE sessions SET archive_dependency_version = archive_dependency_version + 1
+         WHERE id = (SELECT legacy_session_id FROM logical_sessions WHERE logical_session_id = ?)`,
+        [transition.logicalSessionId]
       );
       this.db.run("COMMIT");
     } catch (error) {
@@ -8974,9 +8984,9 @@ export class CorptieStore {
 
   getWorkChatSession(workId) {
     const row = this.selectOne(
-      `SELECT * FROM sessions
-       WHERE work_id = ? AND session_kind = 'workChat' AND deleted_at IS NULL
-       ORDER BY created_at ASC, id ASC LIMIT 1`,
+      `${sessionProjectionSelectSQL()}
+       WHERE sessions.work_id = ? AND sessions.session_kind = 'workChat' AND sessions.deleted_at IS NULL
+       ORDER BY sessions.created_at ASC, sessions.id ASC LIMIT 1`,
       [workId]
     );
     return row ? this.rowToSession(row) : null;
@@ -8984,12 +8994,12 @@ export class CorptieStore {
 
   listSessionsByAgent(agentId) {
     const rows = this.selectAll(
-      `SELECT s.* FROM sessions s
-       WHERE s.deleted_at IS NULL AND (s.agent_id = ? OR EXISTS (
+      `${sessionProjectionSelectSQL()}
+       WHERE sessions.deleted_at IS NULL AND (sessions.agent_id = ? OR EXISTS (
          SELECT 1 FROM agent_sessions bindings
-         WHERE bindings.session_id = s.id AND bindings.agent_id = ?
+         WHERE bindings.session_id = sessions.id AND bindings.agent_id = ?
        ))
-       ORDER BY s.created_at ASC`,
+       ORDER BY sessions.created_at ASC`,
       [agentId, agentId]
     );
     return rows.map((row) => this.rowToSession(row));
@@ -9404,12 +9414,13 @@ export class CorptieStore {
   listArchivedSessionsPendingRuntimeRelease({ taskId = null, limit = 100 } = {}) {
     const boundedLimit = Math.max(1, Math.min(500, Number(limit) || 100));
     return this.selectAll(
-      `SELECT sessions.* FROM sessions INDEXED BY idx_sessions_archived_order
-       LEFT JOIN session_runtime_release_receipts receipt
-         ON receipt.session_id = sessions.id
+      `${sessionProjectionSelectSQL()}
        WHERE sessions.archived = 1
          AND sessions.deleted_at IS NULL
-         AND receipt.session_id IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM session_runtime_release_receipts receipt
+           WHERE receipt.session_id = sessions.id
+         )
          ${taskId ? "AND sessions.task_id = ?" : ""}
        ORDER BY sessions.pinned DESC, sessions.sort_order ASC, sessions.id ASC
        LIMIT ?`,
@@ -13756,9 +13767,11 @@ export class CorptieStore {
     const rawStatus = parseJson(row.raw_json, {});
     const args = parseJson(row.args_json, []);
     const status = row.status;
-    const isCodexAppServer = row.provider === "codex-app-server";
+    const projectedProvider = row.projection_provider_id ?? row.provider;
+    const isCodexAppServer = projectedProvider === "codex-app-server";
     const publicId = row.id;
-    const threadId = rawStatus.threadId
+    const threadId = row.projection_provider_thread_id
+      ?? rawStatus.threadId
       ?? (isCodexAppServer ? String(row.id).replace(/^codex:/, "") : row.id);
     const displayStatus = status;
     const executionStatus = row.projection_execution_status
@@ -13773,13 +13786,21 @@ export class CorptieStore {
       ? {
           logical_session_id: row.projection_logical_session_id,
           session_name: row.projection_session_name,
-          transition_state: row.projection_transition_state
+          transition_state: row.projection_transition_state,
+          routing_version: row.projection_routing_version,
+          active_workspace_id: row.projection_active_workspace_id,
+          repository_id: row.projection_repository_id
         }
       : this.selectOne(
-        `SELECT logical_session_id, session_name, transition_state
+        `SELECT logical_session_id, session_name, transition_state, routing_version,
+                active_workspace_id, repository_id
          FROM logical_sessions WHERE legacy_session_id = ?`,
         [row.id]
       );
+    const routingVersion = logicalIdentity?.routing_version == null
+      ? Number(rawStatus.routingVersion ?? 0)
+      : Number(logicalIdentity.routing_version);
+    const activeCwd = row.projection_bound_cwd ?? row.cwd;
     const agentIdentity = Object.hasOwn(row, "projection_binding_agent_id")
       ? { agent_id: row.projection_binding_agent_id }
       : this.selectOne(
@@ -13833,26 +13854,26 @@ export class CorptieStore {
       workId: row.work_id ?? null,
       taskId: row.task_id ?? null,
       capabilities: {
-        ...normalizedStoredProviderCapabilities(row.provider, displayStatus, rawStatus.capabilities),
+        ...normalizedStoredProviderCapabilities(projectedProvider, displayStatus, rawStatus.capabilities),
         ...(logicalIdentity?.transition_state === "sessionRecovery" ? { canSend: false } : {})
       },
       rawStatus,
       external: {
-        provider: row.provider,
+        provider: projectedProvider,
         threadId,
-        sessionId: rawStatus.sessionId ?? threadId,
+        sessionId: row.projection_provider_session_id ?? rawStatus.sessionId ?? threadId,
         activeTurnId: rawStatus.activeTurnId ?? null,
         lastSettledTurnId: rawStatus.lastSettledTurnId ?? null,
         sandbox: rawStatus.sandbox ?? rawStatus.sandboxMode ?? null,
         approvalPolicy: rawStatus.approvalPolicy ?? null,
         logicalSessionId: logicalIdentity?.logical_session_id ?? rawStatus.logicalSessionId ?? null,
         workspace: rawStatus.workspace ?? null,
-        routingVersion: Number(rawStatus.routingVersion ?? 0),
+        routingVersion,
         agentSessionId: rawStatus.agentSessionId ?? rawStatus.resume?.agentSessionId ?? null,
         connectionStatus: providerConnectionStatus,
         currentModel: rawStatus.currentModel ?? rawStatus.resume?.currentModel ?? modelFromArgs(args),
         currentReasoningLevel: rawStatus.currentReasoningLevel ?? rawStatus.resume?.currentReasoningLevel ?? reasoningFromArgs(args),
-        cwd: row.cwd,
+        cwd: activeCwd,
         source: rawStatus.source ?? row.command,
         args
       }
@@ -14097,12 +14118,19 @@ function messageDeliveryFromRow(row) {
 
 function sessionProjectionSelectSQL() {
   return `SELECT sessions.*,
-    (SELECT logical_session_id FROM logical_sessions
-     WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_logical_session_id,
-    (SELECT session_name FROM logical_sessions
-     WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_session_name,
-    (SELECT transition_state FROM logical_sessions
-     WHERE legacy_session_id = sessions.id LIMIT 1) AS projection_transition_state,
+    projection_logical.logical_session_id AS projection_logical_session_id,
+    projection_logical.session_name AS projection_session_name,
+    projection_logical.transition_state AS projection_transition_state,
+    projection_logical.routing_version AS projection_routing_version,
+    projection_logical.active_workspace_id AS projection_active_workspace_id,
+    projection_logical.repository_id AS projection_repository_id,
+    projection_binding.binding_id AS projection_binding_id,
+    projection_binding.provider_id AS projection_provider_id,
+    projection_binding.provider_session_id AS projection_provider_session_id,
+    projection_binding.provider_thread_id AS projection_provider_thread_id,
+    projection_binding.bound_cwd AS projection_bound_cwd,
+    projection_binding.worktree_id AS projection_worktree_id,
+    projection_binding.routing_version AS projection_binding_routing_version,
     (SELECT bindings.agent_id FROM agent_sessions bindings
      WHERE bindings.session_id = sessions.id AND bindings.unbound_at IS NULL
      LIMIT 1) AS projection_binding_agent_id,
@@ -14152,7 +14180,13 @@ function sessionProjectionSelectSQL() {
        ON cursors.binding_id = bindings.binding_id
      WHERE logical.legacy_session_id = sessions.id
      LIMIT 1) AS projection_sync_health
-    FROM sessions`;
+    FROM sessions
+    LEFT JOIN logical_sessions projection_logical
+      ON projection_logical.legacy_session_id = sessions.id
+    LEFT JOIN provider_thread_bindings projection_binding
+      ON projection_binding.provider_thread_id = projection_logical.active_thread_id
+     AND projection_binding.logical_session_id = projection_logical.logical_session_id
+     AND projection_binding.state = 'active'`;
 }
 
 function effectiveSessionArchivedSQL() {

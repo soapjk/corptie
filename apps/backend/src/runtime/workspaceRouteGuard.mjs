@@ -1,6 +1,10 @@
 import { realpath } from "node:fs/promises";
 import { inspectGitWorkspace } from "../utils/gitWorktreeInventory.mjs";
 
+const TRANSIENT_INSPECTION_CODES = new Set([
+  "EAGAIN", "EBUSY", "EIO", "EMFILE", "ENFILE", "ESTALE", "ETIMEDOUT"
+]);
+
 export async function assertWorkspaceRouteUsable(input) {
   const logical = input?.logicalSession;
   if (!logical?.activeBinding?.boundCwd) {
@@ -44,11 +48,26 @@ export async function assertWorkspaceRouteUsable(input) {
 
   let identity;
   try {
-    identity = await (input.inspectWorkspace ?? inspectGitWorkspace)(binding.boundCwd);
-  } catch {
+    identity = await inspectWorkspaceWithRetry(
+      input.inspectWorkspace ?? inspectGitWorkspace,
+      binding.boundCwd,
+      input
+    );
+  } catch (cause) {
+    const transient = isTransientInspectionError(cause);
+    console.warn(`[workspace-route] ${JSON.stringify({
+      event: "inspection_failed",
+      logicalSessionId: logical.logicalSessionId,
+      worktreeId: logical.activeWorkspaceId,
+      code: cause?.code ?? null,
+      transient
+    })}`);
     throw routeError(
-      "WORKSPACE_UNAVAILABLE",
-      "The active Git worktree path is missing or is no longer a valid Git workspace."
+      transient ? "WORKSPACE_INSPECTION_TRANSIENT" : "WORKSPACE_UNAVAILABLE",
+      transient
+        ? "The active Git worktree could not be verified after retrying. Try the message again."
+        : "The active Git worktree path is missing or is no longer a valid Git workspace.",
+      { cause, retryable: transient }
     );
   }
   if (
@@ -116,9 +135,38 @@ function routeMetadata(logical, binding, cwd) {
   };
 }
 
-function routeError(code, message) {
+async function inspectWorkspaceWithRetry(inspect, cwd, input) {
+  const retries = Number.isSafeInteger(input.workspaceInspectionRetries)
+    ? Math.max(0, input.workspaceInspectionRetries)
+    : 2;
+  const wait = input.wait ?? retryDelay;
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await inspect(cwd);
+    } catch (error) {
+      lastError = error;
+      if (!isTransientInspectionError(error) || attempt === retries) throw error;
+      await wait(50 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
+function isTransientInspectionError(error) {
+  return TRANSIENT_INSPECTION_CODES.has(error?.code)
+    || TRANSIENT_INSPECTION_CODES.has(error?.cause?.code);
+}
+
+function retryDelay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function routeError(code, message, options = {}) {
   const error = new Error(message);
   error.code = code;
   error.statusCode = 409;
+  error.retryable = options.retryable === true;
+  if (options.cause) error.cause = options.cause;
   return error;
 }

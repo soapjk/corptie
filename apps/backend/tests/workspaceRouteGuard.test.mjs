@@ -120,3 +120,47 @@ test("rejects a deleted active worktree even when the cached inventory is availa
     (error) => error.code === "WORKSPACE_UNAVAILABLE"
   );
 });
+
+test("retries transient workspace inspection before accepting the active route", async () => {
+  let inspections = 0;
+  const waits = [];
+  const result = await assertWorkspaceRouteUsable({
+    store: { getGitWorktree: () => worktree },
+    logicalSession: route(),
+    providerThreadId: "thread:active",
+    inspectWorkspace: async () => {
+      inspections += 1;
+      if (inspections < 3) throw Object.assign(new Error("spawn temporarily unavailable"), { code: "EAGAIN" });
+      return {
+        repositoryId: "repository:one",
+        worktreeId: "worktree:one",
+        canonicalPath: "/repo/worktree"
+      };
+    },
+    wait: async (milliseconds) => waits.push(milliseconds)
+  });
+
+  assert.equal(result.cwd, "/repo/worktree");
+  assert.equal(inspections, 3);
+  assert.deepEqual(waits, [50, 100]);
+});
+
+test("preserves retryability when transient workspace inspection is exhausted", async () => {
+  let inspections = 0;
+  await assert.rejects(
+    () => assertWorkspaceRouteUsable({
+      store: { getGitWorktree: () => worktree },
+      logicalSession: route(),
+      providerThreadId: "thread:active",
+      inspectWorkspace: async () => {
+        inspections += 1;
+        throw Object.assign(new Error("file table temporarily full"), { code: "EMFILE" });
+      },
+      wait: async () => {}
+    }),
+    (error) => error.code === "WORKSPACE_INSPECTION_TRANSIENT"
+      && error.retryable === true
+      && error.cause?.code === "EMFILE"
+  );
+  assert.equal(inspections, 3);
+});

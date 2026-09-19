@@ -113,6 +113,22 @@ struct SessionRestartInteractionTests {
         #expect(taskRestart.contains("taskRestartError = entityClient.errorMessage"))
     }
 
+    @Test
+    func providerSwitchReconcilesAndRetriesAStaleRouteExactlyOnce() throws {
+        let source = try contents(of: "BackendClient.swift")
+        let start = try #require(source.range(of: "func switchProvider(session: TaskSession"))
+        let end = try #require(source.range(
+            of: "private func beginRestartActivity",
+            range: start.upperBound..<source.endIndex
+        ))
+        let providerSwitch = source[start.lowerBound..<end.lowerBound]
+
+        #expect(providerSwitch.contains("retryOnStaleRoute: true"))
+        #expect(providerSwitch.contains("failure?.code == \"STALE_SESSION_ROUTE\""))
+        #expect(providerSwitch.contains("acceptCommittedSessionRoute(current)"))
+        #expect(providerSwitch.contains("retryOnStaleRoute: false"))
+    }
+
     private func contents(of fileName: String) throws -> String {
         let sourceRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

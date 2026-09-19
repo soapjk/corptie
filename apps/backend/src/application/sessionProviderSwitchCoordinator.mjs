@@ -61,6 +61,10 @@ export class SessionProviderSwitchCoordinator {
       && Number(input.expectedRoutingVersion) !== logical.routingVersion) {
       const error = new Error(`The Session route changed from version ${input.expectedRoutingVersion} to ${logical.routingVersion}.`);
       error.code = "STALE_SESSION_ROUTE";
+      error.statusCode = 409;
+      error.expectedRoutingVersion = Number(input.expectedRoutingVersion);
+      error.currentRoutingVersion = logical.routingVersion;
+      error.logicalSessionId = logical.logicalSessionId;
       throw error;
     }
     const replacingFailedBinding = input.replaceFailedBinding === true

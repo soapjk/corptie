@@ -48,6 +48,14 @@ private struct DataRootMigrationErrorEnvelope: Decodable {
     let operation: DataRootMigrationOperation?
 }
 
+private struct ProviderSwitchErrorEnvelope: Decodable {
+    let error: String
+    let code: String?
+    let expectedRoutingVersion: Int?
+    let currentRoutingVersion: Int?
+    let session: TaskSession?
+}
+
 private struct SessionTimelineChangedEventEnvelope: Decodable {
     let payload: Payload
 
@@ -3919,6 +3927,14 @@ final class BackendClient: ObservableObject {
 
     @discardableResult
     func switchProvider(session: TaskSession, to providerId: String) async -> Bool {
+        await switchProvider(session: session, to: providerId, retryOnStaleRoute: true)
+    }
+
+    private func switchProvider(
+        session: TaskSession,
+        to providerId: String,
+        retryOnStaleRoute: Bool
+    ) async -> Bool {
         let target = providerId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty, target != session.external?.provider else { return false }
         do {
@@ -3936,7 +3952,18 @@ final class BackendClient: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
             guard (200..<300).contains(http.statusCode) else {
-                throw BackendError.message(Self.errorMessage(from: data) ?? L10n("Provider 切换失败"))
+                let failure = try? JSONDecoder().decode(ProviderSwitchErrorEnvelope.self, from: data)
+                if failure?.code == "STALE_SESSION_ROUTE", let current = failure?.session {
+                    acceptCommittedSessionRoute(current)
+                    if retryOnStaleRoute {
+                        return await switchProvider(
+                            session: current,
+                            to: target,
+                            retryOnStaleRoute: false
+                        )
+                    }
+                }
+                throw BackendError.message(failure?.error ?? Self.errorMessage(from: data) ?? L10n("Provider 切换失败"))
             }
             sendStatusMessage = http.statusCode == 202
                 ? L10n("当前回复完成后切换 Provider")

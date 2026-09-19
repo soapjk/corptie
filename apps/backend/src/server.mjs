@@ -283,6 +283,7 @@ import { collaborationDynamicTools, callCollaborationDynamicTool } from "./colla
 import { CollaborationHttpClient } from "./mcp/collaborationHttpClient.mjs";
 import { choiceParserBackoffKey, choiceParserRetryDelayMs } from "./utils/choiceParserBackoff.mjs";
 import {
+  agentWorkPreDeliveryRetryDecision,
   agentWorkFailureMessage,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
@@ -2752,8 +2753,8 @@ let claudeModelsCache = null;
 const statuses = new Set(["running", "blocked", "complete", "failed", "cancelled"]);
 const drainingAgentWorkSessionIds = new Set();
 const runtimeQueuedTasksBySession = new Map();
-const sessionBusyRetryCounts = new Map();
-const MAX_SESSION_BUSY_RETRIES = 3;
+const preDeliveryRetryCounts = new Map();
+const MAX_PRE_DELIVERY_RETRIES = 3;
 let agentWorkQueueInterval = null;
 let activeCodexThreadCreation = null;
 const codexThreadCreationQueue = new SerializedOperationQueue();
@@ -7648,29 +7649,31 @@ async function drainAgentWorkSession(sessionId) {
       });
       workspaceContinuationCoordinator.recordWorkStarted(startedWork);
     }
-    sessionBusyRetryCounts.delete(claimed.taskId);
+    preDeliveryRetryCounts.delete(claimed.taskId);
   } catch (error) {
-    const busyRetryCount = error.code === "SESSION_BUSY"
-      ? (sessionBusyRetryCounts.get(claimed.taskId) ?? 0) + 1
-      : 0;
-    const shouldRetryBusy = error.code === "SESSION_BUSY" && busyRetryCount <= MAX_SESSION_BUSY_RETRIES;
-    if (shouldRetryBusy) sessionBusyRetryCounts.set(claimed.taskId, busyRetryCount);
+    const { retryCount, shouldRetry } = agentWorkPreDeliveryRetryDecision({
+      errorCode: error.code,
+      targetTurnId: claimed.targetTurnId,
+      previousRetryCount: preDeliveryRetryCounts.get(claimed.taskId) ?? 0,
+      maxRetries: MAX_PRE_DELIVERY_RETRIES
+    });
+    if (shouldRetry) preDeliveryRetryCounts.set(claimed.taskId, retryCount);
     const failedWork = store.updateAgentTask(claimed.taskId, {
-      status: shouldRetryBusy ? "queued" : "failed",
-      startedAt: shouldRetryBusy ? null : claimed.startedAt,
+      status: shouldRetry ? "queued" : "failed",
+      startedAt: shouldRetry ? null : claimed.startedAt,
       lastError: error.message
     });
-    if (shouldRetryBusy) {
+    if (shouldRetry) {
       registerRuntimeQueuedWork(claimed.sessionId, claimed.taskId);
     } else {
-      sessionBusyRetryCounts.delete(claimed.taskId);
+      preDeliveryRetryCounts.delete(claimed.taskId);
       emitEvent("AgentWorkFailed", { sessionId: claimed.sessionId, task: failedWork }, {
         sessionId: claimed.sessionId,
         source: claimed.source
       });
       workspaceContinuationCoordinator.recordWorkSettled(failedWork);
     }
-    if (!shouldRetryBusy) throw error;
+    if (!shouldRetry) throw error;
   }
 }
 
@@ -11219,9 +11222,17 @@ function route(request, response) {
         sendJson(response, result.status === "waitingForTurn" ? 202 : 200, result);
       })
       .catch((error) => {
+        const current = error.code === "STALE_SESSION_ROUTE"
+          ? store.getSession(sessionId)
+          : null;
         sendJson(response, errorStatus(error, unifiedErrorStatus(error)), {
           error: error.message,
-          code: error.code
+          code: error.code,
+          ...(error.code === "STALE_SESSION_ROUTE" ? {
+            expectedRoutingVersion: error.expectedRoutingVersion ?? null,
+            currentRoutingVersion: error.currentRoutingVersion ?? null,
+            session: current ? decorateSessionForClient(current) : null
+          } : {})
         });
       });
     return;

@@ -401,6 +401,9 @@ test("provider switch coordinator preserves Session kind and rejects a stale rou
         expectedRoutingVersion: logical.routingVersion - 1
       }),
       (error) => error?.code === "STALE_SESSION_ROUTE"
+        && error.statusCode === 409
+        && error.expectedRoutingVersion === logical.routingVersion - 1
+        && error.currentRoutingVersion === logical.routingVersion
     );
     assert.equal(store.getPendingWorkspaceTransition(logical.logicalSessionId), null);
 
