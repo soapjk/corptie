@@ -36,6 +36,14 @@ struct ConsoleWindowSplitViewTests {
         #expect(window.titlebarAppearsTransparent)
         #expect(window.toolbar == nil)
         #expect(window.contentLayoutRect == layoutBeforeAccessory)
+        let actions = try #require(window.titlebarAccessoryViewControllers.map(\.view).first {
+            $0.identifier?.rawValue == "console.sidebar.titlebarActions"
+        })
+        let closeButton = try #require(window.standardWindowButton(.closeButton))
+        let actionFrame = actions.convert(actions.bounds, to: nil)
+        let closeFrame = closeButton.convert(closeButton.bounds, to: nil)
+        #expect(abs(actionFrame.midY - closeFrame.midY) <= 2)
+        #expect(actionFrame.minX >= closeFrame.maxX)
         // Geometry alone missed a SwiftUI ancestor clip: the sidebar frame
         // reached the top while its pixels were cut off at the safe area.
         let bitmap = try #require(surface.bitmapImageRepForCachingDisplay(in: surface.bounds))
