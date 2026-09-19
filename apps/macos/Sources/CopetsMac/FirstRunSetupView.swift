@@ -162,8 +162,16 @@ struct FirstRunSetupRoot<Content: View>: View {
                 }
                 .buttonStyle(.borderedProminent)
             } else {
-                Button(L10n("创建第一个 Work")) { creatingWork = true }
-                    .buttonStyle(.borderedProminent)
+                HStack {
+                    Button(L10n("创建第一个 Work")) { creatingWork = true }
+                        .buttonStyle(.borderedProminent)
+                    Button(L10n("跳过")) {
+                        perform {
+                            self.status = try await FirstRunSetupAPI.request("first-run/complete", body: [:])
+                            AppTabRouter.shared.selectTab(.console)
+                        }
+                    }
+                }
             }
             Button(L10n("返回 Provider 设置")) { showingWork = false }
         }
