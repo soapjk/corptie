@@ -396,6 +396,7 @@ private struct MainTabPageHost: NSViewRepresentable {
             }
             let hostingView = NSHostingView(
                 rootView: root
+                    .ignoresSafeArea(.container, edges: tab == .console ? .top : [])
                     .environmentObject(router)
                     .environmentObject(resizeState)
                     .environmentObject(router.sidebarState(for: tab))
@@ -410,6 +411,10 @@ private struct MainTabPageHost: NSViewRepresentable {
 
     func updateNSView(_ container: MainTabPageContainer, context: Context) {
         container.select(selection, animated: !accessibilityReduceMotion && !resizeState.isLiveResize)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: MainTabPageContainer, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 1000, height: proposal.height ?? 700)
     }
 }
 
@@ -441,25 +446,22 @@ struct UnderlineTabBar: View {
         }
         .frame(height: MainWindowLayoutMetrics.tabBarHeight)
         .contentShape(Rectangle())
-        .background {
-            Capsule()
-                .fill(Color.primary.opacity(0.035))
-        }
-        .overlay {
-            Capsule()
-                .stroke(Color(nsColor: .separatorColor).opacity(0.18), lineWidth: 0.5)
-        }
-        .shadow(
-            color: Color.black.opacity(0.025),
-            radius: 3,
-            x: 0,
-            y: 1
-        )
+        .modifier(MainWindowTabGlass())
     }
 
     private func select(_ tab: AppTab) {
         withAnimation(selectionAnimation) {
             selection = tab
+        }
+    }
+}
+
+private struct MainWindowTabGlass: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.clear.interactive(), in: .capsule)
+        } else {
+            content.background(.ultraThinMaterial, in: Capsule())
         }
     }
 }
@@ -515,7 +517,10 @@ struct MainWindowContentView: View {
             router: router,
             resizeState: resizeState
         )
-        .clipped()
+        .ignoresSafeArea(.container, edges: .top)
+        // MainTabPageContainer and MainWindowSurfaceContainer already clip to
+        // window bounds. A SwiftUI clip here uses the safe-area layout bounds
+        // and cuts off the full-height sidebar beneath the title bar.
         .environmentObject(router)
         .transaction { transaction in
             if resizeState.isLiveResize {

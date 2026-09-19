@@ -10,7 +10,7 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!source.contains("显示或隐藏 Task Info"))
         #expect(source.contains("SessionDetailPanel(session: session, railWidth: 280)"))
         #expect(source.contains("SessionCorptieTaskDetailCard(taskId: task.id)"))
-        #expect(source.contains(".frame(minWidth: 680, maxWidth: .infinity, maxHeight: .infinity)"))
+        #expect(source.contains("ConsoleWindowSplitView(mode: navigationMode"))
     }
 
     @Test
@@ -59,8 +59,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(MainWindowPageLayoutMetrics.cardCornerRadius == 10)
 
         let source = try source(named: "UnifiedConsoleView.swift")
-        #expect(source.contains(".padding(.leading, MainWindowPageLayoutMetrics.outerPadding)"))
-        #expect(source.contains(".padding(.vertical, MainWindowPageLayoutMetrics.outerPadding)"))
+        #expect(!source.contains(".padding(.leading, MainWindowPageLayoutMetrics.outerPadding)"))
+        #expect(!source.contains(".padding(.vertical, MainWindowPageLayoutMetrics.outerPadding)"))
         #expect(source.components(
             separatedBy: "HStack(spacing: MainWindowPageLayoutMetrics.columnSpacing)"
         ).count - 1 == 2)
@@ -383,23 +383,6 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(!fields.contains("推理强度"))
     }
 
-    @Test
-    func workAndTaskColumnsShareOneNavigationCard() throws {
-        let source = try source(named: "UnifiedConsoleView.swift")
-        let cardStart = try #require(source.range(of: "private var consoleNavigationCard: some View"))
-        let cardEnd = try #require(source.range(
-            of: "private var workRail: some View",
-            range: cardStart.lowerBound..<source.endIndex
-        ))
-        let card = source[cardStart.lowerBound..<cardEnd.lowerBound]
-
-        #expect(card.contains("workRail"))
-        #expect(card.contains("unifiedTaskSidebar"))
-        #expect(card.contains("RoundedRectangle("))
-        #expect(card.contains(".regularMaterial"))
-        #expect(card.contains(".shadow("))
-        #expect(source.components(separatedBy: ".scrollContentBackground(.hidden)").count - 1 >= 3)
-    }
 
     @Test
     func navigationCanSwitchBetweenWorkRailAndExpandedWorkOutline() throws {
@@ -552,30 +535,6 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(source.contains("private func openWorkChat(for work: Work, session: TaskSession)"))
     }
 
-    @Test
-    func navigationCardWidthIsResizableAndPersisted() throws {
-        #expect(ConsoleNavigationCardWidthPolicy.clamped(120) == 220)
-        #expect(ConsoleNavigationCardWidthPolicy.clamped(360) == 360)
-        #expect(ConsoleNavigationCardWidthPolicy.clamped(800) == 520)
-        let increasingWidths = stride(from: 0.0, through: 80.0, by: 4.0).map {
-            ConsoleNavigationCardWidthPolicy.resizedWidth(
-                from: 300,
-                translation: $0
-            )
-        }
-        #expect(zip(increasingWidths, increasingWidths.dropFirst()).allSatisfy { pair in
-            pair.0 <= pair.1
-        })
-
-        let source = try source(named: "UnifiedConsoleView.swift")
-        #expect(source.contains("console.navigationCard.taskColumnWidth"))
-        #expect(source.contains("@State private var liveTaskColumnWidth: Double?"))
-        #expect(source.contains("DragGesture(\n                    minimumDistance: 0,\n                    coordinateSpace: .named(consoleNavigationResizeCoordinateSpace)"))
-        #expect(source.contains("storedTaskColumnWidth = finalWidth"))
-        #expect(!source.contains("storedTaskColumnWidth = ConsoleNavigationCardWidthPolicy.resizedWidth"))
-        #expect(source.contains("NSCursor.resizeLeftRight"))
-        #expect(source.contains(".overlay(alignment: .trailing) {\n            navigationResizeHandle"))
-    }
 
     @Test
     func selectedWorkUsesADiscordStyleEdgePill() throws {

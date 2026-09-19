@@ -285,8 +285,11 @@ struct MainWindowResizeLayoutTests {
             encoding: .utf8
         )
         #expect(legacyBoard.contains("max: TwoPaneLayoutMetrics.sidebarMaximumWidth"))
-        #expect(unifiedConsole.contains(".frame(width: taskColumnWidth)"))
-        #expect(unifiedConsole.contains("ConsoleNavigationCardWidthPolicy.clamped("))
+        let nativeSplit = try String(contentsOf: sourceRoot.appendingPathComponent("ConsoleWindowSplitView.swift"), encoding: .utf8)
+        #expect(unifiedConsole.contains("ConsoleWindowSplitView(mode: navigationMode"))
+        #expect(nativeSplit.contains("sidebar.minimumThickness = 284"))
+        #expect(nativeSplit.contains("sidebar.maximumThickness = 900"))
+        #expect(!unifiedConsole.contains("navigationResizeHandle"))
         #expect(!legacyBoard.contains("w * 0.34"))
         #expect(!unifiedConsole.contains("w * 0.34"))
     }
