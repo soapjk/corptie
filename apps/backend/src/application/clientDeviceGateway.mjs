@@ -65,7 +65,7 @@ export class ClientDeviceGateway {
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
       const control = /^\/client\/v1\/control\/(automations|agents|skills|repositories)$/.exec(path);
       const repository = /^\/client\/v1\/control\/repositories\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !inventory && !control && !(conversation?.[2] === "messages" && request.method === "GET")) throw deviceError("REQUEST_NOT_ALLOWED", 403);
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
@@ -97,6 +97,12 @@ export class ClientDeviceGateway {
       if (conversation && this.sessionAPI) {
         let sessionId;
         try { sessionId = decodeURIComponent(conversation[1]); } catch { throw deviceError("INVALID_SESSION_ID", 400); }
+        if (conversation[2] === "composer" && ["GET", "POST"].includes(request.method)) {
+          const input = request.method === "POST" ? await body(request, 4096) : null;
+          const result = await this.sessionAPI.configuration(this.authority.authenticate(bearer(request)), sessionId, input);
+          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.write");
+          return reply(response, 200, result);
+        }
         if (request.method === "GET" && conversation[2] === "messages") {
           const result = await this.sessionAPI.messages(identity, sessionId, url.searchParams);
           requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
@@ -106,7 +112,8 @@ export class ClientDeviceGateway {
           return reply(response, 200, this.sessionAPI.capabilities(identity, sessionId));
         }
         if (request.method === "POST" && ["messages", "stop"].includes(conversation[2])) {
-          const input = await body(request, conversation[2] === "messages" ? 65536 : 4096);
+          requireDevicePermission(identity, conversation[2] === "messages" ? "messages.write" : "sessions.stop");
+          const input = await body(request, conversation[2] === "messages" ? 29 * 1024 * 1024 : 4096);
           // Recheck after reading the body: permission may have been revoked meanwhile.
           const current = this.authority.authenticate(bearer(request));
           return reply(response, 202, await this.sessionAPI.command(current, sessionId,
@@ -132,7 +139,7 @@ export class ClientDeviceGateway {
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) {
-      reply(response, error.status ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" });
+      reply(response, error.status ?? error.statusCode ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" });
     }
   }
 

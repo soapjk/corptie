@@ -4687,6 +4687,12 @@ function authorizeScheduledSessionTask({ actor, logicalSessionId, environment })
   if (actor.type === "user" && actor.id === "user:local-macos") {
     return { workId: session.workId ?? null, session };
   }
+  // A paired client acts for its user, never impersonates a Session or local admin.
+  // Recheck durable device authority on each scheduler operation/delivery.
+  if (actor.type === "user" && actor.id?.startsWith("user:paired-device:")
+      && clientDeviceGateway?.authority.canDeliverScheduledMessage(actor.id.slice("user:paired-device:".length))) {
+    return { workId: session.workId ?? null, session };
+  }
   const actorAgent = actor.type === "agent" ? store.getAgent(actor.id) : null;
   const boundAgent = collaborationCore.getAgentForSession(session.id);
   if (!actorAgent || boundAgent?.agentId !== actorAgent.agentId) {
@@ -11770,7 +11776,32 @@ function startBackendRuntime() {
     resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
-      actions: session => decorateSessionForClient(session).actions ?? {} }) })
+      schedule: (id, text, schedule, identity) => scheduledSessionTaskService.create({
+        logicalSessionId: requireSessionReference(id).logicalSessionId,
+        name: text.slice(0, 80), message: { text },
+        scheduleType: schedule.intervalSeconds ? "interval" : "at",
+        runAt: schedule.runAt, expiresAt: schedule.expiresAt,
+        ...(schedule.intervalSeconds ? { intervalSeconds: schedule.intervalSeconds } : {})
+      }, { type: "user", id: `user:paired-device:${identity.deviceId}` }),
+      images: {
+        available: session => decorateSessionForClient(session).capabilities?.canSendImages === true,
+        import: (id, image) => chatResourceService.importImageData(requireSessionReference(id),
+          Buffer.from(image.dataBase64, "base64"), image.fileName)
+      },
+      composer: {
+        read: id => sessionApplicationService.listModelsForSession(id),
+        update: async (id, key, value) => {
+          const reference = requireSessionReference(id);
+          if (key === "model") await sessionApplicationService.switchModel(id, value);
+          else await sessionApplicationService.switchReasoning(id, value);
+          emitEvent(key === "model" ? "SessionModelChanged" : "SessionReasoningChanged", {
+            sessionId: reference.sessionId, logicalSessionId: reference.logicalSessionId, [key]: value
+          }, { sessionId: reference.sessionId });
+        }
+      },
+      actions: session => decorateSessionForClient(session).actions ?? {},
+      resolveSession: id => sessionBindingRepository.resolve(id)?.sessionId
+        ?? (store.getSession(id) ? id : null) }) })
     .then(gateway => { clientDeviceGateway = gateway; })
     .catch(() => console.error("[client-devices] remote gateway unavailable; check explicit TLS configuration"));
   // Store-backed APIs and state streams are the Backend readiness boundary.
