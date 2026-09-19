@@ -6,6 +6,29 @@ import SwiftUI
 import UserNotifications
 
 @main
+enum CorptieMacLauncher {
+    static func main() {
+        if #available(macOS 15.0, *) {
+            ExplicitWindowLaunchApp.main()
+        } else {
+            CorptieMacApp.main()
+        }
+    }
+}
+
+// SceneBuilder cannot branch on API availability on our macOS 14 baseline.
+// Select the App at launch so newer systems use native scene launch policies.
+@available(macOS 15.0, *)
+struct ExplicitWindowLaunchApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    var body: some Scene {
+        Settings { SettingsView() }
+            .defaultLaunchBehavior(.suppressed)
+            .restorationBehavior(.disabled)
+    }
+}
+
 struct CorptieMacApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
@@ -631,6 +654,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var assistantWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
 
+    // AppKit owns our startup window. Do not let the sole SwiftUI Settings
+    // scene serve as an automatic untitled launch/reopen window.
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool { false }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.shared = self
 
@@ -988,6 +1015,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             defer: false
         )
         window.title = "\(CorptieAppEnvironment.appName) \(L10n("Settings"))"
+        window.isRestorable = false
         window.center()
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: SettingsView(

@@ -125,7 +125,6 @@ test("concurrent Chat preparation and restart reuse the same Session", async t =
   await f.service.check({ providerId: "claude-sdk", path: f.binary });
   await Promise.all([f.service.prepareAssistant(), f.service.prepareAssistant()]);
   assert.equal(f.launches(), 1);
-  await assert.rejects(f.service.complete());
   f.setWorks();
   assert.equal((await f.service.complete()).completed, true);
 });
@@ -151,3 +150,22 @@ test("new installs require setup while legacy installs without markers skip it",
   await legacy.initialize();
   assert.equal((await legacy.status()).completed, true);
 });
+
+for (const providerId of ["codex-app-server", "claude-sdk", "openclacky"]) {
+  test(`${providerId}: Work can be skipped only after Provider and Chat are ready`, async t => {
+    const f = await fixture(t);
+    await assert.rejects(f.service.complete());
+    await f.service.check({ providerId, path: f.binary });
+    await assert.rejects(f.service.complete());
+    await f.service.prepareAssistant();
+    await f.service.setEnabled({ providerId, path: f.binary, enabled: false });
+    await assert.rejects(f.service.complete());
+    await f.service.setEnabled({ providerId, path: f.binary, enabled: true });
+    const done = await f.service.complete();
+    assert.equal(done.completed, true);
+    assert.equal(done.hasWorks, false);
+    const restarted = new FirstRunSetupService(f.options);
+    await restarted.initialize();
+    assert.equal((await restarted.status()).completed, true);
+  });
+}
