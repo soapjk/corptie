@@ -10,6 +10,25 @@ export function shouldReportAgentWorkQueued({
   );
 }
 
+const RETRYABLE_PRE_DELIVERY_ERROR_CODES = new Set([
+  "SESSION_BUSY",
+  "WORKSPACE_INSPECTION_TRANSIENT"
+]);
+
+export function agentWorkPreDeliveryRetryDecision({
+  errorCode,
+  targetTurnId = null,
+  previousRetryCount = 0,
+  maxRetries = 3
+} = {}) {
+  const retryable = !targetTurnId && RETRYABLE_PRE_DELIVERY_ERROR_CODES.has(errorCode);
+  const retryCount = retryable ? Number(previousRetryCount) + 1 : 0;
+  return {
+    retryCount,
+    shouldRetry: retryable && retryCount <= maxRetries
+  };
+}
+
 export function interruptedAgentWorkRecoveryPatch(task) {
   if (!task || task.status !== "running") return null;
   if (task.source?.type === "workspace-continuation") {

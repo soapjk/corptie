@@ -10,12 +10,43 @@ import {
   sessionHasActiveRun
 } from "../src/utils/sessionPresentation.mjs";
 import {
+  agentWorkPreDeliveryRetryDecision,
   agentWorkFailureMessage,
   assertAgentWorkSessionReference,
   interruptedAgentWorkRecoveryPatch,
   shouldReportAgentWorkQueued,
   userMessageStatusForAgentWork
 } from "../src/utils/agentWorkQueue.mjs";
+
+test("transient pre-delivery failures are retried without resending delivered work", () => {
+  assert.deepEqual(agentWorkPreDeliveryRetryDecision({
+    errorCode: "WORKSPACE_INSPECTION_TRANSIENT",
+    previousRetryCount: 0
+  }), {
+    retryCount: 1,
+    shouldRetry: true
+  });
+  assert.deepEqual(agentWorkPreDeliveryRetryDecision({
+    errorCode: "SESSION_BUSY",
+    previousRetryCount: 3
+  }), {
+    retryCount: 4,
+    shouldRetry: false
+  });
+  assert.deepEqual(agentWorkPreDeliveryRetryDecision({
+    errorCode: "WORKSPACE_INSPECTION_TRANSIENT",
+    targetTurnId: "turn-already-delivered"
+  }), {
+    retryCount: 0,
+    shouldRetry: false
+  });
+  assert.deepEqual(agentWorkPreDeliveryRetryDecision({
+    errorCode: "WORKSPACE_UNAVAILABLE"
+  }), {
+    retryCount: 0,
+    shouldRetry: false
+  });
+});
 
 test("Provider failure objects become SQLite-safe Agent work messages", () => {
   assert.equal(agentWorkFailureMessage(null), null);

@@ -2208,6 +2208,114 @@ test("a stable Codex session id can route to a different active provider thread"
   }
 });
 
+test("Session reads project route identity from the logical Session and active Binding", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-authoritative-session-route-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "codex:stable-route",
+      title: "Stable route",
+      agent: "Codex",
+      provider: "codex-app-server",
+      cwd: "/stale/cwd",
+      status: "complete",
+      external: {
+        provider: "codex-app-server",
+        threadId: "stale-thread",
+        sessionId: "stale-thread",
+        logicalSessionId: "logical:stable-route",
+        routingVersion: 0,
+        cwd: "/stale/cwd"
+      }
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:stable-route",
+      legacySessionId: "codex:stable-route",
+      providerThreadId: "claude-thread",
+      providerId: "claude-sdk",
+      providerSessionId: "claude-session",
+      boundCwd: "/authoritative/cwd",
+      title: "Stable route"
+    });
+    store.db.run(
+      "UPDATE logical_sessions SET routing_version = 4 WHERE logical_session_id = ?",
+      ["logical:stable-route"]
+    );
+    store.db.run(
+      "UPDATE provider_thread_bindings SET routing_version = 4 WHERE logical_session_id = ? AND state = 'active'",
+      ["logical:stable-route"]
+    );
+
+    for (const session of [
+      store.getSession("codex:stable-route"),
+      store.listSessions({ archived: false }).find((item) => item.id === "codex:stable-route"),
+      store.listSessionPage({ sessionId: "codex:stable-route" }).items[0]
+    ]) {
+      assert.equal(session.external.provider, "claude-sdk");
+      assert.equal(session.external.threadId, "claude-thread");
+      assert.equal(session.external.sessionId, "claude-session");
+      assert.equal(session.external.logicalSessionId, "logical:stable-route");
+      assert.equal(session.external.routingVersion, 4);
+      assert.equal(session.external.cwd, "/authoritative/cwd");
+    }
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Provider transition state changes advance the Session state projection revision", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-transition-revision-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    store.upsertSession({
+      id: "codex:transition-revision",
+      title: "Transition revision",
+      agent: "Codex",
+      provider: "codex-app-server",
+      cwd: "/repo",
+      status: "complete"
+    });
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:transition-revision",
+      legacySessionId: "codex:transition-revision",
+      providerThreadId: "thread:transition-revision",
+      boundCwd: "/repo",
+      title: "Transition revision"
+    });
+    const before = store.stateRevision();
+    store.beginWorkspaceTransition({
+      transitionId: "transition:revision",
+      logicalSessionId: "logical:transition-revision",
+      transitionKind: "provider",
+      targetProviderId: "claude-sdk",
+      sourceRoutingVersion: 1,
+      phase: "preflighting"
+    });
+    const pending = store.stateRevision();
+    assert.ok(pending > before);
+    assert.equal(store.getSession("codex:transition-revision").transitionState, "preflighting");
+
+    store.updateWorkspaceTransition("transition:revision", {
+      phase: "failed",
+      error: { message: "target failed" }
+    });
+    assert.ok(store.stateRevision() > pending);
+    assert.equal(store.getSession("codex:transition-revision").transitionState, null);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 function workspaceSnapshot() {
   return {
     repository: {

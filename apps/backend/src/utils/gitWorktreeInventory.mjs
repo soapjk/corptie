@@ -90,11 +90,22 @@ export async function inspectGitWorkspace(workingDirectory, options = {}) {
   const run = options.execFile ?? execFileAsync;
   const resolveRealpath = options.realpath ?? realpath;
   const requestedPath = resolve(String(workingDirectory));
-  const [topLevel, gitDir, commonGitDir] = await Promise.all([
-    readGitPath(run, requestedPath, "--show-toplevel"),
-    readGitPath(run, requestedPath, "--git-dir"),
-    readGitPath(run, requestedPath, "--git-common-dir")
-  ]);
+  const result = await run(
+    "git",
+    [
+      "-C", requestedPath, "rev-parse", "--path-format=absolute",
+      "--show-toplevel", "--git-dir", "--git-common-dir"
+    ],
+    { encoding: "utf8", maxBuffer: 1024 * 1024 }
+  );
+  const [topLevel, gitDir, commonGitDir, ...unexpected] = String(result.stdout ?? "")
+    .split(/\r?\n/u)
+    .filter((value) => value.length > 0);
+  if (!topLevel || !gitDir || !commonGitDir || unexpected.length > 0) {
+    const error = new Error("git rev-parse returned an invalid workspace identity snapshot");
+    error.code = "GIT_WORKSPACE_IDENTITY_INVALID";
+    throw error;
+  }
   const [canonicalPath, gitDirCanonicalPath, commonGitDirCanonicalPath] = await Promise.all([
     resolveRealpath(topLevel),
     resolveRealpath(gitDir),
@@ -239,23 +250,6 @@ function emptyWorktreeRecord(path) {
 function shortBranchName(ref) {
   const prefix = "refs/heads/";
   return ref.startsWith(prefix) ? ref.slice(prefix.length) : ref || null;
-}
-
-async function readGitPath(run, workingDirectory, flag) {
-  const result = await run(
-    "git",
-    ["-C", workingDirectory, "rev-parse", "--path-format=absolute", flag],
-    { encoding: "utf8", maxBuffer: 1024 * 1024 }
-  );
-  const value = stripTrailingLineEnding(String(result.stdout ?? ""));
-  if (!value) throw new Error(`git rev-parse ${flag} returned an empty path`);
-  return value;
-}
-
-function stripTrailingLineEnding(value) {
-  if (value.endsWith("\r\n")) return value.slice(0, -2);
-  if (value.endsWith("\n")) return value.slice(0, -1);
-  return value;
 }
 
 function stableId(namespace, value) {

@@ -19,6 +19,29 @@ import {
 
 const execFileAsync = promisify(execFile);
 
+test("inspectGitWorkspace reads one atomic Git identity snapshot", async () => {
+  const calls = [];
+  const identity = await inspectGitWorkspace("/repo/worktree", {
+    execFile: async (file, args, options) => {
+      calls.push({ file, args, options });
+      return {
+        stdout: "/repo/worktree\n/repo/main/.git/worktrees/feature\n/repo/main/.git\n"
+      };
+    },
+    realpath: async (value) => value
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].file, "git");
+  assert.deepEqual(calls[0].args, [
+    "-C", "/repo/worktree", "rev-parse", "--path-format=absolute",
+    "--show-toplevel", "--git-dir", "--git-common-dir"
+  ]);
+  assert.equal(identity.canonicalPath, "/repo/worktree");
+  assert.equal(identity.gitDirCanonicalPath, "/repo/main/.git/worktrees/feature");
+  assert.equal(identity.commonGitDirCanonicalPath, "/repo/main/.git");
+});
+
 test("createWorktree uses parameterized Git arguments, validates identity, and schedules a switch", async () => {
   const fixture = await createFixture("create");
   await mkdir(join(fixture.repository, ".corptie"));
@@ -535,7 +558,7 @@ test("management inspection preserves list fields while avoiding deep per-Worktr
     );
     assert.equal(summaryCalls.some((args) => args[0] === "diff"), false);
     assert.equal(summaryCalls.some((args) => args[0] === "merge-base"), false);
-    assert.equal(summaryCalls.filter((args) => args[0] === "rev-parse").length, 3);
+    assert.equal(summaryCalls.filter((args) => args[0] === "rev-parse").length, 1);
     assert.equal(summaryCalls.filter((args) => args[0] === "worktree").length, 1);
     assert.ok(calls.length >= summaryCalls.length + summary.worktrees.length * 2);
   } finally {
