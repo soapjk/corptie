@@ -1099,6 +1099,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         scrollView.drawsBackground = false
         scrollView.hasVerticalScroller = true
         scrollView.verticalScroller = TimelineIntentScroller()
+        scrollView.scrollerStyle = .overlay
+        scrollView.contentView.drawsBackground = false
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.verticalScrollElasticity = .none
@@ -3139,6 +3141,7 @@ private final class IntrinsicHeightTableView: NSTableView {
 }
 
 private final class TimelineIntentScroller: NSScroller {
+    override class var isCompatibleWithOverlayScrollers: Bool { true }
     var onBegin: (() -> Void)?
     var onEnd: (() -> Void)?
 

@@ -1244,7 +1244,9 @@ struct CorptieTaskDetailView: View {
 
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            TaskSummaryView(task: task)
+            if task.userSummary?.content != nil {
+                TaskSummaryView(task: task)
+            }
             if hasTaskDefinitionContent {
                 taskDefinitionSection
             }
@@ -1267,7 +1269,7 @@ struct CorptieTaskDetailView: View {
             Image(systemName: "square.text.square")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
-            Text(L10n("CorptieTask 详情"))
+            Text(verbatim: "Detail")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
             Spacer()

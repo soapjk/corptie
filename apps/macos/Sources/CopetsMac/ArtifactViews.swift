@@ -40,7 +40,7 @@ struct ArtifactSectionView: View {
 
             artifactLoadContent
 
-            if (taskId == nil || showsAllReferences) && client.hasMore(workId: workId, taskId: taskId) {
+            if showsAllReferences && client.hasMore(workId: workId, taskId: taskId) {
                 Button(L10n("Load more Artifacts")) {
                     Task { await client.loadMore(workId: workId, taskId: taskId) }
                 }
@@ -118,11 +118,11 @@ struct ArtifactSectionView: View {
 
     private func artifactRows(_ artifacts: [WorkArtifact]) -> some View {
         LazyVStack(spacing: 6) {
-            if taskId != nil && (artifacts.count > 2 || client.hasMore(workId: workId, taskId: taskId)) {
+            if artifacts.count > 2 || client.hasMore(workId: workId, taskId: taskId) {
                 Button(showsAllReferences ? "收起" : "展开全部") { showsAllReferences.toggle() }
                     .buttonStyle(.borderless).font(.caption)
             }
-            ForEach(taskId == nil || showsAllReferences ? artifacts : Array(artifacts.prefix(2))) { artifact in
+            ForEach(showsAllReferences ? artifacts : Array(artifacts.prefix(2))) { artifact in
                 Button { selection = artifact } label: {
                     HStack(spacing: 7) {
                         if artifact.visibility == .repositoryTracked {
