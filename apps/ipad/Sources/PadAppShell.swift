@@ -29,10 +29,21 @@ struct PadAppShell: View {
                     .toolbar(.hidden, for: .tabBar)
             }
         }
+        .background {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
+        }
+        .background { PadKeyboardDismissal().frame(width: 0, height: 0) }
         // iPadOS places TabView's standard bar at the top. Use the public native
         // UITabBar as the bottom selector, without falsifying content size classes.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            PadBottomTabBar(selection: $tab).frame(height: 49).background(.bar)
+            PadBottomTabBar(selection: $tab)
+                .frame(height: 49)
+                .background {
+                    Rectangle()
+                        .fill(.bar)
+                        .ignoresSafeArea(edges: .bottom)
+                }
         }
         .sheet(item: $sheet) { _ in PadSettingsView(connection: connection, workspace: workspace) }
         .task { await workspace.inventory(connection) }

@@ -1,4 +1,5 @@
 import Foundation
+import CorptieClientCore
 import AppKit
 import SwiftUI
 
@@ -1542,29 +1543,7 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     }
 }
 
-enum UserMessageProcessingState: String, Equatable, Sendable {
-    case queued
-    case processing
-    case consumed
-    case failed
-    case cancelled
-
-    init?(authoritativeValue: String?, legacyStatus: String?) {
-        if let authoritativeValue {
-            guard let state = Self(rawValue: authoritativeValue.lowercased()) else { return nil }
-            self = state
-            return
-        }
-        // Compatibility with snapshots produced before userMessageStatus was
-        // added. Only explicit server status values qualify; timeline position
-        // is never used to infer lifecycle.
-        switch legacyStatus?.lowercased() {
-        case "queued": self = .queued
-        case "running", "processing": self = .processing
-        default: return nil
-        }
-    }
-}
+typealias UserMessageProcessingState = CorptieClientCore.UserMessageProcessingState
 
 struct CodexFileChange: Decodable, Equatable, Sendable {
     let path: String

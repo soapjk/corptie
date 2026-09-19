@@ -26,7 +26,9 @@ extension PadWorkspace {
                     liveStatus = "实时连接正常"
                     if update.control == true { controlRevision += 1 }
                     inventoryDirty = inventoryDirty || update.inventory
-                    messagesDirty = messagesDirty || update.allSessions || (selection.map { update.sessions.contains($0) } ?? false)
+                    let routedSelection = capabilities?.sessionId ?? selection
+                    messagesDirty = messagesDirty || update.allSessions
+                        || (routedSelection.map { update.sessions.contains($0) } ?? false)
                     scheduleRefresh(connection)
                 }
             } catch {
@@ -116,33 +118,32 @@ extension PadWorkspace {
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             capabilities = caps
             guard caps.readMessages else { messages = []; return }
-            let page = try await api.messages(sessionId: id)
+            let page = try await api.messages(sessionId: caps.sessionId)
             var latest = page.items, cursor = page.nextBefore
             let previousTail = messages.last?.id
             // Recover a disconnected gap; do not splice unrelated history onto the newest page.
             var pages = 1
             while let old = previousTail, !latest.contains(where: { $0.id == old }), let next = cursor, pages < 25 {
-                let earlier = try await api.messages(sessionId: id, before: next)
+                let earlier = try await api.messages(sessionId: caps.sessionId, before: next)
                 latest = Self.merge(earlier.items, latest)
                 cursor = earlier.nextBefore
                 pages += 1
             }
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
-            let previous = messages
-            if let first = latest.first?.id, let overlap = messages.firstIndex(where: { $0.id == first }) {
-                let merged = Array(messages.prefix(overlap)) + latest
-                if messages != merged { messages = merged }
-                // Keep the oldest loaded history cursor when extending the live tail.
-            } else {
-                if messages != latest { messages = latest }
-                before = cursor
-                if pages == 25 && cursor != nil { status = "已同步最近 1000 条消息；更早内容可继续向上加载。" }
+            applyLatestWindow(latest, cursor: cursor, revision: page.revision)
+            if caps.composer == true, composerConfiguration == nil
+                || (caps.currentModel != nil && caps.currentModel != composerConfiguration?.currentModel)
+                || (caps.currentReasoningLevel != nil && caps.currentReasoningLevel != composerConfiguration?.currentReasoningLevel) {
+                await configureComposer(connection)
             }
-            if previous != messages { messageRevision += 1 }
         } catch ClientConnectionError.httpStatus(404) {
             guard selection == id, generation == timelineGeneration else { return }
             clearSelectionState()
-            status = "此会话已不可用。请选择其他会话。"
+            conversationNotice = "无法同步这个会话。列表可能已过期，请刷新后重试。"
+        } catch let error as ClientServiceFailure where error.code == "SESSION_NOT_AVAILABLE" {
+            guard selection == id, generation == timelineGeneration else { return }
+            clearSelectionState()
+            conversationNotice = "无法同步这个会话。列表可能已过期，请刷新后重试。"
         }
     }
 }

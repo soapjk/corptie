@@ -15,8 +15,85 @@ async function fixture() {
   return { store, close: async () => { await store.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 const callbacks = { actions: () => ({ send: { available: true }, interrupt: { available: true } }),
-  readWindow: async () => ({ revision: 4, hasEarlier: false, items: [{ id: "item:1", type: "agentMessage", text: "hello", secret: "private" }] }),
+  readWindow: async () => ({ revision: 4, hasEarlier: false, items: [{ id: "item:1", type: "agentMessage", text: "hello", secret: "private", userMessageStatus: "processing", queuePosition: 2 }] }),
   send: async () => {}, stop: async () => {} };
+
+test("image-only messages and mentions use shared send and deduplicate attachments", async () => {
+  const f = await fixture();
+  try {
+    const imports = [], sends = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      images: { available: () => true, import: async (id, image) => {
+        imports.push([id, image]); return { managedPath: "chat-resources/session/image.png", originalPath: null };
+      } }, send: async (...args) => sends.push(args) });
+    const input = { requestId: "image_request", text: "", images: [{ fileName: "image.png", dataBase64: "aGVsbG8=" }] };
+    assert.equal((await api.command(identity, "session:test", "send", input)).status, "accepted");
+    await api.command(identity, "session:test", "send", input);
+    assert.equal(imports.length, 1);
+    assert.equal(sends.length, 1);
+    assert.equal(sends[0][1].images[0].originalPath, null);
+    assert.equal(sends[0][2].type, "remote-client");
+    await assert.rejects(api.command(identity, "session:test", "send", {
+      ...input, images: [{ ...input.images[0], dataBase64: "d29ybGQ=" }]
+    }), { code: "IDEMPOTENCY_CONFLICT" });
+    for (const images of [[{ sourcePath: "/etc/passwd" }], [{ fileName: "x", dataBase64: "invalid!" }], Array(9).fill(input.images[0])]) {
+      await assert.rejects(api.command(identity, "session:test", "send", { ...input, images }), { code: "INVALID_IMAGES" });
+    }
+    const noImages = new ClientSessionAPI({ store: f.store, ...callbacks });
+    await assert.rejects(noImages.command(identity, "session:test", "send", input), { code: "CAPABILITY_UNSUPPORTED" });
+    const mention = { targetType: "work", targetId: "work:test", displayName: "Work" };
+    await api.command(identity, "session:test", "send", { requestId: "mention_request", text: "@Work hello", mentions: [mention] });
+    assert.deepEqual(sends[1][1].mentions, [mention]);
+    await assert.rejects(api.command(identity, "session:test", "send", {
+      requestId: "invalid_mention", text: "hello", mentions: [{ ...mention, targetType: "agent" }]
+    }), { code: "INVALID_MENTIONS" });
+  } finally { await f.close(); }
+});
+
+test("scheduled messages are scoped and deduplicated without immediate model sends", async () => {
+  const f = await fixture();
+  try {
+    const scheduled = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      send: async () => assert.fail("scheduled message must not send now"),
+      schedule: async (...args) => scheduled.push(args) });
+    const schedule = { runAt: new Date(Date.now() + 60000).toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString() };
+    const input = { requestId: "schedule_request", text: "later", schedule };
+    assert.equal((await api.command(identity, "session:test", "send", input)).status, "accepted");
+    await api.command(identity, "session:test", "send", input);
+    assert.deepEqual(scheduled, [["session:test", "later", schedule, identity]]);
+    for (const bad of [{ ...schedule, process: { pid: 1 } }, { ...schedule, intervalSeconds: 0 }, { ...schedule, runAt: "invalid" }]) {
+      await assert.rejects(api.command(identity, "session:test", "send", { ...input, schedule: bad }), { code: "INVALID_SCHEDULE" });
+    }
+    await assert.rejects(api.command({ ...identity, permissions: [] }, "session:test", "send", input), { code: "DEVICE_PERMISSION_REQUIRED" });
+    assert.equal(scheduled.length, 1);
+  } finally { await f.close(); }
+});
+
+test("composer configuration resolves Session identity, checks permissions and uses neutral callbacks", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      resolveSession: id => id === "logical:test" ? "session:test" : id,
+      actions: () => ({ switchModel: { available: true }, switchReasoning: { available: false } }),
+      composer: {
+        read: async id => ({ currentModel: "model:test", models: [{ id: "model:test", name: "Test", secret: "private" }] }),
+        update: async (...args) => calls.push(args)
+      } });
+    const result = await api.configuration(identity, "logical:test", { model: "model:test" });
+    assert.equal(result.sessionId, "session:test");
+    assert.equal(result.currentModel, "model:test");
+    assert.equal(Object.hasOwn(result.models[0], "secret"), false);
+    assert.deepEqual(calls, [["session:test", "model", "model:test"]]);
+    await assert.rejects(api.configuration({ ...identity, permissions: ["messages.read"] }, "session:test", { model: "x" }), { code: "DEVICE_PERMISSION_REQUIRED" });
+    await assert.rejects(api.configuration(identity, "session:test", { reasoningLevel: "high" }), { code: "CAPABILITY_UNSUPPORTED" });
+    for (const input of [{}, [], { model: "x", source: "admin" }, { provider: "x" }, { model: "" }]) {
+      await assert.rejects(api.configuration(identity, "session:test", input), { code: "INVALID_CONFIGURATION" });
+    }
+    assert.equal(calls.length, 1);
+  } finally { await f.close(); }
+});
 
 test("commands dispatch once, replay durable receipt and reject changed payload", async () => {
   const f = await fixture();
@@ -71,6 +148,8 @@ test("uncertain dispatch is never automatically replayed; reads project only pub
     assert.equal(calls, 1);
     const page = await api.messages(identity, "session:test", new URLSearchParams());
     assert.equal(page.items[0].text, "hello");
+    assert.equal(page.items[0].userMessageStatus, "processing");
+    assert.equal(page.items[0].queuePosition, 2);
     assert.equal(Object.hasOwn(page.items[0], "secret"), false);
     const history = new ClientSessionAPI({ store: f.store, ...callbacks, readWindow: async () => ({
       revision: 5, hasEarlier: true, items: ["older", "previous", "anchor", "newer"].map(id => ({ id, type: "userMessage", text: id }))
@@ -81,5 +160,26 @@ test("uncertain dispatch is never automatically replayed; reads project only pub
     await assert.rejects(api.messages(identity, "session:test", new URLSearchParams("before=missing")), { code: "ANCHOR_NOT_FOUND" });
     await assert.rejects(api.messages(identity, "session:test", new URLSearchParams("limit=100")), { code: "INVALID_LIMIT" });
     await assert.rejects(api.messages({ ...identity, permissions: [] }, "session:test", new URLSearchParams()), { code: "DEVICE_PERMISSION_REQUIRED" });
+  } finally { await f.close(); }
+});
+
+test("stable logical Session ids resolve to the current executable Session", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      resolveSession: id => id === "logical:test" ? "session:test" : id,
+      readWindow: async id => {
+        calls.push(id);
+        return { revision: 1, hasEarlier: false, items: [] };
+      },
+      send: async id => { calls.push(id); } });
+    const page = await api.messages(identity, "logical:test", new URLSearchParams());
+    assert.equal(page.sessionId, "session:test");
+    assert.equal(api.capabilities(identity, "logical:test").sessionId, "session:test");
+    const receipt = await api.command(identity, "logical:test", "send",
+      { requestId: "logical_request", text: "Hello" });
+    assert.equal(receipt.sessionId, "session:test");
+    assert.deepEqual(calls, ["session:test", "session:test"]);
   } finally { await f.close(); }
 });

@@ -5,6 +5,16 @@ public struct DevicePairingFailure: Error, Sendable {
     public let code: String
 }
 
+public struct ClientServiceFailure: Error, Equatable, Sendable {
+    public let statusCode: Int
+    public let code: String
+
+    public init(statusCode: Int, code: String) {
+        self.statusCode = statusCode
+        self.code = code
+    }
+}
+
 /// Explicit endpoint ownership: no global URLSession overrides or automatic mutation retries.
 public final class BackendTransport: Sendable {
     public let endpoint: BackendEndpoint
@@ -61,6 +71,10 @@ public final class BackendTransport: Sendable {
         if pairingOnly, let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode),
            let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
             throw DevicePairingFailure(code: code)
+        }
+        if let response = response as? HTTPURLResponse, !(200..<300).contains(response.statusCode),
+           let body = try? JSONDecoder().decode([String: String].self, from: data), let code = body["code"] {
+            throw ClientServiceFailure(statusCode: response.statusCode, code: code)
         }
         return (data, try Self.requireSuccess(response))
     }

@@ -31,8 +31,21 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+  CorptiePadUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: CorptiePad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.corptie.ipad.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: CorptiePad
 schemes:
   CorptiePad:
     build:
       targets:
         CorptiePad: all
+    test:
+      targets: [CorptiePadUITests]

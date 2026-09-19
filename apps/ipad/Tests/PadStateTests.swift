@@ -5,6 +5,66 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func sendRefreshPreservesHistoryAndReconcilesExactlyOneOutgoingMessage() throws {
+        let workspace = PadWorkspace()
+        workspace.selection = "session:a"
+        let history = ClientMessage(id: "history", text: "previous")
+        let outgoing = ClientMessage(id: "client:send", text: "new message")
+        workspace.messages = [history]
+        workspace.before = "earlier"
+        workspace.lastTimelineRevision = 10
+        workspace.outgoingMessages["session:a"] = [outgoing]
+        workspace.outgoingStates[outgoing.id] = "Sent"
+        workspace.applyLatestWindow([], cursor: nil, revision: 11)
+        #expect(workspace.visibleMessages.map(\.id) == [history.id, outgoing.id])
+        #expect(workspace.before == "earlier")
+        let processing = try JSONDecoder().decode(ClientMessage.self, from: Data(#"{"id":"client:send","type":"userMessage","text":"new message","userMessageStatus":"processing"}"#.utf8))
+        workspace.applyLatestWindow([history, processing], cursor: nil, revision: 12)
+        #expect(workspace.visibleMessages.map(\.id) == [history.id, outgoing.id])
+        #expect(workspace.outgoingMessages["session:a"]?.isEmpty == true)
+        #expect(workspace.outgoingStates[outgoing.id] == nil)
+        #expect(workspace.messages.last?.userMessageStatus == "processing")
+        workspace.applyLatestWindow([], cursor: nil, revision: 11)
+        workspace.applyLatestWindow([], cursor: nil, revision: 12)
+        #expect(workspace.messages.count == 2)
+        workspace.selection = "session:b"
+        #expect(workspace.visibleMessages.isEmpty)
+        #expect(workspace.lastTimelineRevision == nil)
+    }
+
+    @Test func sharedMessageStateNeverEquatesReceiptAcceptanceWithProcessing() {
+        #expect(UserMessageProcessingState(authoritativeValue: nil, legacyStatus: "accepted") == nil)
+        #expect(UserMessageProcessingState(authoritativeValue: nil, legacyStatus: "running") == .processing)
+        #expect(UserMessageProcessingState(authoritativeValue: "consumed", legacyStatus: "running") == .consumed)
+        #expect(UserMessageProcessingState(authoritativeValue: "future", legacyStatus: "running") == nil)
+        #expect(ClientSessionAPI.messageID(deviceID: "device:one", requestID: "request_123") == "client:e1257168015d1940a75d46870e4a8d7b50f29d38f1d7506c461ff2111cc06b26")
+    }
+    @Test func startupWithoutSavedBackendFinishesAndDoesNotRetryAfterDisconnect() async {
+        let connection = PadConnection()
+        connection.address = ""
+        connection.serverID = ""
+        await connection.restoreLastConnection()
+        #expect(!connection.restoringConnection)
+        #expect(!connection.connected)
+        connection.disconnect()
+        let notice = connection.notice
+        connection.address = "invalid"
+        connection.serverID = "server:test"
+        await connection.restoreLastConnection()
+        #expect(connection.notice == notice)
+        #expect(!connection.connected)
+    }
+
+    @Test func startupFailureReturnsToConnectionPage() async {
+        let connection = PadConnection()
+        connection.address = "invalid"
+        connection.serverID = "server:test"
+        await connection.restoreLastConnection()
+        #expect(!connection.restoringConnection)
+        #expect(!connection.connected)
+        #expect(!connection.notice.isEmpty)
+    }
+
     @Test func scanValidatesBeforeReplacingFieldsAndDoesNotPersistSecret() throws {
         let connection = PadConnection()
         let savedAddress = UserDefaults.standard.string(forKey: "serverAddress")
@@ -52,6 +112,8 @@ struct PadStateTests {
         let workspace = PadWorkspace(defaults: defaults)
         #expect(workspace.pending?.requestID == "request_123")
         workspace.drafts["session:a"] = "Keep me"
+        workspace.draftImages["session:a"] = [ClientDraftImage(fileName: "test.png", data: Data([1]))]
+        workspace.draftMentions["session:a"] = [ClientDraftMention(targetType: "work", targetId: "work:a", displayName: "A")]
         func receipt(_ id: String, _ status: String) throws -> ClientCommandReceipt {
             try JSONDecoder().decode(ClientCommandReceipt.self, from: Data("{\"schemaVersion\":1,\"sessionId\":\"session:a\",\"requestId\":\"\(id)\",\"kind\":\"send\",\"status\":\"\(status)\",\"updatedAt\":\"now\"}".utf8))
         }
@@ -60,20 +122,59 @@ struct PadStateTests {
         workspace.settle(try receipt("other", "accepted"))
         #expect(workspace.pending != nil)
         #expect(workspace.drafts["session:a"] == "Keep me")
+        #expect(workspace.draftImages["session:a"]?.count == 1)
+        #expect(workspace.draftMentions["session:a"]?.count == 1)
         workspace.settle(try receipt("request_123", "accepted"))
         #expect(workspace.pending == nil)
+        #expect(workspace.status.isEmpty)
         #expect(workspace.drafts["session:a"] == "")
+        #expect(workspace.draftImages["session:a"]?.isEmpty == true)
+        #expect(workspace.draftMentions["session:a"]?.isEmpty == true)
         #expect(PadWorkspace(defaults: defaults).pending == nil)
     }
 
     @Test func selectingAnotherSessionNeverCarriesMessagesOrCapabilities() {
         let workspace = PadWorkspace()
         workspace.status = "old receipt"
+        workspace.conversationNotice = "old error"
         workspace.before = "old-anchor"
+        workspace.configuringComposer = true
+        let composerGeneration = workspace.composerGeneration
         workspace.clearSelectionState()
         #expect(workspace.before == nil)
         #expect(workspace.capabilities == nil)
         #expect(workspace.status.isEmpty)
+        #expect(workspace.conversationNotice.isEmpty)
+        #expect(!workspace.configuringComposer)
+        #expect(workspace.composerConfiguration == nil)
+        #expect(workspace.composerGeneration > composerGeneration)
+    }
+
+    @Test func structuredNotFoundDoesNotClaimAnActiveSessionWasArchived() {
+        let message = PadConnection.explain(ClientServiceFailure(statusCode: 404, code: "SESSION_NOT_AVAILABLE"))
+        #expect(message.contains("归档") == false)
+        #expect(message.contains("刷新"))
+    }
+
+    @Test func conversationLoadIsNotDroppedByBackgroundWorkAndUsesResolvedSessionID() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [ConversationProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://conversation.invalid")!),
+            bearerToken: "fixture", configuration: config)
+        let connection = PadConnection(transportOverride: transport)
+        connection.connected = true
+        connection.busy = true
+        connection.notice = "stale error"
+        ConversationProtocol.paths = []
+        let workspace = PadWorkspace()
+        workspace.selection = "logical:test"
+
+        await workspace.load(connection)
+
+        #expect(workspace.conversationNotice.isEmpty)
+        #expect(workspace.capabilities?.sessionId == "session:resolved")
+        #expect(workspace.messages.first?.text == "available")
+        #expect(ConversationProtocol.paths.contains("/client/v1/sessions/session:resolved/messages"))
     }
 
     @Test func serializedOperationsRejectConcurrentDuplicate() async {
@@ -86,4 +187,22 @@ struct PadStateTests {
         #expect(calls == 1)
         #expect(!connection.busy)
     }
+}
+
+private final class ConversationProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var paths: [String] = []
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let path = request.url!.path
+        Self.paths.append(path)
+        let json = path.hasSuffix("/capabilities")
+            ? #"{"schemaVersion":1,"sessionId":"session:resolved","readMessages":true,"send":{"available":true},"stop":{"available":false}}"#
+            : #"{"schemaVersion":1,"sessionId":"session:resolved","hasEarlier":false,"items":[{"id":"item:1","type":"agentMessage","text":"available"}]}"#
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200,
+            httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(json.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
