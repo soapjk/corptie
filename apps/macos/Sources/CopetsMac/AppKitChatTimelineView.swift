@@ -1359,6 +1359,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             )
             NotificationCenter.default.addObserver(
                 self,
+                selector: #selector(windowDidEndLiveResize(_:)),
+                name: ConsoleNativeSplitView.didEndDividerTracking,
+                object: nil
+            )
+            NotificationCenter.default.addObserver(
+                self,
                 selector: #selector(capturePositionForTermination(_:)),
                 name: .captureSessionTimelinePositions,
                 object: nil
@@ -1389,7 +1395,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             guard rows.indices.contains(row) else { return tableView.rowHeight }
             let item = rows[row]
             let columnWidth = max(120, tableView.tableColumns.first?.width ?? tableView.bounds.width)
-            let isLiveResize = tableView.window?.inLiveResize == true
+            let isLiveResize = ConsoleNativeSplitView.isResizing(tableView)
             let measurementWidth = LiveResizeWidthPolicy.measurementWidth(
                 columnWidth,
                 isLiveResize: isLiveResize
@@ -1916,7 +1922,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             lastMeasuredWidth = width
             if !rows.isEmpty {
                 let visible = tableView.rows(in: tableView.visibleRect)
-                let isLiveResize = scrollView.window?.inLiveResize == true
+                let isLiveResize = ConsoleNativeSplitView.isResizing(scrollView)
                 let measurementWidth = LiveResizeWidthPolicy.measurementWidth(
                     width,
                     isLiveResize: isLiveResize

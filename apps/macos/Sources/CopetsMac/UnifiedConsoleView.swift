@@ -434,7 +434,7 @@ enum ConsoleSelectionRefreshPolicy {
 }
 
 // 统一控制台：Work/Assistant 导航、Task 列、消息列和详情列。
-//   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，纸面卡片质感）
+//   左 sidebar  — 会话列表（CompactSessionRow，固定窄列，窗口级连续侧栏）
 //   中 content  — 对话（复用旧版 DetailView，吃满剩余宽度，纸面卡片质感）
 //   详情信息   — 右侧竖列常驻 side panel（固定宽度，无收起按钮，模仿 Rudder IssueDetail 的 rail）
 //
@@ -499,10 +499,6 @@ struct UnifiedConsoleView: View {
     @State private var searchText = ""
     @FocusState private var isSearchFieldFocused: Bool
     @AppStorage(
-        "console.navigationCard.taskColumnWidth",
-        store: CorptieAppEnvironment.userDefaults
-    ) private var storedTaskColumnWidth = ConsoleNavigationCardWidthPolicy.defaultTaskColumnWidth
-    @AppStorage(
         "console.navigationCard.navigationMode",
         store: CorptieAppEnvironment.userDefaults
     ) private var navigationModeRawValue = ConsoleNavigationMode.workRail.rawValue
@@ -510,13 +506,9 @@ struct UnifiedConsoleView: View {
     /// disclosure state lightweight and prevents stale Work IDs accumulating.
     @State private var isOutlineAssistantCollapsed = false
     @State private var collapsedOutlineWorkIDs = Set<String>()
-    @State private var navigationResizeStartWidth: Double?
-    @State private var liveTaskColumnWidth: Double?
     @State private var cardAttentionCount = 0
     @State private var cardSelectionExplicitlyCleared = false
     @State private var cardRefreshRevision = 0
-    @State private var isHoveringNavigationResizeHandle = false
-    private let consoleNavigationResizeCoordinateSpace = "console-navigation-resize"
     /// 每个 Tab（SessionCategory）独立记录其上一次选中的 Session，跨窗口/重启恢复，
     /// 避免不同 Tab 的选择相互覆盖。key 形如 `sessions.lastSelectedSessionId.<category>`。
     private static let recentSessionIdsKey = "sessions.recentSessionIds"
@@ -526,41 +518,20 @@ struct UnifiedConsoleView: View {
     }
 
     var body: some View {
-        Group {
-            if navigationMode == .taskCards {
-                GeometryReader { geometry in
-                    HSplitView {
-                        consoleNavigationCard
-                            .padding(MainWindowPageLayoutMetrics.outerPadding)
-                            .frame(minWidth: 340, idealWidth: min(680, geometry.size.width * 0.46), maxWidth: .infinity)
-                            .clipped()
-
-                        VStack(spacing: 0) {
-                            HStack {
-                                Text("当前对话").font(.caption).foregroundStyle(.secondary)
-                                Spacer()
-                            }
-                            .padding(.horizontal, MainWindowPageLayoutMetrics.outerPadding)
-                            .padding(.top, 8)
-                            sessionConversation
-                        }
-                        .frame(minWidth: 680, maxWidth: .infinity, maxHeight: .infinity)
-                            .clipped()
-                    }
-                }
-            } else {
-                HStack(spacing: 0) {
-                    consoleNavigationCard
-                        .clipped()
-                        .padding(.leading, MainWindowPageLayoutMetrics.outerPadding)
-                        .padding(.vertical, MainWindowPageLayoutMetrics.outerPadding)
-                    sessionConversation
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
+        ConsoleWindowSplitView(mode: navigationMode, isActive: sidebarState.isSelected) {
+            consoleNavigationContent
+                .environmentObject(router)
+                .environmentObject(sidebarState)
+                .environmentObject(backendClient)
+                .environmentObject(layoutState)
+        } detail: {
+            sessionConversation
+                .environmentObject(router)
+                .environmentObject(sidebarState)
+                .environmentObject(backendClient)
+                .environmentObject(layoutState)
         }
-        .coordinateSpace(name: consoleNavigationResizeCoordinateSpace)
-        .toolbar(removing: .sidebarToggle)
+        .ignoresSafeArea(.container, edges: .top)
         .environmentObject(backendClient)
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
@@ -724,19 +695,18 @@ struct UnifiedConsoleView: View {
         }
     }
 
-    private var consoleNavigationCard: some View {
+
+    private var consoleNavigationContent: some View {
         HStack(spacing: 0) {
             if navigationMode == .workRail {
                 workRail
                     .frame(width: 64)
 
                 unifiedTaskSidebar
-                    .frame(width: taskColumnWidth)
-                    .background(taskColumnBackground)
+                    .frame(maxWidth: .infinity)
             } else if navigationMode == .workOutline {
                 unifiedWorkOutlineSidebar
-                    .frame(width: taskColumnWidth + 64)
-                    .background(taskColumnBackground)
+                    .frame(maxWidth: .infinity)
             }
             cardWorkspaceSidebar
                 .frame(maxWidth: .infinity)
@@ -744,38 +714,8 @@ struct UnifiedConsoleView: View {
                 .clipped()
                 .allowsHitTesting(navigationMode == .taskCards)
                 .accessibilityHidden(navigationMode != .taskCards)
-                .background(taskColumnBackground)
         }
         .frame(maxHeight: .infinity)
-        .clipShape(
-            RoundedRectangle(
-                cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
-                style: .continuous
-            )
-        )
-        .background(
-            .regularMaterial,
-            in: RoundedRectangle(
-                cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
-                style: .continuous
-            )
-        )
-        .overlay {
-            RoundedRectangle(
-                cornerRadius: MainWindowPageLayoutMetrics.cardCornerRadius,
-                style: .continuous
-            )
-            .stroke(Color(nsColor: .separatorColor).opacity(0.42), lineWidth: 1)
-        }
-        .shadow(
-            color: Color.black.opacity(0.045),
-            radius: MainWindowPageLayoutMetrics.cardShadowRadius,
-            x: 0,
-            y: 1
-        )
-        .overlay(alignment: .trailing) {
-            if navigationMode != .taskCards { navigationResizeHandle }
-        }
     }
 
     private var navigationMode: ConsoleNavigationMode {
@@ -855,53 +795,6 @@ struct UnifiedConsoleView: View {
         )) { NewSessionCreationSheet(fixedKind: .assistantChat) }
     }
 
-    private var taskColumnWidth: CGFloat {
-        CGFloat(ConsoleNavigationCardWidthPolicy.clamped(
-            liveTaskColumnWidth ?? storedTaskColumnWidth
-        ))
-    }
-
-    private var taskColumnBackground: Color {
-        Color(nsColor: .controlBackgroundColor).opacity(0.58)
-    }
-
-    private var navigationResizeHandle: some View {
-        Rectangle()
-            .fill(Color.clear)
-            .frame(width: 10)
-            .contentShape(Rectangle())
-            .overlay {
-                Capsule()
-                    .fill(Color.secondary.opacity(isHoveringNavigationResizeHandle ? 0.42 : 0))
-                    .frame(width: 2, height: 34)
-            }
-            .onHover { hovering in
-                isHoveringNavigationResizeHandle = hovering
-                (hovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
-            }
-            .gesture(
-                DragGesture(
-                    minimumDistance: 0,
-                    coordinateSpace: .named(consoleNavigationResizeCoordinateSpace)
-                )
-                    .onChanged { value in
-                        let startWidth = navigationResizeStartWidth ?? storedTaskColumnWidth
-                        navigationResizeStartWidth = startWidth
-                        liveTaskColumnWidth = ConsoleNavigationCardWidthPolicy.resizedWidth(
-                            from: startWidth,
-                            translation: Double(value.translation.width)
-                        )
-                    }
-                    .onEnded { _ in
-                        if let finalWidth = liveTaskColumnWidth {
-                            storedTaskColumnWidth = finalWidth
-                        }
-                        liveTaskColumnWidth = nil
-                        navigationResizeStartWidth = nil
-                    }
-            )
-            .help(L10n("Drag to resize the Work and Task card"))
-    }
 
     private var workRail: some View {
         let unreadSummary = WorkRailUnreadSummary(
