@@ -532,6 +532,14 @@ struct UnifiedConsoleView: View {
                 .environmentObject(layoutState)
         }
         .ignoresSafeArea(.container, edges: .top)
+        .background(ConsoleSidebarTitlebarControls(
+            isActive: sidebarState.isSelected,
+            content: HStack(spacing: 6) {
+                navigationModeToggle.labelsHidden().frame(width: 108)
+                searchToggleButton
+                taskArchiveToggle
+            }.padding(.horizontal, 4)
+        ))
         .environmentObject(backendClient)
         .environmentObject(layoutState)
         .environment(\.isLiquidGlass, false)
@@ -744,7 +752,6 @@ struct UnifiedConsoleView: View {
     private var cardWorkspaceSidebar: some View {
         VStack(spacing: 8) {
             HStack {
-                Text("Work").font(.headline)
                 if cardAttentionCount > 0 {
                     Text("\(cardAttentionCount) 待处理")
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -752,8 +759,6 @@ struct UnifiedConsoleView: View {
                 Spacer()
                 Button("刷新", systemImage: "arrow.clockwise") { cardRefreshRevision &+= 1 }
                     .labelStyle(.iconOnly).help("刷新重点 Task")
-                navigationModeToggle
-                searchToggleButton
                 Menu {
                     Button("新建聊天") { showNewSessionCreation = true }
                     Button("新建 Work") { isCreatingWork = true }
@@ -817,7 +822,7 @@ struct UnifiedConsoleView: View {
                 .padding(.horizontal, 10)
 
             ScrollViewReader { scrollProxy in
-                ScrollView(.vertical, showsIndicators: false) {
+                ScrollView(.vertical) {
                     LazyVStack(spacing: 8) {
                         ForEach(entityClient.works) { work in
                             Button {
@@ -846,6 +851,7 @@ struct UnifiedConsoleView: View {
                         }
                     }
                     .padding(.vertical, 10)
+                    .background(ConsoleOverlayScroller())
                 }
                 .mask(workRailScrollMask)
                 .onAppear {
@@ -948,17 +954,6 @@ struct UnifiedConsoleView: View {
 
     private var unifiedTaskSidebar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(selectedWork?.name ?? L10n("Assistant Sessions"))
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                navigationModeToggle
-                searchToggleButton
-                taskArchiveToggle
-            }
-            .padding(8)
-
             if isSearching {
                 sessionSearchBar
                     .padding(.horizontal, 8)
@@ -989,17 +984,6 @@ struct UnifiedConsoleView: View {
 
     private var unifiedWorkOutlineSidebar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text(verbatim: "Work")
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                navigationModeToggle
-                searchToggleButton
-                taskArchiveToggle
-            }
-            .padding(8)
-
             if isSearching {
                 sessionSearchBar
                     .padding(.horizontal, 8)
@@ -1112,8 +1096,9 @@ struct UnifiedConsoleView: View {
             }
             .padding(.horizontal, ConsoleWorkOutlineMetrics.groupHorizontalInset)
             .padding(.vertical, 4)
+            .background(ConsoleOverlayScroller())
         }
-        .scrollIndicators(.hidden)
+        .scrollIndicators(.automatic)
     }
 
     private func outlineChatHeader(hasUnread: Bool) -> some View {
@@ -1361,6 +1346,7 @@ struct UnifiedConsoleView: View {
             } else {
                 ForEach(assistantSessionRows) { row in
                     sessionRow(row)
+                        .background(ConsoleOverlayScroller())
                 }
             }
         }
@@ -1397,6 +1383,7 @@ struct UnifiedConsoleView: View {
         return List {
             ForEach(archivedTasks) { task in
                 taskRow(task)
+                    .background(ConsoleOverlayScroller())
             }
             if rows.isEmpty && archivedTasks.isEmpty {
                 Text(L10n("No Archived Sessions"))
@@ -1404,6 +1391,7 @@ struct UnifiedConsoleView: View {
             } else {
                 ForEach(rows) { row in
                     sessionRow(row)
+                        .background(ConsoleOverlayScroller())
                 }
             }
         }
@@ -1422,6 +1410,7 @@ struct UnifiedConsoleView: View {
                 }
             } header: {
                 Text(L10n("Work Chat"))
+                    .background(ConsoleOverlayScroller())
             }
 
             Section {
@@ -2902,6 +2891,11 @@ struct SessionDetailPanel: View {
     @State private var providerSwitchError: String?
     @State private var isLoadingProviderCatalog = false
     @State private var providerCatalogLoadFailed = false
+    @State private var showsAllContextReferences = false
+
+    private var detailKind: ConversationDetailKind? {
+        ConversationDetailKind.resolve(session.resolvedSessionKind)
+    }
 
     /// 详情竖列固定宽度（对应 Rudder IssueDetail rail 280px）。
 
@@ -2925,20 +2919,10 @@ struct SessionDetailPanel: View {
     }()
 
     var body: some View {
-        Group {
-            if let taskId = session.taskId, !taskId.isEmpty {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        sessionCard(decoratesSurface: false, scrollsContent: false)
-                    }
-                }
-                .modifier(DetailRailSurfaceModifier(enabled: true))
-            } else {
-                sessionCard(decoratesSurface: true)
-            }
-        }
+        sessionCard(decoratesSurface: true)
         .frame(width: railWidth)
         .task(id: session.id) {
+            showsAllContextReferences = false
             await loadProviderCatalogIfNeeded()
         }
         .onReceive(backendClient.supplementaryDataController.$selectedContextReferences) { references in
@@ -2964,12 +2948,24 @@ struct SessionDetailPanel: View {
     private func sessionCard(decoratesSurface: Bool, scrollsContent: Bool = true) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Text(session.resolvedSessionKind == .worker
-                    ? L10n("Task Information")
-                    : L10n("Session Details"))
+                Text(verbatim: "Detail")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
+                Menu {
+                    Button("本地文件…") { chooseLocalFile() }
+                    Button("网页链接…") { contextReferenceAddMode = .webURL }
+                    Button("Work…") { contextReferenceAddMode = .work }
+                    Button("Task…") { contextReferenceAddMode = .task }
+                    Button("Agent…") { contextReferenceAddMode = .agent }
+                    Button("其他会话…") { contextReferenceAddMode = .session }
+                } label: {
+                    Image(systemName: "link.badge.plus")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("添加引用")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
@@ -2980,6 +2976,7 @@ struct SessionDetailPanel: View {
             if scrollsContent {
                 ScrollView {
                     sessionDetailContent
+                        .background(ConsoleOverlayScroller())
                 }
             } else {
                 sessionDetailContent
@@ -2991,22 +2988,7 @@ struct SessionDetailPanel: View {
 
     private var sessionDetailContent: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if session.resolvedSessionKind != .worker { statusCard }
-
-            ScheduledSessionStrip(session: session)
-
-            if session.resolvedSessionKind == .assistantChat || session.resolvedSessionKind == .workChat {
-                assistantSection
-                contextReferencesSection
-            }
-
-            if session.resolvedSessionKind == .workChat,
-               let workId = session.workId, !workId.isEmpty {
-                ArtifactSectionView(workId: workId, taskId: nil)
-                    .id(workId)
-            }
-
-            if let taskId = session.taskId, !taskId.isEmpty {
+            if detailKind == .taskDetail, let taskId = session.taskId, !taskId.isEmpty {
                 SessionCorptieTaskDetailCard(
                     taskId: taskId,
                     decoratesSurface: false,
@@ -3015,18 +2997,39 @@ struct SessionDetailPanel: View {
                 )
             }
 
+            if detailKind == .chatDetail,
+               let summary = ConversationDetailKind.nonempty(session.summary) {
+                detailSection(title: "会话摘要", systemImage: "text.alignleft") {
+                    CollapsibleDetailText(text: summary, color: .secondary)
+                }
+            }
+
+            if detailKind == .workDetail { workDetailContent }
+
+            if !contextReferences.isEmpty || isLoadingContextReferences {
+                contextReferencesSection
+            }
+
+            ScheduledSessionStrip(session: session)
+
+            if detailKind == .workDetail,
+               let work = entityClient.works.first(where: { $0.id == session.workId }) {
+                Button {
+                    TaskMemoryWindowManager.shared.show(workID: work.id, title: work.name)
+                } label: {
+                    Label("Work 记忆", systemImage: "brain")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+            }
+
             SessionMemoryDiagnosticsView(session: session)
             SessionTurnObservabilityView(sessionId: session.id)
 
             detailSection(title: "运行环境", systemImage: "cpu") {
-                if session.resolvedSessionKind == .worker {
-                    compactProviderPicker
-                    if let cwd = session.external?.cwd, !cwd.isEmpty {
-                        detailFields([("工作空间", compactPath(cwd))])
-                    }
-                } else {
-                    providerPicker
-                    detailFields(runtimeFields)
+                compactProviderPicker
+                if let cwd = session.external?.cwd, !cwd.isEmpty {
+                    detailFields([("工作空间", compactPath(cwd))])
                 }
             }
         }
@@ -3050,6 +3053,49 @@ struct SessionDetailPanel: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
         .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var workDetailContent: some View {
+        if let work = entityClient.works.first(where: { $0.id == session.workId }) {
+            if let description = ConversationDetailKind.nonempty(work.description) {
+                detailSection(title: "Work 概述", systemImage: "scope") {
+                    CollapsibleDetailText(text: description, color: .secondary)
+                }
+            }
+            let relevantTasks = entityClient.tasks.filter {
+                $0.workId == work.id && $0.archived != true && $0.deletionStatus == nil
+                    && $0.lifecycleState != "done"
+            }.sorted {
+                if $0.summaryNeedsIntervention != $1.summaryNeedsIntervention {
+                    return $0.summaryNeedsIntervention
+                }
+                return $0.updatedAt > $1.updatedAt
+            }
+            if !relevantTasks.isEmpty {
+                detailSection(title: "重点 Task", systemImage: "checklist") {
+                    ForEach(Array(relevantTasks.prefix(3))) { task in
+                        VStack(alignment: .leading, spacing: 4) {
+                            if let sessionID = task.currentSessionId {
+                                Button {
+                                    AppTabRouter.shared.openTaskSession(taskId: task.id, sessionId: sessionID, source: .userSelection)
+                                } label: {
+                                    Text(task.title).font(.system(size: 11, weight: .medium))
+                                }.buttonStyle(.plain)
+                            } else {
+                                Text(task.title).font(.system(size: 11, weight: .medium))
+                            }
+                            if task.userSummary?.content != nil {
+                                TaskSummaryView(task: task, compact: true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            ArtifactSectionView(workId: work.id, taskId: nil)
+                .id(work.id)
+        }
     }
 
     private var assistantSection: some View {
@@ -3099,9 +3145,14 @@ struct SessionDetailPanel: View {
                 ProgressView().controlSize(.small)
             } else if !contextReferences.isEmpty {
                 LazyVStack(spacing: 6) {
-                    ForEach(contextReferences) { reference in
+                    ForEach(showsAllContextReferences ? contextReferences : Array(contextReferences.prefix(2))) { reference in
                         contextReferenceRow(reference)
                     }
+                }
+                if contextReferences.count > 2 {
+                    Button(showsAllContextReferences ? "收起" : "展开全部（\(contextReferences.count)）") {
+                        showsAllContextReferences.toggle()
+                    }.buttonStyle(.borderless).font(.caption)
                 }
             }
         }
