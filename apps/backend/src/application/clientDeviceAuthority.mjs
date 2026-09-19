@@ -150,6 +150,12 @@ export class ClientDeviceAuthority {
       permissions: device.permissions ?? [...CLIENT_DEVICE_PERMISSIONS] };
   }
 
+  canDeliverScheduledMessage(deviceId) {
+    const device = this.state.devices.find(item => item.id === deviceId);
+    return Boolean(device && !device.revoked && device.refreshExpiresAt > this.now()
+      && (device.permissions ?? CLIENT_DEVICE_PERMISSIONS).includes("messages.write"));
+  }
+
   async setPermissions(id, permissions) {
     const allowed = CLIENT_DEVICE_PERMISSIONS;
     if (!Array.isArray(permissions) || permissions.length > allowed.length

@@ -8,6 +8,17 @@ struct PendingCommand: Codable {
     let kind: String
     let serverID: String
     let address: String
+    let draftSessionID: String?
+
+    init(requestID: String, sessionID: String, kind: String, serverID: String, address: String,
+         draftSessionID: String? = nil) {
+        self.requestID = requestID
+        self.sessionID = sessionID
+        self.kind = kind
+        self.serverID = serverID
+        self.address = address
+        self.draftSessionID = draftSessionID
+    }
 }
 
 @MainActor @Observable
@@ -25,10 +36,48 @@ final class PadWorkspace {
         didSet { if oldValue != selection { clearSelectionState() } }
     }
     var messages: [ClientMessage] = []
+    var outgoingMessages: [String: [ClientMessage]] = [:]
+    var outgoingStates: [String: String] = [:]
+    var outgoingRequestIDs: [String: String] = [:]
+    var lastTimelineRevision: Int?
+    var visibleMessages: [ClientMessage] {
+        Self.merge(messages, (outgoingMessages[selection ?? ""] ?? []).filter { item in
+            !messages.contains { $0.id == item.id }
+        })
+    }
+
+    /// A window is not a replacement for all loaded history. During submission,
+    /// an empty projection is not proof that the conversation was cleared.
+    func applyLatestWindow(_ items: [ClientMessage], cursor: String?, revision: Int?) {
+        if let revision, let previous = lastTimelineRevision, revision < previous { return }
+        if items.isEmpty, !messages.isEmpty, let revision, let previous = lastTimelineRevision, revision == previous { return }
+        if items.isEmpty, !messages.isEmpty, !(outgoingMessages[selection ?? ""] ?? []).isEmpty { return }
+        let previous = messages
+        if let first = items.first?.id, let overlap = messages.firstIndex(where: { $0.id == first }) {
+            messages = Array(messages.prefix(overlap)) + items
+        } else {
+            messages = items
+            before = cursor
+        }
+        if let revision { lastTimelineRevision = revision }
+        if let selection {
+            let received = Set(items.map(\.id))
+            outgoingMessages[selection]?.removeAll { received.contains($0.id) }
+            for id in received { outgoingStates.removeValue(forKey: id) }
+        }
+        if previous != messages { messageRevision += 1 }
+    }
     var before: String?
     var capabilities: ClientSessionCapabilities?
+    var composerConfiguration: ClientComposerConfiguration?
+    var configuringComposer = false
+    var composerGeneration = 0
+    var importingImagesForSession: String?
     var drafts: [String: String] = [:]
+    var draftImages: [String: [ClientDraftImage]] = [:]
+    var draftMentions: [String: [ClientDraftMention]] = [:]
     var status = ""
+    var conversationNotice = ""
     var liveStatus = "正在连接实时更新"
     var messageRevision = 0
     var controlRevision = 0
@@ -92,53 +141,104 @@ final class PadWorkspace {
 
     func load(_ connection: PadConnection, older: Bool = false) async {
         guard let id = selection else { return }
-        await connection.perform {
-            timelineGeneration += 1
-            let generation = timelineGeneration
+        conversationNotice = ""
+        timelineGeneration += 1
+        let generation = timelineGeneration
+        do {
             let api = ClientSessionAPI(transport: try await connection.transport())
             let caps = try await api.capabilities(sessionId: id)
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             capabilities = caps
             guard caps.readMessages else {
-                connection.notice = "设备未获消息读取权限，请在 Mac 上授权。"
+                conversationNotice = "设备未获消息读取权限，请在 Mac 上授权。"
                 return
             }
-            let page = try await api.messages(sessionId: id, before: older ? before : nil)
+            let page = try await api.messages(sessionId: caps.sessionId, before: older ? before : nil)
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
-            let updated = older ? Self.merge(page.items, messages) : page.items
-            if messages != updated {
-                messages = updated
-                if !older { messageRevision += 1 }
+            if older {
+                messages = Self.merge(page.items, messages)
+                before = page.nextBefore
+            } else {
+                applyLatestWindow(page.items, cursor: page.nextBefore, revision: page.revision)
             }
-            before = page.nextBefore
+            if !older, caps.composer == true, composerConfiguration == nil {
+                await configureComposer(connection)
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard selection == id, generation == timelineGeneration else { return }
+            conversationNotice = PadConnection.explain(error)
         }
     }
 
     func clearSelectionState() {
         timelineGeneration += 1
         messages = []
+        lastTimelineRevision = nil
         before = nil
         capabilities = nil
+        composerConfiguration = nil
+        composerGeneration += 1
+        configuringComposer = false
         status = ""
+        conversationNotice = ""
     }
 
-    func command(_ connection: PadConnection, stop: Bool) async {
-        guard let id = selection, pending == nil else { return }
+    func configureComposer(_ connection: PadConnection, update: [String: String]? = nil) async {
+        guard let id = selection, !configuringComposer, capabilities?.composer == true else { return }
+        let routedID = capabilities?.sessionId ?? id
+        composerGeneration += 1
+        let generation = composerGeneration
+        configuringComposer = true
+        defer { if generation == composerGeneration { configuringComposer = false } }
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let result = try await api.composer(sessionId: routedID, update: update)
+            guard selection == id, generation == composerGeneration, !Task.isCancelled else { return }
+            composerConfiguration = result
+        } catch {
+            guard selection == id, generation == composerGeneration, !Task.isCancelled else { return }
+            conversationNotice = PadConnection.explain(error)
+        }
+    }
+
+    func command(_ connection: PadConnection, stop: Bool, schedule: ClientMessageSchedule? = nil) async {
+        guard let id = selection, pending == nil, importingImagesForSession != id else { return }
+        let routedID = capabilities?.sessionId ?? id
         let text = drafts[id] ?? ""
-        guard stop || (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && text.utf16.count <= 16000) else { return }
+        let images = draftImages[id] ?? []
+        let mentions = (draftMentions[id] ?? []).filter { text.contains("@\($0.displayName)") }
+        guard stop || ((!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && text.utf16.count <= 16000) else { return }
         await connection.perform {
             let api = ClientSessionAPI(transport: try await connection.transport())
-            let command = PendingCommand(requestID: UUID().uuidString, sessionID: id, kind: stop ? "stop" : "send", serverID: connection.serverID, address: connection.address)
+            let command = PendingCommand(requestID: UUID().uuidString, sessionID: routedID,
+                kind: stop ? "stop" : "send", serverID: connection.serverID,
+                address: connection.address, draftSessionID: id)
             // Persist the identity before any mutation. Never persist message text in preferences.
             defaults.set(try JSONEncoder().encode(command), forKey: "pendingCommand")
             pending = command
-            status = "请求提交中；网络中断时请核对回执，不要重复发送。"
+            status = ""
+            if !stop, schedule == nil, let deviceID = connection.deviceID {
+                let messageID = ClientSessionAPI.messageID(deviceID: deviceID, requestID: command.requestID)
+                outgoingMessages[id, default: []].append(ClientMessage(id: messageID, text: text.isEmpty ? "图片消息" : text))
+                outgoingStates[messageID] = "Sending"
+                outgoingRequestIDs[command.requestID] = messageID
+                scrollRequest += 1
+            }
             let receipt = try await (stop
-                ? api.stop(sessionId: id, requestId: command.requestID)
-                : api.send(sessionId: id, requestId: command.requestID, text: text))
+                ? api.stop(sessionId: routedID, requestId: command.requestID)
+                : api.send(sessionId: routedID, requestId: command.requestID, text: text, images: images, mentions: mentions, schedule: schedule))
             settle(receipt)
+            if schedule != nil, receipt.status == "accepted" { status = "定时消息已创建，可在自动化页面查看。" }
         }
-        if pending == nil { await load(connection) }
+        if let pending, let messageID = outgoingRequestIDs[pending.requestID], outgoingStates[messageID] == "Sending" {
+            outgoingStates[messageID] = "结果待核对"
+        }
+        if pending == nil {
+            inventoryDirty = true; messagesDirty = true
+            scheduleRefresh(connection)
+        }
     }
 
     func reconcile(_ connection: PadConnection) async {
@@ -157,12 +257,22 @@ final class PadWorkspace {
         }
         if receipt.status == "accepted" || receipt.status == "stop_requested" {
             if receipt.kind == "send" {
-                drafts[receipt.sessionId] = ""
-                if selection == receipt.sessionId { scrollRequest += 1 }
+                let draftSessionID = pending.draftSessionID ?? receipt.sessionId
+                drafts[draftSessionID] = ""
+                draftImages[draftSessionID] = []
+                draftMentions[draftSessionID] = []
+                if selection == draftSessionID { scrollRequest += 1 }
             }
-            status = receipt.kind == "send" ? "已接收，正在等待模型回复。" : "已请求停止，正在同步状态。"
+            status = ""
+            // Acceptance confirms receipt only, not model execution.
+            if let messageID = outgoingRequestIDs.removeValue(forKey: receipt.requestId), outgoingStates[messageID] != nil {
+                outgoingStates[messageID] = "Sent"
+            }
             forgetPending()
         } else {
+            if let messageID = outgoingRequestIDs[receipt.requestId], outgoingStates[messageID] != nil {
+                outgoingStates[messageID] = "结果待核对"
+            }
             status = "执行结果待核对（\(receipt.status)）。不会自动重发。"
         }
     }

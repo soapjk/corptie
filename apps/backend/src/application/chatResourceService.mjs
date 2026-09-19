@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access, copyFile, mkdir, open, readFile, realpath, stat, unlink } from "node:fs/promises";
+import { access, copyFile, mkdir, open, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, extname, isAbsolute, join, resolve, sep } from "node:path";
 
 export const CHAT_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
@@ -70,6 +70,20 @@ export class ChatResourceService {
     const type = detectedImageType(data.subarray(0, 32), extname(path));
     if (!type) throw resourceError("CHAT_IMAGE_FORMAT_UNSUPPORTED", "The stored image format is unsupported.", 415);
     return { data, path, mimeType: type.mimeType, byteLength: info.size };
+  }
+
+  /** Device uploads never supply a filesystem path on the Mac. */
+  async importImageData(reference, data, fileName) {
+    if (!Buffer.isBuffer(data) || !data.length || data.length > CHAT_IMAGE_MAX_BYTES) {
+      throw resourceError("CHAT_IMAGE_SIZE_INVALID", "Images must be between 1 byte and 20 MB.");
+    }
+    const type = detectedImageType(data.subarray(0, 32), extname(fileName));
+    if (!type) throw resourceError("CHAT_IMAGE_FORMAT_UNSUPPORTED", "Unsupported image format.");
+    const directory = this.#relativeDirectory(reference);
+    const managedPath = `${directory}/${this.idFactory()}.${type.extension}`;
+    await mkdir(join(this.environmentRoot, directory), { recursive: true, mode: 0o700 });
+    await writeFile(this.#safePath(managedPath), data, { flag: "wx", mode: 0o600 });
+    return { managedPath, originalPath: null, fileName: basename(fileName), mimeType: type.mimeType, byteLength: data.length };
   }
 
   async removeUnsentImage(reference, managedPath) {
