@@ -30,6 +30,10 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
     const results = await Promise.allSettled([a.exchange(claim), a.exchange(claim)]);
     assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
     const creds = results.find(r => r.status === "fulfilled").value;
+    assert.equal(a.canDeliverScheduledMessage(creds.deviceId), true);
+    await a.setPermissions(creds.deviceId, ["messages.read"]);
+    assert.equal(a.canDeliverScheduledMessage(creds.deviceId), false);
+    await a.setPermissions(creds.deviceId, ["messages.read", "messages.write"]);
     assert.equal(a.authenticate(creds.accessToken).deviceId, creds.deviceId);
     const disk = await readFile(join(f.dir, "auth", "devices.json"), "utf8");
     assert.equal(disk.includes(creds.accessToken), false);
@@ -42,6 +46,7 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
     await restored.initialize();
     assert.equal(restored.authenticate(rotated.accessToken).deviceId, creds.deviceId);
     await restored.revoke(creds.deviceId);
+    assert.equal(restored.canDeliverScheduledMessage(creds.deviceId), false);
     assert.throws(() => restored.authenticate(rotated.accessToken), { code: "INVALID_CREDENTIAL" });
     await assert.rejects(restored.refresh(rotated), { code: "INVALID_CREDENTIAL" });
   } finally { await f.close(); }
@@ -61,8 +66,11 @@ test("denied and expired invitations and expired access tokens fail closed", asy
     f.authority.approve(second.pairingId, true);
     const creds = await f.authority.exchange(request);
     f.advance(900_001);
+    assert.equal(f.authority.canDeliverScheduledMessage(creds.deviceId), true);
     assert.throws(() => f.authority.authenticate(creds.accessToken), { code: "INVALID_CREDENTIAL" });
     assert.ok((await f.authority.refresh(creds)).accessToken);
+    f.advance(31 * 86400_000);
+    assert.equal(f.authority.canDeliverScheduledMessage(creds.deviceId), false);
   } finally { await f.close(); }
 });
 
@@ -87,7 +95,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
       return { schemaVersion: 1, sessionId, kind, requestId: input.requestId, status: "dispatching" };
     },
     receipt(identity, requestId) { return { requestId, deviceId: identity.deviceId }; },
-    capabilities() { return { schemaVersion: 1 }; }
+    capabilities() { return { schemaVersion: 1 }; },
+    configuration(identity, sessionId, input) {
+      requireDevicePermission(identity, "messages.write");
+      return { schemaVersion: 1, sessionId, currentModel: input?.model ?? "current" };
+    }
   } });
   const remoteAgent = new https.Agent({ keepAlive: true });
   let admin;
@@ -132,6 +144,11 @@ test("real TLS route boundary and authenticated local approval", async () => {
     }
     assert.equal((await call("/client/v1/me", { token: creds.accessToken, headers: { "x-corptie-agent-id": "a" } })).status, 403);
     const messagesPath = "/client/v1/sessions/session%3Atest/messages";
+    const composerPath = "/client/v1/sessions/session%3Atest/composer";
+    assert.equal((await call(composerPath)).status, 401);
+    assert.equal((await call(composerPath, { token: creds.accessToken })).body.currentModel, "current");
+    assert.equal((await call(composerPath, { token: creds.accessToken, method: "POST", value: { model: "new" } })).body.currentModel, "new");
+    assert.equal((await call(composerPath, { token: creds.accessToken, method: "DELETE" })).status, 404);
     assert.deepEqual((await call("/client/v1/me", { token: creds.accessToken })).body.permissions,
       ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]);
     assert.equal((await call("/client/v1/control/agents", { token: creds.accessToken })).status, 200);

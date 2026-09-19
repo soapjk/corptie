@@ -7,6 +7,21 @@ import { ChatResourceService } from "../src/application/chatResourceService.mjs"
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
 
+test("device uploads use generated owned paths and never retain a source path", async () => {
+  const root = await mkdtemp(join(os.tmpdir(), "corptie-device-image-"));
+  const service = new ChatResourceService({ environmentRoot: root, idFactory: () => "upload" });
+  await service.initialize();
+  const reference = { sessionId: "session:one" };
+  const image = await service.importImageData(reference, PNG, "../../untrusted.png");
+  assert.equal(image.originalPath, null);
+  assert.equal(image.fileName, "untrusted.png");
+  assert.equal(image.managedPath, "chat-resources/sessions/session_one/images/upload.png");
+  assert.deepEqual((await service.readImage(reference, image.managedPath)).data, PNG);
+  await assert.rejects(service.importImageData(reference, Buffer.from("not an image"), "image.png"), { code: "CHAT_IMAGE_FORMAT_UNSUPPORTED" });
+  await assert.rejects(service.importImageData(reference, Buffer.alloc(0), "image.png"), { code: "CHAT_IMAGE_SIZE_INVALID" });
+  await assert.rejects(service.readImage({ sessionId: "session:two" }, image.managedPath), { code: "CHAT_IMAGE_FORBIDDEN" });
+});
+
 test("imports a task image into its logical Session resource directory", async () => {
   const root = await mkdtemp(join(os.tmpdir(), "corptie-chat-resource-"));
   const source = join(root, "selected.png");
