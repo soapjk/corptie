@@ -10306,6 +10306,7 @@ struct MessageComposer: View {
 
             if allowsModelSwitch, canSwitchModel {
                 CodexModelMenu(maxWidth: modelMenuMaxWidth)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
