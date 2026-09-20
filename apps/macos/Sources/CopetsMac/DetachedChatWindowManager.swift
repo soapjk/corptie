@@ -161,11 +161,16 @@ private struct DetachedChatWindowView: View {
                 .help(L10n("Return to main window"))
                 .accessibilityLabel(L10n("Return to main window"))
 
-                Text(session?.title ?? L10n("Chat"))
-                    .font(.system(size: 12, weight: .semibold))
-                    .lineLimit(1)
+                ZStack(alignment: .leading) {
+                    DetachedChatWindowDragArea()
 
-                Spacer(minLength: 0)
+                    Text(session?.title ?? L10n("Chat"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .allowsHitTesting(false)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+
                 if let session {
                     SessionHeaderStopButton(session: session)
                 }
@@ -209,6 +214,24 @@ private struct DetachedChatWindowView: View {
         .task(id: sessionID) {
             guard let session else { return }
             await backendClient.loadSessionMessages(session)
+        }
+    }
+}
+
+private struct DetachedChatWindowDragArea: NSViewRepresentable {
+    func makeNSView(context: Context) -> DragView {
+        DragView()
+    }
+
+    func updateNSView(_ nsView: DragView, context: Context) {}
+
+    final class DragView: NSView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+            true
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            window?.performDrag(with: event)
         }
     }
 }
