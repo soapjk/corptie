@@ -10281,6 +10281,7 @@ struct MessageComposer: View {
                 .padding(.trailing, 4)
                 }
             }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             .background(
                 isLiquidGlass ? Color.white : Color(nsColor: .textBackgroundColor),
                 in: RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -10307,6 +10308,7 @@ struct MessageComposer: View {
                 CodexModelMenu(maxWidth: modelMenuMaxWidth)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(key: ComposerWidthPreferenceKey.self, value: proxy.size.width)

@@ -150,6 +150,8 @@ struct UnifiedConsoleControlSurfaceTests {
         #expect(composer.contains("|| backendClient.isSendingMessage"))
         #expect(composer.contains("!backendClient.isSendingMessage else"))
         #expect(!composer.contains(".opacity(!backendClient.selectedCanSendNow"))
+        #expect(composer.contains(".frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)"))
+        #expect(composer.contains(".frame(maxWidth: .infinity, alignment: .leading)"))
     }
 
     @Test
