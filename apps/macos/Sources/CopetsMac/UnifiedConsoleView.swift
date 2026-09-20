@@ -65,6 +65,53 @@ enum ConsoleWorkActivityPolicy {
     }
 }
 
+/// Local disclosure preference for the grouped console outline.
+@MainActor
+final class ConsoleOutlineExpansionPreferences: ObservableObject {
+    static let collapsedWorkIDsKey = "console.workOutline.collapsedWorkIDs.v1"
+    static let assistantCollapsedKey = "console.workOutline.assistantCollapsed.v1"
+
+    @Published private(set) var collapsedWorkIDs: Set<String>
+    @Published private(set) var isAssistantCollapsed: Bool
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = CorptieAppEnvironment.userDefaults) {
+        self.defaults = defaults
+        collapsedWorkIDs = Set(defaults.stringArray(forKey: Self.collapsedWorkIDsKey) ?? [])
+        isAssistantCollapsed = defaults.bool(forKey: Self.assistantCollapsedKey)
+    }
+
+    func setWorkExpanded(_ isExpanded: Bool, workID: String) {
+        guard collapsedWorkIDs.contains(workID) == isExpanded else { return }
+        if isExpanded {
+            collapsedWorkIDs.remove(workID)
+        } else {
+            collapsedWorkIDs.insert(workID)
+        }
+        defaults.set(collapsedWorkIDs.sorted(), forKey: Self.collapsedWorkIDsKey)
+    }
+
+    func toggleWork(workID: String) {
+        setWorkExpanded(collapsedWorkIDs.contains(workID), workID: workID)
+    }
+
+    func setAssistantExpanded(_ isExpanded: Bool) {
+        let isCollapsed = !isExpanded
+        guard isAssistantCollapsed != isCollapsed else { return }
+        isAssistantCollapsed = isCollapsed
+        defaults.set(isCollapsed, forKey: Self.assistantCollapsedKey)
+    }
+
+    func toggleAssistant() {
+        setAssistantExpanded(isAssistantCollapsed)
+    }
+
+    func removeWork(_ workID: String) {
+        guard collapsedWorkIDs.remove(workID) != nil else { return }
+        defaults.set(collapsedWorkIDs.sorted(), forKey: Self.collapsedWorkIDsKey)
+    }
+}
+
 /// Shared running-title treatment for Work groups and experimental Task cards.
 struct ConsoleWorkTitle: View {
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
@@ -502,10 +549,7 @@ struct UnifiedConsoleView: View {
         "console.navigationCard.navigationMode",
         store: CorptieAppEnvironment.userDefaults
     ) private var navigationModeRawValue = ConsoleNavigationMode.workRail.rawValue
-    /// Outline mode starts expanded. Persisting only the presentation mode keeps
-    /// disclosure state lightweight and prevents stale Work IDs accumulating.
-    @State private var isOutlineAssistantCollapsed = false
-    @State private var collapsedOutlineWorkIDs = Set<String>()
+    @StateObject private var outlineExpansionPreferences = ConsoleOutlineExpansionPreferences()
     @State private var cardAttentionCount = 0
     @State private var cardSelectionExplicitlyCleared = false
     @State private var cardRefreshRevision = 0
@@ -1102,7 +1146,7 @@ struct UnifiedConsoleView: View {
     }
 
     private func outlineChatHeader(hasUnread: Bool) -> some View {
-        let isExpanded = !isOutlineAssistantCollapsed || !searchText.isEmpty
+        let isExpanded = !outlineExpansionPreferences.isAssistantCollapsed || !searchText.isEmpty
         return HoverRevealHeaderAction(
             accessibilityLabel: L10n("New Assistant Session"),
             action: { showNewSessionCreation = true }
@@ -1110,7 +1154,7 @@ struct UnifiedConsoleView: View {
             Button {
                 if searchText.isEmpty {
                     withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                        isOutlineAssistantCollapsed.toggle()
+                        outlineExpansionPreferences.toggleAssistant()
                     }
                 }
             } label: {
@@ -1163,16 +1207,16 @@ struct UnifiedConsoleView: View {
     }
 
     private func outlineWorkIsExpanded(_ workID: String) -> Bool {
-        !collapsedOutlineWorkIDs.contains(workID)
+        !outlineExpansionPreferences.collapsedWorkIDs.contains(workID)
             || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var outlineAssistantExpandedBinding: Binding<Bool> {
         Binding(
-            get: { !isOutlineAssistantCollapsed || !searchText.isEmpty },
+            get: { !outlineExpansionPreferences.isAssistantCollapsed || !searchText.isEmpty },
             set: { isExpanded in
                 guard searchText.isEmpty else { return }
-                isOutlineAssistantCollapsed = !isExpanded
+                outlineExpansionPreferences.setAssistantExpanded(isExpanded)
             }
         )
     }
@@ -1184,11 +1228,7 @@ struct UnifiedConsoleView: View {
                 guard searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                     return
                 }
-                if isExpanded {
-                    collapsedOutlineWorkIDs.remove(workID)
-                } else {
-                    collapsedOutlineWorkIDs.insert(workID)
-                }
+                outlineExpansionPreferences.setWorkExpanded(isExpanded, workID: workID)
             }
         )
     }
@@ -1211,11 +1251,7 @@ struct UnifiedConsoleView: View {
             hasUnreadChat: workChat.map(isSessionUnread) ?? false,
             toggleExpanded: {
                 withAnimation(ConsoleWorkOutlineMetrics.disclosureAnimation) {
-                    if collapsedOutlineWorkIDs.contains(work.id) {
-                        collapsedOutlineWorkIDs.remove(work.id)
-                    } else {
-                        collapsedOutlineWorkIDs.insert(work.id)
-                    }
+                    outlineExpansionPreferences.toggleWork(workID: work.id)
                 }
             },
             openChat: {
@@ -1632,6 +1668,7 @@ struct UnifiedConsoleView: View {
             workDeletionError = entityClient.errorMessage ?? L10n("Unable to delete Work.")
             return
         }
+        outlineExpansionPreferences.removeWork(work.id)
         if selectedWorkId == work.id {
             selectedWorkId = entityClient.works.first?.id
             selectedTaskId = nil
