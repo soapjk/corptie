@@ -18,9 +18,13 @@ NODE_DISTRIBUTION="$(bash "${ROOT}/scripts/prepare-bundled-node.sh")"
 export PATH="${NODE_DISTRIBUTION}/bin:${PATH}"
 
 echo "Building for production..."
+BUILD_BIN_DIR="$(swift build \
+  --package-path "${ROOT}/apps/macos" \
+  -c "${BUILD_CFG}" \
+  --show-bin-path)"
 swift build --package-path "${ROOT}/apps/macos" -c "${BUILD_CFG}"
 
-BUILD_BIN="${ROOT}/apps/macos/.build/arm64-apple-macosx/${BUILD_CFG}/CorptieMac"
+BUILD_BIN="${BUILD_BIN_DIR}/CorptieMac"
 if [ ! -f "${BUILD_BIN}" ]; then
   echo "Build binary not found: ${BUILD_BIN}" >&2
   exit 1
@@ -51,7 +55,7 @@ while IFS= read -r runtime_path; do
     *) install_name_tool -delete_rpath "${runtime_path}" "${APP_DIR}/Contents/MacOS/${PRODUCT_NAME}" ;;
   esac
 done < <(otool -l "${BUILD_BIN}" | awk '/cmd LC_RPATH/ { getline; getline; sub(/^ *path /, ""); sub(/ \(offset [0-9]+\)$/, ""); print }')
-RESOURCE_BUNDLE="${ROOT}/apps/macos/.build/arm64-apple-macosx/${BUILD_CFG}/CorptieMac_CorptieMac.bundle"
+RESOURCE_BUNDLE="${BUILD_BIN_DIR}/CorptieMac_CorptieMac.bundle"
 if [ -d "${RESOURCE_BUNDLE}" ]; then
   cp -R "${RESOURCE_BUNDLE}" "${APP_DIR}/Contents/Resources/"
 fi
