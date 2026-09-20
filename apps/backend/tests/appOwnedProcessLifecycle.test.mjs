@@ -25,6 +25,15 @@ test("production backend launch agents are registered without daemon semantics",
   assert.match(standaloneInstaller, /CorptieMac will start it when the App opens/u);
 });
 
+test("production packaging uses SwiftPM's reported output directory", async () => {
+  const contents = await source("scripts/package-macos-installer.sh");
+
+  assert.match(contents, /swift build[\s\S]*--show-bin-path/u);
+  assert.match(contents, /BUILD_BIN="\$\{BUILD_BIN_DIR\}\/CorptieMac"/u);
+  assert.match(contents, /RESOURCE_BUNDLE="\$\{BUILD_BIN_DIR\}\/CorptieMac_CorptieMac\.bundle"/u);
+  assert.doesNotMatch(contents, /\.build\/arm64-apple-macosx/u);
+});
+
 test("development launcher starts one detached App without a process guardian", async () => {
   const contents = await source("scripts/restart-macos-development.sh");
   const detachedLauncher = await source("scripts/launch-development-detached.py");
