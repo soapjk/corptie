@@ -29,6 +29,9 @@ struct DetachedChatWindowTests {
         #expect(source.contains("func returnToMain(sessionID: String)"))
         #expect(source.contains("close(sessionID: sessionID)"))
         #expect(source.contains("AppDelegate.shared?.openSessionInMainWindow(sessionID: sessionID)"))
+        #expect(source.contains("DetachedChatWindowDragArea()"))
+        #expect(source.contains("override func mouseDragged(with event: NSEvent)"))
+        #expect(source.contains("window?.performDrag(with: event)"))
     }
 
     @Test
