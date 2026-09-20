@@ -29,7 +29,12 @@ fi
 STAGING_ROOT="$(mktemp -d /tmp/corptie-pkg-staging-XXXXXX)"
 Dmg_STAGING="$(mktemp -d /tmp/corptie-dmg-staging-XXXXXX)"
 SCRIPTS_DIR="$(mktemp -d /tmp/corptie-pkg-scripts-XXXXXX)"
-trap 'rm -rf "${STAGING_ROOT}" "${Dmg_STAGING}" "${SCRIPTS_DIR}"' EXIT
+PKGBUILD_STDERR=""
+cleanup() {
+  rm -rf "${STAGING_ROOT}" "${Dmg_STAGING}" "${SCRIPTS_DIR}"
+  [[ -z "${PKGBUILD_STDERR}" ]] || rm -f "${PKGBUILD_STDERR}"
+}
+trap cleanup EXIT
 
 APP_DIR="${STAGING_ROOT}/Applications/${APP_NAME}"
 mkdir -p "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" "${APP_DIR}/Contents/Helpers"
@@ -223,13 +228,26 @@ fi
 echo "Bundled Node binary size (bytes): $(stat -f %z "${APP_DIR}/Contents/Helpers/node")"
 
 PKG_FILE="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.pkg"
-pkgbuild \
-  --root "${STAGING_ROOT}" \
-  --identifier "com.corptie.pkg" \
-  --version "${APP_VERSION}" \
-  --install-location / \
-  --scripts "${SCRIPTS_DIR}" \
-  "${PKG_FILE}"
+PKGBUILD_STDERR="$(mktemp /tmp/corptie-pkgbuild-stderr-XXXXXX)"
+if pkgbuild \
+    --root "${STAGING_ROOT}" \
+    --identifier "com.corptie.pkg" \
+    --version "${APP_VERSION}" \
+    --install-location / \
+    --scripts "${SCRIPTS_DIR}" \
+    "${PKG_FILE}" 2>"${PKGBUILD_STDERR}"; then
+  PKGBUILD_STATUS=0
+else
+  PKGBUILD_STATUS=$?
+fi
+# Recent macOS releases can emit this cosmetic message while pkgbuild probes
+# extended attributes. Keep every other diagnostic and the original status.
+grep -v -x 'write: Permission denied' "${PKGBUILD_STDERR}" >&2 || true
+rm -f "${PKGBUILD_STDERR}"
+PKGBUILD_STDERR=""
+if (( PKGBUILD_STATUS != 0 )); then
+  exit "${PKGBUILD_STATUS}"
+fi
 
 DMG_NAME="${ARCHIVE_DIR}/Corptie-Production-${APP_VERSION}-${TIMESTAMP}.dmg"
 
