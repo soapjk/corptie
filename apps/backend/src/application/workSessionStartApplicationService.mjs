@@ -13,6 +13,7 @@ export class WorkSessionStartApplicationService {
   constructor(options = {}) {
     this.store = options.store;
     this.coordinator = options.coordinator;
+    this.managedSandboxCoordinator = options.managedSandboxCoordinator ?? null;
     this.providerRegistry = options.providerRegistry;
     this.resolveProviderId = options.resolveProviderId ?? ((value) => value);
     if (!this.store || !this.coordinator || !this.providerRegistry) {
@@ -23,7 +24,32 @@ export class WorkSessionStartApplicationService {
   async start(input) {
     const command = decodeWorkSessionStartCommand(input);
     const authorized = this.authorize(command);
+    if (authorized.executionStrategy === "managedSandbox") {
+      if (!this.managedSandboxCoordinator) {
+        throw startContractError(
+          "WORKSPACE_CAPABILITY_UNAVAILABLE",
+          "Managed Sandbox execution is unavailable for this non-Git Workspace."
+        );
+      }
+      return this.managedSandboxCoordinator.start(command, authorized);
+    }
     return this.coordinator.start({ ...command, providerId: authorized.providerId });
+  }
+
+  getReceipt(input) {
+    if (String(input?.startupOperationId ?? "").startsWith("execution-space:")) {
+      return this.managedSandboxCoordinator?.getReceipt(input);
+    }
+    return this.coordinator.getReceipt(input);
+  }
+
+  getSessionBinding(logicalSessionId) {
+    try {
+      return this.coordinator.getSessionBinding(logicalSessionId);
+    } catch (error) {
+      if (error?.code !== "START_REFERENCE_INVALID" || !this.managedSandboxCoordinator) throw error;
+      return this.managedSandboxCoordinator.getSessionBinding(logicalSessionId);
+    }
   }
 
   authorize(input) {
@@ -42,8 +68,14 @@ export class WorkSessionStartApplicationService {
        WHERE task_id=? AND idempotency_key=?`,
       [command.taskId, command.idempotencyKey]
     );
-    const idempotentReplay = existing
-      && Number(existing.expected_task_version) === command.expectedTaskVersion;
+    const managedExisting = this.store.selectOne(
+      `SELECT request_fingerprint FROM execution_spaces
+       WHERE task_id=? AND idempotency_key=?`,
+      [command.taskId, command.idempotencyKey]
+    );
+    const idempotentReplay = (existing
+      && Number(existing.expected_task_version) === command.expectedTaskVersion)
+      || Boolean(managedExisting);
     if (Number(task.resource_version ?? 1) !== command.expectedTaskVersion && !idempotentReplay) {
       throw startContractError(
         "TASK_VERSION_CONFLICT",
@@ -62,22 +94,26 @@ export class WorkSessionStartApplicationService {
     if (!workspaceContext?.workspace) {
       throw startContractError("WORKSPACE_NOT_FOUND", "Work Workspace was not found.");
     }
-    if (!repositoryId) {
-      throw startContractError(
-        "WORKSPACE_CAPABILITY_UNAVAILABLE",
-        "Work Workspace does not provide the Git capability required by this execution strategy."
-      );
+    const workspaceRootPath = workspaceContext.workspace.canonicalRootPath
+      ?? workspaceContext.workspace.rootPath
+      ?? null;
+    const executionStrategy = repositoryId ? "gitWorktree" : "managedSandbox";
+    if (!repositoryId && (!workspaceRootPath || workspaceContext.workspace.status !== "ready")) {
+      throw startContractError("WORKSPACE_UNAVAILABLE", "Non-Git Workspace is not ready for managed Sandbox execution.");
     }
     const providerId = this.resolveProviderId(command.providerId);
     if (!providerId) {
       throw startContractError("PROVIDER_CAPABILITY_UNAVAILABLE", "Agent Provider was not found.");
     }
-    for (const capability of [
+    const requiredCapabilities = [
       AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE,
-      AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND,
       AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND
-    ]) {
+    ];
+    if (executionStrategy === "gitWorktree") {
+      requiredCapabilities.push(AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND);
+    }
+    for (const capability of requiredCapabilities) {
       if (!this.providerRegistry.supports(providerId, capability)) {
         const error = startContractError(
           "PROVIDER_CAPABILITY_UNAVAILABLE",
@@ -92,6 +128,10 @@ export class WorkSessionStartApplicationService {
       providerId,
       workId: task.work_id,
       repositoryId,
+      workspaceId: workspaceContext.workspace.workspaceId,
+      workspaceRootPath,
+      workspaceUpdatedAt: workspaceContext.workspace.updatedAt,
+      executionStrategy,
       taskTitle: task.title
     });
   }

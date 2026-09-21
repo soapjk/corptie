@@ -1862,6 +1862,47 @@ export class CorptieStore {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS execution_spaces (
+        execution_space_id TEXT PRIMARY KEY,
+        work_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        session_id TEXT,
+        logical_session_id TEXT,
+        workspace_id TEXT NOT NULL,
+        strategy TEXT NOT NULL CHECK (strategy IN ('gitWorktree','managedSandbox','readOnlyDirect','externalConnector')),
+        status TEXT NOT NULL CHECK (status IN (
+          'pending','preparing','binding','ready','running','awaitingReview','publishing','published',
+          'releasing','released','prepareFailed','executionFailed','publishConflict','publishFailed','cleanupFailed'
+        )),
+        root_path TEXT,
+        source_workspace_path TEXT,
+        base_workspace_revision TEXT,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        receipt_json TEXT,
+        error_code TEXT,
+        error_message TEXT,
+        resource_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        prepared_at TEXT,
+        ready_at TEXT,
+        released_at TEXT,
+        UNIQUE (task_id, idempotency_key),
+        FOREIGN KEY (work_id) REFERENCES works(id) ON DELETE CASCADE,
+        FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL,
+        FOREIGN KEY (logical_session_id) REFERENCES logical_sessions(logical_session_id) ON DELETE SET NULL,
+        FOREIGN KEY (workspace_id) REFERENCES workspaces(workspace_id) ON DELETE RESTRICT
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_execution_spaces_active_task
+      ON execution_spaces(task_id)
+      WHERE status NOT IN ('released','prepareFailed','executionFailed','cleanupFailed');
+
+      CREATE INDEX IF NOT EXISTS idx_execution_spaces_session
+      ON execution_spaces(session_id, updated_at DESC);
+
       CREATE TABLE IF NOT EXISTS git_repositories (
         repository_id TEXT PRIMARY KEY,
         workspace_id TEXT NOT NULL UNIQUE,
@@ -9782,6 +9823,14 @@ export class CorptieStore {
        WHERE session_id = ? AND binding_id = ? AND turn_id = ?`,
       [sessionId, bindingId, turnId]
     );
+  }
+
+  hasSessionTurnForBinding(sessionId, bindingId) {
+    return Boolean(this.selectOne(
+      `SELECT 1 AS present FROM session_turns
+       WHERE session_id = ? AND binding_id = ? LIMIT 1`,
+      [sessionId, bindingId]
+    ));
   }
 
   upsertSessionUsageSnapshot({

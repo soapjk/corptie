@@ -257,6 +257,32 @@ test("public Port never turns generated MCP registration into Applied", async ()
   }
 });
 
+test("conversation dispatch may carry generated MCP application into the Provider's first Turn", async () => {
+  const value = await fixture({
+    capability: {
+      bootstrapAttach: false, appendInPlace: false, replaceAtTurnBoundary: false,
+      generatedMcpRefresh: true, restrictedGateway: false, bindingReplacement: false,
+      capabilityRevision: "fake:mcp:1"
+    },
+    apply: async () => ({ status: "awaiting_provider_observation", observationKind: "mcp_tools_list" })
+  });
+  try {
+    const result = await value.port.ensureDomainsApplied(
+      "logical:one",
+      ["artifacts"],
+      { turnExecutionId: "turn:mcp", allowPendingProviderObservation: true }
+    );
+    assert.equal(result.status, "PendingProviderObservation");
+    assert.equal(result.logicalSessionId, "logical:one");
+    const stored = value.store.getSessionToolCatalogMaterialization("logical:one", "binding:one");
+    assert.equal(stored.status, "refreshing");
+    assert.equal(stored.providerReceipt.status, "awaiting_provider_observation");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("public Port preserves Blocked and Provider Error outcomes as fail-closed errors", async () => {
   const blocked = await fixture();
   try {

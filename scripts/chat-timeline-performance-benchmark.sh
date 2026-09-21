@@ -8,7 +8,11 @@ report_path="$report_dir/report.txt"
 binary="$macos_dir/.build/arm64-apple-macosx/release/CorptieMac"
 
 mkdir -p "$report_dir"
-swift build -c release --package-path "$macos_dir"
+swift build \
+  -c release \
+  --package-path "$macos_dir" \
+  --build-system native \
+  --sdk "$(xcrun --sdk macosx --show-sdk-path)"
 
 pkill -f "$repo_root/apps/macos/.build/.*/CorptieMac" 2>/dev/null || true
 CORPTIE_ENV=development \

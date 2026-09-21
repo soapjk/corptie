@@ -126,6 +126,24 @@ test("pre-ready Worker Session is authorized only by its exact startup operation
   }
 });
 
+test("pre-ready managed Sandbox Worker is authorized by its ExecutionSpace operation", async () => {
+  const value = await fixture();
+  try {
+    value.binding.currentTaskSessionId = null;
+    value.binding.taskSessionAuthorization = "startup";
+    value.binding.startupOperationId = "execution-space:one";
+    const result = await value.coordinator.ensureApplied({
+      logicalSessionId: value.binding.logicalSessionId,
+      providerBindingId: value.binding.providerBindingId,
+      phase: "bootstrap"
+    });
+    assert.equal(result.status, "applied");
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("invalidating an applied proof keeps the existing binding and fails readiness closed", async () => {
   const value = await fixture();
   try {

@@ -377,6 +377,76 @@ test("Claude reconnect restores Corptie-owned history without importing the SDK 
   assert.equal(restored[0].options[0].selected, true);
 });
 
+test("Claude reconnect does not mistake superseded Provider history for a missing Claude identity", async () => {
+  const storedSession = {
+    id: "shared-logical-session",
+    title: "Switched Session",
+    agent: "Claude Code",
+    status: "complete",
+    createdAt: "2026-09-21T01:00:00.000Z",
+    updatedAt: "2026-09-21T01:01:00.000Z",
+    external: { provider: "claude-sdk", agentSessionId: null, cwd: "/tmp/project" },
+    rawStatus: {}
+  };
+  const manager = new ClaudeAgentManager({
+    store: {
+      getSession: () => storedSession,
+      getItems: () => [{
+        id: "codex-history",
+        type: "userMessage",
+        text: "Message sent before switching Providers",
+        bindingId: "binding:codex"
+      }],
+      getLogicalSessionByLegacySessionId: () => ({
+        logicalSessionId: "logical:shared",
+        activeBinding: { bindingId: "binding:claude", providerId: "claude-sdk" }
+      }),
+      hasSessionTurnForBinding: () => false,
+      upsertSession: () => {}
+    }
+  });
+
+  await manager.reconnect("shared-logical-session", { startQuery: false });
+
+  assert.equal(manager.get("shared-logical-session").agentSessionId, null);
+  assert.equal(manager.get("shared-logical-session").phase, "ready");
+});
+
+test("Claude reconnect resolves a switched binding whose Provider id differs from the public Session id", async () => {
+  const storedSession = {
+    id: "codex:public-session",
+    title: "Switched Session",
+    agent: "Claude Code",
+    status: "complete",
+    createdAt: "2026-09-21T01:00:00.000Z",
+    updatedAt: "2026-09-21T01:01:00.000Z",
+    external: { provider: "claude-sdk", agentSessionId: null, cwd: "/tmp/project" },
+    rawStatus: {}
+  };
+  const manager = new ClaudeAgentManager({
+    store: {
+      getSession: (id) => id === storedSession.id ? storedSession : null,
+      getLogicalSessionByProviderSessionId: (providerId, providerSessionId) => {
+        assert.equal(providerId, "claude-sdk");
+        assert.equal(providerSessionId, "claude:provider-session");
+        return { logicalSessionId: "logical:shared", legacySessionId: storedSession.id };
+      },
+      getLogicalSessionByLegacySessionId: () => ({
+        logicalSessionId: "logical:shared",
+        activeBinding: { bindingId: "binding:claude", providerId: "claude-sdk" }
+      }),
+      hasSessionTurnForBinding: () => false,
+      getItems: () => [],
+      upsertSession: () => {}
+    }
+  });
+
+  await manager.reconnect("claude:provider-session", { startQuery: false });
+
+  assert.equal(manager.get("claude:provider-session").agentSessionId, null);
+  assert.equal(manager.get("claude:provider-session").phase, "ready");
+});
+
 test("Claude reconnect clears a stale running state left by a backend restart", async () => {
   const storedSession = {
     id: "claude-stale-running",

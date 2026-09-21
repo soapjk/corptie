@@ -93,6 +93,49 @@ test("compatible stale Tool guidance does not block Session readiness", () => {
   assert.equal(compatible.actions.send.available, true);
 });
 
+test("generated MCP materialization awaiting its first Turn remains sendable", () => {
+  for (const toolMaterialization of [
+    {
+      status: "stale",
+      desiredVersion: "contract:next",
+      appliedVersion: null,
+      exposurePlan: {
+        surface: "generated_authenticated_mcp",
+        refreshMode: "create"
+      }
+    },
+    {
+      status: "stale",
+      desiredVersion: "contract:next",
+      appliedVersion: null,
+      exposurePlan: { refreshMode: "generated_mcp_refresh" }
+    },
+    {
+      status: "refreshing",
+      desiredVersion: "contract:next",
+      appliedVersion: null,
+      exposurePlan: { refreshMode: "generated_mcp_refresh" },
+      providerReceipt: { status: "awaiting_provider_observation" }
+    },
+    {
+      status: "error",
+      desiredVersion: "contract:next",
+      appliedVersion: null,
+      exposurePlan: { refreshMode: "generated_mcp_refresh" },
+      lastErrorCode: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
+    }
+  ]) {
+    const session = withSessionReadiness(sendable, {
+      logicalSession: { activeBinding: { bindingId: "binding:one" } },
+      requireActiveBinding: true,
+      providerRuntime: { state: "ready" },
+      toolMaterialization
+    });
+    assert.equal(session.readiness, "ready");
+    assert.equal(session.actions.send.available, true);
+  }
+});
+
 test("an unverified post-restart binding blocks sending independently from Provider readiness", () => {
   const session = withSessionReadiness(sendable, {
     logicalSession: { activeBinding: { bindingId: "binding:empty" } },

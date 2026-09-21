@@ -2,7 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
-APP_BIN="${ROOT_DIR}/apps/macos/.build/debug/CorptieMac"
+MACOS_PACKAGE_DIR="${ROOT_DIR}/apps/macos"
+MACOS_BUILD_TRIPLE="$(uname -m)-apple-macosx"
+APP_BIN="${MACOS_PACKAGE_DIR}/.build/${MACOS_BUILD_TRIPLE}/debug/CorptieMac"
+MACOS_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+MACOS_SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 EXTERNAL_RUNTIME_ROOT="${CORPTIE_DEVELOPMENT_RUNTIME_ROOT:-/Volumes/T9/CorptieData/development-launcher}"
 if [[ "${EXTERNAL_RUNTIME_ROOT}" != /Volumes/* ]]; then
   echo "Development runtime root must be an explicitly configured external volume path." >&2
@@ -95,8 +99,34 @@ stop_pids() {
   exit 1
 }
 
-echo "Building Corptie macOS development app..."
-swift build --package-path "${ROOT_DIR}/apps/macos"
+linked_macos_sdk_version() {
+  local binary="$1"
+  xcrun vtool -show-build "${binary}" 2>/dev/null \
+    | awk '$1 == "sdk" { print $2; exit }'
+}
+
+if [[ -x "${APP_BIN}" ]]; then
+  LINKED_SDK_VERSION="$(linked_macos_sdk_version "${APP_BIN}")"
+  if [[ "${LINKED_SDK_VERSION}" != "${MACOS_SDK_VERSION}" ]]; then
+    echo "Discarding macOS build cache linked against SDK ${LINKED_SDK_VERSION:-unknown}; current SDK is ${MACOS_SDK_VERSION}."
+    swift package --package-path "${MACOS_PACKAGE_DIR}" clean
+  fi
+fi
+
+echo "Building Corptie macOS development app with macOS SDK ${MACOS_SDK_VERSION}..."
+# Xcode 27's default Swift Build backend currently stamps SwiftPM products with
+# the deployment target as their LC_BUILD_VERSION SDK. The native backend uses
+# the selected sysroot's actual SDK version, which opts AppKit into the current
+# system appearance while keeping macOS 14 as the deployment floor.
+swift build \
+  --package-path "${MACOS_PACKAGE_DIR}" \
+  --build-system native \
+  --sdk "${MACOS_SDK_PATH}"
+LINKED_SDK_VERSION="$(linked_macos_sdk_version "${APP_BIN}")"
+if [[ "${LINKED_SDK_VERSION}" != "${MACOS_SDK_VERSION}" ]]; then
+  echo "CorptieMac linked against SDK ${LINKED_SDK_VERSION:-unknown}, expected ${MACOS_SDK_VERSION}." >&2
+  exit 1
+fi
 echo "Building Corptie backend native safety module..."
 npm --prefix "${ROOT_DIR}/apps/backend" run build:native
 
@@ -110,7 +140,7 @@ while IFS= read -r pid; do
   [[ -n "${pid}" ]] || continue
   process_command="$(ps -p "${pid}" -o command= 2>/dev/null || true)"
   process_cwd="$(lsof -a -p "${pid}" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
-  if [[ "${process_cwd}" == "${ROOT_DIR}" && "${process_command}" == *"apps/macos/.build/debug/CorptieMac"* ]]; then
+  if [[ "${process_cwd}" == "${ROOT_DIR}" && "${process_command}" == *"${APP_BIN}"* ]]; then
     app_pids+=("${pid}")
   fi
 done < <(pgrep -x CorptieMac 2>/dev/null || true)

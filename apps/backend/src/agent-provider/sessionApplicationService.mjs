@@ -282,7 +282,10 @@ export class SessionApplicationService {
     return this.toolMaterializationPort.ensureDomainsApplied(logicalSessionId, domains, {
       turnExecutionId: context.turnExecutionId ?? context.turnId ?? null,
       purpose: context.purpose,
-      activeTurn: context.activeTurn === true
+      activeTurn: context.activeTurn === true,
+      ...(context.allowPendingProviderObservation === true
+        ? { allowPendingProviderObservation: true }
+        : {})
     });
   }
 
@@ -469,7 +472,8 @@ export class SessionApplicationService {
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
       workId: storedSession?.workId ?? context.workId ?? null,
       taskId: storedSession?.taskId ?? context.taskId ?? null,
-      activeTurn: false
+      activeTurn: false,
+      allowPendingProviderObservation: true
     }));
     const sessionContext = this.resolveMessageContext
       ? await this.resolveMessageContext(reference, { ...context, message })

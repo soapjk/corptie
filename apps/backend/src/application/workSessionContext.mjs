@@ -27,13 +27,16 @@ export function buildWorkSessionContext({
     error.code = "WORK_SESSION_BINDING_MISMATCH";
     throw error;
   }
+  const startupWorkingDirectory = startupReceipt?.canonicalWorkingDirectory
+    ?? startupReceipt?.canonicalWorktreePath;
   if (startupReceipt && (startupReceipt.schemaVersion !== 2
     || startupReceipt.status !== "ready"
     || startupReceipt.taskId !== task.id
     || startupReceipt.workId !== task.work_id
     || !validReceiptHash(startupReceipt)
+    || !startupWorkingDirectory
     || (session.external?.cwd
-      && resolve(session.external.cwd) !== resolve(startupReceipt.canonicalWorktreePath)))) {
+      && resolve(session.external.cwd) !== resolve(startupWorkingDirectory)))) {
     const error = new Error("Worker Session startup receipt does not match its Store binding.");
     error.code = "WORK_SESSION_STARTUP_RECEIPT_MISMATCH";
     throw error;
@@ -64,7 +67,9 @@ export function buildWorkSessionContext({
     "Switching a branch, Worktree, or Provider thread never changes this binding.",
     TASK_WORKSPACE_INSTRUCTIONS,
     startupReceipt
-      ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} generation=${startupReceipt.bindingGeneration} repository=${text(startupReceipt.repositoryId)} worktree=${text(startupReceipt.worktreeId)} receiptHash=${text(startupReceipt.receiptHash)}`
+      ? startupReceipt.executionStrategy === "managedSandbox"
+        ? `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} strategy=managedSandbox executionSpace=${text(startupReceipt.executionSpaceId)} receiptHash=${text(startupReceipt.receiptHash)}`
+        : `Startup binding receipt: operation=${text(startupReceipt.startupOperationId)} generation=${startupReceipt.bindingGeneration} repository=${text(startupReceipt.repositoryId)} worktree=${text(startupReceipt.worktreeId)} receiptHash=${text(startupReceipt.receiptHash)}`
       : "This is a retained pre-startup-receipt Session; do not infer a new Workspace binding from shell state.",
     "Use corptie_artifact_create for durable documents. Choose scope=work for shared Work resources or scope=task for this Task's private resources; always supply a stable idempotency_key.",
     "Every Work Session in this Work may read and manage Work-scoped Artifacts. Artifacts owned by another Task are not exposed here; this Task's Artifacts remain manageable.",
