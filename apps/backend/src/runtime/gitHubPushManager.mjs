@@ -12,6 +12,7 @@ export class GitHubPushManager {
     this.createToken = options.createToken ?? randomUUID;
     this.resolveDestination = options.resolveDestination ?? resolveGitHubDestination;
     this.commitProtection = options.commitProtection ?? null;
+    this.ensureCommitGate = options.ensureCommitGate ?? null;
     this.confirmations = new Map();
     this.activeBranchPushes = new Set();
     this.confirmationLifetimeMs = options.confirmationLifetimeMs ?? 5 * 60_000;
@@ -197,6 +198,7 @@ export class GitHubPushManager {
         throw new Error("The Worktree changed while generating the commit message. Review the push details again.");
       }
       await this.runGit(confirmation.canonicalPath, ["add", "--all"]);
+      await this.ensureCommitGate?.(confirmation.canonicalPath);
       await this.runGit(confirmation.canonicalPath, ["commit", "-m", commitMessage]);
       inspection = await this.inspect(confirmation.canonicalPath);
       if (inspection.dirty) {

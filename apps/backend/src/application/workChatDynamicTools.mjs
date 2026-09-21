@@ -120,7 +120,7 @@ export class WorkChatOperationService {
 }
 
 function scopedWorkId(metadata) {
-  if (metadata?.sessionKind !== "workChat") throw coded("WORK_CHAT_SCOPE_REQUIRED", "Work Chat scope is required.");
+  if (!metadata?.sessionId) throw coded("SESSION_AUTHENTICATION_REQUIRED", "An authenticated Session is required.");
   return text(metadata.workId, "workId");
 }
 function text(value, field) { const result = typeof value === "string" ? value.trim() : ""; if (!result) throw coded("INVALID_INPUT", `${field} is required.`); return result; }

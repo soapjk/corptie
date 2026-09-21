@@ -365,6 +365,10 @@ test("Artifact Host Tool authorization exposes provider-neutral scoped managemen
     actorId: "agent:manager",
     metadata: { sessionKind: "workChat", sessionId: "session:manager", workId: "work:one" }
   }).map((tool) => tool.name), artifactDynamicTools.map((tool) => tool.name));
+  assert.deepEqual(catalog.definitions({
+    actorId: "agent:chat",
+    metadata: { sessionKind: "assistantChat", sessionId: "session:chat" }
+  }).map((tool) => tool.name), artifactDynamicTools.map((tool) => tool.name));
 });
 
 test("Tool Host carries immutable Session scope metadata into authorization and Provider attachment", async () => {

@@ -2500,6 +2500,34 @@ export class CorptieStore {
         FOREIGN KEY (target_task_id) REFERENCES tasks(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS artifact_patch_operations (
+        session_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, idempotency_key)
+      );
+      CREATE TABLE IF NOT EXISTS artifact_ownership_operations (
+        session_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        receipt_json TEXT NOT NULL,
+        PRIMARY KEY (session_id, idempotency_key)
+      );
+      CREATE TABLE IF NOT EXISTS artifact_repository_promotions (
+        promotion_id TEXT PRIMARY KEY,
+        repository_path TEXT NOT NULL,
+        target_path TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        authorization_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS artifact_promotion_target ON artifact_repository_promotions(repository_path, target_path, content_hash);
       CREATE TABLE IF NOT EXISTS artifacts (
         artifact_id TEXT PRIMARY KEY,
         work_id TEXT NOT NULL,
@@ -3628,6 +3656,7 @@ export class CorptieStore {
     this.migrateTaskMemoryAssociations();
     this.initializeSortOrder();
     this.migrateAgentAvailability();
+    this.migrateSessionOwnedArtifacts();
     this.ensureProjectCodeReceiptTables();
     this.ensureSkillTables();
     this.ensureStateSyncTables();
@@ -4294,6 +4323,39 @@ export class CorptieStore {
       );
     }
     return repairedTurns.size;
+  }
+
+  migrateSessionOwnedArtifacts() {
+    // Session-owned Artifacts have no invented Work. Rebuild only the three
+    // ownership/audit tables, preserving all columns, indexes and triggers.
+    const tables = ["artifacts", "artifact_references", "artifact_audit_events"];
+    const pending = tables.filter(table => this.selectAll(`PRAGMA table_info(${table})`)
+      .some(column => column.name === "work_id" && column.notnull === 1));
+    if (!pending.length) return;
+    this.db.run("PRAGMA foreign_keys = OFF");
+    this.db.run("BEGIN IMMEDIATE");
+    try {
+      for (const table of pending) {
+        const schema = this.selectOne("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [table]).sql;
+        const dependents = this.selectAll("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL", [table]);
+        const replacement = `${table}_session_owner_migration`;
+        const create = schema.replace(new RegExp(`CREATE TABLE (?:IF NOT EXISTS )?[\"\x60]?${table}[\"\x60]?`, "i"), `CREATE TABLE ${replacement}`)
+          .replace(/\bwork_id\s+TEXT\s+NOT NULL\b/i, "work_id TEXT");
+        if (create === schema) throw new Error(`Cannot migrate ${table} ownership schema`);
+        this.db.run(create);
+        this.db.run(`INSERT INTO ${replacement} SELECT * FROM ${table}`);
+        this.db.run(`DROP TABLE ${table}`);
+        this.db.run(`ALTER TABLE ${replacement} RENAME TO ${table}`);
+        for (const dependent of dependents) this.db.run(dependent.sql);
+      }
+      for (const table of [...tables, "artifact_versions"]) {
+        if (this.selectAll(`PRAGMA foreign_key_check(${table})`).length) throw new Error(`Artifact migration foreign key failure: ${table}`);
+      }
+      this.db.run("COMMIT");
+    } catch (error) {
+      this.db.run("ROLLBACK");
+      throw error;
+    } finally { this.db.run("PRAGMA foreign_keys = ON"); }
   }
 
   migrateSessionEventAgentMessageFlag() {
@@ -11469,10 +11531,11 @@ export class CorptieStore {
     return row ? artifactFromRow(row) : null;
   }
 
-  listArtifacts({ includeRevoked = false } = {}) {
+  listArtifacts({ includeRevoked = false, limit = null, offset = 0 } = {}) {
     return this.selectAll(
       `SELECT * FROM artifacts ${includeRevoked ? "" : "WHERE status <> 'revoked'"}
-       ORDER BY updated_at DESC, artifact_id`
+       ORDER BY updated_at DESC, artifact_id ${limit == null ? "" : "LIMIT ? OFFSET ?"}`,
+      limit == null ? [] : [limit, offset]
     ).map(artifactFromRow);
   }
 
@@ -11618,9 +11681,9 @@ export class CorptieStore {
         ranked = this.selectAll(
           `SELECT artifact_id, bm25(artifact_search_fts, 0, 0, 10, 6, 4, 4, 5, 7, 5, 1) AS score
            FROM artifact_search_fts
-           WHERE work_id = ? AND artifact_search_fts MATCH ?
+           WHERE (? IS NULL OR work_id = ?) AND artifact_search_fts MATCH ?
            ORDER BY score ASC LIMIT ?`,
-          [workId, terms.join(" OR "), boundedLimit]
+          [workId, workId, terms.join(" OR "), boundedLimit]
         );
       } catch {
         ranked = [];
@@ -11629,11 +11692,11 @@ export class CorptieStore {
     const seen = new Set(ranked.map((row) => row.artifact_id));
     const fallback = this.selectAll(
       `SELECT artifact_id, 1000 AS score FROM artifact_search_fts
-       WHERE work_id = ? AND LOWER(
+       WHERE (? IS NULL OR work_id = ?) AND LOWER(
          title || ' ' || summary || ' ' || kind || ' ' || category_path || ' '
          || tags || ' ' || aliases || ' ' || keywords || ' ' || body
        ) LIKE LOWER(?) LIMIT ?`,
-      [workId, `%${normalized}%`, boundedLimit]
+      [workId, workId, `%${normalized}%`, boundedLimit]
     ).filter((row) => !seen.has(row.artifact_id));
     return [...ranked, ...fallback].slice(0, boundedLimit).map((row) => ({
       artifactId: row.artifact_id,
@@ -11823,7 +11886,7 @@ export class CorptieStore {
 
   listArtifactAudit(workId, artifactId = null) {
     return this.selectAll(
-      `SELECT * FROM artifact_audit_events WHERE work_id = ? ${artifactId ? "AND artifact_id = ?" : ""}
+      `SELECT * FROM artifact_audit_events WHERE work_id IS ? ${artifactId ? "AND artifact_id = ?" : ""}
        ORDER BY created_at DESC`,
       artifactId ? [workId, artifactId] : [workId]
     ).map(artifactAuditFromRow);
