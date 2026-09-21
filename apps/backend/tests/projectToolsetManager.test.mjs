@@ -41,8 +41,8 @@ test("scaffold creates a private standard toolset in the main worktree", async (
     assert.equal(state.configured, false);
     assert.deepEqual(Object.keys(state.scripts), PROJECT_TOOLSET_ACTIONS);
     assert.ok(Object.values(state.scripts).every((script) => script.executable));
-    assert.match((await gitOutput(["status", "--short"], fixture.mainPath)).trim(), /^\?\? \.corptie\/$/);
-    assert.equal(await gitSucceeds(["check-ignore", ".corptie/toolset.json"], fixture.mainPath), false);
+    assert.equal((await gitOutput(["status", "--short"], fixture.mainPath)).trim(), "");
+    assert.equal(await gitSucceeds(["check-ignore", ".corptie/toolset.json"], fixture.mainPath), true);
   } finally {
     await fixture.close();
   }
@@ -58,7 +58,7 @@ test("scaffold preserves customized scripts without changing private Git exclude
     await chmod(startPath, 0o700);
     await manager.scaffold(fixture.mainPath);
     assert.equal(await readFile(startPath, "utf8"), "#!/bin/sh\nprintf 'custom\\n'\n");
-    assert.equal(await gitSucceeds(["check-ignore", ".corptie/toolset.json"], fixture.mainPath), false);
+    assert.equal(await gitSucceeds(["check-ignore", ".corptie/toolset.json"], fixture.mainPath), true);
   } finally {
     await fixture.close();
   }
@@ -330,7 +330,7 @@ test("scaffold refuses a repository that already tracks .corptie content", async
   try {
     await mkdir(join(fixture.mainPath, ".corptie"));
     await writeFile(join(fixture.mainPath, ".corptie", "public.txt"), "tracked\n");
-    await git(["add", ".corptie/public.txt"], fixture.mainPath);
+    await git(["add", "-f", ".corptie/public.txt"], fixture.mainPath);
     await git(["commit", "-m", "track conflicting corptie directory"], fixture.mainPath);
     await assert.rejects(
       () => manager.scaffold(fixture.mainPath),

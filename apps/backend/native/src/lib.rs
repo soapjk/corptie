@@ -46,6 +46,7 @@ impl Default for NativeSafeTreeResult {
 }
 
 unsafe extern "C" {
+    fn corptie_write_new_file(root: *const c_char, relative: *const c_char, bytes: *const u8, length: usize, out: *mut NativeSafeTreeResult) -> i32;
     fn corptie_inspect_tree(root: *const c_char, relative: *const c_char, out: *mut NativeSafeTreeResult) -> i32;
     fn corptie_remove_tree(
         root: *const c_char,
@@ -170,6 +171,15 @@ pub fn inspect_tree_openat(root_path: String, relative_path: String) -> Result<S
     let mut result = NativeSafeTreeResult::default();
     let status = unsafe { corptie_inspect_tree(root.as_ptr(), relative.as_ptr(), &mut result) };
     convert_result(status, result, "openat(O_DIRECTORY|O_NOFOLLOW)+fstatat(AT_SYMLINK_NOFOLLOW)")
+}
+
+#[napi]
+pub fn write_new_file_openat(root_path: String, relative_path: String, content: napi::bindgen_prelude::Buffer) -> Result<SafeTreeInspection> {
+    let root = c_string(root_path)?;
+    let relative = c_string(relative_path)?;
+    let mut result = NativeSafeTreeResult::default();
+    let status = unsafe { corptie_write_new_file(root.as_ptr(), relative.as_ptr(), content.as_ptr(), content.len(), &mut result) };
+    convert_result(status, result, "openat(O_NOFOLLOW)+fsync+linkat(no-replace)")
 }
 
 #[napi]

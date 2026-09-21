@@ -20,20 +20,15 @@ test("status parser preserves renamed source and destination paths", () => {
   );
 });
 
-test("protected local Agent files can be added to the project gitignore", async () => {
+test("project-default ignored local Agent files require no additional decision", async () => {
   const fixture = await createRepository();
   const protection = new GitCommitProtection({ rules });
   try {
     await mkdir(join(fixture.path, ".corptie"));
     await writeFile(join(fixture.path, ".corptie", "restart.sh"), "#!/bin/sh\n");
     const inspection = await protection.inspect(fixture.path);
-    assert.equal(inspection.requiresDecision, true);
-    assert.deepEqual(inspection.protectedPaths, [".corptie/restart.sh"]);
-
-    const result = await protection.resolve(fixture.path, { decision: "ignore" });
-    assert.equal(result.gitignoreUpdated, true);
-    assert.match(await readFile(join(fixture.path, ".gitignore"), "utf8"), /^# Corptie local Agent configuration\n\/.corptie\n$/);
-    assert.deepEqual((await protection.inspect(fixture.path)).protectedPaths, []);
+    assert.equal(inspection.requiresDecision, false);
+    assert.deepEqual(inspection.protectedPaths, []);
   } finally {
     await fixture.close();
   }
@@ -112,7 +107,7 @@ test("do not remind preference is stored per repository", async () => {
     const inspection = await protection.inspect(fixture.path);
     assert.equal(inspection.warningEnabled, false);
     assert.equal(inspection.requiresDecision, false);
-    assert.deepEqual(inspection.protectedPaths, [".corptie/local.json"]);
+    assert.deepEqual(inspection.protectedPaths, []);
   } finally {
     await fixture.close();
   }

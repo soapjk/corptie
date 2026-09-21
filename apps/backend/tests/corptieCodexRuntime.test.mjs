@@ -94,7 +94,9 @@ test("startup self-heals managed files without replacing authentication or share
     assert.equal(second.agentsCreated, false);
     assert.equal(second.skillChanged, true);
     assert.equal(await readFile(second.authPath, "utf8"), '{"token":"corptie-account"}\n');
-    assert.equal(await readFile(second.agentsPath, "utf8"), "# User customized instructions\n");
+    const memory = await readFile(second.agentsPath, "utf8");
+    assert.ok(memory.startsWith("# User customized instructions\n"));
+    assert.match(memory, /# Corptie managed Artifact and Markdown policy/);
     assert.match(config, /model = "custom"/);
     assert.match(config, /cli_auth_credentials_store = "file"/);
     assert.match(config, /mcp_oauth_credentials_store = "file"/);

@@ -2194,9 +2194,9 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(L10n("Feishu Gateway"))
+                    Text("IMgateway")
                         .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    Text(L10n("Connect trusted Feishu users to sessions on this Mac."))
+                    Text(L10n("Connect trusted IM users to sessions on this Mac."))
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(CorptiePalette.secondaryText)
                 }

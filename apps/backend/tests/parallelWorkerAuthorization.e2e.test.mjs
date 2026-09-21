@@ -6,7 +6,7 @@ import test from "node:test";
 import { ArtifactService } from "../src/application/artifactService.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
-test("same Agent parallel Workers authorize only exact Session/Task bindings and ignore recency", async () => {
+test("same Agent parallel Workers read project Artifacts but mutate only exact Task bindings", async () => {
   const directory = await mkdtemp(join(os.tmpdir(), "corptie-parallel-worker-"));
   const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });
   try {
@@ -47,8 +47,10 @@ test("same Agent parallel Workers authorize only exact Session/Task bindings and
     store.updateAgent(agent.agentId, { currentSessionId: "session:a" });
     assert.equal((await service.get(context("a"), artifactA.artifactId, pinned(artifactA))).content, "a");
     assert.equal((await service.get(context("b"), artifactB.artifactId, pinned(artifactB))).content, "b");
-    await assert.rejects(() => service.get(context("a"), artifactB.artifactId, pinned(artifactB)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
-    await assert.rejects(() => service.get(context("b"), artifactA.artifactId, pinned(artifactA)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
+    assert.equal((await service.get(context("a"), artifactB.artifactId, pinned(artifactB))).content, "b");
+    assert.equal((await service.get(context("b"), artifactA.artifactId, pinned(artifactA))).content, "a");
+    assert.throws(() => service.updateMetadata(context("a"), artifactB.artifactId, { title: "forbidden" }), { code: "ARTIFACT_READ_ONLY" });
+    assert.throws(() => service.updateMetadata(context("b"), artifactA.artifactId, { title: "forbidden" }), { code: "ARTIFACT_READ_ONLY" });
     store.updateAgent(agent.agentId, { currentSessionId: "session:b" });
     assert.equal((await service.get(context("a"), artifactA.artifactId, pinned(artifactA))).content, "a");
     assert.equal((await service.get(context("b"), artifactB.artifactId, pinned(artifactB))).content, "b");
