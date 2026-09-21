@@ -85,6 +85,7 @@ import {
 import { TaskExecutionOrchestrator } from "./application/taskExecutionOrchestrator.mjs";
 import { TaskWorkspaceService } from "./application/taskWorkspaceService.mjs";
 import { WorkSessionStartupCoordinator } from "./application/workSessionStartupCoordinator.mjs";
+import { ManagedSandboxStartupCoordinator } from "./application/managedSandboxStartupCoordinator.mjs";
 import { WorkSessionStartApplicationService } from "./application/workSessionStartApplicationService.mjs";
 import { WorktreeStartupPreparer } from "./application/worktreeStartupPreparer.mjs";
 import {
@@ -1355,12 +1356,15 @@ const sessionApplicationService = new SessionApplicationService({
       const task = store.getTask(ownership.taskId);
       const work = task?.work_id ? store.getWork(task.work_id) : null;
       const startupReceiptRow = store.selectOne(
-        `SELECT receipt.receipt_json FROM work_session_startup_receipts receipt
+        `SELECT receipt.receipt_json, operation.updated_at FROM work_session_startup_receipts receipt
          JOIN work_session_startup_operations operation
            ON operation.startup_operation_id=receipt.startup_operation_id
          WHERE operation.logical_session_id=? AND operation.state='ready'
-         ORDER BY operation.binding_generation DESC LIMIT 1`,
-        [reference.logicalSessionId]
+         UNION ALL
+         SELECT execution.receipt_json, execution.updated_at FROM execution_spaces execution
+         WHERE execution.logical_session_id=? AND execution.status='ready'
+         ORDER BY updated_at DESC LIMIT 1`,
+        [reference.logicalSessionId, reference.logicalSessionId]
       );
       const toolMaterialization = store.getSessionToolCatalogMaterialization(
         reference.logicalSessionId,
@@ -2329,7 +2333,7 @@ const providerWorkSessionPort = new ProviderWorkSessionPort({
       title,
       model,
       reasoningLevel,
-      workingDirectory: workspace.canonicalWorktreePath,
+      workingDirectory: workspace.canonicalExecutionPath ?? workspace.canonicalWorktreePath,
       autoUniqueTitle: true,
       deferInitialPromptUntilBound: true,
       deferToolHostFinalization: true
@@ -2366,7 +2370,7 @@ const providerWorkSessionPort = new ProviderWorkSessionPort({
         const actualCwd = resolve(actualCwdValue);
         const expectedCwd = resolve(workingDirectory);
         if (!toolContractHash || actualCwd !== expectedCwd) {
-          const error = new Error("Provider Session activation did not apply the required Tool contract in the bound Worktree.");
+          const error = new Error("Provider Session activation did not apply the required Tool contract in the bound ExecutionSpace.");
           error.code = "START_PROVIDER_BINDING_FAILED";
           throw error;
         }
@@ -2454,9 +2458,16 @@ workSessionStartupCoordinator = new WorkSessionStartupCoordinator({
         errorCode: error?.code ?? "PROJECT_CODE_PREWARM_FAILED" })}`);
     })
 });
+const managedSandboxStartupCoordinator = new ManagedSandboxStartupCoordinator({
+  store,
+  providerWorkSessionPort,
+  root: join(store.dataRoot, "execution-spaces"),
+  onChanged: (type, payload) => emitEvent(type, payload)
+});
 workSessionStartApplicationService = new WorkSessionStartApplicationService({
   store,
   coordinator: workSessionStartupCoordinator,
+  managedSandboxCoordinator: managedSandboxStartupCoordinator,
   providerRegistry: agentProviderRegistry,
   resolveProviderId: resolveSessionProviderId
 });
@@ -4498,7 +4509,7 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
   const session = logical.legacySessionId ? store.getSession(logical.legacySessionId) : null;
   const task = session?.taskId ? store.getTask(session.taskId) : null;
   const startupAuthorization = session?.sessionKind === "worker" && task?.current_session_id !== session.id
-    ? store.selectOne(
+    ? (store.selectOne(
       `SELECT startup.startup_operation_id, startup.resource_version
        FROM work_session_startup_operations startup
        JOIN work_session_startup_bindings binding
@@ -4506,9 +4517,16 @@ function resolveToolHostBinding(logicalSessionId, providerBindingId) {
        WHERE startup.task_id=? AND startup.legacy_session_id=? AND startup.logical_session_id=?
          AND startup.provider_id=? AND startup.state IN ('session_bound','provider_bound')
          AND binding.provider_resource_id=? AND binding.status='binding'
-       ORDER BY startup.allocated_at DESC LIMIT 1`,
+      ORDER BY startup.allocated_at DESC LIMIT 1`,
       [session.taskId, session.id, logical.logicalSessionId, active.providerId, active.providerSessionId]
-    )
+    ) ?? store.selectOne(
+      `SELECT execution.execution_space_id AS startup_operation_id, execution.resource_version
+       FROM execution_spaces execution
+       WHERE execution.task_id=? AND execution.session_id=? AND execution.logical_session_id=?
+         AND execution.strategy='managedSandbox' AND execution.status IN ('preparing','binding')
+       ORDER BY execution.updated_at DESC LIMIT 1`,
+      [session.taskId, session.id, logical.logicalSessionId]
+    ))
     : null;
   return {
     logicalSessionId: logical.logicalSessionId,
@@ -5609,8 +5627,8 @@ function resolveSessionProviderId(provider) {
   return agentProviderRegistry.resolveId(normalized, { useDefault: normalized === "" });
 }
 
-// Startup coordinator 专用的低层 Session 构造端口。调用方必须提供已由
-// WorktreeStartupPreparer 验证的目录；此函数不发现、创建或切换 Worktree。
+// Startup coordinator 专用的低层 Session 构造端口。调用方必须提供已验证的
+// ExecutionSpace 目录；此函数不发现、创建或切换 Workspace。
 async function createProviderWorkSession({
   assigneeAgentId,
   assigneeName,
@@ -5641,8 +5659,8 @@ async function createProviderWorkSession({
     ? resolve(workingDirectory.trim())
     : null;
   if (!cwd) {
-    const error = new Error("Worker Session creation requires an authoritative prepared Worktree binding.");
-    error.code = "START_WORKTREE_BINDING_REQUIRED";
+    const error = new Error("Worker Session creation requires an authoritative prepared ExecutionSpace binding.");
+    error.code = "START_EXECUTION_SPACE_BINDING_REQUIRED";
     throw error;
   }
   const task = workService.getTask(taskId);
@@ -9531,8 +9549,8 @@ function route(request, response) {
     assistantService,
     startWorkSession: (input) => workSessionStartApplicationService.start(input),
     defaultSessionProviderId: agentProviderRegistry.defaultProviderId,
-    getTaskStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
-    getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
+    getTaskStartup: (input) => workSessionStartApplicationService.getReceipt(input),
+    getSessionStartupBinding: (logicalSessionId) => workSessionStartApplicationService.getSessionBinding(logicalSessionId),
     launchAgentSession,
     launchWorkChatSession,
     ensureWorkChatSession,

@@ -619,7 +619,8 @@ export class ToolHostMaterializationCoordinator {
       }
       const authorizedByStartup = binding.taskSessionAuthorization === "startup"
         && typeof binding.startupOperationId === "string"
-        && binding.startupOperationId.startsWith("startup:");
+        && (binding.startupOperationId.startsWith("startup:")
+          || binding.startupOperationId.startsWith("execution-space:"));
       if (binding.currentTaskSessionId !== binding.sessionId && !authorizedByStartup) {
         throw toolError("ACTOR_NOT_BOUND", "Worker Session is not the Task current Session.", 403);
       }

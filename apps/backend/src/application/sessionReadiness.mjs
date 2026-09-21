@@ -68,7 +68,7 @@ export function resolveSessionReadiness(session, context = {}) {
   if (materialization && (
     materialization.status !== "applied"
     || materialization.appliedVersion !== materialization.desiredVersion
-  )) {
+  ) && !canApplyGeneratedMcpAtFirstTurn(materialization)) {
     return notReady(
       materialization.lastErrorCode ?? "TOOL_SCHEMA_UNCONFIRMED",
       materialization.lastErrorSummary ?? "The Provider has not confirmed this Session's Tool schema.",
@@ -91,6 +91,22 @@ export function resolveSessionReadiness(session, context = {}) {
     );
   }
   return Object.freeze({ state: READY, reason: null });
+}
+
+function canApplyGeneratedMcpAtFirstTurn(materialization) {
+  // A freshly switched binding keeps the creation-time exposure plan until
+  // its first dispatch. Generated MCP is still the delivery surface in that
+  // state; ensureDomainsApplied() will advance it to the refresh plan before
+  // the Provider observes tools/list. Gating only on refreshMode therefore
+  // deadlocks new bindings whose persisted mode is still "create".
+  if (materialization?.exposurePlan?.surface !== "generated_authenticated_mcp"
+    && materialization?.exposurePlan?.refreshMode !== "generated_mcp_refresh") return false;
+  if (materialization.status === "stale") return true;
+  if (materialization.status === "refreshing") {
+    return materialization.providerReceipt?.status === "awaiting_provider_observation";
+  }
+  return materialization.status === "error"
+    && materialization.lastErrorCode === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
 }
 
 function notReady(code, message, retryable) {

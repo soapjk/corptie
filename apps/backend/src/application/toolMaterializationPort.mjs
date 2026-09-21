@@ -32,6 +32,22 @@ export class ToolMaterializationPort {
       activeTurn: turnBoundary?.activeTurn === true,
       phase: "refresh"
     });
+    if (turnBoundary?.allowPendingProviderObservation === true
+      && result.status === "applying"
+      && result.plan?.refreshMode === "generated_mcp_refresh"
+      && result.record?.providerReceipt?.status === "awaiting_provider_observation") {
+      await this.#assertGeneration(binding);
+      return Object.freeze({
+        status: "PendingProviderObservation",
+        logicalSessionId: sessionId,
+        desiredVersion: result.record.desiredVersion,
+        desiredCatalogVersion: result.record.desiredCatalogVersion,
+        desiredDomains: Object.freeze(
+          (result.record.desiredDomains ?? []).map((domain) => domain.domainId)
+        ),
+        observationKind: result.record.providerReceipt.observationKind
+      });
+    }
     if (result.status !== "applied"
       || !hasCurrentAppliedDomains(result.record, requestedDomains, catalogVersion)) {
       throw portError(

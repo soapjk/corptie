@@ -157,3 +157,28 @@ test("Provider capability absence is a stable provider-neutral business error", 
     });
   } finally { await cleanup(f); }
 });
+
+test("non-Git Workspace selects managed Sandbox without requiring Provider Worktree binding", async () => {
+  const f = await fixture();
+  try {
+    f.store.db.run("DELETE FROM git_repositories WHERE repository_id='repository:one'");
+    const managedCalls = [];
+    f.service.managedSandboxCoordinator = {
+      async start(startCommand, authorization) {
+        managedCalls.push({ startCommand, authorization });
+        return { status: "ready" };
+      }
+    };
+    f.service.providerRegistry.supports = (_providerId, capability) => (
+      capability !== AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND
+    );
+
+    await f.service.start(command());
+
+    assert.equal(f.calls.length, 0);
+    assert.equal(managedCalls.length, 1);
+    assert.equal(managedCalls[0].authorization.executionStrategy, "managedSandbox");
+    assert.equal(managedCalls[0].authorization.workspaceId, "workspace:one");
+    assert.equal(managedCalls[0].authorization.workspaceRootPath, f.directory);
+  } finally { await cleanup(f); }
+});

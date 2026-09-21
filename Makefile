@@ -17,7 +17,7 @@ restart: ## 重新编译 + 重启 Development
 	./scripts/restart-macos-development.sh
 
 build: ## 只编译 macOS app（debug）
-	cd apps/macos && swift build
+	cd apps/macos && swift build --build-system native --sdk "$$(xcrun --sdk macosx --show-sdk-path)"
 
 test: ## 跑后端测试
 	cd apps/backend && npm test

@@ -12,21 +12,34 @@ APP_VERSION="0.5.4"
 APP_BUNDLE_PATH="/Applications/Corptie.app"
 ICON_ICNS_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.icns"
 ICON_SOURCE="${ROOT}/apps/macos/Sources/CopetsMac/Resources/AppIcon.png"
+MACOS_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+MACOS_SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 
 mkdir -p "${ARCHIVE_DIR}"
 NODE_DISTRIBUTION="$(bash "${ROOT}/scripts/prepare-bundled-node.sh")"
 export PATH="${NODE_DISTRIBUTION}/bin:${PATH}"
 
-echo "Building for production..."
+echo "Building for production with macOS SDK ${MACOS_SDK_VERSION}..."
 BUILD_BIN_DIR="$(swift build \
   --package-path "${ROOT}/apps/macos" \
+  --build-system native \
+  --sdk "${MACOS_SDK_PATH}" \
   -c "${BUILD_CFG}" \
   --show-bin-path)"
-swift build --package-path "${ROOT}/apps/macos" -c "${BUILD_CFG}"
+swift build \
+  --package-path "${ROOT}/apps/macos" \
+  --build-system native \
+  --sdk "${MACOS_SDK_PATH}" \
+  -c "${BUILD_CFG}"
 
 BUILD_BIN="${BUILD_BIN_DIR}/CorptieMac"
 if [ ! -f "${BUILD_BIN}" ]; then
   echo "Build binary not found: ${BUILD_BIN}" >&2
+  exit 1
+fi
+LINKED_SDK_VERSION="$(xcrun vtool -show-build "${BUILD_BIN}" 2>/dev/null | awk '$1 == "sdk" { print $2; exit }')"
+if [[ "${LINKED_SDK_VERSION}" != "${MACOS_SDK_VERSION}" ]]; then
+  echo "Production binary linked against SDK ${LINKED_SDK_VERSION:-unknown}, expected ${MACOS_SDK_VERSION}." >&2
   exit 1
 fi
 

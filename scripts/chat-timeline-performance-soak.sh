@@ -12,7 +12,11 @@ allowed_tail_growth_kb="${CORPTIE_SOAK_ALLOWED_TAIL_GROWTH_KB:-16384}"
 stream_steps=$((duration_seconds * 1000 / stream_interval_ms))
 
 mkdir -p "$report_dir"
-swift build -c release --package-path "$macos_dir"
+swift build \
+  -c release \
+  --package-path "$macos_dir" \
+  --build-system native \
+  --sdk "$(xcrun --sdk macosx --show-sdk-path)"
 
 pkill -f "$repo_root/apps/macos/.build/.*/CorptieMac" 2>/dev/null || true
 CORPTIE_ENV=development \

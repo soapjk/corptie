@@ -485,7 +485,8 @@ test("existing Worker Session applies required domains at the next message Turn 
     ["ensure", "logical:worker", ["artifacts", "project-code"], {
       turnExecutionId: null,
       purpose: "conversation-turn-boundary",
-      activeTurn: false
+      activeTurn: false,
+      allowPendingProviderObservation: true
     }],
     ["send", "project-code contract is applied"]
   ]);

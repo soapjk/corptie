@@ -106,7 +106,16 @@ export class ClaudeAgentManager {
   }
 
   storedSession(id) {
-    return this.store?.getSession(`pty:${id}`) ?? this.store?.getSession(id) ?? null;
+    const direct = this.store?.getSession(`pty:${id}`) ?? this.store?.getSession(id) ?? null;
+    if (direct) return direct;
+    // A Provider switch preserves the public Corptie Session id while giving
+    // Claude a new Provider Session id. After a backend restart, reconnect is
+    // addressed by that Claude id, so resolve it through the durable active
+    // binding before loading the shared Session projection.
+    const logical = this.store?.getLogicalSessionByProviderSessionId?.("claude-sdk", id);
+    return logical?.legacySessionId
+      ? this.store?.getSession(logical.legacySessionId) ?? null
+      : null;
   }
 
   persistSessionIdentity(session) {
@@ -625,8 +634,15 @@ export class ClaudeAgentManager {
     const raw = stored.rawStatus ?? {};
     const storedItems = this.store?.getItems(stored.id, this.maxItems, "claude-sdk") ?? [];
     let agentSessionId = stored.external?.agentSessionId ?? raw.agentSessionId ?? null;
-    if (!agentSessionId && storedItems.some(item => ["agentMessage", "userMessage"].includes(item.type))) {
-      const logical = this.store?.getLogicalSessionByLegacySessionId?.(stored.id);
+    const logical = this.store?.getLogicalSessionByLegacySessionId?.(stored.id);
+    const activeBindingId = logical?.activeBinding?.bindingId ?? null;
+    const currentBindingHasConversation = activeBindingId
+      ? typeof this.store?.hasSessionTurnForBinding === "function"
+        ? this.store.hasSessionTurnForBinding(stored.id, activeBindingId)
+        : storedItems.some((item) => item.bindingId === activeBindingId
+          && ["agentMessage", "userMessage"].includes(item.type))
+      : storedItems.some((item) => ["agentMessage", "userMessage"].includes(item.type));
+    if (!agentSessionId && currentBindingHasConversation) {
       agentSessionId = await recoverClaudeSessionIdentity({
         configDirectory: this.environment()?.CLAUDE_CONFIG_DIR,
         cwd: stored.external?.cwd, logicalSessionId: logical?.logicalSessionId
