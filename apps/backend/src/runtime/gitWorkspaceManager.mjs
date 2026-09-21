@@ -42,6 +42,7 @@ export class GitWorkspaceManager {
     this.inspectionCacheTtlMs = options.inspectionCacheTtlMs ?? 5_000;
     this.now = options.now ?? (() => Date.now());
     this.createSnapshot = options.createSnapshot ?? createGitWorkspaceSnapshot;
+    this.ensureCommitGate = options.ensureCommitGate ?? null;
     this.taskWorktreesRoot = options.taskWorktreesRoot ?? null;
     this.inspectionCache = new Map();
     this.inspectionsInFlight = new Map();
@@ -1637,6 +1638,9 @@ export class GitWorkspaceManager {
   }
 
   async runGit(cwd, arguments_) {
+    if (["commit", "merge", "cherry-pick", "rebase", "am"].includes(arguments_?.[0])) {
+      await this.ensureCommitGate?.(cwd);
+    }
     const repositoryId = gitArgumentsMutateWorkspace(arguments_)
       ? this.#repositoryIdForPath(cwd)
       : null;

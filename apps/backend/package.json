@@ -15,7 +15,7 @@
     "benchmark:session-recovery": "node scripts/benchmark-session-recovery.mjs",
     "benchmark:tool-host-first-call": "node scripts/benchmark-tool-host-first-call.mjs",
     "compact:event-storage": "node scripts/compact-event-storage.mjs",
-    "build:native": "cd native && cargo build --release && cp target/release/libcorptie_native.dylib corptie_native.node",
+    "build:native": "cd native && cargo build --release && cp target/release/libcorptie_native.dylib corptie_native.node && codesign --force --sign - corptie_native.node",
     "postinstall": "node scripts/fix-node-pty-permissions.mjs"
   },
   "engines": {

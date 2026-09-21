@@ -36,6 +36,57 @@ static int safe_component(const char *value) {
   return value && value[0] && strcmp(value, ".") != 0 && strcmp(value, "..") != 0 && strchr(value, '/') == NULL;
 }
 
+// Atomically publish a new file relative to a trusted project directory.
+// Every descendant is descriptor-relative and symlinks are never followed.
+int corptie_write_new_file(const char *root, const char *relative,
+                          const unsigned char *bytes, size_t length,
+                          CorptieSafeTreeResult *out) {
+  if (!relative || !relative[0] || relative[0] == '/' || strchr(relative, '\\'))
+    return fail(out, "ARTIFACT_PATH_INVALID", "Expected a safe relative path.");
+  char *copy = strdup(relative);
+  if (!copy) return fail_errno(out, "ARTIFACT_WRITE_FAILED", "copy path");
+  // Validate the complete path before creating any directories.
+  char *cursor = copy, *part;
+  while ((part = strsep(&cursor, "/")) != NULL) {
+    if (!safe_component(part)) { free(copy); return fail(out, "ARTIFACT_PATH_INVALID", "Unsafe path component."); }
+  }
+  strcpy(copy, relative);
+  int parent = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (parent < 0) { free(copy); return fail_errno(out, "ARTIFACT_PATH_UNSAFE", "open project root"); }
+  cursor = copy;
+  while ((part = strsep(&cursor, "/")) != NULL && cursor != NULL) {
+    if (mkdirat(parent, part, 0700) != 0 && errno != EEXIST) {
+      fail_errno(out, "ARTIFACT_WRITE_FAILED", "mkdirat"); goto failed_write;
+    }
+    int next = openat(parent, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (next < 0) { fail_errno(out, "ARTIFACT_PATH_UNSAFE", "openat parent"); goto failed_write; }
+    close(parent); parent = next;
+  }
+  char temporary[96];
+  snprintf(temporary, sizeof(temporary), ".corptie-write-%ld-%08x-%08x", (long)getpid(), arc4random(), arc4random());
+  int fd = openat(parent, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (fd < 0) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "openat temporary"); goto failed_write; }
+  size_t offset = 0;
+  while (offset < length) {
+    ssize_t written = write(fd, bytes + offset, length - offset);
+    if (written < 0 && errno == EINTR) continue;
+    if (written <= 0) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "write temporary"); goto failed_temporary; }
+    offset += (size_t)written;
+  }
+  if (fsync(fd) != 0) { fail_errno(out, "ARTIFACT_WRITE_FAILED", "fsync temporary"); goto failed_temporary; }
+  // linkat is atomic and refuses any existing leaf, including a symlink.
+  if (linkat(parent, temporary, parent, part, 0) != 0) {
+    fail_errno(out, errno == EEXIST ? "ARTIFACT_DESTINATION_EXISTS" : "ARTIFACT_WRITE_FAILED", "publish new file");
+    goto failed_temporary;
+  }
+  out->files = 1; out->bytes = length;
+  close(fd); unlinkat(parent, temporary, 0); close(parent); free(copy); return 0;
+failed_temporary:
+  close(fd); unlinkat(parent, temporary, 0);
+failed_write:
+  close(parent); free(copy); return -1;
+}
+
 static int duplicate_dir(int fd, CorptieSafeTreeResult *out) {
   int result = openat(fd, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (result < 0) fail_errno(out, "RUN_OPENAT_FAILED", "openat directory descriptor");

@@ -302,6 +302,7 @@ import { ForkingWorkspaceTransitionManager } from "./runtime/forkingWorkspaceTra
 import { GitWorkspaceManager } from "./runtime/gitWorkspaceManager.mjs";
 import { GitHubPushManager } from "./runtime/gitHubPushManager.mjs";
 import { GitCommitProtection } from "./runtime/gitCommitProtection.mjs";
+import { ensureArtifactCommitHook } from "./runtime/artifactCommitHook.mjs";
 import { PROJECT_TOOLSET_ISOLATED_ACTIONS, ProjectToolsetManager } from "./runtime/projectToolsetManager.mjs";
 import { createProjectToolsetProductionComposition } from "./application/projectToolsetProductionComposition.mjs";
 import { CodexResetForecastMonitor } from "./runtime/codexResetForecastMonitor.mjs";
@@ -602,6 +603,7 @@ const hostToolCatalog = new HostToolCatalog([
   },
   {
     id: "artifacts",
+    domainRevision: "2",
     tools: artifactDynamicTools,
     authorize: authorizeArtifactDynamicTool,
     execute: (input) => callArtifactDynamicTool(artifactService, input, { toolMaterializationPort })
@@ -670,23 +672,15 @@ const hostToolCatalog = new HostToolCatalog([
   {
     id: "platform",
     tools: platformDynamicTools,
-    authorize: ({ actorId, metadata }) => {
-      // Session creation must materialize the stable catalog before the Store
-      // has a Session id. Execution still revalidates the persisted binding.
-      if (!metadata?.sessionId) return true;
-      try {
-        resolvePlatformAdminSession(store, { actorId, sessionId: metadata?.sessionId });
-        return true;
-      } catch {
-        return false;
-      }
-    },
+    // Catalog visibility is not authorization. Platform operations revalidate
+    // their concrete resource and administrative scope when called.
+    authorize: () => true,
     execute: (input) => callPlatformDynamicTool(platformOperationService, input)
   },
   {
     id: "work-chat",
     tools: workChatDynamicTools,
-    authorize: ({ metadata }) => metadata?.sessionKind === "workChat" && Boolean(metadata?.workId),
+    authorize: ({ metadata }) => Boolean(metadata?.sessionId),
     execute: (input) => callWorkChatDynamicTool(workChatOperationService, input)
   }
 ]);
@@ -982,6 +976,7 @@ const claudeWorkspaceTransitionManager = new ForkingWorkspaceTransitionManager({
 const gitWorkspaces = new GitWorkspaceManager({
   store,
   transitions: workspaceTransitionManager,
+  ensureCommitGate: (path) => ensureArtifactCommitHook(path, { dbPath: store.dbPath }),
   taskWorktreesRoot: ({ repositoryId }) => resolve(
     store.layout.worktreesDirectory,
     repositoryId.split(":").at(-1)
@@ -995,7 +990,10 @@ const projectToolsets = new ProjectToolsetManager({
   validationReceiptResolver: (receiptId) => projectToolsetProduction?.resolveToolsetReceipt(receiptId) ?? null
 });
 const gitCommitProtection = new GitCommitProtection({ configPath: bundledGitCommitProtectionPath });
-const gitHubPushes = new GitHubPushManager({ commitProtection: gitCommitProtection });
+const gitHubPushes = new GitHubPushManager({
+  commitProtection: gitCommitProtection,
+  ensureCommitGate: (path) => ensureArtifactCommitHook(path, { dbPath: store.dbPath })
+});
 const openClackyProvider = createOpenClackyProvider(openClackyManager, {
   attachTools: async (attachment) => openClackyToolHostAttachment(attachment),
   applyToolPlanAtTurnBoundary: applyOpenClackyToolPlanAtTurnBoundary,
@@ -6540,7 +6538,7 @@ function agentWorkTimelineItem(task, sessionId, queuePosition = null) {
       ? "Agent Collaboration"
       : presentation.presentationRole === "system_event"
         ? "System Event"
-        : (task.source?.type === "feishu" ? "Feishu" : "User"),
+        : (task.source?.type === "feishu" ? "IMgateway" : "User"),
     text: task.text,
     images: task.source?.messageContent?.images ?? [],
     status: task.status,
@@ -7260,7 +7258,7 @@ function enqueueUserAgentWork(session, input, source, latencyTrace = null, refer
     agentId: agent.agentId,
     text: message.text,
     content: message,
-    title: source.type === "feishu" ? "Feishu" : "User",
+    title: source.type === "feishu" ? "IMgateway" : "User",
     source: persistedSource,
     createdAt: now()
   });
@@ -11679,6 +11677,13 @@ console.log(`[turn-observability] ${JSON.stringify(telemetryConfiguration)}`);
 // File traversal, orphan audits, FTS rebuilds, and usage reconciliation are
 // maintenance and must never delay the loopback listener.
 await artifactService.initialize({ performMaintenance: false });
+void Promise.allSettled(store.listGitRepositories().flatMap((repository) => {
+  const paths = new Set([repository.path, ...(store.listGitWorktrees(repository.id) ?? []).flatMap(item => [item.path, item.canonicalPath])].filter(Boolean));
+  return [...paths].map(async (path) => {
+    try { await ensureArtifactCommitHook(path, { dbPath: store.dbPath }); }
+    catch (error) { console.error(`[artifact-commit-gate] installation failed repository=${repository.id} path=${path} code=${error.code ?? "ERROR"} message=${error.message}`); }
+  });
+}));
 await chatResourceService.initialize();
 const collaborationMigration = collaborationCore.initialize();
 if (collaborationMigration.status === "applied") {

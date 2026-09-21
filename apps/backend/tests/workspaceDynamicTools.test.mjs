@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { TASK_WORKSPACE_INSTRUCTIONS } from "../src/application/sessionResponsibilityInstructions.mjs";
 import {
   isWorkspaceDynamicTool,
   workspaceDynamicTools
@@ -38,8 +38,7 @@ test("mutating workspace tools require an explicit direct-user request", () => {
   assert.match(switchWorkspace.description, /only when the direct user explicitly requests/u);
 });
 
-test("Session runtime instructions default to the programmatically bound Workspace", async () => {
-  const serverSource = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
-  assert.match(serverSource, /Stay in it; create or switch Worktrees only when the direct user explicitly requests it/u);
-  assert.match(serverSource, /Ordinary development is not authorization/u);
+test("Session runtime instructions default to the programmatically bound Workspace", () => {
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /Stay in it; create or switch Worktrees only when the direct user explicitly requests it/u);
+  assert.match(TASK_WORKSPACE_INSTRUCTIONS, /Ordinary development is not authorization/u);
 });

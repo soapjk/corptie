@@ -1,6 +1,7 @@
 import { chmod, lstat, mkdir, readFile, readlink, rename, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { ARTIFACT_RUNTIME_POLICY, ARTIFACT_RUNTIME_POLICY_HEADING } from "../application/artifactRuntimePolicy.mjs";
 
 const ENVIRONMENT_PLACEHOLDER = "{{CORPTIE_ENVIRONMENT}}";
 const AUTHORITATIVE_WORKSPACE_HEADING = "# Authoritative Work Session workspace";
@@ -45,11 +46,11 @@ export async function ensureCorptieAgentMemory(options = {}) {
       );
       migratedLegacyMemory = true;
     }
-    await atomicWrite(paths.sharedMemoryPath, content, 0o600);
+    await atomicWrite(paths.sharedMemoryPath, reconcileArtifactPolicy(content), 0o600);
     created = true;
   } else {
     const existing = await readFile(paths.sharedMemoryPath, "utf8");
-    const reconciled = reconcileManagedWorkspaceRules(existing, bundled);
+    const reconciled = reconcileArtifactPolicy(reconcileManagedWorkspaceRules(existing, bundled));
     if (reconciled !== existing) {
       await atomicWrite(paths.sharedMemoryPath, reconciled, 0o600);
       updatedManagedWorkspaceRules = true;
@@ -87,6 +88,14 @@ export async function ensureProviderMemoryLink(sharedMemoryPath, providerMemoryP
   }
   await symlink(target, destination);
   return true;
+}
+
+function reconcileArtifactPolicy(content) {
+  for (const heading of [ARTIFACT_RUNTIME_POLICY_HEADING, "# Markdown version-control policy"]) {
+    const range = topLevelSectionRange(content, heading);
+    if (range) content = [content.slice(0, range.start).trimEnd(), content.slice(range.end).trim()].filter(Boolean).join("\n\n");
+  }
+  return `${content.trimEnd()}\n\n${ARTIFACT_RUNTIME_POLICY_HEADING}\n\n${ARTIFACT_RUNTIME_POLICY}\n`;
 }
 
 function renderBundledMemory(template, environmentName) {

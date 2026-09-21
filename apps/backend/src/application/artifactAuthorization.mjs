@@ -23,10 +23,10 @@ export class SessionAuthorizationResolver {
     if (!agent) throw bindingError("Session Agent binding is invalid.");
     if (input.actorId && input.actorId !== session.agentId) throw bindingError("Authenticated Agent does not match the Session binding.");
     const sessionKind = session.sessionKind;
-    if (!["worker", "workChat"].includes(sessionKind)) throw bindingError("Session kind cannot access Work Artifacts.");
+    if (!["worker", "workChat", "assistantChat"].includes(sessionKind)) throw bindingError("Session kind is invalid.");
     if (input.expectedSessionKind && input.expectedSessionKind !== sessionKind) throw bindingError("Session kind changed.");
     const work = session.workId ? this.store.getWork(session.workId) : null;
-    if (!work) throw bindingError("Session Work binding is invalid.");
+    if (sessionKind !== "assistantChat" && !work) throw bindingError("Session Work binding is invalid.");
     let task = null;
     if (sessionKind === "worker") {
       task = session.taskId ? this.store.getTask(session.taskId) : null;
@@ -49,7 +49,7 @@ export class SessionAuthorizationResolver {
     const authorizationRevision = revision([
       logicalSessionId, logical?.routingVersion ?? 0, providerBindingId,
       session.id, session.updatedAt ?? "", sessionKind, session.agentId,
-      work.id, task?.id ?? "", task?.resource_version ?? 0,
+      work?.id, task?.id ?? "", task?.resource_version ?? 0,
       task?.updated_at ?? ""
     ]);
     return Object.freeze({
@@ -57,7 +57,7 @@ export class SessionAuthorizationResolver {
       productSessionId: session.id,
       sessionKind,
       agentId: session.agentId,
-      workId: work.id,
+      workId: work?.id ?? null,
       taskId: task?.id ?? null,
       providerBindingId,
       authorizationRevision,
@@ -76,7 +76,7 @@ export class ArtifactReferenceAuthorizer {
   authorize(context, request = {}) {
     const artifactId = required(request.artifactId, "artifactId");
     const artifact = this.store.getArtifact(artifactId);
-    if (!artifact || artifact.workId !== context.workId || artifact.status === "revoked") {
+    if (!artifact || artifact.status === "revoked") {
       throw hiddenArtifactError();
     }
     const explicitReferenceId = normalized(request.referenceId);
@@ -86,8 +86,7 @@ export class ArtifactReferenceAuthorizer {
     const isManager = ["workChat", "local_user", "platform_admin"].includes(context.kind);
     const references = this.store.listArtifactReferences({ artifactId }).filter((reference) =>
       !reference.revokedAt
-      && reference.workId === context.workId
-      && (isManager
+      && (context.productSessionId || isManager
         || reference.authorizedByActorId === "system:work-scope-read"
         || (reference.sessionId && reference.sessionId === context.productSessionId)
         || (context.taskId && reference.taskId === context.taskId))
