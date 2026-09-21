@@ -3,6 +3,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { ARTIFACT_RUNTIME_POLICY } from "../src/application/artifactRuntimePolicy.mjs";
+import { sessionResponsibilityInstructions } from "../src/application/sessionResponsibilityInstructions.mjs";
 
 import {
   ensureCorptieAgentMemory,
@@ -127,17 +129,34 @@ test("existing shared memory replaces legacy Worktree autonomy with authoritativ
   }
 });
 
-test("bundled Provider memories forbid autonomous Worktree creation and switching", async () => {
+test("shared Provider memory has no invented Task binding; only Worker instructions bind a Worktree", async () => {
   for (const relativePath of [
     "../resources/agent/global-instructions.development.md",
     "../resources/agent/global-instructions.production.md"
   ]) {
     const content = await readFile(new URL(relativePath, import.meta.url), "utf8");
-    assert.match(content, /programmatically creates and binds the Task Worktree/u);
-    assert.match(content, /Stay in that bound Workspace/u);
-    assert.match(content, /only when the direct user explicitly requests it/u);
-    assert.match(content, /Ordinary development work is not authorization/u);
-    assert.doesNotMatch(content, /user does not need to explicitly request/u);
-    assert.equal(content.match(/create or switch Worktrees/gu)?.length, 1);
+    assert.doesNotMatch(content, /programmatically creates and binds the Task Worktree/u);
   }
+  const worker = sessionResponsibilityInstructions("worker");
+  assert.match(worker, /only when the direct user explicitly requests it/);
+  assert.match(worker, /Ordinary development is not authorization/);
+  for (const kind of ["worker", "workChat", "assistantChat"]) assert.ok(sessionResponsibilityInstructions(kind).includes(ARTIFACT_RUNTIME_POLICY));
+});
+
+test("Artifact policy upgrades existing runtime memory once and preserves unrelated user memory", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "artifact-runtime-policy-"));
+  try {
+    const options = { corptieHome: directory, bundledMemoryPath: new URL("../resources/agent/global-instructions.production.md", import.meta.url).pathname };
+    const first = await ensureCorptieAgentMemory(options);
+    const current = await readFile(first.sharedMemoryPath, "utf8");
+    assert.ok(current.includes(ARTIFACT_RUNTIME_POLICY));
+    await writeFile(first.sharedMemoryPath, "# User memory\n\nKeep this preference.\n\n# Markdown version-control policy\n\nStore notes as ordinary files.\n");
+    assert.equal((await ensureCorptieAgentMemory(options)).updatedManagedWorkspaceRules, true);
+    const upgraded = await readFile(first.sharedMemoryPath, "utf8");
+    assert.match(upgraded, /Keep this preference/);
+    assert.doesNotMatch(upgraded, /Store notes as ordinary files/);
+    assert.ok(upgraded.includes(ARTIFACT_RUNTIME_POLICY));
+    assert.equal((await ensureCorptieAgentMemory(options)).updatedManagedWorkspaceRules, false);
+    assert.equal(await readFile(first.sharedMemoryPath, "utf8"), upgraded);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

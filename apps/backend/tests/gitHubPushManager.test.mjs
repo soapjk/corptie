@@ -265,7 +265,7 @@ test("confirmation fails closed when the Worktree changes after review", async (
   }
 });
 
-test("confirmed ignore decision commits gitignore without pushing private Agent files", async () => {
+test("project-default ignored private Agent files never create a push confirmation", async () => {
   const fixture = await createFixture();
   const protection = new GitCommitProtection({
     rules: [{ path: ".corptie", kind: "directory" }]
@@ -274,26 +274,9 @@ test("confirmed ignore decision commits gitignore without pushing private Agent 
   try {
     await mkdir(join(fixture.repository, ".corptie"));
     await writeFile(join(fixture.repository, ".corptie", "secret.json"), "private\n");
-    const prepared = await manager.prepare({
-      sessionId: "codex:test",
-      workingDirectory: fixture.repository
-    });
-    assert.equal(prepared.commitProtection.requiresDecision, true);
-    assert.deepEqual(prepared.commitProtection.protectedPaths, [".corptie/secret.json"]);
-
-    await manager.confirm({
-      sessionId: "codex:test",
-      confirmationToken: prepared.confirmationToken,
-      privateFilesDecision: "ignore",
-      generateCommitMessage: async () => "Ignore local Agent configuration"
-    });
-    assert.equal(
-      (await gitOutput(["show", "--pretty=", "--name-only", "main"], fixture.remote)).trim(),
-      ".gitignore"
-    );
-    assert.equal(
-      (await gitOutput(["show", "main:.gitignore"], fixture.remote)).trim(),
-      "# Corptie local Agent configuration\n/.corptie"
+    await assert.rejects(
+      () => manager.prepare({ sessionId: "codex:test", workingDirectory: fixture.repository }),
+      /There are no changes or commits to push/
     );
   } finally {
     await fixture.close();

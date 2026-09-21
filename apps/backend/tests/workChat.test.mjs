@@ -52,7 +52,7 @@ test("startup migration repairs illegal stored classifications from authoritativ
     await store.initialize();
 
     assert.equal(store.getSession("recoverable").sessionKind, "assistantChat");
-    assert.equal(store.getSession("unowned").sessionKind, "legacy");
+    assert.equal(store.getSession("unowned").sessionKind, "assistantChat");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -122,9 +122,9 @@ test("Work Chat context is bounded and includes traceable Work state", async () 
       name: "Ship feature", description: "Delivery remains reliable across every path", profile: "software"
     });
     workService.createTask({ workId: work.id, title: "Backend" });
-    const context = new WorkChatContextService({ store, characterBudget: 3_000 }).build(work.id);
+    const context = new WorkChatContextService({ store, characterBudget: 6_000 }).build(work.id);
     assert.equal(context.workId, work.id);
-    assert.ok(context.characters <= 3_100);
+    assert.ok(context.characters <= 6_100);
     assert.match(context.prompt, /Delivery remains reliable across every path/);
     assert.match(context.prompt, /Backend/);
     assert.ok(context.generatedAt);
@@ -141,12 +141,12 @@ test("Work Chat context forbids Task creation without a direct explicit user req
     const context = new WorkChatContextService({ store }).build(work.id);
 
     assert.ok(context.prompt.includes(WORK_CHAT_REPOSITORY_CHANGE_RULE));
-    assert.match(context.prompt, /requires any code change or repository-content mutation/);
-    assert.match(context.prompt, /Do not switch or create a worktree/);
-    assert.match(context.prompt, /do not edit, create, delete, rename, stage, commit/);
+    assert.match(context.prompt, /recommend doing them in a Task/);
+    assert.match(context.prompt, /workflow recommendation, not a permission denial/);
+    assert.match(context.prompt, /carry out the request in this Session when otherwise authorized/);
+    assert.match(context.prompt, /Non-code changes, including repository configuration, may be performed directly/);
     assert.match(context.prompt, /Never create a new Task unless the direct user explicitly asks/);
     assert.match(context.prompt, /Complexity, code changes, decomposition, parallelism, missing information/);
-    assert.match(context.prompt, /Do not infer consent/);
     assert.match(context.prompt, /explicitly requests a new Task, its title, description, and acceptance criteria/);
     assert.match(context.prompt, /Task creation starts its Worker Session automatically/);
     assert.match(context.prompt, /never request or perform a separate start action/);
@@ -159,11 +159,11 @@ test("Work Chat context forbids Task creation without a direct explicit user req
 test("Work Chat repository delegation rule preserves non-mutating discussion scope", () => {
   assert.match(
     WORK_CHAT_REPOSITORY_CHANGE_RULE,
-    /applies only when code or repository content must change/
+    /recommend doing them in a Task/
   );
   assert.match(
     WORK_CHAT_REPOSITORY_CHANGE_RULE,
-    /Continue handling discussion, planning, status review, and other non-mutating Work work normally/
+    /Continue handling discussion, planning, status review, and non-code Work changes normally/
   );
   assert.doesNotMatch(WORK_CHAT_REPOSITORY_CHANGE_RULE, /Create a new Task in this Work with an assignee/);
 });

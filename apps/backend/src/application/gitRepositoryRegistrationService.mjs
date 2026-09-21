@@ -3,6 +3,7 @@ import { realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createGitWorkspaceSnapshot } from "../utils/gitWorktreeInventory.mjs";
+import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -73,6 +74,7 @@ export async function registerGitRepository({
   }
 
   store.upsertGitWorkspaceSnapshot(snapshot);
+  if (store.dbPath) await ensureArtifactCommitHook(dirPath, { dbPath: store.dbPath });
   return store.listGitRepositories().find((repository) => repository.id === snapshot.repository.id);
 }
 

@@ -6,6 +6,9 @@ import { resolvePlatformAdminSession } from "../utils/platformAssistantIdentity.
 import { ArtifactReferenceAuthorizer, SessionAuthorizationResolver, artifactError as pinnedReadError, safeHashEqual } from "./artifactAuthorization.mjs";
 import { buildArtifactContextIndex } from "./artifactContextIndex.mjs";
 import { ArtifactReadCoordinator, ARTIFACT_READ_DEFAULT_LIMITS } from "./artifactReadCoordinator.mjs";
+import { materializeArtifactBytes, publishArtifactRepositoryFile } from "./artifactMaterialization.mjs";
+import { authorizeArtifactPromotion } from "./artifactPromotionAuthorization.mjs";
+import { ensureArtifactCommitHook } from "../runtime/artifactCommitHook.mjs";
 
 export const ARTIFACT_VISIBILITIES = Object.freeze([
   "work_private", "task_private", "session_private", "repository_tracked"
@@ -17,7 +20,7 @@ export const ARTIFACT_RELATIONS = Object.freeze([
 const VISIBILITIES = new Set(ARTIFACT_VISIBILITIES);
 const RELATIONS = new Set(ARTIFACT_RELATIONS);
 const VERSION_POLICIES = new Set(["fixed", "latest_approved"]);
-const ARTIFACT_SCOPES = new Set(["work", "task"]);
+const ARTIFACT_SCOPES = new Set(["work", "task", "session"]);
 const MAX_READ_BYTES = ARTIFACT_READ_DEFAULT_LIMITS.maxPageBytes;
 const ARTIFACT_SEARCH_INDEX_STATE_KEY = "artifact-search-index:v1";
 const ARTIFACT_USAGE_RECONCILIATION_STATE_KEY = "artifact-turn-read-usage:v1";
@@ -166,7 +169,7 @@ export class ArtifactService {
   list(contextInput, options = {}) {
     const context = this.context(contextInput);
     const relatedTaskIds = this.#relatedTaskIds(context);
-    const artifacts = this.store.listArtifactsByWork(context.workId, {
+    const artifacts = this.store.listArtifacts({
       includeRevoked: options.includeRevoked === true,
       limit: options.limit ?? null,
       offset: options.offset ?? 0
@@ -347,7 +350,7 @@ export class ArtifactService {
     if (requestedScope && !ARTIFACT_SCOPES.has(requestedScope)) {
       throw artifactError("ARTIFACT_SCOPE_INVALID", `Unsupported Artifact scope: ${requestedScope}`, 400);
     }
-    const matches = this.store.searchArtifactDocuments(context.workId, query, Math.max(limit * 4, 50));
+    const matches = this.store.searchArtifactDocuments(null, query, Math.max(limit * 4, 50));
     for (const match of matches) {
       const artifact = this.store.getArtifact(match.artifactId);
       if (!artifact) continue;
@@ -375,11 +378,19 @@ export class ArtifactService {
 
   async create(contextInput, input = {}) {
     const context = this.context(contextInput);
+    if (context.kind === "assistantChat") {
+      if ((input.scope && input.scope !== "session")
+        || (input.visibility && input.visibility !== "session_private")
+        || input.boundTaskId || (input.boundSessionId && input.boundSessionId !== context.sessionId)) {
+        throw artifactError("ARTIFACT_WRITE_FORBIDDEN", "Chat Sessions may create only their own Session Artifacts.", 403);
+      }
+      input = { ...input, scope: "session", visibility: "session_private", boundSessionId: context.sessionId };
+    }
     const requestedScope = input.scope
       ?? (input.visibility ? artifactScope(input.visibility) : (context.kind === "worker" ? "task" : "work"));
     if (context.kind === "worker" && requestedScope !== "work") return this.#createWorkerArtifact(context, input);
     if (context.kind === "worker") this.#assertActiveWorkerBinding(context);
-    else this.#assertManager(context);
+    else if (context.kind !== "assistantChat") this.#assertManager(context);
     const visibility = enumValue(
       input.visibility ?? (requestedScope === "work" ? "work_private" : "task_private"),
       VISIBILITIES,
@@ -390,11 +401,12 @@ export class ArtifactService {
       throw artifactError("ARTIFACT_WORKER_SCOPE_FORBIDDEN", "Worker may create only Work-public or current-Task Artifacts.", 403);
     }
     const binding = this.#validateBinding(context.workId, visibility, input);
+    this.#assertCanManageArtifact(context, { workId: context.workId, scope, ...binding });
     if (scope === "work" && (binding.boundTaskId || binding.boundSessionId)) {
       throw artifactError("ARTIFACT_SCOPE_INVALID", "Work-scoped Artifacts cannot be privately bound to a Task or Session.", 400);
     }
     const taxonomy = normalizeArtifactTaxonomy(input);
-    const workerIdempotencyKey = context.kind === "worker" ? requiredText(input.idempotencyKey, "idempotencyKey") : null;
+    const workerIdempotencyKey = ["worker", "assistantChat"].includes(context.kind) ? requiredText(input.idempotencyKey, "idempotencyKey") : null;
     const artifactId = input.artifactId
       ? canonicalId(input.artifactId, "artifact")
       : workerIdempotencyKey
@@ -632,11 +644,86 @@ export class ArtifactService {
     return { artifact, receipt: { sourcePath: path, sourcePreserved: true, byteLength: content.byteLength, contentHash: sha256(content), remoteWrite: false } };
   }
 
-  async publishVersion(contextInput, artifactId, input = {}) {
+  async patch(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    const artifact = this.#sameWorkArtifact(context, artifactId);
+    this.#assertCanManageArtifact(context, artifact);
+    const key = requiredText(input.idempotencyKey, "idempotencyKey");
+    if (key.length > 200) throw artifactError("ARTIFACT_INVALID_INPUT", "idempotencyKey is too long.", 400);
+    const sessionId = context.sessionId ?? `local-actor:${context.actorId}`;
+    const requestHash = sha256(Buffer.from(JSON.stringify({ artifactId, ...input })));
+    const replay = () => {
+      const row = this.store.selectOne("SELECT * FROM artifact_patch_operations WHERE session_id=? AND idempotency_key=?", [sessionId, key]);
+      if (!row) return null;
+      if (row.request_hash !== requestHash) throw artifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "Patch key was used with different input.", 409);
+      return { ...JSON.parse(row.receipt_json), idempotentReplay: true };
+    };
+    const prior = replay();
+    if (prior) return prior;
+    const base = this.store.getArtifactVersion(artifactId, input.version);
+    if (artifact.currentVersion !== input.version || !base || !safeHashEqual(base.contentHash, input.contentHash)) {
+      throw artifactError("ARTIFACT_PATCH_CONFLICT", "Patch base version/hash is not current.", 409);
+    }
+    const checkReference = () => {
+      if (!input.referenceId) return;
+      const ref = this.store.getArtifactReference(input.referenceId);
+      if (!ref || ref.revokedAt || ref.artifactId !== artifactId
+        || ref.pinnedVersion !== input.version || !safeHashEqual(ref.pinnedHash, input.contentHash)) {
+        throw artifactError("ARTIFACT_REFERENCE_PIN_CONFLICT", "Patch Reference does not match its base.", 409);
+      }
+    };
+    checkReference();
+    if (!isTextMime(base.mimeType) || base.byteLength > 4 * 1024 * 1024) {
+      throw artifactError("ARTIFACT_PATCH_UNSUPPORTED", "Patch requires a text Artifact no larger than 4 MiB.", 400);
+    }
+    if (!Array.isArray(input.edits) || !input.edits.length || input.edits.length > 100) {
+      throw artifactError("ARTIFACT_INVALID_INPUT", "Provide 1 to 100 exact text edits.", 400);
+    }
+    const buffer = await readFile(this.#safeStoragePath(base.storageKey));
+    if (!safeHashEqual(sha256(buffer), base.contentHash)) throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "Stored base failed verification.", 409);
+    let content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    for (const edit of input.edits) {
+      if (typeof edit.oldText !== "string" || !edit.oldText.length || typeof edit.newText !== "string") {
+        throw artifactError("ARTIFACT_INVALID_INPUT", "Each edit requires nonempty oldText and string newText.", 400);
+      }
+      const at = content.indexOf(edit.oldText);
+      if (at < 0 || content.indexOf(edit.oldText, at + 1) >= 0) {
+        throw artifactError("ARTIFACT_PATCH_AMBIGUOUS", "Each oldText must match exactly once; edits apply in order.", 409);
+      }
+      content = content.slice(0, at) + edit.newText + content.slice(at + edit.oldText.length);
+    }
+    if (Buffer.byteLength(content) > 4 * 1024 * 1024) throw artifactError("ARTIFACT_PATCH_UNSUPPORTED", "Patched text exceeds 4 MiB.", 400);
+    if (content === buffer.toString("utf8")) throw artifactError("ARTIFACT_PATCH_NO_CHANGE", "Patch must change content.", 400);
+    let receipt;
+    const commitPatch = (versionNumber, hash) => {
+      // Private publication already validates then atomically advances its pin.
+      if (!(context.kind === "worker" && artifact.scope === "task")) checkReference();
+      receipt = { artifactId, version: versionNumber, contentHash: hash,
+        auditAction: "artifact.patched", idempotencyKey: key, idempotentReplay: false };
+      this.store.db.run("INSERT INTO artifact_patch_operations VALUES (?, ?, ?, ?, ?, ?)",
+        [sessionId, key, requestHash, artifactId, JSON.stringify(receipt), this.clock()]);
+      this.#audit(context, artifactId, "artifact.patched", { idempotencyKey: key,
+        baseHash: base.contentHash, contentHash: hash, editCount: input.edits.length }, input.version, versionNumber);
+    };
+    try {
+      await this.publishVersion(contextInput, artifactId, {
+        content, mimeType: base.mimeType, expectedResourceVersion: artifact.resourceVersion,
+        expectedPinnedVersion: input.version, expectedPinnedHash: input.contentHash,
+        referenceId: input.referenceId, idempotencyKey: `patch:${sha256(Buffer.from(sessionId + key))}`
+      }, commitPatch);
+      return receipt;
+    } catch (error) {
+      const raced = replay();
+      if (raced) return raced;
+      throw error;
+    }
+  }
+
+  async publishVersion(contextInput, artifactId, input = {}, onPublished = null) {
     const context = this.context(contextInput);
     const artifact = this.#sameWorkArtifact(context, artifactId);
     if (context.kind === "worker" && artifact.scope === "task") {
-      return this.publishAndRepin(contextInput, artifactId, input);
+      return this.publishAndRepin(contextInput, artifactId, input, onPublished);
     }
     this.#assertCanManageArtifact(context, artifact);
     if (artifact.visibility === "repository_tracked") throw artifactError("ARTIFACT_REPOSITORY_CONTENT_FORBIDDEN", "Repository-tracked Artifacts do not store private versions.", 400);
@@ -649,6 +736,13 @@ export class ArtifactService {
     try {
       let affected = [];
       this.store.runInTransaction(() => {
+        const current = this.#sameWorkArtifact(this.context(contextInput), artifactId);
+        this.#assertCanManageArtifact(this.context(contextInput), current);
+        if (current.currentVersion !== artifact.currentVersion
+          || current.resourceVersion !== artifact.resourceVersion
+          || (input.expectedResourceVersion != null && current.resourceVersion !== input.expectedResourceVersion)) {
+          throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed before publish commit.", 409);
+        }
         this.store.createArtifactVersion({
           artifactId: artifact.artifactId, version: versionNumber, contentHash: prepared.hash,
           byteLength: buffer.byteLength, mimeType: optionalText(input.mimeType) ?? "text/markdown",
@@ -666,6 +760,7 @@ export class ArtifactService {
         this.#audit(context, artifact.artifactId, "artifact.version_published", {
           contentHash: prepared.hash, approvalStatus, affectedReferences: affected
         }, artifact.currentVersion, versionNumber);
+        onPublished?.(versionNumber, prepared.hash);
       });
       this.store.updateArtifactContentOperation(prepared.operationId, "completed");
       const updated = this.store.getArtifact(artifact.artifactId);
@@ -678,7 +773,7 @@ export class ArtifactService {
     }
   }
 
-  async publishAndRepin(contextInput, artifactId, input = {}) {
+  async publishAndRepin(contextInput, artifactId, input = {}, onPublished = null) {
     const context = this.context(contextInput);
     const artifact = this.#sameWorkArtifact(context, artifactId);
     const taskId = context.kind === "worker"
@@ -694,6 +789,7 @@ export class ArtifactService {
         403
       );
     }
+    this.#assertCanManageArtifact(context, artifact);
     if (artifact.status !== "active") {
       throw artifactError("ARTIFACT_VERSION_APPEND_FORBIDDEN", "Artifact status does not allow a new version.", 409);
     }
@@ -793,6 +889,7 @@ export class ArtifactService {
           referenceId: reference.referenceId, version: versionNumber,
           contentHash: prepared.hash, operationStatus: "completed", createdAt
         });
+        onPublished?.(versionNumber, prepared.hash);
       });
       this.store.updateArtifactContentOperation(prepared.operationId, "completed");
       const updated = this.store.getArtifact(artifact.artifactId);
@@ -840,21 +937,24 @@ export class ArtifactService {
 
   createReference(contextInput, artifactId, input = {}) {
     const context = this.context(contextInput);
-    const artifact = this.#sameWorkArtifact(context, artifactId);
+    const artifact = this.#readableArtifact(context, artifactId);
     const taskId = optionalText(input.taskId);
     const sessionId = optionalText(input.sessionId);
-    if (!taskId && !sessionId) throw artifactError("ARTIFACT_REFERENCE_TARGET_REQUIRED", "taskId or sessionId is required.", 400);
+    if (Boolean(taskId) === Boolean(sessionId)) throw artifactError("ARTIFACT_REFERENCE_TARGET_REQUIRED", "Exactly one of taskId or sessionId is required.", 400);
     if (context.kind === "worker"
       && ((taskId && taskId !== context.taskId) || (sessionId && sessionId !== context.sessionId))) {
       throw artifactError("ARTIFACT_REFERENCE_TARGET_FORBIDDEN", "Worker may create References only for its current Task or Session.", 403);
     }
-    if (context.kind !== "worker") this.#assertManager(context);
+    if (context.kind === "assistantChat" && (taskId || sessionId !== context.sessionId)) {
+      throw artifactError("ARTIFACT_REFERENCE_TARGET_FORBIDDEN", "Chat Sessions may create References only for themselves.", 403);
+    }
+    if (!["worker", "assistantChat"].includes(context.kind)) this.#assertManager(context);
     const task = taskId ? this.store.getTask(taskId) : null;
     if (taskId && (!task || task.work_id !== context.workId)) {
       throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Artifact references cannot cross Work boundaries.", 403);
     }
     const session = sessionId ? this.store.getSession(sessionId) : null;
-    if (sessionId && (!session || (session.workId ?? session.work_id) !== context.workId)) {
+    if (sessionId && (!session || (session.workId ?? session.work_id ?? null) !== (context.workId ?? null))) {
       throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Artifact references cannot target another Work's Session.", 403);
     }
     const relation = enumValue(input.relation, RELATIONS, "ARTIFACT_RELATION_INVALID");
@@ -961,6 +1061,53 @@ export class ArtifactService {
     });
     this.#audit(context, reference.artifactId, "artifact.access_revoked", { referenceId, reason });
     return revoked;
+  }
+
+  transferOwnership(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    const sessionId = context.sessionId ?? `local-actor:${context.actorId}`;
+    const key = requiredText(input.idempotencyKey, "idempotencyKey");
+    const requestHash = sha256(Buffer.from(JSON.stringify({ artifactId, ...input })));
+    const artifact = this.#sameWorkArtifact(context, artifactId);
+    const prior = this.store.selectOne("SELECT * FROM artifact_ownership_operations WHERE session_id=? AND idempotency_key=?", [sessionId, key]);
+    if (prior) {
+      if (prior.request_hash !== requestHash) throw artifactError("ARTIFACT_IDEMPOTENCY_CONFLICT", "Ownership operation key changed.", 409);
+      return { ...JSON.parse(prior.receipt_json), idempotentReplay: true };
+    }
+    this.#assertCanManageArtifact(context, artifact);
+    if (artifact.status !== "active" || artifact.visibility === "repository_tracked") throw artifactError("ARTIFACT_OWNERSHIP_FORBIDDEN", "Only active stored Artifacts may change ownership.", 409);
+    if (artifact.resourceVersion !== input.expectedResourceVersion) throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact ownership revision changed.", 409);
+    const scope = enumValue(input.scope, ARTIFACT_SCOPES, "ARTIFACT_SCOPE_INVALID");
+    const next = { ...artifact, scope, boundTaskId: null, boundSessionId: null,
+      visibility: scope === "work" ? "work_private" : scope === "task" ? "task_private" : "session_private" };
+    if (scope === "task") next.boundTaskId = requiredText(input.taskId ?? context.taskId, "taskId");
+    if (scope === "session") next.boundSessionId = requiredText(input.sessionId ?? context.sessionId, "sessionId");
+    this.#validateBinding(context.workId, next.visibility, next);
+    // Transfer is a write to both ownership scopes, not a way for a read-only
+    // caller to claim an Artifact or inject it into someone else's namespace.
+    this.#assertCanManageArtifact(context, next);
+    let receipt;
+    this.store.runInTransaction(() => {
+      const currentContext = this.context(contextInput);
+      const current = this.#sameWorkArtifact(currentContext, artifactId);
+      this.#assertCanManageArtifact(currentContext, current);
+      if (current.resourceVersion !== input.expectedResourceVersion) throw artifactError("ARTIFACT_RESOURCE_VERSION_CONFLICT", "Artifact changed before ownership commit.", 409);
+      const updated = this.store.updateArtifact(artifactId, { scope, visibility: next.visibility,
+        boundTaskId: next.boundTaskId, boundSessionId: next.boundSessionId, updatedAt: this.clock() });
+      if (scope === "task" && context.kind === "worker") this.createReference(contextInput, artifactId, {
+        taskId: next.boundTaskId, relation: "implementation_spec", versionPolicy: "fixed", version: updated.currentVersion
+      });
+      this.#indexArtifact(updated);
+      this.#audit(currentContext, artifactId, "artifact.ownership_changed", {
+        idempotencyKey: key, from: { scope: artifact.scope, taskId: artifact.boundTaskId, sessionId: artifact.boundSessionId },
+        to: { scope, taskId: next.boundTaskId, sessionId: next.boundSessionId }
+      });
+      receipt = { artifactId, scope, workId: updated.workId, taskId: updated.boundTaskId,
+        sessionId: updated.boundSessionId, resourceVersion: updated.resourceVersion,
+        auditAction: "artifact.ownership_changed", idempotencyKey: key, idempotentReplay: false };
+      this.store.db.run("INSERT INTO artifact_ownership_operations VALUES (?, ?, ?, ?)", [sessionId, key, requestHash, JSON.stringify(receipt)]);
+    });
+    return receipt;
   }
 
   updateMetadata(contextInput, artifactId, patch = {}) {
@@ -1155,6 +1302,75 @@ export class ArtifactService {
       destinationPath: destination, repositoryId: repository?.id ?? null, contentHash: version.contentHash
     }, version.version, version.version);
     return { artifactId: artifact.artifactId, version: version.version, contentHash: version.contentHash, destinationPath: destination, repositoryWrite: Boolean(repository) };
+  }
+
+  async promoteToRepository(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    const authorize = () => authorizeArtifactPromotion({ store: this.store, sessionId: context.sessionId,
+      currentTurnId: contextInput.turnExecutionId, eventId: input.eventId, sequence: input.sequence,
+      path: input.path });
+    authorize();
+    const artifact = this.#readableArtifact(context, artifactId);
+    const version = this.store.getArtifactVersion(artifactId, input.version);
+    if (!version?.storageKey || !/^[a-f0-9]{64}$/.test(input.contentHash ?? "") || !safeHashEqual(version.contentHash, input.contentHash)) {
+      throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "Promotion requires an exact stored Artifact version/hash.", 409);
+    }
+    if (version.byteLength > 16 * 1024 * 1024) throw artifactError("ARTIFACT_PROMOTION_TOO_LARGE", "Promotion is limited to 16 MiB.", 413);
+    const content = await readFile(this.#safeStoragePath(version.storageKey));
+    if (content.length !== version.byteLength || sha256(content) !== version.contentHash) throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Promotion content failed SHA-256 verification.", 409);
+    const current = this.context(contextInput);
+    this.#readableArtifact(current, artifactId);
+    const authorization = authorize();
+    const session = this.store.getSession(current.sessionId);
+    await ensureArtifactCommitHook(session?.external?.cwd, { dbPath: this.store.dbPath });
+    this.context(contextInput);
+    this.#readableArtifact(current, artifactId);
+    authorize();
+    const destination = publishArtifactRepositoryFile({ cwd: session?.external?.cwd, path: input.path, content });
+    const promotionId = `artifact_promotion:${this.idFactory()}`;
+    // Only a completed file publication earns commit evidence. A DB failure
+    // leaves an unapproved file, never a permission to commit it.
+    this.store.runInTransaction(() => {
+      this.store.db.run("INSERT INTO artifact_repository_promotions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [promotionId, destination.repositoryPath, destination.path, artifactId, version.version,
+          version.contentHash, current.sessionId, JSON.stringify(authorization), this.clock()]);
+      this.#audit(current, artifact.artifactId, "artifact.promoted_to_repository", {
+        promotionId, ...destination, contentHash: version.contentHash, authorization
+      }, version.version, version.version);
+    });
+    return { promotionId, artifactId, version: version.version, contentHash: version.contentHash,
+      ...destination, staged: false, committed: false, auditAction: "artifact.promoted_to_repository" };
+  }
+
+  verifyRepositoryPromotion({ repositoryPath, path, contentHash }) {
+    const rows = this.store.selectAll("SELECT * FROM artifact_repository_promotions WHERE repository_path=? AND target_path=? AND content_hash=?", [repositoryPath, path, contentHash]);
+    return rows.some(row => {
+      const artifact = this.store.getArtifact(row.artifact_id);
+      const version = this.store.getArtifactVersion(row.artifact_id, row.version);
+      return artifact?.status === "active" && version?.contentHash === contentHash
+        && Boolean(JSON.parse(row.authorization_json).eventId);
+    });
+  }
+
+  async materialize(contextInput, artifactId, input = {}) {
+    const context = this.context(contextInput);
+    const artifact = this.#readableArtifact(context, artifactId);
+    const versionNumber = boundedInteger(input.version, 1, Number.MAX_SAFE_INTEGER, null, "version");
+    const hash = requiredText(input.contentHash, "contentHash");
+    const version = this.store.getArtifactVersion(artifactId, versionNumber);
+    if (!version || !/^[a-f0-9]{64}$/.test(hash) || !safeHashEqual(version.contentHash, hash)) {
+      throw artifactError("ARTIFACT_VERSION_HASH_MISMATCH", "An exact immutable Artifact version and SHA-256 are required.", 409);
+    }
+    if (!version.storageKey) throw artifactError("ARTIFACT_MATERIALIZE_UNAVAILABLE", "Artifact has no stored content.", 409);
+    if (version.byteLength > 16 * 1024 * 1024) throw artifactError("ARTIFACT_MATERIALIZE_TOO_LARGE", "Materialization is limited to 16 MiB.", 413);
+    const buffer = await readFile(this.#safeStoragePath(version.storageKey));
+    if (buffer.length !== version.byteLength || sha256(buffer) !== hash) throw artifactError("ARTIFACT_INTEGRITY_FAILED", "Stored content does not match the fixed version.", 409);
+    const current = this.context(contextInput);
+    this.#readableArtifact(current, artifactId);
+    const session = current.sessionId ? this.store.getSession(current.sessionId) : null;
+    const receipt = materializeArtifactBytes({ cwd: session?.external?.cwd, relativePath: input.path, content: buffer });
+    this.#audit(current, artifact.artifactId, "artifact.materialized", { ...receipt, contentHash: hash }, versionNumber, versionNumber);
+    return { artifactId, version: versionNumber, contentHash: hash, ...receipt, auditAction: "artifact.materialized" };
   }
 
   async localFile(contextInput, artifactId, input = {}) {
@@ -1433,8 +1649,10 @@ export class ArtifactService {
   }
 
   #canManageArtifact(context, artifact) {
+    if (context.kind === "assistantChat") return artifact.scope === "session" && artifact.boundSessionId === context.sessionId;
     if (artifact.workId !== context.workId) return false;
-    if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return true;
+    if (["local_user", "platform_admin"].includes(context.kind)) return true;
+    if (context.kind === "workChat") return artifact.scope === "work";
     if (context.kind !== "worker") return false;
     this.#assertActiveWorkerBinding(context);
     return artifact.scope === "work"
@@ -1442,7 +1660,9 @@ export class ArtifactService {
   }
 
   #assertCanManageReference(context, reference) {
-    if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return;
+    if (["local_user", "platform_admin"].includes(context.kind)) return;
+    if (context.kind === "workChat" && reference.workId === context.workId) return;
+    if (context.kind === "assistantChat" && reference.sessionId === context.sessionId) return;
     if (context.kind === "worker"
       && ((reference.taskId && reference.taskId === context.taskId)
         || (reference.sessionId && reference.sessionId === context.sessionId))) return;
@@ -1466,11 +1686,8 @@ export class ArtifactService {
   }
 
   #canRead(context, artifact, relatedTaskIds = null) {
-    if (artifact.workId !== context.workId || artifact.status === "revoked") return false;
-    if (["workChat", "local_user", "platform_admin"].includes(context.kind)) return true;
-    if (context.kind !== "worker") return false;
-    if (artifact.scope === "session") return artifact.boundSessionId === context.sessionId;
-    return ["work", "task"].includes(artifact.scope);
+    return artifact.status !== "revoked"
+      && ["assistantChat", "workChat", "worker", "local_user", "platform_admin"].includes(context.kind);
   }
 
   #canAuthorizeReference(context, artifact) {
@@ -1604,7 +1821,7 @@ export class ArtifactService {
     }
     if (boundSessionId) {
       const session = this.store.getSession(boundSessionId);
-      if (!session || (session.workId ?? session.work_id) !== workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Bound Session must belong to the current Work.", 403);
+      if (!session || (session.workId ?? session.work_id ?? null) !== workId) throw artifactError("ARTIFACT_CROSS_WORK_FORBIDDEN", "Bound Session must belong to the current Work.", 403);
     }
     return { boundTaskId, boundSessionId };
   }

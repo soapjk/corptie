@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import { performance } from "node:perf_hooks";
 
 import { ArtifactService, readVerifiedArtifactPage } from "../src/application/artifactService.mjs";
 import { ArtifactReadCoordinator } from "../src/application/artifactReadCoordinator.mjs";
+import { inspectArtifactMarkdownCommit } from "../src/runtime/artifactMarkdownCommitGate.mjs";
 import { artifactDynamicTools, callArtifactDynamicTool } from "../src/application/artifactDynamicTools.mjs";
 import { CollaborationCore } from "../src/collaboration/collaborationCore.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
@@ -60,6 +62,228 @@ function pinnedReadOptions(artifact, reference = null, options = {}) {
     ...options
   };
 }
+
+test("promotion records durable exact-path evidence without staging and the Git gate consumes it", async () => {
+  const f = await fixture();
+  try {
+    const root = join(f.directory, "promotion-project");
+    await mkdir(root);
+    const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
+    git("init", "--quiet");
+    const hooks = git("rev-parse", "--git-path", "hooks").trim();
+    const originalMarker = join(root, "original-hook-ran");
+    await writeFile(join(root, hooks, "pre-commit"), `#!/bin/sh\nprintf ran > '${originalMarker}'\n`, { mode: 0o700 });
+    f.store.upsertSession({ ...f.store.getSession("session:worker"), cwd: root });
+    f.store.createUserMessageDelivery({ deliveryId: "delivery:promotion", messageId: "message:promotion", sessionId: "session:worker",
+      binding: { bindingId: "binding:promotion", routingVersion: 1, providerId: "claude-sdk", providerSessionId: "thread:worker" },
+      agentId: f.worker.agentId, source: { type: "desktop" }, text: "请将 `docs/spec.md` 纳入版本控制。" });
+    const event = f.store.getSessionEvent("user-message:message:promotion");
+    const artifact = await f.service.create(managerContext(f), { title: "Spec", content: "approved spec" });
+    const input = { path: "docs/spec.md", version: 1, contentHash: artifact.versions[0].contentHash, eventId: event.eventId, sequence: event.sequence };
+    await assert.rejects(() => f.service.promoteToRepository(workerContext(f), artifact.artifactId, input), { code: "ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED" });
+    const context = { ...workerContext(f), turnExecutionId: "delivery:promotion" };
+    await assert.rejects(() => f.service.promoteToRepository(context, artifact.artifactId, { ...input, path: "docs/other.md" }), { code: "ARTIFACT_PROMOTION_AUTHORIZATION_REQUIRED" });
+    const receipt = await f.service.promoteToRepository(context, artifact.artifactId, input);
+    assert.equal(receipt.staged, false);
+    assert.equal(git("ls-files"), "");
+    assert.equal(await readFile(join(root, input.path), "utf8"), "approved spec");
+    const restarted = new ArtifactService({ store: f.store, contentRoot: f.service.contentRoot });
+    git("add", "--", input.path);
+    const verifyPromotion = item => restarted.verifyRepositoryPromotion(item);
+    assert.equal((await inspectArtifactMarkdownCommit(root, { verifyPromotion })).ok, true);
+    await writeFile(join(root, input.path), "unauthorized replacement");
+    git("add", "--", input.path);
+    assert.equal((await inspectArtifactMarkdownCommit(root, { verifyPromotion })).ok, false);
+    const commit = () => git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--no-gpg-sign", "-m", "promoted");
+    assert.throws(commit, /GIT_MARKDOWN_PROMOTION_REQUIRED/);
+    await writeFile(join(root, input.path), "approved spec");
+    git("add", "--", input.path);
+    commit();
+    assert.equal(git("log", "-1", "--format=%s").trim(), "promoted");
+    assert.equal(await readFile(originalMarker, "utf8"), "ran");
+    await mkdir(join(root, ".corptie"));
+    await writeFile(join(root, ".corptie", "ignored.txt"), "ignored");
+    assert.equal(git("check-ignore", "--quiet", ".corptie/ignored.txt"), "");
+    await writeFile(join(root, "unapproved.md"), "unapproved");
+    git("add", "-N", "--", "unapproved.md");
+    assert.throws(() => git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "--no-gpg-sign", "--only", "unapproved.md", "-m", "must fail"), /GIT_MARKDOWN_PROMOTION_REQUIRED/);
+    assert.equal(f.store.listArtifactAudit("work:one", artifact.artifactId).filter(event => event.action === "artifact.promoted_to_repository").length, 1);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("materialization binds the Session workspace, verifies fixed content and leaves Git untouched", async () => {
+  const f = await fixture();
+  try {
+    const root = join(f.directory, "project");
+    await mkdir(root);
+    const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" });
+    git("init", "--quiet");
+    f.store.upsertSession({ ...f.store.getSession("session:worker"), cwd: root });
+    const artifact = await f.service.create(managerContext(f), { title: "Materialize", content: "fixed body" });
+    const input = { version: 1, contentHash: artifact.versions[0].contentHash, path: "artifacts/report.md" };
+    await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, { ...input, contentHash: "0".repeat(64) }), { code: "ARTIFACT_VERSION_HASH_MISMATCH" });
+    for (const path of ["../escape.md", "/tmp/escape.md", "a/../../escape.md", ".git/config", ".gitignore"]) {
+      await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, { ...input, path }), { code: "ARTIFACT_PATH_INVALID" });
+    }
+    const result = await callArtifactDynamicTool(f.service, { tool: "corptie_artifact_materialize", actorId: f.worker.agentId,
+      metadata: { sessionId: "session:worker" }, arguments: { artifact_id: artifact.artifactId, version: 1, content_hash: input.contentHash, path: input.path } });
+    assert.equal(await readFile(result.path, "utf8"), "fixed body");
+    assert.equal(result.gitIgnored, true);
+    assert.equal(git("status", "--porcelain"), "");
+    assert.equal(git("ls-files"), "");
+    await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, input), /ARTIFACT_DESTINATION_EXISTS/);
+    assert.equal(f.store.listArtifactAudit("work:one", artifact.artifactId).filter(event => event.action === "artifact.materialized").length, 1);
+    git("add", "--force", ".corptie/artifacts/report.md");
+    await assert.rejects(() => f.service.materialize(workerContext(f), artifact.artifactId, { ...input, path: "another.md" }), { code: "ARTIFACT_CORPTIE_TRACKED" });
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Session ownership migration preserves populated legacy versions, references, audits and schema dependents", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(managerContext(f), { title: "Legacy", content: "historical v1" });
+    const reference = f.service.createReference(managerContext(f), artifact.artifactId, {
+      taskId: "task:one", relation: "implementation_spec", versionPolicy: "fixed", version: 1
+    });
+    await f.service.publishVersion(managerContext(f), artifact.artifactId, { content: "historical v2" });
+    const tables = ["artifacts", "artifact_references", "artifact_audit_events"];
+    const snapshot = () => Object.fromEntries([...tables, "artifact_versions"].map(table => [table, f.store.selectAll(`SELECT * FROM ${table}`)]));
+    const before = snapshot();
+    const dependents = f.store.selectAll("SELECT name, sql FROM sqlite_master WHERE type IN ('index','trigger') AND tbl_name IN ('artifacts','artifact_references','artifact_audit_events') AND sql IS NOT NULL ORDER BY name");
+    // Reproduce the pre-upgrade schema, not an already migrated empty database.
+    f.store.db.run("PRAGMA foreign_keys=OFF");
+    for (const table of tables) {
+      const schema = f.store.selectOne("SELECT sql FROM sqlite_master WHERE name=?", [table]).sql;
+      const objects = f.store.selectAll("SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger') AND sql IS NOT NULL", [table]);
+      const legacy = `${table}_legacy_test`;
+      f.store.db.run(schema.replace(new RegExp(`CREATE TABLE [\"\\x60]?${table}[\"\\x60]?`, "i"), `CREATE TABLE ${legacy}`).replace(/\bwork_id\s+TEXT\b/i, "work_id TEXT NOT NULL"));
+      f.store.db.run(`INSERT INTO ${legacy} SELECT * FROM ${table}`);
+      f.store.db.run(`DROP TABLE ${table}`);
+      f.store.db.run(`ALTER TABLE ${legacy} RENAME TO ${table}`);
+      for (const object of objects) f.store.db.run(object.sql);
+      assert.equal(f.store.selectAll(`PRAGMA table_info(${table})`).find(column => column.name === "work_id").notnull, 1);
+    }
+    f.store.db.run("UPDATE artifacts SET work_id='work:missing-legacy' WHERE artifact_id=?", [artifact.artifactId]);
+    f.store.db.run("PRAGMA foreign_keys=ON");
+    const invalid = snapshot();
+    assert.throws(() => f.store.migrateSessionOwnedArtifacts(), /foreign key failure/);
+    assert.deepEqual(snapshot(), invalid);
+    assert.equal(f.store.selectOne("PRAGMA foreign_keys").foreign_keys, 1);
+    for (const table of tables) assert.equal(f.store.selectAll(`PRAGMA table_info(${table})`).find(column => column.name === "work_id").notnull, 1);
+    f.store.db.run("UPDATE artifacts SET work_id='work:one' WHERE artifact_id=?", [artifact.artifactId]);
+    f.store.migrateSessionOwnedArtifacts();
+    assert.deepEqual(snapshot(), before);
+    assert.deepEqual(f.store.selectAll("SELECT name, sql FROM sqlite_master WHERE type IN ('index','trigger') AND tbl_name IN ('artifacts','artifact_references','artifact_audit_events') AND sql IS NOT NULL ORDER BY name"), dependents);
+    assert.deepEqual(f.store.selectAll("PRAGMA foreign_key_check"), []);
+    for (const table of tables) assert.equal(f.store.selectAll(`PRAGMA table_info(${table})`).find(column => column.name === "work_id").notnull, 0);
+    assert.equal((await f.service.get(workerContext(f), artifact.artifactId, pinnedReadOptions(artifact, reference))).content, "historical v1");
+    const after = snapshot();
+    f.store.migrateSessionOwnedArtifacts();
+    assert.deepEqual(snapshot(), after);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("assistantChat owns Artifacts without a Work, with global read and owner-only mutation", async () => {
+  const f = await fixture();
+  try {
+    for (const id of ["chat:a", "chat:b"]) f.store.upsertSession({ id, title: id, provider: "codex-app-server", status: "running", sessionKind: "assistantChat", agentId: f.manager.agentId });
+    const a = { actorId: f.manager.agentId, sessionId: "chat:a" };
+    const b = { actorId: f.manager.agentId, sessionId: "chat:b" };
+    const created = await f.service.create(a, { title: "Chat notes", content: "private ownership", idempotencyKey: "chat-create" });
+    assert.equal(created.workId, null);
+    assert.equal(created.scope, "session");
+    assert.equal(created.boundSessionId, "chat:a");
+    assert.equal((await f.service.create(a, { title: "Chat notes", content: "private ownership", idempotencyKey: "chat-create" })).artifactId, created.artifactId);
+    assert.equal((await f.service.get(b, created.artifactId, pinnedReadOptions(created))).content, "private ownership");
+    assert.equal((await f.service.get(workerContext(f), created.artifactId, pinnedReadOptions(created))).content, "private ownership");
+    const ownReference = f.service.createReference(a, created.artifactId, { sessionId: "chat:a", relation: "research_evidence" });
+    assert.throws(() => f.service.revokeReference(b, ownReference.referenceId, "claim"), { code: "ARTIFACT_REFERENCE_READ_ONLY" });
+    assert.ok(f.service.revokeReference(a, ownReference.referenceId, "organized elsewhere").revokedAt);
+    const workArtifact = await f.service.create(managerContext(f), { title: "Work read", content: "shared read" });
+    const crossWorkReference = f.service.createReference(a, workArtifact.artifactId, { sessionId: "chat:a", relation: "research_evidence" });
+    assert.equal(crossWorkReference.workId, null);
+    assert.throws(() => f.service.updateMetadata(b, created.artifactId, { title: "forbidden" }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    assert.equal(f.service.updateMetadata(a, created.artifactId, { title: "Updated" }).title, "Updated");
+    const patched = await f.service.patch(a, created.artifactId, { version: 1, contentHash: created.versions[0].contentHash, idempotencyKey: "chat-patch", edits: [{ oldText: "private", newText: "session" }] });
+    assert.equal(patched.version, 2);
+    assert.ok(f.store.listArtifactAudit(null, created.artifactId).some(event => event.action === "artifact.patched"));
+    assert.equal(f.store.listArtifactAudit("work:one", created.artifactId).length, 0);
+    f.service.revokeArtifact(a, created.artifactId, "test deletion");
+    f.service.restoreArtifact(a, created.artifactId);
+    await assert.rejects(() => f.service.create(a, { title: "bad", scope: "work", idempotencyKey: "bad" }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    f.store.migrateSessionOwnedArtifacts();
+    assert.equal(f.store.getArtifact(created.artifactId).currentVersion, 2);
+    assert.equal(f.store.selectAll("PRAGMA foreign_key_check(artifacts)").length, 0);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Artifact patch is compact, fixed-base, durable, and rejects drift or ambiguous edits", async () => {
+  const f = await fixture();
+  try {
+    const artifact = await f.service.create(managerContext(f), { title: "Patch", content: "alpha\nbeta\n", scope: "work" });
+    const input = { version: 1, contentHash: artifact.versions[0].contentHash,
+      idempotencyKey: "patch:one", edits: [{ oldText: "alpha", newText: "gamma" }] };
+    const first = await f.service.patch(managerContext(f), artifact.artifactId, input);
+    assert.equal(first.version, 2);
+    const read = await f.service.get(workerContext(f), artifact.artifactId, { version: first.version,
+      contentHash: first.contentHash, turnExecutionId: "patch:read" });
+    assert.equal(read.content, "gamma\nbeta\n");
+    const restarted = new ArtifactService({ store: f.store, contentRoot: join(f.directory, "data", "artifacts") });
+    await restarted.initialize();
+    assert.equal((await restarted.patch(managerContext(f), artifact.artifactId, input)).idempotentReplay, true);
+    await assert.rejects(() => f.service.patch(managerContext(f), artifact.artifactId, { ...input, edits: [{ oldText: "alpha", newText: "wrong" }] }), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
+    await assert.rejects(() => f.service.patch(managerContext(f), artifact.artifactId, { ...input, idempotencyKey: "stale" }), { code: "ARTIFACT_PATCH_CONFLICT" });
+    await assert.rejects(() => f.service.patch(managerContext(f), artifact.artifactId, { ...input, version: 2, contentHash: first.contentHash, idempotencyKey: "ambiguous", edits: [{ oldText: "a", newText: "z" }] }), { code: "ARTIFACT_PATCH_AMBIGUOUS" });
+    const next = { version: 2, contentHash: first.contentHash, idempotencyKey: "race", edits: [{ oldText: "beta", newText: "delta" }] };
+    const results = await Promise.all([f.service.patch(managerContext(f), artifact.artifactId, next), restarted.patch(managerContext(f), artifact.artifactId, next)]);
+    assert.ok(results.every(result => result.version === 3));
+    assert.equal(f.store.getArtifact(artifact.artifactId).currentVersion, 3);
+    assert.equal(f.store.listArtifactAudit("work:one", artifact.artifactId).filter(row => row.action === "artifact.patched").length, 2);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("Worker patch repins its own Task and rejects another Task's private Artifact", async () => {
+  const f = await fixture();
+  try {
+    const created = await f.service.create(workerContext(f), { title: "Private", content: "old", idempotencyKey: "private:create" });
+    const artifact = created.artifact ?? created;
+    const version = artifact.versions?.[0] ?? f.store.getArtifactVersion(artifact.artifactId, 1);
+    const input = { version: 1, contentHash: version.contentHash, idempotencyKey: "private:patch", edits: [{ oldText: "old", newText: "new" }] };
+    await assert.rejects(() => f.service.patch(peerContext(f), artifact.artifactId, input), { code: "ARTIFACT_READ_ONLY" });
+    const result = await f.service.patch(workerContext(f), artifact.artifactId, input);
+    assert.equal(result.version, 2);
+    assert.ok(f.store.listArtifactReferences({ artifactId: artifact.artifactId }).some(ref => ref.pinnedVersion === 2 && ref.pinnedHash === result.contentHash));
+    assert.equal((await f.service.patch(workerContext(f), artifact.artifactId, input)).idempotentReplay, true);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("ownership transfer preserves immutable content and requires write access to both scopes", async () => {
+  const f = await fixture();
+  try {
+    const created = await f.service.create(workerContext(f), { title: "Ownership", content: "fixed", idempotencyKey: "ownership:create" });
+    const id = created.artifactId;
+    const version = f.store.getArtifactVersion(id, 1);
+    await assert.rejects(() => f.service.create(managerContext(f), {
+      title: "Forbidden private creation", visibility: "task_private", boundTaskId: "task:one", content: "forbidden"
+    }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    await assert.rejects(() => f.service.publishAndRepin(managerContext(f), id, { taskId: "task:one", content: "forbidden" }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    const input = { scope: "work", expectedResourceVersion: f.store.getArtifact(id).resourceVersion, idempotencyKey: "ownership:share" };
+    assert.throws(() => f.service.transferOwnership(peerContext(f), id, input), { code: "ARTIFACT_READ_ONLY" });
+    assert.throws(() => f.service.transferOwnership(managerContext(f), id, input), { code: "ARTIFACT_WRITE_FORBIDDEN" });
+    const shared = f.service.transferOwnership(workerContext(f), id, input);
+    assert.equal(shared.scope, "work");
+    assert.equal(f.service.transferOwnership(workerContext(f), id, input).idempotentReplay, true);
+    assert.throws(() => f.service.transferOwnership(workerContext(f), id, { ...input, scope: "task" }), { code: "ARTIFACT_IDEMPOTENCY_CONFLICT" });
+    assert.throws(() => f.service.transferOwnership(workerContext(f), id, { ...input, idempotencyKey: "stale" }), { code: "ARTIFACT_RESOURCE_VERSION_CONFLICT" });
+    f.service.updateMetadata(peerContext(f), id, { title: "Shared edit" });
+    const back = { scope: "task", expectedResourceVersion: f.store.getArtifact(id).resourceVersion, idempotencyKey: "ownership:private" };
+    assert.throws(() => f.service.transferOwnership(workerContext(f), id, { ...back, taskId: "task:peer" }), { code: "ARTIFACT_READ_ONLY" });
+    assert.equal(f.service.transferOwnership(workerContext(f), id, back).taskId, "task:one");
+    assert.throws(() => f.service.updateMetadata(peerContext(f), id, { title: "Denied" }), { code: "ARTIFACT_READ_ONLY" });
+    assert.deepEqual(f.store.getArtifactVersion(id, 1), version);
+    assert.equal(f.store.listArtifactAudit("work:one", id).filter(row => row.action === "artifact.ownership_changed").length, 2);
+  } finally { f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
+});
 
 test("Task deletion can revoke, promote, or retain bound Artifacts explicitly", async () => {
   const f = await fixture();
@@ -217,7 +441,7 @@ test("local file lookup reuses the stored Artifact object without reading or mat
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 
-test("Work Sessions read same-Work Artifacts without References while cross-Work access remains forbidden", async () => {
+test("Sessions read project Artifacts across Work and private ownership without individual grants", async () => {
   const f = await fixture();
   try {
     const artifact = await f.service.create(managerContext(f), { title: "Security", visibility: "work_private", content: "security requirement" });
@@ -231,17 +455,17 @@ test("Work Sessions read same-Work Artifacts without References while cross-Work
       referenceId: unrelatedReference.referenceId
     })), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN", statusCode: 404 });
 
-    const taskPrivate = await f.service.create(managerContext(f), {
+    const taskPrivate = await f.service.create(localUserContext, {
       title: "Task private", visibility: "task_private", boundTaskId: "task:one", content: "work item only"
     });
     assert.equal((await f.service.get(peerContext(f), taskPrivate.artifactId, pinnedReadOptions(taskPrivate))).content, "work item only");
     const taskReference = f.service.createReference(managerContext(f), taskPrivate.artifactId, { taskId: "task:one", relation: "implementation_spec" });
     assert.equal((await f.service.get(workerContext(f), taskPrivate.artifactId, pinnedReadOptions(taskPrivate, taskReference))).content, "work item only");
 
-    const sessionPrivate = await f.service.create(managerContext(f), {
+    const sessionPrivate = await f.service.create(localUserContext, {
       title: "Session private", visibility: "session_private", boundSessionId: "session:manager", content: "manager only"
     });
-    await assert.rejects(() => f.service.get(workerContext(f), sessionPrivate.artifactId, pinnedReadOptions(sessionPrivate)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
+    assert.equal((await f.service.get(workerContext(f), sessionPrivate.artifactId, pinnedReadOptions(sessionPrivate))).content, "manager only");
     const sessionReference = f.service.createReference(managerContext(f), sessionPrivate.artifactId, { sessionId: "session:worker", relation: "research_evidence" });
     assert.equal((await f.service.get(workerContext(f), sessionPrivate.artifactId, pinnedReadOptions(sessionPrivate, sessionReference))).content, "manager only");
 
@@ -253,7 +477,15 @@ test("Work Sessions read same-Work Artifacts without References while cross-Work
 
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "task_private", { confirmed: true }), { code: "ARTIFACT_TASK_REQUIRED" });
     assert.throws(() => f.service.changeVisibility(managerContext(f), artifact.artifactId, "repository_tracked", { confirmed: true }), { code: "ARTIFACT_VISIBILITY_TRANSITION_FORBIDDEN" });
-    await assert.rejects(() => f.service.get(outsiderContext(f), artifact.artifactId, pinnedReadOptions(artifact)), { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" });
+    assert.equal((await f.service.get(outsiderContext(f), artifact.artifactId, pinnedReadOptions(artifact))).content, "security requirement");
+    assert.throws(() => f.service.updateMetadata(outsiderContext(f), artifact.artifactId, { title: "forbidden" }), { code: "ARTIFACT_CROSS_WORK_FORBIDDEN" });
+    assert.ok(f.service.list(outsiderContext(f)).some(item => item.artifactId === artifact.artifactId && item.access.read && !item.access.write));
+    assert.ok((await f.service.search(outsiderContext(f), "security")).results.some(item => item.artifact.artifactId === artifact.artifactId));
+    f.store.upsertSession({ id: "session:chat", title: "Chat", provider: "codex-app-server", status: "running", sessionKind: "assistantChat", agentId: f.manager.agentId });
+    const chat = { actorId: f.manager.agentId, sessionId: "session:chat" };
+    assert.equal((await f.service.get(chat, artifact.artifactId, pinnedReadOptions(artifact))).content, "security requirement");
+    assert.ok(f.service.list(chat).some(item => item.artifactId === artifact.artifactId && !item.access.write));
+    assert.throws(() => f.service.updateMetadata(managerContext(f), taskPrivate.artifactId, { title: "forbidden" }), { code: "ARTIFACT_WRITE_FORBIDDEN" });
     const sharedByWorker = await f.service.create(workerContext(f), {
       title: "Shared by Worker", visibility: "work_private", scope: "work",
       content: "shared", idempotencyKey: "shared-by-worker"
@@ -616,14 +848,9 @@ test("parallel Worker Sessions owned by one Agent create Artifacts within their 
     ]);
     assert.equal(originalPage.content, "original");
     assert.equal(parallelPage.content, "parallel");
-    await assert.rejects(
-      f.service.get(workerContext(f), parallel.artifactId, pinnedReadOptions(parallel)),
-      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
-    );
-    await assert.rejects(
-      f.service.get(parallelContext, original.artifactId, pinnedReadOptions(original)),
-      { code: "ARTIFACT_NOT_FOUND_OR_FORBIDDEN" }
-    );
+    assert.equal((await f.service.get(workerContext(f), parallel.artifactId, pinnedReadOptions(parallel))).content, "parallel");
+    assert.equal((await f.service.get(parallelContext, original.artifactId, pinnedReadOptions(original))).content, "original");
+    assert.throws(() => f.service.updateMetadata(parallelContext, original.artifactId, { title: "forbidden" }), { code: "ARTIFACT_READ_ONLY" });
   } finally { await f.store.close(); await rm(f.directory, { recursive: true, force: true }); }
 });
 

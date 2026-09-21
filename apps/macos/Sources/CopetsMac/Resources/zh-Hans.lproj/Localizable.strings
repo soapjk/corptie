@@ -42,6 +42,7 @@
 "Completion Sound" = "完成提示音";
 "Config" = "配置文件";
 "Connect trusted Feishu users to sessions on this Mac." = "将受信任的飞书用户连接到这台 Mac 上的会话。";
+"Connect trusted IM users to sessions on this Mac." = "将受信任的即时通讯用户连接到这台 Mac 上的会话。";
 "Current version" = "当前版本";
 "Data Directory" = "数据目录";
 "Database" = "数据库";
