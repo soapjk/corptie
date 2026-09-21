@@ -3,6 +3,7 @@ import PhotosUI
 import UniformTypeIdentifiers
 import ImageIO
 import CorptieClientCore
+import CorptieConversation
 
 struct PadComposerExtras: View {
     @Bindable var workspace: PadWorkspace
@@ -105,7 +106,14 @@ struct PadComposerExtras: View {
             selected.append(item)
         }
         workspace.draftMentions[sessionID] = selected
-        workspace.drafts[sessionID, default: ""] += "@\(name) "
+        let currentDraft = workspace.drafts[sessionID] ?? ""
+        if let query = ComposerMentionQuery.resolve(in: currentDraft, selection: NSRange(location: (currentDraft as NSString).length, length: 0)) {
+            let prefix = (currentDraft as NSString).substring(to: query.replacementRange.location)
+            let suffix = (currentDraft as NSString).substring(from: query.replacementRange.location + query.replacementRange.length)
+            workspace.drafts[sessionID] = "\(prefix)@\(name) \(suffix)"
+        } else {
+            workspace.drafts[sessionID, default: ""] += "@\(name) "
+        }
         showMentions = false
     }
     private func pasteImage() {

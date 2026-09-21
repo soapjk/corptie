@@ -13,6 +13,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../../packages/CorptieClientCore"),
+        .package(path: "../../packages/CorptieConversation"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.1"),
         .package(url: "https://github.com/tevelee/SwiftUI-Flow", exact: "3.1.1")
     ],
@@ -30,6 +31,7 @@ let package = Package(
             name: "CorptieMac",
             dependencies: [
                 .product(name: "CorptieClientCore", package: "CorptieClientCore"),
+                .product(name: "CorptieConversation", package: "CorptieConversation"),
                 "RectanglePacking",
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Flow", package: "SwiftUI-Flow")

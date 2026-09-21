@@ -66,6 +66,7 @@ import {
 } from "./application/providerSessionProjection.mjs";
 import { platformDynamicTools, callPlatformDynamicTool } from "./application/platformDynamicTools.mjs";
 import { WorkChatContextService } from "./application/workChatContextService.mjs";
+import { WorkDiscussionApplicationService } from "./application/workDiscussionApplicationService.mjs";
 import {
   WorkChatOperationService,
   workChatDynamicTools,
@@ -441,6 +442,7 @@ const workService = new WorkApplicationService({
   store,
   onEntityChanged: (type, payload) => emitEvent(type, payload)
 });
+const workDiscussionService = new WorkDiscussionApplicationService({ workService, launch: launchWorkChatSession });
 let sessionRuntimeReleaseService = null;
 const taskCompletionService = new TaskCompletionService({
   store,
@@ -5752,23 +5754,7 @@ async function launchWorkChatSession({ agent, work, providerId: requestedProvide
 }
 
 async function ensureWorkChatSession(work) {
-  const existing = store.getWorkChatSession(work.id);
-  if (existing) return existing;
-  const agent = (work.contributorAgentIds ?? [])
-    .map((agentId) => store.getAgent(agentId))
-    .find(Boolean);
-  if (!agent) {
-    const error = new Error("创建 Work Chat 需要至少一个有效的 Contributor Agent。");
-    error.code = "WORK_CONTRIBUTOR_REQUIRED";
-    error.statusCode = 400;
-    throw error;
-  }
-  return launchWorkChatSession({
-    agent,
-    work,
-    providerId: agentProviderRegistry.defaultProviderId,
-    title: `${work.name}_Chat`
-  });
+  return workDiscussionService.ensure(work.id, agentProviderRegistry.defaultProviderId);
 }
 
 async function reconcileWorkChatsAtStartup() {
@@ -6918,7 +6904,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
 
   const slashCommand = parseSlashCommand(value);
   if (slashCommand && !(isClearCommand(value) && message.images.length === 0) && options.fromAgentWorkQueue !== true && !options.agentTask
-      && ["desktop", "feishu"].includes(source.type)) {
+      && ["desktop", "feishu", "remote-client"].includes(source.type)) {
     if (message.images.length > 0) {
       throw Object.assign(new Error("斜杠命令不支持附带图片，请单独发送命令。"), {
         code: "INVALID_COMMAND_ARGUMENTS", statusCode: 400
@@ -6943,7 +6929,7 @@ async function sendUnifiedSessionMessage(sessionId, input, source = { type: "des
       sourceType: "session_command"
     };
     emitEvent("SessionCommandCompleted", { item }, { sessionId: routedSessionId, source });
-    return { accepted: true, mode: "session-command", sessionId: publicSessionId, warning: result.text };
+    return { accepted: true, mode: "session-command", sessionId: publicSessionId, warning: result.text, commandMessageId: id };
   }
 
   if (options.fromAgentWorkQueue !== true) {
@@ -9534,7 +9520,7 @@ function route(request, response) {
     getTaskStartup: (input) => workSessionStartupCoordinator.getReceipt(input),
     getSessionStartupBinding: (logicalSessionId) => workSessionStartupCoordinator.getSessionBinding(logicalSessionId),
     launchAgentSession,
-    launchWorkChatSession,
+    workDiscussionService,
     ensureWorkChatSession,
     createSession: (input) => {
       const providerId = requestedProviderId(input.providerId ?? input.agent);
@@ -11776,6 +11762,63 @@ function startBackendRuntime() {
     resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
+      workDiscussion: {
+        options: () => ({ defaultProviderId: agentProviderRegistry.defaultProviderId,
+          providers: agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
+            available: [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+              .every(capability => agentProviderRegistry.supports(descriptor.id, capability)) })) }),
+        open: input => workDiscussionService.open(input)
+      },
+      taskCreation: {
+        options: async (_id, selectedProviderId) => {
+          const required = [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND,
+            AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND];
+          const providers = agentProviderRegistry.descriptors().map(descriptor => ({
+            id: descriptor.id, name: descriptor.displayName,
+            available: required.every(capability => agentProviderRegistry.supports(descriptor.id, capability)),
+            supportsModels: agentProviderRegistry.supports(descriptor.id, AGENT_PROVIDER_CAPABILITIES.MODEL_LIST)
+          }));
+          const defaultProviderId = agentProviderRegistry.defaultProviderId;
+          if (!selectedProviderId) return { providers, models: [], defaultProviderId };
+          const selected = providers.find(provider => provider.id === selectedProviderId);
+          if (!selected?.available) {
+            throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
+          }
+          const catalog = selected.supportsModels ? await sessionApplicationService.listModels(selected.id) : {};
+          return { providers, defaultProviderId, models: catalog.models ?? [], currentModel: catalog.currentModel ?? null,
+            currentReasoningLevel: catalog.currentReasoningLevel ?? null };
+        },
+        validate: (id, input) => {
+          const reference = requireSessionReference(id);
+          const logical = store.getLogicalSession(reference.logicalSessionId);
+          if (!logical || logical.archived || logical.activeBinding?.state !== "active") {
+            throw Object.assign(new Error("Source Session is not active"), { code: "SOURCE_SESSION_NOT_FOUND", status: 409 });
+          }
+          const providerId = agentProviderRegistry.resolveId(input.providerId);
+          if (!providerId || [AGENT_PROVIDER_CAPABILITIES.SESSION_CREATE, AGENT_PROVIDER_CAPABILITIES.WORKSPACE_BIND,
+            AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+            .some(capability => !agentProviderRegistry.supports(providerId, capability))) {
+            throw Object.assign(new Error("Provider does not support Work Sessions"), { code: "PROVIDER_CAPABILITY_UNAVAILABLE", status: 409 });
+          }
+        },
+        create: (id, { taskInput, providerId, model, reasoningLevel, operationID }) => {
+          const sourceSessionId = requireSessionReference(id).logicalSessionId;
+          return createTaskAndSession({ workService,
+            startWorkSession: input => workSessionStartApplicationService.start(input),
+            taskInput, sourceSessionId, providerId, model, reasoningLevel, idempotencyKey: operationID,
+            creationOrigin: { originType: "session", creatorSessionId: sourceSessionId, operationId: operationID } });
+        }
+      },
+      conversationCommands: {
+        list: id => sessionApplicationService.listConversationCommands(id),
+        validate: (id, command) => sessionApplicationService.validateConversationCommand(id, command),
+        execute: async (id, command, source) => {
+          const result = await sendUnifiedSessionMessage(id,
+            { text: `/${command.name}${command.arguments ? ` ${command.arguments}` : ""}` }, source);
+          return { text: result.warning ?? (result.cleared ? "会话上下文已清空。" : "命令已执行。"),
+            messageId: result.commandMessageId, conversationCleared: result.cleared === true };
+        }
+      },
       schedule: (id, text, schedule, identity) => scheduledSessionTaskService.create({
         logicalSessionId: requireSessionReference(id).logicalSessionId,
         name: text.slice(0, 80), message: { text },

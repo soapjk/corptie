@@ -48,6 +48,21 @@ final class PadConnection {
         }
         if let error = error as? ClientServiceFailure {
             switch error.code {
+            case "INVALID_MESSAGE": return "消息未发送：内容不符合后端要求；当前后端可能尚未支持此斜杠命令。"
+            case "INVALID_COMMAND": return "请求格式不正确，未执行。"
+            case "INVALID_COMMAND_ARGUMENTS": return "命令参数不正确，未执行。请查看该命令的用法。"
+            case "INVALID_ENTITY_NAME": return "名称只能包含中文、英文字母和数字，草稿已保留。"
+            case "TASK_OUTSIDE_WORK", "SOURCE_SESSION_CHANGED": return "来源会话与 Work 不匹配，请关闭表单后重新打开。草稿已保留。"
+            case "AGENT_OUTSIDE_WORK", "AGENT_NOT_FOUND": return "所选 Agent 已不可用于此 Work，请重新加载执行选项。"
+            case "SOURCE_SESSION_NOT_FOUND": return "来源会话尚未就绪，请先在 Mac 上恢复该会话。草稿已保留。"
+            case "PROVIDER_CAPABILITY_UNAVAILABLE": return "所选 Provider 不支持创建此工作会话，请选择其他可用 Provider。"
+            case "PROVIDER_COMMAND_UNSUPPORTED": return "当前会话不支持此命令。请使用 /help 查看可用命令。"
+            case "COMMAND_CONFIRMATION_REQUIRED": return "此命令需要确认后才能执行，草稿已保留。"
+            case "INVALID_IMAGES": return "图片格式或大小不符合要求，消息未发送。"
+            case "INVALID_MENTIONS": return "引用信息不符合要求，消息未发送。"
+            case "INVALID_SCHEDULE": return "定时发送参数无效，请检查时间和重复设置。"
+            case "CAPABILITY_UNSUPPORTED": return "当前会话暂不支持此操作，未执行。"
+            case "COMMAND_JOURNAL_FULL": return "后端请求记录已满，暂时无法接受新请求。"
             case "SESSION_NOT_AVAILABLE": return "无法打开这个会话。列表可能已过期，请刷新后重试。"
             case "ROUTE_NOT_AVAILABLE": return "Mac 端暂不支持这项功能，请更新并重启 Corptie。"
             case "DEVICE_PERMISSION_REQUIRED": return "此设备没有执行该操作的权限，请在 Mac 上检查设备授权。"
