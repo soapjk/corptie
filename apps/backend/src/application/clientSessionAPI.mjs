@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { deviceError } from "./clientDeviceAuthority.mjs";
+import { validateSessionCommand, sessionCommandPermissions, sessionCommandNeedsConfirmation } from "../commands/sessionCommandCatalog.mjs";
+import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
+import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreation.mjs";
+import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscussion.mjs";
 
 export function requireDevicePermission(identity, permission) {
   if (!identity.permissions?.includes(permission)) throw deviceError("DEVICE_PERMISSION_REQUIRED", 403);
@@ -7,13 +11,18 @@ export function requireDevicePermission(identity, permission) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null }) {
-    Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule });
+  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null }) {
+    Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
+    this.taskCreation = taskCreation;
+    this.workDiscussion = workDiscussion;
     store.db.run(`CREATE TABLE IF NOT EXISTS client_command_receipts (
       device_id TEXT NOT NULL, request_id TEXT NOT NULL, session_id TEXT NOT NULL,
       kind TEXT NOT NULL, payload_hash TEXT NOT NULL, status TEXT NOT NULL,
       error_code TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
       PRIMARY KEY(device_id, request_id))`);
+    if (!store.selectAll("PRAGMA table_info(client_command_receipts)").some(column => column.name === "result_json")) {
+      store.db.run("ALTER TABLE client_command_receipts ADD COLUMN result_json TEXT");
+    }
     this.inFlight = new Set();
   }
 
@@ -22,6 +31,17 @@ export class ClientSessionAPI {
     const session = sessionId ? this.store.getSession(sessionId) : null;
     if (!session || session.archived === true) throw deviceError("SESSION_NOT_AVAILABLE", 404);
     return { sessionId, session };
+  }
+
+  createTask(identity, sourceSessionId, input, revalidateIdentity = null) {
+    return createClientTask(this, identity, sourceSessionId, input, revalidateIdentity);
+  }
+  discussionOptions(identity, workId) { return clientDiscussionOptions(this, identity, workId); }
+  openDiscussion(identity, workId, input, revalidateIdentity = null) {
+    return openClientDiscussion(this, identity, workId, input, revalidateIdentity);
+  }
+  taskCreationOptions(identity, sourceSessionId, query) {
+    return clientTaskCreationCatalog(this, identity, sourceSessionId, query);
   }
 
   async messages(identity, sessionId, query) {
@@ -44,6 +64,13 @@ export class ClientSessionAPI {
       text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
       createdAt: item.createdAt ?? null,
       userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
+      // Additive presentation contract, shared with the desktop timeline.
+      // Never spread provider items: raw envelopes and credentials stay private.
+      ...Object.fromEntries([
+        "turnStatus", "title", "presentationRole", "presentationText",
+        "sourceType", "localVisibility", "processingError",
+        "processStartedAt", "processEndedAt",
+      ].map(key => [key, typeof item[key] === "string" ? item[key] : null])),
     }));
     const result = { schemaVersion: 1, sessionId, revision: window.revision, items,
       hasEarlier: window.hasEarlier === true, nextBefore: window.hasEarlier && items.length ? items[0].id : null };
@@ -60,6 +87,10 @@ export class ClientSessionAPI {
       sendImages: Boolean(this.images?.available(resolved.session)),
       sendMentions: true,
       scheduleMessage: Boolean(this.schedule) && identity.permissions.includes("messages.write"),
+      createTask: { available: Boolean(this.taskCreation) && Boolean(resolved.session.workId)
+          && identity.permissions.includes("tasks.create"),
+        reason: !identity.permissions.includes("tasks.create") ? "DEVICE_PERMISSION_REQUIRED"
+          : !this.taskCreation ? "CAPABILITY_UNSUPPORTED" : !resolved.session.workId ? "WORK_REQUIRED" : null },
       currentModel: resolved.session.external?.currentModel ?? null,
       currentReasoningLevel: resolved.session.external?.currentReasoningLevel ?? null,
       readMessages: identity.permissions.includes("messages.read"),
@@ -99,7 +130,79 @@ export class ClientSessionAPI {
     const key = `${identity.deviceId}:${requestId}`;
     return { schemaVersion: 1, requestId: row.request_id, sessionId: row.session_id, kind: row.kind,
       status: row.status === "dispatching" && !this.inFlight.has(key) ? "unknown" : row.status,
-      errorCode: row.error_code, updatedAt: row.updated_at };
+      errorCode: row.error_code, updatedAt: row.updated_at,
+      ...(row.result_json ? { [row.kind === "create_task" ? "taskResult" : row.kind === "open_work_discussion" ? "discussionResult" : "commandResult"]: JSON.parse(row.result_json) } : {}) };
+  }
+
+  async commandCatalog(identity, id) {
+    requireDevicePermission(identity, "messages.read");
+    const { sessionId } = this.session(id);
+    if (!this.conversationCommands) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    const commands = await this.conversationCommands.list(sessionId);
+    return { schemaVersion: 1, sessionId, commands: commands.map(command => {
+      const permitted = command.requiredPermissions.every(permission => identity.permissions.includes(permission));
+      return { ...command, available: command.available && permitted,
+        reason: permitted ? command.reason : "DEVICE_PERMISSION_REQUIRED",
+        // Argument-bearing goal/model operations need separate write authority.
+        canMutate: identity.permissions.includes("sessions.commands") };
+    }) };
+  }
+
+  async conversationCommand(identity, id, input, revalidateIdentity = null) {
+    if (!input || typeof input !== "object" || Array.isArray(input)
+        || Object.keys(input).some(key => !["requestId", "name", "arguments", "confirmed"].includes(key))
+        || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")
+        || (input.confirmed !== undefined && typeof input.confirmed !== "boolean")) throw deviceError("INVALID_COMMAND", 400);
+    const command = { name: input.name, arguments: input.arguments };
+    validateSessionCommand(command);
+    for (const permission of sessionCommandPermissions(command)) requireDevicePermission(identity, permission);
+    // Fingerprint the submitted target, not a binding that a command may replace.
+    const fingerprint = createHash("sha256").update(JSON.stringify([id, "conversation_command", command.name, command.arguments])).digest("hex");
+    const existing = this.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id = ? AND request_id = ?", [identity.deviceId, input.requestId]);
+    if (existing) {
+      if (existing.payload_hash !== fingerprint) throw deviceError("IDEMPOTENCY_CONFLICT", 409);
+      return this.receipt(identity, input.requestId);
+    }
+    const { sessionId } = this.session(id);
+    if (sessionCommandNeedsConfirmation(command) && input.confirmed !== true) throw deviceError("COMMAND_CONFIRMATION_REQUIRED", 409);
+    if (!this.conversationCommands) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    await this.conversationCommands.validate(sessionId, command);
+    if (revalidateIdentity) {
+      const current = revalidateIdentity();
+      if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
+      for (const permission of sessionCommandPermissions(command)) requireDevicePermission(current, permission);
+      identity = current;
+    }
+    // Validation may await a capability read. Claim synchronously afterwards;
+    // a concurrent copy may have created the receipt while it was suspended.
+    const raced = this.store.selectOne("SELECT payload_hash FROM client_command_receipts WHERE device_id = ? AND request_id = ?", [identity.deviceId, input.requestId]);
+    if (raced) {
+      if (raced.payload_hash !== fingerprint) throw deviceError("IDEMPOTENCY_CONFLICT", 409);
+      return this.receipt(identity, input.requestId);
+    }
+    if (this.store.selectOne("SELECT COUNT(*) AS count FROM client_command_receipts").count >= 10000) throw deviceError("COMMAND_JOURNAL_FULL", 503);
+    const now = new Date().toISOString(), key = `${identity.deviceId}:${input.requestId}`;
+    this.store.db.run(`INSERT INTO client_command_receipts
+      (device_id, request_id, session_id, kind, payload_hash, status, error_code, created_at, updated_at)
+      VALUES (?, ?, ?, 'conversation_command', ?, 'dispatching', NULL, ?, ?)`,
+      [identity.deviceId, input.requestId, sessionId, fingerprint, now, now]);
+    this.inFlight.add(key);
+    try {
+      const result = await this.conversationCommands.execute(sessionId, command,
+        { type: "remote-client", deviceId: identity.deviceId, requestId: input.requestId,
+          messageId: `client:${createHash("sha256").update(key).digest("hex")}` });
+      // Explicit public projection, never expose raw Provider payloads.
+      const text = typeof result?.text === "string" ? result.text : "命令已执行。";
+      this.update(identity.deviceId, input.requestId, "completed", null,
+        { text: text.slice(0, 64000), truncated: text.length > 64000,
+          ...(result?.conversationCleared === true ? { conversationCleared: true } : {}),
+          ...(typeof result?.messageId === "string" ? { messageId: result.messageId } : {}) });
+    } catch (error) {
+      const rejected = error.commandStage === "validation";
+      this.update(identity.deviceId, input.requestId, rejected ? "rejected" : "unknown",
+        rejected ? error.code ?? "INVALID_COMMAND_ARGUMENTS" : "COMMAND_OUTCOME_UNCERTAIN");
+    } finally { this.inFlight.delete(key); }
+    return this.receipt(identity, input.requestId);
   }
 
   async command(identity, sessionId, kind, input) {
@@ -108,7 +211,7 @@ export class ClientSessionAPI {
         || Object.keys(input).some(k => !["requestId", ...(kind === "send" ? ["text", "images", "mentions", "schedule"] : [])].includes(k))
         || !/^[A-Za-z0-9_-]{8,128}$/.test(input.requestId ?? "")) throw deviceError("INVALID_COMMAND", 400);
     if (kind === "send" && (typeof input.text !== "string" || (!input.text.trim() && !input.images?.length) || input.text.length > 16000
-      || input.text.trim().startsWith("/"))) throw deviceError("INVALID_MESSAGE", 400);
+      || parseSlashCommand(input.text))) throw deviceError("INVALID_MESSAGE", 400);
     const resolved = this.session(sessionId);
     sessionId = resolved.sessionId;
     const images = input.images ?? [], mentions = input.mentions ?? [];
@@ -155,7 +258,9 @@ export class ClientSessionAPI {
     const count = this.store.selectOne("SELECT COUNT(*) AS count FROM client_command_receipts").count;
     if (count >= 10000) throw deviceError("COMMAND_JOURNAL_FULL", 503);
     const now = new Date().toISOString(), key = `${identity.deviceId}:${input.requestId}`;
-    this.store.db.run("INSERT INTO client_command_receipts VALUES (?, ?, ?, ?, ?, 'dispatching', NULL, ?, ?)",
+    this.store.db.run(`INSERT INTO client_command_receipts
+      (device_id, request_id, session_id, kind, payload_hash, status, error_code, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 'dispatching', NULL, ?, ?)`,
       [identity.deviceId, input.requestId, sessionId, kind, fingerprint, now, now]);
     this.inFlight.add(key);
     const commandSource = { type: "remote-client", deviceId: identity.deviceId,
@@ -177,8 +282,8 @@ export class ClientSessionAPI {
     return this.receipt(identity, input.requestId);
   }
 
-  update(deviceId, requestId, status, errorCode) {
-    this.store.db.run("UPDATE client_command_receipts SET status = ?, error_code = ?, updated_at = ? WHERE device_id = ? AND request_id = ?",
-      [status, errorCode, new Date().toISOString(), deviceId, requestId]);
+  update(deviceId, requestId, status, errorCode, result = null) {
+    this.store.db.run("UPDATE client_command_receipts SET status = ?, error_code = ?, updated_at = ?, result_json = ? WHERE device_id = ? AND request_id = ?",
+      [status, errorCode, new Date().toISOString(), result ? JSON.stringify(result) : null, deviceId, requestId]);
   }
 }

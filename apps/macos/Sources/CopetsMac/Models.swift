@@ -125,14 +125,8 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
     }
 
     var executionTaskStatus: TaskStatus {
-        switch executionStatus?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "running": .running
-        case "blocked": .blocked
-        case "completed", "complete", "idle": .complete
-        case "failed": .failed
-        case "cancelled", "canceled": .cancelled
-        default: status
-        }
+        SessionExecutionState(executionStatus: executionStatus)
+            .flatMap { TaskStatus(rawValue: $0.rawValue) } ?? status
     }
 
     var resolvedSessionKind: SessionKind {
@@ -698,12 +692,16 @@ enum TaskStatus: String, Codable, Sendable {
     case cancelled
 
     @MainActor var label: String {
+        L10n(sharedExecutionState.label)
+    }
+
+    var sharedExecutionState: SessionExecutionState {
         switch self {
-        case .running: L10n("Running")
-        case .blocked: L10n("Blocked")
-        case .complete: L10n("Complete")
-        case .failed: L10n("Failed")
-        case .cancelled: L10n("Interrupted")
+        case .running: .running
+        case .blocked: .blocked
+        case .complete: .complete
+        case .failed: .failed
+        case .cancelled: .cancelled
         }
     }
 
@@ -1544,6 +1542,12 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
 }
 
 typealias UserMessageProcessingState = CorptieClientCore.UserMessageProcessingState
+
+extension CodexThreadItem: CorptieClientCore.ConversationExecutionItem {
+    var executionTitle: String { title }
+    var timelineTurnID: String { turnId }
+    var timelineTurnStatus: String { turnStatus }
+}
 
 struct CodexFileChange: Decodable, Equatable, Sendable {
     let path: String

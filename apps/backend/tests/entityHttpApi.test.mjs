@@ -8,6 +8,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { WorkApplicationService } from "../src/application/workApplicationService.mjs";
+import { WorkDiscussionApplicationService } from "../src/application/workDiscussionApplicationService.mjs";
 import { HubService } from "../src/application/hubService.mjs";
 import { CollaborationRouter } from "../src/application/collaborationRouter.mjs";
 import { MemoryExtractor } from "../src/application/memoryExtractor.mjs";
@@ -191,7 +192,7 @@ async function callApi({ method, pathname, search = "", body, headers, ...servic
     getTaskStartup: services.getTaskStartup,
     getSessionStartupBinding: services.getSessionStartupBinding,
     launchAgentSession: services.launchAgentSession,
-    launchWorkChatSession: services.launchWorkChatSession,
+    workDiscussionService: services.workDiscussionService,
     ensureWorkChatSession: services.ensureWorkChatSession ?? (async (work) => {
       const existing = services.store.getWorkChatSession(work.id);
       if (existing) return existing;
@@ -1227,6 +1228,7 @@ test("POST /works/:id/sessions creates at most one Work Chat and rejects invalid
         status: "running", progress: 0.5, summary: "Starting", updatedAt: new Date().toISOString(), accent: "cyan"
       };
     };
+    services.workDiscussionService = new WorkDiscussionApplicationService({ workService: services.workService, launch: launchWorkChatSession });
     const created = await callApi({
       method: "POST",
       pathname: `/works/${work.id}/sessions`,

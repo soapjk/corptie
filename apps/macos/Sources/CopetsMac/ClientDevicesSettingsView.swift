@@ -5,6 +5,7 @@ struct ClientDeviceInventory: Decodable {
     let state: String?
     let address: String?
     let errorCode: String?
+    let availablePermissions: [String]?
     struct Device: Decodable, Identifiable {
         let id: String
         let name: String
@@ -20,6 +21,42 @@ struct ClientDeviceInventory: Decodable {
     let pending: [Pending]
 }
 
+enum ClientDeviceCommandPermission: String, CaseIterable, Identifiable {
+    case commands = "sessions.commands"
+    case clear = "sessions.clear"
+    case createTask = "tasks.create"
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .commands: "修改类会话命令"
+        case .clear: "清空会话上下文"
+        case .createTask: "创建 Task 与配套会话"
+        }
+    }
+    var explanation: String {
+        switch self {
+        case .commands:
+            "允许 /goal 设置、暂停、恢复和清除目标，以及模型、推理强度、会话名称等修改类命令。实际操作仍受会话能力与其他必要权限限制。"
+        case .clear:
+            "允许 /clear 清空会话上下文。设备执行时仍须单独确认此操作。"
+        case .createTask:
+            "允许设备在来源会话所属 Work 内创建 Task 与配套会话；只能选择该 Work 的参与 Agent。不会自动发送首条消息，也不授予删除、清空或其他管理权限。"
+        }
+    }
+}
+
+struct ClientDevicePermissionChange {
+    let permission: ClientDeviceCommandPermission
+    let enabled: Bool
+    let expected: [String]
+    var updated: [String] {
+        var result = Set(expected)
+        if enabled { result.insert(permission.rawValue) }
+        else { result.remove(permission.rawValue) }
+        return result.sorted()
+    }
+}
+
 struct ClientDeviceInvite: Decodable {
     let address: String?
     let certificate: String?
@@ -31,7 +68,8 @@ struct ClientDeviceInvite: Decodable {
 
 enum LocalDeviceAdminClient {
     static func request(dataRoot: String, action: String? = nil, body: [String: String]? = nil,
-                        approved: Bool? = nil, permissions: [String]? = nil) async throws -> Data {
+                        approved: Bool? = nil, permissions: [String]? = nil,
+                        expectedPermissions: [String]? = nil) async throws -> Data {
         let endpoint = await CorptieAppEnvironment.backendEndpoint
         guard endpoint.isLoopback else { throw ClientConnectionError.outsideEndpoint }
         let secretURL = URL(fileURLWithPath: dataRoot, isDirectory: true)
@@ -50,6 +88,7 @@ enum LocalDeviceAdminClient {
             var value: [String: Any] = body ?? [:]
             if let approved { value["approved"] = approved }
             if let permissions { value["permissions"] = permissions }
+            if let expectedPermissions { value["expectedPermissions"] = expectedPermissions }
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: value)
         }
@@ -71,12 +110,13 @@ struct ClientDevicesSettingsView: View {
         let id: String
         let name: String
         let revoke: Bool
+        var permission: ClientDevicePermissionChange? = nil
     }
 
     var body: some View {
         Form {
             Section("连接手机或 iPad") {
-                Text("让同一局域网内的设备访问这台 Mac。扫码验证身份后，仍需你批准；批准后可使用移动端当前支持的全部功能。")
+                Text("让同一局域网内的设备访问这台 Mac。扫码后仍需你批准；会话修改命令和清空上下文须另外授权。")
                     .font(.callout).foregroundStyle(.secondary)
                 Text(statusText).font(.callout)
                 HStack {
@@ -126,7 +166,8 @@ struct ClientDevicesSettingsView: View {
                 Section("已配对设备") {
                     if inventory.devices.isEmpty { Text("暂无已配对设备").foregroundStyle(.secondary) }
                     ForEach(inventory.devices) { item in
-                        HStack {
+                        VStack(alignment: .leading, spacing: 8) {
+                          HStack {
                             VStack(alignment: .leading) {
                                 Text(item.name)
                                 Text(item.id).font(.caption).foregroundStyle(.secondary)
@@ -134,10 +175,29 @@ struct ClientDevicesSettingsView: View {
                             Spacer()
                             if item.revoked { Text("已撤销").foregroundStyle(.secondary) }
                             else {
-                                Label("完整移动端权限", systemImage: "checkmark.shield.fill")
-                                    .font(.caption).foregroundStyle(.secondary)
                                 Button("撤销", role: .destructive) { confirmation = Action(id: item.id, name: item.name, revoke: true) }
                             }
+                          }
+                          if !item.revoked, let permissions = item.permissions {
+                            ForEach(ClientDeviceCommandPermission.allCases) { permission in
+                                if inventory.availablePermissions?.contains(permission.rawValue) == true {
+                                    HStack {
+                                        Text(permission.title)
+                                        Spacer()
+                                        Text(permissions.contains(permission.rawValue) ? "已授权" : "未授权")
+                                            .foregroundStyle(.secondary)
+                                        Button(permissions.contains(permission.rawValue) ? "取消授权…" : "授权…") {
+                                            confirmation = Action(id: item.id, name: item.name, revoke: false,
+                                                permission: ClientDevicePermissionChange(permission: permission,
+                                                    enabled: !permissions.contains(permission.rawValue), expected: permissions))
+                                        }
+                                        .accessibilityLabel("\(item.name)：\(permission.title)")
+                                        .accessibilityIdentifier("device-permission-\(permission.rawValue)")
+                                    }
+                                    .font(.callout)
+                                }
+                            }
+                          }
                         }
                     }
                 }
@@ -160,21 +220,23 @@ struct ClientDevicesSettingsView: View {
         } message: {
             Text("将更新本机证书并撤销已配对设备。手机和 iPad 需要重新扫码配对；不会删除工作或会话。")
         }
-        .alert(confirmation?.revoke == true ? "撤销设备访问？" : "批准设备访问？",
+        .alert(confirmation?.permission != nil ? "修改设备权限？" : confirmation?.revoke == true ? "撤销设备访问？" : "批准设备访问？",
                isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } })) {
             if let action = confirmation {
                 Button("取消", role: .cancel) { confirmation = nil }
-                Button(action.revoke ? "撤销" : "批准") {
+                Button(action.permission != nil ? "确认修改" : action.revoke ? "撤销" : "批准") {
                     confirmation = nil
                     Task {
-                        if action.revoke { await revoke(action.id) }
+                        if let change = action.permission { await updatePermissions(action.id, change: change) }
+                        else if action.revoke { await revoke(action.id) }
                         else { await decide(action.id, approved: true) }
                     }
                 }
             }
         } message: {
             Text("\(confirmation?.name ?? "")\n\(confirmation?.id ?? "")\n" +
-                 (confirmation?.revoke == true ? "设备将失去访问权限，现有连接也会关闭。" : "仅批准你正在配对的设备。批准后可使用移动端当前支持的全部功能，包括消息发送、停止与 Worktree 浏览。"))
+                 (confirmation?.permission.map { ($0.enabled ? "授权：" : "取消授权：") + $0.permission.title + "\n" + $0.permission.explanation }
+                    ?? (confirmation?.revoke == true ? "设备将失去访问权限，现有连接也会关闭。" : "仅批准你正在配对的设备。默认允许浏览、消息发送和停止；会话修改命令与清空上下文需要另外授权。")))
         }
     }
 
@@ -189,7 +251,9 @@ struct ClientDevicesSettingsView: View {
         catch {
             inventory = nil
             invite = nil
-            if (error as NSError).code == NSFileReadNoSuchFileError {
+            if (error as? ClientServiceFailure)?.code == "PERMISSIONS_CHANGED" {
+                message = "设备权限已被其他操作修改。本次修改未应用，请刷新后重新确认。"
+            } else if (error as NSError).code == NSFileReadNoSuchFileError {
                 message = "设备管理尚未就绪。请稍后刷新；只读预览模式不提供设备接入。"
             } else {
                 message = "操作未完成，请刷新后重试。若持续失败，请检查后端是否在线。"
@@ -244,6 +308,13 @@ struct ClientDevicesSettingsView: View {
     private func revoke(_ id: String) async {
         await perform { root in
             _ = try await LocalDeviceAdminClient.request(dataRoot: root, action: "revoke", body: ["deviceId": id])
+            inventory = try JSONDecoder().decode(ClientDeviceInventory.self, from: await LocalDeviceAdminClient.request(dataRoot: root))
+        }
+    }
+    private func updatePermissions(_ id: String, change: ClientDevicePermissionChange) async {
+        await perform { root in
+            _ = try await LocalDeviceAdminClient.request(dataRoot: root, action: "permissions", body: ["deviceId": id],
+                permissions: change.updated, expectedPermissions: change.expected)
             inventory = try JSONDecoder().decode(ClientDeviceInventory.self, from: await LocalDeviceAdminClient.request(dataRoot: root))
         }
     }

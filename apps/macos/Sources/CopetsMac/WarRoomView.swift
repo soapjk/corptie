@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieClientCore
 
 // 控制台主视图：三栏布局。
 // 净新增独立文件，不碰 FloatingRootView.swift 巨石。
@@ -649,16 +650,9 @@ enum CorptieTaskAcceptanceReviewState: Equatable {
     }
 }
 
-enum CorptieTaskBoundSessionActivity: Equatable {
-    case noSession
-    case processing
-    case waitingForInput
-    case idle
-    case paused
-    case interrupted
-    case failed
-    case unknown
+typealias CorptieTaskBoundSessionActivity = TaskSessionActivity
 
+extension TaskSessionActivity {
     static func resolve(task: CorptieTask, sessions: [TaskSession]) -> Self {
         let currentSessionId = task.currentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
         let boundSession = currentSessionId.flatMap { sessionId in
@@ -668,40 +662,13 @@ enum CorptieTaskBoundSessionActivity: Equatable {
                 .filter { $0.taskId == task.id && $0.archived != true }
                 .max(by: { $0.updatedAt < $1.updatedAt })
 
-        guard currentSessionId?.isEmpty == false || boundSession != nil else { return .noSession }
-
-        if let status = boundSession?.status {
-            switch status {
-            case .running: return .processing
-            case .blocked: return .waitingForInput
-            case .complete: return .idle
-            case .cancelled: return .interrupted
-            case .failed: return .failed
-            }
-        }
-
-        switch task.executionStatus {
-        case "running": return .processing
-        case "blocked": return .waitingForInput
-        case "idle", "completed": return .idle
-        case "paused": return .paused
-        case "cancelled", "canceled": return .interrupted
-        case "failed": return .failed
-        default: return .unknown
-        }
+        return Self.resolve(hasBinding: currentSessionId?.isEmpty == false || boundSession != nil,
+            sessionExecutionStatus: boundSession?.executionTaskStatus.rawValue,
+            taskExecutionStatus: task.executionStatus)
     }
 
     @MainActor var label: String {
-        switch self {
-        case .noSession: L10n("No Session")
-        case .processing: L10n("Processing")
-        case .waitingForInput: L10n("Waiting for Input")
-        case .idle: L10n("Idle")
-        case .paused: L10n("Paused")
-        case .interrupted: L10n("Interrupted")
-        case .failed: L10n("Failed")
-        case .unknown: L10n("Unknown")
-        }
+        L10n(labelKey)
     }
 
     var color: Color {

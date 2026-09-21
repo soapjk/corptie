@@ -63,11 +63,12 @@ export class ClientDeviceGateway {
       const url = new URL(request.url, "https://client.invalid");
       const path = url.pathname;
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
+      const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
       const control = /^\/client\/v1\/control\/(automations|agents|skills|repositories)$/.exec(path);
       const repository = /^\/client\/v1\/control\/repositories\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !inventory && !control && !(conversation?.[2] === "messages" && request.method === "GET")) throw deviceError("REQUEST_NOT_ALLOWED", 403);
+      if (url.search && !inventory && !control && !(["messages", "tasks"].includes(conversation?.[2]) && request.method === "GET")) throw deviceError("REQUEST_NOT_ALLOWED", 403);
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
         return reply(response, 200, this.authority.claim(await body(request)));
       }
@@ -79,6 +80,19 @@ export class ClientDeviceGateway {
       }
       const identity = this.authority.authenticate(bearer(request));
       this.sockets.set(request.socket, identity.deviceId);
+      if (discussion && this.sessionAPI && ["GET", "POST"].includes(request.method)) {
+        requireDevicePermission(identity, "works.discuss");
+        let workId;
+        try { workId = decodeURIComponent(discussion[1]); } catch { throw deviceError("INVALID_WORK_ID", 400); }
+        if (request.method === "GET") {
+          const result = await this.sessionAPI.discussionOptions(identity, workId);
+          requireDevicePermission(this.authority.authenticate(bearer(request)), "works.discuss");
+          return reply(response, 200, result);
+        }
+        const input = await body(request);
+        return reply(response, 202, await this.sessionAPI.openDiscussion(this.authority.authenticate(bearer(request)), workId,
+          input, () => this.authority.authenticate(bearer(request))));
+      }
       if (request.method === "GET" && (control || repository) && this.controlAPI) {
         requireDevicePermission(identity, "control.read");
         let result;
@@ -97,6 +111,29 @@ export class ClientDeviceGateway {
       if (conversation && this.sessionAPI) {
         let sessionId;
         try { sessionId = decodeURIComponent(conversation[1]); } catch { throw deviceError("INVALID_SESSION_ID", 400); }
+        if (conversation[2] === "tasks" && request.method === "GET") {
+          requireDevicePermission(identity, "tasks.create");
+          const result = await this.sessionAPI.taskCreationOptions(identity, sessionId, url.searchParams);
+          requireDevicePermission(this.authority.authenticate(bearer(request)), "tasks.create");
+          return reply(response, 200, result);
+        }
+        if (conversation[2] === "tasks" && request.method === "POST") {
+          const input = await body(request, 160 * 1024);
+          requireDevicePermission(identity, "tasks.create");
+          return reply(response, 202, await this.sessionAPI.createTask(this.authority.authenticate(bearer(request)),
+            sessionId, input, () => this.authority.authenticate(bearer(request))));
+        }
+        if (conversation[2] === "conversation-commands" && request.method === "GET") {
+          const result = await this.sessionAPI.commandCatalog(identity, sessionId);
+          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
+          return reply(response, 200, result);
+        }
+        if (conversation[2] === "conversation-commands" && request.method === "POST") {
+          const input = await body(request, 70 * 1024);
+          const current = this.authority.authenticate(bearer(request));
+          return reply(response, 202, await this.sessionAPI.conversationCommand(current, sessionId, input,
+            () => this.authority.authenticate(bearer(request))));
+        }
         if (conversation[2] === "composer" && ["GET", "POST"].includes(request.method)) {
           const input = request.method === "POST" ? await body(request, 4096) : null;
           const result = await this.sessionAPI.configuration(this.authority.authenticate(bearer(request)), sessionId, input);
@@ -131,7 +168,8 @@ export class ClientDeviceGateway {
       // Pairing readiness is deliberately distinct from business API readiness.
       if (request.method === "GET" && path === "/client/v1/capabilities") {
         return reply(response, 200, { schemaVersion: 1, service: "corptie", deviceAuthentication: true,
-          businessAPI: Boolean(this.readAPI), readOnly: !identity.permissions.some(p => ["messages.write", "sessions.stop"].includes(p)),
+          businessAPI: Boolean(this.readAPI), readOnly: !identity.permissions.some(p => ["messages.write", "sessions.stop", "sessions.commands", "sessions.clear", "tasks.create", "works.discuss"].includes(p)),
+          workDiscussion: Boolean(this.sessionAPI?.workDiscussion) && identity.permissions.includes("works.discuss"),
           inventoryLists: Boolean(this.readAPI) && identity.permissions.includes("inventory.read"),
           messages: Boolean(this.sessionAPI) && identity.permissions.includes("messages.read"),
           controlRead: Boolean(this.controlAPI) && identity.permissions.includes("control.read"), controlWrite: false,
@@ -190,7 +228,7 @@ export class ClientDeviceGateway {
       }
       if (request.method === "POST" && request.url === "/internal/client-devices/permissions") {
         const input = await body(request);
-        return reply(response, 200, await this.authority.setPermissions(input.deviceId, input.permissions));
+        return reply(response, 200, await this.authority.setPermissions(input.deviceId, input.permissions, input.expectedPermissions));
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) { reply(response, error.status ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" }); }
