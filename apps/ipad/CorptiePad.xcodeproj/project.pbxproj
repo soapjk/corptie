@@ -50,7 +50,7 @@
 		AEEB41418B7183068BED5DA3 /* PadControlStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadControlStore.swift; sourceTree = "<group>"; };
 		BABDB8CF2882D7BBC96B929D /* PadAppShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadAppShell.swift; sourceTree = "<group>"; };
 		BC6E13873D563DA09CEDA230 /* PadMessageText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PadMessageText.swift; sourceTree = "<group>"; };
-		C58EDD96BAC59D754ED10CDA /* CorptiePad.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = CorptiePad.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C58EDD96BAC59D754ED10CDA /* CorptiePad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CorptiePad.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		EA09F1A57B1FE419D9113B8A /* CorptieClientCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CorptieClientCore; path = ../../packages/CorptieClientCore; sourceTree = SOURCE_ROOT; };
 		EEFC733B6DD2C64DB027A7FF /* PairingScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingScannerView.swift; sourceTree = "<group>"; };
 		F1B0A3D72E0CB389E0F6C280 /* ConversationNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationNavigationTests.swift; sourceTree = "<group>"; };
@@ -375,6 +375,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = RUT4Z5DWDP;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Corptie;
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。";
@@ -398,6 +399,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				DEVELOPMENT_TEAM = RUT4Z5DWDP;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Corptie;
 				INFOPLIST_KEY_NSCameraUsageDescription = "扫描 Mac 上的 Corptie 配对二维码，自动填写连接信息并申请配对。";
