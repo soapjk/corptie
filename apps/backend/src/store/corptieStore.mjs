@@ -3925,20 +3925,35 @@ export class CorptieStore {
         `);
       }
     }
-    // Worker archive membership is derived from its Task lifecycle. Touch a
-    // projection-only dependency counter whenever the Task crosses the
-    // completed boundary so the ordinary Session trigger publishes membership
-    // changes without rewriting conversation ordering metadata.
+    // Worker presentation is derived from its Task. Touch a projection-only
+    // dependency counter whenever Task fields used by the Session projection
+    // change, so the ordinary Session stream publishes the new presentation
+    // without rewriting conversation ordering metadata.
     this.db.run("DROP TRIGGER IF EXISTS state_sync_worker_archive_dependency_update");
     this.db.run(`
       CREATE TRIGGER state_sync_worker_archive_dependency_update
-      AFTER UPDATE OF lifecycle_state, archived ON tasks
+      AFTER UPDATE OF title, lifecycle_state, archived ON tasks
       WHEN (OLD.lifecycle_state = 'done') IS NOT (NEW.lifecycle_state = 'done')
         OR OLD.archived IS NOT NEW.archived
+        OR OLD.title IS NOT NEW.title
       BEGIN
         UPDATE sessions
         SET archive_dependency_version = archive_dependency_version + 1
         WHERE session_kind = 'worker' AND task_id = NEW.id;
+      END
+    `);
+    // Work Chat presentation is derived from its Work name. Reuse the same
+    // generic projection dependency counter (its legacy name predates this
+    // broader role) so incremental clients receive the renamed Session.
+    this.db.run("DROP TRIGGER IF EXISTS state_sync_work_chat_presentation_dependency_update");
+    this.db.run(`
+      CREATE TRIGGER state_sync_work_chat_presentation_dependency_update
+      AFTER UPDATE OF name ON works
+      WHEN OLD.name IS NOT NEW.name
+      BEGIN
+        UPDATE sessions
+        SET archive_dependency_version = archive_dependency_version + 1
+        WHERE session_kind = 'workChat' AND work_id = NEW.id;
       END
     `);
     // A scheduled wake is projected on its owning Corptie Task row. Keep that
@@ -5134,6 +5149,9 @@ export class CorptieStore {
         );
       }
     }
+    // Session names are replaceable labels, not durable routes. Stable IDs
+    // supersede the legacy alias table, so old names must stop resolving.
+    this.db.run("DELETE FROM session_name_aliases");
   }
 
   migrateCollaborationSessionIdentities() {
@@ -5582,12 +5600,15 @@ export class CorptieStore {
     const timestamp = input.createdAt || new Date().toISOString();
     const sessionName = requiredText(input.sessionName ?? input.title ?? logicalSessionId, "sessionName");
     const sessionNameKey = normalizeSessionTitle(sessionName);
+    // Deleted routes keep their immutable IDs for audit, but names are not
+    // identities and must be immediately reusable.
+    this.db.run(
+      "UPDATE logical_sessions SET session_name_key = NULL WHERE session_name_key = ? AND deleted_at IS NOT NULL",
+      [sessionNameKey]
+    );
     const nameOwner = this.selectOne(
-      `SELECT logical_session_id FROM logical_sessions WHERE session_name_key = ?
-       UNION ALL
-       SELECT logical_session_id FROM session_name_aliases WHERE alias_key = ?
-       LIMIT 1`,
-      [sessionNameKey, sessionNameKey]
+      "SELECT logical_session_id FROM logical_sessions WHERE session_name_key = ? AND deleted_at IS NULL LIMIT 1",
+      [sessionNameKey]
     );
     if (nameOwner && nameOwner.logical_session_id !== logicalSessionId) {
       const error = new Error(`A session named "${sessionName}" already exists.`);
@@ -5661,7 +5682,10 @@ export class CorptieStore {
       [logicalSessionId]
     );
     if (!row) return null;
-    const sessionName = row.session_name || row.title || row.logical_session_id;
+    // Worker and Work Chat names are projections of their owning resources.
+    // Only standalone Chat sessions own a mutable Session name.
+    const projectedSession = row.legacy_session_id ? this.getSession(row.legacy_session_id) : null;
+    const sessionName = projectedSession?.title || row.session_name || row.title || row.logical_session_id;
     return {
       logicalSessionId: row.logical_session_id,
       legacySessionId: row.legacy_session_id,
@@ -5699,14 +5723,11 @@ export class CorptieStore {
     const key = normalizeSessionTitle(alias);
     if (!key) return [];
     const rows = this.selectAll(
-      `SELECT logical_session_id FROM logical_sessions
-       WHERE session_name_key = ? AND deleted_at IS NULL
-       UNION ALL
-       SELECT aliases.logical_session_id FROM session_name_aliases aliases
-       JOIN logical_sessions sessions ON sessions.logical_session_id = aliases.logical_session_id
-       WHERE aliases.alias_key = ? AND sessions.deleted_at IS NULL`,
-      [key, key]
-    );
+      `${sessionProjectionSelectSQL()}
+       WHERE sessions.deleted_at IS NULL
+         AND projection_logical.logical_session_id IS NOT NULL`
+    ).filter((row) => normalizeSessionTitle(sessionPresentationTitle(row)) === key)
+      .map((row) => ({ logical_session_id: row.projection_logical_session_id }));
     return [...new Set(rows.map((row) => row.logical_session_id))]
       .map((logicalSessionId) => this.getLogicalSession(logicalSessionId))
       .filter(Boolean);
@@ -9004,18 +9025,9 @@ export class CorptieStore {
   }
 
   listSessionTitleIdentities() {
-    return this.selectAll(
-      `SELECT id, title FROM sessions
-       WHERE deleted_at IS NULL
-       UNION
-       SELECT COALESCE(legacy_session_id, logical_session_id) AS id, session_name AS title
-       FROM logical_sessions WHERE session_name_key IS NOT NULL
-       UNION
-       SELECT COALESCE(s.legacy_session_id, s.logical_session_id) AS id, a.alias AS title
-       FROM session_name_aliases a
-       JOIN logical_sessions s ON s.logical_session_id=a.logical_session_id
-       ORDER BY title ASC, id ASC`
-    );
+    return this.selectAll(`${sessionProjectionSelectSQL()} WHERE sessions.deleted_at IS NULL`)
+      .map((row) => ({ id: row.id, title: sessionPresentationTitle(row) }))
+      .sort((left, right) => left.title.localeCompare(right.title) || left.id.localeCompare(right.id));
   }
 
   listSessionPage(options = {}) {
@@ -9572,22 +9584,24 @@ export class CorptieStore {
     const updatedAt = new Date().toISOString();
     const logical = this.getLogicalSessionByLegacySessionId(id) ?? this.getLogicalSession(id);
     const storageSessionId = logical?.legacySessionId ?? id;
+    const currentSession = this.getSession(storageSessionId);
+    if (currentSession && ["worker", "workChat"].includes(currentSession.sessionKind)) {
+      const error = new Error("Task and Work Chat Session names are derived from their owning resource.");
+      error.code = "SESSION_TITLE_DERIVED";
+      error.statusCode = 409;
+      throw error;
+    }
     if (logical) {
       const conflict = this.selectOne(
         `SELECT logical_session_id FROM logical_sessions
          WHERE session_name_key = ? AND logical_session_id <> ?`,
         [sessionNameKey, logical.logicalSessionId]
       );
-      const aliasConflict = this.selectOne(
-        `SELECT logical_session_id FROM session_name_aliases
-         WHERE alias_key = ? AND logical_session_id <> ?`,
-        [sessionNameKey, logical.logicalSessionId]
-      );
-      if (conflict || aliasConflict) {
+      if (conflict) {
         const error = new Error(`A session named "${sessionName}" already exists.`);
         error.code = "SESSION_TITLE_CONFLICT";
         error.statusCode = 409;
-        error.conflictingSessionId = conflict?.logical_session_id ?? aliasConflict.logical_session_id;
+        error.conflictingSessionId = conflict.logical_session_id;
         throw error;
       }
     }
@@ -9595,20 +9609,9 @@ export class CorptieStore {
     try {
       this.db.run("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?", [sessionName, updatedAt, storageSessionId]);
       if (logical) {
-        const previousName = logical.sessionName;
-        const previousKey = normalizeSessionTitle(previousName);
-        if (previousKey && previousKey !== sessionNameKey) {
-          this.db.run(
-            `INSERT INTO session_name_aliases (alias_key, alias, logical_session_id, created_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT(alias_key) DO NOTHING`,
-            [previousKey, previousName, logical.logicalSessionId, updatedAt]
-          );
-        }
-        this.db.run(
-          "DELETE FROM session_name_aliases WHERE alias_key = ? AND logical_session_id = ?",
-          [sessionNameKey, logical.logicalSessionId]
-        );
+        // Renaming is replacement, not an alias operation. Stable IDs are the
+        // only supported long-lived route; old names stop resolving.
+        this.db.run("DELETE FROM session_name_aliases WHERE logical_session_id = ?", [logical.logicalSessionId]);
         this.db.run(
           `UPDATE logical_sessions
            SET session_name = ?, session_name_key = ?, title = ?, updated_at = ?
@@ -13932,8 +13935,8 @@ export class CorptieStore {
     );
     return {
       id: publicId,
-      title: logicalIdentity?.session_name || row.title,
-      sessionName: logicalIdentity?.session_name || row.title,
+      title: sessionPresentationTitle(row),
+      sessionName: sessionPresentationTitle(row),
       logicalSessionId: logicalIdentity?.logical_session_id ?? null,
       transitionState: logicalIdentity?.transition_state ?? null,
       agent: row.agent,
@@ -14281,9 +14284,15 @@ function sessionProjectionSelectSQL() {
     (SELECT tasks.lifecycle_state FROM tasks
      WHERE tasks.id = sessions.task_id
      LIMIT 1) AS projection_task_status,
+    (SELECT tasks.title FROM tasks
+     WHERE tasks.id = sessions.task_id
+     LIMIT 1) AS projection_task_title,
     (SELECT tasks.archived FROM tasks
      WHERE tasks.id = sessions.task_id
      LIMIT 1) AS projection_task_archived,
+    (SELECT works.name FROM works
+     WHERE works.id = sessions.work_id
+     LIMIT 1) AS projection_work_name,
     (SELECT cursors.sync_health
      FROM logical_sessions logical
      JOIN provider_thread_bindings bindings
@@ -14299,6 +14308,23 @@ function sessionProjectionSelectSQL() {
       ON projection_binding.provider_thread_id = projection_logical.active_thread_id
      AND projection_binding.logical_session_id = projection_logical.logical_session_id
      AND projection_binding.state = 'active'`;
+}
+
+function sessionPresentationTitle(row) {
+  const kind = inferSessionKind({
+    sessionKind: row.session_kind,
+    workId: row.work_id,
+    taskId: row.task_id
+  });
+  if (kind === "worker") {
+    const taskTitle = String(row.projection_task_title ?? "").trim();
+    if (taskTitle) return taskTitle;
+  }
+  if (kind === "workChat") {
+    const workName = String(row.projection_work_name ?? "").trim();
+    if (workName) return `${workName} · 讨论`;
+  }
+  return String(row.projection_session_name ?? row.title ?? row.id).trim();
 }
 
 function effectiveSessionArchivedSQL() {
