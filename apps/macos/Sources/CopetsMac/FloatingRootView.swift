@@ -3484,11 +3484,7 @@ struct TimelineRestorationIntent: Equatable {
 }
 
 func nativeTimelineTimestampText(createdAt: String?) -> String {
-    guard let createdAt,
-          let date = ISO8601DateFormatter.corptieThreadItemDate(from: createdAt) else { return "" }
-    return date.formatted(
-        .dateTime.month(.twoDigits).day(.twoDigits).hour().minute().second()
-    )
+    ConversationTimestampText.messageLabel(createdAt: createdAt)
 }
 
 typealias DetailView = SessionConversationContent
@@ -9769,20 +9765,7 @@ private enum ComposerMentionCommand {
     case dismiss
 }
 
-enum ComposerMentionMenuMetrics {
-    static let width: CGFloat = 360
-    static let minimumHeight: CGFloat = 180
-    static let maximumHeight: CGFloat = 326
-    private static let headerHeight: CGFloat = 38
-    private static let rowHeight: CGFloat = 40
-    private static let maximumVisibleRows = 7
-
-    static func height(candidateCount: Int) -> CGFloat {
-        let visibleRows = min(max(candidateCount, 0), maximumVisibleRows)
-        let contentHeight = headerHeight + CGFloat(visibleRows) * rowHeight + 8
-        return min(maximumHeight, max(minimumHeight, contentHeight))
-    }
-}
+typealias ComposerMentionMenuMetrics = CorptieConversation.ComposerMentionMenuMetrics
 
 enum ComposerMentionAnchorPolicy {
     static let fallback = UnitPoint(x: 0.05, y: 0)
@@ -10346,19 +10329,17 @@ struct MessageComposer: View {
     }
 
     private var modelMenuMaxWidth: CGFloat {
-        guard composerWidth > 0 else {
-            return 74
-        }
-        return max(54, min(74, composerWidth / 6))
+        ComposerShellMetrics.modelMenuMaxWidth(composerWidth: composerWidth)
     }
 }
 
 enum ComposerInputLayout {
-    static let minimumHeight: CGFloat = 44
-    static let maximumHeight: CGFloat = 96
+    // Shared with the iPad composer; the AppKit editor only reports content height.
+    static let minimumHeight = ComposerShellMetrics.minimumInputHeight
+    static let maximumHeight = ComposerShellMetrics.maximumInputHeight
 
     static func resolvedHeight(for contentHeight: CGFloat) -> CGFloat {
-        min(maximumHeight, max(minimumHeight, ceil(contentHeight)))
+        ComposerShellMetrics.resolvedInputHeight(for: contentHeight)
     }
 }
 
@@ -10611,13 +10592,7 @@ private struct CodexModelMenu: View {
     }
 
     private func reasoningShortLabel(_ value: String) -> String {
-        switch value.lowercased() {
-        case "low": "L"
-        case "medium": "M"
-        case "high": "H"
-        case "xhigh": "XH"
-        default: value.uppercased()
-        }
+        ComposerModelLabel.reasoningShort(value)
     }
 
     private func reasoningDescription(_ value: String) -> String {
@@ -10657,20 +10632,20 @@ enum SessionConfigurationMenuAvailability {
         isSwitchingModel: Bool,
         isSwitchingReasoning: Bool
     ) -> Bool {
-        (canSwitchModel || canSwitchReasoning)
-            && !isSwitchingModel
-            && !isSwitchingReasoning
+        ComposerModelLabel.menuEnabled(
+            canSwitchModel: canSwitchModel,
+            canSwitchReasoning: canSwitchReasoning,
+            isSwitchingModel: isSwitchingModel,
+            isSwitchingReasoning: isSwitchingReasoning
+        )
     }
 }
 
 enum ModelMenuLabel {
-    static let maximumCharacterCount = 15
+    static let maximumCharacterCount = ComposerModelLabel.maximumCharacterCount
 
     static func compact(_ value: String) -> String {
-        guard value.count > maximumCharacterCount else {
-            return value
-        }
-        return String(value.prefix(maximumCharacterCount - 1)) + "…"
+        ComposerModelLabel.compact(value)
     }
 }
 

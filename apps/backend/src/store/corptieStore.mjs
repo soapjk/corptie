@@ -11260,7 +11260,7 @@ export class CorptieStore {
 
   listClientWorkPage({ limit, cursor }) {
     const rows = this.selectAll(
-      `SELECT id, name, status, updated_at FROM works WHERE status = 'active'
+      `SELECT id, name, status, avatar_path, updated_at FROM works WHERE status = 'active'
        ${cursor ? "AND (updated_at < ? OR (updated_at = ? AND id < ?))" : ""}
        ORDER BY updated_at DESC, id DESC LIMIT ?`,
       [...(cursor ? [cursor.updatedAt, cursor.updatedAt, cursor.id] : []), limit + 1]);

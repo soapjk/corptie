@@ -65,12 +65,19 @@ struct PadControlTests {
         let workspace = PadWorkspace()
         workspace.selection = "one"
         workspace.before = "history-anchor"
+        workspace.messages = [ClientMessage(id: "m1", text: "hello")]
         workspace.drafts["one"] = "draft"
         workspace.selection = "one"
         #expect(workspace.before == "history-anchor")
+        #expect(workspace.messages.map(\.id) == ["m1"])
         workspace.selection = "two"
         #expect(workspace.before == nil)
+        #expect(workspace.messages.isEmpty)
         #expect(workspace.drafts["one"] == "draft")
+        workspace.selection = "one"
+        #expect(workspace.before == "history-anchor")
+        #expect(workspace.messages.map(\.id) == ["m1"])
+        #expect(!workspace.isLoadingDetail)
     }
 }
 
