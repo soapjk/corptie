@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -106,8 +106,14 @@ test("gateway is disabled by default and always disabled in preview", async () =
 
 test("real TLS route boundary and authenticated local approval", async () => {
   const f = await fixture();
+  const avatarPath = join(f.dir, "avatar.png");
+  await writeFile(avatarPath, Buffer.from("89504e470d0a1a0a", "hex"));
   const gateway = new ClientDeviceGateway(f.authority, { readAPI: {
-    list: (kind, query) => ({ schemaVersion: 1, items: [{ id: `${kind}:one` }], limit: query.get("limit") })
+    list: (kind, query) => ({ schemaVersion: 1, items: [{ id: `${kind}:one` }], limit: query.get("limit") }),
+    workAvatar: async workId => {
+      if (workId !== "work:one") throw Object.assign(new Error("AVATAR_NOT_FOUND"), { code: "AVATAR_NOT_FOUND", status: 404 });
+      return { path: avatarPath, contentType: "image/png", size: 8, etag: '"8-1"' };
+    }
   }, controlAPI: {
     list: async kind => ({ schemaVersion: 1, items: [{ id: `${kind}:one` }] }),
     repository: async id => ({ schemaVersion: 1, repository: { id } })
@@ -140,6 +146,42 @@ test("real TLS route boundary and authenticated local approval", async () => {
     configuration(identity, sessionId, input) {
       requireDevicePermission(identity, "messages.write");
       return { schemaVersion: 1, sessionId, currentModel: input?.model ?? "current" };
+    },
+    readReceipt(identity, sessionId, input) {
+      requireDevicePermission(identity, "messages.read");
+      return { schemaVersion: 1, sessionId, lastAgentMessageSequence: 7, lastReadMessageSequence: input.throughSequence };
+    },
+    image(identity, sessionId, query) {
+      requireDevicePermission(identity, "messages.read");
+      if (query.get("path") !== "chat-resources/session/a.png") throw Object.assign(new Error("IMAGE_NOT_AVAILABLE"), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
+      return { data: Buffer.from("png-bytes"), contentType: "image/png", byteLength: 9 };
+    },
+    async usage(identity, sessionId) {
+      requireDevicePermission(identity, "messages.read");
+      return { schemaVersion: 1, sessionId, context: { usedTokens: 10, contextWindow: 100, remainingTokens: 90, usedPercent: 10 }, account: null };
+    },
+    entityCommands: {},
+    taskManagement(identity, taskId) {
+      requireDevicePermission(identity, "tasks.manage");
+      return { schemaVersion: 1, task: { id: taskId }, actions: {} };
+    },
+    async taskDeletionPlan(identity, taskId) {
+      requireDevicePermission(identity, "tasks.manage");
+      return { schemaVersion: 1, taskId, status: "safe" };
+    },
+    workManagement(identity, workId) {
+      requireDevicePermission(identity, "works.manage");
+      return { schemaVersion: 1, work: { id: workId }, actions: {} };
+    },
+    taskCommand(identity, taskId, command, input, revalidate) {
+      requireDevicePermission(identity, "tasks.manage");
+      assert.equal(revalidate().deviceId, identity.deviceId);
+      return { schemaVersion: 1, requestId: input.requestId, kind: `task_${command}`, status: "completed", entityResult: { taskId } };
+    },
+    workCommand(identity, workId, command, input, revalidate) {
+      requireDevicePermission(identity, "works.manage");
+      assert.equal(revalidate().deviceId, identity.deviceId);
+      return { schemaVersion: 1, requestId: input.requestId, kind: `work_${command}`, status: "completed", entityResult: { workId } };
     }
   } });
   const remoteAgent = new https.Agent({ keepAlive: true });
@@ -157,9 +199,13 @@ test("real TLS route boundary and authenticated local approval", async () => {
         port: local ? admin.address().port : address.port, path, method, ca: cert, agent: local ? false : remoteAgent,
         headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers,
           ...(value ? { "content-type": "application/json" } : {}) } }, res => {
-        let body = "";
-        res.on("data", chunk => { body += chunk; });
-        res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(body) }));
+        const chunks = [];
+        res.on("data", chunk => { chunks.push(chunk); });
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks);
+          const json = /^application\/json/.test(res.headers["content-type"] ?? "");
+          resolve({ status: res.statusCode, headers: res.headers, raw, body: json && raw.length ? JSON.parse(raw.toString("utf8")) : null });
+        });
       });
       req.on("error", reject);
       req.end(value ? JSON.stringify(value) : undefined);
@@ -180,6 +226,17 @@ test("real TLS route boundary and authenticated local approval", async () => {
       assert.equal(page.body.items[0].id, `${kind}:one`);
       assert.equal((await call(`/client/v1/${kind}`, { method: "POST", token: creds.accessToken, value: {} })).status, 404);
     }
+    const avatarRoute = "/client/v1/works/work%3Aone/avatar";
+    assert.equal((await call(avatarRoute)).status, 401);
+    const avatar = await call(avatarRoute, { token: creds.accessToken });
+    assert.equal(avatar.status, 200);
+    assert.equal(avatar.headers["content-type"], "image/png");
+    assert.equal(avatar.headers["x-content-type-options"], "nosniff");
+    assert.equal(avatar.raw.toString("hex"), "89504e470d0a1a0a");
+    assert.equal((await call(avatarRoute, { token: creds.accessToken, headers: { "if-none-match": '"8-1"' } })).status, 304);
+    assert.equal((await call("/client/v1/works/work%3Atwo/avatar", { token: creds.accessToken })).status, 404);
+    assert.equal((await call(`${avatarRoute}?x=1`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(avatarRoute, { token: creds.accessToken, method: "POST", value: {} })).status, 404);
     for (const path of ["/settings", "/state/snapshot", "/internal/client-devices", "/sessions/x/messages"]) {
       assert.equal((await call(path, { token: creds.accessToken })).status, 404);
     }
@@ -203,6 +260,31 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlWrite, false);
     assert.equal((await call(messagesPath, { token: creds.accessToken })).body.sessionId, "session:test");
+    const readReceiptPath = "/client/v1/sessions/session%3Atest/read-receipt";
+    assert.equal((await call(readReceiptPath, { method: "POST", value: { throughSequence: 7 } })).status, 401);
+    const acknowledged = await call(readReceiptPath, { token: creds.accessToken, method: "POST", value: { throughSequence: 7 } });
+    assert.equal(acknowledged.status, 200);
+    assert.equal(acknowledged.body.lastReadMessageSequence, 7);
+    assert.equal((await call(readReceiptPath, { token: creds.accessToken })).status, 404);
+    assert.equal((await call(`${readReceiptPath}?x=1`, { token: creds.accessToken, method: "POST", value: { throughSequence: 7 } })).status, 403);
+    const imagePath = "/client/v1/sessions/session%3Atest/images?path=chat-resources%2Fsession%2Fa.png";
+    assert.equal((await call(imagePath)).status, 401);
+    const image = await call(imagePath, { token: creds.accessToken });
+    assert.equal(image.status, 200);
+    assert.equal(image.headers["content-type"], "image/png");
+    assert.equal(image.headers["x-content-type-options"], "nosniff");
+    assert.equal(image.raw.toString(), "png-bytes");
+    assert.equal((await call("/client/v1/sessions/session%3Atest/images?path=other.png", { token: creds.accessToken })).status, 404);
+    // Query strings are only tolerated on GET; other verbs never reach the route.
+    assert.equal((await call(imagePath, { token: creds.accessToken, method: "POST", value: {} })).status, 403);
+    assert.equal((await call("/client/v1/sessions/session%3Atest/images", { token: creds.accessToken, method: "DELETE" })).status, 404);
+    const usagePath = "/client/v1/sessions/session%3Atest/usage";
+    assert.equal((await call(usagePath)).status, 401);
+    const usage = await call(usagePath, { token: creds.accessToken });
+    assert.equal(usage.status, 200);
+    assert.equal(usage.body.context.usedTokens, 10);
+    assert.equal((await call(`${usagePath}?x=1`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(usagePath, { token: creds.accessToken, method: "POST", value: {} })).status, 404);
     const commandsPath = "/client/v1/sessions/session%3Atest/conversation-commands";
     assert.equal((await call(commandsPath, { token: creds.accessToken })).body.commands[0].name, "goal");
     const commandInput = { requestId: "command_123", name: "goal", arguments: "test" };
@@ -233,6 +315,41 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call(`${createPath}?work=other`, { token: creds.accessToken, method: "POST", value: createInput })).status, 403);
     await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
       value: { deviceId: creds.deviceId, permissions: beforeCreateGrant } });
+    // Work / Task management is a separate explicit grant; messages.write + tasks.create never imply it.
+    const taskPath = "/client/v1/tasks/task%3Aone";
+    const workPath = "/client/v1/works/work%3Aone";
+    assert.equal((await call(`${taskPath}/management`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(`${workPath}/management`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(`${taskPath}/archive`, { token: creds.accessToken, method: "POST", value: { requestId: "archive_123", archived: true } })).status, 403);
+    assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.taskManagement, false);
+    const beforeManageGrant = f.authority.authenticate(creds.accessToken).permissions;
+    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: [...beforeManageGrant, "tasks.manage"], expectedPermissions: beforeManageGrant } });
+    const capabilities = (await call("/client/v1/capabilities", { token: creds.accessToken })).body;
+    assert.equal(capabilities.taskManagement, true);
+    assert.equal(capabilities.workManagement, false);
+    assert.equal((await call(`${taskPath}/management`, { token: creds.accessToken })).body.task.id, "task:one");
+    assert.equal((await call(`${taskPath}/deletion`, { token: creds.accessToken })).body.status, "safe");
+    assert.equal((await call(`${taskPath}/management?x=1`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(`${taskPath}/management`, { token: creds.accessToken, method: "POST", value: {} })).status, 404);
+    assert.equal((await call(`${taskPath}/archive`, { token: creds.accessToken })).status, 404);
+    assert.equal((await call(`${taskPath}/complete`, { token: creds.accessToken, method: "POST", value: { requestId: "complete_123" } })).status, 404);
+    const archived = await call(`${taskPath}/archive`, { token: creds.accessToken, method: "POST", value: { requestId: "archive_123", archived: true } });
+    assert.equal(archived.status, 202);
+    assert.equal(archived.body.kind, "task_archive");
+    assert.deepEqual(archived.body.entityResult, { taskId: "task:one" });
+    assert.equal((await call(`${taskPath}/delete`, { token: creds.accessToken, method: "POST", value: { requestId: "delete_1234", mode: "safe" } })).body.kind, "task_delete");
+    assert.equal((await call(`${workPath}/management`, { token: creds.accessToken })).status, 403);
+    assert.equal((await call(`${workPath}/delete`, { token: creds.accessToken, method: "POST", value: { requestId: "delete_work1" } })).status, 403);
+    const beforeWorkGrant = f.authority.authenticate(creds.accessToken).permissions;
+    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: [...beforeWorkGrant, "works.manage"], expectedPermissions: beforeWorkGrant } });
+    assert.equal((await call(`${workPath}/management`, { token: creds.accessToken })).body.work.id, "work:one");
+    assert.equal((await call(`${workPath}/update`, { token: creds.accessToken, method: "POST", value: { requestId: "update_work1", name: "New" } })).body.kind, "work_update");
+    assert.equal((await call(`${workPath}/deletion`, { token: creds.accessToken })).status, 404);
+    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: beforeCreateGrant } });
+    assert.equal((await call(`${taskPath}/management`, { token: creds.accessToken })).status, 403);
     const sent = await call(messagesPath, { token: creds.accessToken, method: "POST", value: { requestId: "request_123", text: "test" } });
     assert.equal(sent.status, 202);
     assert.equal(sent.body.kind, "send");

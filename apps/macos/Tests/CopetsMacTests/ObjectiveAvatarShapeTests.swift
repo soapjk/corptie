@@ -39,12 +39,22 @@ struct ObjectiveAvatarShapeTests {
             #expect(source.contains("ObjectiveAvatarView("), "Missing shared avatar in \(fileName)")
         }
 
+        // The squircle body is shared with iPad; macOS only injects the image leaf.
+        let sharedRoot = sourceRoot  // …/apps/macos/Sources/CopetsMac
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("packages/CorptieConversation/Sources/CorptieConversation")
         let component = try String(
-            contentsOf: sourceRoot.appendingPathComponent("DefaultAvatarGradient.swift"),
+            contentsOf: sharedRoot.appendingPathComponent("ObjectiveAvatar.swift"),
             encoding: .utf8
         )
         #expect(component.contains("style: .continuous"))
         #expect(component.contains(".clipShape(MacOSAppIconShape())"))
+        let wrapper = try String(
+            contentsOf: sourceRoot.appendingPathComponent("DefaultAvatarGradient.swift"),
+            encoding: .utf8
+        )
+        #expect(wrapper.contains("CorptieConversation.ObjectiveAvatarView("))
     }
 
     @Test

@@ -23,6 +23,62 @@ struct SessionAPITests {
         #expect(try await api.receipt(requestId: "request_123").taskResult == nil)
         #expect(try await api.capabilities(sessionId: "session:test").createTask == nil)
     }
+    @Test func entityManagementUsesClosedRoutesAndTypedEntityResults() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SessionProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://unit-test.invalid")!),
+            bearerToken: "test-only", configuration: config)
+        let api = ClientSessionAPI(transport: transport)
+        let management = try await api.taskManagement(taskId: "task:one")
+        #expect(management.task.title == "Task")
+        #expect(management.task.archived == false)
+        #expect(management.actions.restart == ClientEntityAction(available: false, reason: "PROVIDER_INITIALIZING"))
+        #expect(management.actions.delete.available)
+        #expect(management.agents.map(\.id) == ["agent:test"])
+        let plan = try await api.taskDeletionPlan(taskId: "task:one")
+        #expect(plan.status == "risky")
+        #expect(plan.worktree?.branchName == "task/abc")
+        #expect(plan.risks.first?.files == ["a.swift"])
+        #expect(plan.blockers.isEmpty)
+        let work = try await api.workManagement(workId: "work:one")
+        #expect(work.work.name == "Work")
+        #expect(work.actions.delete == ClientEntityAction(available: false, reason: "WORK_TASK_DELETING"))
+        var update = ClientTaskUpdate(requestId: "update_12345")
+        update.title = "Renamed"
+        let renamed = try await api.taskCommand(taskId: "task:one", command: .update, body: update)
+        #expect(renamed.kind == "task_update")
+        #expect(renamed.entityResult?.title == "Renamed")
+        #expect(renamed.taskResult == nil && renamed.commandResult == nil)
+        var deletion = ClientTaskDeletion(requestId: "delete_12345")
+        deletion.mode = "force"; deletion.acknowledgeDataLoss = true; deletion.confirmedBranchName = "task/abc"
+        let deleted = try await api.taskCommand(taskId: "task:one", command: .delete, body: deletion)
+        #expect(deleted.entityResult?.operationId == "op:1")
+        let removed = try await api.workCommand(workId: "work:one", command: .delete, body: ClientEntityRequest(requestId: "delete_work12"))
+        #expect(removed.kind == "work_delete")
+        #expect(removed.entityResult?.workId == "work:one")
+        #expect(try await api.receipt(requestId: "request_123").entityResult == nil)
+    }
+    @Test func capabilitiesCarryReadinessAndUsageIsAReadOnlyProjection() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SessionProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://unit-test.invalid")!),
+            bearerToken: "test-only", configuration: config)
+        let api = ClientSessionAPI(transport: transport)
+        let capabilities = try await api.capabilities(sessionId: "session:test")
+        #expect(capabilities.readiness == "not_ready")
+        #expect(capabilities.notReadyReason == ClientSessionNotReadyReason(code: "PROVIDER_INITIALIZING", message: "Provider is starting", retryable: true))
+        let usage = try await api.usage(sessionId: "session:test")
+        #expect(usage.context?.usedTokens == 10)
+        #expect(usage.context?.usedPercent == 10)
+        #expect(usage.account?.provider == "codex")
+        #expect(usage.account?.rateLimits?.primary?.windowDurationMins == 300)
+        #expect(usage.account?.rateLimits?.secondary == nil)
+        #expect(usage.account?.rateLimitsByLimitId?["codex"]?.primary?.usedPercent == 25)
+        let legacy = try JSONDecoder().decode(ClientSessionCapabilities.self,
+            from: Data(#"{"schemaVersion":1,"sessionId":"s","readMessages":true,"send":{"available":true},"stop":{"available":true}}"#.utf8))
+        #expect(legacy.readiness == nil)
+        #expect(legacy.notReadyReason == nil)
+    }
     @Test func timelinePresentationDecodesAdditivelyAndInvalidatesOnStateChanges() throws {
         let data = Data(#"{"id":"tool:1","turnId":"turn:1","type":"commandExecution","text":"output","turnStatus":"running","title":"Read source","presentationRole":"commentary","presentationText":"检查代码","sourceType":"tool","localVisibility":"visible","processingError":"failed","processStartedAt":"start","processEndedAt":"end"}"#.utf8)
         let decoder = JSONDecoder()
@@ -44,6 +100,38 @@ struct SessionAPITests {
         #expect(legacy.presentationRole == nil)
         #expect(legacy.processStartedAt == nil)
         #expect(ClientMessage(id: "local", text: "draft").presentationRole == nil)
+    }
+
+    @Test func attachmentsDecodeAdditivelyAndStreamThroughTheSessionImageRoute() async throws {
+        let decoder = JSONDecoder()
+        let message = try decoder.decode(ClientMessage.self, from: Data(#"{"id":"m","type":"userMessage","text":"see","images":[{"managedPath":"chat-resources/session/a.png","fileName":"a.png","mimeType":"image/png","byteLength":9},{"managedPath":"chat-resources/session/b.png"}]}"#.utf8))
+        #expect(message.images.map(\.id) == ["chat-resources/session/a.png", "chat-resources/session/b.png"])
+        #expect(message.images[0].fileName == "a.png")
+        #expect(message.images[1].mimeType == nil)
+        let legacy = try decoder.decode(ClientMessage.self, from: Data(#"{"id":"old","type":"agentMessage","text":"hello"}"#.utf8))
+        #expect(legacy.images.isEmpty)
+        #expect(ClientMessage(id: "local", text: "draft").images.isEmpty)
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SessionProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://unit-test.invalid")!),
+            bearerToken: "test-only", configuration: config)
+        let api = ClientSessionAPI(transport: transport)
+        let payload = try await api.image(sessionId: "session:test", managedPath: "chat-resources/session/a.png")
+        #expect(payload?.contentType == "image/png")
+        #expect(payload.map { String(decoding: $0.data, as: UTF8.self) } == "png-bytes")
+        #expect(try await api.image(sessionId: "session:test", managedPath: "chat-resources/session/gone.png") == nil)
+    }
+
+    @Test func timelineTimestampsMatchTheDesktopLabel() {
+        let label = ConversationTimestampText.messageLabel(createdAt: "2026-09-19T08:05:09.123Z")
+        let expected = Date(timeIntervalSince1970: 1_789_805_109.123)
+            .formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute().second())
+        #expect(label == expected)
+        #expect(ConversationTimestampText.messageLabel(createdAt: "2026-09-19T08:05:09Z")
+            == Date(timeIntervalSince1970: 1_789_805_109).formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour().minute().second()))
+        #expect(ConversationTimestampText.messageLabel(createdAt: nil) == "")
+        #expect(ConversationTimestampText.messageLabel(createdAt: "not a date") == "")
     }
 
     @Test func slashSyntaxPreservesArgumentsWithoutTreatingPathsAsCommands() throws {
@@ -96,7 +184,34 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-only")
         let path = request.url!.path
         let json: String
-        if path.hasSuffix("/tasks") {
+        if path.hasPrefix("/client/v1/tasks/") || path.hasPrefix("/client/v1/works/") {
+            let route = path.split(separator: "/").last.map(String.init) ?? ""
+            let body = (try? JSONSerialization.jsonObject(with: Self.body(of: request))) as? [String: Any]
+            switch (path, route, request.httpMethod) {
+            case ("/client/v1/tasks/task:one/management", _, "GET"):
+                json = #"{"schemaVersion":1,"task":{"id":"task:one","workId":"work:one","title":"Task","description":"","acceptanceCriteria":"","verificationCriteria":"","priority":"medium","lifecycleState":"todo","archived":false,"mainAgentId":"agent:test","deletionStatus":null},"agents":[{"id":"agent:test","name":"Test"}],"priorities":["low","medium","high","urgent"],"actions":{"rename":{"available":true,"reason":null},"edit":{"available":true,"reason":null},"restart":{"available":false,"reason":"PROVIDER_INITIALIZING"},"archive":{"available":true,"reason":null},"unarchive":{"available":false,"reason":"TASK_NOT_ARCHIVED"},"delete":{"available":true,"reason":null}}}"#
+            case ("/client/v1/tasks/task:one/deletion", _, "GET"):
+                json = #"{"schemaVersion":1,"taskId":"task:one","status":"risky","associatedSessionCount":1,"artifacts":[{"id":"artifact:a","title":"Plan"}],"worktree":{"branchName":"task/abc","dirty":true,"mergedIntoMain":false,"aheadOfMain":2},"risks":[{"code":"DIRTY_WORKTREE","message":"uncommitted","files":["a.swift"],"commitCount":2}],"blockers":[]}"#
+            case ("/client/v1/works/work:one/management", _, "GET"):
+                json = #"{"schemaVersion":1,"work":{"id":"work:one","name":"Work","description":"","status":"active"},"actions":{"edit":{"available":true,"reason":null},"delete":{"available":false,"reason":"WORK_TASK_DELETING"}}}"#
+            case ("/client/v1/tasks/task:one/update", _, "POST"):
+                #expect(body?["title"] as? String == "Renamed")
+                #expect(body?["description"] == nil, "unset optionals stay off the wire")
+                json = #"{"schemaVersion":1,"requestId":"update_12345","sessionId":"","kind":"task_update","status":"completed","errorCode":null,"updatedAt":"now","entityResult":{"taskId":"task:one","title":"Renamed"}}"#
+            case ("/client/v1/tasks/task:one/delete", _, "POST"):
+                #expect(body?["mode"] as? String == "force")
+                #expect(body?["acknowledgeDataLoss"] as? Bool == true)
+                #expect(body?["confirmedBranchName"] as? String == "task/abc")
+                #expect(body?["deleteWorktree"] as? Bool == true)
+                json = #"{"schemaVersion":1,"requestId":"delete_12345","sessionId":"","kind":"task_delete","status":"completed","errorCode":null,"updatedAt":"now","entityResult":{"taskId":"task:one","operationId":"op:1","state":"queued"}}"#
+            case ("/client/v1/works/work:one/delete", _, "POST"):
+                #expect(body?.keys.sorted() == ["requestId"])
+                json = #"{"schemaVersion":1,"requestId":"delete_work12","sessionId":"","kind":"work_delete","status":"completed","errorCode":null,"updatedAt":"now","entityResult":{"workId":"work:one"}}"#
+            default:
+                Issue.record("unexpected entity route \(request.httpMethod ?? "") \(path)")
+                json = "{}"
+            }
+        } else if path.hasSuffix("/tasks") {
             #expect(path == "/client/v1/sessions/session:test/tasks")
             if request.httpMethod == "GET" {
                 #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "provider:test")
@@ -130,8 +245,26 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
                 #expect(body?["text"] == nil)
                 json = #"{"schemaVersion":1,"sessionId":"session:test","requestId":"goal_12345","kind":"conversation_command","status":"completed","updatedAt":"2026-09-19T00:00:00Z","commandResult":{"text":"当前没有目标。","truncated":false}}"#
             }
+        } else if path.hasSuffix("/images") {
+            #expect(request.httpMethod == "GET")
+            let managed = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "path" }?.value
+            if managed == "chat-resources/session/a.png" {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "image/png"])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data("png-bytes".utf8))
+            } else {
+                client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+                client?.urlProtocol(self, didLoad: Data(#"{"code":"IMAGE_NOT_AVAILABLE"}"#.utf8))
+            }
+            client?.urlProtocolDidFinishLoading(self)
+            return
         } else if path.hasSuffix("capabilities") {
-            json = #"{"schemaVersion":1,"sessionId":"session:test","readMessages":true,"send":{"available":true},"stop":{"available":false}}"#
+            json = #"{"schemaVersion":1,"sessionId":"session:test","readMessages":true,"send":{"available":true},"stop":{"available":false},"readiness":"not_ready","notReadyReason":{"code":"PROVIDER_INITIALIZING","message":"Provider is starting","retryable":true}}"#
+        } else if path.hasSuffix("/usage") {
+            #expect(request.httpMethod == "GET")
+            #expect(path == "/client/v1/sessions/session:test/usage")
+            json = #"{"schemaVersion":1,"sessionId":"session:test","context":{"usedTokens":10,"contextWindow":100,"remainingTokens":90,"usedPercent":10},"account":{"available":true,"provider":"codex","model":"gpt-5","rateLimits":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1700000000},"secondary":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1700000000},"secondary":null}}}}"#
         } else if path.hasSuffix("messages") && request.httpMethod == "GET" {
             #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "before", value: "item:1")) == true)
             json = #"{"schemaVersion":1,"sessionId":"session:test","items":[],"hasEarlier":false}"#
@@ -146,4 +279,18 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+    private static func body(of request: URLRequest) -> Data {
+        var data = request.httpBody ?? Data()
+        if let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var bytes = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&bytes, maxLength: bytes.count)
+                if count <= 0 { break }
+                data.append(contentsOf: bytes.prefix(count))
+            }
+        }
+        return data
+    }
 }

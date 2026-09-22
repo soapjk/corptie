@@ -25,12 +25,18 @@ enum ClientDeviceCommandPermission: String, CaseIterable, Identifiable {
     case commands = "sessions.commands"
     case clear = "sessions.clear"
     case createTask = "tasks.create"
+    case discuss = "works.discuss"
+    case manageTasks = "tasks.manage"
+    case manageWorks = "works.manage"
     var id: String { rawValue }
     var title: String {
         switch self {
         case .commands: "修改类会话命令"
         case .clear: "清空会话上下文"
         case .createTask: "创建 Task 与配套会话"
+        case .discuss: "打开 Work 讨论"
+        case .manageTasks: "管理 Task（重命名／编辑／重启／归档／删除）"
+        case .manageWorks: "管理 Work（编辑／删除）"
         }
     }
     var explanation: String {
@@ -41,6 +47,12 @@ enum ClientDeviceCommandPermission: String, CaseIterable, Identifiable {
             "允许 /clear 清空会话上下文。设备执行时仍须单独确认此操作。"
         case .createTask:
             "允许设备在来源会话所属 Work 内创建 Task 与配套会话；只能选择该 Work 的参与 Agent。不会自动发送首条消息，也不授予删除、清空或其他管理权限。"
+        case .discuss:
+            "允许设备从 Task 会话打开或创建所属 Work 的讨论会话。不授予 Work 或 Task 的修改权限。"
+        case .manageTasks:
+            "允许设备通过 Work 大纲的长按菜单重命名、编辑、重启、归档／恢复和删除 Task，与 macOS 右键菜单一致。删除仍会在设备上展示与桌面相同的风险确认；不授予 Work 管理或脚本运行权限。"
+        case .manageWorks:
+            "允许设备通过 Work 大纲的长按菜单编辑或删除 Work。删除会同时清除 Work 头像并需设备端确认；不包含 Task 管理权限。"
         }
     }
 }

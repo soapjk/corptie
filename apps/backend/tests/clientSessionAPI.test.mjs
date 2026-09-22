@@ -249,6 +249,43 @@ test("permissions, provider capabilities and payload boundaries precede executio
   } finally { await f.close(); }
 });
 
+test("capabilities carry Session readiness and usage is a sanitized read-only projection", async () => {
+  const f = await fixture();
+  try {
+    const plain = new ClientSessionAPI({ store: f.store, ...callbacks });
+    const withoutReadiness = plain.capabilities(identity, "session:test");
+    assert.equal(withoutReadiness.readiness, null);
+    assert.equal(withoutReadiness.notReadyReason, null);
+    await assert.rejects(plain.usage(identity, "session:test"), { code: "CAPABILITY_UNSUPPORTED" });
+
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readiness: () => ({ readiness: "not_ready", notReadyReason: { code: "PROVIDER_INITIALIZING", message: "starting", retryable: true, secret: "private" } }),
+      usage: async () => ({ account: { available: true, provider: "codex", model: "gpt-5", token: "private",
+        rateLimits: { limitId: "default", limitName: "gpt-5", primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1700000000, raw: {} }, secondary: null },
+        rateLimitsByLimitId: { default: { limitId: "default", primary: { usedPercent: "bad" } }, broken: "no" } },
+        context: { usedTokens: 1200, contextWindow: 4000, remainingTokens: 2800, usedPercent: 30, trace: "private" },
+        resetForecast: { forecast: { url: "https://example.invalid" } } }) });
+    const capabilities = api.capabilities(identity, "session:test");
+    assert.equal(capabilities.readiness, "not_ready");
+    assert.deepEqual(capabilities.notReadyReason, { code: "PROVIDER_INITIALIZING", message: "starting", retryable: true });
+    const ready = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readiness: () => ({ readiness: "ready", notReadyReason: { code: "STALE", message: "ignored" } }) });
+    assert.equal(ready.capabilities(identity, "session:test").readiness, "ready");
+    assert.equal(ready.capabilities(identity, "session:test").notReadyReason, null);
+
+    const usage = await api.usage(identity, "session:test");
+    assert.deepEqual(usage, { schemaVersion: 1, sessionId: "session:test",
+      context: { usedTokens: 1200, contextWindow: 4000, remainingTokens: 2800, usedPercent: 30 },
+      account: { available: true, provider: "codex", model: "gpt-5",
+        rateLimits: { limitId: "default", limitName: "gpt-5",
+          primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1700000000 }, secondary: null },
+        rateLimitsByLimitId: { default: { limitId: "default", limitName: null,
+          primary: { usedPercent: null, windowDurationMins: null, resetsAt: null }, secondary: null } } } });
+    await assert.rejects(api.usage({ ...identity, permissions: ["inventory.read"] }, "session:test"), { code: "DEVICE_PERMISSION_REQUIRED" });
+    await assert.rejects(api.usage(identity, "session:missing"), { code: "SESSION_NOT_AVAILABLE" });
+  } finally { await f.close(); }
+});
+
 test("uncertain dispatch is never automatically replayed; reads project only public message fields", async () => {
   const f = await fixture();
   try {
@@ -293,5 +330,72 @@ test("stable logical Session ids resolve to the current executable Session", asy
       { requestId: "logical_request", text: "Hello" });
     assert.equal(receipt.sessionId, "session:test");
     assert.deepEqual(calls, ["session:test", "session:test"]);
+  } finally { await f.close(); }
+});
+
+test("read receipts acknowledge an exact rendered cursor and publish through the host callback", async () => {
+  const f = await fixture();
+  try {
+    f.store.appendSessionEvent({ sessionId: "session:test", eventId: "event:agent-1", type: "AgentTurnCompleted",
+      payload: { hasAgentMessage: true }, source: "test" });
+    const published = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks, markRead: (sessionId, through) => {
+      const receipt = f.store.markSessionMessagesRead(sessionId, through);
+      published.push([sessionId, through]);
+      return receipt;
+    } });
+    const latest = f.store.lastAgentMessageSequence("session:test");
+    const receipt = api.readReceipt(identity, "session:test", { throughSequence: latest });
+    assert.equal(receipt.schemaVersion, 1);
+    assert.equal(receipt.sessionId, "session:test");
+    assert.equal(receipt.lastReadMessageSequence, latest);
+    assert.deepEqual(published, [["session:test", latest]]);
+    assert.throws(() => api.readReceipt(identity, "session:test", { throughSequence: latest + 1 }), { code: "INVALID_READ_SEQUENCE", status: 409 });
+    for (const input of [{}, { throughSequence: -1 }, { throughSequence: "1" }, { throughSequence: 0, extra: true }]) {
+      assert.throws(() => api.readReceipt(identity, "session:test", input), { code: "INVALID_READ_SEQUENCE", status: 400 });
+    }
+    assert.throws(() => api.readReceipt({ ...identity, permissions: [] }, "session:test", { throughSequence: 0 }), { status: 403 });
+    assert.throws(() => api.readReceipt(identity, "session:missing", { throughSequence: 0 }), { code: "SESSION_NOT_AVAILABLE" });
+  } finally { await f.close(); }
+});
+
+test("message attachments project managed paths only and stream through the owned image callback", async () => {
+  const f = await fixture();
+  try {
+    const reads = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 6, hasEarlier: false, items: [
+        { id: "m:1", type: "userMessage", text: "see", images: [
+          { managedPath: "chat-resources/session/a.png", originalPath: "/Users/me/secret.png", fileName: "a.png", mimeType: "image/png", byteLength: 12 },
+          { originalPath: "/Users/me/only-original.png" }, null, { managedPath: "" },
+        ] },
+        { id: "m:2", type: "agentMessage", text: "none", images: "invalid" },
+      ] }),
+      images: { available: () => true, import: async () => ({}), read: async (sessionId, managedPath) => {
+        reads.push([sessionId, managedPath]);
+        if (managedPath.endsWith("missing.png")) { const error = new Error("missing"); error.code = "CHAT_IMAGE_MISSING"; error.statusCode = 404; throw error; }
+        if (managedPath.startsWith("chat-resources/other")) { const error = new Error("foreign"); error.code = "CHAT_IMAGE_FORBIDDEN"; error.statusCode = 403; throw error; }
+        return { data: Buffer.from("png-bytes"), mimeType: "image/png", byteLength: 9 };
+      } } });
+    const { items } = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(items[0].images, [{ managedPath: "chat-resources/session/a.png", fileName: "a.png", mimeType: "image/png", byteLength: 12 }]);
+    assert.equal(Object.hasOwn(items[0].images[0], "originalPath"), false);
+    assert.deepEqual(items[1].images, []);
+
+    const image = await api.image(identity, "session:test", new URLSearchParams({ path: "chat-resources/session/a.png" }));
+    assert.equal(image.contentType, "image/png");
+    assert.equal(image.byteLength, 9);
+    assert.equal(image.data.toString(), "png-bytes");
+    assert.deepEqual(reads, [["session:test", "chat-resources/session/a.png"]]);
+    await assert.rejects(api.image(identity, "session:test", new URLSearchParams({ path: "chat-resources/session/missing.png" })), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
+    // Foreign Sessions' paths read as absent, never as forbidden.
+    await assert.rejects(api.image(identity, "session:test", new URLSearchParams({ path: "chat-resources/other/a.png" })), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
+    for (const query of [new URLSearchParams(), new URLSearchParams({ path: "" }), new URLSearchParams([["path", "a"], ["path", "b"]]), new URLSearchParams({ path: "a", extra: "1" })]) {
+      await assert.rejects(api.image(identity, "session:test", query), { status: query.get("path") === "" ? 404 : 400 });
+    }
+    await assert.rejects(api.image({ ...identity, permissions: [] }, "session:test", new URLSearchParams({ path: "a" })), { status: 403 });
+    await assert.rejects(api.image(identity, "session:missing", new URLSearchParams({ path: "a" })), { code: "SESSION_NOT_AVAILABLE" });
+    const noImages = new ClientSessionAPI({ store: f.store, ...callbacks });
+    await assert.rejects(noImages.image(identity, "session:test", new URLSearchParams({ path: "a" })), { code: "IMAGE_NOT_AVAILABLE", status: 404 });
   } finally { await f.close(); }
 });

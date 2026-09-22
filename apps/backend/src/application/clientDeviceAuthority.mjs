@@ -6,7 +6,7 @@ const token = () => randomBytes(32).toString("base64url");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const validToken = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 export const DEFAULT_CLIENT_DEVICE_PERMISSIONS = Object.freeze(["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]);
-export const CLIENT_DEVICE_PERMISSIONS = Object.freeze([...DEFAULT_CLIENT_DEVICE_PERMISSIONS, "sessions.commands", "sessions.clear", "tasks.create", "works.discuss"]);
+export const CLIENT_DEVICE_PERMISSIONS = Object.freeze([...DEFAULT_CLIENT_DEVICE_PERMISSIONS, "sessions.commands", "sessions.clear", "tasks.create", "works.discuss", "tasks.manage", "works.manage"]);
 export const deviceError = (code, status = 401) => Object.assign(new Error(code), { code, status });
 
 /** Device credentials authorize client access, never impersonate a Session or Agent. */
