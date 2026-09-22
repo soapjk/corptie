@@ -20,13 +20,42 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
     public let processingError: String?
     public var processStartedAt: String?
     public var processEndedAt: String?
+    /// Managed attachments (additive; older backends omit them). Bytes come from `ClientSessionAPI.image`.
+    public let images: [ClientMessageImage]
+
+    enum CodingKeys: String, CodingKey {
+        case id, turnId, type, text, status, createdAt, userMessageStatus, queuePosition
+        case turnStatus, title, presentationRole, presentationText, sourceType, localVisibility, processingError
+        case processStartedAt, processEndedAt, images
+    }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+        type = try container.decode(String.self, forKey: .type)
+        text = try container.decode(String.self, forKey: .text)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        userMessageStatus = try container.decodeIfPresent(String.self, forKey: .userMessageStatus)
+        queuePosition = try container.decodeIfPresent(Int.self, forKey: .queuePosition)
+        turnStatus = try container.decodeIfPresent(String.self, forKey: .turnStatus)
+        title = try container.decodeIfPresent(String.self, forKey: .title)
+        presentationRole = try container.decodeIfPresent(String.self, forKey: .presentationRole)
+        presentationText = try container.decodeIfPresent(String.self, forKey: .presentationText)
+        sourceType = try container.decodeIfPresent(String.self, forKey: .sourceType)
+        localVisibility = try container.decodeIfPresent(String.self, forKey: .localVisibility)
+        processingError = try container.decodeIfPresent(String.self, forKey: .processingError)
+        processStartedAt = try container.decodeIfPresent(String.self, forKey: .processStartedAt)
+        processEndedAt = try container.decodeIfPresent(String.self, forKey: .processEndedAt)
+        images = try container.decodeIfPresent([ClientMessageImage].self, forKey: .images) ?? []
+    }
 
     public init(id: String, text: String) {
         self.id = id; self.text = text; type = "userMessage"
         turnId = nil; status = nil; createdAt = nil; userMessageStatus = nil; queuePosition = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
-        processStartedAt = nil; processEndedAt = nil
+        processStartedAt = nil; processEndedAt = nil; images = []
     }
     public init(commandMessageID: String, result: ClientConversationCommandResult) {
         id = commandMessageID; text = result.text; type = "commandExecution"
@@ -34,8 +63,16 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         userMessageStatus = nil; queuePosition = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
-        processStartedAt = nil; processEndedAt = nil
+        processStartedAt = nil; processEndedAt = nil; images = []
     }
+}
+/// One managed attachment of a message. `managedPath` is an opaque host token, never a device path.
+public struct ClientMessageImage: Decodable, Sendable, Equatable, Identifiable {
+    public var id: String { managedPath }
+    public let managedPath: String
+    public let fileName: String?
+    public let mimeType: String?
+    public let byteLength: Int?
 }
 extension ClientMessage: ConversationExecutionItem {
     public var executionTitle: String { title ?? "" }
@@ -62,6 +99,8 @@ public struct ClientCommandReceipt: Decodable, Sendable {
     public let updatedAt: String
     public let commandResult: ClientConversationCommandResult?
     public let taskResult: ClientTaskCreationResult?
+    /// Present for `task_*` / `work_*` management commands.
+    public let entityResult: ClientEntityCommandResult?
 }
 public struct ClientSessionCapabilities: Decodable, Sendable {
     public struct Action: Decodable, Sendable {
@@ -80,6 +119,69 @@ public struct ClientSessionCapabilities: Decodable, Sendable {
     public let createTask: Action?
     public let currentModel: String?
     public let currentReasoningLevel: String?
+    /// Host readiness of the Session ("ready" / "not_ready"); absent on older hosts.
+    public let readiness: String?
+    /// Present only while `readiness == "not_ready"`.
+    public let notReadyReason: ClientSessionNotReadyReason?
+}
+
+/// Why the host reports a Session as not ready; codes mirror the desktop `SessionNotReadyReason`.
+public struct ClientSessionNotReadyReason: Decodable, Equatable, Sendable {
+    public let code: String
+    public let message: String
+    public let retryable: Bool?
+    public init(code: String, message: String, retryable: Bool? = nil) {
+        self.code = code; self.message = message; self.retryable = retryable
+    }
+}
+
+/// Read-only usage projection of one Session (context window plus provider rate limits).
+public struct ClientSessionUsage: Decodable, Equatable, Sendable {
+    public struct Context: Decodable, Equatable, Sendable {
+        public let usedTokens: Int?
+        public let contextWindow: Int?
+        public let remainingTokens: Int?
+        public let usedPercent: Double?
+        public init(usedTokens: Int?, contextWindow: Int?, remainingTokens: Int?, usedPercent: Double?) {
+            self.usedTokens = usedTokens; self.contextWindow = contextWindow
+            self.remainingTokens = remainingTokens; self.usedPercent = usedPercent
+        }
+    }
+    public struct Window: Decodable, Equatable, Sendable {
+        public let usedPercent: Double?
+        public let windowDurationMins: Int?
+        public let resetsAt: Double?
+        public init(usedPercent: Double?, windowDurationMins: Int?, resetsAt: Double?) {
+            self.usedPercent = usedPercent; self.windowDurationMins = windowDurationMins; self.resetsAt = resetsAt
+        }
+    }
+    public struct RateLimit: Decodable, Equatable, Sendable {
+        public let limitId: String?
+        public let limitName: String?
+        public let primary: Window?
+        public let secondary: Window?
+        public init(limitId: String?, limitName: String?, primary: Window?, secondary: Window?) {
+            self.limitId = limitId; self.limitName = limitName; self.primary = primary; self.secondary = secondary
+        }
+    }
+    public struct Account: Decodable, Equatable, Sendable {
+        public let available: Bool?
+        public let provider: String?
+        public let model: String?
+        public let rateLimits: RateLimit?
+        public let rateLimitsByLimitId: [String: RateLimit]?
+        public init(available: Bool?, provider: String?, model: String?, rateLimits: RateLimit?, rateLimitsByLimitId: [String: RateLimit]?) {
+            self.available = available; self.provider = provider; self.model = model
+            self.rateLimits = rateLimits; self.rateLimitsByLimitId = rateLimitsByLimitId
+        }
+    }
+    public let schemaVersion: Int
+    public let sessionId: String
+    public let context: Context?
+    public let account: Account?
+    public init(schemaVersion: Int = 1, sessionId: String, context: Context?, account: Account?) {
+        self.schemaVersion = schemaVersion; self.sessionId = sessionId; self.context = context; self.account = account
+    }
 }
 
 public struct ClientMessageSchedule: Encodable, Sendable {
@@ -147,6 +249,10 @@ public struct ClientSessionAPI: Sendable {
     public func capabilities(sessionId: String) async throws -> ClientSessionCapabilities {
         try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "capabilities"]))
     }
+    /// Usage snapshot behind `messages.read`; hosts without a usage reader answer 409 `CAPABILITY_UNSUPPORTED`.
+    public func usage(sessionId: String) async throws -> ClientSessionUsage {
+        try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "usage"]))
+    }
     public func composer(sessionId: String, update: [String: String]? = nil) async throws -> ClientComposerConfiguration {
         var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "composer"])
         if let update {
@@ -189,6 +295,25 @@ public struct ClientSessionAPI: Sendable {
     public func stop(sessionId: String, requestId: String) async throws -> ClientCommandReceipt {
         try await command(sessionId: sessionId, route: "stop", body: ["requestId": requestId])
     }
+    /// Acknowledges agent messages through `throughSequence` (same host receipt macOS submits on open).
+    public func readReceipt(sessionId: String, throughSequence: Int) async throws -> ClientReadReceipt {
+        var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "read-receipt"])
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(["throughSequence": throughSequence])
+        return try await read(request)
+    }
+    /// Raw bytes of one managed attachment (`nil` when the host no longer has it). Callers decode off-main.
+    public func image(sessionId: String, managedPath: String) async throws -> (data: Data, contentType: String?)? {
+        let request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "images"],
+            query: [URLQueryItem(name: "path", value: managedPath)])
+        do {
+            let (data, response) = try await transport.data(for: request)
+            return (data, response.value(forHTTPHeaderField: "Content-Type"))
+        } catch let failure as ClientServiceFailure where failure.statusCode == 404 {
+            return nil
+        }
+    }
     public func createTask(sourceSessionId: String, input: ClientTaskCreation) async throws -> ClientCommandReceipt {
         try await command(sessionId: sourceSessionId, route: "tasks", body: input)
     }
@@ -196,8 +321,27 @@ public struct ClientSessionAPI: Sendable {
         let query = providerId.map { [URLQueryItem(name: "providerId", value: $0)] } ?? []
         return try await read(transport.endpoint.request(path: ["client", "v1", "sessions", sourceSessionId, "tasks"], query: query))
     }
+    // MARK: Work / Task management (macOS outline context menus)
+    public func taskManagement(taskId: String) async throws -> ClientTaskManagement {
+        try await read(transport.endpoint.request(path: ["client", "v1", "tasks", taskId, "management"]))
+    }
+    public func taskDeletionPlan(taskId: String) async throws -> ClientTaskDeletionPlan {
+        try await read(transport.endpoint.request(path: ["client", "v1", "tasks", taskId, "deletion"]))
+    }
+    public func workManagement(workId: String) async throws -> ClientWorkManagement {
+        try await read(transport.endpoint.request(path: ["client", "v1", "works", workId, "management"]))
+    }
+    public func taskCommand<Body: Encodable>(taskId: String, command: ClientTaskCommand, body: Body) async throws -> ClientCommandReceipt {
+        try await post(path: ["client", "v1", "tasks", taskId, command.rawValue], body: body)
+    }
+    public func workCommand<Body: Encodable>(workId: String, command: ClientWorkCommand, body: Body) async throws -> ClientCommandReceipt {
+        try await post(path: ["client", "v1", "works", workId, command.rawValue], body: body)
+    }
     private func command<Body: Encodable>(sessionId: String, route: String, body: Body) async throws -> ClientCommandReceipt {
-        var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, route])
+        try await post(path: ["client", "v1", "sessions", sessionId, route], body: body)
+    }
+    private func post<Body: Encodable>(path: [String], body: Body) async throws -> ClientCommandReceipt {
+        var request = try transport.endpoint.request(path: path)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)

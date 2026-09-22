@@ -102,45 +102,13 @@ final class ConsoleOutlineExpansionPreferences: ObservableObject {
 
 typealias ConsoleWorkTitle = CorptieConversation.ConsoleWorkTitle
 
-/// Shared by list rows and experimental Task cards; animate only the icon.
+/// Shared by list rows and experimental Task cards; body lives in CorptieConversation.
 struct ConsoleScheduledWakeIcon: View {
     var isActive = true
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isVisible = false
 
     var body: some View {
-        Group {
-            if reduceMotion {
-                coloredIcon(progress: 0)
-            } else {
-                TimelineView(.animation(
-                    minimumInterval: ConsoleWorkOutlineMetrics.workingGradientFrameInterval,
-                    // AppKit-hosted windows do not reliably propagate SwiftUI scenePhase.
-                    paused: !isVisible || !isActive
-                )) { context in
-                    coloredIcon(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
-                }
-            }
-        }
-        .frame(width: 12, height: 12)
-        .onAppear { isVisible = true }
-        .onDisappear { isVisible = false }
-        .accessibilityLabel(L10n("存在等待执行的计划任务"))
-        .help(L10n("存在等待执行的计划任务"))
-    }
-
-    private func coloredIcon(progress: CGFloat) -> some View {
-        AngularGradient(
-            colors: [.cyan, .blue, .purple, .pink, .orange, .cyan],
-            center: .center,
-            angle: .degrees(Double(progress) * 360)
-        )
-        .frame(width: 12, height: 12)
-        .mask {
-            Image(systemName: "alarm")
-                .font(.system(size: 10, weight: .semibold))
-                .frame(width: 12, height: 12)
-        }
+        ScheduledWakeIcon(isActive: isActive, label: L10n("存在等待执行的计划任务"))
+            .help(L10n("存在等待执行的计划任务"))
     }
 }
 
@@ -1027,18 +995,7 @@ struct UnifiedConsoleView: View {
                 }
             } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: "bubble.left.and.bubble.right.fill")
-                        .font(.system(size: 10, weight: .regular))
-                        .foregroundStyle(.white)
-                        .frame(
-                            width: ObjectiveAvatarGeometry.displaySize(for: 22),
-                            height: ObjectiveAvatarGeometry.displaySize(for: 22)
-                        )
-                        .background {
-                            MacOSAppIconShape()
-                                .fill(Color(red: 0.36, green: 0.32, blue: 0.86))
-                        }
-                        .frame(width: 22, height: 22)
+                    ChatGroupIcon()
                     Text(L10n("Chat"))
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(selectedWorkId == nil ? Color.primary : Color.secondary)

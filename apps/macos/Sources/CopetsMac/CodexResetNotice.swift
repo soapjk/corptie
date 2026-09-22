@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CorptieConversation
 import UserNotifications
 
 enum CodexResetNoticeIdentity {
@@ -274,51 +275,34 @@ final class CodexResetSystemNotificationManager {
     }
 }
 
+/// Desktop adapter over the shared `SessionUsagePolicy` (identical on iPad).
 enum SessionUsagePresentation {
     static func remainingRateLimitPercent(_ window: CodexRateLimitWindow) -> Double? {
-        guard let usedPercent = window.usedPercent,
-              usedPercent.isFinite,
-              usedPercent >= 0 else { return nil }
-        return max(0, min(100, 100 - usedPercent))
+        SessionUsagePolicy.remainingRateLimitPercent(window.shared)
     }
 
     static func preferredRateLimitWindow(_ account: CodexAccountUsage) -> CodexRateLimitWindow? {
-        let snapshots: [CodexRateLimitSnapshot]
-        if account.provider == "codex" {
-            let scoped = account.rateLimitsByLimitId?.values.first { snapshot in
-                guard let model = normalizedModelIdentifier(account.model),
-                      let limitName = normalizedModelIdentifier(snapshot.limitName),
-                      !limitName.isEmpty else { return false }
-                return model == limitName || model.contains(limitName) || limitName.contains(model)
-            }
-            if let scoped {
-                snapshots = [scoped]
-            } else if let fallback = account.rateLimits {
-                // `rateLimits` is the Provider-designated default Codex bucket.
-                // Do not replace it with a zero-usage quota belonging to a
-                // different model (for example GPT-5.3-Codex-Spark).
-                snapshots = [fallback]
-            } else {
-                snapshots = account.rateLimitsByLimitId?.values.map { $0 } ?? []
-            }
-        } else {
-            snapshots = account.rateLimitsByLimitId?.values.map { $0 }
-                ?? account.rateLimits.map { [$0] }
-                ?? []
+        SessionUsagePolicy.preferredRateLimitWindow(account.shared).map {
+            CodexRateLimitWindow(usedPercent: $0.usedPercent, windowDurationMins: $0.windowDurationMins, resetsAt: $0.resetsAt)
         }
-        return snapshots
-            .flatMap { [$0.primary, $0.secondary].compactMap { $0 } }
-            .filter { remainingRateLimitPercent($0) != nil }
-            .max { left, right in
-                let leftDuration = left.windowDurationMins ?? -1
-                let rightDuration = right.windowDurationMins ?? -1
-                if leftDuration != rightDuration { return leftDuration < rightDuration }
-                return (left.resetsAt ?? 0) < (right.resetsAt ?? 0)
-            }
     }
+}
 
-    private static func normalizedModelIdentifier(_ value: String?) -> String? {
-        guard let value else { return nil }
-        return value.lowercased().filter { $0.isLetter || $0.isNumber }
+private extension CodexRateLimitWindow {
+    var shared: SessionUsagePolicy.Window {
+        .init(usedPercent: usedPercent, windowDurationMins: windowDurationMins, resetsAt: resetsAt)
+    }
+}
+
+private extension CodexRateLimitSnapshot {
+    var shared: SessionUsagePolicy.Snapshot {
+        .init(limitName: limitName, primary: primary?.shared, secondary: secondary?.shared)
+    }
+}
+
+private extension CodexAccountUsage {
+    var shared: SessionUsagePolicy.Account {
+        .init(provider: provider, model: model, rateLimits: rateLimits?.shared,
+              rateLimitsByLimitId: rateLimitsByLimitId?.mapValues(\.shared))
     }
 }

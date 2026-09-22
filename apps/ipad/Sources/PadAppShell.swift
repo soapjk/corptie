@@ -41,7 +41,7 @@ struct PadAppShell: View {
                 .frame(height: 49)
                 .background {
                     Rectangle()
-                        .fill(.bar)
+                        .fill(.ultraThinMaterial)
                         .ignoresSafeArea(edges: .bottom)
                 }
         }
@@ -68,6 +68,15 @@ private struct PadBottomTabBar: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
     func makeUIView(context: Context) -> UITabBar {
         let bar = UITabBar()
+        let appearance = UITabBarAppearance()
+        appearance.configureWithTransparentBackground()
+        appearance.backgroundColor = .clear
+        bar.standardAppearance = appearance
+        bar.scrollEdgeAppearance = appearance
+        bar.backgroundColor = .clear
+        bar.isTranslucent = true
+        bar.backgroundImage = UIImage()
+        bar.shadowImage = UIImage()
         bar.items = PadTab.allCases.map { UITabBarItem(title: $0.title, image: UIImage(systemName: $0.symbol), tag: $0.rawValue) }
         bar.itemPositioning = .fill
         bar.delegate = context.coordinator

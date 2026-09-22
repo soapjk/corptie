@@ -101,12 +101,16 @@ struct UnifiedConsoleControlSurfaceTests {
         let iconStart = try #require(source.range(of: "struct ConsoleScheduledWakeIcon: View"))
         let iconEnd = try #require(source.range(of: "private struct ConsoleWorkOutlineDisclosureStyle"))
         let icon = source[iconStart.lowerBound..<iconEnd.lowerBound]
-        #expect(icon.contains("Image(systemName: \"alarm\")"))
-        #expect(icon.contains(".accessibilityLabel(L10n(\"存在等待执行的计划任务\"))"))
+        // The Mac wrapper keeps localization + tooltip; the animated body is shared with iPad.
+        #expect(icon.contains("ScheduledWakeIcon(isActive: isActive, label: L10n(\"存在等待执行的计划任务\"))"))
         #expect(icon.contains(".help(L10n(\"存在等待执行的计划任务\"))"))
-        #expect(icon.contains("AngularGradient("))
-        #expect(icon.contains("paused: !isVisible || !isActive"))
-        #expect(icon.contains("if reduceMotion"))
+        let shared = try sharedSource(named: "WorkOutlineParts.swift")
+        let sharedStart = try #require(shared.range(of: "public struct ScheduledWakeIcon: View"))
+        let sharedIcon = shared[sharedStart.lowerBound...]
+        #expect(sharedIcon.contains("Image(systemName: \"alarm\")"))
+        #expect(sharedIcon.contains("AngularGradient("))
+        #expect(sharedIcon.contains("paused: !isVisible || !isActive"))
+        #expect(sharedIcon.contains("if reduceMotion"))
         let cards = try self.source(named: "ConsoleCardWorkspace.swift")
         #expect(cards.contains("if task.hasPendingScheduledWake == true {\n                        ConsoleScheduledWakeIcon(isActive: isActive)"))
     }
@@ -757,6 +761,18 @@ struct UnifiedConsoleControlSurfaceTests {
             .deletingLastPathComponent()
         return try String(
             contentsOf: packageRoot.appendingPathComponent("Sources/CopetsMac/\(name)"),
+            encoding: .utf8
+        )
+    }
+
+    private func sharedSource(named name: String) throws -> String {
+        let packageRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        return try String(
+            contentsOf: packageRoot.appendingPathComponent(
+                "../../packages/CorptieConversation/Sources/CorptieConversation/\(name)"),
             encoding: .utf8
         )
     }
