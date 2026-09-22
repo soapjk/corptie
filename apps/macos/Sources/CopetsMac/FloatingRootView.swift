@@ -1,4 +1,6 @@
 import AppKit
+import CorptieClientCore
+import CorptieConversation
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -5044,41 +5046,7 @@ private struct UsageProgressRing: View {
     }
 }
 
-struct ChatDisplayEntry: Identifiable, Sendable {
-    enum Kind: Sendable {
-        case message(CodexThreadItem)
-        case process(turnId: String, items: [CodexThreadItem])
-    }
-
-    let kind: Kind
-
-    var id: String {
-        switch kind {
-        case .message(let item):
-            return "message:\(item.id)"
-        case .process(let turnId, _):
-            return "process:\(turnId)"
-        }
-    }
-
-    var isProcessGroup: Bool {
-        switch kind {
-        case .message:
-            return false
-        case .process:
-            return true
-        }
-    }
-
-    var displayWeight: Int {
-        // The window budget represents visible conversation messages, not
-        // disclosure rows. A process card can contain hundreds of tool events
-        // and long-running turns can be split into multiple process segments;
-        // counting those rows evicted the actual user/assistant conversation
-        // from the initial viewport.
-        isProcessGroup ? 0 : 1
-    }
-}
+typealias ChatDisplayEntry = ConversationEntry<CodexThreadItem>
 
 struct DetailDisplayCache: Sendable {
     let sessionId: String
@@ -5279,294 +5247,32 @@ func visibleDetailEntries(from displayEntries: [ChatDisplayEntry], limit: Int) -
 }
 
 func makeChatDisplayEntries(from items: [CodexThreadItem]) -> [ChatDisplayEntry] {
-    var entries: [ChatDisplayEntry] = []
-    var currentItems: [CodexThreadItem] = []
-    var currentSegmentHasNonUserMessage = false
-    var segmentCountsByTurnId: [String: Int] = [:]
-    let orderedItems = stableChronologicalChatItems(items)
-    func appendCurrentSegment() {
-        guard let sourceTurnId = currentItems.first?.turnId else { return }
-        let segmentIndex = segmentCountsByTurnId[sourceTurnId, default: 0]
-        segmentCountsByTurnId[sourceTurnId] = segmentIndex + 1
-        let displayTurnId = segmentIndex == 0
-            ? sourceTurnId
-            : "\(sourceTurnId):display-segment:\(segmentIndex)"
-        entries.append(contentsOf: makeChatDisplayEntriesForTurn(
-            currentItems,
-            displayTurnId: displayTurnId
-        ))
-        currentItems.removeAll(keepingCapacity: true)
-        currentSegmentHasNonUserMessage = false
-    }
-
-    for item in orderedItems {
-        let startsNewSourceTurn = currentItems.last.map { $0.turnId != item.turnId } ?? false
-        // Some provider histories omit turn_id or reuse one value for the
-        // complete Session. Once a turn has emitted non-user content, the next
-        // authored user message is the only reliable boundary. Segmenting here
-        // preserves provider order and prevents all user cards from being
-        // projected ahead of every assistant/process card in the Session.
-        let startsRecoveredTurn = item.type == "userMessage"
-            && currentSegmentHasNonUserMessage
-        if startsNewSourceTurn || startsRecoveredTurn {
-            appendCurrentSegment()
-        }
-        currentItems.append(item)
-        currentSegmentHasNonUserMessage = currentSegmentHasNonUserMessage || item.type != "userMessage"
-    }
-    appendCurrentSegment()
-    return entries
+    ConversationTimeline.makeEntries(from: items)
 }
 
-/// Orders a fully timestamped provider timeline chronologically while retaining
-/// source order for ties. A partial or malformed timestamp set stays untouched:
-/// provider order is safer than inventing positions for undated process items.
 func stableChronologicalChatItems(_ items: [CodexThreadItem]) -> [CodexThreadItem] {
-    guard let firstTimestamp = items.first?.createdAt else { return items }
-    let fixedTimestampLength = firstTimestamp.utf8.count
-    var previousTimestamp: String?
-    var fixedUTCRequiresSorting = false
-    var hasUniformTimestampWidth = true
-
-    for item in items {
-        guard let timestamp = item.createdAt else { return items }
-        if timestamp.utf8.count != fixedTimestampLength {
-            hasUniformTimestampWidth = false
-        }
-        if let previousTimestamp, previousTimestamp > timestamp {
-            fixedUTCRequiresSorting = true
-        }
-        previousTimestamp = timestamp
-    }
-
-    // An already monotonic, uniform-width sequence needs no interpretation:
-    // returning provider order is correct even when a provider supplied a
-    // malformed value. Strict timestamp validation is only necessary before
-    // we actively reorder anything.
-    if hasUniformTimestampWidth, !fixedUTCRequiresSorting {
-        return items
-    }
-
-    // Provider timelines overwhelmingly use one fixed-width UTC ISO-8601
-    // representation. In that form lexical and chronological order are
-    // identical, avoiding thousands of formatter calls when sorting is needed.
-    if hasUniformTimestampWidth,
-       items.allSatisfy({ item in
-           item.createdAt.map { isFixedUTCISO8601Timestamp($0, length: fixedTimestampLength) } == true
-       }) {
-        return items.enumerated().sorted { left, right in
-            guard let leftTimestamp = left.element.createdAt,
-                  let rightTimestamp = right.element.createdAt else { return left.offset < right.offset }
-            guard leftTimestamp != rightTimestamp else { return left.offset < right.offset }
-            return leftTimestamp < rightTimestamp
-        }.map(\.element)
-    }
-
-    var datedItems: [(index: Int, item: CodexThreadItem, date: Date)] = []
-    datedItems.reserveCapacity(items.count)
-    var previousDate: Date?
-    var requiresSorting = false
-
-    for (index, item) in items.enumerated() {
-        guard let createdAt = item.createdAt,
-              let date = ISO8601DateFormatter.corptieThreadItemDate(from: createdAt) else {
-            return items
-        }
-        if let previousDate, previousDate > date {
-            requiresSorting = true
-        }
-        datedItems.append((index: index, item: item, date: date))
-        previousDate = date
-    }
-    guard requiresSorting else { return items }
-    return datedItems.sorted { left, right in
-        guard left.date != right.date else {
-            return left.index < right.index
-        }
-        return left.date < right.date
-    }.map(\.item)
-}
-
-private func isFixedUTCISO8601Timestamp(_ value: String, length: Int) -> Bool {
-    guard value.utf8.count == length,
-          length == 20 || length >= 22 else { return false }
-    var month = 0
-    var day = 0
-    var hour = 0
-    var minute = 0
-    var second = 0
-    for (index, byte) in value.utf8.enumerated() {
-        switch index {
-        case 4, 7:
-            guard byte == 45 else { return false } // -
-        case 10:
-            guard byte == 84 else { return false } // T
-        case 13, 16:
-            guard byte == 58 else { return false } // :
-        case 19 where length == 20:
-            guard byte == 90 else { return false } // Z
-        case 19:
-            guard byte == 46 else { return false } // .
-        case length - 1:
-            guard byte == 90 else { return false } // Z
-        default:
-            guard byte >= 48, byte <= 57 else { return false }
-            let digit = Int(byte - 48)
-            switch index {
-            case 5: month = digit * 10
-            case 6: month += digit
-            case 8: day = digit * 10
-            case 9: day += digit
-            case 11: hour = digit * 10
-            case 12: hour += digit
-            case 14: minute = digit * 10
-            case 15: minute += digit
-            case 17: second = digit * 10
-            case 18: second += digit
-            default: break
-            }
-        }
-    }
-    guard (1...12).contains(month),
-          (1...31).contains(day),
-          (0...23).contains(hour),
-          (0...59).contains(minute),
-          (0...60).contains(second) else { return false }
-    return true
+    ConversationTimeline.orderedItems(items)
 }
 
 func makeChatDisplayEntriesForTurn(
-    _ items: [CodexThreadItem],
-    displayTurnId: String? = nil
+    _ items: [CodexThreadItem], displayTurnId: String? = nil
 ) -> [ChatDisplayEntry] {
-    let userMessages = items.filter { $0.type == "userMessage" }
-    if let confirmation = items.last(where: { $0.type == "collaborationConfirmation" }) {
-        return userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-            + [ChatDisplayEntry(kind: .message(confirmation))]
-    }
-    let agentMessages = items.filter {
-        $0.type == "agentMessage" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-    let presentedAgentMessage = preferredPresentedAgentMessage(from: agentMessages)
-    // An unclassified Assistant item is not execution progress. Keep it as a
-    // visible message so an Adapter contract defect cannot hide the model's
-    // response inside the process disclosure. New Provider events are expected
-    // to carry commentary/final_answer explicitly.
-    let unclassifiedAgentMessages = agentMessages.filter {
-        $0.presentationRole?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false
-    }
-    let separatelyPresentedAgentIDs = Set(
-        unclassifiedAgentMessages.map(\.id) + [presentedAgentMessage?.id].compactMap { $0 }
-    )
-    let progressAgentMessages = agentMessages.filter { !separatelyPresentedAgentIDs.contains($0.id) }
-    let progressAgentMessageIds = Set(progressAgentMessages.map(\.id))
-    var processItems = items.filter { item in
-        isDetailProcessItem(item) || progressAgentMessageIds.contains(item.id)
-    }
-    let trailingItems = items.filter { item in
-        item.type != "userMessage" && item.type != "agentMessage" && !isDetailProcessItem(item)
-    }
-
-    var entries = userMessages.map { ChatDisplayEntry(kind: .message($0)) }
-    if !processItems.isEmpty,
-       let sourceTurnId = items.first?.turnId {
-        let turnStartedAt = userMessages.compactMap(\.createdAt).first
-            ?? items.compactMap(\.createdAt).first
-        let turnEndedAt = items.reversed().compactMap(\.createdAt).first
-        processItems[0].processStartedAt = turnStartedAt
-        if items.contains(where: { isTerminalTurnStatus($0.turnStatus) }) {
-            processItems[0].processEndedAt = turnEndedAt
-        }
-        // Keep execution lifecycle independent from the user's authored message.
-        // The process row owns its disclosure state and remains a separate bubble
-        // even for the common one-message turn.
-        entries.append(ChatDisplayEntry(kind: .process(
-            turnId: displayTurnId ?? sourceTurnId,
-            items: processItems
-        )))
-    }
-    entries.append(contentsOf: unclassifiedAgentMessages.map { ChatDisplayEntry(kind: .message($0)) })
-    if let presentedAgentMessage,
-       !unclassifiedAgentMessages.contains(where: { $0.id == presentedAgentMessage.id }) {
-        entries.append(ChatDisplayEntry(kind: .message(presentedAgentMessage)))
-    }
-    entries.append(contentsOf: trailingItems.map { ChatDisplayEntry(kind: .message($0)) })
-    return entries
-}
-
-private func preferredPresentedAgentMessage(from messages: [CodexThreadItem]) -> CodexThreadItem? {
-    messages.last(where: {
-        $0.presentationRole?.lowercased() == "final_answer"
-    })
-}
-
-private func isTerminalTurnStatus(_ status: String) -> Bool {
-    switch status.lowercased() {
-    case "completed", "complete", "failed", "cancelled", "canceled", "interrupted":
-        return true
-    default:
-        return false
-    }
+    ConversationTimeline.entriesForTurn(items, displayTurnId: displayTurnId)
 }
 
 /// Projects the state of the whole execution card from the turn lifecycle.
 /// An individual command can fail and still be followed by a successful
 /// recovery, so its item-level `status` must not determine the turn outcome.
 func projectedProcessState(for items: [CodexThreadItem]) -> AppKitChatTimelineRow.ProcessState {
-    guard let status = items.lazy
-        .map({ $0.turnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() })
-        .last(where: { !$0.isEmpty }) else {
-        return .completed
-    }
-
-    switch status {
-    case "failed", "error":
-        return .failed
-    case "cancelled", "canceled", "interrupted":
-        return .cancelled
-    case "completed", "complete":
-        return .completed
-    default:
-        return .running
-    }
+    ConversationProcessPresentation.state(for: items)
 }
 
 /// Formats the elapsed time for the complete execution lifecycle. Prefer the
 /// turn bounds projected onto the process group; fall back to execution item
 /// timestamps only for older cached entries. A single timestamp is not a
 /// duration and must never be presented as a fabricated "<1s" result.
-func executionProcessDurationText(
-    for items: [CodexThreadItem],
-    now: Date = Date()
-) -> String? {
-    let itemDates = items.compactMap { item in
-        item.createdAt.flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
-    }
-    let projectedStart = items.lazy.compactMap(\.processStartedAt).first
-        .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
-    let projectedEnd = items.lazy.compactMap(\.processEndedAt).first
-        .flatMap(ISO8601DateFormatter.corptieThreadItemDate(from:))
-    guard let start = projectedStart ?? itemDates.min() else { return nil }
-    let end: Date?
-    if let projectedEnd {
-        end = projectedEnd
-    } else if projectedProcessState(for: items) == .running {
-        end = now
-    } else {
-        end = itemDates.max()
-    }
-    guard let end else { return nil }
-    let duration = end.timeIntervalSince(start)
-    guard duration > 0.05 else { return nil }
-    if duration < 10 { return String(format: "%.1fs", duration) }
-    let seconds = Int(duration.rounded())
-    if seconds < 60 { return "\(seconds)s" }
-    let minutes = seconds / 60
-    let remainder = seconds % 60
-    if minutes < 60 { return remainder == 0 ? "\(minutes)m" : "\(minutes)m \(remainder)s" }
-    let hours = minutes / 60
-    let minuteRemainder = minutes % 60
-    return minuteRemainder == 0 ? "\(hours)h" : "\(hours)h \(minuteRemainder)m"
+func executionProcessDurationText(for items: [CodexThreadItem], now: Date = Date()) -> String? {
+    ConversationProcessPresentation.durationText(for: items, now: now)
 }
 
 struct NativeCollaborationCardPresentation: Equatable {
@@ -5831,15 +5537,6 @@ private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
         return true
     }
     return false
-}
-
-private func isDetailProcessItem(_ item: CodexThreadItem) -> Bool {
-    switch item.type {
-    case "reasoning", "plan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction":
-        return true
-    default:
-        return false
-    }
 }
 
 private func detailDisplaySignature(for visibleEntries: [ChatDisplayEntry], visibleMessageLimit: Int) -> String {
@@ -8545,8 +8242,8 @@ struct ThreadMetaView: View {
                     .padding(12)
                     .frame(width: 280, alignment: .leading)
                 }
-                Text(status.label)
-                    .foregroundStyle(status.color)
+                SessionExecutionStatusText(state: status.sharedExecutionState,
+                    label: status.label, tint: status.color)
                 SessionActivityStatusText(
                     sessionID: sessionID,
                     fallbackText: activityStatus,

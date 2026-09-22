@@ -11,6 +11,7 @@ const projectors = {
     })(), updatedAt: row.updated_at }),
   sessions: row => ({ id: row.id, title: row.title, workId: row.workId ?? null,
     taskId: row.taskId ?? null, sessionKind: row.sessionKind, executionStatus: row.executionStatus ?? row.status,
+    activityStatus: typeof row.activityStatus === "string" ? row.activityStatus : null,
     updatedAt: row.updatedAt }),
 };
 

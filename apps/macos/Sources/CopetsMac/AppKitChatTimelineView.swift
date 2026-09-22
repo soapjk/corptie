@@ -1,192 +1,17 @@
 import AppKit
 import SwiftUI
+import CorptieConversation
+import CorptieClientCore
 
 @MainActor
 enum NativeMarkdownAttributedText {
-    private static let unorderedListItemRegex = try! NSRegularExpression(pattern: #"^(\s*)[-+*]\s+(.+)$"#)
-    private static let orderedListItemRegex = try! NSRegularExpression(pattern: #"^(\s*)(\d+)[.)]\s+(.+)$"#)
-
-    static func make(
-        text: String,
-        style: AppKitChatTimelineRow.NativeStyle
-    ) -> NSAttributedString {
-        let baseFont: NSFont = switch style {
-        case .user, .agent: .systemFont(ofSize: 11, weight: .medium)
-        case .process: .systemFont(ofSize: 10.5, weight: .semibold)
+    static func make(text: String, style: AppKitChatTimelineRow.NativeStyle) -> NSAttributedString {
+        let sharedStyle: MessageMarkdown.Style = switch style {
+        case .user: .user
+        case .agent: .agent
+        case .process: .process
         }
-        let color = NativeTimelineCardPalette.secondaryText
-        guard style != .process else {
-            return NSAttributedString(string: text, attributes: [.font: baseFont, .foregroundColor: color])
-        }
-
-        let attributed = NSMutableAttributedString()
-        var inCodeFence = false
-        let lines = text.components(separatedBy: "\n")
-        for (index, sourceLine) in lines.enumerated() {
-            let line = sourceLine.trimmingCharacters(in: .whitespaces)
-            if line.hasPrefix("```") || line.hasPrefix("~~~") {
-                inCodeFence.toggle()
-            } else if inCodeFence {
-                attributed.append(blockLine(
-                    sourceLine,
-                    font: .monospacedSystemFont(ofSize: 12, weight: .regular),
-                    color: color,
-                    backgroundColor: .quaternaryLabelColor,
-                    headIndent: 8,
-                    tailIndent: -8
-                ))
-            } else if let heading = heading(in: sourceLine) {
-                attributed.append(blockLine(
-                    heading.text,
-                    baseFont: .systemFont(
-                        ofSize: max(14, 21 - CGFloat(heading.level * 2)),
-                        weight: .bold
-                    ),
-                    color: color,
-                    paragraphSpacingBefore: heading.level == 1 ? 8 : 5,
-                    paragraphSpacing: 4
-                ))
-            } else if let listItem = unorderedListItem(in: sourceLine) {
-                attributed.append(blockLine(
-                    "\(String(repeating: "  ", count: listItem.depth))•  \(listItem.text)",
-                    baseFont: baseFont,
-                    color: color,
-                    headIndent: CGFloat(listItem.depth * 14),
-                    firstLineHeadIndent: CGFloat(listItem.depth * 14)
-                ))
-            } else if let listItem = orderedListItem(in: sourceLine) {
-                attributed.append(blockLine(
-                    "\(String(repeating: "  ", count: listItem.depth))\(listItem.ordinal).  \(listItem.text)",
-                    baseFont: baseFont,
-                    color: color,
-                    headIndent: CGFloat(listItem.depth * 14),
-                    firstLineHeadIndent: CGFloat(listItem.depth * 14)
-                ))
-            } else if let quote = blockQuote(in: sourceLine) {
-                attributed.append(blockLine(
-                    "│  \(quote)",
-                    baseFont: baseFont,
-                    color: .secondaryLabelColor,
-                    headIndent: 8,
-                    firstLineHeadIndent: 0
-                ))
-            } else if isThematicBreak(sourceLine) {
-                attributed.append(blockLine("────────", baseFont: baseFont, color: .separatorColor))
-            } else {
-                attributed.append(blockLine(sourceLine, baseFont: baseFont, color: color))
-            }
-            if index < lines.count - 1, !(line.hasPrefix("```") || line.hasPrefix("~~~")) {
-                attributed.append(NSAttributedString(string: "\n", attributes: [.font: baseFont]))
-            }
-        }
-        return attributed
-    }
-
-    private static func blockLine(
-        _ text: String,
-        baseFont: NSFont? = nil,
-        font: NSFont? = nil,
-        color: NSColor,
-        backgroundColor: NSColor? = nil,
-        headIndent: CGFloat = 0,
-        firstLineHeadIndent: CGFloat? = nil,
-        tailIndent: CGFloat = 0,
-        paragraphSpacingBefore: CGFloat = 0,
-        paragraphSpacing: CGFloat = 0
-    ) -> NSAttributedString {
-        let effectiveFont = font ?? baseFont ?? .systemFont(ofSize: 13)
-        let attributed: NSMutableAttributedString
-        if font == nil,
-           let parsed = try? AttributedString(
-               markdown: text,
-               options: .init(
-                   interpretedSyntax: .inlineOnlyPreservingWhitespace,
-                   failurePolicy: .returnPartiallyParsedIfPossible
-               )
-           ) {
-            attributed = NSMutableAttributedString(parsed)
-        } else {
-            attributed = NSMutableAttributedString(string: text)
-        }
-        let fullRange = NSRange(location: 0, length: attributed.length)
-        attributed.addAttributes([.font: effectiveFont, .foregroundColor: color], range: fullRange)
-        if let backgroundColor {
-            attributed.addAttribute(.backgroundColor, value: backgroundColor, range: fullRange)
-        }
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.headIndent = headIndent
-        paragraphStyle.firstLineHeadIndent = firstLineHeadIndent ?? headIndent
-        paragraphStyle.tailIndent = tailIndent
-        paragraphStyle.paragraphSpacingBefore = paragraphSpacingBefore
-        paragraphStyle.paragraphSpacing = paragraphSpacing
-        // Chat messages regularly contain URLs, hashes, file paths, and model
-        // identifiers with no whitespace. Word wrapping lets those runs escape
-        // the fixed card width; character wrapping preserves the card boundary.
-        paragraphStyle.lineBreakMode = .byCharWrapping
-        attributed.addAttribute(.paragraphStyle, value: paragraphStyle, range: fullRange)
-        let inlineIntentKey = NSAttributedString.Key("NSInlinePresentationIntent")
-        attributed.enumerateAttribute(inlineIntentKey, in: fullRange) { value, range, _ in
-            guard let rawIntent = value as? NSNumber else { return }
-            let intent = rawIntent.intValue
-            let isCode = intent & 4 != 0
-            let isStrong = intent & 2 != 0
-            let isEmphasized = intent & 1 != 0
-            let isStrikethrough = intent & 64 != 0
-            let font: NSFont
-            if isCode {
-                font = .monospacedSystemFont(ofSize: effectiveFont.pointSize, weight: isStrong ? .bold : .regular)
-            } else {
-                let weighted = isStrong
-                    ? NSFont.systemFont(ofSize: effectiveFont.pointSize, weight: .bold)
-                    : effectiveFont
-                font = isEmphasized
-                    ? NSFontManager.shared.convert(weighted, toHaveTrait: .italicFontMask)
-                    : weighted
-            }
-            attributed.addAttribute(.font, value: font, range: range)
-            if isStrikethrough {
-                attributed.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
-            }
-        }
-        return attributed
-    }
-
-    private static func heading(in line: String) -> (level: Int, text: String)? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        let markerCount = trimmed.prefix(while: { $0 == "#" }).count
-        guard (1...6).contains(markerCount),
-              trimmed.dropFirst(markerCount).first == " " else { return nil }
-        return (markerCount, String(trimmed.dropFirst(markerCount + 1)))
-    }
-
-    private static func unorderedListItem(in line: String) -> (depth: Int, text: String)? {
-        matchListItem(in: line, regex: unorderedListItemRegex).map { ($0.depth, $0.text) }
-    }
-
-    private static func orderedListItem(in line: String) -> (depth: Int, ordinal: String, text: String)? {
-        guard let match = orderedListItemRegex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-              let indentRange = Range(match.range(at: 1), in: line),
-              let ordinalRange = Range(match.range(at: 2), in: line),
-              let textRange = Range(match.range(at: 3), in: line) else { return nil }
-        return (String(line[indentRange]).count / 2, String(line[ordinalRange]), String(line[textRange]))
-    }
-
-    private static func matchListItem(in line: String, regex: NSRegularExpression) -> (depth: Int, text: String)? {
-        guard let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-              let indentRange = Range(match.range(at: 1), in: line),
-              let textRange = Range(match.range(at: 2), in: line) else { return nil }
-        return (String(line[indentRange]).count / 2, String(line[textRange]))
-    }
-
-    private static func blockQuote(in line: String) -> String? {
-        let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix(">") else { return nil }
-        return String(trimmed.dropFirst().drop(while: { $0 == " " }))
-    }
-
-    private static func isThematicBreak(_ line: String) -> Bool {
-        let compact = line.filter { !$0.isWhitespace }
-        return compact.count >= 3 && (Set(compact) == ["-"] || Set(compact) == ["*"] || Set(compact) == ["_"])
+        return MessageMarkdown.make(text: text, style: sharedStyle)
     }
 }
 
@@ -313,228 +138,13 @@ enum NativeTextKitLayout {
 /// Final native row geometry, shared by all retained Session hosts. The cache
 /// key includes every input that can affect wrapping, so a row is never shown
 /// with an estimated height and corrected after the first paint.
-struct NativeExecutionTimelineStep: Identifiable, Hashable {
-    enum Kind: Hashable {
-        case context
-        case action
-        case result
-
-        var label: String {
-            switch self {
-            case .context: "Execution Context"
-            case .action: "Execution Action"
-            case .result: "Execution Result"
-            }
-        }
-    }
-
-    enum State: Hashable {
-        case running
-        case completed
-        case failed
-        case cancelled
-
-        var marker: String {
-            switch self {
-            case .running: "●"
-            case .completed: "✓"
-            case .failed: "!"
-            case .cancelled: "■"
-            }
-        }
-    }
-
-    let id: String
-    let kind: Kind
-    let state: State
-    let title: String
-    let detail: String?
-}
-
-enum NativeExecutionTimelineProjection {
-    static let detailCharacterLimit = 180
-    static let detailLineLimit = 2
-
-    static func steps(for items: [CodexThreadItem]) -> [NativeExecutionTimelineStep] {
-        let runningTurn = items.last.map { isRunningTurnStatus($0.turnStatus) } ?? false
-        return items.enumerated().map { index, item in
-            let sourceTitle = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            return NativeExecutionTimelineStep(
-                id: item.id,
-                kind: kind(item.type),
-                state: state(item, isLatest: index == items.indices.last, runningTurn: runningTurn),
-                title: title(for: item),
-                detail: detailPreview(item.text, excludingTitle: sourceTitle)
-            )
-        }
-    }
-
-    static func title(for item: CodexThreadItem) -> String {
-        if item.type == "contextCompaction" {
-            return "Context compacted"
-        }
-        let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return title.isEmpty ? typeTitle(item.type) : title
-    }
-
-    static func plainText(for steps: [NativeExecutionTimelineStep]) -> String {
-        steps.map { step in
-            ["\(step.state.marker) [\(step.kind.label)] \(step.title)", step.detail]
-                .compactMap { $0 }
-                .joined(separator: "\n")
-        }
-        .joined(separator: "\n\n")
-    }
-
-    private static func kind(_ type: String) -> NativeExecutionTimelineStep.Kind {
-        switch type {
-        case "reasoning", "plan", "agentMessage", "contextCompaction": .context
-        case "warning": .result
-        default: .action
-        }
-    }
-
-    private static func state(
-        _ item: CodexThreadItem,
-        isLatest: Bool,
-        runningTurn: Bool
-    ) -> NativeExecutionTimelineStep.State {
-        let status = normalized(item.status ?? "")
-        switch status {
-        case "failed", "error": return .failed
-        case "cancelled", "canceled", "interrupted": return .cancelled
-        case "running", "inprogress", "in_progress", "started": return .running
-        default: break
-        }
-        if item.type == "warning" { return .failed }
-        return isLatest && runningTurn ? .running : .completed
-    }
-
-    private static func detailPreview(_ text: String, excludingTitle title: String) -> String? {
-        let boundedText = text.prefix(detailCharacterLimit * 2)
-        let candidates = boundedText.split(
-            separator: "\n",
-            maxSplits: detailLineLimit + 1,
-            omittingEmptySubsequences: true
-        )
-        var lines: [String] = []
-        lines.reserveCapacity(detailLineLimit + 1)
-        for candidate in candidates {
-            let line = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !line.isEmpty { lines.append(line) }
-        }
-        if let first = lines.first,
-           !title.isEmpty,
-           first == title || first.hasPrefix(title + ":") {
-            lines.removeFirst()
-        }
-        guard !lines.isEmpty else { return nil }
-        var preview = lines.prefix(detailLineLimit).joined(separator: " · ")
-        if preview.count > detailCharacterLimit {
-            preview = String(preview.prefix(detailCharacterLimit - 1)) + "…"
-        } else if lines.count > detailLineLimit || boundedText.endIndex != text.endIndex {
-            preview += "…"
-        }
-        return preview
-    }
-
-    private static func typeTitle(_ type: String) -> String {
-        switch type {
-        case "commandExecution": "Ran command"
-        case "fileChange": "Changed files"
-        case "webSearch": "Searched the web"
-        case "mcpToolCall", "dynamicToolCall": "Used tool"
-        case "reasoning": "Reasoned"
-        case "plan": "Updated plan"
-        case "warning": "Warning"
-        case "agentMessage": "Progress update"
-        case "contextCompaction": "Context compacted"
-        default: "Execution step"
-        }
-    }
-
-    private static func normalized(_ value: String) -> String {
-        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private static func isRunningTurnStatus(_ value: String) -> Bool {
-        switch normalized(value) {
-        case "completed", "complete", "failed", "error", "cancelled", "canceled", "interrupted": false
-        default: true
-        }
-    }
-}
+typealias NativeExecutionTimelineStep = ConversationExecutionStep
+typealias NativeExecutionTimelineProjection = ConversationExecutionProjection
 
 @MainActor
 enum NativeExecutionTimelineAttributedText {
     static func make(steps: [NativeExecutionTimelineStep]) -> NSAttributedString {
-        let result = NSMutableAttributedString()
-        for (index, step) in steps.enumerated() {
-            let marker = NSMutableAttributedString(
-                string: "\(step.state.marker)  ",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 10.5, weight: .bold),
-                    .foregroundColor: markerColor(step.state)
-                ]
-            )
-            result.append(marker)
-            result.append(NSAttributedString(
-                string: "\(L10n(step.kind.label).uppercased())  ",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 8.5, weight: .bold),
-                    .foregroundColor: kindColor(step.kind)
-                ]
-            ))
-            result.append(NSAttributedString(
-                string: L10n(step.title),
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-                    .foregroundColor: NativeTimelineCardPalette.secondaryText
-                ]
-            ))
-            if let detail = step.detail {
-                let paragraph = NSMutableParagraphStyle()
-                paragraph.headIndent = 20
-                paragraph.firstLineHeadIndent = 20
-                paragraph.paragraphSpacingBefore = 3
-                paragraph.lineBreakMode = .byCharWrapping
-                result.append(NSAttributedString(
-                    string: "\n│  \(detail)",
-                    attributes: [
-                        .font: detailFont(step.kind),
-                        .foregroundColor: NativeTimelineCardPalette.mutedText,
-                        .paragraphStyle: paragraph
-                    ]
-                ))
-            }
-            if index < steps.count - 1 {
-                result.append(NSAttributedString(string: "\n\n"))
-            }
-        }
-        return result
-    }
-
-    private static func markerColor(_ state: NativeExecutionTimelineStep.State) -> NSColor {
-        switch state {
-        case .running: .controlAccentColor
-        case .completed: .systemGreen
-        case .failed: .systemRed
-        case .cancelled: .secondaryLabelColor
-        }
-    }
-
-    private static func kindColor(_ kind: NativeExecutionTimelineStep.Kind) -> NSColor {
-        switch kind {
-        case .context: .secondaryLabelColor
-        case .action: .controlAccentColor
-        case .result: .systemOrange
-        }
-    }
-
-    private static func detailFont(_ kind: NativeExecutionTimelineStep.Kind) -> NSFont {
-        kind == .action
-            ? .monospacedSystemFont(ofSize: 9.5, weight: .regular)
-            : .systemFont(ofSize: 10, weight: .regular)
+        ExecutionTimelineAttributedText.make(steps: steps, localize: { L10n($0) })
     }
 }
 
@@ -695,30 +305,7 @@ final class NativeTimelineLayoutCache {
 
 struct AppKitChatTimelineRow: Identifiable {
     var isWorkspaceCard = false
-    enum ProcessState: Hashable {
-        case running
-        case completed
-        case failed
-        case cancelled
-
-        var symbolName: String {
-            switch self {
-            case .running: "ellipsis.circle"
-            case .completed: "checkmark.circle.fill"
-            case .failed: "exclamationmark.circle.fill"
-            case .cancelled: "stop.circle.fill"
-            }
-        }
-
-        var color: NSColor {
-            switch self {
-            case .running: .controlAccentColor
-            case .completed: .systemGreen
-            case .failed: .systemRed
-            case .cancelled: .secondaryLabelColor
-            }
-        }
-    }
+    typealias ProcessState = ConversationProcessState
 
     struct Action: Identifiable {
         enum Kind {
@@ -820,34 +407,8 @@ struct AppKitChatTimelineRow: Identifiable {
     }
 
     var processSummary: String {
-        let count = processCount ?? 0
-        let steps = "\(count) \(count == 1 ? "step" : "steps")"
-        let normalizedDuration = processDuration?
-            .replacingOccurrences(of: "·", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        switch processState {
-        case .running:
-            let currentStep = processCurrentStepTitle.map { " · \($0)" } ?? ""
-            if let normalizedDuration, !normalizedDuration.isEmpty {
-                return "Working for \(normalizedDuration)\(currentStep) · \(steps)"
-            }
-            return "Working\(currentStep)… · \(steps)"
-        case .completed:
-            if let normalizedDuration, !normalizedDuration.isEmpty {
-                return "Worked for \(normalizedDuration) · \(steps)"
-            }
-            return "Completed · \(steps)"
-        case .failed:
-            if let normalizedDuration, !normalizedDuration.isEmpty {
-                return "Execution failed after \(normalizedDuration) · \(steps)"
-            }
-            return "Execution failed · \(steps)"
-        case .cancelled:
-            if let normalizedDuration, !normalizedDuration.isEmpty {
-                return "Execution stopped after \(normalizedDuration) · \(steps)"
-            }
-            return "Execution stopped · \(steps)"
-        }
+        ConversationProcessPresentation(state: processState, count: processCount ?? 0,
+            duration: processDuration, currentStepTitle: processCurrentStepTitle).summary
     }
 }
 
@@ -1037,9 +598,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         // The parent owns the viewport, not the table's document/fitting size.
         // In the compact workspace a long row must wrap inside its card rather
         // than widen the NSViewRepresentable into the neighbouring Work grid.
-        guard let width = proposal.width, let height = proposal.height,
-              width.isFinite, height.isFinite else { return nil }
-        return CGSize(width: max(0, width), height: max(0, height))
+        let width = proposal.width ?? 10
+        let height = proposal.height ?? 10
+        return CGSize(
+            width: width.isFinite ? max(0, width) : 10,
+            height: height.isFinite ? max(0, height) : 10
+        )
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -1143,6 +707,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
         static let columnIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.column")
         private static let nativeCellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.native.cell")
+        private static let sharedTextCellIdentifier = NSUserInterfaceItemIdentifier("chat.timeline.shared-text.cell")
+        private let useSharedTextCards: Bool
+        private let useSharedProcessCards: Bool
 
         private let followsLatestBinding: Binding<Bool>
         var onToggleExpansion: (String) -> Void
@@ -1157,7 +724,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private var rows: [AppKitChatTimelineRow] = []
         private var revisionsByID: [String: Int] = [:]
         private var heightCache: [HeightCacheKey: CGFloat] = [:]
-        private var cellsByKey: [CellCacheKey: AppKitChatNativeTextCell] = [:]
+        private var cellsByKey: [CellCacheKey: NSTableCellView & AppKitChatRowRendering] = [:]
         private var cellRecency: [CellCacheKey] = []
         private var lastMeasuredWidth: CGFloat = 0
         private var scrollCommandGeneration = 0
@@ -1244,6 +811,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             sessionID: String = "test-session",
             baseDirectory: String? = nil,
             followsLatest: Binding<Bool>,
+            useSharedTextCards: Bool = true,
+            useSharedProcessCards: Bool = true,
             onToggleExpansion: @escaping (String) -> Void,
             onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
             onNearTop: @escaping () -> Void = {},
@@ -1254,6 +823,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             self.representedSessionID = sessionID
             self.baseDirectory = Self.normalizedBaseDirectory(baseDirectory)
             self.followsLatestBinding = followsLatest
+            self.useSharedTextCards = useSharedTextCards
+            self.useSharedProcessCards = useSharedProcessCards
             self.onToggleExpansion = onToggleExpansion
             self.onAction = onAction
             self.onNearTop = onNearTop
@@ -1423,6 +994,11 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         }
 
 
+        private func usesSharedCard(_ row: AppKitChatTimelineRow) -> Bool {
+            (row.nativeStyle == .process ? useSharedProcessCards : useSharedTextCards)
+                && MacSharedMessageTextCard.supports(row)
+        }
+
         func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
             guard rows.indices.contains(row) else { return nil }
             let rowModel = rows[row]
@@ -1432,7 +1008,9 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 revision: rowModel.contentRevision
             )
             let availableWidth = tableView.tableColumns.first?.width ?? tableView.bounds.width
-            if let cachedCell = cellsByKey[cacheKey] {
+            let usesSharedText = usesSharedCard(rowModel)
+            if let cachedCell = cellsByKey[cacheKey],
+               (cachedCell is AppKitSharedMessageTextCell) == usesSharedText {
                 touchCell(cacheKey)
                 cachedCell.updateCallbacks(
                     onToggleExpansion: onToggleExpansion,
@@ -1445,10 +1023,12 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                 )
                 return cachedCell
             }
-            let cell = (tableView.makeView(withIdentifier: Self.nativeCellIdentifier, owner: nil) as? AppKitChatNativeTextCell)
-                ?? {
+            let identifier = usesSharedText ? Self.sharedTextCellIdentifier : Self.nativeCellIdentifier
+            let cell: NSTableCellView & AppKitChatRowRendering =
+                (tableView.makeView(withIdentifier: identifier, owner: nil) as? (NSTableCellView & AppKitChatRowRendering)) ?? {
                     ChatPerformanceRecorder.shared.increment(.appKitCellsCreated)
-                    return AppKitChatNativeTextCell(identifier: Self.nativeCellIdentifier)
+                    if usesSharedText { return AppKitSharedMessageTextCell(identifier: identifier) }
+                    return AppKitChatNativeTextCell(identifier: identifier)
                 }()
             cellsByKey = cellsByKey.filter { $0.value !== cell }
             cellRecency.removeAll { cellsByKey[$0] == nil }
@@ -1488,6 +1068,17 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             // Preserve reader intent across the entire mutation, including
             // geometry feedback before a coalesced correction has committed.
             let followedLatestBeforeUpdate = followsLatest
+            // Physical viewport geometry is authoritative over the semantic
+            // `followsLatest` flag, which lags behind the reader's actual
+            // position (SwiftUI binding publication is a frame behind AppKit
+            // scroll geometry). A stale `true` at the top/middle must not
+            // yank the reader to the bottom, and a stale `false` at the
+            // physical bottom must not strand a completed reply below the
+            // visible document. Only an empty projection has no geometry to
+            // consult, so it falls back to the semantic flag.
+            let shouldFollowAfterUpdate = rows.isEmpty
+                ? followedLatestBeforeUpdate
+                : isViewportNearBottom()
             synchronizeTableWidth()
             let width = tableView.tableColumns.first?.width ?? tableView.bounds.width
             let hasPendingInitialViewport = pendingRestorePosition != nil || pendingInitialScrollToBottom
@@ -1503,7 +1094,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             let returningFromEmptyProjection = rows.isEmpty && !nextRows.isEmpty
                 ? deferredEmptyProjectionViewport
                 : nil
-            let prependAnchor = !followedLatestBeforeUpdate && !hasPendingInitialViewport
+            let prependAnchor = !shouldFollowAfterUpdate && !hasPendingInitialViewport
                 ? visibleAnchor(in: tableView)
                 : nil
             if abs(width - lastMeasuredWidth) >= 1 {
@@ -1533,7 +1124,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                     in: tableView
                 )
                 synchronizeDocumentHeight(in: tableView)
-                if followedLatestBeforeUpdate, !pendingInitialScrollToBottom {
+                if shouldFollowAfterUpdate, !pendingInitialScrollToBottom {
                     scrollToBottom()
                 } else if let returningFromEmptyProjection {
                     deferredEmptyProjectionViewport = nil
@@ -1580,10 +1171,15 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
             for row in changed {
                 let currentCell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false)
-                if let nativeCell = currentCell as? AppKitChatNativeTextCell {
+                if let nativeCell = currentCell as? (NSTableCellView & AppKitChatRowRendering) {
+                    if (nativeCell is AppKitSharedMessageTextCell) != usesSharedCard(nextRows[row]) {
+                        tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integer: 0))
+                        continue
+                    }
                     nativeCell.setContent(
                         nextRows[row],
                         availableWidth: tableView.tableColumns.first?.width ?? tableView.bounds.width,
+                        baseDirectory: baseDirectory,
                         onToggleExpansion: onToggleExpansion,
                         onAction: onAction
                     )
@@ -1591,7 +1187,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             }
             tableView.noteHeightOfRows(withIndexesChanged: changed)
             synchronizeDocumentHeight(in: tableView)
-            if followedLatestBeforeUpdate,
+            if shouldFollowAfterUpdate,
                !pendingInitialScrollToBottom {
                 scrollToBottom()
             } else if let prependAnchor {
@@ -1945,7 +1541,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                             atColumn: 0,
                             row: row,
                             makeIfNecessary: false
-                        ) as? AppKitChatNativeTextCell {
+                        ) as? (NSTableCellView & AppKitChatRowRendering) {
                             if !nativeCell.updateLayoutIfContentUnchanged(
                                 rows[row],
                                 availableWidth: measurementWidth
@@ -1953,6 +1549,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                                 nativeCell.setContent(
                                     rows[row],
                                     availableWidth: measurementWidth,
+                                    baseDirectory: baseDirectory,
                                     onToggleExpansion: onToggleExpansion,
                                     onAction: onAction
                                 )
@@ -1995,7 +1592,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                         atColumn: 0,
                         row: row,
                         makeIfNecessary: false
-                    ) as? AppKitChatNativeTextCell {
+                    ) as? (NSTableCellView & AppKitChatRowRendering) {
                         if !nativeCell.updateLayoutIfContentUnchanged(
                             rows[row],
                             availableWidth: exactWidth
@@ -2003,6 +1600,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
                             nativeCell.setContent(
                                 rows[row],
                                 availableWidth: exactWidth,
+                                baseDirectory: baseDirectory,
                                 onToggleExpansion: onToggleExpansion,
                                 onAction: onAction
                             )
@@ -2411,7 +2009,7 @@ final class NativeCollaborationRouteSummaryView: NSView {
 }
 
 @MainActor
-final class AppKitChatNativeTextCell: NSTableCellView {
+final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let cardView = NSView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")

@@ -21,6 +21,25 @@ struct PendingCommand: Codable {
     }
 }
 
+struct ReceiptReconciliationKey: Hashable {
+    let requestID: String
+    let serverID: String
+    let address: String
+    let deviceID: String?
+}
+
+struct CommandConfirmation: Identifiable {
+    let id = UUID()
+    let command: ClientConversationCommand
+    let text: String
+    let sessionID: String
+    let draftSessionID: String
+    let draftRevision: Int
+    let serverID: String
+    let address: String
+    let deviceID: String?
+}
+
 @MainActor @Observable
 final class PadWorkspace {
     var works: [ClientWork] = []
@@ -29,20 +48,53 @@ final class PadWorkspace {
     var tasksByWork: [String: [ClientTask]] = [:]
     var discussionsByWork: [String: [ClientSession]] = [:]
     var sessionsByID: [String: ClientSession] = [:]
+    private(set) var processingWorkIDs: Set<String> = []
+    private(set) var executionByTaskID: [String: String] = [:]
+    private(set) var activityByTaskID: [String: TaskSessionActivity] = [:]
+    private(set) var sessionIDByTaskID: [String: String] = [:]
     var workCursor: String?
     var taskCursor: String?
     var sessionCursor: String?
     var selection: String? {
         didSet { if oldValue != selection { clearSelectionState() } }
     }
-    var messages: [ClientMessage] = []
-    var outgoingMessages: [String: [ClientMessage]] = [:]
+    var messages: [ClientMessage] = [] {
+        didSet { if oldValue != messages { refreshDisplayEntries() } }
+    }
+    var outgoingMessages: [String: [ClientMessage]] = [:] {
+        didSet {
+            if oldValue[selection ?? ""] != outgoingMessages[selection ?? ""] { refreshDisplayEntries() }
+        }
+    }
+    private(set) var displayEntries: [ConversationEntry<ClientMessage>] = []
+    private(set) var processPresentations: [String: ConversationProcessPresentation] = [:]
+    private(set) var processSteps: [String: [ConversationExecutionStep]] = [:]
+    @ObservationIgnored private var projectedMessages: [ClientMessage] = []
     var outgoingStates: [String: String] = [:]
     var outgoingRequestIDs: [String: String] = [:]
     var lastTimelineRevision: Int?
     var visibleMessages: [ClientMessage] {
         Self.merge(messages, (outgoingMessages[selection ?? ""] ?? []).filter { item in
             !messages.contains { $0.id == item.id }
+        })
+    }
+
+    private func refreshDisplayEntries() {
+        let source = visibleMessages
+        guard source != projectedMessages else { return }
+        projectedMessages = source
+        displayEntries = ConversationTimeline.makeEntries(from: source)
+        let now = Date()
+        processSteps = Dictionary(uniqueKeysWithValues: displayEntries.compactMap { entry in
+            guard case let .process(_, items) = entry.kind else { return nil }
+            return (entry.id, ConversationExecutionProjection.steps(for: items))
+        })
+        processPresentations = Dictionary(uniqueKeysWithValues: displayEntries.compactMap { entry in
+            guard case let .process(_, items) = entry.kind else { return nil }
+            return (entry.id, ConversationProcessPresentation(
+                state: ConversationProcessPresentation.state(for: items), count: items.count,
+                duration: ConversationProcessPresentation.durationText(for: items, now: now),
+                currentStepTitle: processSteps[entry.id]?.last?.title))
         })
     }
 
@@ -70,10 +122,25 @@ final class PadWorkspace {
     var before: String?
     var capabilities: ClientSessionCapabilities?
     var composerConfiguration: ClientComposerConfiguration?
+    var commandCatalog: ClientConversationCommandCatalog?
     var configuringComposer = false
     var composerGeneration = 0
     var importingImagesForSession: String?
-    var drafts: [String: String] = [:]
+    var drafts: [String: String] = [:] {
+        didSet {
+            for id in Set(oldValue.keys).union(drafts.keys) where oldValue[id] != drafts[id] {
+                draftRevisions[id, default: 0] += 1
+            }
+        }
+    }
+    private var draftRevisions: [String: Int] = [:]
+    private struct SubmissionSnapshot {
+        let sessionID: String
+        let textRevision: Int
+        let imageIDs: [UUID]
+        let mentions: [String]
+    }
+    private var submissions: [String: SubmissionSnapshot] = [:]
     var draftImages: [String: [ClientDraftImage]] = [:]
     var draftMentions: [String: [ClientDraftMention]] = [:]
     var status = ""
@@ -89,6 +156,10 @@ final class PadWorkspace {
     var messagesDirty = false
     var refreshWorker: Task<Void, Never>?
     var pending: PendingCommand?
+    var commandConfirmation: CommandConfirmation?
+    var automaticReconciliationActive = false
+    @ObservationIgnored private var reconciliationRun: UUID?
+    @ObservationIgnored private var receiptReadInFlight = false
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
@@ -127,6 +198,37 @@ final class PadWorkspace {
         tasksByWork = Dictionary(grouping: tasks, by: \.workId)
         discussionsByWork = Dictionary(grouping: sessions.filter { $0.sessionKind == "workChat" && $0.workId != nil }, by: { $0.workId! })
         sessionsByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        var execution: [String: String] = [:]
+        var activity: [String: TaskSessionActivity] = [:]
+        var resolvedSessionIDs: [String: String] = [:]
+        var processing: Set<String> = []
+        // Device inventory contains only live Sessions. Index once, never scan per rendered row.
+        var latestByTask: [String: ClientSession] = [:]
+        for session in sessions {
+            guard let taskID = session.taskId else { continue }
+            if latestByTask[taskID].map({ $0.updatedAt < session.updatedAt }) ?? true {
+                latestByTask[taskID] = session
+            }
+        }
+        for task in tasks {
+            let bindingID = task.currentSessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let bound = bindingID.flatMap { sessionsByID[$0] } ?? latestByTask[task.id]
+            if let sessionID = bound?.id ?? bindingID, !sessionID.isEmpty {
+                resolvedSessionIDs[task.id] = sessionID
+            }
+            let status = bound?.executionStatus ?? task.executionStatus
+            execution[task.id] = status
+            let resolved = TaskSessionActivity.resolve(hasBinding: bindingID?.isEmpty == false || bound != nil,
+                sessionExecutionStatus: bound?.executionStatus, taskExecutionStatus: task.executionStatus)
+            activity[task.id] = resolved
+            if resolved == .processing {
+                processing.insert(task.workId)
+            }
+        }
+        if executionByTaskID != execution { executionByTaskID = execution }
+        if activityByTaskID != activity { activityByTaskID = activity }
+        if sessionIDByTaskID != resolvedSessionIDs { sessionIDByTaskID = resolvedSessionIDs }
+        if processingWorkIDs != processing { processingWorkIDs = processing }
     }
 
     func sessionIsKnownUnavailable(_ id: String) -> Bool {
@@ -164,6 +266,9 @@ final class PadWorkspace {
             if !older, caps.composer == true, composerConfiguration == nil {
                 await configureComposer(connection)
             }
+            if !older, caps.readMessages, commandCatalog == nil {
+                await loadCommandCatalog(connection)
+            }
         } catch is CancellationError {
             return
         } catch {
@@ -173,16 +278,33 @@ final class PadWorkspace {
     }
 
     func clearSelectionState() {
+        commandConfirmation = nil
         timelineGeneration += 1
         messages = []
+        refreshDisplayEntries()
         lastTimelineRevision = nil
         before = nil
         capabilities = nil
         composerConfiguration = nil
+        commandCatalog = nil
         composerGeneration += 1
         configuringComposer = false
         status = ""
         conversationNotice = ""
+    }
+
+    func loadCommandCatalog(_ connection: PadConnection) async {
+        guard let id = selection else { return }
+        let routedID = capabilities?.sessionId ?? id
+        let generation = timelineGeneration
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let catalog = try await api.commandCatalog(sessionId: routedID)
+            guard selection == id, generation == timelineGeneration, !Task.isCancelled else { return }
+            commandCatalog = catalog
+        } catch {
+            // Non-blocking: catalog is an enhancement for discovery and suggestions
+        }
     }
 
     func configureComposer(_ connection: PadConnection, update: [String: String]? = nil) async {
@@ -203,37 +325,89 @@ final class PadWorkspace {
         }
     }
 
-    func command(_ connection: PadConnection, stop: Bool, schedule: ClientMessageSchedule? = nil) async {
+    func command(_ connection: PadConnection, stop: Bool, schedule: ClientMessageSchedule? = nil,
+                 confirmation: CommandConfirmation? = nil) async {
+        if let confirmation, !confirmationMatches(confirmation, connection: connection) {
+            commandConfirmation = nil
+            status = "命令、草稿或连接已变化，请重新发送并确认。"
+            return
+        }
         guard let id = selection, pending == nil, importingImagesForSession != id else { return }
         let routedID = capabilities?.sessionId ?? id
         let text = drafts[id] ?? ""
         let images = draftImages[id] ?? []
         let mentions = (draftMentions[id] ?? []).filter { text.contains("@\($0.displayName)") }
+        let slashCommand = stop ? nil : ClientConversationCommand.parse(text)
+        if slashCommand != nil, !images.isEmpty || !mentions.isEmpty || schedule != nil {
+            status = "请单独发送斜杠命令，不要附带图片、引用或定时设置。"
+            return
+        }
         guard stop || ((!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !images.isEmpty) && text.utf16.count <= 16000) else { return }
+        let snapshot = submissionSnapshot(sessionID: id)
+        let serverID = connection.serverID, address = connection.address, deviceID = connection.deviceID
+        var receivedAcknowledgement = false
         await connection.perform {
             let api = ClientSessionAPI(transport: try await connection.transport())
+            guard connection.serverID == serverID, connection.address == address, connection.deviceID == deviceID,
+                  !Task.isCancelled else { return }
+            if let confirmation, !confirmationMatches(confirmation, connection: connection) {
+                commandConfirmation = nil
+                status = "命令、草稿或连接已变化，请重新发送并确认。"
+                return
+            }
+            commandConfirmation = nil
             let command = PendingCommand(requestID: UUID().uuidString, sessionID: routedID,
-                kind: stop ? "stop" : "send", serverID: connection.serverID,
+                kind: stop ? "stop" : (slashCommand == nil ? "send" : "conversation_command"), serverID: connection.serverID,
                 address: connection.address, draftSessionID: id)
             // Persist the identity before any mutation. Never persist message text in preferences.
             defaults.set(try JSONEncoder().encode(command), forKey: "pendingCommand")
             pending = command
+            if !stop { submissions[command.requestID] = snapshot }
             status = ""
-            if !stop, schedule == nil, let deviceID = connection.deviceID {
+            if !stop, slashCommand == nil, schedule == nil, let deviceID = connection.deviceID {
                 let messageID = ClientSessionAPI.messageID(deviceID: deviceID, requestID: command.requestID)
                 outgoingMessages[id, default: []].append(ClientMessage(id: messageID, text: text.isEmpty ? "图片消息" : text))
                 outgoingStates[messageID] = "Sending"
                 outgoingRequestIDs[command.requestID] = messageID
                 scrollRequest += 1
             }
-            let receipt = try await (stop
-                ? api.stop(sessionId: routedID, requestId: command.requestID)
-                : api.send(sessionId: routedID, requestId: command.requestID, text: text, images: images, mentions: mentions, schedule: schedule))
-            settle(receipt)
+            let receipt: ClientCommandReceipt
+            do {
+                if let slashCommand {
+                    receipt = try await api.conversationCommand(sessionId: routedID, requestId: command.requestID,
+                        command: slashCommand, confirmed: confirmation != nil)
+                } else if stop {
+                    receipt = try await api.stop(sessionId: routedID, requestId: command.requestID)
+                } else {
+                    receipt = try await api.send(sessionId: routedID, requestId: command.requestID, text: text, images: images, mentions: mentions, schedule: schedule)
+                }
+            } catch {
+                if let failure = error as? ClientServiceFailure, failure.code == "COMMAND_CONFIRMATION_REQUIRED",
+                   let slashCommand, pending?.requestID == command.requestID {
+                    forgetPending()
+                    // The server rejected before dispatch. Confirmation is an
+                    // explicit NEW intent, never a replay of an uncertain send.
+                    let proposal = CommandConfirmation(command: slashCommand, text: text,
+                        sessionID: routedID, draftSessionID: id, draftRevision: snapshot.textRevision,
+                        serverID: serverID, address: address, deviceID: deviceID)
+                    commandConfirmation = proposal
+                    if !confirmationMatches(proposal, connection: connection) {
+                        commandConfirmation = nil
+                        status = "命令、草稿或连接已变化，请重新发送并确认。"
+                    }
+                    return
+                }
+                rejectBeforeDispatch(error, requestID: command.requestID)
+                throw error
+            }
+            receivedAcknowledgement = true
+            // A concurrent receipt read may have already settled this request
+            // while the original POST response was still in transit.
+            if pending?.requestID == command.requestID { settle(receipt) }
             if schedule != nil, receipt.status == "accepted" { status = "定时消息已创建，可在自动化页面查看。" }
         }
-        if let pending, let messageID = outgoingRequestIDs[pending.requestID], outgoingStates[messageID] == "Sending" {
-            outgoingStates[messageID] = "结果待核对"
+        if !receivedAcknowledgement, let pending, let messageID = outgoingRequestIDs[pending.requestID], outgoingStates[messageID] == "Sending" {
+            outgoingStates[messageID] = "送达状态未确认"
         }
         if pending == nil {
             inventoryDirty = true; messagesDirty = true
@@ -241,12 +415,86 @@ final class PadWorkspace {
         }
     }
 
+    private func confirmationMatches(_ proposal: CommandConfirmation, connection: PadConnection) -> Bool {
+        commandConfirmation?.id == proposal.id
+            && selection == proposal.draftSessionID
+            && (capabilities?.sessionId ?? selection) == proposal.sessionID
+            && connection.serverID == proposal.serverID && connection.address == proposal.address
+            && connection.deviceID == proposal.deviceID
+            && draftRevisions[proposal.draftSessionID, default: 0] == proposal.draftRevision
+            && drafts[proposal.draftSessionID] == proposal.text
+            && (draftImages[proposal.draftSessionID] ?? []).isEmpty
+            && (draftMentions[proposal.draftSessionID] ?? []).isEmpty
+    }
+
     func reconcile(_ connection: PadConnection) async {
-        guard let pending, pending.serverID == connection.serverID, pending.address == connection.address else { return }
-        await connection.perform {
-            let api = ClientSessionAPI(transport: try await connection.transport())
-            settle(try await api.receipt(requestId: pending.requestID))
+        guard let key = reconciliationKey(connection) else { return }
+        _ = await queryReceipt(connection, key: key)
+    }
+
+    func reconciliationKey(_ connection: PadConnection) -> ReceiptReconciliationKey? {
+        guard connection.connected, let pending,
+              pending.serverID == connection.serverID, pending.address == connection.address else { return nil }
+        return ReceiptReconciliationKey(requestID: pending.requestID, serverID: pending.serverID,
+            address: pending.address, deviceID: connection.deviceID)
+    }
+
+    /// Foreground-owned, finite backoff. Queries only: never replays the POST.
+    func reconcileAutomatically(_ connection: PadConnection,
+                                delays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16), .seconds(30)]) async {
+        guard let key = reconciliationKey(connection) else { return }
+        let run = UUID()
+        reconciliationRun = run
+        automaticReconciliationActive = true
+        defer {
+            if reconciliationRun == run {
+                reconciliationRun = nil
+                automaticReconciliationActive = false
+            }
         }
+        for delay in delays {
+            do { try await Task.sleep(for: delay) } catch { return }
+            guard !Task.isCancelled, reconciliationRun == run, reconciliationKey(connection) == key else { return }
+            guard await queryReceipt(connection, key: key) else { return }
+        }
+        guard !Task.isCancelled, reconciliationRun == run, reconciliationKey(connection) == key else { return }
+        status = "暂时无法确认请求结果。已停止自动核对，可稍后查询回执；不会自动重发。"
+    }
+
+    /// Returns whether another query may help. Reads do not take the global UI lock.
+    private func queryReceipt(_ connection: PadConnection, key: ReceiptReconciliationKey) async -> Bool {
+        guard !Task.isCancelled, reconciliationKey(connection) == key else { return false }
+        guard !receiptReadInFlight else { return true }
+        receiptReadInFlight = true
+        defer { receiptReadInFlight = false }
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let receipt = try await api.receipt(requestId: key.requestID)
+            guard !Task.isCancelled, reconciliationKey(connection) == key else { return false }
+            settle(receipt)
+            if pending == nil {
+                inventoryDirty = true; messagesDirty = true
+                scheduleRefresh(connection)
+                return false
+            }
+        } catch is CancellationError {
+            return false
+        } catch {
+            guard !Task.isCancelled, reconciliationKey(connection) == key else { return false }
+            // Denial is not proof of non-delivery. Preserve identity and stop
+            // automatic reads until access is restored by the user.
+            var denied = (error as? ClientServiceFailure).map { [401, 403].contains($0.statusCode) } == true
+            if let failure = error as? ClientConnectionError,
+               case .httpStatus(let statusCode) = failure {
+                denied = [401, 403].contains(statusCode)
+            }
+            if denied {
+                status = PadConnection.explain(error)
+                return false
+            }
+            if !automaticReconciliationActive { status = PadConnection.explain(error) }
+        }
+        return true
     }
 
     func settle(_ receipt: ClientCommandReceipt) {
@@ -255,12 +503,32 @@ final class PadWorkspace {
             status = "回执与本机请求不一致，保留待核对记录。"
             return
         }
-        if receipt.status == "accepted" || receipt.status == "stop_requested" {
+        if receipt.kind == "conversation_command", receipt.status == "completed" {
+            let draftSessionID = pending.draftSessionID ?? receipt.sessionId
+            clearSubmittedDraft(requestID: receipt.requestId)
+            if receipt.commandResult?.conversationCleared == true {
+                for item in outgoingMessages.removeValue(forKey: draftSessionID) ?? [] {
+                    outgoingStates.removeValue(forKey: item.id)
+                }
+                if selection == draftSessionID {
+                    clearSelectionState()
+                    messageRevision += 1
+                }
+            }
+            // Receipt and realtime event are two deliveries of the SAME row.
+            // Do not fabricate a user message or a model Processing state.
+            if let result = receipt.commandResult, let messageID = result.messageId {
+                let item = ClientMessage(commandMessageID: messageID, result: result)
+                outgoingMessages[draftSessionID] = Self.merge(outgoingMessages[draftSessionID] ?? [], [item])
+                if selection == draftSessionID { scrollRequest += 1 }
+            }
+            status = ""
+            inventoryDirty = true; messagesDirty = true
+            forgetPending()
+        } else if receipt.status == "accepted" || receipt.status == "stop_requested" {
             if receipt.kind == "send" {
                 let draftSessionID = pending.draftSessionID ?? receipt.sessionId
-                drafts[draftSessionID] = ""
-                draftImages[draftSessionID] = []
-                draftMentions[draftSessionID] = []
+                clearSubmittedDraft(requestID: receipt.requestId)
                 if selection == draftSessionID { scrollRequest += 1 }
             }
             status = ""
@@ -269,15 +537,71 @@ final class PadWorkspace {
                 outgoingStates[messageID] = "Sent"
             }
             forgetPending()
+        } else if ["rejected", "failed", "cancelled"].contains(receipt.status) {
+            finishRejectedRequest(requestID: receipt.requestId,
+                message: receipt.status == "cancelled" ? "请求已取消" : "操作失败（\(receipt.errorCode ?? receipt.status)）")
+        } else if receipt.status == "dispatching" {
+            // Server acknowledgement of dispatch is not model execution.
+            if let messageID = outgoingRequestIDs[receipt.requestId], outgoingStates[messageID] != nil {
+                outgoingStates[messageID] = "Sending"
+            }
+            status = ""
         } else {
             if let messageID = outgoingRequestIDs[receipt.requestId], outgoingStates[messageID] != nil {
-                outgoingStates[messageID] = "结果待核对"
+                outgoingStates[messageID] = "送达状态未确认"
             }
-            status = "执行结果待核对（\(receipt.status)）。不会自动重发。"
+            status = automaticReconciliationActive ? "" : "暂时无法确认请求是否已送达，请查询回执。不会自动重发。"
         }
     }
 
+    func captureSubmission(requestID: String, sessionID: String) {
+        submissions[requestID] = submissionSnapshot(sessionID: sessionID)
+    }
+
+    private func submissionSnapshot(sessionID: String) -> SubmissionSnapshot {
+        SubmissionSnapshot(sessionID: sessionID,
+            textRevision: draftRevisions[sessionID, default: 0],
+            imageIDs: (draftImages[sessionID] ?? []).map(\.id),
+            mentions: (draftMentions[sessionID] ?? []).map { "\($0.id):\($0.displayName)" })
+    }
+
+    private func clearSubmittedDraft(requestID: String) {
+        // No snapshot survives process restart: never erase a newly entered draft
+        // on the basis of an old persisted request identity alone.
+        guard let snapshot = submissions[requestID],
+              draftRevisions[snapshot.sessionID, default: 0] == snapshot.textRevision,
+              (draftImages[snapshot.sessionID] ?? []).map(\.id) == snapshot.imageIDs,
+              (draftMentions[snapshot.sessionID] ?? []).map({ "\($0.id):\($0.displayName)" }) == snapshot.mentions else { return }
+        drafts[snapshot.sessionID] = ""
+        draftImages[snapshot.sessionID] = []
+        draftMentions[snapshot.sessionID] = []
+    }
+
+    @discardableResult
+    func rejectBeforeDispatch(_ error: Error, requestID: String) -> Bool {
+        // These device-gateway codes are emitted before dispatch/journalling.
+        // HTTP status alone is NOT proof; conflicts and uncertain failures keep
+        // their original request identity for reconciliation, never replay.
+        guard pending?.requestID == requestID, let failure = error as? ClientServiceFailure,
+              ["INVALID_MESSAGE", "INVALID_COMMAND", "INVALID_IMAGES", "INVALID_MENTIONS",
+               "INVALID_SCHEDULE", "CAPABILITY_UNSUPPORTED", "DEVICE_PERMISSION_REQUIRED",
+               "INVALID_COMMAND_ARGUMENTS", "PROVIDER_COMMAND_UNSUPPORTED", "COMMAND_CONFIRMATION_REQUIRED",
+               "SESSION_NOT_AVAILABLE", "COMMAND_JOURNAL_FULL", "ROUTE_NOT_AVAILABLE"].contains(failure.code) else { return false }
+        finishRejectedRequest(requestID: requestID, message: PadConnection.explain(failure))
+        return true
+    }
+
+    private func finishRejectedRequest(requestID: String, message: String) {
+        guard pending?.requestID == requestID else { return }
+        if let id = outgoingRequestIDs.removeValue(forKey: requestID), outgoingStates[id] != nil {
+            outgoingStates[id] = "发送失败：\(message)"
+        }
+        status = message
+        forgetPending()
+    }
+
     func forgetPending() {
+        if let pending { submissions.removeValue(forKey: pending.requestID) }
         pending = nil
         defaults.removeObject(forKey: "pendingCommand")
     }
