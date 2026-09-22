@@ -8,6 +8,6 @@ let package = Package(name: "CorptiePadState", platforms: [.macOS(.v14), .iOS(.v
         .target(name: "CorptiePadState", dependencies: [
             .product(name: "CorptieClientCore", package: "CorptieClientCore"),
             .product(name: "CorptieClientSecurity", package: "CorptieClientCore")],
-            path: "Sources", exclude: ["CorptiePadApp.swift", "PadAppShell.swift", "PadControlView.swift", "PairingScannerView.swift", "PadKeyboardDismissal.swift", "PadComposerExtras.swift", "PadMessageText.swift", "PadTaskCreationSheet.swift"]),
+            path: "Sources", exclude: ["CorptiePadApp.swift", "PadAppShell.swift", "PadControlView.swift", "PairingScannerView.swift", "PadKeyboardDismissal.swift", "PadComposerExtras.swift", "PadComposer.swift", "PadComposerTextView.swift", "PadThreadMetaView.swift", "PadMessageText.swift", "PadTaskCreationSheet.swift", "PadWorkAvatars.swift", "PadWorkOutline.swift", "PadMessageImages.swift", "PadMessageLayout.swift", "PadEntityMenus.swift"]),
         .testTarget(name: "CorptiePadStateTests", dependencies: ["CorptiePadState"], path: "Tests")
     ])

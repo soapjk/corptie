@@ -4,6 +4,7 @@ import { validateSessionCommand, sessionCommandPermissions, sessionCommandNeedsC
 import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
 import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreation.mjs";
 import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscussion.mjs";
+import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand } from "./clientEntityCommands.mjs";
 
 export function requireDevicePermission(identity, permission) {
   if (!identity.permissions?.includes(permission)) throw deviceError("DEVICE_PERMISSION_REQUIRED", 403);
@@ -11,10 +12,17 @@ export function requireDevicePermission(identity, permission) {
 
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null }) {
+  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null }) {
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
+    // Optional host projections: Session readiness (desktop ThreadMetaView light) and usage (context / quota).
+    this.readiness = readiness;
+    this.usageReader = usage;
+    // Host callback so read receipts publish through the same state-sync path as the desktop route.
+    this.markRead = markRead ?? ((sessionId, throughSequence) => store.markSessionMessagesRead(sessionId, throughSequence));
     this.taskCreation = taskCreation;
     this.workDiscussion = workDiscussion;
+    // Host Work / Task management services (desktop entity routes); absent hosts answer CAPABILITY_UNSUPPORTED.
+    this.entityCommands = entityCommands;
     store.db.run(`CREATE TABLE IF NOT EXISTS client_command_receipts (
       device_id TEXT NOT NULL, request_id TEXT NOT NULL, session_id TEXT NOT NULL,
       kind TEXT NOT NULL, payload_hash TEXT NOT NULL, status TEXT NOT NULL,
@@ -39,6 +47,15 @@ export class ClientSessionAPI {
   discussionOptions(identity, workId) { return clientDiscussionOptions(this, identity, workId); }
   openDiscussion(identity, workId, input, revalidateIdentity = null) {
     return openClientDiscussion(this, identity, workId, input, revalidateIdentity);
+  }
+  taskManagement(identity, taskId) { return clientTaskManagement(this, identity, taskId); }
+  taskDeletionPlan(identity, taskId) { return clientTaskDeletionPlan(this, identity, taskId); }
+  workManagement(identity, workId) { return clientWorkManagement(this, identity, workId); }
+  taskCommand(identity, taskId, command, input, revalidateIdentity = null) {
+    return clientTaskCommand(this, identity, taskId, command, input, revalidateIdentity);
+  }
+  workCommand(identity, workId, command, input, revalidateIdentity = null) {
+    return clientWorkCommand(this, identity, workId, command, input, revalidateIdentity);
   }
   taskCreationOptions(identity, sourceSessionId, query) {
     return clientTaskCreationCatalog(this, identity, sourceSessionId, query);
@@ -71,6 +88,14 @@ export class ClientSessionAPI {
         "sourceType", "localVisibility", "processingError",
         "processStartedAt", "processEndedAt",
       ].map(key => [key, typeof item[key] === "string" ? item[key] : null])),
+      // Managed attachments only (never original host paths); bytes stream via `image()`.
+      images: Array.isArray(item.images) ? item.images
+        .filter(image => image && typeof image.managedPath === "string" && image.managedPath)
+        .slice(0, 8)
+        .map(image => ({ managedPath: image.managedPath,
+          fileName: typeof image.fileName === "string" ? image.fileName : null,
+          mimeType: typeof image.mimeType === "string" ? image.mimeType : null,
+          byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null })) : [],
     }));
     const result = { schemaVersion: 1, sessionId, revision: window.revision, items,
       hasEarlier: window.hasEarlier === true, nextBefore: window.hasEarlier && items.length ? items[0].id : null };
@@ -78,11 +103,57 @@ export class ClientSessionAPI {
     return result;
   }
 
+  /** Bytes of one managed attachment of this Session. Same ownership check as the desktop image route. */
+  async image(identity, id, query) {
+    requireDevicePermission(identity, "messages.read");
+    const { sessionId } = this.session(id);
+    if ([...query.keys()].some(k => k !== "path") || query.getAll("path").length !== 1) throw deviceError("INVALID_QUERY", 400);
+    const managedPath = query.get("path");
+    if (!managedPath || managedPath.length > 1024 || !this.images?.read) throw deviceError("IMAGE_NOT_AVAILABLE", 404);
+    let image;
+    try { image = await this.images.read(sessionId, managedPath); }
+    catch (error) {
+      // Foreign paths read as absent: the device must not learn which paths exist on the host.
+      if ([403, 404].includes(error?.statusCode) || error?.code === "CHAT_IMAGE_FORBIDDEN" || error?.code === "CHAT_IMAGE_MISSING") throw deviceError("IMAGE_NOT_AVAILABLE", 404);
+      if (error?.code === "CHAT_IMAGE_FORMAT_UNSUPPORTED") throw deviceError("IMAGE_NOT_AVAILABLE", 415);
+      throw error;
+    }
+    return { data: image.data, contentType: image.mimeType, byteLength: image.byteLength };
+  }
+
+  /** Acknowledge agent messages through an exact cursor the device rendered; never "everything". */
+  readReceipt(identity, id, input) {
+    requireDevicePermission(identity, "messages.read");
+    const { sessionId } = this.session(id);
+    const through = input?.throughSequence;
+    if (!Number.isSafeInteger(through) || through < 0 || Object.keys(input).some(key => key !== "throughSequence")) {
+      throw deviceError("INVALID_READ_SEQUENCE", 400);
+    }
+    let receipt;
+    try { receipt = this.markRead(sessionId, through); }
+    catch (error) {
+      if (error?.code === "INVALID_READ_SEQUENCE") throw deviceError("INVALID_READ_SEQUENCE", 409);
+      if (error?.code === "SESSION_NOT_FOUND") throw deviceError("SESSION_NOT_AVAILABLE", 404);
+      throw error;
+    }
+    return { schemaVersion: 1, sessionId,
+      lastAgentMessageSequence: Number(receipt?.lastAgentMessageSequence ?? 0),
+      lastReadMessageSequence: Number(receipt?.lastReadMessageSequence ?? 0) };
+  }
+
   capabilities(identity, sessionId) {
     const resolved = this.session(sessionId);
     sessionId = resolved.sessionId;
     const actions = this.actions(resolved.session);
+    const readiness = this.readiness ? this.readiness(resolved.session) : null;
+    const notReadyReason = readiness?.notReadyReason && typeof readiness.notReadyReason === "object"
+      ? { code: String(readiness.notReadyReason.code ?? "SESSION_NOT_READY"),
+        message: String(readiness.notReadyReason.message ?? ""),
+        retryable: typeof readiness.notReadyReason.retryable === "boolean" ? readiness.notReadyReason.retryable : null }
+      : null;
     return { schemaVersion: 1, sessionId,
+      readiness: readiness?.readiness === "ready" ? "ready" : readiness?.readiness === "not_ready" ? "not_ready" : null,
+      notReadyReason: readiness?.readiness === "not_ready" ? notReadyReason : null,
       composer: Boolean(this.composer),
       sendImages: Boolean(this.images?.available(resolved.session)),
       sendMentions: true,
@@ -98,6 +169,32 @@ export class ClientSessionAPI {
         reason: identity.permissions.includes("messages.write") ? actions.send?.reason ?? null : "DEVICE_PERMISSION_REQUIRED" },
       stop: { available: identity.permissions.includes("sessions.stop") && actions.interrupt?.available === true,
         reason: identity.permissions.includes("sessions.stop") ? actions.interrupt?.reason ?? null : "DEVICE_PERMISSION_REQUIRED" } };
+  }
+
+  /** Context window and account quota of a Session: the desktop ChatUsageBar data, read-only. */
+  async usage(identity, id) {
+    requireDevicePermission(identity, "messages.read");
+    const { sessionId } = this.session(id);
+    if (!this.usageReader) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    const snapshot = await this.usageReader(sessionId);
+    const number = value => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const window = value => value && typeof value === "object"
+      ? { usedPercent: number(value.usedPercent), windowDurationMins: number(value.windowDurationMins), resetsAt: number(value.resetsAt) }
+      : null;
+    const limit = value => value && typeof value === "object"
+      ? { limitId: value.limitId == null ? null : String(value.limitId), limitName: value.limitName == null ? null : String(value.limitName),
+        primary: window(value.primary), secondary: window(value.secondary) }
+      : null;
+    const account = snapshot?.account && typeof snapshot.account === "object" ? snapshot.account : null;
+    const context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : null;
+    return { schemaVersion: 1, sessionId,
+      context: context ? { usedTokens: number(context.usedTokens), contextWindow: number(context.contextWindow),
+        remainingTokens: number(context.remainingTokens), usedPercent: number(context.usedPercent) } : null,
+      account: account ? { available: account.available === true, provider: account.provider == null ? null : String(account.provider),
+        model: account.model == null ? null : String(account.model), rateLimits: limit(account.rateLimits),
+        rateLimitsByLimitId: account.rateLimitsByLimitId && typeof account.rateLimitsByLimitId === "object"
+          ? Object.fromEntries(Object.entries(account.rateLimitsByLimitId).map(([key, value]) => [key, limit(value)]).filter(([, value]) => value))
+          : null } : null };
   }
 
   async configuration(identity, id, input = null) {
@@ -131,7 +228,8 @@ export class ClientSessionAPI {
     return { schemaVersion: 1, requestId: row.request_id, sessionId: row.session_id, kind: row.kind,
       status: row.status === "dispatching" && !this.inFlight.has(key) ? "unknown" : row.status,
       errorCode: row.error_code, updatedAt: row.updated_at,
-      ...(row.result_json ? { [row.kind === "create_task" ? "taskResult" : row.kind === "open_work_discussion" ? "discussionResult" : "commandResult"]: JSON.parse(row.result_json) } : {}) };
+      ...(row.result_json ? { [row.kind === "create_task" ? "taskResult" : row.kind === "open_work_discussion" ? "discussionResult"
+        : /^(task|work)_/.test(row.kind) ? "entityResult" : "commandResult"]: JSON.parse(row.result_json) } : {}) };
   }
 
   async commandCatalog(identity, id) {
