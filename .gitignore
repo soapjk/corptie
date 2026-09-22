@@ -65,16 +65,16 @@ development-docs/
 **/CLAUDE.md
 **/CODEX.md
 **/GEMINI.md
-**/.agent/
-**/.agents/
-**/.codex/
-**/.claude/
-**/.cursor/
-**/.windsurf/
-**/.gemini/
-**/.continue/
-**/.roo/
-**/.cline/
+**/.agent
+**/.agents
+**/.codex
+**/.claude
+**/.cursor
+**/.windsurf
+**/.gemini
+**/.continue
+**/.roo
+**/.cline
 **/.cursorrules
 **/.windsurfrules
 **/.clinerules
@@ -82,7 +82,7 @@ development-docs/
 **/.github/copilot-instructions.md
 **/.github/instructions/
 # Corptie local Agent configuration
-/.corptie/
+/.corptie
 
 # Internal Markdown stays local; public README and bundled runtime resources remain tracked.
 /docs/

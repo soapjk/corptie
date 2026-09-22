@@ -89,10 +89,13 @@ test("createWorktree uses parameterized Git arguments, validates identity, and s
       join(await realpath(fixture.repository), ".agents")
     );
     assert.equal((await lstat(join(target, "AGENTS.md"))).isSymbolicLink(), false);
-    assert.deepEqual(
-      (await gitOutput(["status", "--short"], target)).trim().split("\n").sort(),
-      ["?? .agents", "?? .corptie"]
-    );
+    assert.equal((await gitOutput(["status", "--short"], target)).trim(), "");
+    const commonGitDir = (await gitOutput([
+      "rev-parse", "--path-format=absolute", "--git-common-dir"
+    ], target)).trim();
+    const excludes = await readFile(join(commonGitDir, "info", "exclude"), "utf8");
+    assert.match(excludes, /^\/\.agents$/mu);
+    assert.match(excludes, /^\/\.corptie$/mu);
     const identity = await inspectGitWorkspace(target);
     assert.equal(identity.repositoryId, result.repositoryId);
   } finally {
