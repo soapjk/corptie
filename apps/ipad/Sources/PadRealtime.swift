@@ -131,6 +131,8 @@ extension PadWorkspace {
             }
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             applyLatestWindow(latest, cursor: cursor, revision: page.revision)
+            await loadUsage(api, sessionID: id, routedID: caps.sessionId, generation: generation)
+            guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             if caps.composer == true, composerConfiguration == nil
                 || (caps.currentModel != nil && caps.currentModel != composerConfiguration?.currentModel)
                 || (caps.currentReasoningLevel != nil && caps.currentReasoningLevel != composerConfiguration?.currentReasoningLevel) {

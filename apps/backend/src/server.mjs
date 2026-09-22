@@ -251,6 +251,7 @@ import {
 import { ensureCorptieCodexRuntime, resolveCorptieRuntimePaths } from "./runtime/corptieCodexRuntime.mjs";
 import { recoverCollaborationDeliveriesAfterCodexRolloutRepair } from "./application/collaborationDeliveryInfrastructureRecovery.mjs";
 import { ensureAgentWorkDir, recoverableAgentWorkDir } from "./runtime/agentWorkDir.mjs";
+import { clearWorkAvatar as clearWorkAvatarFile } from "./runtime/agentAvatar.mjs";
 import { ensureCorptieClaudeRuntime, resolveCorptieClaudeRuntimePaths } from "./runtime/corptieClaudeRuntime.mjs";
 import { ensureCorptieOpenClackyRuntime, resolveCorptieOpenClackyRuntimePaths } from "./runtime/corptieOpenClackyRuntime.mjs";
 import { OpenClackyServerRuntime, resolveOpenClackyCommand, resolveOpenClackyManagedPort } from "./runtime/openClackyServerRuntime.mjs";
@@ -2283,9 +2284,32 @@ const taskDeletionService = new TaskDeletionService({
     actorId: actor?.id,
     workId: task.work_id
   }, task.id, disposition),
-  authorize: ({ actor }) => actor?.type === "user" && actor.id === "user:local-macos",
+  // Paired devices act for the same local user; their grant is checked at the device gateway (`tasks.manage`).
+  authorize: ({ actor }) => actor?.type === "user"
+    && (actor.id === "user:local-macos" || /^user:paired-device:[A-Za-z0-9_:-]{1,128}$/.test(String(actor.id ?? ""))),
   onChanged: (type, payload) => emitEvent(type, payload)
 });
+/** Shared by the desktop entity routes and the paired-device management commands. */
+function restartTaskForEntityRoutes(taskId, context) {
+  const task = workService.getTask(taskId);
+  if (!task.current_session_id) {
+    const error = new Error(`Task ${taskId} has no active Session to restart.`);
+    error.code = "TASK_SESSION_NOT_FOUND";
+    throw error;
+  }
+  return sessionApplicationService.restartSession(task.current_session_id, context);
+}
+async function setTaskArchivedForEntityRoutes(taskId, archived) {
+  const task = store.setTaskArchived(taskId, archived);
+  for (const session of store.listSessionsByTask(taskId)) {
+    if (archived) {
+      void sessionRuntimeReleaseService.request(session.id, "task-archived");
+    } else {
+      await sessionRuntimeReleaseService.restore(session.id);
+    }
+  }
+  return task;
+}
 taskExecutionOrchestrator = new TaskExecutionOrchestrator({
   getTask: (taskId) => store.getTask(taskId),
   getSession: (sessionId) => store.getSession(sessionId),
@@ -6825,6 +6849,33 @@ function collaborationSessionPresentation(sessionId) {
   };
 }
 
+/** Account quota + context usage of one Session; shared by the desktop route and the paired-device gateway. */
+function readSessionUsage(sessionId, session = store.getSession(sessionId)) {
+  if (!session) return Promise.reject(new Error("Session not found."));
+  const provider = session.external?.provider === "codex-app-server"
+    ? "codex"
+    : session.external?.provider ?? "unknown";
+  const storedUsage = store.getSessionUsageSnapshot(sessionId);
+  return loadSessionUsageSnapshot({
+    loadAccount: () => sessionApplicationService.readAccountUsage(sessionId),
+    loadContext: async () => storedUsage?.context ?? null,
+    fallbackAccount: storedUsage?.account ?? {
+      available: false,
+      provider,
+      model: storedUsage?.model ?? session.external?.currentModel ?? null
+    },
+    persistAccount: (account) => store.upsertSessionUsageSnapshot({
+      sessionId,
+      providerId: session.external?.provider ?? provider,
+      model: account.model ?? storedUsage?.model ?? session.external?.currentModel ?? null,
+      account
+    }),
+    resetForecast: session.external?.provider === "codex-app-server"
+      ? codexResetForecastMonitor?.snapshot() ?? null
+      : null
+  });
+}
+
 async function getGatewayUsage(sessionId = null) {
   if (!sessionId) return { available: false, provider: "codex", model: null };
   const session = store.getSession(sessionId);
@@ -9549,26 +9600,8 @@ function route(request, response) {
     inspectTaskDeletion: (taskId, actor) => taskDeletionService.inspect(taskId, actor),
     deleteTaskSafely: (taskId, input, actor) => taskDeletionService.request(taskId, input, actor),
     getTaskDeletionOperation: (operationId) => taskDeletionService.getOperation(operationId),
-    restartTask: (taskId, context) => {
-      const task = workService.getTask(taskId);
-      if (!task.current_session_id) {
-        const error = new Error(`Task ${taskId} has no active Session to restart.`);
-        error.code = "TASK_SESSION_NOT_FOUND";
-        throw error;
-      }
-      return sessionApplicationService.restartSession(task.current_session_id, context);
-    },
-    setTaskArchived: async (taskId, archived) => {
-      const task = store.setTaskArchived(taskId, archived);
-      for (const session of store.listSessionsByTask(taskId)) {
-        if (archived) {
-          void sessionRuntimeReleaseService.request(session.id, "task-archived");
-        } else {
-          await sessionRuntimeReleaseService.restore(session.id);
-        }
-      }
-      return task;
-    },
+    restartTask: restartTaskForEntityRoutes,
+    setTaskArchived: setTaskArchivedForEntityRoutes,
     restoreTaskExecution: (taskId) => taskExecutionOrchestrator.restore(taskId),
     taskCompletionService,
     resolveAgentAvailability: (agent) => {
@@ -9979,28 +10012,7 @@ function route(request, response) {
       sendJson(response, 404, { error: "Session not found." });
       return;
     }
-    const provider = session.external?.provider === "codex-app-server"
-      ? "codex"
-      : session.external?.provider ?? "unknown";
-    const storedUsage = store.getSessionUsageSnapshot(sessionId);
-    loadSessionUsageSnapshot({
-      loadAccount: () => sessionApplicationService.readAccountUsage(sessionId),
-      loadContext: async () => storedUsage?.context ?? null,
-      fallbackAccount: storedUsage?.account ?? {
-        available: false,
-        provider,
-        model: storedUsage?.model ?? session.external?.currentModel ?? null
-      },
-      persistAccount: (account) => store.upsertSessionUsageSnapshot({
-        sessionId,
-        providerId: session.external?.provider ?? provider,
-        model: account.model ?? storedUsage?.model ?? session.external?.currentModel ?? null,
-        account
-      }),
-      resetForecast: session.external?.provider === "codex-app-server"
-        ? codexResetForecastMonitor?.snapshot() ?? null
-        : null
-    })
+    readSessionUsage(sessionId, session)
       .then((usage) => sendJson(response, 200, usage))
       .catch((error) => sendJson(response, 503, { error: error.message }));
     return;
@@ -11776,7 +11788,7 @@ function startBackendRuntime() {
   taskSummaryService.start();
   const startDeviceAccess = process.env.CORPTIE_REMOTE_ACCESS === "1" ? startConfiguredDeviceGateway : createDeviceSetup;
   void startDeviceAccess({ directory: join(store.dataRoot, "client-devices"), preview: developmentPreview,
-    readAPI: new ClientReadAPI(store),
+    readAPI: new ClientReadAPI(store, { environmentName }),
     controlAPI: new ClientControlReadAPI({ lists: {
       automations: () => store.listScheduledSessionTasks({ environment: environmentName }),
       agents: () => store.listAgents(), skills: () => store.listRegistrySkills(),
@@ -11785,6 +11797,12 @@ function startBackendRuntime() {
     resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
+      markRead: (sessionId, throughSequence) => {
+        const receipt = store.markSessionMessagesRead(sessionId, throughSequence);
+        setImmediate(publishStateChangesIfNeeded);
+        clientDeviceGateway?.events.invalidate({ inventory: true });
+        return receipt;
+      },
       workDiscussion: {
         options: () => ({ defaultProviderId: agentProviderRegistry.defaultProviderId,
           providers: agentProviderRegistry.descriptors().map(descriptor => ({ id: descriptor.id, name: descriptor.displayName,
@@ -11852,7 +11870,8 @@ function startBackendRuntime() {
       images: {
         available: session => decorateSessionForClient(session).capabilities?.canSendImages === true,
         import: (id, image) => chatResourceService.importImageData(requireSessionReference(id),
-          Buffer.from(image.dataBase64, "base64"), image.fileName)
+          Buffer.from(image.dataBase64, "base64"), image.fileName),
+        read: (id, managedPath) => chatResourceService.readImage(requireSessionReference(id), managedPath)
       },
       composer: {
         read: id => sessionApplicationService.listModelsForSession(id),
@@ -11866,6 +11885,28 @@ function startBackendRuntime() {
         }
       },
       actions: session => decorateSessionForClient(session).actions ?? {},
+      readiness: session => {
+        const presented = decorateSessionForClient(session);
+        return { readiness: presented.readiness ?? null, notReadyReason: presented.notReadyReason ?? null };
+      },
+      usage: sessionId => readSessionUsage(sessionId),
+      // Same services the desktop entity routes call; the device layer adds permission, DTO and receipt boundaries.
+      entityCommands: {
+        updateTask: (taskId, patch) => workService.updateTask(taskId, patch),
+        setTaskArchived: async (taskId, archived) => {
+          const task = await setTaskArchivedForEntityRoutes(taskId, archived);
+          workService.emit("TaskChanged", task, archived ? "archived" : "unarchived");
+          return task;
+        },
+        restartTask: (taskId, context) => restartTaskForEntityRoutes(taskId, context),
+        inspectTaskDeletion: (taskId, actor) => taskDeletionService.inspect(taskId, actor),
+        deleteTask: (taskId, input, actor) => taskDeletionService.request(taskId, input, actor),
+        updateWork: (workId, patch) => workService.updateWork(workId, patch),
+        deleteWork: async workId => {
+          await clearWorkAvatarFile(workId, { environmentName });
+          return workService.deleteWork(workId);
+        }
+      },
       resolveSession: id => sessionBindingRepository.resolve(id)?.sessionId
         ?? (store.getSession(id) ? id : null) }) })
     .then(gateway => { clientDeviceGateway = gateway; })

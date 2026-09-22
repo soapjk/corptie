@@ -39,7 +39,7 @@ struct PadMessageText: UIViewRepresentable {
         if let steps {
             view.attributedText = ExecutionTimelineAttributedText.make(steps: steps)
         } else {
-            view.attributedText = MessageMarkdown.make(text: text, style: fromUser ? .user : .agent)
+            view.attributedText = PadMessageLayout.entry(text: text, style: fromUser ? .user : .agent).attributed
         }
         view.invalidateIntrinsicContentSize()
     }
