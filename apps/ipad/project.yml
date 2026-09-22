@@ -3,6 +3,8 @@ options:
   deploymentTarget:
     iOS: '17.0'
 packages:
+  CorptieConversation:
+    path: ../../packages/CorptieConversation
   CorptieClientCore:
     path: ../../packages/CorptieClientCore
 settings:
@@ -16,6 +18,8 @@ targets:
     platform: iOS
     sources: [Sources]
     dependencies:
+      - package: CorptieConversation
+        product: CorptieConversation
       - package: CorptieClientCore
         product: CorptieClientCore
       - package: CorptieClientCore

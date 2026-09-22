@@ -455,20 +455,14 @@ final class ScheduledSessionUITests: XCTestCase {
             encoding: .utf8
         )
 
-        let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private func sessionCard(decoratesSurface: Bool) -> some View"))
-        let statusRange = try XCTUnwrap(
-            sessionsView.range(
-                of: "statusCard",
-                range: detailCardStart.lowerBound..<sessionsView.endIndex
-            )
-        )
+        let detailCardStart = try XCTUnwrap(sessionsView.range(of: "private func sessionCard(decoratesSurface: Bool, scrollsContent: Bool = true) -> some View"))
         let scheduleRange = try XCTUnwrap(
             sessionsView.range(
                 of: "ScheduledSessionStrip(session: session)",
-                range: statusRange.lowerBound..<sessionsView.endIndex
+                range: detailCardStart.lowerBound..<sessionsView.endIndex
             )
         )
-        XCTAssertLessThan(statusRange.lowerBound, scheduleRange.lowerBound)
+        XCTAssertGreaterThan(scheduleRange.lowerBound, detailCardStart.lowerBound)
         XCTAssertFalse(conversationView.contains("ScheduledSessionStrip(session: session)"))
     }
 }

@@ -480,7 +480,9 @@ final class AppKitChatTimelineControlTests: XCTestCase {
     }
 
     func testOrdinaryNativeMessagePlacesHoverTimestampBesideCopyAction() throws {
-        let harness = makeHarness(followsLatest: true)
+        // Keep the legacy renderer baseline while shared-card coverage lives
+        // in MessageTextCardMigrationTests.
+        let harness = makeHarness(followsLatest: true, useSharedTextCards: false)
         let message = row(
             id: "ordinary-message",
             text: "Ready",
@@ -518,7 +520,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
     }
 
     func testOrdinaryMessageActionsAreOutsideCardAndExcludedFromExecutionRows() throws {
-        let harness = makeHarness(followsLatest: true)
+        let harness = makeHarness(followsLatest: true, useSharedTextCards: false)
         let agent = row(
             id: "agent-message",
             text: "First line\nSecond line",
@@ -620,7 +622,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         harness.window.contentView?.layoutSubtreeIfNeeded()
 
         let cell = try XCTUnwrap(
-            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitChatNativeTextCell
+            harness.tableView.view(atColumn: 0, row: 0, makeIfNecessary: true) as? AppKitSharedMessageTextCell
         )
         cell.layoutSubtreeIfNeeded()
         let card = try XCTUnwrap(cell.subviews.first)
@@ -807,6 +809,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         harness.scrollView.contentView.scroll(to: .zero)
         harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        harness.coordinator.userScrollEventWillBegin()
+        harness.coordinator.userScrollEventDidEnd()
         await settleMainQueue()
 
         XCTAssertFalse(harness.followState.value)
@@ -1101,6 +1105,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         harness.scrollView.contentView.scroll(to: .zero)
         harness.scrollView.reflectScrolledClipView(harness.scrollView.contentView)
+        harness.coordinator.userScrollEventWillBegin()
+        harness.coordinator.userScrollEventDidEnd()
         await settleMainQueue()
         XCTAssertFalse(harness.followState.value)
 
@@ -1438,6 +1444,8 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
         goalHarness.scrollView.contentView.scroll(to: .zero)
         goalHarness.scrollView.reflectScrolledClipView(goalHarness.scrollView.contentView)
+        goalHarness.coordinator.userScrollEventWillBegin()
+        goalHarness.coordinator.userScrollEventDidEnd()
         await settleMainQueue()
 
         XCTAssertFalse(goalHarness.followState.value)
@@ -1701,6 +1709,7 @@ final class AppKitChatTimelineControlTests: XCTestCase {
 
     private func makeHarness(
         followsLatest: Bool,
+        useSharedTextCards: Bool = ProcessInfo.processInfo.environment["CORPTIE_TEST_LEGACY_CARDS"] != "1",
         height: CGFloat = 320,
         onToggle: @escaping (String) -> Void = { _ in },
         onAction: @escaping (AppKitChatTimelineRow.Action) -> Void = { _ in },
@@ -1721,6 +1730,10 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         let scrollView = AppKitChatTimelineView.makeScrollView(tableView: tableView)
         let coordinator = AppKitChatTimelineView.Coordinator(
             followsLatest: binding,
+            useSharedTextCards: useSharedTextCards,
+            // Keep the native-control baseline assertions. Shared process rows
+            // are exercised through the real coordinator in ProcessCardMigrationTests.
+            useSharedProcessCards: false,
             onToggleExpansion: onToggle,
             onAction: onAction,
             onNearTop: onNearTop,

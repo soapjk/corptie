@@ -1,4 +1,5 @@
 import Combine
+import CorptieConversation
 import AppKit
 import SwiftUI
 
@@ -35,22 +36,9 @@ enum ConsoleNavigationMode: String, CaseIterable {
     }
 }
 
-enum ConsoleWorkOutlineMetrics {
-    static let childIndent: CGFloat = 24
-    static let groupCornerRadius: CGFloat = 8
-    static let groupHorizontalInset: CGFloat = 6
-    static let disclosureAnimation = Animation.easeInOut(duration: 0.16)
-    static let workingGradientDuration = 2.6
-    static let workingGradientFrameInterval = 1.0 / 24.0
-}
+typealias ConsoleWorkOutlineMetrics = CorptieConversation.ConsoleWorkOutlineMetrics
 
-enum ConsoleWorkFlowingGradientPolicy {
-    static func progress(at date: Date) -> CGFloat {
-        let elapsed = date.timeIntervalSinceReferenceDate
-            .truncatingRemainder(dividingBy: ConsoleWorkOutlineMetrics.workingGradientDuration)
-        return CGFloat(elapsed / ConsoleWorkOutlineMetrics.workingGradientDuration)
-    }
-}
+typealias ConsoleWorkFlowingGradientPolicy = CorptieConversation.ConsoleWorkFlowingGradientPolicy
 
 enum ConsoleWorkActivityPolicy {
     static func processingWorkIDs(
@@ -112,80 +100,7 @@ final class ConsoleOutlineExpansionPreferences: ObservableObject {
     }
 }
 
-/// Shared running-title treatment for Work groups and experimental Task cards.
-struct ConsoleWorkTitle: View {
-    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
-
-    let title: String
-    let isWorking: Bool
-    var isActive = true
-
-    var body: some View {
-        if isWorking {
-            ConsoleFlowingGradientWorkTitle(
-                title: title,
-                animates: !accessibilityReduceMotion && isActive
-            )
-        } else {
-            Text(title)
-        }
-    }
-}
-
-private struct ConsoleFlowingGradientWorkTitle: View {
-    let title: String
-    let animates: Bool
-    @State private var isVisible = false
-
-    @ViewBuilder
-    var body: some View {
-        if animates {
-            TimelineView(.animation(
-                minimumInterval: ConsoleWorkOutlineMetrics.workingGradientFrameInterval,
-                paused: !isVisible
-            )) { context in
-                flowingTitle(progress: ConsoleWorkFlowingGradientPolicy.progress(at: context.date))
-            }
-            .onAppear { isVisible = true }
-            .onDisappear { isVisible = false }
-        } else {
-            Text(title)
-                .foregroundStyle(staticGradient)
-        }
-    }
-
-    private func flowingTitle(progress: CGFloat) -> some View {
-        Text(title)
-            .foregroundStyle(.clear)
-            .overlay {
-                GeometryReader { proxy in
-                    seamlessGradient
-                        .frame(width: proxy.size.width * 2, height: proxy.size.height)
-                        .offset(x: proxy.size.width * (progress - 1))
-                }
-                .mask(Text(title))
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(title)
-    }
-
-    private var seamlessGradient: LinearGradient {
-        LinearGradient(
-            colors: [.cyan, .blue, .purple, .pink, .orange, .cyan,
-                     .blue, .purple, .pink, .orange, .cyan],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-    }
-
-    private var staticGradient: LinearGradient {
-        LinearGradient(
-            colors: [.cyan, .blue, .purple, .pink, .orange],
-            startPoint: .leading,
-            endPoint: .trailing
-        )
-    }
-}
+typealias ConsoleWorkTitle = CorptieConversation.ConsoleWorkTitle
 
 /// Shared by list rows and experimental Task cards; animate only the icon.
 struct ConsoleScheduledWakeIcon: View {
@@ -265,21 +180,7 @@ private struct ConsoleWorkOutlineDisclosureStyle: DisclosureGroupStyle {
     }
 }
 
-private struct ConsoleWorkOutlineGroupCardModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .padding(.horizontal, 6)
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.black.opacity(0.065),
-                in: RoundedRectangle(
-                    cornerRadius: ConsoleWorkOutlineMetrics.groupCornerRadius,
-                    style: .continuous
-                )
-            )
-    }
-}
+private typealias ConsoleWorkOutlineGroupCardModifier = WorkGroupCardSurface
 
 private extension View {
     func consoleWorkOutlineGroupCard() -> some View {
@@ -338,7 +239,6 @@ private struct ConsoleWorkOutlineHeader: View {
     let createTask: () -> Void
 
     @State private var isHovering = false
-    @State private var isChatHovering = false
     @FocusState private var isCreateTaskFocused: Bool
 
     var body: some View {
@@ -364,44 +264,12 @@ private struct ConsoleWorkOutlineHeader: View {
             .accessibilityValue(accessibilityValue)
             .help(isExpanded ? L10n("Collapse Work") : L10n("Expand Work"))
 
-            Button(action: openChat) {
-                Label {
-                    Text(L10n("讨论"))
-                        .font(.system(size: 10, weight: .medium))
-                } icon: {
-                    Image(systemName: "bubble.left.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                }
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(isChatSelected ? Color.accentColor : Color.secondary)
-                    .padding(.horizontal, 7)
-                    .frame(height: 22)
-                    .background {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(
-                                isChatSelected
-                                    ? Color.accentColor.opacity(0.13)
-                                    : Color.secondary.opacity(isChatHovering ? 0.13 : 0.07)
-                            )
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if hasUnreadChat {
-                            Circle()
-                                .fill(Color.red)
-                                .frame(width: 6, height: 6)
-                                .offset(x: 1, y: -1)
-                        }
-                    }
-                    .overlay { ConsoleDiscussionActivityBorder(isRunning: isChatRunning) }
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.leading, 6)
-            .fixedSize()
-            .onHover { isChatHovering = $0 }
-            .accessibilityLabel(L10n("Open Work Chat"))
-            .accessibilityValue(hasUnreadChat ? L10n("Unread Session") : "")
-            .help(L10n("Open Work Chat"))
+            WorkDiscussionButton(isSelected: isChatSelected, isRunning: isChatRunning,
+                hasUnread: hasUnreadChat, title: L10n("讨论"),
+                accessibilityTitle: L10n("Open Work Chat"),
+                accessibilityState: hasUnreadChat ? L10n("Unread Session") : "",
+                action: openChat)
+                .padding(.leading, 6)
 
             Spacer(minLength: 4)
 
@@ -1523,10 +1391,8 @@ struct UnifiedConsoleView: View {
             openTask(task, session: session)
         } label: {
             HStack(spacing: 9) {
-                Circle()
-                    .fill(taskIndicatorColor(sessionActivity, lifecycleState: task.lifecycleState))
-                    .frame(width: 7, height: 7)
-                    .accessibilityLabel(L10nFormat("Session: %@", sessionActivity.label))
+                TaskActivityIndicator(activity: sessionActivity, lifecycleState: task.lifecycleState,
+                    label: L10nFormat("Session: %@", sessionActivity.label))
                 Text(task.title)
                     .font(.system(size: 12, weight: .semibold))
                     .lineLimit(1)
@@ -1722,27 +1588,6 @@ struct UnifiedConsoleView: View {
 
     private func workerSession(for task: CorptieTask) -> TaskSession? {
         ConsoleTaskSelectionPolicy.session(for: task, in: backendClient.sessions)
-    }
-
-    private func taskStatusColor(_ status: String) -> Color {
-        switch status.lowercased() {
-        case "completed", "complete": return .green
-        case "blocked", "failed": return .red
-        case "running", "in_progress", "active": return CorptiePalette.connected
-        default: return .secondary
-        }
-    }
-
-    private func taskIndicatorColor(
-        _ sessionActivity: CorptieTaskBoundSessionActivity,
-        lifecycleState: String
-    ) -> Color {
-        switch sessionActivity {
-        case .noSession, .unknown:
-            taskStatusColor(lifecycleState)
-        default:
-            sessionActivity.color
-        }
     }
 
     private func restoreConsoleSpaceIfNeeded() {
