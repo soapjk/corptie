@@ -313,6 +313,30 @@ test("Session application service owns Provider-neutral lifecycle and stable ide
   ]);
 });
 
+test("derived Session titles reject rename before invoking the Provider", async () => {
+  const calls = [];
+  const service = new SessionApplicationService({
+    registry: {
+      invoke: async () => {
+        calls.push("provider-invoked");
+        return {};
+      }
+    },
+    resolveSessionReference: async () => ({
+      sessionId: "session:worker",
+      providerId: "fake.provider",
+      providerSessionId: "native:worker",
+      metadata: { session: { sessionKind: "worker" } }
+    })
+  });
+
+  await assert.rejects(
+    service.renameSession("session:worker", "IndependentName"),
+    { code: "SESSION_TITLE_DERIVED", statusCode: 409 }
+  );
+  assert.deepEqual(calls, []);
+});
+
 test("Session restart audit records the provider-neutral caller source and stable route", async () => {
   const { service } = fixture();
   const events = [];

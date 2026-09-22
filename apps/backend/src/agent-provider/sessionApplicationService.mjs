@@ -399,6 +399,13 @@ export class SessionApplicationService {
 
   async renameSession(sessionId, title, context = {}) {
     const reference = await this.referenceFor(sessionId);
+    const sessionKind = reference.metadata?.session?.sessionKind ?? null;
+    if (["worker", "workChat"].includes(sessionKind)) {
+      const error = new Error("Task and Work Chat Session names are derived from their owning resource.");
+      error.code = "SESSION_TITLE_DERIVED";
+      error.statusCode = 409;
+      throw error;
+    }
     const normalizedTitle = requiredText(title, "title");
     const providerSession = await this.registry.invoke(
       reference.providerId,

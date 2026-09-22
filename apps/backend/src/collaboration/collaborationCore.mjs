@@ -2139,6 +2139,8 @@ function taskFromRow(row, store = null) {
   const targetWork = store?.getWork(row.target_work_id);
   const sourceTask = row.source_task_id ? store?.getTask(row.source_task_id) : null;
   const targetTask = row.target_task_id ? store?.getTask(row.target_task_id) : null;
+  const initiatorSession = store ? sessionPresentationSnapshot(store, row.initiator_session_id) : null;
+  const recipientSession = store ? sessionPresentationSnapshot(store, row.recipient_session_id) : null;
   return {
     taskId: row.task_id,
     contextId: row.context_id,
@@ -2156,8 +2158,10 @@ function taskFromRow(row, store = null) {
     recipientAgentId: row.recipient_agent_id,
     initiatorSessionId: row.initiator_session_id || null,
     recipientSessionId: row.recipient_session_id || null,
-    initiatorNameAtSend: row.initiator_name_at_send || null,
-    recipientNameAtSend: row.recipient_name_at_send || null,
+    // Compatibility field names; presentation always resolves the current
+    // resource-derived Session name instead of retaining a stale snapshot.
+    initiatorNameAtSend: initiatorSession?.title ?? row.initiator_name_at_send ?? null,
+    recipientNameAtSend: recipientSession?.title ?? row.recipient_name_at_send ?? null,
     routingVersion: row.routing_version == null ? null : Number(row.routing_version),
     routeStatus: row.route_status || "unresolved",
     routingIntent: row.routing_intent || null,
@@ -2289,18 +2293,22 @@ function taskConfirmationFromRow(row, core) {
   const initiator = core.getAgent(row.initiator_agent_id);
   const recipient = core.getAgent(row.recipient_agent_id);
   const recipientRouteUnresolved = Boolean(request.routingIntent || request.sessionAgentId) && !row.recipient_session_id;
+  const initiatorSessionId = row.initiator_session_id || initiator?.sessionId || null;
+  const recipientSessionId = row.recipient_session_id || (recipientRouteUnresolved ? null : recipient?.sessionId) || null;
+  const currentInitiator = sessionPresentationSnapshot(core.store, initiatorSessionId);
+  const currentRecipient = sessionPresentationSnapshot(core.store, recipientSessionId);
   return {
     confirmationId: row.confirmation_id,
     initiatorAgentId: row.initiator_agent_id,
-    initiatorSessionId: row.initiator_session_id || initiator?.sessionId || null,
+    initiatorSessionId,
     initiatorAgentName: presentation.initiatorAgentName || initiator?.name || row.initiator_agent_id,
-    initiatorSessionTitle: presentation.initiatorSession?.title || row.initiator_name_at_send || null,
+    initiatorSessionTitle: currentInitiator?.title ?? presentation.initiatorSession?.title ?? null,
     initiatorSessionKind: presentation.initiatorSession?.sessionKind || null,
     initiatorTaskId: presentation.initiatorSession?.taskId || request.sourceTaskId || null,
     recipientAgentId: row.recipient_agent_id,
-    recipientSessionId: row.recipient_session_id || (recipientRouteUnresolved ? null : recipient?.sessionId) || null,
+    recipientSessionId,
     recipientAgentName: presentation.recipientAgentName || recipient?.name || row.recipient_agent_id,
-    recipientSessionTitle: presentation.recipientSession?.title || row.recipient_name_at_send || null,
+    recipientSessionTitle: currentRecipient?.title ?? presentation.recipientSession?.title ?? null,
     recipientSessionKind: presentation.recipientSession?.sessionKind || null,
     recipientTaskId: presentation.recipientSession?.taskId || request.targetTaskId || null,
     sourceWorkId: presentation.sourceWork?.id || request.sourceWorkId || null,
