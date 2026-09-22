@@ -6,6 +6,23 @@ import { join } from "node:path";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ClientReadAPI } from "../src/application/clientReadAPI.mjs";
 
+test("session activity is an explicit nullable presentation field, never a Provider payload", () => {
+  let activityStatus = "Running command";
+  const api = new ClientReadAPI({ listSessionPage: () => ({ items: [{ id: "s", title: "Session",
+    executionStatus: "running", activityStatus, rawStatus: { secret: "PRIVATE" },
+    updatedAt: "now" }], hasMore: false }) });
+  const read = () => api.list("sessions", new URLSearchParams()).items[0];
+  assert.equal(read().activityStatus, "Running command");
+  assert.equal(Object.hasOwn(read(), "rawStatus"), false);
+  activityStatus = "Waiting for approval";
+  assert.equal(read().activityStatus, "Waiting for approval");
+  for (const invalid of [undefined, null, 42, { secret: "PRIVATE" }]) {
+    activityStatus = invalid;
+    assert.equal(read().activityStatus, null);
+    assert.equal(JSON.stringify(read()).includes("PRIVATE"), false);
+  }
+});
+
 test("real Store inventory is paginated and excludes private implementation fields", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-client-inventory-"));
   const store = new CorptieStore({ dbPath: join(directory, "db.sqlite"), configPath: join(directory, "config.json") });

@@ -28,6 +28,7 @@ public struct ClientSession: Decodable, Sendable, Identifiable, Equatable {
     public let taskId: String?
     public let sessionKind: String?
     public let executionStatus: String
+    public let activityStatus: String?
     public let updatedAt: String
 }
 public struct ClientInventory: Sendable {

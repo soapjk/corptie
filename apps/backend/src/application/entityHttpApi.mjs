@@ -84,7 +84,7 @@ export function handleEntityHttpRequest({
   getTaskStartup,
   getSessionStartupBinding,
   launchAgentSession,
-  launchWorkChatSession,
+  workDiscussionService,
   ensureWorkChatSession,
   createSession,
   backgroundAgentService,
@@ -676,31 +676,16 @@ export function handleEntityHttpRequest({
           return sendJson(response, 200, { sessions: workService.store.listSessionsByWork(id) });
         }
         if (request.method === "POST") {
-          if (typeof launchWorkChatSession !== "function") {
-            throw apiError("INTERNAL", "launchWorkChatSession is not configured.", 500);
+          if (!workDiscussionService) {
+            throw apiError("INTERNAL", "Work discussion service is not configured.", 500);
           }
           const input = await readJson(request);
           rejectSessionAvatarInput(input);
-          const agentId = String(input.agentId ?? "").trim();
-          if (!agentId) throw apiError("INVALID_INPUT", "agentId is required.", 400);
-          const agent = workService.store.getAgent(agentId);
-          if (!agent) throw apiError("AGENT_NOT_FOUND", "Agent not found.", 404);
-          if (!work.contributorAgentIds.includes(agent.agentId)) {
-            throw apiError("AGENT_OUTSIDE_WORK", "只有挂载在当前 Work 下的 Agent 才能创建 Work Chat Session。", 403);
-          }
-          const providerId = requiredProviderId(input);
-          const existingSession = workService.store.getWorkChatSession(id);
-          if (existingSession) {
-            return sendJson(response, 200, { session: existingSession, created: false });
-          }
-          const session = await launchWorkChatSession({
-            agent,
-            work,
-            providerId,
-            title: typeof input.title === "string" && input.title.trim() ? input.title.trim() : undefined,
-            prompt: typeof input.prompt === "string" && input.prompt.trim() ? input.prompt.trim() : undefined
+          const result = await workDiscussionService.open({
+            workId: id, agentId: input.agentId, providerId: input.providerId,
+            title: input.title, prompt: input.prompt
           });
-          return sendJson(response, 201, { session });
+          return sendJson(response, result.created ? 201 : 200, result);
         }
       }
 

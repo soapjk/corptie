@@ -3,6 +3,18 @@ import Testing
 @testable import CorptieMac
 
 struct CorptieTaskCardStatusTests {
+    @Test func executionProjectionWinsOverStaleLegacySessionStatus() {
+        var session = makeCorptieTaskSession(id: "session:current", status: .running)
+        session.executionStatus = "completed"
+        #expect(CorptieTaskBoundSessionActivity.resolve(
+            task: makeCorptieTask(currentSessionId: session.id, executionStatus: "running"),
+            sessions: [session]) == .idle)
+        session.executionStatus = "failed"
+        #expect(CorptieTaskBoundSessionActivity.resolve(
+            task: makeCorptieTask(currentSessionId: session.id, executionStatus: "running"),
+            sessions: [session]) == .failed)
+    }
+
     @Test func reportsNoSessionWithoutACurrentBinding() {
         #expect(CorptieTaskBoundSessionActivity.resolve(
             task: makeCorptieTask(currentSessionId: nil, executionStatus: "idle"),
@@ -107,7 +119,7 @@ struct CorptieTaskCardStatusTests {
         let contents = try String(contentsOf: source, encoding: .utf8)
 
         #expect(contents.contains("CorptieTaskBoundSessionActivity.resolve("))
-        #expect(contents.contains("taskIndicatorColor(sessionActivity, lifecycleState: task.lifecycleState)"))
+        #expect(contents.contains("TaskActivityIndicator(activity: sessionActivity, lifecycleState: task.lifecycleState"))
         #expect(!contents.contains(".fill(taskStatusColor(task.lifecycleState))"))
     }
 }

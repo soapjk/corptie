@@ -1,4 +1,6 @@
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "./contracts.mjs";
+import { SESSION_COMMAND_CATALOG, validateSessionCommand, sessionCommandAvailability,
+  sessionCommandPermissions, sessionCommandError } from "../commands/sessionCommandCatalog.mjs";
 
 export class SessionNotFoundError extends Error {
   constructor(sessionId) {
@@ -410,12 +412,39 @@ export class SessionApplicationService {
       : providerSession;
   }
 
+  async listConversationCommands(sessionId) {
+    const reference = await this.referenceFor(sessionId);
+    assertTaskNotArchived(reference);
+    const provider = this.registry.get(reference.providerId).descriptor;
+    return SESSION_COMMAND_CATALOG.map(descriptor => ({
+      name: descriptor.name, usage: descriptor.usage, summary: descriptor.summary,
+      available: sessionCommandAvailability(descriptor, provider),
+      reason: sessionCommandAvailability(descriptor, provider) ? null : "CAPABILITY_UNSUPPORTED",
+      requiredPermissions: sessionCommandPermissions({ name: descriptor.name, arguments: "" }),
+      requiresConfirmation: descriptor.requiresConfirmation === true
+    }));
+  }
+
+  async validateConversationCommand(sessionId, command) {
+    const descriptor = validateSessionCommand(command);
+    const reference = await this.referenceFor(sessionId);
+    assertTaskNotArchived(reference);
+    if (!sessionCommandAvailability(descriptor, this.registry.get(reference.providerId).descriptor, command)) {
+      throw sessionCommandError("CAPABILITY_UNSUPPORTED", "当前会话不支持此命令。", 409);
+    }
+    return reference;
+  }
+
   async executeCommand(sessionId, command, context = {}) {
     const reference = await this.referenceFor(sessionId);
     assertTaskNotArchived(reference);
-    this.registry.requireCapability(reference.providerId, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND);
+    validateSessionCommand(command);
     await this.assertMessageDispatchAllowed?.(reference, context);
     const args = command.arguments;
+    if (command.name === "help") {
+      const commands = await this.listConversationCommands(sessionId);
+      return { text: commands.map(item => `${item.usage}：${item.summary}${item.available ? "" : "（当前会话不支持）"}`).join("\n") };
+    }
     if (command.name === "model") {
       if (!args) {
         const catalog = await this.listModelsForSession(sessionId);
@@ -435,6 +464,7 @@ export class SessionApplicationService {
       const session = reference.metadata?.session;
       return { text: `Session：${reference.logicalSessionId ?? reference.sessionId}\n模型：${session?.external?.currentModel ?? "默认"}\n状态：${session?.status ?? "未知"}` };
     }
+    this.registry.requireCapability(reference.providerId, AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND);
     // Read/stop/pause operations must not materialize tools or replace a binding
     // underneath a running turn. Only commands that can start work need preparation.
     if (["compact", "review"].includes(command.name)
