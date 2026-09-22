@@ -204,7 +204,7 @@ test("a staged request creates no task until deterministic user confirmation", a
   });
 });
 
-test("Session names resolve to stable Session ids and collaboration snapshots survive rename", async () => {
+test("Session names resolve to stable IDs and renames replace old names", async () => {
   await withFixture(async ({ core, store, directory }) => {
     for (const [legacyId, logicalId, name, agentId] of [
       ["codex:sender-thread", "logical:sender", "sender_agent", "sender-agent"],
@@ -252,10 +252,10 @@ test("Session names resolve to stable Session ids and collaboration snapshots su
     const task = core.getTask(resolved.taskId);
     assert.equal(task.initiatorSessionId, "logical:sender");
     assert.equal(task.recipientSessionId, "logical:recipient");
-    assert.equal(task.recipientNameAtSend, "recipient_agent");
+    assert.equal(task.recipientNameAtSend, "recipient_agent_v2");
 
-    assert.equal(core.resolveAgentBySessionName("recipient_agent").sessionId, "logical:recipient");
-    assert.equal(core.getTask(resolved.taskId).recipientNameAtSend, "recipient_agent");
+    assert.equal(core.resolveAgentBySessionName("recipient_agent"), null);
+    assert.equal(core.getTask(resolved.taskId).recipientNameAtSend, "recipient_agent_v2");
   });
 });
 
@@ -284,7 +284,7 @@ test("confirmation snapshots keep registry Agent identity separate from exact Se
     }
 
     assert.equal(core.getAgentForSession("logical:source").name, "Stable MarketCow Agent");
-    assert.equal(core.getAgentForSession("logical:source").sessionName, "修复 PolyMarket snapshot/bootstrap");
+    assert.equal(core.getAgentForSession("logical:source").sessionName, "Snapshot repair");
     const confirmation = core.proposeTask({
       initiatorAgentId: sourceAgent.agentId,
       recipientAgentId: sourceAgent.agentId,
@@ -300,8 +300,8 @@ test("confirmation snapshots keep registry Agent identity separate from exact Se
 
     assert.equal(confirmation.initiatorAgentName, "Stable MarketCow Agent");
     assert.equal(confirmation.recipientAgentName, "Stable MarketCow Agent");
-    assert.equal(confirmation.initiatorSessionTitle, "修复 PolyMarket snapshot/bootstrap");
-    assert.equal(confirmation.recipientSessionTitle, "金融工具开发专家_Session");
+    assert.equal(confirmation.initiatorSessionTitle, "Snapshot repair");
+    assert.equal(confirmation.recipientSessionTitle, "One-hour shadow");
     assert.equal(confirmation.sourceWorkName, "MarketCow");
     assert.equal(confirmation.targetWorkName, "PolyMarket 实时套利");
     assert.equal(confirmation.initiatorTaskId, sourceTask.id);

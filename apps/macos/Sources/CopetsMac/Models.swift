@@ -143,6 +143,12 @@ struct TaskSession: Identifiable, Codable, Equatable, Sendable {
         resolvedSessionKind == .assistantChat
     }
 
+    /// Worker and Work Chat names belong to their Task and Work resources.
+    /// Only standalone conversations own a directly editable Session title.
+    var allowsManualRename: Bool {
+        resolvedSessionKind == .assistantChat || resolvedSessionKind == .legacy
+    }
+
     var isConnecting: Bool {
         isConnectingStatus(external?.connectionStatus, provider: external?.provider)
     }
