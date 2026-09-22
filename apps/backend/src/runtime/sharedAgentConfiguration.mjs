@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readlink, symlink } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readFile, readlink, symlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const EXCLUDE_HEADER = "# Corptie shared Agent configuration";
 
 export const DEFAULT_SHARED_AGENT_CONFIGURATION_PATHS = Object.freeze([
   ".corptie",
@@ -57,7 +58,31 @@ export async function linkSharedAgentConfiguration(options) {
     await symlink(source, target);
     result.linked.push(relativePath);
   }
+  if (options.commonGitDir) {
+    await appendSharedConfigurationExcludes(
+      options.commonGitDir,
+      [...result.linked, ...result.alreadyLinked]
+    );
+  }
   return result;
+}
+
+async function appendSharedConfigurationExcludes(commonGitDir, paths) {
+  const excludePath = join(commonGitDir, "info", "exclude");
+  await mkdir(dirname(excludePath), { recursive: true });
+  let current = "";
+  try {
+    current = await readFile(excludePath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const existing = new Set(current.split(/\r?\n/u).map((line) => line.trim()));
+  const additions = [...new Set(paths.map((path) => `/${path}`))]
+    .filter((pattern) => !existing.has(pattern));
+  if (additions.length === 0) return;
+  const separator = current && !current.endsWith("\n") ? "\n" : "";
+  const header = existing.has(EXCLUDE_HEADER) ? "" : `${EXCLUDE_HEADER}\n`;
+  await appendFile(excludePath, `${separator}${header}${additions.join("\n")}\n`, "utf8");
 }
 
 async function isTracked(run, mainPath, relativePath) {
