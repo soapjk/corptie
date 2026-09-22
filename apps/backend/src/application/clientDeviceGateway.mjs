@@ -1,5 +1,6 @@
 import https from "node:https";
 import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
 import { requireDevicePermission } from "./clientSessionAPI.mjs";
 import { ClientEventStream } from "./clientEventStream.mjs";
@@ -24,6 +25,23 @@ async function body(request, maxBytes = 4096) {
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
     return value;
   } catch { throw deviceError("INVALID_JSON", 400); }
+}
+
+/** Streams a host-verified managed file; the path was resolved by the read API and is never echoed back. */
+function streamFile(response, { path, contentType, size, etag }) {
+  return new Promise(resolve => {
+    const stream = createReadStream(path);
+    stream.once("error", () => {
+      if (!response.headersSent) reply(response, 404, { code: "AVATAR_NOT_FOUND" }); else response.destroy();
+      resolve();
+    });
+    stream.once("open", () => {
+      response.writeHead(200, { "content-type": contentType, "content-length": size, etag,
+        "cache-control": "private, max-age=0, must-revalidate", "x-content-type-options": "nosniff" });
+      stream.pipe(response);
+    });
+    response.once("close", () => { stream.destroy(); resolve(); });
+  });
 }
 
 /** Separate TLS listener with a closed route list; never forwards to the legacy router. */
@@ -64,11 +82,14 @@ export class ClientDeviceGateway {
       const path = url.pathname;
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
       const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
+      const taskEntity = /^\/client\/v1\/tasks\/([^/]+)\/(management|deletion|update|archive|restart|delete)$/.exec(path);
+      const workEntity = /^\/client\/v1\/works\/([^/]+)\/(management|update|delete)$/.exec(path);
+      const workAvatar = /^\/client\/v1\/works\/([^/]+)\/avatar$/.exec(path);
       const control = /^\/client\/v1\/control\/(automations|agents|skills|repositories)$/.exec(path);
       const repository = /^\/client\/v1\/control\/repositories\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !inventory && !control && !(["messages", "tasks"].includes(conversation?.[2]) && request.method === "GET")) throw deviceError("REQUEST_NOT_ALLOWED", 403);
+      if (url.search && !inventory && !control && !(["messages", "tasks", "images"].includes(conversation?.[2]) && request.method === "GET")) throw deviceError("REQUEST_NOT_ALLOWED", 403);
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
         return reply(response, 200, this.authority.claim(await body(request)));
       }
@@ -92,6 +113,29 @@ export class ClientDeviceGateway {
         const input = await body(request);
         return reply(response, 202, await this.sessionAPI.openDiscussion(this.authority.authenticate(bearer(request)), workId,
           input, () => this.authority.authenticate(bearer(request))));
+      }
+      if ((taskEntity || workEntity) && this.sessionAPI) {
+        const permission = taskEntity ? "tasks.manage" : "works.manage";
+        requireDevicePermission(identity, permission);
+        let entityId;
+        try { entityId = decodeURIComponent((taskEntity ?? workEntity)[1]); } catch { throw deviceError(taskEntity ? "INVALID_TASK_ID" : "INVALID_WORK_ID", 400); }
+        const route = (taskEntity ?? workEntity)[2];
+        const isRead = route === "management" || route === "deletion";
+        if (request.method === "GET" && isRead) {
+          const result = route === "deletion" ? await this.sessionAPI.taskDeletionPlan(identity, entityId)
+            : taskEntity ? this.sessionAPI.taskManagement(identity, entityId) : this.sessionAPI.workManagement(identity, entityId);
+          requireDevicePermission(this.authority.authenticate(bearer(request)), permission);
+          return reply(response, 200, result);
+        }
+        if (request.method === "POST" && !isRead) {
+          const input = await body(request, 64 * 1024);
+          const current = this.authority.authenticate(bearer(request));
+          const revalidate = () => this.authority.authenticate(bearer(request));
+          return reply(response, 202, await (taskEntity
+            ? this.sessionAPI.taskCommand(current, entityId, route, input, revalidate)
+            : this.sessionAPI.workCommand(current, entityId, route, input, revalidate)));
+        }
+        throw deviceError("ROUTE_NOT_AVAILABLE", 404);
       }
       if (request.method === "GET" && (control || repository) && this.controlAPI) {
         requireDevicePermission(identity, "control.read");
@@ -145,9 +189,27 @@ export class ClientDeviceGateway {
           requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
           return reply(response, 200, result);
         }
+        if (request.method === "GET" && conversation[2] === "images") {
+          const image = await this.sessionAPI.image(identity, sessionId, url.searchParams);
+          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
+          response.writeHead(200, { "content-type": image.contentType, "content-length": image.byteLength,
+            "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
+          return response.end(image.data);
+        }
+        if (conversation[2] === "images") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+        if (request.method === "POST" && conversation[2] === "read-receipt") {
+          const input = await body(request, 1024);
+          return reply(response, 200, this.sessionAPI.readReceipt(this.authority.authenticate(bearer(request)), sessionId, input));
+        }
         if (request.method === "GET" && conversation[2] === "capabilities") {
           return reply(response, 200, this.sessionAPI.capabilities(identity, sessionId));
         }
+        if (request.method === "GET" && conversation[2] === "usage") {
+          const result = await this.sessionAPI.usage(identity, sessionId);
+          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
+          return reply(response, 200, result);
+        }
+        if (conversation[2] === "usage") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
         if (request.method === "POST" && ["messages", "stop"].includes(conversation[2])) {
           requireDevicePermission(identity, conversation[2] === "messages" ? "messages.write" : "sessions.stop");
           const input = await body(request, conversation[2] === "messages" ? 29 * 1024 * 1024 : 4096);
@@ -164,12 +226,23 @@ export class ClientDeviceGateway {
         requireDevicePermission(identity, "inventory.read");
         return reply(response, 200, this.readAPI.list(inventory[1], url.searchParams));
       }
+      if (request.method === "GET" && workAvatar && this.readAPI?.workAvatar) {
+        requireDevicePermission(identity, "inventory.read");
+        let workId;
+        try { workId = decodeURIComponent(workAvatar[1]); } catch { throw deviceError("INVALID_WORK_ID", 400); }
+        const avatar = await this.readAPI.workAvatar(workId);
+        requireDevicePermission(this.authority.authenticate(bearer(request)), "inventory.read");
+        if (request.headers["if-none-match"] === avatar.etag) { response.writeHead(304, { etag: avatar.etag }); return response.end(); }
+        return streamFile(response, avatar);
+      }
       if (request.method === "GET" && path === "/client/v1/me") return reply(response, 200, identity);
       // Pairing readiness is deliberately distinct from business API readiness.
       if (request.method === "GET" && path === "/client/v1/capabilities") {
         return reply(response, 200, { schemaVersion: 1, service: "corptie", deviceAuthentication: true,
-          businessAPI: Boolean(this.readAPI), readOnly: !identity.permissions.some(p => ["messages.write", "sessions.stop", "sessions.commands", "sessions.clear", "tasks.create", "works.discuss"].includes(p)),
+          businessAPI: Boolean(this.readAPI), readOnly: !identity.permissions.some(p => ["messages.write", "sessions.stop", "sessions.commands", "sessions.clear", "tasks.create", "works.discuss", "tasks.manage", "works.manage"].includes(p)),
           workDiscussion: Boolean(this.sessionAPI?.workDiscussion) && identity.permissions.includes("works.discuss"),
+          taskManagement: Boolean(this.sessionAPI?.entityCommands) && identity.permissions.includes("tasks.manage"),
+          workManagement: Boolean(this.sessionAPI?.entityCommands) && identity.permissions.includes("works.manage"),
           inventoryLists: Boolean(this.readAPI) && identity.permissions.includes("inventory.read"),
           messages: Boolean(this.sessionAPI) && identity.permissions.includes("messages.read"),
           controlRead: Boolean(this.controlAPI) && identity.permissions.includes("control.read"), controlWrite: false,

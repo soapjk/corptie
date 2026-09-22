@@ -27,6 +27,6 @@ struct PadTimelineProjectionTests {
         #expect(workspace.processPresentations.isEmpty)
         #expect(workspace.processSteps.isEmpty)
         workspace.selection = "session:a"
-        #expect(workspace.displayEntries.map(\.id) == ["message:pending"])
+        #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
     }
 }

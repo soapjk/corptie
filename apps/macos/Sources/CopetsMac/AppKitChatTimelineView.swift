@@ -15,29 +15,10 @@ enum NativeMarkdownAttributedText {
     }
 }
 
+/// Full-width Markdown detection is shared with the iPad timeline (`MessageBubbleWidthPolicy`).
 enum NativeMarkdownCompatibility {
-    private static let image = try! NSRegularExpression(pattern: #"!\[[^\]]*\]\([^\)]*\)"#)
-    private static let taskList = try! NSRegularExpression(
-        pattern: #"(?m)^\s*[-+*]\s+\[[ xX]\]\s+"#
-    )
-    private static let tableDelimiter = try! NSRegularExpression(
-        pattern: #"(?m)^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$"#
-    )
-    private static let fencedCode = try! NSRegularExpression(
-        pattern: #"(?m)^\s*(?:```|~~~)"#
-    )
-    private static let htmlBlock = try! NSRegularExpression(
-        pattern: #"(?m)^\s*</?(?:details|summary|table|div|picture|video|audio|iframe)\b"#,
-        options: [.caseInsensitive]
-    )
-
     static func requiresFullWidthLayout(_ markdown: String) -> Bool {
-        let range = NSRange(markdown.startIndex..., in: markdown)
-        return image.firstMatch(in: markdown, range: range) != nil
-            || taskList.firstMatch(in: markdown, range: range) != nil
-            || tableDelimiter.firstMatch(in: markdown, range: range) != nil
-            || fencedCode.firstMatch(in: markdown, range: range) != nil
-            || htmlBlock.firstMatch(in: markdown, range: range) != nil
+        MessageBubbleWidthPolicy.requiresFullWidthLayout(markdown)
     }
 }
 
@@ -434,13 +415,12 @@ enum AppKitChatRowReusePolicy {
 
 /// Deterministic width contract for native AppKit timeline rows.
 @MainActor
+/// AppKit measurement on top of the shared `MessageBubbleWidthPolicy` clamp.
 enum ChatBubbleWidthPolicy {
-    static let maximumWidth: CGFloat = 480
-    // The previous 88pt floor existed to fit the removed title/metadata row.
-    // A plain message now only needs enough room for its body and card padding.
-    static let minimumWidth: CGFloat = 40
-    static let horizontalPadding: CGFloat = 20
-    static let collapsedProcessWidth: CGFloat = 180
+    static let maximumWidth = MessageBubbleWidthPolicy.maximumWidth
+    static let minimumWidth = MessageBubbleWidthPolicy.minimumWidth
+    static let horizontalPadding = MessageBubbleWidthPolicy.horizontalPadding
+    static let collapsedProcessWidth = MessageBubbleWidthPolicy.collapsedProcessWidth
 
     static func preferredWidth(
         text: String,
@@ -450,13 +430,9 @@ enum ChatBubbleWidthPolicy {
         processWidth: CGFloat = 0,
         availableWidth: CGFloat = maximumWidth
     ) -> CGFloat {
-        let available = max(minimumWidth, min(maximumWidth, availableWidth))
         let bodyWidth: CGFloat
-        if NativeMarkdownCompatibility.requiresFullWidthLayout(text) {
-            // Rich blocks (images, tables, fenced code, HTML) need the full
-            // content lane; their natural width is not represented by text
-            // glyph bounds alone.
-            bodyWidth = maximumWidth - horizontalPadding
+        if MessageBubbleWidthPolicy.requiresFullWidthLayout(text) {
+            bodyWidth = MessageBubbleWidthPolicy.fullWidthBody
         } else {
             let attributed = NativeMarkdownTextCache.shared.value(text: text, style: style)
             bodyWidth = ceil(attributed.boundingRect(
@@ -471,17 +447,15 @@ enum ChatBubbleWidthPolicy {
             .font: NSFont.systemFont(ofSize: 10, weight: .semibold)
         ]).width)
         let headerWidth = titleWidth + metadataWidth + 12
-        return min(
-            available,
-            max(minimumWidth, max(bodyWidth, headerWidth, processWidth) + horizontalPadding)
-        )
+        return MessageBubbleWidthPolicy.preferredWidth(bodyWidth: bodyWidth, headerWidth: headerWidth,
+            processWidth: processWidth, availableWidth: availableWidth)
     }
 
     static func cardWidth(for row: AppKitChatTimelineRow, availableWidth: CGFloat) -> CGFloat {
         if row.isWorkspaceCard {
             return WorkspaceMessageCardLayout.cardWidth(in: availableWidth)
         }
-        let fullAvailableWidth = max(minimumWidth, availableWidth - 4)
+        let fullAvailableWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
         if row.nativeStyle == .process {
             guard !row.isExpanded else { return fullAvailableWidth }
             let summaryWidth = ceil((row.processSummary as NSString).size(withAttributes: [
@@ -500,7 +474,8 @@ enum ChatBubbleWidthPolicy {
             processWidth: row.processCount == nil ? 0 : collapsedProcessWidth,
             availableWidth: fullAvailableWidth
         )
-        return row.images.isEmpty ? preferred : min(fullAvailableWidth, max(220, preferred))
+        return row.images.isEmpty ? preferred
+            : min(fullAvailableWidth, max(MessageBubbleWidthPolicy.attachmentMinimumWidth, preferred))
     }
 }
 

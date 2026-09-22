@@ -1,4 +1,5 @@
 import XCTest
+import CorptieConversation
 @testable import CorptieMac
 
 @MainActor
@@ -55,6 +56,22 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         )
 
         XCTAssertEqual(width, 312)
+    }
+
+    /// The AppKit wrapper only measures; the clamp the iPad applies is the shared one.
+    func testSharedPolicyMatchesDesktopClampAndAttachmentFloor() {
+        XCTAssertEqual(ChatBubbleWidthPolicy.maximumWidth, MessageBubbleWidthPolicy.maximumWidth)
+        XCTAssertEqual(ChatBubbleWidthPolicy.minimumWidth, MessageBubbleWidthPolicy.minimumWidth)
+        XCTAssertEqual(ChatBubbleWidthPolicy.horizontalPadding, MessageBubbleWidthPolicy.horizontalPadding)
+        XCTAssertEqual(MessageBubbleWidthPolicy.preferredWidth(bodyWidth: 12), MessageBubbleWidthPolicy.minimumWidth)
+        XCTAssertEqual(MessageBubbleWidthPolicy.preferredWidth(bodyWidth: 100), 120)
+        XCTAssertEqual(MessageBubbleWidthPolicy.preferredWidth(bodyWidth: 900), MessageBubbleWidthPolicy.maximumWidth)
+        XCTAssertEqual(MessageBubbleWidthPolicy.preferredWidth(bodyWidth: 900, availableWidth: 312), 312)
+        XCTAssertEqual(MessageBubbleWidthPolicy.cardWidth(bodyWidth: 20, hasAttachments: false, laneWidth: 600), 40)
+        XCTAssertEqual(MessageBubbleWidthPolicy.cardWidth(bodyWidth: 20, hasAttachments: true, laneWidth: 600), 220)
+        XCTAssertEqual(MessageBubbleWidthPolicy.cardWidth(bodyWidth: 20, hasAttachments: true, laneWidth: 200), 196)
+        XCTAssertTrue(MessageBubbleWidthPolicy.requiresFullWidthLayout("| A | B |\n|---|---|"))
+        XCTAssertFalse(MessageBubbleWidthPolicy.requiresFullWidthLayout("plain **bold** text"))
     }
 
     private func preferredWidth(

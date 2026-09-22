@@ -47,16 +47,26 @@ final class PadWorkspace {
     var sessions: [ClientSession] = []
     var tasksByWork: [String: [ClientTask]] = [:]
     var discussionsByWork: [String: [ClientSession]] = [:]
+    /// Sessions outside any Work (macOS "Chat" group), in inventory order.
+    private(set) var independentSessions: [ClientSession] = []
     var sessionsByID: [String: ClientSession] = [:]
     private(set) var processingWorkIDs: Set<String> = []
     private(set) var executionByTaskID: [String: String] = [:]
     private(set) var activityByTaskID: [String: TaskSessionActivity] = [:]
     private(set) var sessionIDByTaskID: [String: String] = [:]
+    /// Unread projection (macOS `WorkRailUnreadSummary`): Sessions whose agent output
+    /// the user has not opened, the Works they belong to, and independent chats.
+    private(set) var unreadSessionIDs: Set<String> = []
+    private(set) var unreadWorkIDs: Set<String> = []
+    private(set) var hasUnreadIndependentSessions = false
+    /// Sequences already submitted as read receipts; hides the dot until the host echoes the cursor.
+    @ObservationIgnored private var submittedReadSequences: [String: Int] = [:]
+    @ObservationIgnored private var readReceiptScope = ""
     var workCursor: String?
     var taskCursor: String?
     var sessionCursor: String?
     var selection: String? {
-        didSet { if oldValue != selection { clearSelectionState() } }
+        didSet { if oldValue != selection { selectSession(from: oldValue, to: selection) } }
     }
     var messages: [ClientMessage] = [] {
         didSet { if oldValue != messages { refreshDisplayEntries() } }
@@ -121,11 +131,85 @@ final class PadWorkspace {
     }
     var before: String?
     var capabilities: ClientSessionCapabilities?
+    /// Usage of the selected Session; re-read once per timeline change, never per frame.
+    var usage: ClientSessionUsage?
+    @ObservationIgnored private var usageRevision: Int?
     var composerConfiguration: ClientComposerConfiguration?
     var commandCatalog: ClientConversationCommandCatalog?
     var configuringComposer = false
     var composerGeneration = 0
     var importingImagesForSession: String?
+    private(set) var isLoadingDetail = false
+    private(set) var isLoadingEarlier = false
+    var historyRestorationAnchor: String?
+
+    struct ResidentTimelineState {
+        var messages: [ClientMessage]
+        var before: String?
+        var lastTimelineRevision: Int?
+        var capabilities: ClientSessionCapabilities?
+        var usage: ClientSessionUsage?
+        var composerConfiguration: ClientComposerConfiguration?
+    }
+
+    @ObservationIgnored private var residentStates: [String: ResidentTimelineState] = [:]
+    @ObservationIgnored private var residentRecency: [String] = []
+    @ObservationIgnored private let residentCapacity = 48
+
+    func saveResidentState(for sessionID: String) {
+        residentStates[sessionID] = ResidentTimelineState(
+            messages: messages,
+            before: before,
+            lastTimelineRevision: lastTimelineRevision,
+            capabilities: capabilities,
+            usage: usage,
+            composerConfiguration: composerConfiguration
+        )
+        residentRecency.removeAll { $0 == sessionID }
+        residentRecency.append(sessionID)
+        trimResidentStatesIfNeeded()
+    }
+
+    private func trimResidentStatesIfNeeded() {
+        while residentRecency.count > residentCapacity {
+            let evicted = residentRecency.removeFirst()
+            residentStates.removeValue(forKey: evicted)
+        }
+    }
+
+    func selectSession(from oldID: String?, to newID: String?) {
+        if let oldID {
+            saveResidentState(for: oldID)
+        }
+        commandConfirmation = nil
+        timelineGeneration += 1
+        composerGeneration += 1
+        configuringComposer = false
+        status = ""
+        conversationNotice = ""
+        historyRestorationAnchor = nil
+        isLoadingEarlier = false
+
+        if let newID, let cached = residentStates[newID] {
+            messages = cached.messages
+            before = cached.before
+            lastTimelineRevision = cached.lastTimelineRevision
+            capabilities = cached.capabilities
+            usage = cached.usage
+            composerConfiguration = cached.composerConfiguration
+            isLoadingDetail = false
+            refreshDisplayEntries()
+        } else {
+            messages = []
+            before = nil
+            lastTimelineRevision = nil
+            capabilities = nil
+            usage = nil
+            composerConfiguration = nil
+            isLoadingDetail = (newID != nil)
+            refreshDisplayEntries()
+        }
+    }
     var drafts: [String: String] = [:] {
         didSet {
             for id in Set(oldValue.keys).union(drafts.keys) where oldValue[id] != drafts[id] {
@@ -195,9 +279,12 @@ final class PadWorkspace {
     }
 
     func rebuildGroups() {
-        tasksByWork = Dictionary(grouping: tasks, by: \.workId)
+        // The desktop outline hides archived Tasks (`archived != true`); keep the index on the same filter.
+        tasksByWork = Dictionary(grouping: tasks.filter { !$0.archived }, by: \.workId)
         discussionsByWork = Dictionary(grouping: sessions.filter { $0.sessionKind == "workChat" && $0.workId != nil }, by: { $0.workId! })
         sessionsByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let independent = sessions.filter { $0.workId == nil }
+        if independentSessions != independent { independentSessions = independent }
         var execution: [String: String] = [:]
         var activity: [String: TaskSessionActivity] = [:]
         var resolvedSessionIDs: [String: String] = [:]
@@ -229,6 +316,55 @@ final class PadWorkspace {
         if activityByTaskID != activity { activityByTaskID = activity }
         if sessionIDByTaskID != resolvedSessionIDs { sessionIDByTaskID = resolvedSessionIDs }
         if processingWorkIDs != processing { processingWorkIDs = processing }
+        rebuildUnread()
+    }
+
+    private func rebuildUnread() {
+        var unreadSessions: Set<String> = []
+        var unreadWorks: Set<String> = []
+        var independent = false
+        for session in sessions where isUnread(session) {
+            unreadSessions.insert(session.id)
+            if let workID = session.workId { unreadWorks.insert(workID) } else { independent = true }
+        }
+        if unreadSessionIDs != unreadSessions { unreadSessionIDs = unreadSessions }
+        if unreadWorkIDs != unreadWorks { unreadWorkIDs = unreadWorks }
+        if hasUnreadIndependentSessions != independent { hasUnreadIndependentSessions = independent }
+    }
+
+    /// Desktop rule plus the locally submitted receipt, so the dot clears on tap
+    /// instead of waiting for the next inventory round-trip.
+    func isUnread(_ session: ClientSession) -> Bool {
+        let acknowledged = max(session.lastReadMessageSequence, submittedReadSequences[session.id] ?? 0)
+        return SessionReadAttention.needsUserAttention(executionStatus: session.executionStatus,
+            lastAgentMessageSequence: session.lastAgentMessageSequence, lastReadMessageSequence: acknowledged)
+    }
+
+    /// Mirrors macOS `markOpenedSessionRead`: submit once per new agent sequence while the
+    /// conversation is open in an active scene; roll back the local mark on failure.
+    func acknowledgeOpenedSession(_ connection: PadConnection, isActive: Bool) {
+        let scope = "\(connection.serverID)|\(connection.address)"
+        if scope != readReceiptScope {
+            readReceiptScope = scope
+            submittedReadSequences = [:]
+        }
+        guard isActive, let id = selection, let session = sessionsByID[id],
+              let sequence = SessionReadAttention.sequenceForOpenedSession(
+                  lastAgentMessageSequence: session.lastAgentMessageSequence,
+                  lastReadMessageSequence: session.lastReadMessageSequence,
+                  alreadySubmittedSequence: submittedReadSequences[id]) else { return }
+        submittedReadSequences[id] = sequence
+        rebuildUnread()
+        Task { [weak self] in
+            do {
+                let api = ClientSessionAPI(transport: try await connection.transport())
+                _ = try await api.readReceipt(sessionId: id, throughSequence: sequence)
+            } catch {
+                guard let self, self.submittedReadSequences[id] == sequence, self.readReceiptScope == scope else { return }
+                self.submittedReadSequences[id] = nil
+                self.rebuildUnread()
+            }
+        }
     }
 
     func sessionIsKnownUnavailable(_ id: String) -> Bool {
@@ -241,14 +377,28 @@ final class PadWorkspace {
         return old.map { replacements[$0.id] ?? $0 } + new.filter { !existing.contains($0.id) }
     }
 
+    func loadEarlierMessagesIfNeeded(_ connection: PadConnection) async {
+        guard selection != nil, before != nil, !isLoadingEarlier, !connection.busy else { return }
+        isLoadingEarlier = true
+        defer { isLoadingEarlier = false }
+        await load(connection, older: true)
+    }
+
     func load(_ connection: PadConnection, older: Bool = false) async {
         guard let id = selection else { return }
         conversationNotice = ""
-        timelineGeneration += 1
+        if !older {
+            timelineGeneration += 1
+        }
         let generation = timelineGeneration
         do {
             let api = ClientSessionAPI(transport: try await connection.transport())
-            let caps = try await api.capabilities(sessionId: id)
+            let caps: ClientSessionCapabilities
+            if let existing = capabilities, older {
+                caps = existing
+            } else {
+                caps = try await api.capabilities(sessionId: id)
+            }
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             capabilities = caps
             guard caps.readMessages else {
@@ -258,17 +408,22 @@ final class PadWorkspace {
             let page = try await api.messages(sessionId: caps.sessionId, before: older ? before : nil)
             guard !Task.isCancelled, selection == id, generation == timelineGeneration else { return }
             if older {
+                let anchorID = messages.first?.id
                 messages = Self.merge(page.items, messages)
                 before = page.nextBefore
+                historyRestorationAnchor = anchorID
             } else {
                 applyLatestWindow(page.items, cursor: page.nextBefore, revision: page.revision)
+                isLoadingDetail = false
             }
+            saveResidentState(for: id)
             if !older, caps.composer == true, composerConfiguration == nil {
                 await configureComposer(connection)
             }
             if !older, caps.readMessages, commandCatalog == nil {
                 await loadCommandCatalog(connection)
             }
+            if !older { await loadUsage(api, sessionID: id, routedID: caps.sessionId, generation: generation) }
         } catch is CancellationError {
             return
         } catch {
@@ -278,6 +433,10 @@ final class PadWorkspace {
     }
 
     func clearSelectionState() {
+        if let id = selection {
+            residentStates.removeValue(forKey: id)
+            residentRecency.removeAll { $0 == id }
+        }
         commandConfirmation = nil
         timelineGeneration += 1
         messages = []
@@ -285,12 +444,36 @@ final class PadWorkspace {
         lastTimelineRevision = nil
         before = nil
         capabilities = nil
+        usage = nil
+        usageRevision = nil
         composerConfiguration = nil
         commandCatalog = nil
         composerGeneration += 1
         configuringComposer = false
         status = ""
         conversationNotice = ""
+        historyRestorationAnchor = nil
+        isLoadingEarlier = false
+        isLoadingDetail = false
+    }
+
+    /// One usage read per applied timeline window (desktop refreshes after each
+    /// live usage burst). Hosts without a usage reader answer 409; that clears it.
+    func loadUsage(_ api: ClientSessionAPI, sessionID: String, routedID: String, generation: Int) async {
+        guard usageRevision != messageRevision else { return }
+        let revision = messageRevision
+        do {
+            let snapshot = try await api.usage(sessionId: routedID)
+            guard !Task.isCancelled, selection == sessionID, generation == timelineGeneration else { return }
+            usageRevision = revision
+            if usage != snapshot { usage = snapshot }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard selection == sessionID, generation == timelineGeneration else { return }
+            usageRevision = revision
+            if usage != nil { usage = nil }
+        }
     }
 
     func loadCommandCatalog(_ connection: PadConnection) async {
