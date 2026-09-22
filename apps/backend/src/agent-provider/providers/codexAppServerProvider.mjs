@@ -24,6 +24,7 @@ export function createCodexAppServerProvider(operations, options = {}) {
     runtime: { lifecycle: "managed" },
     metadata: {
       ...(options.metadata ?? {}),
+      conversationCommands: ["goal", "compact", "review", "ps", "stop", "clean"],
       backgroundExecutionPolicies: ["no-tools"],
       toolSchemaCapabilities: CODEX_TOOL_SCHEMA_CAPABILITIES,
       sessionRecovery: {

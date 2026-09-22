@@ -5,7 +5,8 @@ import { join } from "node:path";
 const token = () => randomBytes(32).toString("base64url");
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const validToken = (value) => typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
-export const CLIENT_DEVICE_PERMISSIONS = ["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"];
+export const DEFAULT_CLIENT_DEVICE_PERMISSIONS = Object.freeze(["inventory.read", "control.read", "messages.read", "messages.write", "sessions.stop"]);
+export const CLIENT_DEVICE_PERMISSIONS = Object.freeze([...DEFAULT_CLIENT_DEVICE_PERMISSIONS, "sessions.commands", "sessions.clear", "tasks.create", "works.discuss"]);
 export const deviceError = (code, status = 401) => Object.assign(new Error(code), { code, status });
 
 /** Device credentials authorize client access, never impersonate a Session or Agent. */
@@ -113,7 +114,7 @@ export class ClientDeviceAuthority {
       const result = await this.change(state => {
         if (state.devices.length >= 100) throw deviceError("DEVICE_LIMIT", 409);
         const device = { id: randomUUID(), name: item.name, createdAt: this.now(), revoked: false,
-          permissions: [...CLIENT_DEVICE_PERMISSIONS],
+          permissions: [...DEFAULT_CLIENT_DEVICE_PERMISSIONS],
           refreshExpiresAt: this.now() + 30 * 86400_000 };
         state.devices.push(device);
         return this.issue(device, state.serverId);
@@ -147,25 +148,33 @@ export class ClientDeviceAuthority {
     const device = this.state.devices.find(d => d.accessHash === hash(accessToken));
     if (!device || device.revoked || device.accessExpiresAt <= this.now()) throw deviceError("INVALID_CREDENTIAL");
     return { deviceId: device.id, name: device.name, serverId: this.state.serverId,
-      permissions: device.permissions ?? [...CLIENT_DEVICE_PERMISSIONS] };
+      permissions: device.permissions ?? [...DEFAULT_CLIENT_DEVICE_PERMISSIONS] };
   }
 
   canDeliverScheduledMessage(deviceId) {
     const device = this.state.devices.find(item => item.id === deviceId);
     return Boolean(device && !device.revoked && device.refreshExpiresAt > this.now()
-      && (device.permissions ?? CLIENT_DEVICE_PERMISSIONS).includes("messages.write"));
+      && (device.permissions ?? DEFAULT_CLIENT_DEVICE_PERMISSIONS).includes("messages.write"));
   }
 
-  async setPermissions(id, permissions) {
+  async setPermissions(id, permissions, expectedPermissions = undefined) {
     const allowed = CLIENT_DEVICE_PERMISSIONS;
     if (!Array.isArray(permissions) || permissions.length > allowed.length
         || permissions.some(p => !allowed.includes(p))) throw deviceError("INVALID_PERMISSIONS", 400);
+    if (expectedPermissions !== undefined && (!Array.isArray(expectedPermissions)
+        || expectedPermissions.length > allowed.length || expectedPermissions.some(p => !allowed.includes(p)))) {
+      throw deviceError("INVALID_PERMISSIONS", 400);
+    }
     await this.change(state => {
       const device = state.devices.find(d => d.id === id && !d.revoked);
       if (!device) throw deviceError("DEVICE_NOT_FOUND", 404);
+      if (expectedPermissions !== undefined
+          && JSON.stringify([...new Set(expectedPermissions)].sort())
+            !== JSON.stringify([...new Set(device.permissions ?? DEFAULT_CLIENT_DEVICE_PERMISSIONS)].sort())) {
+        throw deviceError("PERMISSIONS_CHANGED", 409);
+      }
       device.permissions = [...new Set(permissions)];
     });
-    for (const listener of this.listeners) listener(id);
     return { deviceId: id, permissions: [...new Set(permissions)] };
   }
 
@@ -182,7 +191,8 @@ export class ClientDeviceAuthority {
 
   list() {
     return { devices: this.state.devices.map(({ id, name, createdAt, revoked, permissions }) => ({ id, name, createdAt, revoked,
-      permissions: permissions ?? [...CLIENT_DEVICE_PERMISSIONS] })),
+      permissions: permissions ?? [...DEFAULT_CLIENT_DEVICE_PERMISSIONS] })),
+      availablePermissions: [...CLIENT_DEVICE_PERMISSIONS],
       pending: [...this.pending].filter(([, p]) => p.expiresAt > this.now() && p.status === "pending")
         .map(([pairingId, p]) => ({ pairingId, name: p.name, expiresAt: p.expiresAt })) };
   }

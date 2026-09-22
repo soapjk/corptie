@@ -30,6 +30,8 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
     const results = await Promise.allSettled([a.exchange(claim), a.exchange(claim)]);
     assert.equal(results.filter(r => r.status === "fulfilled").length, 1);
     const creds = results.find(r => r.status === "fulfilled").value;
+    assert.equal(a.authenticate(creds.accessToken).permissions.includes("sessions.commands"), false);
+    assert.equal(a.authenticate(creds.accessToken).permissions.includes("sessions.clear"), false);
     assert.equal(a.canDeliverScheduledMessage(creds.deviceId), true);
     await a.setPermissions(creds.deviceId, ["messages.read"]);
     assert.equal(a.canDeliverScheduledMessage(creds.deviceId), false);
@@ -49,6 +51,27 @@ test("pairing requires local approval, exchanges once, rotates and revokes persi
     assert.equal(restored.canDeliverScheduledMessage(creds.deviceId), false);
     assert.throws(() => restored.authenticate(rotated.accessToken), { code: "INVALID_CREDENTIAL" });
     await assert.rejects(restored.refresh(rotated), { code: "INVALID_CREDENTIAL" });
+  } finally { await f.close(); }
+});
+
+test("permission edits compare the confirmed grants atomically and preserve concurrent revocations", async () => {
+  const f = await fixture();
+  try {
+    const a = f.authority;
+    const invite = a.invite();
+    const claim = a.claim({ ...invite, name: "Test iPad" });
+    a.approve(invite.pairingId, true);
+    const creds = await a.exchange(claim);
+    const original = a.authenticate(creds.accessToken).permissions;
+    const withCommands = [...original, "sessions.commands"];
+    await a.setPermissions(creds.deviceId, withCommands, [...original].reverse());
+    assert.deepEqual(a.authenticate(creds.accessToken).permissions, withCommands);
+    await assert.rejects(a.setPermissions(creds.deviceId, [...original, "sessions.clear"], original), { code: "PERMISSIONS_CHANGED" });
+    assert.deepEqual(a.authenticate(creds.accessToken).permissions, withCommands);
+    await a.setPermissions(creds.deviceId, ["messages.read"], withCommands);
+    await assert.rejects(a.setPermissions(creds.deviceId, withCommands, withCommands), { code: "PERMISSIONS_CHANGED" });
+    assert.deepEqual(a.authenticate(creds.accessToken).permissions, ["messages.read"]);
+    await assert.rejects(a.setPermissions(creds.deviceId, [], "invalid"), { code: "INVALID_PERMISSIONS" });
   } finally { await f.close(); }
 });
 
@@ -89,6 +112,15 @@ test("real TLS route boundary and authenticated local approval", async () => {
     list: async kind => ({ schemaVersion: 1, items: [{ id: `${kind}:one` }] }),
     repository: async id => ({ schemaVersion: 1, repository: { id } })
   }, sessionAPI: {
+    commandCatalog(identity, sessionId) {
+      requireDevicePermission(identity, "messages.read");
+      return { schemaVersion: 1, sessionId, commands: [{ name: "goal" }] };
+    },
+    conversationCommand(identity, sessionId, input, revalidate) {
+      requireDevicePermission(identity, "sessions.commands");
+      assert.equal(revalidate().deviceId, identity.deviceId);
+      return { schemaVersion: 1, sessionId, requestId: input.requestId, kind: "conversation_command", status: "completed" };
+    },
     messages(identity, sessionId) { requireDevicePermission(identity, "messages.read"); return { schemaVersion: 1, sessionId, items: [] }; },
     command(identity, sessionId, kind, input) {
       requireDevicePermission(identity, kind === "send" ? "messages.write" : "sessions.stop");
@@ -96,6 +128,15 @@ test("real TLS route boundary and authenticated local approval", async () => {
     },
     receipt(identity, requestId) { return { requestId, deviceId: identity.deviceId }; },
     capabilities() { return { schemaVersion: 1 }; },
+    createTask(identity, sessionId, input, revalidate) {
+      requireDevicePermission(identity, "tasks.create");
+      assert.equal(revalidate().deviceId, identity.deviceId);
+      return { schemaVersion: 1, sessionId, requestId: input.requestId, kind: "create_task", status: "completed" };
+    },
+    taskCreationOptions(identity, sessionId, query) {
+      requireDevicePermission(identity, "tasks.create");
+      return { schemaVersion: 1, sourceSessionId: sessionId, providerId: query.get("providerId") };
+    },
     configuration(identity, sessionId, input) {
       requireDevicePermission(identity, "messages.write");
       return { schemaVersion: 1, sessionId, currentModel: input?.model ?? "current" };
@@ -162,6 +203,36 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlWrite, false);
     assert.equal((await call(messagesPath, { token: creds.accessToken })).body.sessionId, "session:test");
+    const commandsPath = "/client/v1/sessions/session%3Atest/conversation-commands";
+    assert.equal((await call(commandsPath, { token: creds.accessToken })).body.commands[0].name, "goal");
+    const commandInput = { requestId: "command_123", name: "goal", arguments: "test" };
+    assert.equal((await call(commandsPath, { token: creds.accessToken, method: "POST", value: commandInput })).status, 403);
+    const previousPermissions = f.authority.authenticate(creds.accessToken).permissions;
+    const granted = await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: [...previousPermissions, "sessions.commands"], expectedPermissions: previousPermissions } });
+    assert.equal(granted.status, 200);
+    const staleEdit = await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: [...previousPermissions, "sessions.clear"], expectedPermissions: previousPermissions } });
+    assert.equal(staleEdit.status, 409);
+    assert.equal(staleEdit.body.code, "PERMISSIONS_CHANGED");
+    assert.equal(f.authority.authenticate(creds.accessToken).permissions.includes("sessions.clear"), false);
+    assert.equal((await call(commandsPath, { token: creds.accessToken, method: "POST", value: commandInput })).body.status, "completed");
+    const createPath = "/client/v1/sessions/session%3Atest/tasks";
+    const createInput = { requestId: "create_123", title: "Task" };
+    assert.equal((await call(createPath, { token: creds.accessToken, method: "POST", value: createInput })).status, 403);
+    const beforeCreateGrant = f.authority.authenticate(creds.accessToken).permissions;
+    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: [...beforeCreateGrant, "tasks.create"], expectedPermissions: beforeCreateGrant } });
+    const created = await call(createPath, { token: creds.accessToken, method: "POST", value: createInput });
+    assert.equal(created.status, 202);
+    assert.equal(created.body.kind, "create_task");
+    assert.equal(created.body.sessionId, "session:test");
+    const choices = await call(`${createPath}?providerId=provider%3Atest`, { token: creds.accessToken });
+    assert.equal(choices.status, 200);
+    assert.equal(choices.body.providerId, "provider:test");
+    assert.equal((await call(`${createPath}?work=other`, { token: creds.accessToken, method: "POST", value: createInput })).status, 403);
+    await call("/internal/client-devices/permissions", { local: true, token, method: "POST",
+      value: { deviceId: creds.deviceId, permissions: beforeCreateGrant } });
     const sent = await call(messagesPath, { token: creds.accessToken, method: "POST", value: { requestId: "request_123", text: "test" } });
     assert.equal(sent.status, 202);
     assert.equal(sent.body.kind, "send");
@@ -189,6 +260,7 @@ test("real TLS route boundary and authenticated local approval", async () => {
     await call("/internal/client-devices/revoke", { local: true, token, method: "POST", value: { deviceId: creds.deviceId } });
     assert.ok(authenticatedSockets.every(socket => socket.destroyed));
     await streamClosed;
+    remoteAgent.destroy();
     assert.equal((await call("/client/v1/me", { token: creds.accessToken })).status, 401);
   } finally {
     remoteAgent.destroy();

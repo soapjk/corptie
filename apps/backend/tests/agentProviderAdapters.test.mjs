@@ -29,11 +29,30 @@ test("production bootstrap routes slash goal through the application service to 
     sessionId: "session:test", providerId: "codex-app-server", providerSessionId: "thread:test"
   }) });
   const result = await service.executeCommand("session:test", parseSlashCommand("/goal 完成剩余任务"));
+  const commands = await service.listConversationCommands("session:test");
+  assert.equal(commands.find(command => command.name === "goal").available, true);
   assert.deepEqual(calls, [{ method: "thread/goal/set", params: {
     threadId: "thread:test", objective: "完成剩余任务", status: "active"
   } }]);
   assert.match(result.text, /完成剩余任务/);
   assert.equal(registry.supports("claude-sdk", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND), false);
+});
+
+test("shared catalog and common commands work without a Provider-specific command adapter", async () => {
+  const manager = recordingManager();
+  const registry = new AgentProviderRegistry([createClaudeAgentSdkProvider(manager)]);
+  const service = new SessionApplicationService({ registry, resolveSessionReference: () => ({
+    sessionId: "session:claude", providerId: "claude-sdk", providerSessionId: "native:claude",
+    metadata: { session: { status: "complete" } }
+  }) });
+  const commands = await service.listConversationCommands("session:claude");
+  assert.equal(commands.find(command => command.name === "goal").available, false);
+  assert.equal(commands.find(command => command.name === "status").available, true);
+  assert.equal(commands.find(command => command.name === "rename").available, true);
+  await assert.rejects(service.validateConversationCommand("session:claude", { name: "goal", arguments: "build" }), { code: "CAPABILITY_UNSUPPORTED" });
+  assert.match((await service.executeCommand("session:claude", { name: "status", arguments: "" })).text, /complete/);
+  await service.executeCommand("session:claude", { name: "rename", arguments: "new title" });
+  assert.deepEqual(manager.calls, [["rename", "native:claude", "new title"]]);
 });
 
 test("bootstrap does not advertise command execution without an implementation", () => {

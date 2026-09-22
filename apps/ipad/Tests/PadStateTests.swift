@@ -5,6 +5,93 @@ import CorptieClientCore
 
 @MainActor
 struct PadStateTests {
+    @Test func originalResponseArrivingAfterReceiptSettlementDoesNotReportMismatch() async throws {
+        let name = "corptie-ipad-command-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CompletedCommandProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://slow-command.invalid")!),
+            bearerToken: "fixture", configuration: config)
+        let connection = PadConnection(transportOverride: transport)
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:a"
+        workspace.drafts["session:a"] = "/goal test"
+        let worker = Task { await workspace.command(connection, stop: false) }
+        for _ in 0..<100 where workspace.pending == nil { try await Task.sleep(for: .milliseconds(1)) }
+        let pending = try #require(workspace.pending)
+        let data = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "sessionId": "session:a",
+            "requestId": pending.requestID, "kind": "conversation_command", "status": "completed", "updatedAt": "now"])
+        workspace.settle(try JSONDecoder().decode(ClientCommandReceipt.self, from: data))
+        await worker.value
+        #expect(workspace.pending == nil)
+        #expect(workspace.status.isEmpty)
+        #expect(connection.notice.isEmpty)
+        #expect(workspace.drafts["session:a"] == "")
+    }
+
+    @Test func slashSubmissionUsesCommandRouteAndPreservesHistory() async throws {
+        let name = "corptie-ipad-command-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CompletedCommandProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://command.invalid")!),
+            bearerToken: "fixture", configuration: config)
+        let connection = PadConnection(transportOverride: transport)
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:a"
+        workspace.messages = [ClientMessage(id: "history", text: "保留历史")]
+        workspace.drafts["session:a"] = "/goal test"
+        await workspace.command(connection, stop: false)
+        #expect(workspace.pending == nil)
+        #expect(defaults.data(forKey: "pendingCommand") == nil)
+        #expect(workspace.drafts["session:a"] == "")
+        #expect(workspace.visibleMessages.map(\.id) == ["history", "command:result"])
+        #expect(workspace.visibleMessages.last?.type == "commandExecution")
+        #expect(workspace.outgoingStates.isEmpty)
+        #expect(workspace.status.isEmpty)
+        #expect(connection.notice.isEmpty)
+        workspace.applyLatestWindow(workspace.visibleMessages, cursor: nil, revision: 1)
+        #expect(workspace.visibleMessages.map(\.id) == ["history", "command:result"])
+        #expect(workspace.outgoingMessages["session:a"]?.isEmpty == true)
+    }
+
+    @Test func completedCommandKeepsEditedDraftAndStaysInOriginalConversation() throws {
+        let name = "corptie-ipad-command-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "logical:a"
+        workspace.drafts["logical:a"] = "/goal test"
+        workspace.pending = PendingCommand(requestID: "request_123", sessionID: "session:a",
+            kind: "conversation_command", serverID: "server:a", address: "https://example.invalid", draftSessionID: "logical:a")
+        workspace.captureSubmission(requestID: "request_123", sessionID: "logical:a")
+        workspace.drafts["logical:a"] = "新草稿"
+        workspace.selection = "logical:b"
+        let receipt = try JSONDecoder().decode(ClientCommandReceipt.self, from: Data(#"{"schemaVersion":1,"sessionId":"session:a","requestId":"request_123","kind":"conversation_command","status":"completed","updatedAt":"now","commandResult":{"text":"目标已设置","truncated":false,"messageId":"command:result"}}"#.utf8))
+        workspace.settle(receipt)
+        #expect(workspace.pending == nil)
+        #expect(workspace.drafts["logical:a"] == "新草稿")
+        #expect(workspace.visibleMessages.isEmpty)
+        #expect(workspace.outgoingMessages["logical:a"]?.first?.text == "目标已设置")
+    }
+
+    @Test func slashAttachmentsAreNotSilentlyDiscarded() async {
+        let name = "corptie-ipad-command-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:a"
+        workspace.drafts["session:a"] = "/goal test"
+        workspace.draftImages["session:a"] = [ClientDraftImage(fileName: "test.png", data: Data([1]))]
+        await workspace.command(PadConnection(), stop: false)
+        #expect(workspace.pending == nil)
+        #expect(workspace.status.contains("单独发送"))
+        #expect(workspace.drafts["session:a"] == "/goal test")
+        #expect(workspace.draftImages["session:a"]?.count == 1)
+    }
+
     @Test func sendRefreshPreservesHistoryAndReconcilesExactlyOneOutgoingMessage() throws {
         let workspace = PadWorkspace()
         workspace.selection = "session:a"
@@ -103,7 +190,7 @@ struct PadStateTests {
         #expect(!workspace.sessionIsKnownUnavailable("session:known"))
     }
 
-    @Test func restartRetainsUnknownCommandAndOnlyMatchingReceiptClearsDraft() throws {
+    @Test func restartRetainsUnknownCommandAndMatchingReceiptNeverErasesNewDraft() throws {
         let name = "corptie-ipad-tests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
         defer { defaults.removePersistentDomain(forName: name) }
@@ -127,10 +214,87 @@ struct PadStateTests {
         workspace.settle(try receipt("request_123", "accepted"))
         #expect(workspace.pending == nil)
         #expect(workspace.status.isEmpty)
-        #expect(workspace.drafts["session:a"] == "")
-        #expect(workspace.draftImages["session:a"]?.isEmpty == true)
-        #expect(workspace.draftMentions["session:a"]?.isEmpty == true)
+        #expect(workspace.drafts["session:a"] == "Keep me")
+        #expect(workspace.draftImages["session:a"]?.count == 1)
+        #expect(workspace.draftMentions["session:a"]?.count == 1)
         #expect(PadWorkspace(defaults: defaults).pending == nil)
+    }
+
+    @Test func rejectedMessageDoesNotBecomeUncertainAndDoesNotLockComposer() throws {
+        let name = "corptie-rejection-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:a"
+        workspace.drafts["session:a"] = "/goal build something"
+        workspace.pending = PendingCommand(requestID: "request_123", sessionID: "session:a",
+            kind: "send", serverID: "server:a", address: "https://example.invalid")
+        workspace.outgoingRequestIDs["request_123"] = "client:a"
+        workspace.outgoingStates["client:a"] = "Sending"
+        workspace.messages = [ClientMessage(id: "history", text: "previous")]
+        #expect(workspace.rejectBeforeDispatch(ClientServiceFailure(statusCode: 400, code: "INVALID_MESSAGE"), requestID: "request_123"))
+        #expect(workspace.pending == nil)
+        #expect(workspace.outgoingStates["client:a"]?.contains("发送失败") == true)
+        #expect(workspace.outgoingStates["client:a"]?.contains("待核对") == false)
+        #expect(workspace.drafts["session:a"] == "/goal build something")
+        #expect(workspace.messages.count == 1)
+    }
+
+    @Test func timeoutConflictAndUnstructuredHTTPFailureRetainRequestIdentity() {
+        let name = "corptie-uncertain-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.pending = PendingCommand(requestID: "request_123", sessionID: "session:a",
+            kind: "send", serverID: "server:a", address: "https://example.invalid")
+        for error: any Error in [URLError(.timedOut),
+            ClientServiceFailure(statusCode: 409, code: "IDEMPOTENCY_CONFLICT"),
+            ClientConnectionError.httpStatus(400),
+            ClientServiceFailure(statusCode: 500, code: "UNKNOWN_ERROR")] {
+            #expect(!workspace.rejectBeforeDispatch(error, requestID: "request_123"))
+            #expect(workspace.pending?.requestID == "request_123")
+        }
+        #expect(!workspace.rejectBeforeDispatch(ClientServiceFailure(statusCode: 400, code: "INVALID_MESSAGE"), requestID: "other"))
+    }
+
+    @Test func acceptanceOnlyClearsUnmodifiedSubmissionSnapshot() throws {
+        let name = "corptie-snapshot-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        let receipt = try JSONDecoder().decode(ClientCommandReceipt.self, from: Data(#"{"schemaVersion":1,"sessionId":"session:a","requestId":"request_123","kind":"send","status":"accepted","updatedAt":"now"}"#.utf8))
+        for edited in [false, true] {
+            workspace.pending = PendingCommand(requestID: "request_123", sessionID: "session:a",
+                kind: "send", serverID: "server:a", address: "https://example.invalid")
+            workspace.drafts["session:a"] = "submitted"
+            workspace.captureSubmission(requestID: "request_123", sessionID: "session:a")
+            if edited {
+                workspace.drafts["session:a"] = "new text"
+                workspace.drafts["session:a"] = "submitted" // Same text, different edit revision.
+            }
+            workspace.settle(receipt)
+            #expect(workspace.drafts["session:a"] == (edited ? "submitted" : ""))
+            #expect(workspace.pending == nil)
+        }
+    }
+
+    @Test func actualHTTPRejectionSettlesPendingWithoutLosingDraft() async throws {
+        let name = "corptie-http-rejection-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RejectedCommandProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://command.invalid")!),
+            bearerToken: "fixture", configuration: config)
+        let connection = PadConnection(transportOverride: transport)
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:a"
+        workspace.drafts["session:a"] = "/goal test"
+        await workspace.command(connection, stop: false)
+        #expect(workspace.pending == nil)
+        #expect(defaults.data(forKey: "pendingCommand") == nil)
+        #expect(workspace.drafts["session:a"] == "/goal test")
+        #expect(connection.notice.contains("消息未发送"))
     }
 
     @Test func selectingAnotherSessionNeverCarriesMessagesOrCapabilities() {
@@ -187,6 +351,57 @@ struct PadStateTests {
         #expect(calls == 1)
         #expect(!connection.busy)
     }
+}
+
+private final class CompletedCommandProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        #expect(request.url?.path == "/client/v1/sessions/session:a/conversation-commands")
+        #expect(request.httpMethod == "POST")
+        var data = request.httpBody ?? Data()
+        if let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 1024)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                data.append(contentsOf: buffer.prefix(count))
+            }
+        }
+        let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        #expect(body?["name"] as? String == "goal")
+        #expect(body?["arguments"] as? String == "test")
+        #expect(body?["confirmed"] as? Bool == false)
+        let json: [String: Any] = ["schemaVersion": 1, "sessionId": "session:a",
+            "requestId": body?["requestId"] as? String ?? "invalid", "kind": "conversation_command",
+            "status": "completed", "updatedAt": "now",
+            "commandResult": ["text": "目标已设置", "truncated": false, "messageId": "command:result"]]
+        let responseData = try! JSONSerialization.data(withJSONObject: json)
+        let deliver: @Sendable () -> Void = { [self] in
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200,
+                httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: responseData)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if request.url?.host == "slow-command.invalid" {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1, execute: deliver)
+        } else { deliver() }
+    }
+    override func stopLoading() {}
+}
+
+private final class RejectedCommandProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 400,
+            httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(#"{"code":"INVALID_MESSAGE"}"#.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
 }
 
 private final class ConversationProtocol: URLProtocol, @unchecked Sendable {

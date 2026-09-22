@@ -5,7 +5,8 @@ final class ConversationNavigationTests: XCTestCase {
     func testPairedDeviceOpensTaskConversation() throws {
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(app.navigationBars["工作台"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["workspace-settings"].waitForExistence(timeout: 20))
+        XCTAssertFalse(app.navigationBars["工作台"].exists)
         let row = app.staticTexts["iOSiPadOS开发"].firstMatch
         for _ in 0..<20 {
             if row.exists && row.isHittable { break }
@@ -24,9 +25,11 @@ final class ConversationNavigationTests: XCTestCase {
         XCTAssertLessThanOrEqual(input.frame.maxY, app.keyboards.firstMatch.frame.minY)
         XCTAssertFalse(app.buttons["刷新消息"].exists)
         XCTAssertFalse(app.buttons["最新消息"].exists)
-        // Tap non-editor chrome without relying on a mobile-only action.
-        app.navigationBars.element(boundBy: app.navigationBars.count - 1)
-            .coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["conversation-stop"].exists)
+        XCTAssertTrue(app.buttons["workspace-toggle-sidebar"].exists)
+        // The removed toolbar must not be required to dismiss the keyboard.
+        app.scrollViews["conversation-timeline"].firstMatch
+            .coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.05)).tap()
         let dismissed = NSPredicate(format: "exists == false")
         expectation(for: dismissed, evaluatedWith: app.keyboards.firstMatch)
         waitForExpectations(timeout: 5)

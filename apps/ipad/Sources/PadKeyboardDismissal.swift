@@ -28,7 +28,8 @@ struct PadKeyboardDismissal: UIViewRepresentable {
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
             var target = touch.view
             while let view = target {
-                if view is UITextView || view is UITextField { return false }
+                // Read-only message TextKit leaves are not composer inputs.
+                if (view as? UITextView)?.isEditable == true || view is UITextField { return false }
                 target = view.superview
             }
             return true

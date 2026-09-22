@@ -47,6 +47,10 @@ struct PadAppShell: View {
         }
         .sheet(item: $sheet) { _ in PadSettingsView(connection: connection, workspace: workspace) }
         .task { await workspace.inventory(connection) }
+        .task(id: scenePhase == .active ? workspace.reconciliationKey(connection) : nil) {
+            guard scenePhase == .active else { return }
+            await workspace.reconcileAutomatically(connection)
+        }
         .task(id: scenePhase) {
             guard scenePhase == .active else { controls.pause(); return }
             controls.activate(tab, connection: connection)
@@ -97,7 +101,7 @@ private struct PadSettingsView: View {
                         .disabled(connection.busy)
                 }
                 Section("功能与版本") {
-                    Text("连接获批后，移动端当前支持的功能会直接可用，无需再次设置权限。")
+                    Text("连接获批后可浏览、发送和停止。/goal 等修改类命令与清空会话上下文，需要在 Mac 的设备接入设置中另外授权。")
                     Text("当前移动版：四页浏览、实时消息、发送与停止。自动化编辑、Git 操作与 Agent / Skill 编辑尚未接入。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
