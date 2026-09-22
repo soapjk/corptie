@@ -1113,10 +1113,12 @@ struct SessionContextMenuContent: View {
     @Binding var isRenaming: Bool
 
     var body: some View {
-        Button {
-            isRenaming = true
-        } label: {
-            Label(L10n("Rename"), systemImage: "pencil")
+        if session.allowsManualRename {
+            Button {
+                isRenaming = true
+            } label: {
+                Label(L10n("Rename"), systemImage: "pencil")
+            }
         }
 
         Button {
@@ -2645,7 +2647,7 @@ struct RenameSessionSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(L10n("Rename Task"))
+                Text(L10n("Rename Chat"))
                     .font(.system(size: 16, weight: .semibold, design: .rounded))
                 Spacer()
                 Button {
@@ -2659,7 +2661,7 @@ struct RenameSessionSheet: View {
                 .help(L10n("Close"))
             }
 
-            TextField(L10n("Task name"), text: $title)
+            TextField(L10n("Chat name"), text: $title)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13, weight: .medium))
                 .padding(.horizontal, 10)
@@ -5802,13 +5804,7 @@ struct DetailHeaderView: View {
     }
 
     private var selectedTitle: String? {
-        guard let session = backendClient.selectedSession else { return nil }
-        guard session.resolvedSessionKind == .worker,
-              let taskID = session.taskId,
-              let task = entityClient.tasks.first(where: { $0.id == taskID }) else {
-            return session.title
-        }
-        return task.title
+        backendClient.selectedSession?.title
     }
 
     private var selectedSessionWorktree: ProjectWorktreeStatus? {

@@ -1597,7 +1597,7 @@ test("legacy Agent lifecycle status is repaired even with an active Session bind
   }
 });
 
-test("logical Session owns the canonical unique name and preserves renamed aliases", async () => {
+test("standalone Chat rename replaces its name without preserving aliases", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-session-identity-"));
   const store = new CorptieStore({
     dbPath: join(directory, "corptie.sqlite"),
@@ -1633,11 +1633,78 @@ test("logical Session owns the canonical unique name and preserves renamed alias
     assert.equal(store.getLogicalSession("logical:stable-session").sessionName, "renamed_agent");
     assert.equal(store.getSession("codex:provider-thread").title, "renamed_agent");
     assert.equal(store.getLogicalSessionByName("renamed_agent").logicalSessionId, "logical:stable-session");
-    assert.equal(store.getLogicalSessionByName("original_agent").logicalSessionId, "logical:stable-session");
+    assert.equal(store.getLogicalSessionByName("original_agent"), null);
 
     store.updateAgent("agent:stable-name", { name: "Renamed Agent" });
     assert.equal(store.getSession("codex:provider-thread").title, "renamed_agent");
     assert.equal(store.getLogicalSession("logical:stable-session").sessionName, "renamed_agent");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Worker and Work Chat names are live projections of Task and Work", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-derived-session-names-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const agent = store.createAgent({ id: "agent:derived", name: "DerivedAgent" });
+    store.createWork({
+      id: "work:derived", name: "InitialWork", contributorAgentIds: [agent.agentId]
+    });
+    store.createTask({
+      id: "task:derived", workId: "work:derived", title: "InitialTask", mainAgentId: agent.agentId
+    });
+    store.upsertSession({
+      id: "session:worker-derived", title: "stale-worker-copy", agent: "Codex",
+      provider: "codex-app-server", status: "complete"
+    });
+    store.bindSessionToTask("session:worker-derived", "task:derived", "work:derived");
+    store.createLogicalSessionRoute({
+      logicalSessionId: "logical:worker-derived",
+      legacySessionId: "session:worker-derived",
+      providerThreadId: "thread:worker-derived",
+      providerId: "codex-app-server",
+      boundCwd: directory,
+      title: "stale-worker-copy"
+    });
+    store.upsertSession({
+      id: "session:work-chat-derived", title: "stale-work-copy", agent: "Codex",
+      provider: "codex-app-server", status: "complete", sessionKind: "workChat",
+      workId: "work:derived"
+    });
+
+    assert.equal(store.getSession("session:worker-derived").title, "InitialTask");
+    assert.equal(store.getLogicalSession("logical:worker-derived").sessionName, "InitialTask");
+    assert.equal(store.getSession("session:work-chat-derived").title, "InitialWork · 讨论");
+
+    const taskRenameRevision = store.stateRevision();
+    store.updateTask("task:derived", { title: "RenamedTask" });
+    const taskRenameChanges = store.stateChangesAfter(taskRenameRevision);
+    assert.ok(taskRenameChanges.some((change) =>
+      change.entityType === "session" && change.entityId === "session:worker-derived"
+    ));
+
+    const workRenameRevision = store.stateRevision();
+    store.updateWork("work:derived", { name: "RenamedWork" });
+    const workRenameChanges = store.stateChangesAfter(workRenameRevision);
+    assert.ok(workRenameChanges.some((change) =>
+      change.entityType === "session" && change.entityId === "session:work-chat-derived"
+    ));
+
+    assert.equal(store.getSession("session:worker-derived").title, "RenamedTask");
+    assert.equal(store.getLogicalSession("logical:worker-derived").sessionName, "RenamedTask");
+    assert.equal(store.getLogicalSessionByName("RenamedTask").logicalSessionId, "logical:worker-derived");
+    assert.equal(store.getLogicalSessionByName("InitialTask"), null);
+    assert.equal(store.getSession("session:work-chat-derived").title, "RenamedWork · 讨论");
+    assert.throws(
+      () => store.renameSession("session:worker-derived", "IndependentName"),
+      (error) => error?.code === "SESSION_TITLE_DERIVED"
+    );
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });

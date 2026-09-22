@@ -61,11 +61,7 @@ test(`${sessionKind}: catalog-to-HTTP Channel routing confirms, reuses, and reje
     assert.equal(missing.error.details.resolution, "not_found");
     assert.equal(missing.error.details.nextAction, "corptie_sessions_discover");
 
-    value.store.db.run(
-      `INSERT INTO session_name_aliases (alias_key, alias, logical_session_id, created_at)
-       VALUES (?, ?, ?, ?)`,
-      ["automation工具维护", "automation工具维护", "logical:ambiguous", new Date().toISOString()]
-    );
+    value.store.updateTask("task:ambiguous", { title: "automation工具维护" });
     const ambiguous = await measuredOpenError(value, {
       recipient_session_name: "@automation工具维护",
       body: "This should return candidates, not guess.",
@@ -211,7 +207,7 @@ async function fixture(sessionKind = "worker") {
 
 function bind(store, core, directory, input) {
   if (input.taskId) store.createTask({
-    id: input.taskId, workId: input.workId, title: input.taskId, mainAgentId: input.agentId
+    id: input.taskId, workId: input.workId, title: input.sessionName, mainAgentId: input.agentId
   }, { originType: "direct_user" });
   store.createSession({
     id: input.providerSessionId, title: input.sessionName, agentId: input.agentId,

@@ -25,13 +25,65 @@ struct DetachedChatWindowTests {
         #expect(source.contains("Color(red: 1, green: 0.373, blue: 0.341)"))
         #expect(source.contains(".frame(width: 14, height: 14)"))
         #expect(source.contains(".frame(width: 22, height: 22)"))
-        #expect(source.contains("Image(systemName: \"arrow.uturn.backward\")"))
+        #expect(source.contains("systemImage: \"arrow.uturn.backward\""))
         #expect(source.contains("func returnToMain(sessionID: String)"))
         #expect(source.contains("close(sessionID: sessionID)"))
         #expect(source.contains("AppDelegate.shared?.openSessionInMainWindow(sessionID: sessionID)"))
         #expect(source.contains("DetachedChatWindowDragArea()"))
         #expect(source.contains("override func mouseDragged(with event: NSEvent)"))
         #expect(source.contains("window?.performDrag(with: event)"))
+        #expect(source.contains("func windowDidEndLiveResize(_ notification: Notification)"))
+        #expect(source.contains("panel.setFrame(frame, display: true, animate: true)"))
+        #expect(source.contains("Menu {"))
+        #expect(source.contains("DetachedWindowTrafficLightButton("))
+    }
+
+    @Test
+    func detachedWindowPresetsUseTheCurrentScreensVisibleFrame() {
+        let screen = NSRect(x: 100, y: 50, width: 3_200, height: 1_800)
+        let minimum = NSSize(width: 220, height: 420)
+        let normal = NSSize(width: 560, height: 640)
+
+        let right = DetachedChatWindowGeometry.frame(
+            for: .narrowRight,
+            visibleFrame: screen,
+            normalSize: normal,
+            minimumSize: minimum
+        )
+        #expect(right == NSRect(x: 2_900, y: 50, width: 400, height: 1_800))
+
+        let left = DetachedChatWindowGeometry.frame(
+            for: .narrowLeft,
+            visibleFrame: screen,
+            normalSize: normal,
+            minimumSize: minimum
+        )
+        #expect(left == NSRect(x: 100, y: 50, width: 400, height: 1_800))
+
+        let maximized = DetachedChatWindowGeometry.frame(
+            for: .maximized,
+            visibleFrame: screen,
+            normalSize: normal,
+            minimumSize: minimum
+        )
+        #expect(maximized == screen)
+    }
+
+    @Test
+    func detachedWindowSizeIsRememberedPerSession() throws {
+        let suiteName = "DetachedChatWindowTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        DetachedChatWindowSizeStore.save(
+            NSSize(width: 612, height: 734),
+            for: "session:one",
+            defaults: defaults
+        )
+
+        #expect(DetachedChatWindowSizeStore.size(for: "session:one", defaults: defaults)
+            == NSSize(width: 612, height: 734))
+        #expect(DetachedChatWindowSizeStore.size(for: "session:two", defaults: defaults) == nil)
     }
 
     @Test

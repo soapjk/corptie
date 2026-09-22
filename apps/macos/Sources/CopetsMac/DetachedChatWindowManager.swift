@@ -38,6 +38,10 @@ final class DetachedChatWindowManager {
         AppDelegate.shared?.openSessionInMainWindow(sessionID: sessionID)
     }
 
+    func apply(_ preset: DetachedChatWindowPreset, to sessionID: String) {
+        controllers[sessionID]?.apply(preset)
+    }
+
     func closeAll() {
         let openControllers = Array(controllers.values)
         controllers.removeAll()
@@ -58,13 +62,16 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
         self.closeHandler = close
         let visibleFrame = NSScreen.main?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let restoredSize = DetachedChatWindowSizeStore.size(for: sessionID)
+            .map { DetachedChatWindowGeometry.constrainedSize($0, in: visibleFrame) }
+            ?? Self.initialSize
         let offset = CGFloat(cascadeIndex % 8) * 24
         let origin = NSPoint(
-            x: visibleFrame.midX - Self.initialSize.width / 2 + offset,
-            y: visibleFrame.midY - Self.initialSize.height / 2 - offset
+            x: visibleFrame.midX - restoredSize.width / 2 + offset,
+            y: visibleFrame.midY - restoredSize.height / 2 - offset
         )
         panel = DetachedChatPanel(
-            contentRect: NSRect(origin: origin, size: Self.initialSize),
+            contentRect: NSRect(origin: origin, size: restoredSize),
             styleMask: [.borderless, .fullSizeContentView, .resizable, .closable],
             backing: .buffered,
             defer: false
@@ -80,14 +87,17 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
         panel.hasShadow = true
         panel.hidesOnDeactivate = false
         panel.isMovableByWindowBackground = true
-        panel.minSize = NSSize(width: 420, height: 420)
-        panel.maxSize = NSSize(width: 900, height: 1_000)
+        panel.minSize = NSSize(width: 220, height: 420)
+        panel.maxSize = NSSize(width: 10_000, height: 10_000)
         panel.contentView = DetachedChatHostingView(
             rootView: DetachedChatWindowView(
                 sessionID: sessionID,
                 close: { DetachedChatWindowManager.shared.close(sessionID: sessionID) },
                 returnToMain: {
                     DetachedChatWindowManager.shared.returnToMain(sessionID: sessionID)
+                },
+                applyWindowPreset: { preset in
+                    DetachedChatWindowManager.shared.apply(preset, to: sessionID)
                 }
             )
         )
@@ -104,12 +114,119 @@ private final class DetachedChatWindowController: NSObject, NSWindowDelegate {
         panel.close()
     }
 
+    func apply(_ preset: DetachedChatWindowPreset) {
+        let visibleFrame = panel.screen?.visibleFrame
+            ?? NSScreen.main?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let frame = DetachedChatWindowGeometry.frame(
+            for: preset,
+            visibleFrame: visibleFrame,
+            normalSize: Self.initialSize,
+            minimumSize: panel.minSize
+        )
+        panel.setFrame(frame, display: true, animate: true)
+        DetachedChatWindowSizeStore.save(frame.size, for: sessionID)
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        DetachedChatWindowSizeStore.save(panel.frame.size, for: sessionID)
+    }
+
     func windowWillClose(_ notification: Notification) {
         closeHandler(sessionID)
     }
 
     var isKeyWindow: Bool {
         panel.isKeyWindow
+    }
+}
+
+enum DetachedChatWindowPreset: String, CaseIterable, Sendable {
+    case normal
+    case narrowRight
+    case narrowLeft
+    case maximized
+
+    @MainActor
+    var title: String {
+        switch self {
+        case .normal: L10n("Normal")
+        case .narrowRight: L10n("Narrow on Right")
+        case .narrowLeft: L10n("Narrow on Left")
+        case .maximized: L10n("Maximize")
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .normal: "macwindow"
+        case .narrowRight: "rectangle.righthalf.inset.filled"
+        case .narrowLeft: "rectangle.lefthalf.inset.filled"
+        case .maximized: "arrow.up.left.and.arrow.down.right"
+        }
+    }
+}
+
+enum DetachedChatWindowGeometry {
+    static func constrainedSize(
+        _ requested: NSSize,
+        in visibleFrame: NSRect,
+        minimumSize: NSSize = NSSize(width: 220, height: 420)
+    ) -> NSSize {
+        NSSize(
+            width: min(visibleFrame.width, max(minimumSize.width, requested.width)),
+            height: min(visibleFrame.height, max(minimumSize.height, requested.height))
+        )
+    }
+
+    static func frame(
+        for preset: DetachedChatWindowPreset,
+        visibleFrame: NSRect,
+        normalSize: NSSize,
+        minimumSize: NSSize
+    ) -> NSRect {
+        switch preset {
+        case .normal:
+            let size = constrainedSize(normalSize, in: visibleFrame, minimumSize: minimumSize)
+            return centeredFrame(size: size, in: visibleFrame)
+        case .narrowRight, .narrowLeft:
+            let width = min(visibleFrame.width, max(minimumSize.width, visibleFrame.width / 8))
+            let x = preset == .narrowRight ? visibleFrame.maxX - width : visibleFrame.minX
+            return NSRect(x: x, y: visibleFrame.minY, width: width, height: visibleFrame.height)
+        case .maximized:
+            return visibleFrame
+        }
+    }
+
+    private static func centeredFrame(size: NSSize, in visibleFrame: NSRect) -> NSRect {
+        NSRect(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+}
+
+enum DetachedChatWindowSizeStore {
+    private static let keyPrefix = "detachedChatWindow.size.v1."
+
+    static func size(for sessionID: String, defaults: UserDefaults = .standard) -> NSSize? {
+        guard let value = defaults.dictionary(forKey: keyPrefix + sessionID),
+              let width = value["width"] as? Double,
+              let height = value["height"] as? Double,
+              width.isFinite, height.isFinite,
+              width > 0, height > 0 else { return nil }
+        return NSSize(width: width, height: height)
+    }
+
+    static func save(_ size: NSSize, for sessionID: String, defaults: UserDefaults = .standard) {
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return }
+        defaults.set(
+            ["width": Double(size.width), "height": Double(size.height)],
+            forKey: keyPrefix + sessionID
+        )
     }
 }
 
@@ -140,6 +257,7 @@ private struct DetachedChatWindowView: View {
     let sessionID: String
     let close: () -> Void
     let returnToMain: () -> Void
+    let applyWindowPreset: (DetachedChatWindowPreset) -> Void
 
     private var session: TaskSession? {
         backendClient.sessions.first(where: { $0.id == sessionID })
@@ -151,15 +269,33 @@ private struct DetachedChatWindowView: View {
             HStack(spacing: 8) {
                 PersistentRedWindowCloseButton(action: close)
 
-                Button(action: returnToMain) {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 11, weight: .semibold))
-                        .frame(width: 22, height: 22)
-                        .contentShape(Rectangle())
+                DetachedWindowTrafficLightButton(
+                    color: Color(red: 1, green: 0.741, blue: 0.180),
+                    systemImage: "arrow.uturn.backward",
+                    help: L10n("Return to main window"),
+                    action: returnToMain
+                )
+
+                Menu {
+                    ForEach(DetachedChatWindowPreset.allCases, id: \.self) { preset in
+                        Button {
+                            applyWindowPreset(preset)
+                        } label: {
+                            Label(preset.title, systemImage: preset.systemImage)
+                        }
+                    }
+                } label: {
+                    DetachedWindowTrafficLightLabel(
+                        color: Color(red: 0.188, green: 0.784, blue: 0.251),
+                        systemImage: "rectangle.3.group"
+                    )
                 }
                 .buttonStyle(.plain)
-                .help(L10n("Return to main window"))
-                .accessibilityLabel(L10n("Return to main window"))
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(L10n("Window size and position"))
+                .accessibilityLabel(L10n("Window size and position"))
 
                 ZStack(alignment: .leading) {
                     DetachedChatWindowDragArea()
@@ -240,21 +376,46 @@ private struct PersistentRedWindowCloseButton: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            ZStack {
-                Circle()
-                    .fill(Color(red: 1, green: 0.373, blue: 0.341))
-                    .frame(width: 14, height: 14)
+        DetachedWindowTrafficLightButton(
+            color: Color(red: 1, green: 0.373, blue: 0.341),
+            systemImage: "xmark",
+            help: L10n("Close"),
+            action: action
+        )
+    }
+}
 
-                Image(systemName: "xmark")
-                    .font(.system(size: 7, weight: .bold))
-                    .foregroundStyle(.black.opacity(0.62))
-            }
-            .frame(width: 22, height: 22)
-            .contentShape(Rectangle())
+private struct DetachedWindowTrafficLightButton: View {
+    let color: Color
+    let systemImage: String
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            DetachedWindowTrafficLightLabel(color: color, systemImage: systemImage)
         }
         .buttonStyle(.plain)
-        .help(L10n("Close"))
-        .accessibilityLabel(L10n("Close"))
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+private struct DetachedWindowTrafficLightLabel: View {
+    let color: Color
+    let systemImage: String
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(color)
+                .frame(width: 14, height: 14)
+
+            Image(systemName: systemImage)
+                .font(.system(size: 6.5, weight: .bold))
+                .foregroundStyle(.black.opacity(0.62))
+        }
+        .frame(width: 22, height: 22)
+        .contentShape(Rectangle())
     }
 }
