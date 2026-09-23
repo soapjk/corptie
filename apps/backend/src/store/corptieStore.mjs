@@ -15110,7 +15110,13 @@ function toSessionSummary(session) {
 }
 
 function toRawStatus(session) {
-  const agentSessionId = session.agentSessionId ?? session.resume?.agentSessionId ?? null;
+  // Store reads expose the Provider-native resume id under external. Routine
+  // projections are built from those reads, so omitting this source silently
+  // erased a verified Claude identity on the next status or message update.
+  const agentSessionId = session.agentSessionId
+    ?? session.external?.agentSessionId
+    ?? session.resume?.agentSessionId
+    ?? null;
   return {
     command: session.command ?? null,
     args: session.args ?? [],
