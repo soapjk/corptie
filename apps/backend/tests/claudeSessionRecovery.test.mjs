@@ -30,6 +30,29 @@ test("Claude persists native identity at init and resumes exact identity after m
   } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("routine Session projection updates preserve Claude's native resume identity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "claude-identity-projection-"));
+  const store = new CorptieStore({ dbPath: join(dir, "db.sqlite"), configPath: join(dir, "config.json") });
+  try {
+    await store.initialize();
+    store.upsertSession({ id: "pty:projection", title: "Projection", sessionKind: "assistantChat",
+      provider: "claude-sdk", status: "complete", external: { provider: "claude-sdk", sessionId: "projection", cwd: dir } });
+    const manager = new ClaudeAgentManager({ store });
+    manager.start({ id: "projection", cwd: dir });
+    manager.handleSdkMessage(manager.get("projection"), { type: "system", subtype: "init", session_id: "native-projection" });
+    const stored = store.getSession("pty:projection");
+    assert.equal(stored.external.agentSessionId, "native-projection");
+    store.upsertSession({ ...stored, summary: "Updated after a Provider event" });
+    assert.equal(store.getSession("pty:projection").external.agentSessionId, "native-projection");
+    const restarted = new ClaudeAgentManager({ store });
+    await restarted.reconnect("projection", { startQuery: false });
+    assert.equal(restarted.get("projection").agentSessionId, "native-projection");
+    store.upsertSession({ ...store.getSession("pty:projection"),
+      external: { ...store.getSession("pty:projection").external, agentSessionId: null } });
+    assert.equal(store.getSession("pty:projection").external.agentSessionId, null);
+  } finally { await store.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("legacy repair requires exact cwd and Session evidence and rejects ambiguity", async () => {
   const dir = await mkdtemp(join(tmpdir(), "claude-identity-"));
   try {
@@ -55,4 +78,40 @@ test("missing native identity with prior messages must not silently start fresh"
     getItems: () => [{ type: "agentMessage", text: "history" }]
   }, query: () => assert.fail("must not launch a fresh query") });
   await assert.rejects(manager.reconnect("old"), { code: "PROVIDER_SESSION_UNAVAILABLE" });
+});
+
+test("legacy identity recovery streams transcripts larger than 32 MiB and still rejects ambiguity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "claude-large-identity-"));
+  try {
+    const cwd = await realpath(dir);
+    const project = join(dir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    await mkdir(project, { recursive: true });
+    const input = { configDirectory: dir, cwd, logicalSessionId: "logical:large" };
+    const row = { type: "user", cwd, sessionId: "native-large", message: {
+      content: [{ type: "text", text: '<corptie_direct_user_message_evidence logical_session_id="logical:large" event_id="test">' }]
+    } };
+    const padding = (JSON.stringify({ type: "assistant", text: "x".repeat(65536) }) + "\n").repeat(513);
+    await writeFile(join(project, "native-large.jsonl"), padding + JSON.stringify(row));
+    assert.equal(await recoverClaudeSessionIdentity(input), "native-large");
+    assert.equal(await recoverClaudeSessionIdentity({ ...input, logicalSessionId: "logical:other" }), null);
+    await writeFile(join(project, "native-other.jsonl"), JSON.stringify({ ...row, sessionId: "native-other" }));
+    assert.equal(await recoverClaudeSessionIdentity(input), null);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("legacy identity recovery finds evidence after more than 64 Provider transcripts", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "claude-many-identities-"));
+  try {
+    const cwd = await realpath(dir);
+    const project = join(dir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    await mkdir(project, { recursive: true });
+    for (let index = 0; index < 65; index++) {
+      await writeFile(join(project, `native-${index}.jsonl`), JSON.stringify({ type: "user", cwd,
+        sessionId: `native-${index}`, message: { content: index === 64
+          ? '<corptie_direct_user_message_evidence logical_session_id="logical:many" event_id="test">'
+          : "unrelated" } }));
+    }
+    assert.equal(await recoverClaudeSessionIdentity({ configDirectory: dir, cwd,
+      logicalSessionId: "logical:many" }), "native-64");
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
