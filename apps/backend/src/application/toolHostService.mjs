@@ -7,6 +7,7 @@ import {
   TOOL_RESTRICTED_GATEWAY
 } from "./hostToolCatalog.mjs";
 import { buildToolExposurePlan } from "./toolExposurePlan.mjs";
+import { matchesToolMaterializationGeneration } from "./toolHostMaterializationCoordinator.mjs";
 
 export class ToolHostService {
   constructor(options = {}) {
@@ -34,7 +35,7 @@ export class ToolHostService {
     return this.materializationPort.assertCanonicalToolApplied(logicalSessionId, canonicalName);
   }
 
-  async prepareSession(providerId, context = {}) {
+  async prepareSession(providerId, context = {}, options = {}) {
     const supportsAttachment = this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH);
     const actorId = normalizedText(context.actorId);
     if (!supportsAttachment && !actorId) return null;
@@ -47,13 +48,32 @@ export class ToolHostService {
     let tools;
     const provider = this.registry.get(providerId);
     if (this.coordinator && context.logicalSessionId && context.providerBindingId) {
-      materialization = await this.coordinator.ensureApplied({
-        logicalSessionId: context.logicalSessionId,
-        providerBindingId: context.providerBindingId,
-        desiredDomains: context.desiredToolDomains,
-        activeTurn: context.activeTurn === true,
-        phase: context.purpose === "session-bootstrap" ? "create" : "refresh"
-      });
+      if (options.preparedMaterialization) {
+        const prepared = options.preparedMaterialization;
+        const current = this.coordinator.store.getSessionToolCatalogMaterialization(
+          context.logicalSessionId, context.providerBindingId
+        );
+        if (prepared.record?.logicalSessionId !== context.logicalSessionId
+          || prepared.record?.providerBindingId !== context.providerBindingId
+          || !matchesToolMaterializationGeneration(current, prepared.record)
+          || (current.status === "refreshing" && current.resourceVersion !== prepared.record.resourceVersion)
+          || prepared.snapshot?.catalogVersion !== current.desiredCatalogVersion
+          || this.catalog.snapshot().catalogVersion !== current.desiredCatalogVersion
+          || prepared.plan?.exposurePlanHash !== current.exposurePlan.exposurePlanHash
+          || !["applied", "applying"].includes(prepared.status)
+          || !["applied", "refreshing"].includes(current.status)) {
+          throw toolError("PROVIDER_TOOL_OBSERVATION_STALE", "The prepared Tool Host generation changed before attachment.", 409);
+        }
+        materialization = { ...prepared, record: current };
+      } else {
+        materialization = await this.coordinator.ensureApplied({
+          logicalSessionId: context.logicalSessionId,
+          providerBindingId: context.providerBindingId,
+          desiredDomains: context.desiredToolDomains,
+          activeTurn: context.activeTurn === true,
+          phase: context.purpose === "session-bootstrap" ? "create" : "refresh"
+        });
+      }
       if (!["applied", "applying"].includes(materialization.status)) {
         throw toolError("SESSION_TOOL_CATALOG_REFRESH_FAILED", "Session Tool catalog is not applied at this Turn boundary.");
       }
@@ -309,6 +329,43 @@ export class ToolHostService {
   }
 
   async observeGeneratedMcpToolsList(input = {}) {
+    this.#recordMcpObservation(input, "received");
+    try {
+      const result = await this.#observeGeneratedMcpToolsList(input);
+      this.#recordMcpObservation(input, "accepted", null, result);
+      return result;
+    } catch (error) {
+      this.#recordMcpObservation(input, "rejected", error);
+      throw error;
+    }
+  }
+
+  #recordMcpObservation(input, outcome, error = null, result = null) {
+    // Only explicit identity/version fields cross this diagnostic boundary.
+    // Never spread input, Provider errors, metadata, or returned Tool definitions.
+    try {
+      this.#record({
+        stage: "provider-materialization",
+        status: outcome === "received" ? "info" : outcome === "accepted" ? "success" : "failed",
+        sessionId: normalizedText(input.metadata?.sessionId),
+        logicalSessionId: normalizedText(input.metadata?.logicalSessionId),
+        providerId: normalizedText(input.metadata?.providerId),
+        desiredVersion: normalizedText(input.desiredVersion),
+        appliedVersion: normalizedText(result?.appliedVersion),
+        errorCode: error ? normalizedText(error.code) ?? "PROVIDER_TOOL_OBSERVATION_FAILED" : null,
+        details: {
+          observationKind: "mcp_tools_list",
+          observationOutcome: outcome,
+          observationId: normalizedText(input.observationId),
+          providerBindingId: normalizedText(input.metadata?.providerBindingId)
+        }
+      });
+    } catch {
+      // Diagnostic failures must not change receipt acceptance or hide rejection.
+    }
+  }
+
+  async #observeGeneratedMcpToolsList(input) {
     const scope = exactScope(input);
     await this.coordinator.observeGeneratedMcpToolsList({
       ...scope,
@@ -345,25 +402,36 @@ export class ToolHostService {
   }
 
   async confirmPreparedSession(prepared, options = {}) {
-    if (!prepared?.materialization || prepared.materialization.status === "applied") return prepared;
-    const logicalSessionId = prepared.materialization.record?.logicalSessionId;
-    const providerBindingId = prepared.materialization.record?.providerBindingId;
-    if (!logicalSessionId || !providerBindingId) {
-      throw toolError("SESSION_TOOL_CATALOG_REFRESH_FAILED", "Prepared Tool Host is missing its exact Session binding.");
+    if (!prepared?.materialization) return prepared;
+    const expected = prepared.materialization.record;
+    const logicalSessionId = expected?.logicalSessionId;
+    const providerBindingId = expected?.providerBindingId;
+    if (!matchesToolMaterializationGeneration(expected, expected)) {
+      throw toolError("SESSION_TOOL_CATALOG_REFRESH_FAILED", "Prepared Tool Host is missing its exact Session binding and generation.");
     }
     const timeoutMs = Number(options.timeoutMs ?? 5_000);
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    // Inspect at least once, including an already-applied preparation or zero timeout.
+    while (true) {
       const record = this.coordinator.store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
-      if (record?.status === "applied" && record.appliedVersion === record.desiredVersion) return { ...prepared, materialization: { ...prepared.materialization, status: "applied", record } };
-      if (["error", "canceled"].includes(record?.status)) break;
+      if (!matchesToolMaterializationGeneration(record, expected)) {
+        throw toolError("PROVIDER_TOOL_OBSERVATION_STALE", "The prepared Tool Host generation changed while awaiting confirmation.", 409);
+      }
+      if (record.status === "applied"
+        && record.appliedVersion === expected.desiredVersion
+        && record.appliedCatalogVersion === expected.desiredCatalogVersion
+        && record.providerReceipt?.appliedExposurePlanHash === expected.exposurePlan.exposurePlanHash) {
+        return { ...prepared, materialization: { ...prepared.materialization, status: "applied", record } };
+      }
+      if (["error", "canceled"].includes(record.status) || !(Date.now() < deadline)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     await this.coordinator.failPendingApplication(
       logicalSessionId,
       providerBindingId,
       "PROVIDER_TOOL_APPLICATION_UNCONFIRMED",
-      "Provider did not confirm the requested Tool materialization before the Turn gate timeout."
+      "Provider did not confirm the requested Tool materialization before the Turn gate timeout.",
+      expected
     );
     throw toolError("PROVIDER_TOOL_APPLICATION_UNCONFIRMED", "Provider did not confirm the requested Tool materialization.", 503);
   }

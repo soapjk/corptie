@@ -1,4 +1,5 @@
 import { AGENT_PROVIDER_CAPABILITIES, AgentProviderNotFoundError } from "./contracts.mjs";
+import { SingleFlight } from "../utils/singleFlight.mjs";
 import { SESSION_COMMAND_CATALOG, validateSessionCommand, sessionCommandAvailability,
   sessionCommandPermissions, sessionCommandError } from "../commands/sessionCommandCatalog.mjs";
 
@@ -27,6 +28,7 @@ export class SessionApplicationService {
     this.toolMaterializationPort = options.toolMaterializationPort ?? null;
     this.resolveRequiredToolDomains = options.resolveRequiredToolDomains ?? (() => []);
     this.observeLifecycle = options.observeLifecycle ?? (() => {});
+    this.toolReadinessFlights = new SingleFlight();
     if (!this.registry) throw new TypeError("SessionApplicationService requires an Agent Provider Registry.");
     if (typeof this.resolveSessionReference !== "function") {
       throw new TypeError("SessionApplicationService requires resolveSessionReference().");
@@ -120,7 +122,51 @@ export class SessionApplicationService {
       throw error;
     }
     if (context.deferToolHostFinalization !== true) {
-      await this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference);
+      try {
+        await this.#finalizeCreatedSessionTools(providerId, preparedInput, context, reference);
+      } catch (error) {
+        // Another committed route now owns this logical Session. Never let stale
+        // creation cleanup tombstone or detach the replacement binding.
+        if (error?.cause?.code === "SESSION_BINDING_CHANGED") throw error;
+        const failedReference = {
+          sessionId: reference?.sessionId ?? session.id,
+          logicalSessionId: reference?.logicalSessionId ?? null,
+          bindingId: reference?.bindingId ?? reference?.providerBindingId ?? null,
+          providerId,
+          providerSessionId: reference?.providerSessionId
+            ?? session.external?.sessionId
+            ?? session.external?.threadId
+            ?? session.id
+        };
+        try {
+          await this.registry.invoke(
+            providerId,
+            AGENT_PROVIDER_CAPABILITIES.SESSION_DELETE,
+            failedReference,
+            context
+          );
+        } catch (cleanupError) {
+          this.observeLifecycle({
+            type: "SessionCreationCleanupFailed",
+            providerId,
+            sessionId: failedReference.sessionId,
+            errorCode: cleanupError?.code ?? "PROVIDER_CLEANUP_FAILED"
+          });
+        }
+        if (this.removeSessionBinding) {
+          try {
+            await this.removeSessionBinding({ reference: failedReference });
+          } catch (cleanupError) {
+            this.observeLifecycle({
+              type: "SessionCreationCleanupFailed",
+              providerId,
+              sessionId: failedReference.sessionId,
+              errorCode: cleanupError?.code ?? "LOCAL_BINDING_CLEANUP_FAILED"
+            });
+          }
+        }
+        throw error;
+      }
     }
     return this.decorateLifecycleSession(providerId, session, reference);
   }
@@ -129,34 +175,26 @@ export class SessionApplicationService {
     const actorId = normalizedText(context.actorId ?? input.toolHost?.actorId);
     if (!reference || !this.toolHostService || !actorId) return;
     if (!this.registry.supports(providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH)) return;
-    this.registry.requireCapability(providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME);
-    const finalizationContext = this.#materializationContext({
-      ...context,
-      purpose: "session-create-finalization",
-      actorId,
-      sessionId: reference.sessionId,
-      logicalSessionId: reference.logicalSessionId ?? null,
-      ...(reference.bindingId ?? reference.providerBindingId
-        ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
-        : {}),
-      sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
-      workId: context.workId ?? null,
-      taskId: context.taskId ?? null
-    });
     try {
-      const toolHost = await this.toolHostService.prepareSession(providerId, finalizationContext);
-      await this.registry.invoke(
-        providerId,
-        AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
-        reference,
-        toolHost ? { ...finalizationContext, toolHost } : finalizationContext
-      );
-      if (toolHost?.materialization?.status === "applying") {
-        await this.toolHostService.confirmPreparedSession(toolHost);
-      }
-      // Generated MCP catalogs are observed only after the Provider starts.
-      // Keep the strict domain gate, but run it after attachment and confirmation.
-      await this.#ensureRequiredDomains(finalizationContext);
+      await this.ensureActiveBindingToolsReady(reference.sessionId, {
+        ...context,
+        purpose: "session-create-finalization",
+        actorId,
+        sessionKind: context.sessionKind ?? input.sessionKind ?? "legacy",
+        expectedLogicalSessionId: reference.logicalSessionId ?? null,
+        expectedProviderBindingId: reference.bindingId ?? reference.providerBindingId ?? null,
+        expectedProviderSessionId: reference.providerSessionId ?? null,
+        expectedRoutingVersion: reference.routingVersion ?? null,
+        ...((reference.providerSessionId
+          && (reference.bindingId ?? reference.providerBindingId)
+          && reference.routingVersion != null) ? {
+          resolvedReference: {
+            ...reference,
+            providerId: reference.providerId ?? providerId
+          }
+        } : {}),
+        forceProviderResume: true
+      });
     } catch (cause) {
       const error = new Error(`Session Tool Host finalization failed: ${cause?.message ?? cause}`);
       error.code = "SESSION_TOOL_MATERIALIZATION_FAILED";
@@ -178,37 +216,142 @@ export class SessionApplicationService {
   }
 
   async resumeSession(sessionId, context = {}) {
-    const reference = await this.referenceFor(sessionId);
-    assertTaskNotArchived(reference);
-    const storedSession = reference.metadata?.session ?? null;
-    const actorId = normalizedText(context.actorId ?? storedSession?.agentId);
-    const resumeContext = this.#materializationContext({
+    const ready = await this.ensureActiveBindingToolsReady(sessionId, {
       ...context,
       purpose: normalizedText(context.purpose) ?? "session-resume",
+      forceProviderResume: true
+    });
+    return this.decorateLifecycleSession(ready.reference.providerId, ready.providerSession, ready.reference);
+  }
+
+  async ensureActiveBindingToolsReady(sessionId, context = {}) {
+    const reference = context.resolvedReference
+      ? normalizeSessionReference(context.resolvedReference, sessionId)
+      : await this.referenceFor(sessionId);
+    assertTaskNotArchived(reference);
+    assertExpectedBinding(reference, context);
+    const storedSession = reference.metadata?.session ?? context.before ?? null;
+    const actorId = normalizedText(storedSession?.agentId) ?? normalizedText(context.actorId);
+    const {
+      expectedLogicalSessionId: _expectedLogicalSessionId,
+      expectedProviderBindingId: _expectedProviderBindingId,
+      expectedProviderSessionId: _expectedProviderSessionId,
+      expectedRoutingVersion: _expectedRoutingVersion,
+      resolvedReference: _resolvedReference,
+      forceProviderResume: _forceProviderResume,
+      ...providerContext
+    } = context;
+    const readinessContext = this.#materializationContext({
+      ...providerContext,
+      purpose: normalizedText(context.purpose) ?? "session-tool-readiness",
       actorId,
       sessionId: reference.sessionId,
       logicalSessionId: reference.logicalSessionId ?? null,
       sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
-      workId: storedSession?.workId ?? context.workId ?? null,
-      taskId: storedSession?.taskId ?? context.taskId ?? null,
-      ...(reference.bindingId ?? reference.providerBindingId
-        ? { providerBindingId: reference.bindingId ?? reference.providerBindingId }
-        : {})
+      workId: normalizedText(storedSession?.workId) ?? normalizedText(context.workId),
+      taskId: normalizedText(storedSession?.taskId) ?? normalizedText(context.taskId),
+      ...(reference.bindingId ? { providerBindingId: reference.bindingId } : {})
     });
-    const toolHost = this.toolHostService && actorId
-      ? await this.toolHostService.prepareSession(reference.providerId, resumeContext)
+    const attachesToolHost = Boolean(this.toolHostService
+      && readinessContext.actorId
+      && this.registry.supports(
+        reference.providerId,
+        AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+      ));
+    const key = [
+      reference.logicalSessionId ?? reference.sessionId,
+      reference.bindingId ?? "unbound",
+      reference.providerSessionId,
+      reference.routingVersion ?? "unversioned",
+      normalizedText(readinessContext.actorId) ?? "actorless",
+      normalizedText(readinessContext.workId) ?? "workless",
+      normalizedText(readinessContext.taskId) ?? "taskless",
+      readinessContext.activeTurn === true ? "active-turn" : "idle-turn",
+      readinessContext.sessionKind,
+      context.forceProviderResume === true ? "forced-resume" : "readiness",
+      attachesToolHost ? "attachment" : "gate",
+      ...readinessContext.desiredToolDomains
+    ].join("\0");
+    const lookupSessionId = reference.requestedSessionId
+      ?? reference.logicalSessionId
+      ?? reference.sessionId;
+    let ownsPreparation = false;
+    const ready = await this.toolReadinessFlights.run(key, () => {
+      ownsPreparation = true;
+      return this.#prepareActiveBindingTools(reference, readinessContext, { ...context, lookupSessionId });
+    });
+    if (ownsPreparation) return ready;
+    // Every joining waiter owns its route/scope fences, even when another lifecycle
+    // purpose performed the shared Provider preparation.
+    const current = await this.referenceFor(lookupSessionId);
+    assertSameBinding(reference, current);
+    assertSameToolScope(reference, current);
+    assertExpectedBinding(current, context);
+    await this.#ensureDomains(readinessContext, readinessContext.desiredToolDomains);
+    const finalReference = await this.referenceFor(lookupSessionId);
+    assertSameBinding(current, finalReference);
+    assertSameToolScope(current, finalReference);
+    assertExpectedBinding(finalReference, context);
+    return ready;
+  }
+
+  async #prepareActiveBindingTools(reference, readinessContext, options) {
+    const desiredDomains = readinessContext.desiredToolDomains;
+    const canAttach = this.toolHostService
+      && readinessContext.actorId
+      && this.registry.supports(reference.providerId, AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH);
+    let preparedMaterialization = null;
+    if (options.forceProviderResume !== true) {
+      try {
+        const materialization = await this.#ensureDomains(readinessContext, desiredDomains);
+        const current = await this.referenceFor(options.lookupSessionId ?? reference.sessionId);
+        assertSameBinding(reference, current);
+        assertSameToolScope(reference, current);
+        assertExpectedBinding(current, options);
+        return Object.freeze({
+          reference: current,
+          providerSession: current.metadata?.session ?? null,
+          materialization
+        });
+      } catch (error) {
+        if (!canAttach || !providerObservationCanBeRepaired(error)) throw error;
+        preparedMaterialization = error.preparedMaterialization ?? null;
+      }
+    }
+    const toolHost = canAttach
+      ? await this.toolHostService.prepareSession(reference.providerId, readinessContext, {
+        preparedMaterialization
+      })
       : null;
-    const session = await this.registry.invoke(
-      reference.providerId,
-      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
-      reference,
-      toolHost ? { ...resumeContext, toolHost } : resumeContext
+    const preparedReference = await this.referenceFor(
+      options.lookupSessionId ?? reference.sessionId
     );
+    assertSameBinding(reference, preparedReference);
+    assertSameToolScope(reference, preparedReference);
+    assertExpectedBinding(preparedReference, options);
+    let providerSession = reference.metadata?.session ?? null;
+    if (toolHost || options.forceProviderResume === true) {
+      this.registry.requireCapability(reference.providerId, AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME);
+      providerSession = await this.registry.invoke(
+        reference.providerId,
+        AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+        reference,
+        toolHost ? { ...readinessContext, toolHost } : readinessContext
+      );
+    }
     if (toolHost?.materialization?.status === "applying") {
       await this.toolHostService.confirmPreparedSession(toolHost);
     }
-    await this.#ensureRequiredDomains(resumeContext);
-    return this.decorateLifecycleSession(reference.providerId, session, reference);
+    const materialization = await this.#ensureDomains(readinessContext, desiredDomains);
+    const current = await this.referenceFor(options.lookupSessionId ?? reference.sessionId);
+    assertSameBinding(reference, current);
+    assertSameToolScope(reference, current);
+    assertExpectedBinding(current, options);
+    return Object.freeze({
+      reference: current,
+      providerSession: providerSession ?? current.metadata?.session ?? null,
+      materialization
+    });
   }
 
   async prepareExecution(sessionId, context = {}) {
@@ -272,23 +415,36 @@ export class SessionApplicationService {
   }
 
   async #ensureRequiredDomains(context) {
+    return this.#ensureDomains(context, this.resolveRequiredToolDomains(context));
+  }
+
+  async #ensureDomains(context, domains) {
     if (!this.toolMaterializationPort) return null;
-    const domains = this.resolveRequiredToolDomains(context);
-    if (!Array.isArray(domains) || domains.length === 0) return null;
+    const requestedDomains = Array.isArray(domains) ? domains : [];
     const logicalSessionId = normalizedText(context.logicalSessionId ?? context.sessionId);
     if (!logicalSessionId) {
       const error = new Error("Required Tool domains need an authenticated logical Session.");
       error.code = "SESSION_BINDING_CHANGED";
       throw error;
     }
-    return this.toolMaterializationPort.ensureDomainsApplied(logicalSessionId, domains, {
+    const boundary = {
       turnExecutionId: context.turnExecutionId ?? context.turnId ?? null,
       purpose: context.purpose,
       activeTurn: context.activeTurn === true,
       ...(context.allowPendingProviderObservation === true
         ? { allowPendingProviderObservation: true }
         : {})
-    });
+    };
+    if (requestedDomains.length > 0) {
+      return this.toolMaterializationPort.ensureDomainsApplied(
+        logicalSessionId,
+        requestedDomains,
+        boundary
+      );
+    }
+    return typeof this.toolMaterializationPort.ensureCurrentApplied === "function"
+      ? this.toolMaterializationPort.ensureCurrentApplied(logicalSessionId, boundary)
+      : null;
   }
 
   #materializationContext(context = {}) {
@@ -495,30 +651,47 @@ export class SessionApplicationService {
   }
 
   async sendMessage(sessionId, message, context = {}) {
-    const reference = await this.referenceFor(sessionId);
-    assertTaskNotArchived(reference);
-    await this.assertMessageDispatchAllowed?.(reference, context);
-    const storedSession = reference.metadata?.session ?? context.before ?? null;
-    await this.#ensureRequiredDomains(this.#materializationContext({
-      ...context,
-      purpose: "conversation-turn-boundary",
-      actorId: normalizedText(context.actorId ?? storedSession?.agentId),
-      sessionId: reference.sessionId,
-      logicalSessionId: reference.logicalSessionId,
-      providerBindingId: reference.bindingId,
-      sessionKind: storedSession?.sessionKind ?? context.sessionKind ?? "legacy",
-      workId: storedSession?.workId ?? context.workId ?? null,
-      taskId: storedSession?.taskId ?? context.taskId ?? null,
-      activeTurn: false,
-      allowPendingProviderObservation: true
-    }));
-    const sessionContext = this.resolveMessageContext
-      ? await this.resolveMessageContext(reference, { ...context, message })
-      : null;
+    let reference;
+    try {
+      reference = await this.referenceFor(sessionId);
+      assertTaskNotArchived(reference);
+      await this.assertMessageDispatchAllowed?.(reference, context);
+    } catch (error) {
+      throw withDispatchStateNotSent(error);
+    }
+    let ready;
+    try {
+      ready = await this.ensureActiveBindingToolsReady(reference.requestedSessionId, {
+        ...context,
+        purpose: "conversation-turn-boundary",
+        resolvedReference: reference,
+        expectedLogicalSessionId: reference.logicalSessionId,
+        expectedProviderBindingId: reference.bindingId,
+        expectedProviderSessionId: reference.providerSessionId,
+        expectedRoutingVersion: reference.routingVersion,
+        activeTurn: false
+      });
+    } catch (error) {
+      throw withDispatchStateNotSent(error);
+    }
+    const prepared = ready.reference;
+    let sessionContext;
+    let dispatchReference;
+    try {
+      await this.assertMessageDispatchAllowed?.(prepared, context);
+      sessionContext = this.resolveMessageContext
+        ? await this.resolveMessageContext(prepared, { ...context, message })
+        : null;
+      dispatchReference = await this.referenceFor(prepared.requestedSessionId);
+      assertSameBinding(prepared, dispatchReference);
+      await this.assertMessageDispatchAllowed?.(dispatchReference, context);
+    } catch (error) {
+      throw withDispatchStateNotSent(error);
+    }
     return this.registry.invoke(
-      reference.providerId,
+      dispatchReference.providerId,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND,
-      reference,
+      dispatchReference,
       message,
       sessionContext ? { ...context, sessionContext } : context
     );
@@ -642,20 +815,10 @@ export class SessionApplicationService {
   async referenceFor(sessionId) {
     const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!normalizedSessionId) throw new SessionNotFoundError(String(sessionId ?? ""));
-    const reference = await this.resolveSessionReference(normalizedSessionId);
-    if (!reference?.providerId || !reference?.providerSessionId) {
-      throw new SessionNotFoundError(normalizedSessionId);
-    }
-    return Object.freeze({
-      sessionId: reference.sessionId ?? normalizedSessionId,
-      requestedSessionId: reference.requestedSessionId ?? normalizedSessionId,
-      logicalSessionId: reference.logicalSessionId ?? null,
-      bindingId: reference.bindingId ?? null,
-      providerId: reference.providerId,
-      providerSessionId: reference.providerSessionId,
-      routingVersion: reference.routingVersion ?? null,
-      metadata: reference.metadata ?? {}
-    });
+    return normalizeSessionReference(
+      await this.resolveSessionReference(normalizedSessionId),
+      normalizedSessionId
+    );
   }
 
   decorateLifecycleSession(providerId, session, reference = null) {
@@ -683,6 +846,89 @@ export function validateReasoningLevelForModel({ modelId, reasoningLevel, models
   const error = new RangeError(`Reasoning level ${reasoningLevel} is not supported by model ${modelId}.`);
   error.code = "UNSUPPORTED_REASONING_LEVEL";
   throw error;
+}
+
+function normalizeSessionReference(reference, requestedSessionId) {
+  const normalizedSessionId = normalizedText(requestedSessionId);
+  if (!normalizedSessionId || !reference?.providerId || !reference?.providerSessionId) {
+    throw new SessionNotFoundError(normalizedSessionId ?? String(requestedSessionId ?? ""));
+  }
+  return Object.freeze({
+    sessionId: reference.sessionId ?? normalizedSessionId,
+    requestedSessionId: reference.requestedSessionId ?? normalizedSessionId,
+    logicalSessionId: reference.logicalSessionId ?? null,
+    bindingId: reference.bindingId ?? reference.providerBindingId ?? null,
+    providerId: reference.providerId,
+    providerSessionId: reference.providerSessionId,
+    routingVersion: reference.routingVersion ?? null,
+    metadata: reference.metadata ?? (reference.session ? { session: reference.session } : {})
+  });
+}
+
+function assertExpectedBinding(reference, expected = {}) {
+  const mismatched = (expected.expectedLogicalSessionId != null
+      && reference.logicalSessionId !== expected.expectedLogicalSessionId)
+    || (expected.expectedProviderBindingId != null
+      && reference.bindingId !== expected.expectedProviderBindingId)
+    || (expected.expectedProviderSessionId != null
+      && reference.providerSessionId !== expected.expectedProviderSessionId)
+    || (expected.expectedRoutingVersion != null
+      && reference.routingVersion !== expected.expectedRoutingVersion);
+  if (!mismatched) return;
+  const error = new Error("The Provider binding generation changed during Tool Host readiness.");
+  error.code = "SESSION_BINDING_CHANGED";
+  error.statusCode = 409;
+  throw error;
+}
+
+function assertSameBinding(expected, current) {
+  const matches = current.logicalSessionId === expected.logicalSessionId
+    && current.bindingId === expected.bindingId
+    && current.providerId === expected.providerId
+    && current.providerSessionId === expected.providerSessionId
+    && current.routingVersion === expected.routingVersion;
+  if (matches) return;
+  const error = new Error("The Provider binding generation changed during Tool Host readiness.");
+  error.code = "SESSION_BINDING_CHANGED";
+  error.statusCode = 409;
+  throw error;
+}
+
+function assertSameToolScope(expected, current) {
+  const expectedSession = expected.metadata?.session ?? null;
+  const currentSession = current.metadata?.session ?? null;
+  const fields = ["agentId", "workId", "taskId", "sessionKind"];
+  if (fields.every((field) => (
+    normalizedText(currentSession?.[field]) === normalizedText(expectedSession?.[field])
+  ))) return;
+  const error = new Error("The Session Tool authorization scope changed during readiness.");
+  error.code = "SESSION_BINDING_CHANGED";
+  error.statusCode = 409;
+  throw error;
+}
+
+function providerObservationCanBeRepaired(error) {
+  return error?.recoveryAction === "observe_generated_mcp";
+}
+
+function withDispatchStateNotSent(error) {
+  if (error != null && (typeof error === "object" || typeof error === "function")) {
+    if (error.dispatchState === "not_sent") return error;
+    try {
+      error.dispatchState = "not_sent";
+      if (error.dispatchState === "not_sent") return error;
+    } catch {
+      // Frozen Provider errors are wrapped below without losing their structured fields.
+    }
+  }
+  const wrapped = new Error(error?.message ?? String(error), {
+    ...(error instanceof Error ? { cause: error } : {})
+  });
+  for (const field of ["code", "statusCode", "stage", "recoveryAction", "replacementReason"]) {
+    if (error?.[field] != null) wrapped[field] = error[field];
+  }
+  wrapped.dispatchState = "not_sent";
+  return wrapped;
 }
 
 function restartAudit(reference, context) {
