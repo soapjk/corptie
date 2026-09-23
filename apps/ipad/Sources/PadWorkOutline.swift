@@ -213,10 +213,11 @@ struct PadWorkOutline: View {
         let activity = workspace.activityByTaskID[task.id]
             ?? .resolve(hasBinding: sessionID != nil, sessionExecutionStatus: workspace.executionByTaskID[task.id],
                         taskExecutionStatus: task.executionStatus)
-        let available = sessionID.map { !workspace.sessionIsKnownUnavailable($0) } ?? false
         let isDeleting = task.deletionStatus == "deleting"
         return Button {
-            workspace.selection = sessionID
+            if let sessionID, !workspace.sessionIsKnownUnavailable(sessionID) {
+                workspace.selection = sessionID
+            }
         } label: {
             HStack(spacing: WorkOutlineMetrics.rowSpacing) {
                 TaskActivityIndicator(activity: activity, lifecycleState: task.lifecycleState)
@@ -240,8 +241,8 @@ struct PadWorkOutline: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(isDeleting || !available)
-        .accessibilityValue(available ? activity.labelKey : "会话不可用")
+        .disabled(isDeleting)
+        .accessibilityValue(activity.labelKey)
         .accessibilityIdentifier("work-task-\(task.id)")
         .contextMenu {
             Button {

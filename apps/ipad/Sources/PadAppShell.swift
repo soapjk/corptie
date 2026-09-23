@@ -10,42 +10,48 @@ struct PadAppShell: View {
     @State private var controls = PadControlStore()
     @State private var tab = PadTab.workspace
     @State private var sheet: Sheet?
+    @State private var isKeyboardVisible = false
     private enum Sheet: String, Identifiable { case settings; var id: String { rawValue } }
 
     var body: some View {
-        TabView(selection: $tab) {
-            WorkspaceView(connection: connection, workspace: workspace, settings: { sheet = .settings })
-                .tag(PadTab.workspace)
-                .tabItem { Label(PadTab.workspace.title, systemImage: PadTab.workspace.symbol) }
-                .toolbar(.hidden, for: .tabBar)
-            ForEach([PadTab.automations, .worktrees, .agents]) { page in
-                PadControlView(tab: page, connection: connection, store: controls,
-                    settings: { sheet = .settings }, openSession: { id in
-                        workspace.selection = id
-                        tab = .workspace
-                    })
-                    .tag(page)
-                    .tabItem { Label(page.title, systemImage: page.symbol) }
-                    .toolbar(.hidden, for: .tabBar)
+        VStack(spacing: 0) {
+            ZStack {
+                WorkspaceView(connection: connection, workspace: workspace, settings: { sheet = .settings })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(tab == .workspace ? 1 : 0)
+                    .allowsHitTesting(tab == .workspace)
+                ForEach([PadTab.automations, .worktrees, .agents]) { page in
+                    PadControlView(tab: page, connection: connection, store: controls,
+                        settings: { sheet = .settings }, openSession: { id in
+                            workspace.selection = id
+                            tab = .workspace
+                        })
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(tab == page ? 1 : 0)
+                        .allowsHitTesting(tab == page)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if !isKeyboardVisible {
+                PadBottomTabBar(selection: $tab)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .ignoresSafeArea(.keyboard)
         .background {
             Color(uiColor: .systemGroupedBackground)
                 .ignoresSafeArea()
         }
         .background { PadKeyboardDismissal().frame(width: 0, height: 0) }
-        // iPadOS places TabView's standard bar at the top. Use the public native
-        // UITabBar as the bottom selector, without falsifying content size classes.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            PadBottomTabBar(selection: $tab)
-                .frame(height: 49)
-                .background {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
-                        .ignoresSafeArea(edges: .bottom)
-                }
-        }
+        .ignoresSafeArea(.container, edges: .top)
         .sheet(item: $sheet) { _ in PadSettingsView(connection: connection, workspace: workspace) }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
+        }
         .task { await workspace.inventory(connection) }
         .task(id: scenePhase == .active ? workspace.reconciliationKey(connection) : nil) {
             guard scenePhase == .active else { return }
@@ -63,34 +69,36 @@ struct PadAppShell: View {
     }
 }
 
-private struct PadBottomTabBar: UIViewRepresentable {
+private struct PadBottomTabBar: View {
     @Binding var selection: PadTab
-    func makeCoordinator() -> Coordinator { Coordinator(selection: $selection) }
-    func makeUIView(context: Context) -> UITabBar {
-        let bar = UITabBar()
-        let appearance = UITabBarAppearance()
-        appearance.configureWithTransparentBackground()
-        appearance.backgroundColor = .clear
-        bar.standardAppearance = appearance
-        bar.scrollEdgeAppearance = appearance
-        bar.backgroundColor = .clear
-        bar.isTranslucent = true
-        bar.backgroundImage = UIImage()
-        bar.shadowImage = UIImage()
-        bar.items = PadTab.allCases.map { UITabBarItem(title: $0.title, image: UIImage(systemName: $0.symbol), tag: $0.rawValue) }
-        bar.itemPositioning = .fill
-        bar.delegate = context.coordinator
-        return bar
-    }
-    func updateUIView(_ bar: UITabBar, context: Context) {
-        context.coordinator.selection = $selection
-        bar.selectedItem = bar.items?.first { $0.tag == selection.rawValue }
-    }
-    final class Coordinator: NSObject, UITabBarDelegate {
-        var selection: Binding<PadTab>
-        init(selection: Binding<PadTab>) { self.selection = selection }
-        func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
-            if let tab = PadTab(rawValue: item.tag) { selection.wrappedValue = tab }
+    var body: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 0) {
+                ForEach(PadTab.allCases) { item in
+                    Button {
+                        selection = item
+                    } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: item.symbol)
+                                .font(.system(size: 18, weight: selection == item ? .semibold : .regular))
+                            Text(item.title)
+                                .font(.system(size: 10, weight: selection == item ? .medium : .regular))
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(selection == item ? Color.accentColor : Color.secondary)
+                    .accessibilityIdentifier("tab-\(item.rawValue)")
+                }
+            }
+            .frame(height: 49)
+        }
+        .background {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea(edges: .bottom)
         }
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import CorptieClientCore
-@testable import CorptiePadState
+@testable import CorptieMobileState
 
 /// The status row's usage is a bounded read: once per applied timeline window,
 /// never on a timer, and a host without a usage reader clears it instead of failing.

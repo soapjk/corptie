@@ -279,10 +279,18 @@ final class PadWorkspace {
     }
 
     func rebuildGroups() {
-        // The desktop outline hides archived Tasks (`archived != true`); keep the index on the same filter.
-        tasksByWork = Dictionary(grouping: tasks.filter { !$0.archived }, by: \.workId)
-        discussionsByWork = Dictionary(grouping: sessions.filter { $0.sessionKind == "workChat" && $0.workId != nil }, by: { $0.workId! })
+        // The desktop outline hides archived Tasks (`archived != true`) and completed Tasks (`lifecycleState != "done"`).
+        // Also filter tasks whose bound currentSessionId is known unavailable (session was archived by effectiveSessionArchivedSQL).
         sessionsByID = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        tasksByWork = Dictionary(grouping: tasks.filter { task in
+            guard !task.archived && task.lifecycleState != "done" else { return false }
+            if let sessionID = task.currentSessionId, !sessionID.isEmpty,
+               sessionCursor == nil && sessionsByID[sessionID] == nil {
+                return false
+            }
+            return true
+        }, by: \.workId)
+        discussionsByWork = Dictionary(grouping: sessions.filter { $0.sessionKind == "workChat" && $0.workId != nil }, by: { $0.workId! })
         let independent = sessions.filter { $0.workId == nil }
         if independentSessions != independent { independentSessions = independent }
         var execution: [String: String] = [:]
