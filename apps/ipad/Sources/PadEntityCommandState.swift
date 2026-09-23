@@ -130,7 +130,11 @@ final class PadEntityCommandState {
         switch receipt.status {
         case "completed":
             outcome = Outcome(pending: pending, status: "completed", errorCode: nil, result: receipt.entityResult)
-            self.pending = nil; flush(); notice = "\(pending.label)已完成。"
+            self.pending = nil
+            flush()
+            notice = pending.kind == "task_delete"
+                ? "Task 删除请求已提交，后台清理状态会随列表更新。"
+                : "\(pending.label)已完成。"
         case "rejected":
             outcome = Outcome(pending: pending, status: "rejected", errorCode: receipt.errorCode, result: nil)
             self.pending = nil; flush()
