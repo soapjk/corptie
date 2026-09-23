@@ -5,7 +5,6 @@ struct PadControlView: View {
     let tab: PadTab
     let connection: PadConnection
     @Bindable var store: PadControlStore
-    let settings: () -> Void
     let openSession: (String) -> Void
     private var selection: Binding<PadControlSelection?> {
         Binding(get: { store.routes[tab] }, set: { value in
@@ -44,7 +43,6 @@ struct PadControlView: View {
             }
             .navigationTitle(tab.title)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("设置", systemImage: "gearshape") { settings() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("刷新", systemImage: "arrow.clockwise") {
                         Task { for kind in tab.resources { await store.refresh(kind, connection: connection) } }

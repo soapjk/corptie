@@ -53,6 +53,14 @@ public enum MessageBubbleWidthPolicy {
         let preferred = preferredWidth(bodyWidth: bodyWidth, availableWidth: fullAvailable)
         return hasAttachments ? min(fullAvailable, max(attachmentMinimumWidth, preferred)) : preferred
     }
+
+    /// Process cards expand to the whole bounded lane; collapsed cards retain a
+    /// compact summary width, matching the desktop timeline.
+    public static func processCardWidth(summaryWidth: CGFloat, expanded: Bool, laneWidth: CGFloat) -> CGFloat {
+        let fullAvailable = fullAvailableWidth(laneWidth: laneWidth)
+        guard !expanded else { return fullAvailable }
+        return min(fullAvailable, max(collapsedProcessWidth, summaryWidth + 58))
+    }
 }
 
 /// Attachment strip inside a message card: up to four 88pt thumbnails, 7pt apart,
