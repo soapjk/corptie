@@ -40,6 +40,39 @@ struct CommandConfirmation: Identifiable {
     let deviceID: String?
 }
 
+/// Deduplicates automatic history requests emitted by scroll geometry. Near-top
+/// requests rearm only after the reader leaves the threshold; underfilled
+/// timelines may bootstrap a bounded number of pages, matching the Mac client.
+struct PadHistoryAutoLoadGate: Equatable {
+    private(set) var nearTopTriggered = false
+    private(set) var underfilledRequestCount = 0
+    private(set) var lastUnderfilledCursor: String?
+
+    mutating func requestCursor(
+        before: String?,
+        nearTop: Bool,
+        underfilled: Bool,
+        allowsNearTopRequest: Bool,
+        isLoading: Bool,
+        connectionBusy: Bool
+    ) -> String? {
+        if !nearTop { nearTopTriggered = false }
+        guard let before, !isLoading, !connectionBusy else { return nil }
+
+        if underfilled {
+            guard underfilledRequestCount < 4,
+                  lastUnderfilledCursor != before else { return nil }
+            lastUnderfilledCursor = before
+            underfilledRequestCount += 1
+            return before
+        }
+
+        guard nearTop, allowsNearTopRequest, !nearTopTriggered else { return nil }
+        nearTopTriggered = true
+        return before
+    }
+}
+
 @MainActor @Observable
 final class PadWorkspace {
     var works: [ClientWork] = []

@@ -6,6 +6,10 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v17)],
     products: [.library(name: "CorptieConversation", targets: ["CorptieConversation"])],
     dependencies: [.package(path: "../CorptieClientCore")],
-    targets: [.target(name: "CorptieConversation", dependencies: [
-        .product(name: "CorptieClientCore", package: "CorptieClientCore")])]
+    targets: [
+        .target(name: "CorptieConversation", dependencies: [
+            .product(name: "CorptieClientCore", package: "CorptieClientCore")
+        ]),
+        .testTarget(name: "CorptieConversationTests", dependencies: ["CorptieConversation"])
+    ]
 )

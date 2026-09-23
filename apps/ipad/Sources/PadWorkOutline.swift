@@ -194,12 +194,14 @@ struct PadWorkOutline: View {
             } label: {
                 Label("编辑", systemImage: "square.and.pencil")
             }
+            .disabled(entityCommands.isBusy)
             Divider()
             Button(role: .destructive) {
                 onEntityRoute(.deleteWork(work))
             } label: {
                 Label("删除", systemImage: "trash")
             }
+            .disabled(entityCommands.isBusy)
         }
     }
 
@@ -250,14 +252,14 @@ struct PadWorkOutline: View {
             } label: {
                 Label("重命名", systemImage: "pencil")
             }
-            .disabled(isDeleting)
+            .disabled(isDeleting || entityCommands.isBusy)
 
             Button {
                 onEntityRoute(.editTask(task))
             } label: {
                 Label("编辑", systemImage: "square.and.pencil")
             }
-            .disabled(isDeleting)
+            .disabled(isDeleting || entityCommands.isBusy)
 
             Button {
                 Task {
@@ -269,7 +271,7 @@ struct PadWorkOutline: View {
             } label: {
                 Label("重启 Task", systemImage: "arrow.clockwise")
             }
-            .disabled(isDeleting || sessionID == nil)
+            .disabled(isDeleting || entityCommands.isBusy || sessionID == nil)
 
             Button {
                 let willArchive = !task.archived
@@ -282,7 +284,7 @@ struct PadWorkOutline: View {
             } label: {
                 Label(task.archived ? "恢复 Task" : "归档 Task", systemImage: "archivebox")
             }
-            .disabled(isDeleting)
+            .disabled(isDeleting || entityCommands.isBusy)
 
             Divider()
 
@@ -291,7 +293,7 @@ struct PadWorkOutline: View {
             } label: {
                 Label("删除", systemImage: "trash")
             }
-            .disabled(isDeleting)
+            .disabled(isDeleting || entityCommands.isBusy)
         }
     }
 
