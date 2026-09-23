@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import CorptieClientCore
-@testable import CorptiePadState
+@testable import CorptieMobileState
 
 /// Work / Task management commands: one persisted request id, no replay, receipt-driven outcome.
 @MainActor @Suite(.serialized)

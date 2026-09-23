@@ -1,4 +1,4 @@
-name: CorptiePad
+name: CorptieMobile
 options:
   deploymentTarget:
     iOS: '17.0'
@@ -12,8 +12,10 @@ settings:
     SWIFT_VERSION: '6.0'
     TARGETED_DEVICE_FAMILY: '1,2'
     SUPPORTS_MACCATALYST: NO
+    DEVELOPMENT_TEAM: RUT4Z5DWDP
+    CODE_SIGN_STYLE: Automatic
 targets:
-  CorptiePad:
+  CorptieMobile:
     type: application
     platform: iOS
     sources: [Sources]
@@ -26,6 +28,7 @@ targets:
         product: CorptieClientSecurity
     settings:
       base:
+        PRODUCT_NAME: CorptieMobile
         PRODUCT_BUNDLE_IDENTIFIER: com.corptie.ipad.development
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Corptie
@@ -35,21 +38,21 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
-  CorptiePadUITests:
+  CorptieMobileUITests:
     type: bundle.ui-testing
     platform: iOS
     sources: [UITests]
     dependencies:
-      - target: CorptiePad
+      - target: CorptieMobile
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.corptie.ipad.uitests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_TARGET_NAME: CorptiePad
+        TEST_TARGET_NAME: CorptieMobile
 schemes:
-  CorptiePad:
+  CorptieMobile:
     build:
       targets:
-        CorptiePad: all
+        CorptieMobile: all
     test:
-      targets: [CorptiePadUITests]
+      targets: [CorptieMobileUITests]
