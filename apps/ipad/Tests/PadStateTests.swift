@@ -178,6 +178,54 @@ struct PadStateTests {
         #expect(rows.map(\.value) == [3, 2, 4])
     }
 
+    @Test func historyAutoLoadRequiresReaderPositionAndRearmsAfterLeavingTop() {
+        var gate = PadHistoryAutoLoadGate()
+        #expect(gate.requestCursor(before: "p1", nearTop: true, underfilled: false,
+                                   allowsNearTopRequest: false, isLoading: false,
+                                   connectionBusy: false) == nil)
+        #expect(gate.requestCursor(before: "p1", nearTop: true, underfilled: false,
+                                   allowsNearTopRequest: true, isLoading: false,
+                                   connectionBusy: false) == "p1")
+        #expect(gate.requestCursor(before: "p1", nearTop: true, underfilled: false,
+                                   allowsNearTopRequest: true, isLoading: false,
+                                   connectionBusy: false) == nil)
+        #expect(gate.requestCursor(before: "p1", nearTop: false, underfilled: false,
+                                   allowsNearTopRequest: true, isLoading: false,
+                                   connectionBusy: false) == nil)
+        #expect(gate.requestCursor(before: "p1", nearTop: true, underfilled: false,
+                                   allowsNearTopRequest: true, isLoading: false,
+                                   connectionBusy: false) == "p1")
+    }
+
+    @Test func historyAutoLoadBootstrapsUnderfilledTimelineWithoutDuplicateRequests() {
+        var gate = PadHistoryAutoLoadGate()
+        for index in 1...4 {
+            let cursor = "p\(index)"
+            #expect(gate.requestCursor(before: cursor, nearTop: true, underfilled: true,
+                                       allowsNearTopRequest: false, isLoading: false,
+                                       connectionBusy: false) == cursor)
+            #expect(gate.requestCursor(before: cursor, nearTop: true, underfilled: true,
+                                       allowsNearTopRequest: false, isLoading: false,
+                                       connectionBusy: false) == nil)
+        }
+        #expect(gate.requestCursor(before: "p5", nearTop: true, underfilled: true,
+                                   allowsNearTopRequest: false, isLoading: false,
+                                   connectionBusy: false) == nil)
+    }
+
+    @Test func historyAutoLoadDoesNotConsumeTriggerWhileTransportIsBusy() {
+        var gate = PadHistoryAutoLoadGate()
+        #expect(gate.requestCursor(before: "p1", nearTop: true, underfilled: false,
+                                   allowsNearTopRequest: true, isLoading: true,
+                                   connectionBusy: false) == nil)
+        #expect(gate.requestCursor(before: "p1", nearTop: true, underfilled: false,
+                                   allowsNearTopRequest: true, isLoading: false,
+                                   connectionBusy: true) == nil)
+        #expect(gate.requestCursor(before: "p1", nearTop: true, underfilled: false,
+                                   allowsNearTopRequest: true, isLoading: false,
+                                   connectionBusy: false) == "p1")
+    }
+
     @Test func missingSessionIsOnlyUnavailableAfterInventoryIsComplete() throws {
         let workspace = PadWorkspace()
         workspace.sessionCursor = "more"

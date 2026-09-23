@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import CorptieClientCore
 
-/// Feature state and the single event subscription outlive individual Tab pages.
+/// Feature state and the single event subscription outlive individual navigation pages.
 struct PadAppShell: View {
     @Environment(\.scenePhase) private var scenePhase
     let connection: PadConnection
@@ -11,30 +11,49 @@ struct PadAppShell: View {
     @State private var tab = PadTab.workspace
     @State private var sheet: Sheet?
     @State private var isKeyboardVisible = false
+    @AppStorage("corptie.mobile.navigationRailExpanded") private var navigationRailExpanded = true
     private enum Sheet: String, Identifiable { case settings; var id: String { rawValue } }
 
+    private var usesNavigationRail: Bool {
+        UIDevice.current.userInterfaceIdiom == .pad
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 0) {
+            if usesNavigationRail {
+                PadNavigationRail(
+                    selection: $tab,
+                    isExpanded: $navigationRailExpanded,
+                    settings: { sheet = .settings }
+                )
+                .frame(width: navigationRailExpanded ? 200 : 64)
+            }
+
             ZStack {
-                WorkspaceView(connection: connection, workspace: workspace, settings: { sheet = .settings })
+                WorkspaceView(connection: connection, workspace: workspace)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(tab == .workspace ? 1 : 0)
                     .allowsHitTesting(tab == .workspace)
+                    .accessibilityHidden(tab != .workspace)
                 ForEach([PadTab.automations, .worktrees, .agents]) { page in
-                    PadControlView(tab: page, connection: connection, store: controls,
-                        settings: { sheet = .settings }, openSession: { id in
-                            workspace.selection = id
-                            tab = .workspace
-                        })
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .opacity(tab == page ? 1 : 0)
-                        .allowsHitTesting(tab == page)
+                    PadControlView(tab: page, connection: connection, store: controls, openSession: { id in
+                        workspace.selection = id
+                        tab = .workspace
+                    })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(tab == page ? 1 : 0)
+                    .allowsHitTesting(tab == page)
+                    .accessibilityHidden(tab != page)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if !isKeyboardVisible {
-                PadBottomTabBar(selection: $tab)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !usesNavigationRail, !isKeyboardVisible {
+                PadBottomTabBar(selection: $tab, settings: { sheet = .settings })
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -44,12 +63,13 @@ struct PadAppShell: View {
                 .ignoresSafeArea()
         }
         .background { PadKeyboardDismissal().frame(width: 0, height: 0) }
-        .ignoresSafeArea(.container, edges: .top)
         .sheet(item: $sheet) { _ in PadSettingsView(connection: connection, workspace: workspace) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            guard !usesNavigationRail else { return }
             withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = true }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            guard !usesNavigationRail else { return }
             withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
         }
         .task { await workspace.inventory(connection) }
@@ -69,37 +89,162 @@ struct PadAppShell: View {
     }
 }
 
+private struct PadNavigationRail: View {
+    @Binding var selection: PadTab
+    @Binding var isExpanded: Bool
+    let settings: () -> Void
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ForEach(PadTab.allCases) { item in
+                let isSelected = selection == item
+                Button {
+                    selection = item
+                } label: {
+                    railLabel(symbol: item.symbol, title: item.title, selected: isSelected)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .background(isSelected ? Color.accentColor.opacity(0.10) : Color.clear)
+                .help(item.title)
+                .accessibilityLabel(item.title)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                .accessibilityIdentifier("tab-\(item.rawValue)")
+            }
+
+            Spacer(minLength: 12)
+            Divider().padding(.horizontal, 8)
+
+            Button(action: settings) {
+                railLabel(symbol: "gearshape", title: "设置")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("设置")
+            .accessibilityLabel("设置")
+            .accessibilityIdentifier("navigation-settings")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .frame(maxHeight: .infinity)
+        .background {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea(edges: [.top, .bottom, .leading])
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(width: 0.5)
+                .ignoresSafeArea(edges: [.top, .bottom])
+                .allowsHitTesting(false)
+        }
+        .overlay(alignment: .trailing) {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: 24)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 8)
+                        .onEnded { value in
+                            let translation = value.translation.width
+                            let predicted = value.predictedEndTranslation.width
+                            let distance = abs(predicted) > abs(translation) ? predicted : translation
+                            if distance <= -32 {
+                                isExpanded = false
+                            } else if distance >= 32 {
+                                isExpanded = true
+                            }
+                        }
+                )
+                .accessibilityElement()
+                .accessibilityLabel("调整导航栏宽度")
+                .accessibilityValue(isExpanded ? "已展开" : "已折叠")
+                .accessibilityHint("向左拖动收起，向右拖动展开")
+                .accessibilityAction(named: isExpanded ? "收起导航" : "展开导航") {
+                    isExpanded.toggle()
+                }
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: isExpanded = true
+                    case .decrement: isExpanded = false
+                    @unknown default: break
+                    }
+                }
+                .accessibilityIdentifier("navigation-rail-resizer")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("navigation-rail")
+    }
+
+    private func railLabel(symbol: String, title: String, selected: Bool = false) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 16, weight: selected ? .semibold : .medium))
+                .frame(width: 40, height: 40)
+            if isExpanded {
+                Text(title)
+                    .font(.system(size: 15, weight: selected ? .semibold : .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+}
+
 private struct PadBottomTabBar: View {
     @Binding var selection: PadTab
+    let settings: () -> Void
+
     var body: some View {
-        VStack(spacing: 0) {
-            Divider()
+        HStack(spacing: 8) {
             HStack(spacing: 0) {
                 ForEach(PadTab.allCases) { item in
+                    let isSelected = selection == item
                     Button {
                         selection = item
                     } label: {
-                        VStack(spacing: 3) {
-                            Image(systemName: item.symbol)
-                                .font(.system(size: 18, weight: selection == item ? .semibold : .regular))
-                            Text(item.title)
-                                .font(.system(size: 10, weight: selection == item ? .medium : .regular))
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .contentShape(Rectangle())
+                        compactLabel(symbol: item.symbol, title: item.title, selected: isSelected)
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(selection == item ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .accessibilityLabel(item.title)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                     .accessibilityIdentifier("tab-\(item.rawValue)")
                 }
             }
-            .frame(height: 49)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 4)
+            .frame(maxWidth: 360)
+            .padGlassSurface(in: Capsule(), interactive: true)
+
+            Button(action: settings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 17, weight: .medium))
+                    .frame(width: 50, height: 50)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padGlassSurface(in: Circle(), interactive: true)
+            .accessibilityLabel("设置")
+            .accessibilityIdentifier("navigation-settings")
         }
-        .background {
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .ignoresSafeArea(edges: .bottom)
+        .frame(maxWidth: 430)
+    }
+
+    private func compactLabel(symbol: String, title: String, selected: Bool = false) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 16, weight: selected ? .semibold : .regular))
+            Text(title)
+                .font(.system(size: 10, weight: selected ? .semibold : .regular))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
+        .frame(maxWidth: .infinity, minHeight: 50)
+        .contentShape(Rectangle())
     }
 }
 

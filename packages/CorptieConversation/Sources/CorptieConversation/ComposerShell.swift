@@ -219,12 +219,15 @@ public struct ComposerActionGlyph: View {
     private let tint: Color
     private let isBusy: Bool
     private let weight: Font.Weight
+    private let showsSurface: Bool
 
-    public init(systemName: String, tint: Color, isBusy: Bool = false, weight: Font.Weight = .bold) {
+    public init(systemName: String, tint: Color, isBusy: Bool = false, weight: Font.Weight = .bold,
+                showsSurface: Bool = true) {
         self.systemName = systemName
         self.tint = tint
         self.isBusy = isBusy
         self.weight = weight
+        self.showsSurface = showsSurface
     }
 
     public var body: some View {
@@ -236,7 +239,9 @@ public struct ComposerActionGlyph: View {
             }
         }
         .frame(width: ComposerShellMetrics.actionGlyphEdge, height: ComposerShellMetrics.actionGlyphEdge)
-        .background { Circle().fill(tint.opacity(0.14)) }
+        .background {
+            if showsSurface { Circle().fill(tint.opacity(0.14)) }
+        }
         .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
         .foregroundStyle(tint)
         .contentShape(Circle())
@@ -249,12 +254,15 @@ public struct ComposerModelMenuLabel: View {
     private let reasoningShortLabel: String
     private let isBusy: Bool
     private let maxWidth: CGFloat
+    private let showsSurface: Bool
 
-    public init(modelLabel: String, reasoningShortLabel: String, isBusy: Bool, maxWidth: CGFloat) {
+    public init(modelLabel: String, reasoningShortLabel: String, isBusy: Bool, maxWidth: CGFloat,
+                showsSurface: Bool = true) {
         self.modelLabel = modelLabel
         self.reasoningShortLabel = reasoningShortLabel
         self.isBusy = isBusy
         self.maxWidth = maxWidth
+        self.showsSurface = showsSurface
     }
 
     public var body: some View {
@@ -277,12 +285,18 @@ public struct ComposerModelMenuLabel: View {
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 8)
         .frame(height: ComposerShellMetrics.modelMenuHeight)
-        .background(Color.white.opacity(0.12),
-                    in: RoundedRectangle(cornerRadius: ComposerShellMetrics.modelMenuCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: ComposerShellMetrics.modelMenuCornerRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-        )
+        .background {
+            if showsSurface {
+                RoundedRectangle(cornerRadius: ComposerShellMetrics.modelMenuCornerRadius, style: .continuous)
+                    .fill(Color.white.opacity(0.12))
+            }
+        }
+        .overlay {
+            if showsSurface {
+                RoundedRectangle(cornerRadius: ComposerShellMetrics.modelMenuCornerRadius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+            }
+        }
     }
 }
 

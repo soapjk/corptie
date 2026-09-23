@@ -87,7 +87,10 @@ struct PadComposer: View {
                     Button {
                         Task { await workspace.command(connection, stop: false) }
                     } label: {
-                        ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue, isBusy: isSubmitting)
+                        ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
+                                            isBusy: isSubmitting, showsSurface: false)
+                            .padGlassSurface(in: Circle(), interactive: true,
+                                             fallbackUsesMaterial: false)
                             .contentShape(Circle().inset(by: -8))
                     }
                     .buttonStyle(.plain)
@@ -115,7 +118,10 @@ struct PadComposer: View {
                         }
                         .disabled(!canScheduleMessage)
                     } label: {
-                        ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText, weight: .semibold)
+                        ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
+                                            weight: .semibold, showsSurface: false)
+                            .padGlassSurface(in: Circle(), interactive: true,
+                                             fallbackUsesMaterial: false)
                             .contentShape(Circle().inset(by: -8))
                     }
                     .menuIndicator(.hidden)
@@ -373,9 +379,21 @@ private struct PadModelMenu: View {
         } label: {
             ComposerModelMenuLabel(
                 modelLabel: currentModelLabel,
-                reasoningShortLabel: configuration == nil ? "" : ComposerModelLabel.reasoningShort(currentReasoningLevel),
+                reasoningShortLabel: configuration == nil
+                    ? ""
+                    : ComposerModelLabel.reasoningShort(currentReasoningLevel),
                 isBusy: workspace.configuringComposer,
-                maxWidth: maxWidth)
+                maxWidth: maxWidth,
+                showsSurface: false
+            )
+            .padGlassSurface(
+                in: RoundedRectangle(
+                    cornerRadius: ComposerShellMetrics.modelMenuCornerRadius,
+                    style: .continuous
+                ),
+                interactive: true,
+                fallbackUsesMaterial: false
+            )
         }
         .menuIndicator(.hidden)
         .disabled(configuration != nil && !ComposerModelLabel.menuEnabled(

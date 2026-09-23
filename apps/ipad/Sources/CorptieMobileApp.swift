@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import CorptieClientCore
 import CorptieConversation
 
@@ -104,7 +105,6 @@ struct PairingView: View {
 struct WorkspaceView: View {
     let connection: PadConnection
     @Bindable var workspace: PadWorkspace
-    let settings: () -> Void
     @State private var expandedWorkIDs: Set<String> = []
     @State private var isChatExpanded = true
     @State private var initializedExpansion = false
@@ -115,9 +115,8 @@ struct WorkspaceView: View {
     @State private var messageImages = PadMessageImageStore()
     @State private var entityCommands: PadEntityCommandState?
     @State private var entityRoute: PadEntityRoute?
-    @State private var confirmDeleteTask: ClientTask?
-    @State private var confirmDeleteWork: ClientWork?
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     private var activeEntityCommands: PadEntityCommandState {
         if let existing = entityCommands, existing.matches(connection) { return existing }
@@ -132,54 +131,69 @@ struct WorkspaceView: View {
             PadWorkOutline(connection: connection, workspace: workspace, workAvatars: workAvatars,
                 entityCommands: commands, isActive: scenePhase == .active, expandedWorkIDs: $expandedWorkIDs,
                 isChatExpanded: $isChatExpanded, createTask: openTaskCreation, onEntityRoute: { route in
-                    switch route {
-                    case .deleteTask(let task): confirmDeleteTask = task
-                    case .deleteWork(let work): confirmDeleteWork = work
-                    default: entityRoute = route
-                    }
+                    entityRoute = route
                 })
             .disabled(connection.busy)
             .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 4) {
-                    if !commands.notice.isEmpty {
-                        Text(commands.notice)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 16)
-                    }
-                    HStack(spacing: 8) {
-                        Button("设置", systemImage: "gearshape") { settings() }
-                            .accessibilityIdentifier("workspace-settings")
+                VStack(spacing: 6) {
+                    HStack {
                         Spacer()
-                        Button("刷新列表", systemImage: "arrow.clockwise") { Task { await workspace.inventory(connection) } }
-                            .disabled(connection.busy)
-                            .accessibilityIdentifier("workspace-refresh")
+
+                        Button {
+                            Task { await workspace.inventory(connection) }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .frame(width: 36, height: 36)
+                                .padGlassSurface(in: Circle(), interactive: true)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(connection.busy)
+                        .accessibilityIdentifier("workspace-refresh")
                     }
-                    .labelStyle(.iconOnly).buttonStyle(.borderless)
-                    .controlSize(.large)
-                    .padding(.horizontal, 16).padding(.vertical, 6)
-                }
-                .background {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
-                        .ignoresSafeArea(edges: .top)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 6)
+                    .padding(.bottom, 4)
+
+                    if !commands.notice.isEmpty {
+                        HStack(spacing: 8) {
+                            Text(commands.notice)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            if commands.pending != nil {
+                                Button("核对") {
+                                    Task { await commands.reconcile(connection) }
+                                }
+                                .font(.caption2.weight(.semibold))
+                                .buttonStyle(.plain)
+                                .disabled(commands.checking)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .background(.ultraThinMaterial, in: Capsule())
+                    }
                 }
             }
-            .toolbar(.hidden, for: .navigationBar)
-            .ignoresSafeArea(.container, edges: .top)
+            .toolbar(removing: .sidebarToggle)
         } detail: {
             if let id = workspace.selection {
                 ConversationView(connection: connection, workspace: workspace, sessionID: id,
-                    messageImages: messageImages,
-                    toggleSidebar: { columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly })
+                    messageImages: messageImages)
                     .id(id)
             } else {
                 ContentUnavailableView("选择一个 Task 或会话", systemImage: "bubble.left.and.text.bubble.right",
                     description: Text("消息与状态自动更新。"))
             }
         }
+        .toolbar(removing: .sidebarToggle)
         .toolbar(.hidden, for: .navigationBar)
-        .ignoresSafeArea(.container, edges: .top)
+        .onChange(of: horizontalSizeClass, initial: true) { _, sizeClass in
+            if sizeClass == .regular { columnVisibility = .all }
+        }
         .onChange(of: workspace.selection) {
             if workspace.selection == nil { columnVisibility = .all }
         }
@@ -204,50 +218,36 @@ struct WorkspaceView: View {
                 PadEditTaskSheet(connection: connection, commands: commands, task: task) {
                     Task { await workspace.inventory(connection) }
                 }
-            default:
-                EmptyView()
-            }
-        }
-        .confirmationDialog(
-            "确定删除 Task「\(confirmDeleteTask?.title ?? "")」？",
-            isPresented: Binding(get: { confirmDeleteTask != nil }, set: { if !$0 { confirmDeleteTask = nil } }),
-            titleVisibility: .visible
-        ) {
-            if let task = confirmDeleteTask {
-                Button("删除 Task", role: .destructive) {
-                    Task {
-                        _ = await commands.run(connection, target: .task(task.id), kind: "task_delete", label: "删除 Task") { api, requestID in
-                            var req = ClientTaskDeletion(requestId: requestID)
-                            req.mode = "safe"
-                            return try await api.taskCommand(taskId: task.id, command: .delete, body: req)
-                        }
-                        await workspace.inventory(connection)
+            case .deleteTask(let task):
+                PadDeleteTaskSheet(connection: connection, commands: commands, task: task) {
+                    if let selected = workspace.selection,
+                       workspace.sessionsByID[selected]?.taskId == task.id {
+                        workspace.selection = nil
                     }
+                    Task { await workspace.inventory(connection) }
+                }
+            case .deleteWork(let work):
+                PadDeleteWorkSheet(connection: connection, commands: commands, work: work) {
+                    if let selected = workspace.selection,
+                       workspace.sessionsByID[selected]?.workId == work.id {
+                        workspace.selection = nil
+                    }
+                    Task { await workspace.inventory(connection) }
                 }
             }
-            Button("取消", role: .cancel) { confirmDeleteTask = nil }
-        }
-        .confirmationDialog(
-            "确定删除 Work「\(confirmDeleteWork?.name ?? "")」？",
-            isPresented: Binding(get: { confirmDeleteWork != nil }, set: { if !$0 { confirmDeleteWork = nil } }),
-            titleVisibility: .visible
-        ) {
-            if let work = confirmDeleteWork {
-                Button("删除 Work", role: .destructive) {
-                    Task {
-                        _ = await commands.run(connection, target: .work(work.id), kind: "work_delete", label: "删除 Work") { api, requestID in
-                            try await api.workCommand(workId: work.id, command: .delete, body: ClientEntityRequest(requestId: requestID))
-                        }
-                        await workspace.inventory(connection)
-                    }
-                }
-            }
-            Button("取消", role: .cancel) { confirmDeleteWork = nil }
         }
         .onChange(of: workspace.works.map(\.id), initial: true) { _, ids in
             if !initializedExpansion, !ids.isEmpty {
                 expandedWorkIDs = Set(ids)
                 initializedExpansion = true
+            }
+        }
+        .task(id: "\(commands.pending?.requestID ?? ""):active=\(scenePhase == .active)") {
+            guard scenePhase == .active, commands.pending != nil else { return }
+            for seconds in [0, 1, 2, 4, 8, 16, 30] {
+                do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+                guard !Task.isCancelled, commands.pending != nil else { return }
+                await commands.reconcile(connection)
             }
         }
     }
@@ -288,15 +288,19 @@ struct ConversationView: View {
     @Bindable var workspace: PadWorkspace
     let sessionID: String
     let messageImages: PadMessageImageStore
-    let toggleSidebar: () -> Void
     @State private var confirmForget = false
     @State private var followLatest = true
-    /// Content lane inside the timeline's 16pt gutters; one reader for the whole
-    /// scroll view so rows never observe geometry themselves.
+    @State private var historyViewport = TimelineHistoryViewportState()
+    @State private var historyAutoLoadGate = PadHistoryAutoLoadGate()
+    /// Rounded whole-point lane width prevents sub-pixel geometry changes from
+    /// invalidating every realized message row during keyboard/split resizing.
     @State private var laneWidth: CGFloat = 0
     @State private var attachmentPreview: PadAttachmentPreview?
     @State private var composerSheet: ComposerSheet?
-    private enum ComposerSheet: String, Identifiable { case schedule; var id: String { rawValue } }
+    private enum ComposerSheet: String, Identifiable {
+        case schedule
+        var id: String { rawValue }
+    }
     private var draft: Binding<String> {
         Binding(get: { workspace.drafts[sessionID] ?? "" }, set: { workspace.drafts[sessionID] = $0 })
     }
@@ -304,6 +308,17 @@ struct ConversationView: View {
         ScrollViewReader { reader in
             ScrollView {
                 LazyVStack(spacing: 12) {
+                    Color.clear
+                        .frame(height: 1)
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear.preference(
+                                    key: TimelineNearTopKey.self,
+                                    value: proxy.frame(in: .named(timelineCoordinateSpace)).minY >= -8
+                                )
+                            }
+                        }
+                        .accessibilityHidden(true)
                     if workspace.isLoadingEarlier {
                         HStack(spacing: 8) {
                             ProgressView()
@@ -314,21 +329,7 @@ struct ConversationView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                    } else if workspace.before != nil {
-                        Color.clear.frame(height: 20)
-                            .onAppear {
-                                if !followLatest && !workspace.isLoadingEarlier {
-                                    Task { await workspace.loadEarlierMessagesIfNeeded(connection) }
-                                }
-                            }
-                        Button("加载更早消息") {
-                            Task { await workspace.loadEarlierMessagesIfNeeded(connection) }
-                        }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .disabled(connection.busy)
-                    } else if !workspace.messages.isEmpty {
+                    } else if workspace.before == nil, !workspace.messages.isEmpty {
                         Text("已显示全部历史消息")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
@@ -344,33 +345,55 @@ struct ConversationView: View {
                                 .id(message.id)
                         case .process:
                             if let presentation = workspace.processPresentations[entry.id] {
-                                PadProcessCard(steps: workspace.processSteps[entry.id] ?? [], presentation: presentation).id(sessionID + ":" + entry.id)
+                                PadProcessCard(steps: workspace.processSteps[entry.id] ?? [], presentation: presentation,
+                                               laneWidth: laneWidth)
+                                    .id(sessionID + ":" + entry.id)
                             }
                         }
                     }
                     Color.clear.frame(height: 1).id("latest")
                         .onAppear { followLatest = true }
-                        .onDisappear { followLatest = false }
+                        .onDisappear {
+                            followLatest = false
+                            requestEarlierHistoryIfNeeded()
+                        }
                 }
                 .padding(.horizontal, 16).padding(.vertical, 12)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: TimelineContentHeightKey.self,
+                            value: proxy.size.height.rounded(.up)
+                        )
+                    }
+                }
             }
+            .coordinateSpace(name: timelineCoordinateSpace)
             .scrollDismissesKeyboard(.interactively)
             .background {
                 GeometryReader { proxy in
-                    Color.clear.preference(key: TimelineLaneWidthKey.self, value: max(0, proxy.size.width - 32))
+                    Color.clear.preference(key: TimelineViewportSizeKey.self, value: proxy.size)
                 }
             }
-            .onPreferenceChange(TimelineLaneWidthKey.self) { width in
-                // Whole points only: sub-pixel drift must not re-measure every card.
-                let rounded = width.rounded(.down)
-                if rounded != laneWidth { laneWidth = rounded }
+            .onPreferenceChange(TimelineNearTopKey.self) { nearTop in
+                guard nearTop != historyViewport.nearTop else { return }
+                historyViewport.nearTop = nearTop
+                requestEarlierHistoryIfNeeded()
+            }
+            .onPreferenceChange(TimelineContentHeightKey.self) { height in
+                guard height != historyViewport.contentHeight else { return }
+                historyViewport.contentHeight = height
+                requestEarlierHistoryIfNeeded()
+            }
+            .onPreferenceChange(TimelineViewportSizeKey.self) { size in
+                let roundedWidth = max(0, size.width - 32).rounded(.down)
+                if roundedWidth != laneWidth { laneWidth = roundedWidth }
+                let roundedHeight = size.height.rounded(.down)
+                guard roundedHeight != historyViewport.viewportHeight else { return }
+                historyViewport.viewportHeight = roundedHeight
+                requestEarlierHistoryIfNeeded()
             }
             .accessibilityIdentifier("conversation-timeline")
-            .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
-            .safeAreaInset(edge: .bottom, spacing: 0) { composer }
-            .ignoresSafeArea(.container, edges: .top)
-            .background(Color(uiColor: .systemGroupedBackground))
-            .toolbar(.hidden, for: .navigationBar)
             .task {
                 let hadCachedCapabilities = workspace.capabilities != nil
                 await workspace.load(connection)
@@ -391,7 +414,20 @@ struct ConversationView: View {
                 followLatest = true
                 reader.scrollTo("latest", anchor: .bottom)
             }
+            .onChange(of: workspace.before) {
+                requestEarlierHistoryIfNeeded()
+            }
+            .onChange(of: workspace.isLoadingEarlier) { _, isLoading in
+                if !isLoading { requestEarlierHistoryIfNeeded() }
+            }
+            .onChange(of: connection.busy) { _, isBusy in
+                if !isBusy { requestEarlierHistoryIfNeeded() }
+            }
         }
+        .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
+        .safeAreaInset(edge: .bottom, spacing: 0) { composer }
+        .background(Color(uiColor: .systemGroupedBackground))
+        .toolbar(.hidden, for: .navigationBar)
         .confirmationDialog("已核对消息与执行状态？清除记录不会取消后台执行。", isPresented: $confirmForget, titleVisibility: .visible) {
             Button("已核对，清除本机待核对记录", role: .destructive) { workspace.forgetPending() }
         }
@@ -406,25 +442,68 @@ struct ConversationView: View {
         }
     }
 
+    private var timelineCoordinateSpace: String {
+        "conversation-timeline-\(sessionID)"
+    }
+
+    private func requestEarlierHistoryIfNeeded() {
+        let viewportReady = historyViewport.contentHeight > 0 && historyViewport.viewportHeight > 1
+        let underfilled = viewportReady
+            && historyViewport.contentHeight <= historyViewport.viewportHeight + 0.5
+        guard historyAutoLoadGate.requestCursor(
+            before: workspace.before,
+            nearTop: historyViewport.nearTop,
+            underfilled: underfilled,
+            allowsNearTopRequest: !followLatest,
+            isLoading: workspace.isLoadingEarlier,
+            connectionBusy: connection.busy
+        ) != nil else { return }
+        Task { await workspace.loadEarlierMessagesIfNeeded(connection) }
+    }
+
     private var conversationHeader: some View {
         HStack(spacing: 8) {
-            Button("显示或隐藏侧栏", systemImage: "sidebar.left") { toggleSidebar() }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
-                .accessibilityIdentifier("workspace-toggle-sidebar")
             PadThreadMetaView(session: workspace.sessionsByID[sessionID],
                               capabilities: workspace.capabilities, usage: workspace.usage)
-            Button("停止", systemImage: "stop.circle.fill") { Task { await workspace.command(connection, stop: true) } }
-                .labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44)
-                .disabled(connection.busy || workspace.pending != nil || workspace.capabilities?.stop.available != true)
+            Spacer(minLength: 0)
+            let session = workspace.sessionsByID[sessionID]
+            let isRunning = SessionExecutionState(executionStatus: session?.executionStatus) == .running
+                || SessionExecutionState(executionStatus: workspace.executionByTaskID[session?.taskId ?? ""]) == .running
+            let canStop = isRunning && workspace.capabilities?.stop.available == true
+            if canStop {
+                Button {
+                    Task { await workspace.command(connection, stop: true) }
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.red)
+                        .frame(width: 28, height: 28)
+                        .padGlassSurface(in: Circle(), interactive: true)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(connection.busy || workspace.pending != nil)
+                .accessibilityLabel("停止当前运行")
                 .accessibilityIdentifier("conversation-stop")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background {
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(alignment: .top) {
             Rectangle()
                 .fill(.ultraThinMaterial)
+                .mask {
+                    LinearGradient(
+                        colors: [.black, .black.opacity(0.72), .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .frame(height: 72)
                 .ignoresSafeArea(edges: .top)
+                .allowsHitTesting(false)
         }
     }
 
@@ -451,7 +530,7 @@ struct ConversationView: View {
                 let matching = catalog.commands.filter { prefix.isEmpty || $0.name.lowercased().hasPrefix(prefix.lowercased()) }
                 if !matching.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
+                        LazyHStack(spacing: 8) {
                             ForEach(matching) { cmd in
                                 Button {
                                     draft.wrappedValue = "/\(cmd.name) "
@@ -461,7 +540,8 @@ struct ConversationView: View {
                                         Text(cmd.summary).font(.system(size: 11)).foregroundStyle(.secondary)
                                     }
                                     .padding(.horizontal, 8).padding(.vertical, 4)
-                                    .background(.quaternary, in: Capsule())
+                                    .padGlassSurface(in: Capsule(), interactive: true,
+                                                     fallbackUsesMaterial: false)
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityIdentifier("command-suggestion-\(cmd.name)")
@@ -474,7 +554,9 @@ struct ConversationView: View {
             PadComposer(connection: connection, workspace: workspace, sessionID: sessionID,
                         scheduleMessage: { composerSheet = .schedule })
         }
-        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8).background(.ultraThinMaterial)
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
     }
 
     private func slashCommandPrefix(_ text: String) -> String? {
@@ -526,8 +608,19 @@ private struct PadCommandConfirmationView: View {
 private struct PadProcessCard: View {
     let steps: [ConversationExecutionStep]
     let presentation: ConversationProcessPresentation
+    let laneWidth: CGFloat
     @State private var expanded = false
     private var state: ConversationProcessState { presentation.state }
+    private var cardWidth: CGFloat? {
+        guard laneWidth > 0 else { return nil }
+        let summaryWidth = ceil((presentation.summary as NSString).size(withAttributes: [
+            .font: UIFont.systemFont(ofSize: 10.5, weight: .medium)
+        ]).width)
+        return MessageBubbleWidthPolicy.processCardWidth(
+            summaryWidth: summaryWidth,
+            expanded: expanded,
+            laneWidth: laneWidth)
+    }
     private var tint: Color {
         switch state {
         case .running: .accentColor
@@ -543,14 +636,37 @@ private struct PadProcessCard: View {
             PadMessageText(text: "", fromUser: false, steps: steps)
                 .frame(maxWidth: .infinity)
         }
+        .frame(width: cardWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("conversation-process")
     }
 }
 
-private struct TimelineLaneWidthKey: PreferenceKey {
+private struct TimelineHistoryViewportState: Equatable {
+    var nearTop = false
+    var contentHeight: CGFloat = 0
+    var viewportHeight: CGFloat = 0
+}
+
+private struct TimelineNearTopKey: PreferenceKey {
+    static let defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
+private struct TimelineContentHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct TimelineViewportSizeKey: PreferenceKey {
+    static let defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
 }
 
 struct PadAttachmentPreview: Identifiable {
