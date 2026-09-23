@@ -155,7 +155,7 @@ function fixture(capabilities = [
   const registry = new AgentProviderRegistry([provider]);
   const service = new SessionApplicationService({
     registry,
-    resolveSessionReference: async (sessionId) => sessionId === "logical-a"
+    resolveSessionReference: async (sessionId) => ["logical-a", "legacy-a"].includes(sessionId)
       ? {
           bindingId: "binding-a",
           logicalSessionId: "logical-a",
@@ -404,14 +404,19 @@ test("new Session finalizes Tool Host with the authoritative binding before retu
         };
       }
     },
-    resolveSessionReference: async () => null,
+    resolveSessionReference: async (sessionId) => sessionId === "session:new" ? {
+      sessionId,
+      logicalSessionId: "logical:new",
+      bindingId: "binding:new",
+      providerId: "tool-host-provider",
+      providerSessionId: "native:new"
+    } : null,
     bindCreatedSession: async ({ session }) => {
       calls.push(["bind", session.id]);
       return {
         sessionId: session.id,
         logicalSessionId: "logical:new",
         bindingId: "binding:new",
-        providerId: "tool-host-provider",
         providerSessionId: "native:new"
       };
     }
@@ -509,11 +514,293 @@ test("existing Worker Session applies required domains at the next message Turn 
     ["ensure", "logical:worker", ["artifacts", "project-code"], {
       turnExecutionId: null,
       purpose: "conversation-turn-boundary",
-      activeTurn: false,
-      allowPendingProviderObservation: true
+      activeTurn: false
     }],
     ["send", "project-code contract is applied"]
   ]);
+});
+
+test("empty-domain bindings still prove the baseline Tool Host materialization", async () => {
+  const calls = [];
+  let prepared = false;
+  const pendingMaterialization = { status: "applying", record: { desiredVersion: "v1" } };
+  const provider = new CallbackAgentProvider({
+    id: "baseline-tool-provider",
+    displayName: "Baseline Tool Provider",
+    transport: "fake",
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+    ]
+  }, {
+    attachTools: async () => ({}),
+    resumeSession: async () => {
+      calls.push("resume");
+      return { id: "session:baseline" };
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:baseline",
+      logicalSessionId: "logical:baseline",
+      bindingId: "binding:baseline",
+      providerId: "baseline-tool-provider",
+      providerSessionId: "native:baseline",
+      routingVersion: 2,
+      metadata: { session: { agentId: "agent:one", sessionKind: "assistantChat" } }
+    }),
+    resolveRequiredToolDomains: () => [],
+    toolMaterializationPort: {
+      async ensureCurrentApplied() {
+        calls.push("gate");
+        if (!prepared) {
+          throw Object.assign(new Error("Awaiting generated MCP observation"), {
+            code: "TOOL_MATERIALIZATION_OUTCOME_UNKNOWN",
+            recoveryAction: "observe_generated_mcp",
+            preparedMaterialization: pendingMaterialization
+          });
+        }
+        return { status: "Applied", appliedDomains: [] };
+      }
+    },
+    toolHostService: {
+      async prepareSession(_providerId, _context, options) {
+        assert.strictEqual(options.preparedMaterialization, pendingMaterialization);
+        calls.push("prepare");
+        prepared = true;
+        return { providerAttachment: {} };
+      }
+    }
+  });
+
+  await service.ensureActiveBindingToolsReady("logical:baseline");
+
+  assert.deepEqual(calls, ["gate", "prepare", "resume", "gate"]);
+});
+
+test("permanent materialization errors do not trigger a second Provider application", async () => {
+  let prepares = 0;
+  const provider = new CallbackAgentProvider({
+    id: "permanent-error-provider",
+    displayName: "Permanent Error Provider",
+    transport: "fake",
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+    ]
+  }, {
+    attachTools: async () => ({}),
+    resumeSession: async () => assert.fail("Permanent failures must not resume the Provider")
+  });
+  const failure = Object.assign(new Error("Receipt is invalid"), {
+    code: "SESSION_TOOL_CATALOG_REFRESH_FAILED"
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:permanent",
+      logicalSessionId: "logical:permanent",
+      bindingId: "binding:permanent",
+      providerId: "permanent-error-provider",
+      providerSessionId: "native:permanent",
+      metadata: { session: { agentId: "agent:one", sessionKind: "worker" } }
+    }),
+    resolveRequiredToolDomains: () => ["artifacts"],
+    toolMaterializationPort: {
+      async ensureDomainsApplied() { throw failure; }
+    },
+    toolHostService: {
+      async prepareSession() { prepares += 1; return { providerAttachment: {} }; }
+    }
+  });
+
+  await assert.rejects(
+    service.ensureActiveBindingToolsReady("logical:permanent"),
+    (error) => error === failure
+  );
+  assert.equal(prepares, 0);
+});
+
+test("frozen readiness errors retain their code and are marked safely unsent", async () => {
+  let sends = 0;
+  const frozen = Object.freeze(Object.assign(new Error("Gate unavailable"), {
+    code: "TOOL_GATE_UNAVAILABLE"
+  }));
+  const provider = new CallbackAgentProvider({
+    id: "frozen-error-provider",
+    displayName: "Frozen Error Provider",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+  }, {
+    send: async () => { sends += 1; }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:frozen",
+      logicalSessionId: "logical:frozen",
+      bindingId: "binding:frozen",
+      providerId: "frozen-error-provider",
+      providerSessionId: "native:frozen",
+      metadata: { session: { agentId: "agent:one", sessionKind: "worker" } }
+    }),
+    resolveRequiredToolDomains: () => ["artifacts"],
+    toolMaterializationPort: {
+      async ensureDomainsApplied() { throw frozen; }
+    }
+  });
+
+  await assert.rejects(service.sendMessage("logical:frozen", "stay unsent"), (error) => (
+    error.code === "TOOL_GATE_UNAVAILABLE"
+      && error.dispatchState === "not_sent"
+      && error.cause === frozen
+  ));
+  assert.equal(sends, 0);
+});
+
+test("business messages fail closed until Tool materialization is strictly applied", async () => {
+  let sends = 0;
+  const provider = new CallbackAgentProvider({
+    id: "strict-readiness-provider",
+    displayName: "Strict Readiness Provider",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+  }, {
+    send: async () => { sends += 1; return { accepted: true }; }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:strict",
+      logicalSessionId: "logical:strict",
+      bindingId: "binding:strict",
+      providerId: "strict-readiness-provider",
+      providerSessionId: "native:strict",
+      routingVersion: 4,
+      metadata: { session: { agentId: "agent:one", sessionKind: "worker" } }
+    }),
+    resolveRequiredToolDomains: () => ["artifacts"],
+    toolMaterializationPort: {
+      async ensureDomainsApplied(_logicalSessionId, _domains, boundary) {
+        assert.equal(boundary.allowPendingProviderObservation, undefined);
+        throw Object.assign(new Error("Provider observation is still pending"), {
+          code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
+        });
+      }
+    }
+  });
+
+  await assert.rejects(
+    service.sendMessage("logical:strict", "must not dispatch"),
+    (error) => error.code === "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
+      && error.dispatchState === "not_sent"
+  );
+  assert.equal(sends, 0);
+});
+
+test("message dispatch rechecks the binding after resolving asynchronous context", async () => {
+  let routeChanged = false;
+  let sends = 0;
+  const provider = new CallbackAgentProvider({
+    id: "dispatch-fence-provider",
+    displayName: "Dispatch Fence Provider",
+    transport: "fake",
+    capabilities: [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_SEND]
+  }, {
+    send: async () => { sends += 1; return { accepted: true }; }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:dispatch-fence",
+      logicalSessionId: "logical:dispatch-fence",
+      bindingId: routeChanged ? "binding:new" : "binding:old",
+      providerId: "dispatch-fence-provider",
+      providerSessionId: routeChanged ? "native:new" : "native:old",
+      routingVersion: routeChanged ? 2 : 1,
+      metadata: { session: { agentId: "agent:one", sessionKind: "assistantChat" } }
+    }),
+    resolveMessageContext: async () => {
+      routeChanged = true;
+      return { prompt: "resolved after route change" };
+    }
+  });
+
+  await assert.rejects(
+    service.sendMessage("logical:dispatch-fence", "must stay unsent"),
+    (error) => error.code === "SESSION_BINDING_CHANGED"
+      && error.dispatchState === "not_sent"
+  );
+  assert.equal(sends, 0);
+});
+
+test("concurrent binding readiness callers share one Provider finalization", async () => {
+  let prepareCalls = 0;
+  let resumeCalls = 0;
+  let gateCalls = 0;
+  let preparationFinished = false;
+  let releasePreparation;
+  const preparationGate = new Promise((resolve) => { releasePreparation = resolve; });
+  const provider = new CallbackAgentProvider({
+    id: "single-flight-provider",
+    displayName: "Single Flight Provider",
+    transport: "fake",
+    capabilities: [
+      AGENT_PROVIDER_CAPABILITIES.SESSION_RESUME,
+      AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH
+    ]
+  }, {
+    attachTools: async () => ({}),
+    resumeSession: async () => {
+      resumeCalls += 1;
+      return { id: "session:single-flight" };
+    }
+  });
+  const service = new SessionApplicationService({
+    registry: new AgentProviderRegistry([provider]),
+    resolveSessionReference: async () => ({
+      sessionId: "session:single-flight",
+      logicalSessionId: "logical:single-flight",
+      bindingId: "binding:single-flight",
+      providerId: "single-flight-provider",
+      providerSessionId: "native:single-flight",
+      routingVersion: 7,
+      metadata: { session: { agentId: "agent:one", sessionKind: "worker" } }
+    }),
+    resolveRequiredToolDomains: () => ["artifacts"],
+    toolHostService: {
+      async prepareSession() {
+        prepareCalls += 1;
+        await preparationGate;
+        preparationFinished = true;
+        return { providerAttachment: {} };
+      }
+    },
+    toolMaterializationPort: {
+      async ensureDomainsApplied() {
+        gateCalls += 1;
+        if (!preparationFinished) {
+          throw Object.assign(new Error("Provider observation is pending"), {
+            code: "TOOL_MATERIALIZATION_OUTCOME_UNKNOWN",
+            recoveryAction: "observe_generated_mcp"
+          });
+        }
+        return { appliedDomains: ["artifacts"] };
+      }
+    }
+  });
+
+  const first = service.ensureActiveBindingToolsReady("logical:single-flight", { purpose: "provider-switch-finalization" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = service.ensureActiveBindingToolsReady("logical:single-flight", { purpose: "conversation-turn-boundary" });
+  releasePreparation();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.strictEqual(firstResult, secondResult);
+  assert.equal(prepareCalls, 1);
+  assert.equal(resumeCalls, 1);
+  assert.equal(gateCalls, 3); // Initial gate, owner confirmation, joiner's strict gate.
 });
 
 test("new Session fails closed when authenticated Tool Host finalization fails", async () => {
@@ -541,10 +828,17 @@ test("new Session fails closed when authenticated Tool Host finalization fails",
         return { actorId: context.actorId, providerAttachment: {} };
       }
     },
-    resolveSessionReference: async () => null,
+    resolveSessionReference: async (sessionId) => sessionId === "session:degraded" ? {
+      sessionId,
+      logicalSessionId: "logical:degraded",
+      bindingId: "binding:degraded",
+      providerId: "failing-tool-host-provider",
+      providerSessionId: "native:degraded"
+    } : null,
     bindCreatedSession: async ({ session }) => ({
       sessionId: session.id,
       logicalSessionId: "logical:degraded",
+      bindingId: "binding:degraded",
       providerId: "failing-tool-host-provider",
       providerSessionId: "native:degraded"
     })

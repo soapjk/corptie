@@ -874,6 +874,55 @@ test("generated MCP stays applying until the Provider performs tools/list for th
   }
 });
 
+for (const legacyStatus of ["stale", "refreshing", "error"]) {
+  test(`generated MCP repairs persisted create-mode ${legacyStatus} rows before observing tools/list`, async () => {
+    const value = await fixture({
+      capability: { generatedMcpRefresh: true, capabilityRevision: "fake:mcp:1" },
+      apply: async () => ({ status: "awaiting_provider_observation", observationKind: "mcp_tools_list" })
+    });
+    try {
+      const scope = { logicalSessionId: "logical:worker", providerBindingId: "binding:worker" };
+      const created = await value.coordinator.ensureApplied({ ...scope, phase: "create" });
+      assert.equal(created.record.exposurePlan.refreshMode, "generated_mcp_refresh");
+      // Reconstruct the durable legacy replacement state, including its unchanged
+      // ownership hash/version. A current planner must not mistake it for ready.
+      let legacy = value.store.writeSessionToolCatalogDesired({
+        ...created.record,
+        exposurePlan: { ...created.record.exposurePlan, refreshMode: "create" }
+      }, created.record.resourceVersion);
+      if (legacyStatus !== "stale") {
+        legacy = value.store.beginSessionToolCatalogRefresh(scope.logicalSessionId, scope.providerBindingId, legacy.resourceVersion);
+        legacy = value.store.recordSessionToolCatalogPendingReceipt({
+          ...scope, providerReceipt: created.record.providerReceipt
+        }, legacy.resourceVersion);
+        if (legacyStatus === "error") {
+          legacy = await value.coordinator.failPendingApplication(scope.logicalSessionId, scope.providerBindingId,
+            "PROVIDER_TOOL_APPLICATION_UNCONFIRMED", "legacy timeout", legacy);
+        } else {
+          await assert.rejects(value.coordinator.observeGeneratedMcpToolsList({ ...scope, observationId: "legacy" }),
+            { code: "PROVIDER_TOOL_OBSERVATION_CONFLICT" });
+        }
+      }
+      assert.equal(legacy.status, legacyStatus);
+      const pending = await value.coordinator.ensureApplied({ ...scope, phase: "refresh" });
+      assert.equal(pending.record.exposurePlan.refreshMode, "generated_mcp_refresh");
+      assert.equal(pending.record.desiredVersion, created.record.desiredVersion);
+      assert.equal(pending.status, "applying");
+      assert.equal(pending.record.appliedVersion, null);
+      assert.equal(value.applyCount, 2);
+      const applied = await value.coordinator.observeGeneratedMcpToolsList({
+        ...scope, observationId: "actual-tools-list", desiredVersion: pending.record.desiredVersion
+      });
+      assert.equal(applied.status, "applied");
+      assert.equal(applied.appliedVersion, pending.record.desiredVersion);
+      assert.equal(applied.providerReceipt.refreshMode, "generated_mcp_refresh");
+    } finally {
+      value.store.close();
+      await rm(value.directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test("unconfirmed generated MCP application fails closed without advancing applied state", async () => {
   const value = await fixture({
     capability: {
@@ -884,12 +933,12 @@ test("unconfirmed generated MCP application fails closed without advancing appli
     apply: async () => ({ status: "awaiting_provider_observation", observationKind: "mcp_tools_list" })
   });
   try {
-    await value.coordinator.ensureApplied({
+    const pending = await value.coordinator.ensureApplied({
       logicalSessionId: "logical:worker", providerBindingId: "binding:worker"
     });
     const failed = await value.coordinator.failPendingApplication(
       "logical:worker", "binding:worker",
-      "PROVIDER_TOOL_APPLICATION_UNCONFIRMED", "tools/list was not observed"
+      "PROVIDER_TOOL_APPLICATION_UNCONFIRMED", "tools/list was not observed", pending.record
     );
     assert.equal(failed.status, "error");
     assert.equal(failed.appliedVersion, null);
@@ -902,6 +951,84 @@ test("unconfirmed generated MCP application fails closed without advancing appli
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });
   }
+});
+
+test("a pending application timeout cannot fail another generation or refresh attempt", async (t) => {
+  const mutations = [
+    ["desired version", (record) => ({ ...record, desiredVersion: "desired:older" })],
+    ["catalog version", (record) => ({ ...record, desiredCatalogVersion: "catalog:older" })],
+    ["exposure plan", (record) => ({ ...record, exposurePlan: { ...record.exposurePlan, exposurePlanHash: "plan:older" } })],
+    ["binding", (record) => ({ ...record, providerBindingId: "binding:other" })],
+    ["Session", (record) => ({ ...record, logicalSessionId: "logical:other" })],
+    ["refresh CAS", (record) => ({ ...record, resourceVersion: record.resourceVersion - 1 })]
+  ];
+  for (const [name, mutate] of mutations) {
+    await t.test(name, async () => {
+      const value = await fixture({
+        capability: {
+          bootstrapAttach: false, appendInPlace: false, replaceAtTurnBoundary: false,
+          generatedMcpRefresh: true, restrictedGateway: false, bindingReplacement: false,
+          capabilityRevision: "fake:mcp:1"
+        },
+        apply: async () => ({ status: "awaiting_provider_observation", observationKind: "mcp_tools_list" })
+      });
+      try {
+        const pending = await value.coordinator.ensureApplied({
+          logicalSessionId: "logical:worker", providerBindingId: "binding:worker"
+        });
+        const unchanged = await value.coordinator.failPendingApplication(
+          "logical:worker", "binding:worker", "PROVIDER_TOOL_APPLICATION_UNCONFIRMED",
+          "old confirmation timed out", mutate(pending.record)
+        );
+        assert.deepEqual(unchanged, pending.record);
+        assert.equal(value.events.some((event) => event.type === "provider_application_failed"), false);
+        const applied = await value.coordinator.observeGeneratedMcpToolsList({
+          logicalSessionId: "logical:worker", providerBindingId: "binding:worker",
+          desiredVersion: pending.record.desiredVersion, observationId: "observation:after-old-timeout"
+        });
+        assert.equal(applied.status, "applied");
+      } finally {
+        value.store.close();
+        await rm(value.directory, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("pending timeout fences are rechecked after asynchronous binding resolution", async () => {
+  const expected = {
+    logicalSessionId: "logical:pending", providerBindingId: "binding:pending",
+    desiredVersion: "desired:pending", desiredCatalogVersion: "catalog:pending",
+    exposurePlan: { exposurePlanHash: "plan:pending" }, resourceVersion: 3, status: "refreshing"
+  };
+  let current = expected;
+  let releaseBinding;
+  const bindingReady = new Promise((resolve) => { releaseBinding = resolve; });
+  let failures = 0;
+  const coordinator = new ToolHostMaterializationCoordinator({
+    catalog: {}, providerPort: {},
+    resolveBinding: () => bindingReady,
+    store: {
+      getSessionToolCatalogMaterialization: () => current,
+      failSessionToolCatalogRefresh: () => { failures += 1; }
+    }
+  });
+  const timeout = coordinator.failPendingApplication(
+    expected.logicalSessionId, expected.providerBindingId,
+    "PROVIDER_TOOL_APPLICATION_UNCONFIRMED", "old timeout", expected
+  );
+  current = { ...expected, desiredVersion: "desired:newer", resourceVersion: 4 };
+  releaseBinding({
+    logicalSessionId: expected.logicalSessionId, providerBindingId: expected.providerBindingId,
+    state: "active", isCurrent: true
+  });
+  assert.equal(await timeout, current);
+  assert.equal(failures, 0);
+  await assert.rejects(() => coordinator.failPendingApplication(
+    expected.logicalSessionId, expected.providerBindingId,
+    "PROVIDER_TOOL_APPLICATION_UNCONFIRMED", "binding-only timeout"
+  ), { code: "SESSION_TOOL_CATALOG_REFRESH_FAILED" });
+  assert.equal(failures, 0);
 });
 
 test("Registry port never converts a local restricted gateway registration into applied", async () => {

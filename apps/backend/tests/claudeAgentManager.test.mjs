@@ -471,6 +471,85 @@ test("Claude reconnect clears a stale running state left by a backend restart", 
   assert.equal(manager.get("claude-stale-running").turnState, "idle");
 });
 
+for (const agentSessionId of [null, "sdk-restored"]) {
+  test(`Claude restored runtime preparation awaits Query startup (${agentSessionId ?? "fresh"})`, async () => {
+    const storedSession = {
+      id: "claude-restored-runtime",
+      status: "complete",
+      external: { provider: "claude-sdk", agentSessionId, cwd: "/tmp/project" },
+      rawStatus: {}
+    };
+    const queries = [];
+    const manager = new ClaudeAgentManager({
+      store: { getSession: () => storedSession, getItems: () => [] },
+      query: ({ options }) => {
+        let finish;
+        const finished = new Promise((resolve) => { finish = resolve; });
+        const query = {
+          options,
+          close() { finish(); },
+          async *[Symbol.asyncIterator]() { await finished; }
+        };
+        queries.push(query);
+        return query;
+      }
+    });
+    let releaseStartup;
+    const startupGate = new Promise((resolve) => { releaseStartup = resolve; });
+    manager.runtimeOptionsFor = async (session) => {
+      await startupGate;
+      return session.runtimeOptions;
+    };
+    const runtimeOptions = { mcpServers: { corptie: { type: "stdio", command: "node" } } };
+    let reconnected = false;
+    const reconnectTask = manager.reconnect(storedSession.id, { runtimeOptions }).then((result) => {
+      reconnected = true;
+      return result;
+    });
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(reconnected, false);
+      assert.equal(queries.length, 0);
+      releaseStartup();
+      await reconnectTask;
+
+      const session = manager.get(storedSession.id);
+      assert.equal(queries.length, 1);
+      assert.equal(session.query, queries[0]);
+      assert.equal(queries[0].options.resume, agentSessionId ?? undefined);
+      assert.deepEqual(queries[0].options.mcpServers, runtimeOptions.mcpServers);
+      assert.equal(session.currentTurnId, null);
+      assert.equal(session.turnState, "idle");
+      assert.deepEqual(session.inputQueue, []);
+    } finally {
+      releaseStartup();
+      await reconnectTask;
+      queries[0]?.close();
+      await manager.get(storedSession.id)?.queryTask;
+    }
+  });
+
+  test(`Claude restored startQuery:false stays lazy with explicit runtime options (${agentSessionId ?? "fresh"})`, async () => {
+    const storedSession = {
+      id: "claude-restored-lazy",
+      status: "complete",
+      external: { provider: "claude-sdk", agentSessionId, cwd: "/tmp/project" },
+      rawStatus: {}
+    };
+    let queryCalls = 0;
+    const manager = new ClaudeAgentManager({
+      store: { getSession: () => storedSession, getItems: () => [] },
+      query: () => { queryCalls += 1; throw new Error("Query must stay lazy"); }
+    });
+    const options = { startQuery: false, runtimeOptions: {} };
+    await manager.reconnect(storedSession.id, options);
+    await manager.reconnect(storedSession.id, options);
+
+    assert.equal(queryCalls, 0);
+    assert.equal(manager.get(storedSession.id).query, null);
+  });
+}
+
 test("Claude generated MCP refresh closes the old Query before starting the replacement generation", async () => {
   const queries = [];
   const manager = new ClaudeAgentManager({
@@ -503,6 +582,97 @@ test("Claude generated MCP refresh closes the old Query before starting the repl
   assert.equal(queries[1].options.mcpServers.corptie.command, "new");
   assert.equal(session.query, queries[1]);
   queries[1].close();
+});
+
+test("Claude reconnect reuses an idle Query with identical MCP options", async () => {
+  const queries = [];
+  const manager = new ClaudeAgentManager({
+    query: ({ options }) => {
+      let finish;
+      const finished = new Promise((resolve) => { finish = resolve; });
+      const query = {
+        options,
+        closed: false,
+        close() { this.closed = true; finish(); },
+        async *[Symbol.asyncIterator]() { await finished; }
+      };
+      queries.push(query);
+      return query;
+    }
+  });
+  const runtimeOptions = {
+    mcpServers: { corptie: { type: "stdio", command: "node" } }
+  };
+  manager.start({ id: "claude-mcp-identical", runtimeOptions });
+  const session = manager.get("claude-mcp-identical");
+  await manager.ensureQueryStarted(session);
+  const originalQueryTask = session.queryTask;
+
+  await manager.reconnect("claude-mcp-identical", {
+    runtimeOptions: structuredClone(runtimeOptions)
+  });
+
+  assert.equal(queries.length, 1);
+  assert.equal(queries[0].closed, false);
+  assert.equal(session.query, queries[0]);
+  assert.equal(session.queryTask, originalQueryTask);
+  queries[0].close();
+  await originalQueryTask;
+});
+
+test("Claude reconnect preserves an active Turn and rejects changed runtime options", async () => {
+  let queryCalls = 0;
+  let closed = false;
+  const manager = new ClaudeAgentManager({
+    query: () => { queryCalls += 1; throw new Error("Must preserve the active Query"); }
+  });
+  const runtimeOptions = { mcpServers: { corptie: { type: "stdio", command: "node" } } };
+  manager.start({ id: "claude-active-runtime", runtimeOptions });
+  const session = manager.get("claude-active-runtime");
+  const activeQuery = { close() { closed = true; } };
+  const activeQueryTask = Promise.resolve();
+  const previousRuntimeOptions = session.runtimeOptions;
+  session.query = activeQuery;
+  session.queryTask = activeQueryTask;
+  session.turnState = "running";
+  session.currentTurnId = "claude-active-runtime:turn:1";
+  session.status = "running";
+  session.phase = "working";
+
+  await manager.reconnect(session.id, { runtimeOptions: structuredClone(runtimeOptions) });
+  await assert.rejects(manager.reconnect(session.id, {
+    runtimeOptions: { mcpServers: { corptie: { type: "stdio", command: "replacement" } } }
+  }), { code: "PROVIDER_TOOL_REFRESH_DURING_TURN" });
+
+  assert.equal(queryCalls, 0);
+  assert.equal(closed, false);
+  assert.equal(session.query, activeQuery);
+  assert.equal(session.queryTask, activeQueryTask);
+  assert.equal(session.queryClosed, false);
+  assert.equal(session.runtimeOptions, previousRuntimeOptions);
+  assert.equal(session.turnState, "running");
+  assert.equal(session.currentTurnId, "claude-active-runtime:turn:1");
+  assert.equal(session.status, "running");
+  assert.equal(session.phase, "working");
+});
+
+test("Claude restored runtime preparation propagates Query startup failure", async () => {
+  const storedSession = {
+    id: "claude-restored-startup-failure",
+    status: "complete",
+    external: { provider: "claude-sdk", agentSessionId: null, cwd: "/tmp/project" },
+    rawStatus: {}
+  };
+  const startupError = new Error("Query startup failed");
+  const manager = new ClaudeAgentManager({
+    store: { getSession: () => storedSession, getItems: () => [] },
+    query: () => { throw startupError; }
+  });
+
+  await assert.rejects(manager.reconnect(storedSession.id, { runtimeOptions: {} }),
+    (error) => error === startupError);
+  assert.equal(manager.get(storedSession.id).query, null);
+  assert.equal(manager.get(storedSession.id).queryStartTask, null);
 });
 
 test("reading a persisted Claude session restores history without starting a Query", async () => {

@@ -23,6 +23,7 @@ export class SessionProviderSwitchCoordinator {
     this.resolveTargetContext = options.resolveTargetContext ?? null;
     this.confirmToolSchema = options.confirmToolSchema ?? null;
     this.prepareToolMaterialization = options.prepareToolMaterialization ?? null;
+    this.finalizeCommittedTarget = options.finalizeCommittedTarget ?? null;
     this.requiresAtomicToolMaterialization = options.requiresAtomicToolMaterialization
       ?? (({ providerId }) => providerRequiresAtomicToolMaterialization(this.registry, providerId));
     this.hasActiveRun = options.hasActiveRun ?? (() => false);
@@ -57,8 +58,30 @@ export class SessionProviderSwitchCoordinator {
       error.code = "SESSION_NOT_FOUND";
       throw error;
     }
+    // Only an explicitly identified, still-current committed switch can retry
+    // Tool Host finalization. Do not turn a same-Provider request into a new switch.
+    const requestedTransition = input.transitionId
+      ? this.store.getWorkspaceTransition(input.transitionId)
+      : null;
+    const committedRetry = requestedTransition?.phase === "committed"
+      ? requestedTransition
+      : null;
+    if (committedRetry) {
+      if (committedRetry.transitionId !== input.transitionId
+        || committedRetry.transitionKind !== "provider"
+        || committedRetry.logicalSessionId !== logical.logicalSessionId
+        || committedRetry.targetProviderId !== targetProviderId) {
+        throw providerSwitchRecoveryError(
+          "The committed transition does not match the requested Session and Provider.",
+          "PROVIDER_SWITCH_TRANSITION_MISMATCH"
+        );
+      }
+      assertCommittedRetryReference(committedRetry, logical, reference);
+    }
     if (input.expectedRoutingVersion != null
-      && Number(input.expectedRoutingVersion) !== logical.routingVersion) {
+      && Number(input.expectedRoutingVersion) !== logical.routingVersion
+      && !(committedRetry
+        && Number(input.expectedRoutingVersion) === committedRetry.sourceRoutingVersion)) {
       const error = new Error(`The Session route changed from version ${input.expectedRoutingVersion} to ${logical.routingVersion}.`);
       error.code = "STALE_SESSION_ROUTE";
       error.statusCode = 409;
@@ -66,6 +89,9 @@ export class SessionProviderSwitchCoordinator {
       error.currentRoutingVersion = logical.routingVersion;
       error.logicalSessionId = logical.logicalSessionId;
       throw error;
+    }
+    if (committedRetry) {
+      return this.finalizeCommittedProviderSwitch(committedRetry, reference, logical);
     }
     const replacingFailedBinding = input.replaceFailedBinding === true
       && logical.activeBinding.providerId === targetProviderId;
@@ -137,11 +163,7 @@ export class SessionProviderSwitchCoordinator {
       throw new Error(`Provider transition ${transitionId} has no target Provider.`);
     }
     if (transition.phase === "committed") {
-      return {
-        status: "committed",
-        transition,
-        logicalSession: this.store.getLogicalSession(transition.logicalSessionId)
-      };
+      return this.finalizeCommittedProviderSwitch(transition, reference);
     }
     if (transition.phase === "failed") {
       throw new Error(`Provider transition ${transitionId} has already failed.`);
@@ -170,6 +192,8 @@ export class SessionProviderSwitchCoordinator {
     })
       ?? {};
     let created = null;
+    let committedTransition = null;
+    let committedLogical = null;
     try {
       const recoveringTarget = Boolean(transition.newThreadId);
       if (recoveringTarget) {
@@ -296,7 +320,7 @@ export class SessionProviderSwitchCoordinator {
             requiresApplied: requiresAtomicTools
           })
         : null;
-      const switched = this.store.commitWorkspaceTransition(transitionId, {
+      committedLogical = this.store.commitWorkspaceTransition(transitionId, {
         bindingId: newBindingId,
         providerThreadId: newThreadId,
         providerId: resolvedTargetProviderId,
@@ -311,20 +335,16 @@ export class SessionProviderSwitchCoordinator {
         sessionProjection,
         toolMaterialization
       });
+      committedTransition = this.store.getWorkspaceTransition(transitionId);
       this.onTransitionEvent("ProviderSwitched", {
         sessionId: reference.sessionId,
-        logicalSessionId: switched.logicalSessionId,
+        logicalSessionId: committedLogical.logicalSessionId,
         transitionId,
         fromProviderId: sourceLogical.activeBinding.providerId,
         toProviderId: resolvedTargetProviderId,
-        bindingId: switched.activeBinding?.bindingId ?? null,
-        routingVersion: switched.routingVersion
+        bindingId: committedLogical.activeBinding?.bindingId ?? null,
+        routingVersion: committedLogical.routingVersion
       });
-      return {
-        status: "committed",
-        transition: this.store.getWorkspaceTransition(transitionId),
-        logicalSession: switched
-      };
     } catch (error) {
       const newThreadId = created?.providerThreadId
         ?? created?.external?.threadId
@@ -359,6 +379,101 @@ export class SessionProviderSwitchCoordinator {
         error: error.message
       });
       throw error;
+    }
+
+    return this.finalizeCommittedProviderSwitch(
+      committedTransition,
+      reference,
+      committedLogical
+    );
+  }
+
+  async finalizeCommittedProviderSwitch(transition, reference = null, logical = null) {
+    const current = logical ?? this.store.getLogicalSession(transition.logicalSessionId);
+    assertCommittedTargetBinding(transition, current);
+    const binding = current.activeBinding;
+    const materialization = binding.bindingId
+      ? this.store.getSessionToolCatalogMaterialization(
+          transition.logicalSessionId,
+          binding.bindingId
+        )
+      : null;
+    const result = {
+      status: "committed",
+      transition: this.store.getWorkspaceTransition(transition.transitionId) ?? transition,
+      logicalSession: current
+    };
+    if (!materialization) {
+      return { ...result, toolHostStatus: "ready" };
+    }
+    if (typeof this.finalizeCommittedTarget !== "function") {
+      if (isCurrentAppliedMaterialization(materialization)) {
+        return { ...result, toolHostStatus: "ready" };
+      }
+      return {
+        ...result,
+        toolHostStatus: "pending",
+        toolHostErrorCode: "PROVIDER_TOOL_FINALIZATION_UNAVAILABLE",
+        retryable: true
+      };
+    }
+
+    try {
+      await this.finalizeCommittedTarget({
+        sessionId: current.legacySessionId ?? reference?.sessionId ?? null,
+        logicalSessionId: current.logicalSessionId,
+        providerId: binding.providerId,
+        providerBindingId: binding.bindingId,
+        providerSessionId: binding.providerSessionId,
+        routingVersion: current.routingVersion,
+        desiredToolDomains: desiredDomainIds(materialization),
+        transitionId: transition.transitionId,
+        purpose: "provider-switch-finalization"
+      });
+      const finalized = this.store.getLogicalSession(transition.logicalSessionId);
+      assertCommittedTargetBinding(transition, finalized);
+      const applied = this.store.getSessionToolCatalogMaterialization(
+        transition.logicalSessionId,
+        finalized.activeBinding.bindingId
+      );
+      if (!isCurrentAppliedMaterialization(applied)) {
+        throw toolMaterializationError(
+          "The committed Provider binding did not prove its Tool materialization."
+        );
+      }
+      this.onTransitionEvent("ProviderSwitchToolsReady", {
+        sessionId: finalized.legacySessionId ?? reference?.sessionId ?? null,
+        logicalSessionId: finalized.logicalSessionId,
+        transitionId: transition.transitionId,
+        toProviderId: finalized.activeBinding.providerId,
+        bindingId: finalized.activeBinding.bindingId,
+        routingVersion: finalized.routingVersion
+      });
+      return {
+        ...result,
+        transition: this.store.getWorkspaceTransition(transition.transitionId) ?? transition,
+        logicalSession: finalized,
+        toolHostStatus: "ready"
+      };
+    } catch (error) {
+      const errorCode = error?.code ?? "PROVIDER_TOOL_FINALIZATION_FAILED";
+      this.onTransitionEvent("ProviderSwitchToolsPending", {
+        sessionId: current.legacySessionId ?? reference?.sessionId ?? null,
+        logicalSessionId: current.logicalSessionId,
+        transitionId: transition.transitionId,
+        toProviderId: binding.providerId,
+        bindingId: binding.bindingId,
+        routingVersion: current.routingVersion,
+        errorCode
+      });
+      const latest = this.store.getLogicalSession(transition.logicalSessionId) ?? current;
+      return {
+        ...result,
+        logicalSession: latest,
+        toolHostStatus: "failed",
+        toolHostErrorCode: errorCode,
+        retryable: true
+      };
     }
   }
 
@@ -436,6 +551,61 @@ export class SessionProviderSwitchCoordinator {
       error: error.message
     });
   }
+}
+
+function assertCommittedRetryReference(transition, logical, reference) {
+  assertCommittedTargetBinding(transition, logical);
+  const binding = logical.activeBinding;
+  if (binding.bindingId
+    && binding.state === "active"
+    && binding.logicalSessionId === logical.logicalSessionId
+    && binding.providerThreadId === transition.newThreadId
+    && binding.parentThreadId === transition.sourceThreadId
+    && binding.routingVersion === logical.routingVersion
+    && reference.logicalSessionId === logical.logicalSessionId
+    && reference.sessionId === logical.legacySessionId
+    && reference.bindingId === binding.bindingId
+    && reference.providerId === binding.providerId
+    && reference.providerSessionId === binding.providerSessionId
+    && reference.routingVersion === logical.routingVersion) return;
+  throw providerSwitchRecoveryError(
+    "The committed Provider binding no longer matches the resolved Session route.",
+    "SESSION_BINDING_CHANGED"
+  );
+}
+
+function assertCommittedTargetBinding(transition, logical) {
+  const expectedRoutingVersion = Number(transition.sourceRoutingVersion) + 1;
+  const binding = logical?.activeBinding;
+  const matches = binding
+    && logical.activeThreadId === transition.newThreadId
+    && binding.providerId === transition.targetProviderId
+    && logical.routingVersion === expectedRoutingVersion;
+  if (matches) return;
+  const error = new Error("The committed Provider binding changed before Tool Host finalization completed.");
+  error.code = "SESSION_BINDING_CHANGED";
+  error.statusCode = 409;
+  throw error;
+}
+
+function isCurrentAppliedMaterialization(materialization) {
+  return materialization?.status === "applied"
+    && typeof materialization.desiredVersion === "string"
+    && materialization.desiredVersion.length > 0
+    && materialization.appliedVersion === materialization.desiredVersion
+    && materialization.appliedCatalogVersion === materialization.desiredCatalogVersion
+    && materialization.providerReceipt != null;
+}
+
+function desiredDomainIds(materialization) {
+  return [...new Set([
+    ...(materialization?.desiredDomains ?? []),
+    ...(materialization?.appliedDomains ?? [])
+  ].map((domain) => (
+    typeof domain === "string" ? domain.trim() : domain?.domainId?.trim()
+  )).filter(Boolean).map((domainId) => (
+    domainId === "work-item-acceptance" ? "task-acceptance" : domainId
+  )))].sort();
 }
 
 function assertTargetSessionInitialized(created, providerId) {

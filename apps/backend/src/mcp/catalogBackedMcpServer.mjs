@@ -15,11 +15,26 @@ export function createCatalogBackedMcpServer(options = {}) {
     }
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const result = await client.get("/internal/session/tool/catalog", {
-      observationId: randomUUID()
-    });
-    observedRevision = result.revision ?? observedRevision;
-    return { tools: (result.tools ?? []).map(toMcpDefinition) };
+    const observationId = randomUUID();
+    const diagnostic = (status, errorCode = null) => {
+      // stderr only: stdout belongs to the MCP transport. Never log schemas,
+      // environment, credentials, prompts, or backend error bodies.
+      try {
+        (options.recordDiagnostic ?? ((event) => console.error("[corptie-tool-host-mcp]", JSON.stringify(event))))({
+          stage: "tools-list", status, observationId, errorCode
+        });
+      } catch { /* Diagnostics cannot alter protocol behavior. */ }
+    };
+    diagnostic("received");
+    try {
+      const result = await client.get("/internal/session/tool/catalog", { observationId });
+      observedRevision = result.revision ?? observedRevision;
+      diagnostic("catalog-returned");
+      return { tools: (result.tools ?? []).map(toMcpDefinition) };
+    } catch (error) {
+      diagnostic("rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
+      throw error;
+    }
   });
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
