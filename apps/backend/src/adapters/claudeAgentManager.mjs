@@ -608,7 +608,8 @@ export class ClaudeAgentManager {
       const session = this.get(id);
       if (options.runtimeOptions) {
         const nextRuntimeOptions = normalizeClaudeRuntimeOptions(options.runtimeOptions);
-        if (JSON.stringify(session.runtimeOptions ?? {}) !== JSON.stringify(nextRuntimeOptions)) {
+        const runtimeChanged = JSON.stringify(session.runtimeOptions ?? {}) !== JSON.stringify(nextRuntimeOptions);
+        if (runtimeChanged) {
           if (session.turnState !== "idle" || session.currentTurnId) {
             const error = new Error("Claude Tool configuration cannot refresh during an active Turn.");
             error.code = "PROVIDER_TOOL_REFRESH_DURING_TURN";
@@ -713,7 +714,13 @@ export class ClaudeAgentManager {
     this.persistSessionIdentity(session);
     const startQuery = options.startQuery !== false;
     console.log(`[claude-sdk] reconnecting id=${id} resume=${agentSessionId ?? "fresh"} startQuery=${startQuery}`);
-    if (agentSessionId && startQuery) void this.ensureQueryStarted(session);
+    if (startQuery && options.runtimeOptions) {
+      // Explicit runtime preparation must finish before tool observation, even
+      // for a restored binding that has not acquired an SDK Session id yet.
+      await this.ensureQueryStarted(session);
+    } else if (agentSessionId && startQuery) {
+      void this.ensureQueryStarted(session);
+    }
     return this.toSessionSummary(session);
   }
 
@@ -774,7 +781,9 @@ export class ClaudeAgentManager {
     if (session.queryStartTask) return session.queryStartTask;
     const startTask = (async () => {
       if (session.query) return session.query;
-      console.log(`[claude-sdk] query starting id=${session.id} resume=${session.agentSessionId ?? ""}`);
+      console.log("[claude-sdk] query startup", JSON.stringify({
+        sessionId: session.id, agentSessionId: session.agentSessionId ?? null, status: "starting"
+      }));
       session.queryClosed = false;
       const permissionOptions = claudePermissionOptions(session);
       const runtimeOptions = await this.runtimeOptionsFor(session);
@@ -799,7 +808,16 @@ export class ClaudeAgentManager {
     })();
     session.queryStartTask = startTask;
     try {
-      return await startTask;
+      const startedQuery = await startTask;
+      console.log("[claude-sdk] query startup", JSON.stringify({
+        sessionId: session.id, agentSessionId: session.agentSessionId ?? null, status: "started"
+      }));
+      return startedQuery;
+    } catch (error) {
+      console.error("[claude-sdk] query startup", JSON.stringify({
+        sessionId: session.id, agentSessionId: session.agentSessionId ?? null, status: "failed"
+      }));
+      throw error;
     } finally {
       if (session.queryStartTask === startTask) session.queryStartTask = null;
     }

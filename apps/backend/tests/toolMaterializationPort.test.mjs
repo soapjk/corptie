@@ -122,6 +122,22 @@ test("public ToolMaterializationPort resolves the current binding and returns on
   }
 });
 
+test("public Port treats an absent empty-domain baseline as no materialization requirement", async () => {
+  const value = await fixture();
+  try {
+    const baseline = await value.port.ensureCurrentApplied(
+      "logical:one",
+      { turnExecutionId: "turn:baseline" }
+    );
+
+    assert.equal(baseline, null);
+    assert.equal(value.applyCount, 0);
+  } finally {
+    value.store.close();
+    await rm(value.directory, { recursive: true, force: true });
+  }
+});
+
 test("public Port accepts a contract-compatible definition upgrade on its first request", async () => {
   const catalog = (field) => new HostToolCatalog([{
     id: "artifacts",

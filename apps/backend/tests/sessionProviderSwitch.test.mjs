@@ -427,6 +427,396 @@ test("provider switch coordinator preserves Session kind and rejects a stale rou
   }
 });
 
+test("committed Provider switch finalizes the exact active binding and verifies durable application", async () => {
+  const transition = {
+    transitionId: "transition:post-commit-ready",
+    logicalSessionId: "logical:post-commit",
+    sourceRoutingVersion: 4,
+    targetProviderId: "claude-sdk",
+    newThreadId: "thread:claude-target",
+    phase: "committed"
+  };
+  const logical = {
+    logicalSessionId: transition.logicalSessionId,
+    legacySessionId: "session:post-commit",
+    activeThreadId: transition.newThreadId,
+    routingVersion: 5,
+    activeBinding: {
+      bindingId: "binding:claude-target",
+      providerId: "claude-sdk",
+      providerSessionId: "native:claude-target"
+    }
+  };
+  let materialization = staleToolMaterialization({
+    logicalSessionId: logical.logicalSessionId,
+    binding: logical.activeBinding,
+    domains: [{ domainId: "artifacts" }]
+  });
+  let finalizationInput = null;
+  const coordinator = new SessionProviderSwitchCoordinator({
+    store: {
+      getLogicalSession: () => logical,
+      getWorkspaceTransition: () => transition,
+      getSessionToolCatalogMaterialization: () => materialization
+    },
+    registry: { resolveId: (providerId) => providerId },
+    resolveSessionReference: async () => null,
+    createTargetSession: async () => null,
+    finalizeCommittedTarget: async (input) => {
+      finalizationInput = input;
+      materialization = {
+        ...materialization,
+        status: "applied",
+        appliedVersion: materialization.desiredVersion,
+        appliedCatalogVersion: materialization.desiredCatalogVersion,
+        appliedDomains: materialization.desiredDomains,
+        providerReceipt: { observationKind: "mcp_tools_list" }
+      };
+    }
+  });
+
+  const result = await coordinator.completeProviderSwitch(
+    transition.transitionId,
+    transition.targetProviderId,
+    null,
+    null
+  );
+
+  assert.equal(result.status, "committed");
+  assert.equal(result.toolHostStatus, "ready");
+  assert.deepEqual(finalizationInput, {
+    sessionId: logical.legacySessionId,
+    logicalSessionId: logical.logicalSessionId,
+    providerId: "claude-sdk",
+    providerBindingId: "binding:claude-target",
+    providerSessionId: "native:claude-target",
+    routingVersion: 5,
+    desiredToolDomains: ["artifacts"],
+    transitionId: transition.transitionId,
+    purpose: "provider-switch-finalization"
+  });
+});
+
+test("committed retries revalidate an applied record through the authoritative readiness boundary", async () => {
+  const transition = {
+    transitionId: "transition:post-commit-revalidate",
+    logicalSessionId: "logical:post-commit-revalidate",
+    sourceRoutingVersion: 2,
+    targetProviderId: "claude-sdk",
+    newThreadId: "thread:claude-revalidate",
+    phase: "committed"
+  };
+  const logical = {
+    logicalSessionId: transition.logicalSessionId,
+    legacySessionId: "session:post-commit-revalidate",
+    activeThreadId: transition.newThreadId,
+    routingVersion: 3,
+    activeBinding: {
+      bindingId: "binding:claude-revalidate",
+      providerId: "claude-sdk",
+      providerSessionId: "native:claude-revalidate"
+    }
+  };
+  let materialization = staleToolMaterialization({
+    logicalSessionId: logical.logicalSessionId,
+    binding: logical.activeBinding,
+    domains: []
+  });
+  materialization = {
+    ...materialization,
+    status: "applied",
+    appliedVersion: materialization.desiredVersion,
+    appliedCatalogVersion: materialization.desiredCatalogVersion,
+    appliedDomains: materialization.desiredDomains,
+    providerReceipt: { observationKind: "mcp_tools_list" }
+  };
+  let attempts = 0;
+  const coordinator = new SessionProviderSwitchCoordinator({
+    store: {
+      getLogicalSession: () => logical,
+      getWorkspaceTransition: () => transition,
+      getSessionToolCatalogMaterialization: () => materialization
+    },
+    registry: { resolveId: (providerId) => providerId },
+    resolveSessionReference: async () => null,
+    createTargetSession: async () => null,
+    finalizeCommittedTarget: async () => { attempts += 1; }
+  });
+
+  const result = await coordinator.completeProviderSwitch(
+    transition.transitionId,
+    transition.targetProviderId,
+    null,
+    null
+  );
+
+  assert.equal(result.toolHostStatus, "ready");
+  assert.equal(attempts, 1);
+});
+
+test("post-commit Tool finalization failure keeps the target active and retries idempotently", async () => {
+  const transition = {
+    transitionId: "transition:post-commit-retry",
+    logicalSessionId: "logical:post-commit-retry",
+    sourceRoutingVersion: 8,
+    targetProviderId: "claude-sdk",
+    newThreadId: "thread:claude-retry",
+    phase: "committed"
+  };
+  const logical = {
+    logicalSessionId: transition.logicalSessionId,
+    legacySessionId: "session:post-commit-retry",
+    activeThreadId: transition.newThreadId,
+    routingVersion: 9,
+    activeBinding: {
+      bindingId: "binding:claude-retry",
+      providerId: "claude-sdk",
+      providerSessionId: "native:claude-retry",
+      state: "active"
+    }
+  };
+  let materialization = staleToolMaterialization({
+    logicalSessionId: logical.logicalSessionId,
+    binding: logical.activeBinding,
+    domains: [{ domainId: "artifacts" }]
+  });
+  let attempts = 0;
+  const events = [];
+  const coordinator = new SessionProviderSwitchCoordinator({
+    store: {
+      getLogicalSession: () => logical,
+      getWorkspaceTransition: () => transition,
+      getSessionToolCatalogMaterialization: () => materialization
+    },
+    registry: { resolveId: (providerId) => providerId },
+    resolveSessionReference: async () => null,
+    createTargetSession: async () => null,
+    finalizeCommittedTarget: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error("MCP observation timed out"), {
+          code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
+        });
+      }
+      materialization = {
+        ...materialization,
+        status: "applied",
+        appliedVersion: materialization.desiredVersion,
+        appliedCatalogVersion: materialization.desiredCatalogVersion,
+        appliedDomains: materialization.desiredDomains,
+        providerReceipt: { observationKind: "mcp_tools_list" }
+      };
+    },
+    onTransitionEvent: (type, payload) => events.push([type, payload])
+  });
+
+  const failed = await coordinator.completeProviderSwitch(
+    transition.transitionId,
+    transition.targetProviderId,
+    null,
+    null
+  );
+  assert.equal(failed.status, "committed");
+  assert.equal(failed.toolHostStatus, "failed");
+  assert.equal(failed.toolHostErrorCode, "PROVIDER_TOOL_APPLICATION_UNCONFIRMED");
+  assert.equal(failed.retryable, true);
+  assert.equal(logical.activeBinding.state, "active");
+  assert.equal(transition.phase, "committed");
+
+  const repaired = await coordinator.completeProviderSwitch(
+    transition.transitionId,
+    transition.targetProviderId,
+    null,
+    null
+  );
+  assert.equal(repaired.toolHostStatus, "ready");
+  assert.equal(attempts, 2);
+  assert.deepEqual(events.map(([type]) => type), [
+    "ProviderSwitchToolsPending",
+    "ProviderSwitchToolsReady"
+  ]);
+});
+
+test("switchProvider retries committed Tool finalization without recreating resources or bumping the route", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-entry-retry-"));
+  const store = new CorptieStore({
+    dbPath: join(directory, "corptie.sqlite"),
+    configPath: join(directory, "config.json")
+  });
+  try {
+    await store.initialize();
+    const original = providerSession(store);
+    const bindings = new SessionBindingRepository({ store });
+    let creates = 0;
+    let prepares = 0;
+    let contexts = 0;
+    let finalizations = 0;
+    const events = [];
+    const coordinator = new SessionProviderSwitchCoordinator({
+      store,
+      registry: codexRegistry("openclacky"),
+      resolveSessionReference: (sessionId) => bindings.resolve(sessionId),
+      resolveTargetContext: async () => {
+        contexts += 1;
+        return { desiredToolDomains: ["artifacts"] };
+      },
+      createTargetSession: async () => {
+        creates += 1;
+        return {
+          providerThreadId: "thread:entry-retry",
+          providerSessionId: "native:entry-retry",
+          sessionProjection: { status: "complete" }
+        };
+      },
+      resumeTargetSession: async () => assert.fail("must not resume the committed target"),
+      prepareToolMaterialization: async (input) => {
+        prepares += 1;
+        return staleToolMaterialization({ ...input, domains: [{ domainId: "artifacts" }] });
+      },
+      finalizeCommittedTarget: async (input) => {
+        finalizations += 1;
+        if (finalizations === 1) {
+          throw Object.assign(new Error("MCP observation timed out"), {
+            code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
+          });
+        }
+        const current = store.getLogicalSession(original.logicalSessionId);
+        assert.equal(input.providerBindingId, current.activeBinding.bindingId);
+        assert.equal(input.providerSessionId, "native:entry-retry");
+        assert.equal(input.routingVersion, original.routingVersion + 1);
+        const materialization = store.getSessionToolCatalogMaterialization(
+          input.logicalSessionId, input.providerBindingId
+        );
+        if (materialization.status === "applied") return;
+        const refreshing = store.beginSessionToolCatalogRefresh(
+          input.logicalSessionId, input.providerBindingId, materialization.resourceVersion
+        );
+        store.applySessionToolCatalogReceipt({
+          logicalSessionId: input.logicalSessionId,
+          providerBindingId: input.providerBindingId,
+          appliedVersion: refreshing.desiredVersion,
+          appliedCatalogVersion: refreshing.desiredCatalogVersion,
+          appliedDomains: refreshing.desiredDomains,
+          providerReceipt: { observationKind: "mcp_tools_list" }
+        }, refreshing.resourceVersion);
+      },
+      onTransitionEvent: (type) => events.push(type)
+    });
+    const input = {
+      providerId: "openclacky",
+      transitionId: "transition:entry-retry",
+      expectedRoutingVersion: original.routingVersion
+    };
+    const failed = await coordinator.switchProvider(original.legacySessionId, input);
+    assert.equal(failed.status, "committed");
+    assert.equal(failed.toolHostStatus, "failed");
+    const committed = store.getLogicalSession(original.logicalSessionId);
+    const committedBindings = store.listProviderThreadBindings(original.logicalSessionId);
+    const committedTransition = store.getWorkspaceTransition(input.transitionId);
+    const committedMaterialization = store.getSessionToolCatalogMaterialization(
+      original.logicalSessionId, committed.activeBinding.bindingId
+    );
+
+    for (const expectedRoutingVersion of [original.routingVersion, committed.routingVersion, undefined]) {
+      const repaired = await coordinator.switchProvider(original.legacySessionId, {
+        ...input, expectedRoutingVersion
+      });
+      assert.equal(repaired.toolHostStatus, "ready");
+      assert.equal(repaired.logicalSession.routingVersion, committed.routingVersion);
+      assert.equal(repaired.logicalSession.activeBinding.bindingId, committed.activeBinding.bindingId);
+    }
+    assert.equal(creates, 1);
+    assert.equal(prepares, 1);
+    assert.equal(contexts, 1);
+    assert.equal(finalizations, 4);
+    assert.deepEqual(store.listProviderThreadBindings(original.logicalSessionId), committedBindings);
+    assert.deepEqual(store.getWorkspaceTransition(input.transitionId), committedTransition);
+    assert.equal(store.getPendingWorkspaceTransition(original.logicalSessionId), null);
+    const applied = store.getSessionToolCatalogMaterialization(
+      original.logicalSessionId, committed.activeBinding.bindingId
+    );
+    assert.equal(applied.desiredVersion, committedMaterialization.desiredVersion);
+    assert.equal(applied.desiredCatalogVersion, committedMaterialization.desiredCatalogVersion);
+    assert.deepEqual(events, [
+      "ProviderSwitchPending", "ProviderSwitched", "ProviderSwitchToolsPending",
+      "ProviderSwitchToolsReady", "ProviderSwitchToolsReady", "ProviderSwitchToolsReady"
+    ]);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("switchProvider committed retries reject mismatched identity and stale binding fences", async (t) => {
+  const cases = [
+    ["another Session", ({ transition }) => { transition.logicalSessionId = "logical:other"; }, "PROVIDER_SWITCH_TRANSITION_MISMATCH"],
+    ["another Provider", ({ transition }) => { transition.targetProviderId = "openclacky"; }, "PROVIDER_SWITCH_TRANSITION_MISMATCH"],
+    ["workspace transition", ({ transition }) => { transition.transitionKind = "workspace"; }, "PROVIDER_SWITCH_TRANSITION_MISMATCH"],
+    ["different transition id", ({ transition }) => { transition.transitionId = "transition:other"; }, "PROVIDER_SWITCH_TRANSITION_MISMATCH"],
+    ["later route", ({ logical, reference }) => { logical.routingVersion += 1; reference.routingVersion += 1; }],
+    ["different active thread", ({ logical }) => { logical.activeThreadId = "thread:other"; }],
+    ["different binding thread", ({ logical }) => { logical.activeBinding.providerThreadId = "thread:other"; }],
+    ["different binding parent", ({ logical }) => { logical.activeBinding.parentThreadId = "thread:other"; }],
+    ["different binding Provider", ({ logical }) => { logical.activeBinding.providerId = "openclacky"; }],
+    ["different binding Session", ({ logical }) => { logical.activeBinding.logicalSessionId = "logical:other"; }],
+    ["different binding route", ({ logical }) => { logical.activeBinding.routingVersion += 1; }],
+    ["superseded binding", ({ logical }) => { logical.activeBinding.state = "superseded"; }],
+    ["stale reference binding", ({ reference }) => { reference.bindingId = "binding:other"; }],
+    ["stale reference Provider", ({ reference }) => { reference.providerId = "openclacky"; }],
+    ["stale reference native session", ({ reference }) => { reference.providerSessionId = "native:other"; }],
+    ["stale reference route", ({ reference }) => { reference.routingVersion -= 1; }],
+    ["different reference Session", ({ reference }) => { reference.logicalSessionId = "logical:other"; }],
+    ["different public Session", ({ reference }) => { reference.sessionId = "session:other"; }],
+    ["unrelated expected route", ({ input }) => { input.expectedRoutingVersion = 2; }, "STALE_SESSION_ROUTE"],
+    ["no explicit transition", ({ input }) => { delete input.transitionId; }, "PROVIDER_ALREADY_ACTIVE"],
+    ["unknown transition", ({ input }) => { input.transitionId = "transition:unknown"; }, "PROVIDER_ALREADY_ACTIVE"],
+    ["unfinished transition", ({ transition }) => { transition.phase = "committingRoute"; }, "PROVIDER_ALREADY_ACTIVE"],
+    ["failed transition", ({ transition }) => { transition.phase = "failed"; }, "PROVIDER_ALREADY_ACTIVE"]
+  ];
+  for (const [name, mutate, code = "SESSION_BINDING_CHANGED"] of cases) {
+    await t.test(name, async () => {
+      const transition = {
+        transitionId: "transition:entry-fence", transitionKind: "provider",
+        logicalSessionId: "logical:entry-fence", sourceRoutingVersion: 4,
+        sourceThreadId: "thread:source", newThreadId: "thread:target",
+        targetProviderId: "claude-sdk", phase: "committed"
+      };
+      const logical = {
+        logicalSessionId: transition.logicalSessionId, legacySessionId: "session:entry-fence",
+        activeThreadId: transition.newThreadId, routingVersion: 5,
+        activeBinding: {
+          bindingId: "binding:target", logicalSessionId: transition.logicalSessionId,
+          providerId: "claude-sdk", providerThreadId: "thread:target",
+          providerSessionId: "native:target", parentThreadId: "thread:source",
+          routingVersion: 5, state: "active"
+        }
+      };
+      const reference = {
+        sessionId: logical.legacySessionId, logicalSessionId: logical.logicalSessionId,
+        bindingId: logical.activeBinding.bindingId, providerId: "claude-sdk",
+        providerSessionId: "native:target", routingVersion: 5
+      };
+      const input = { providerId: "claude-sdk", transitionId: transition.transitionId, expectedRoutingVersion: 5 };
+      mutate({ transition, logical, reference, input });
+      let finalizations = 0;
+      let creates = 0;
+      const coordinator = new SessionProviderSwitchCoordinator({
+        store: {
+          getLogicalSession: () => logical,
+          getWorkspaceTransition: (id) => id === "transition:entry-fence" ? transition : null
+        },
+        registry: codexRegistry("claude-sdk", "openclacky"),
+        resolveSessionReference: async () => reference,
+        createTargetSession: async () => { creates += 1; },
+        finalizeCommittedTarget: async () => { finalizations += 1; }
+      });
+      await assert.rejects(() => coordinator.switchProvider(logical.legacySessionId, input), { code });
+      assert.equal(finalizations, 0);
+      assert.equal(creates, 0);
+    });
+  }
+});
+
 test("Claude to Codex provider switch commits the exact thread proof and applied Tool materialization atomically", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-provider-switch-codex-tools-"));
   const store = new CorptieStore({

@@ -1439,9 +1439,12 @@ const sessionApplicationService = new SessionApplicationService({
     return logical ? {
       sessionId: logical.legacySessionId,
       logicalSessionId: logical.logicalSessionId,
+      bindingId: logical.activeBinding?.bindingId ?? null,
+      routingVersion: logical.routingVersion,
       providerId,
       providerSessionId: logical.activeBinding?.providerSessionId ?? null,
-      session: sessionWithLogicalWorkspace(session, logical)
+      session: store.getSession(logical.legacySessionId)
+        ?? sessionWithLogicalWorkspace(session, logical)
     } : null;
   },
   persistRenamedSession: async ({ reference, title, providerSession }) => {
@@ -2223,6 +2226,20 @@ const sessionProviderSwitchCoordinator = new SessionProviderSwitchCoordinator({
         })
       : toolHostMaterializationCoordinator.prepareDesiredReplacement(replacement);
   },
+  finalizeCommittedTarget: async (input) => (
+    sessionApplicationService.ensureActiveBindingToolsReady(
+      input.logicalSessionId,
+      {
+        purpose: input.purpose,
+        desiredToolDomains: input.desiredToolDomains,
+        expectedLogicalSessionId: input.logicalSessionId,
+        expectedProviderBindingId: input.providerBindingId,
+        expectedProviderSessionId: input.providerSessionId,
+        expectedRoutingVersion: input.routingVersion,
+        activeTurn: false
+      }
+    )
+  ),
   onTransitionEvent: (type, payload) => emitEvent(type, payload, { sessionId: payload.sessionId })
 });
 const sessionWorktrees = new SessionWorktreeService({
@@ -9421,6 +9438,17 @@ function route(request, response) {
     "/internal/session/tool/catalog",
     "/internal/session/tool/catalog/revision"
   ].includes(url.pathname)) {
+    const isToolsList = url.pathname === "/internal/session/tool/catalog";
+    const observation = {
+      // Untrusted request correlation is length-bounded and JSON-escaped.
+      observationId: (url.searchParams.get("observationId") ?? "").slice(0, 128)
+    };
+    const recordObservation = (status, errorCode = null) => {
+      if (isToolsList) console.info("[tool-host-catalog]", JSON.stringify({
+        stage: "catalog-http", status, ...observation, errorCode
+      }));
+    };
+    recordObservation("received");
     try {
       const actorId = typeof request.headers["x-corptie-agent-id"] === "string"
         ? request.headers["x-corptie-agent-id"].trim() : "";
@@ -9432,6 +9460,11 @@ function route(request, response) {
       const boundAgent = session ? collaborationCore.getAgentForSession(session.id) : null;
       const metadata = sessionToolMetadata(session);
       assertSessionToolScope({ actorId, providerBindingId, session, metadata, boundAgent });
+      Object.assign(observation, {
+        logicalSessionId: metadata.logicalSessionId,
+        providerBindingId: metadata.providerBindingId
+      });
+      recordObservation("authorized");
       if (url.pathname.endsWith("/revision")) {
         sendJson(response, 200, { revision: toolHostService.catalogRevision({ actorId, metadata }) });
         return;
@@ -9441,11 +9474,17 @@ function route(request, response) {
         metadata,
         desiredVersion: url.searchParams.get("desiredVersion") ?? undefined,
         observationId: url.searchParams.get("observationId") ?? ""
-      }).then((result) => sendJson(response, 200, result))
-        .catch((error) => sendJson(response, errorStatus(error, 403), {
+      }).then((result) => {
+        recordObservation("catalog-returned");
+        sendJson(response, 200, result);
+      }).catch((error) => {
+        recordObservation("observation-rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
+        sendJson(response, errorStatus(error, 403), {
           error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED"
-        }));
+        });
+      });
     } catch (error) {
+      recordObservation("authorization-rejected", error.code ?? "SESSION_TOOL_CATALOG_FAILED");
       sendJson(response, errorStatus(error, 403), { error: error.message, code: error.code ?? "SESSION_TOOL_CATALOG_FAILED" });
     }
     return;

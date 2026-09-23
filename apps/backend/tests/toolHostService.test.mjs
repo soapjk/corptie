@@ -17,6 +17,188 @@ import { artifactDynamicTools, authorizeArtifactDynamicTool } from "../src/appli
 import { platformDynamicTools } from "../src/application/platformDynamicTools.mjs";
 import { taskAcceptanceDynamicTools } from "../src/application/taskAcceptanceDynamicTools.mjs";
 
+function preparedGenerationRecord() {
+  return {
+    logicalSessionId: "logical:prepared", providerBindingId: "binding:prepared",
+    desiredVersion: "desired:prepared", desiredCatalogVersion: "catalog:prepared",
+    exposurePlan: { exposurePlanHash: "plan:prepared" },
+    resourceVersion: 3, status: "refreshing"
+  };
+}
+
+test("prepared Session confirmation accepts only its exact applied generation and receipt", async (t) => {
+  for (const initialStatus of ["applying", "applied"]) {
+    await t.test(initialStatus, async () => {
+      const expected = preparedGenerationRecord();
+      const current = {
+        ...expected, resourceVersion: 4, status: "applied",
+        appliedVersion: expected.desiredVersion, appliedCatalogVersion: expected.desiredCatalogVersion,
+        providerReceipt: { appliedExposurePlanHash: expected.exposurePlan.exposurePlanHash }
+      };
+      const service = new ToolHostService({
+        registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
+        coordinator: {
+          store: { getSessionToolCatalogMaterialization: () => current },
+          failPendingApplication: async () => assert.fail("confirmed generation must not fail")
+        }
+      });
+      const prepared = { materialization: { status: initialStatus, record: expected } };
+      const result = await service.confirmPreparedSession(prepared, { timeoutMs: 0 });
+      assert.equal(result.materialization.status, "applied");
+      assert.equal(result.materialization.record, current);
+    });
+  }
+});
+
+test("prepared confirmation rejects another desired, catalog, exposure or binding generation without failing it", async (t) => {
+  const patches = [
+    { desiredVersion: "desired:newer", appliedVersion: "desired:newer" },
+    { desiredCatalogVersion: "catalog:newer", appliedCatalogVersion: "catalog:newer" },
+    { exposurePlan: { exposurePlanHash: "plan:newer" } },
+    { logicalSessionId: "logical:other" },
+    { providerBindingId: "binding:other" }
+  ];
+  for (const patch of patches) {
+    await t.test(Object.keys(patch)[0], async () => {
+      const expected = preparedGenerationRecord();
+      const current = {
+        ...expected, status: "applied", appliedVersion: expected.desiredVersion,
+        appliedCatalogVersion: expected.desiredCatalogVersion,
+        providerReceipt: { appliedExposurePlanHash: expected.exposurePlan.exposurePlanHash },
+        ...patch
+      };
+      const service = new ToolHostService({
+        registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
+        coordinator: {
+          store: { getSessionToolCatalogMaterialization: () => current },
+          failPendingApplication: async () => assert.fail("must not fail another generation")
+        }
+      });
+      await assert.rejects(() => service.confirmPreparedSession({
+        materialization: { status: "applied", record: expected }
+      }, { timeoutMs: 0 }), { code: "PROVIDER_TOOL_OBSERVATION_STALE" });
+    });
+  }
+});
+
+test("prepared confirmation requires matching applied catalog and exposure proof and passes timeout CAS", async (t) => {
+  for (const patch of [
+    { status: "refreshing" },
+    { appliedVersion: "desired:old" },
+    { appliedCatalogVersion: "catalog:old" },
+    { providerReceipt: null },
+    { providerReceipt: { appliedExposurePlanHash: "plan:old" } }
+  ]) {
+    await t.test(JSON.stringify(patch), async () => {
+      const expected = preparedGenerationRecord();
+      const current = {
+        ...expected, status: "applied", appliedVersion: expected.desiredVersion,
+        appliedCatalogVersion: expected.desiredCatalogVersion,
+        providerReceipt: { appliedExposurePlanHash: expected.exposurePlan.exposurePlanHash },
+        ...patch
+      };
+      const failures = [];
+      const service = new ToolHostService({
+        registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
+        coordinator: {
+          store: { getSessionToolCatalogMaterialization: () => current },
+          failPendingApplication: async (...args) => { failures.push(args); }
+        }
+      });
+      await assert.rejects(() => service.confirmPreparedSession({
+        materialization: { status: "applying", record: expected }
+      }, { timeoutMs: 0 }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+      assert.equal(failures.length, 1);
+      assert.equal(failures[0][0], expected.logicalSessionId);
+      assert.equal(failures[0][1], expected.providerBindingId);
+      assert.equal(failures[0][4], expected);
+    });
+  }
+});
+
+test("bootstrap attachment reuses the strict gate plan instead of recalculating a create-phase generation", async () => {
+  const catalog = new HostToolCatalog([]);
+  const record = { ...preparedGenerationRecord(), desiredCatalogVersion: catalog.snapshot().catalogVersion };
+  const materialization = {
+    status: "applying", record, snapshot: catalog.snapshot(),
+    plan: { ...record.exposurePlan, surface: "generated_authenticated_mcp", providerDefinitions: [] }
+  };
+  const attachments = [];
+  const registry = new AgentProviderRegistry([
+    provider("hosted", [AGENT_PROVIDER_CAPABILITIES.TOOL_HOST_ATTACH], {
+      attachTools: (attachment) => { attachments.push(attachment); return {}; }
+    })
+  ]);
+  let current = record;
+  const service = new ToolHostService({
+    registry, catalog,
+    coordinator: {
+      store: { getSessionToolCatalogMaterialization: () => current },
+      ensureApplied: async () => assert.fail("must reuse the refresh-phase plan")
+    }
+  });
+  const context = {
+    actorId: "agent:prepared", logicalSessionId: record.logicalSessionId,
+    providerBindingId: record.providerBindingId, purpose: "session-bootstrap"
+  };
+  const prepared = await service.prepareSession("hosted", context, { preparedMaterialization: materialization });
+  assert.equal(prepared.materialization.plan, materialization.plan);
+  assert.equal(attachments[0].metadata.exposurePlanHash, record.exposurePlan.exposurePlanHash);
+  current = { ...record, desiredVersion: "desired:newer", resourceVersion: 4 };
+  await assert.rejects(() => service.prepareSession("hosted", context, {
+    preparedMaterialization: materialization
+  }), { code: "PROVIDER_TOOL_OBSERVATION_STALE" });
+  assert.equal(attachments.length, 1);
+});
+
+test("generated MCP observation diagnostics report safe received/accepted/rejected identities only", async () => {
+  const events = [];
+  const record = {
+    ...preparedGenerationRecord(), status: "applied", appliedVersion: "desired:prepared",
+    exposurePlan: { ownership: {} }
+  };
+  let rejectObservation = false;
+  let observations = 0;
+  const service = new ToolHostService({
+    registry: new AgentProviderRegistry([]), catalog: new HostToolCatalog([]),
+    coordinator: {
+      store: { getSessionToolCatalogMaterialization: () => record },
+      observeGeneratedMcpToolsList: async () => {
+        observations += 1;
+        if (rejectObservation) throw Object.assign(new Error("SECRET provider error and env"), {
+          code: "PROVIDER_TOOL_OBSERVATION_STALE"
+        });
+      }
+    },
+    recordRuntimeEvent: (event) => events.push(event)
+  });
+  const input = {
+    desiredVersion: record.desiredVersion, observationId: "observation:prepared",
+    metadata: {
+      sessionId: "session:prepared", logicalSessionId: record.logicalSessionId,
+      providerBindingId: record.providerBindingId, providerId: "hosted", prompt: "SECRET"
+    },
+    env: { KEY: "SECRET" }, definitions: [{ description: "SECRET" }]
+  };
+  await service.observeGeneratedMcpToolsList(input);
+  rejectObservation = true;
+  await assert.rejects(() => service.observeGeneratedMcpToolsList(input), { code: "PROVIDER_TOOL_OBSERVATION_STALE" });
+  assert.equal(observations, 2);
+  assert.deepEqual(events.map((event) => event.details.observationOutcome), ["received", "accepted", "received", "rejected"]);
+  assert.equal(events[3].errorCode, "PROVIDER_TOOL_OBSERVATION_STALE");
+  assert.equal(events[1].appliedVersion, record.desiredVersion);
+  for (const event of events) {
+    assert.equal(event.logicalSessionId, record.logicalSessionId);
+    assert.equal(event.details.providerBindingId, record.providerBindingId);
+    assert.equal(event.details.observationId, input.observationId);
+    assert.equal(event.desiredVersion, record.desiredVersion);
+  }
+  assert.equal(JSON.stringify(events).includes("SECRET"), false);
+  service.recordRuntimeEvent = () => { throw new Error("diagnostics unavailable"); };
+  rejectObservation = false;
+  await service.observeGeneratedMcpToolsList(input);
+});
+
 function provider(id, capabilities, operations = {}) {
   return new CallbackAgentProvider({ id, displayName: id, transport: "fake", capabilities }, {
     listSessions: () => [],

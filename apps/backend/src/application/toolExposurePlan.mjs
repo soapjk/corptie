@@ -137,9 +137,11 @@ function selectDeliverySurface(capabilities, phase) {
 }
 
 function refreshMode(capabilities, phase, surface) {
+  // Generated MCP is proved by authenticated tools/list even at creation.
+  // `create` is not an observation protocol and must not mask that boundary.
+  if (surface === "generated_authenticated_mcp") return "generated_mcp_refresh";
   if (phase === "create") return "create";
   if (surface === "restricted_gateway") return "restricted_gateway";
-  if (surface === "generated_authenticated_mcp") return "generated_mcp_refresh";
   if (capabilities.appendInPlace) return "append_in_place";
   if (capabilities.replaceAtTurnBoundary) return "turn_boundary_replace";
   return "binding_replacement";

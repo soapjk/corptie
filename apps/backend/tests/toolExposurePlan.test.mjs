@@ -32,6 +32,17 @@ test("ExposurePlan selects one surface from real capability facts", () => {
   assert.equal(gateway.providerDefinitions.some((tool) => tool.name === "corptie_tool_call"), true);
 });
 
+test("generated MCP creation and refresh use the same observation protocol", () => {
+  const capabilities = { generatedMcpRefresh: true, capabilityRevision: "mcp:1" };
+  const create = buildToolExposurePlan({ catalog, desiredDomains: ["artifacts"], capabilities, phase: "create" });
+  const refresh = buildToolExposurePlan({ catalog, desiredDomains: ["artifacts"], capabilities, phase: "refresh" });
+  assert.equal(create.refreshMode, "generated_mcp_refresh");
+  assert.equal(refresh.refreshMode, create.refreshMode);
+  assert.equal(create.exposurePlanHash, refresh.exposurePlanHash);
+  const native = buildToolExposurePlan({ catalog, capabilities: { bootstrapAttach: true, capabilityRevision: "native:1" }, phase: "create" });
+  assert.equal(native.refreshMode, "create");
+});
+
 test("ExposurePlan fails closed on duplicate delivery ownership", () => {
   const plan = buildToolExposurePlan({
     catalog, desiredDomains: ["artifacts"], phase: "refresh",
