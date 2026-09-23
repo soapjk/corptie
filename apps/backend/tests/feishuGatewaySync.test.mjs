@@ -1005,6 +1005,102 @@ test("an empty started assistant item is deferred until the same item id contain
   assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-stable-id"), true);
 });
 
+test("assistant text with an active turn and no item status is deferred until the stable item becomes final", async () => {
+  const botId = "bot-a";
+  const sent = [];
+  let items = [{
+    id: "assistant-provider-neutral-id",
+    type: "agentMessage",
+    status: "",
+    turnStatus: "running",
+    text: "Partial reply"
+  }];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId, sessionId: "session-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return { title: "Session A", status: "running", items };
+    }
+  });
+  manager.botRuntime.set(botId, { lastStatus: "running", seenItems: new Set() });
+  manager.sendText = async (_botId, _chatId, text) => {
+    sent.push(text);
+    return [];
+  };
+
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, []);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-provider-neutral-id"), false);
+
+  items = [{
+    id: "assistant-provider-neutral-id",
+    type: "agentMessage",
+    status: "",
+    turnStatus: "complete",
+    presentationRole: "final_answer",
+    text: "The completed reply"
+  }];
+  await manager.syncBot(botId);
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, ["The completed reply"]);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-provider-neutral-id"), true);
+});
+
+test("runtime recovery does not seed provider-neutral active assistant text into the seen set", async () => {
+  const botId = "bot-a";
+  const sent = [];
+  let items = [{
+    id: "assistant-provider-neutral-recovered-id",
+    type: "agentMessage",
+    status: "",
+    turnStatus: "running",
+    text: "Partial reply"
+  }];
+  const manager = new FeishuGatewayManager({
+    store: {
+      getFeishuAssignmentForBot() {
+        return { botId, sessionId: "session-a" };
+      },
+      listFeishuBindings() {
+        return [{ chatId: "chat-a" }];
+      }
+    },
+    async getSnapshot() {
+      return { title: "Session A", status: "running", items };
+    }
+  });
+  manager.sendText = async (_botId, _chatId, text) => {
+    sent.push(text);
+    return [];
+  };
+
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, ["当前会话：Session A\n状态：正在处理"]);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-provider-neutral-recovered-id"), false);
+
+  items = [{
+    id: "assistant-provider-neutral-recovered-id",
+    type: "agentMessage",
+    status: "",
+    turnStatus: "completed",
+    presentationRole: "final_answer",
+    text: "Recovered completed reply"
+  }];
+  await manager.syncBot(botId);
+
+  assert.deepEqual(sent, ["当前会话：Session A\n状态：正在处理", "Recovered completed reply"]);
+  assert.equal(manager.botRuntime.get(botId).seenItems.has("assistant-provider-neutral-recovered-id"), true);
+});
+
 test("runtime recovery does not seed an in-progress assistant id into the seen set", async () => {
   const botId = "bot-a";
   const sent = [];

@@ -2084,7 +2084,7 @@ function findLatestFormalAgentReply(items = []) {
 }
 
 function isTerminalTurnStatus(status) {
-  return ["completed", "complete", "failed", "cancelled", "canceled", "interrupted"]
+  return ["completed", "complete", "succeeded", "success", "failed", "cancelled", "canceled", "interrupted"]
     .includes(optionalText(status).toLowerCase());
 }
 
@@ -2100,8 +2100,10 @@ function feishuProjectionForSessionItem(item) {
   }
   if (["agentMessage", "assistantMessage"].includes(item?.type)) {
     const status = optionalText(item.status).toLowerCase();
+    const turnStatus = optionalText(item.turnStatus).toLowerCase();
     const isStillGenerating = ["inprogress", "in_progress", "running", "streaming", "pending", "started"]
-      .includes(status);
+      .includes(status)
+      || (turnStatus && !isTerminalTurnStatus(turnStatus));
     if (!optionalText(item.text) || isStillGenerating) return "deferred";
     return isFinalAssistantItem(item) ? "assistant" : "hidden";
   }
