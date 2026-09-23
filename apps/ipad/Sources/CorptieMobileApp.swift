@@ -3,7 +3,7 @@ import CorptieClientCore
 import CorptieConversation
 
 @main
-struct CorptiePadApp: App {
+struct CorptieMobileApp: App {
     @State private var connection = PadConnection()
     var body: some Scene {
         WindowGroup {
@@ -159,7 +159,11 @@ struct WorkspaceView: View {
                     .controlSize(.large)
                     .padding(.horizontal, 16).padding(.vertical, 6)
                 }
-                .background(.ultraThinMaterial)
+                .background {
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                        .ignoresSafeArea(edges: .top)
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .ignoresSafeArea(.container, edges: .top)
@@ -175,6 +179,7 @@ struct WorkspaceView: View {
             }
         }
         .toolbar(.hidden, for: .navigationBar)
+        .ignoresSafeArea(.container, edges: .top)
         .onChange(of: workspace.selection) {
             if workspace.selection == nil { columnVisibility = .all }
         }
@@ -416,7 +421,11 @@ struct ConversationView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(.ultraThinMaterial)
+        .background {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea(edges: .top)
+        }
     }
 
     private var composer: some View {

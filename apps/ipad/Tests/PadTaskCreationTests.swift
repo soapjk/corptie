@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import CorptieClientCore
-@testable import CorptiePadState
+@testable import CorptieMobileState
 
 @MainActor @Suite(.serialized)
 struct PadTaskCreationTests {
