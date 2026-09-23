@@ -47,6 +47,28 @@ test("authenticated MCP lists only the latest applied catalog and delegates call
   }
 });
 
+test("tools/list diagnostics correlate rejection without exposing backend details", async () => {
+  const events = [];
+  const server = createCatalogBackedMcpServer({
+    pollIntervalMs: 0,
+    recordDiagnostic: (event) => events.push(event),
+    client: { get: async () => { throw Object.assign(new Error("private backend detail"), { code: "SESSION_BINDING_CHANGED" }); } }
+  });
+  const client = new Client({ name: "catalog-diagnostic-test", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  try {
+    await assert.rejects(client.listTools());
+    assert.deepEqual(events.map((event) => event.status), ["received", "rejected"]);
+    assert.equal(events[0].observationId, events[1].observationId);
+    assert.equal(events[1].errorCode, "SESSION_BINDING_CHANGED");
+    assert.equal(JSON.stringify(events).includes("private backend detail"), false);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
 test("authenticated MCP announces an assignment-driven catalog revision change", async () => {
   let revision = "catalog:skills:none";
   let changed = 0;

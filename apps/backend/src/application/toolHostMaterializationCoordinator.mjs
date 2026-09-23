@@ -11,6 +11,20 @@ import {
   validateToolMaterializationReceipt
 } from "../agent-provider/toolSchemaCapabilities.mjs";
 
+export function matchesToolMaterializationGeneration(record, expected) {
+  return Boolean(record && expected
+    && expected.logicalSessionId
+    && expected.providerBindingId
+    && expected.desiredVersion
+    && expected.desiredCatalogVersion
+    && expected.exposurePlan?.exposurePlanHash
+    && record.logicalSessionId === expected.logicalSessionId
+    && record.providerBindingId === expected.providerBindingId
+    && record.desiredVersion === expected.desiredVersion
+    && record.desiredCatalogVersion === expected.desiredCatalogVersion
+    && record.exposurePlan?.exposurePlanHash === expected.exposurePlan.exposurePlanHash);
+}
+
 export class ToolHostMaterializationCoordinator {
   constructor(options = {}) {
     this.store = options.store;
@@ -367,10 +381,15 @@ export class ToolHostMaterializationCoordinator {
     return this.store.cancelSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
   }
 
-  async failPendingApplication(logicalSessionId, providerBindingId, errorCode, errorSummary) {
+  async failPendingApplication(logicalSessionId, providerBindingId, errorCode, errorSummary, expectedGeneration) {
+    if (!expectedGeneration || !Number.isSafeInteger(expectedGeneration.resourceVersion)) {
+      throw toolError("SESSION_TOOL_CATALOG_REFRESH_FAILED", "Failing a pending application requires its exact expected generation.", 409);
+    }
     const binding = await this.#binding(logicalSessionId, providerBindingId);
     const current = this.store.getSessionToolCatalogMaterialization(logicalSessionId, providerBindingId);
-    if (!current || current.status !== "refreshing") return current;
+    if (!current || current.status !== "refreshing"
+      || !matchesToolMaterializationGeneration(current, expectedGeneration)
+      || current.resourceVersion !== expectedGeneration.resourceVersion) return current;
     const failed = this.store.failSessionToolCatalogRefresh({
       logicalSessionId,
       providerBindingId,
@@ -765,7 +784,12 @@ function matchesDesired(record, version, catalogVersion, domains, plan) {
     && record.desiredVersion === version
     && stableStringify((record.desiredDomains ?? []).map(contractDomainRecord))
       === stableStringify(domains.map(contractDomainRecord))
-    && record.exposurePlan?.exposureContractHash === plan.exposureContractHash;
+    && record.exposurePlan?.exposureContractHash === plan.exposureContractHash
+    // Older generated-MCP replacement rows persisted `create`. Ownership
+    // hashes are identical, but the observation protocol must still be repaired
+    // through the normal desired-state CAS before waiting for tools/list.
+    && (plan.surface !== "generated_authenticated_mcp"
+      || record.exposurePlan?.refreshMode === plan.refreshMode);
 }
 
 function compatibleDefinitionOnly(record, binding, capability, plan, desiredVersion) {

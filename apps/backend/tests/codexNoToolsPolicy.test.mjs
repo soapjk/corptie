@@ -3,10 +3,28 @@ import test from "node:test";
 import { assertCodexNoToolsRuntime, codexNoToolsConfig } from "../src/adapters/codexNoToolsPolicy.mjs";
 import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
 
-test("no-tools rejects unverified runtime versions instead of trusting ignored config keys", () => {
-  assertCodexNoToolsRuntime("corptie/0.153.4 (Mac OS; arm64)");
-  for (const agent of [null, "corptie/0.149.1", "corptie/0.153.5", "invalid"]) {
-    assert.throws(() => assertCodexNoToolsRuntime(agent), { code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED" });
+test("no-tools accepts only explicitly qualified complete runtime versions", () => {
+  for (const agent of [
+    "corptie/0.153.4 (Mac OS; arm64)",
+    "corptie/0.155.1 (Mac OS 27.0.0; arm64) unknown (corptie; 0.5.4)"
+  ]) assert.doesNotThrow(() => assertCodexNoToolsRuntime(agent));
+
+  for (const agent of [
+    null,
+    "corptie/0.155.0",
+    "corptie/0.155.2",
+    "corptie/0.156.0",
+    "corptie/0.155",
+    "corptie/0.155.1.0",
+    "corptie/0.155.1-beta.1",
+    "corptie/0.155.1+build.7",
+    "codex-cli/0.155.1",
+    "corptie/v0.155.1",
+    "invalid"
+  ]) {
+    assert.throws(() => assertCodexNoToolsRuntime(agent), {
+      code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
+    });
   }
 });
 

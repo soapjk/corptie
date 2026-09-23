@@ -1,6 +1,10 @@
-// Verified with the real 0.153.4 App Server against a loopback Responses stub.
-// Keep this version gate until the offline protocol suite passes on upgrades.
-export const CODEX_NO_TOOLS_VERSION = "0.153.4";
+// Every listed runtime passed the real loopback-only no-tools App Server probe.
+// Keep this exact allowlist fail-closed; upgrades require the full probe matrix.
+export const CODEX_NO_TOOLS_VERIFIED_VERSIONS = Object.freeze([
+  "0.153.4",
+  "0.155.1"
+]);
+const VERIFIED_RUNTIME_VERSIONS = new Set(CODEX_NO_TOOLS_VERIFIED_VERSIONS);
 
 export function codexNoToolsConfig(mcpServers = {}) {
   return {
@@ -19,8 +23,9 @@ export function codexNoToolsConfig(mcpServers = {}) {
 }
 
 export function assertCodexNoToolsRuntime(userAgent) {
-  const version = String(userAgent ?? "").match(/^[^/]+\/([^ ]+)/)?.[1];
-  if (version !== CODEX_NO_TOOLS_VERSION) {
+  const version = String(userAgent ?? "")
+    .match(/^corptie\/([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)/)?.[1];
+  if (!version || !VERIFIED_RUNTIME_VERSIONS.has(version)) {
     throw Object.assign(new Error("This Codex runtime has not passed the no-tools protocol verification."), {
       code: "BACKGROUND_NO_TOOLS_RUNTIME_UNVERIFIED"
     });

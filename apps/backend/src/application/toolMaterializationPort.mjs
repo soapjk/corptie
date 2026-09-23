@@ -11,12 +11,27 @@ export class ToolMaterializationPort {
   }
 
   async ensureDomainsApplied(logicalSessionId, domains, turnBoundary = {}) {
+    return this.#ensureApplied(
+      logicalSessionId,
+      normalizedDomains(domains),
+      turnBoundary
+    );
+  }
+
+  async ensureCurrentApplied(logicalSessionId, turnBoundary = {}) {
+    return this.#ensureApplied(logicalSessionId, [], turnBoundary);
+  }
+
+  async #ensureApplied(logicalSessionId, requestedDomains, turnBoundary) {
     const sessionId = requiredText(logicalSessionId, "logicalSessionId");
-    const requestedDomains = normalizedDomains(domains);
     const binding = await this.#currentBinding(sessionId);
     const current = this.coordinator.store.getSessionToolCatalogMaterialization(
       sessionId, binding.providerBindingId
     );
+    if (requestedDomains.length === 0 && !current) {
+      await this.#assertGeneration(binding);
+      return null;
+    }
     const catalogVersion = this.coordinator.catalog.snapshot().catalogVersion;
     if (hasCurrentAppliedDomains(current, requestedDomains, catalogVersion)) {
       await this.#assertGeneration(binding);
@@ -50,13 +65,24 @@ export class ToolMaterializationPort {
     }
     if (result.status !== "applied"
       || !hasCurrentAppliedDomains(result.record, requestedDomains, catalogVersion)) {
-      throw portError(
+      const error = portError(
         result.status === "blocked"
           ? "SESSION_TOOL_CATALOG_REFRESH_FAILED"
           : "TOOL_MATERIALIZATION_OUTCOME_UNKNOWN",
         "Tool Host did not receive a matching Provider applied receipt for the requested domains.",
         503
       );
+      error.recoveryAction = result.status === "applying"
+        && result.plan?.refreshMode === "generated_mcp_refresh"
+        && result.record?.providerReceipt?.status === "awaiting_provider_observation"
+        ? "observe_generated_mcp"
+        : "none";
+      if (error.recoveryAction === "observe_generated_mcp") {
+        // Internal handoff only: attach the generation already prepared by the
+        // authoritative coordinator instead of preparing it a second time.
+        error.preparedMaterialization = result;
+      }
+      throw error;
     }
     await this.#assertGeneration(binding);
     const appliedDomains = result.record.appliedDomains.map((domain) => domain.domainId);
@@ -99,7 +125,7 @@ export class ToolMaterializationPort {
   async #assertGeneration(expected) {
     const current = await this.#currentBinding(expected.logicalSessionId);
     if (current.providerBindingId !== expected.providerBindingId
-      || Number(current.routingVersion ?? 0) !== Number(expected.routingVersion ?? 0)) {
+      || current.routingVersion !== expected.routingVersion) {
       throw portError("SESSION_BINDING_CHANGED", "The Provider binding generation changed during Tool materialization.", 409);
     }
   }
