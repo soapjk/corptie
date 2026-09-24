@@ -35,6 +35,32 @@ struct CodexResetNoticeTests {
     }
 
     @Test
+    func bankedResetCreditsDecodeAndIgnoreRedeemedOrExpiredDates() throws {
+        let json = """
+        {
+          "available": true,
+          "provider": "codex",
+          "rateLimitResetCredits": {
+            "availableCount": 2,
+            "credits": [
+              {"id":"one","status":"available","expiresAt":2100000000},
+              {"id":"two","status":"available","expiresAt":2200000000},
+              {"id":"used","status":"redeemed","expiresAt":2300000000},
+              {"id":"expired","status":"available","expiresAt":1500000000}
+            ]
+          }
+        }
+        """
+        let account = try JSONDecoder().decode(CodexAccountUsage.self, from: Data(json.utf8))
+        let resets = try #require(account.rateLimitResetCredits)
+        #expect(resets.availableCount == 2)
+        #expect(resets.availableExpirationDates(now: Date(timeIntervalSince1970: 2000000000)) == [
+            Date(timeIntervalSince1970: 2100000000),
+            Date(timeIntervalSince1970: 2200000000)
+        ])
+    }
+
+    @Test
     func planQuotaUsesTheLongestAvailableRateLimitWindow() {
         let account = CodexAccountUsage(
             available: true,

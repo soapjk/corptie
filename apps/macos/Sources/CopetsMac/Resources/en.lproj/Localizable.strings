@@ -383,6 +383,9 @@
 "Codex plan update" = "Codex plan update";
 "Tibo forecast: %@" = "Tibo forecast: %@";
 "Tibo forecast: No upcoming reset announcement" = "Tibo forecast: No upcoming reset announcement";
+"Banked resets remaining: %lld" = "Banked resets remaining: %lld";
+"Earliest banked reset expiry: %@" = "Earliest banked reset expiry: %@";
+"Banked reset expiry unavailable" = "Banked reset expiry unavailable";
 
 /* Console, Sessions, Work, CorptieTask, and Agent surfaces */
 "\u63A7\u5236\u53F0" = "Console";
