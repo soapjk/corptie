@@ -362,6 +362,7 @@ export function toolDefinitionsContractHash(definitions = [], options = {}) {
 }
 
 export function providerContractHashFromReceipt(receipt = {}, definitions = null) {
+  if (!receipt || typeof receipt !== "object") return null;
   if (typeof receipt.providerContractHash === "string" && receipt.providerContractHash.trim()) {
     return receipt.providerContractHash.trim();
   }
@@ -371,7 +372,7 @@ export function providerContractHashFromReceipt(receipt = {}, definitions = null
   if (exactHash && LEGACY_PROVIDER_DEFINITION_CONTRACT_HASHES[exactHash]) {
     return LEGACY_PROVIDER_DEFINITION_CONTRACT_HASHES[exactHash];
   }
-  if (Array.isArray(definitions) && exactHash === schemaHash(definitions)) {
+  if (Array.isArray(definitions) && exactHash && exactHash === schemaHash(definitions)) {
     return toolDefinitionsContractHash(definitions);
   }
   return null;

@@ -7,6 +7,7 @@ import {
   confirmOrRestoreCodexToolPlan
 } from "../src/application/codexToolPlanConfirmation.mjs";
 import {
+  providerContractHashFromReceipt,
   schemaHash,
   toolDefinitionsContractHash
 } from "../src/application/hostToolCatalog.mjs";
@@ -165,4 +166,30 @@ test("persisted confirmation recovery fails closed on binding, generation, or sc
       runtime: restartedRuntime(), store: storeWith(patch), binding, plan, request
     }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
   }
+});
+
+test("persisted confirmation recovery fails closed when materialization record or receipt is null", () => {
+  assert.throws(() => confirmOrRestoreCodexToolPlan({
+    runtime: restartedRuntime(),
+    store: { getSessionToolCatalogMaterialization: () => null },
+    binding,
+    plan,
+    request
+  }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+
+  assert.throws(() => confirmOrRestoreCodexToolPlan({
+    runtime: restartedRuntime(),
+    store: { getSessionToolCatalogMaterialization: () => ({ providerReceipt: null }) },
+    binding,
+    plan,
+    request
+  }), { code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED" });
+});
+
+test("providerContractHashFromReceipt gracefully handles null, undefined, or non-object receipts", () => {
+  assert.equal(providerContractHashFromReceipt(null), null);
+  assert.equal(providerContractHashFromReceipt(undefined), null);
+  assert.equal(providerContractHashFromReceipt("invalid"), null);
+  assert.equal(providerContractHashFromReceipt(123), null);
+  assert.equal(providerContractHashFromReceipt({}), null);
 });

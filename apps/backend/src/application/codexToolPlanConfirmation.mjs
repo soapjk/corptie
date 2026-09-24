@@ -34,12 +34,13 @@ export function confirmOrRestoreCodexToolPlan({ runtime, store, binding, plan, r
       binding.logicalSessionId,
       binding.providerBindingId
     );
-    const receipt = record?.providerReceipt;
+    const receipt = record?.providerReceipt ?? null;
     const committedProviderConfirmation = receipt
       && receipt.providerBindingId === binding.providerBindingId
       && record.appliedVersion === receipt.appliedVersion
       && record.appliedCatalogVersion === receipt.appliedCatalogVersion
       && JSON.stringify(record.appliedDomains ?? []) === JSON.stringify(receipt.appliedDomains ?? []);
+    if (!committedProviderConfirmation) throw error;
     const requestedContractHash = plan.providerContractHash
       ?? toolDefinitionsContractHash(plan.providerDefinitions);
     const compatibleContractHash = providerContractHashFromReceipt(
@@ -49,8 +50,7 @@ export function confirmOrRestoreCodexToolPlan({ runtime, store, binding, plan, r
     const exactDefinitionsCount = receipt?.providerDefinitionsCount === plan.providerDefinitions.length;
     const exactObservationKind = receipt?.providerObservationKind === "thread_start_accepted"
       || receipt?.providerObservationKind === "thread_fork_inherited";
-    if (!committedProviderConfirmation || !compatibleContractHash
-      || !exactDefinitionsCount || !exactObservationKind) throw error;
+    if (!compatibleContractHash || !exactDefinitionsCount || !exactObservationKind) throw error;
     return runtime.restoreThreadToolPlanConfirmation(
       binding.providerSessionId,
       plan.providerDefinitions,
