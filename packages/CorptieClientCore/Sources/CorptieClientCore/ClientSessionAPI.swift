@@ -170,10 +170,25 @@ public struct ClientSessionUsage: Decodable, Equatable, Sendable {
         public let model: String?
         public let rateLimits: RateLimit?
         public let rateLimitsByLimitId: [String: RateLimit]?
-        public init(available: Bool?, provider: String?, model: String?, rateLimits: RateLimit?, rateLimitsByLimitId: [String: RateLimit]?) {
+        public let rateLimitResetCredits: RateLimitResetCredits?
+        public init(available: Bool?, provider: String?, model: String?, rateLimits: RateLimit?, rateLimitsByLimitId: [String: RateLimit]?, rateLimitResetCredits: RateLimitResetCredits? = nil) {
             self.available = available; self.provider = provider; self.model = model
             self.rateLimits = rateLimits; self.rateLimitsByLimitId = rateLimitsByLimitId
+            self.rateLimitResetCredits = rateLimitResetCredits
         }
+    }
+    public struct RateLimitResetCredits: Decodable, Equatable, Sendable {
+        public let availableCount: Int?
+        public let credits: [RateLimitResetCredit]?
+    }
+    public struct RateLimitResetCredit: Decodable, Equatable, Sendable {
+        public let id: String?
+        public let resetType: String?
+        public let status: String?
+        public let grantedAt: Double?
+        public let expiresAt: Double?
+        public let title: String?
+        public let description: String?
     }
     public let schemaVersion: Int
     public let sessionId: String
