@@ -135,47 +135,26 @@ struct WorkspaceView: View {
                 })
             .disabled(connection.busy)
             .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 6) {
-                    HStack {
-                        Spacer()
-
-                        Button {
-                            Task { await workspace.inventory(connection) }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.primary)
-                                .frame(width: 36, height: 36)
-                                .padGlassSurface(in: Circle(), interactive: true)
-                                .frame(width: 44, height: 44)
-                                .contentShape(Circle())
+                if !commands.notice.isEmpty {
+                    HStack(spacing: 8) {
+                        Text(commands.notice)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        if commands.pending != nil {
+                            Button("核对") {
+                                Task { await commands.reconcile(connection) }
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .buttonStyle(.plain)
+                            .disabled(commands.checking)
                         }
-                        .buttonStyle(.plain)
-                        .disabled(connection.busy)
-                        .accessibilityIdentifier("workspace-refresh")
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: Capsule())
                     .padding(.horizontal, 16)
                     .padding(.top, 6)
                     .padding(.bottom, 4)
-
-                    if !commands.notice.isEmpty {
-                        HStack(spacing: 8) {
-                            Text(commands.notice)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            if commands.pending != nil {
-                                Button("核对") {
-                                    Task { await commands.reconcile(connection) }
-                                }
-                                .font(.caption2.weight(.semibold))
-                                .buttonStyle(.plain)
-                                .disabled(commands.checking)
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .background(.ultraThinMaterial, in: Capsule())
-                    }
                 }
             }
             .toolbar(removing: .sidebarToggle)
