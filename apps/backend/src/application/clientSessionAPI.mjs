@@ -185,6 +185,17 @@ export class ClientSessionAPI {
       ? { limitId: value.limitId == null ? null : String(value.limitId), limitName: value.limitName == null ? null : String(value.limitName),
         primary: window(value.primary), secondary: window(value.secondary) }
       : null;
+    const resetCredits = value => value && typeof value === "object"
+      ? { availableCount: Number.isSafeInteger(value.availableCount) && value.availableCount >= 0 ? value.availableCount : null,
+        credits: Array.isArray(value.credits) ? value.credits.filter(credit => credit && typeof credit === "object").map(credit => ({
+          id: typeof credit.id === "string" ? credit.id : null,
+          resetType: typeof credit.resetType === "string" ? credit.resetType : null,
+          status: typeof credit.status === "string" ? credit.status : null,
+          grantedAt: number(credit.grantedAt), expiresAt: number(credit.expiresAt),
+          title: typeof credit.title === "string" ? credit.title : null,
+          description: typeof credit.description === "string" ? credit.description : null
+        })) : null }
+      : null;
     const account = snapshot?.account && typeof snapshot.account === "object" ? snapshot.account : null;
     const context = snapshot?.context && typeof snapshot.context === "object" ? snapshot.context : null;
     return { schemaVersion: 1, sessionId,
@@ -192,6 +203,7 @@ export class ClientSessionAPI {
         remainingTokens: number(context.remainingTokens), usedPercent: number(context.usedPercent) } : null,
       account: account ? { available: account.available === true, provider: account.provider == null ? null : String(account.provider),
         model: account.model == null ? null : String(account.model), rateLimits: limit(account.rateLimits),
+        rateLimitResetCredits: resetCredits(account.rateLimitResetCredits),
         rateLimitsByLimitId: account.rateLimitsByLimitId && typeof account.rateLimitsByLimitId === "object"
           ? Object.fromEntries(Object.entries(account.rateLimitsByLimitId).map(([key, value]) => [key, limit(value)]).filter(([, value]) => value))
           : null } : null };

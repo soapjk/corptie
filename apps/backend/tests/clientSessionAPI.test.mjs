@@ -262,7 +262,11 @@ test("capabilities carry Session readiness and usage is a sanitized read-only pr
       readiness: () => ({ readiness: "not_ready", notReadyReason: { code: "PROVIDER_INITIALIZING", message: "starting", retryable: true, secret: "private" } }),
       usage: async () => ({ account: { available: true, provider: "codex", model: "gpt-5", token: "private",
         rateLimits: { limitId: "default", limitName: "gpt-5", primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1700000000, raw: {} }, secondary: null },
-        rateLimitsByLimitId: { default: { limitId: "default", primary: { usedPercent: "bad" } }, broken: "no" } },
+        rateLimitsByLimitId: { default: { limitId: "default", primary: { usedPercent: "bad" } }, broken: "no" },
+        rateLimitResetCredits: { availableCount: 2, privateField: "private", credits: [
+          { id: "credit:one", resetType: "codexRateLimits", status: "available", grantedAt: 1700000000,
+            expiresAt: 1701000000, title: "Full reset", description: "One use", token: "private" }
+        ] } },
         context: { usedTokens: 1200, contextWindow: 4000, remainingTokens: 2800, usedPercent: 30, trace: "private" },
         resetForecast: { forecast: { url: "https://example.invalid" } } }) });
     const capabilities = api.capabilities(identity, "session:test");
@@ -277,6 +281,10 @@ test("capabilities carry Session readiness and usage is a sanitized read-only pr
     assert.deepEqual(usage, { schemaVersion: 1, sessionId: "session:test",
       context: { usedTokens: 1200, contextWindow: 4000, remainingTokens: 2800, usedPercent: 30 },
       account: { available: true, provider: "codex", model: "gpt-5",
+        rateLimitResetCredits: { availableCount: 2, credits: [
+          { id: "credit:one", resetType: "codexRateLimits", status: "available", grantedAt: 1700000000,
+            expiresAt: 1701000000, title: "Full reset", description: "One use" }
+        ] },
         rateLimits: { limitId: "default", limitName: "gpt-5",
           primary: { usedPercent: 40, windowDurationMins: 300, resetsAt: 1700000000 }, secondary: null },
         rateLimitsByLimitId: { default: { limitId: "default", limitName: null,

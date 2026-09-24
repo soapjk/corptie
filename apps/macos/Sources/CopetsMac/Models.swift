@@ -1209,6 +1209,27 @@ struct CodexAccountUsage: Decodable, Equatable {
     let model: String?
     let rateLimits: CodexRateLimitSnapshot?
     let rateLimitsByLimitId: [String: CodexRateLimitSnapshot]?
+    var rateLimitResetCredits: CodexRateLimitResetCredits? = nil
+}
+
+struct CodexRateLimitResetCredits: Decodable, Equatable {
+    let availableCount: Int
+    let credits: [CodexRateLimitResetCredit]?
+
+    func availableExpirationDates(now: Date = .now) -> [Date] {
+        (credits ?? [])
+            .filter { $0.status == "available" }
+            .compactMap(\.expiresAt)
+            .filter { $0.isFinite && $0 > now.timeIntervalSince1970 }
+            .map(Date.init(timeIntervalSince1970:))
+            .sorted()
+    }
+}
+
+struct CodexRateLimitResetCredit: Decodable, Equatable {
+    let id: String
+    let status: String
+    let expiresAt: Double?
 }
 
 struct CodexRateLimitSnapshot: Decodable, Equatable {
