@@ -959,6 +959,58 @@ test("a sync requested while sending runs again after the active sync", async ()
   assert.deepEqual(sent, ["First", "Second"]);
 });
 
+test("a future final reply failed before delivery remains eligible after gateway restart", async () => {
+  const delivered = new Set();
+  const assignment = { id: "assignment-a", botId: "bot-a", sessionId: "session-a" };
+  let initialized = false;
+  let items = [{ id: "old-final", type: "agentMessage", text: "Old answer",
+    presentationRole: "final_answer", turnStatus: "completed" }];
+  const store = {
+    getFeishuAssignmentForBot: () => assignment,
+    listFeishuBindings: () => [{ id: "binding-a", chatId: "chat-a" }],
+    initializeFeishuDelivery(_assignmentId, seedIds) {
+      if (!initialized) {
+        seedIds.forEach((id) => delivered.add(id));
+        initialized = true;
+      }
+      return new Set(delivered);
+    },
+    markFeishuItemDelivered(_assignmentId, itemId) { delivered.add(itemId); }
+  };
+  const makeManager = () => new FeishuGatewayManager({
+    store, getSnapshot: async () => ({ title: "Session A", status: "complete", items })
+  });
+  const first = makeManager();
+  first.sendText = async () => [{ text: "session", result: { data: { message_id: "card-a" } } }];
+  await first.syncBot("bot-a");
+  assert.deepEqual([...delivered], ["old-final"]);
+
+  items = [...items, { id: "new-final", type: "agentMessage", text: "New answer",
+    presentationRole: "final_answer", turnStatus: "completed" }];
+  first.sendText = async () => { throw new Error("transport unavailable"); };
+  await assert.rejects(first.syncBot("bot-a"), /transport unavailable/);
+  assert.equal(delivered.has("new-final"), false);
+
+  const restarted = makeManager();
+  const sent = [];
+  restarted.sendText = async (_botId, _chatId, text) => {
+    sent.push(text);
+    return [{ text, result: { data: { message_id: "card-b" } } }];
+  };
+  await restarted.syncBot("bot-a");
+  assert.deepEqual(sent, ["当前会话：Session A\n状态：已完成", "New answer"]);
+  assert.equal(delivered.has("new-final"), true);
+
+  const nextRestart = makeManager();
+  const afterSuccess = [];
+  nextRestart.sendText = async (_botId, _chatId, text) => {
+    afterSuccess.push(text);
+    return [{ text, result: { data: { message_id: "card-c" } } }];
+  };
+  await nextRestart.syncBot("bot-a");
+  assert.deepEqual(afterSuccess, ["当前会话：Session A\n状态：已完成"]);
+});
+
 test("an empty started assistant item is deferred until the same item id contains the completed reply", async () => {
   const botId = "bot-a";
   const sent = [];
