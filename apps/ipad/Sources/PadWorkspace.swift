@@ -289,25 +289,33 @@ final class PadWorkspace {
             inventoryGeneration += 1
             let generation = inventoryGeneration
             let api = ClientInventory(transport: try await connection.transport())
-            if !more || workCursor != nil {
-                let page = try await api.works(cursor: more ? workCursor : nil)
-                guard generation == inventoryGeneration, !Task.isCancelled else { return }
-                works = Self.merge(more ? works : [], page.items)
-                workCursor = page.nextCursor
-            }
-            if !more || taskCursor != nil {
-                let page = try await api.tasks(cursor: more ? taskCursor : nil)
-                guard generation == inventoryGeneration, !Task.isCancelled else { return }
-                tasks = Self.merge(more ? tasks : [], page.items)
-                taskCursor = page.nextCursor
-            }
-            if !more || sessionCursor != nil {
-                let page = try await api.sessions(cursor: more ? sessionCursor : nil)
-                guard generation == inventoryGeneration, !Task.isCancelled else { return }
-                sessions = Self.merge(more ? sessions : [], page.items)
-                sessionCursor = page.nextCursor
-            }
-            rebuildGroups()
+            var fetchMore = more
+            repeat {
+                if !fetchMore || workCursor != nil {
+                    let page = try await api.works(cursor: fetchMore ? workCursor : nil)
+                    guard generation == inventoryGeneration, !Task.isCancelled else { return }
+                    works = Self.merge(fetchMore ? works : [], page.items)
+                    workCursor = page.nextCursor
+                }
+                if !fetchMore || taskCursor != nil {
+                    let page = try await api.tasks(cursor: fetchMore ? taskCursor : nil)
+                    guard generation == inventoryGeneration, !Task.isCancelled else { return }
+                    tasks = Self.merge(fetchMore ? tasks : [], page.items)
+                    taskCursor = page.nextCursor
+                }
+                if !fetchMore || sessionCursor != nil {
+                    let page = try await api.sessions(cursor: fetchMore ? sessionCursor : nil)
+                    guard generation == inventoryGeneration, !Task.isCancelled else { return }
+                    sessions = Self.merge(fetchMore ? sessions : [], page.items)
+                    sessionCursor = page.nextCursor
+                }
+                rebuildGroups()
+                if !more && (workCursor != nil || taskCursor != nil || sessionCursor != nil) {
+                    fetchMore = true
+                } else {
+                    break
+                }
+            } while !Task.isCancelled
         }
     }
 

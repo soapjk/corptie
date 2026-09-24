@@ -30,12 +30,12 @@ struct PadWorkOutline: View {
                     workGroup(work)
                 }
                 if workspace.workCursor != nil || workspace.taskCursor != nil || workspace.sessionCursor != nil {
-                    Button("加载更多 Work / Task / 会话") { Task { await workspace.inventory(connection, more: true) } }
-                        .font(.system(size: 11))
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.accentColor)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .accessibilityIdentifier("workspace-load-more")
+                    Color.clear
+                        .frame(height: 16)
+                        .task {
+                            guard !connection.busy else { return }
+                            await workspace.inventory(connection, more: true)
+                        }
                 }
             }
             .padding(.horizontal, ConsoleWorkOutlineMetrics.groupHorizontalInset)
