@@ -352,10 +352,38 @@ test("a turn-scoped Provider error fails only the Turn and keeps the Session ret
     assert.equal(settled.session.status, "failed");
     assert.equal(settled.session.capabilities.canSend, true);
     assert.equal(settled.session.sendUnavailableReason, null);
+    const failureItem = store.getItems(binding.sessionId).find(item =>
+      item.id === `turn-failure:${binding.bindingId}:turn:one`
+    );
+    assert.equal(failureItem.type, "system");
+    assert.equal(failureItem.turnStatus, "failed");
+    assert.match(failureItem.text, /模型服务/);
+    assert.equal(settled.timelineChanged, true);
     assert.equal(
       store.getSessionTurn(binding.sessionId, binding.bindingId, "turn:one").execution_status,
       "failed"
     );
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed Turn publishes one sanitized actionable timeline item on replay", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const failed = event("turn.failed", {
+      payload: { error: {
+        code: "UPSTREAM_ACCOUNT_UNAVAILABLE",
+        message: "no eligible upstream account is currently available; token=secret-value"
+      } }
+    });
+    projector.project({ event: failed, binding });
+    projector.project({ event: failed, binding });
+    const items = store.getItems(binding.sessionId).filter(item => item.type === "system");
+    assert.equal(items.length, 1);
+    assert.match(items[0].text, /没有可用的上游账号/);
+    assert.equal(items[0].text.includes("secret-value"), false);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
