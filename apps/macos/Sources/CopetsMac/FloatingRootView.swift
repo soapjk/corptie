@@ -4947,6 +4947,32 @@ private struct ChatUsageBar: View {
             )
             .lineLimit(1)
 
+            if let bankedResets = usage.account.rateLimitResetCredits {
+                Label(
+                    L10nFormat("Banked resets remaining: %lld", Int64(max(0, bankedResets.availableCount))),
+                    systemImage: "arrow.counterclockwise.circle"
+                )
+                .lineLimit(1)
+
+                if bankedResets.availableCount > 0 {
+                    let expirationDates = bankedResets.availableExpirationDates()
+                    if let firstExpiration = expirationDates.first {
+                        Label(
+                            L10nFormat("Earliest banked reset expiry: %@", formattedBankedResetDate(firstExpiration)),
+                            systemImage: "calendar.badge.clock"
+                        )
+                        .lineLimit(1)
+                        .help(expirationDates.map(formattedBankedResetDate).joined(separator: "\n"))
+                    } else {
+                        Label(
+                            L10n("Banked reset expiry unavailable"),
+                            systemImage: "calendar.badge.clock"
+                        )
+                        .lineLimit(1)
+                    }
+                }
+            }
+
             if let forecast = usage.resetForecast?.forecast {
                 Button {
                     openResetForecast(forecast)
@@ -4970,7 +4996,7 @@ private struct ChatUsageBar: View {
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(CorptiePalette.primaryText)
         .padding(10)
-        .frame(width: 280)
+        .frame(width: 340)
     }
 
     private func formattedResetDate(_ epochSeconds: Double?) -> String {
@@ -4979,6 +5005,10 @@ private struct ChatUsageBar: View {
             date: .abbreviated,
             time: .shortened
         )
+    }
+
+    private func formattedBankedResetDate(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
     }
 
     private func openResetForecast(_ forecast: CodexResetForecast) {

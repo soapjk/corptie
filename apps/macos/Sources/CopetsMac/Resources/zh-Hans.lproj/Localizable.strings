@@ -727,6 +727,9 @@
 "Codex plan update" = "Codex 套餐更新";
 "Tibo forecast: %@" = "Tibo预告：%@";
 "Tibo forecast: No upcoming reset announcement" = "Tibo预告：暂无即将重置的消息";
+"Banked resets remaining: %lld" = "已存额度重置：剩余 %lld 次";
+"Earliest banked reset expiry: %@" = "最早过期：%@";
+"Banked reset expiry unavailable" = "已存额度重置的过期时间暂不可用";
 
 /* Console, Sessions, Work, CorptieTask, and Agent surfaces */
 "\u63A7\u5236\u53F0" = "\u63A7\u5236\u53F0";
