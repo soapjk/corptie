@@ -1,5 +1,23 @@
-// IMgateway is transport-neutral; feishu remains a legacy persisted adapter source.
-const DIRECT_MESSAGE_SOURCES = new Set(["desktop", "macos", "imgateway", "feishu", "dsh"]);
+// Direct user message sources are categorized into two semantic tiers:
+// - local: locally-running clients (e.g. macOS desktop app, desktop client)
+// - remote: remote clients (e.g. mobile remote-client, IM gateway, feishu adapter)
+export const LOCAL_MESSAGE_SOURCES = Object.freeze(new Set(["local", "desktop", "macos"]));
+export const REMOTE_MESSAGE_SOURCES = Object.freeze(new Set(["remote", "remote-client", "imgateway", "feishu"]));
+export const DIRECT_MESSAGE_SOURCES = Object.freeze(new Set([
+  ...LOCAL_MESSAGE_SOURCES,
+  ...REMOTE_MESSAGE_SOURCES
+]));
+
+export function resolveDirectMessageSourceCategory(sourceType) {
+  const normalized = String(sourceType ?? "").trim();
+  if (LOCAL_MESSAGE_SOURCES.has(normalized)) return "local";
+  if (REMOTE_MESSAGE_SOURCES.has(normalized)) return "remote";
+  return null;
+}
+
+export function isDirectUserMessageSource(sourceType) {
+  return resolveDirectMessageSourceCategory(sourceType) !== null;
+}
 
 export function authorizeDirectUserTaskCreation(input = {}) {
   const logicalSessionId = required(input.logicalSessionId, "logical_session_id");
@@ -35,7 +53,7 @@ export function directUserTaskCreationRejection(event) {
   const direct = event?.type === "SessionUserMessageCreated"
     && event.producer === "user"
     && event.surface === true
-    && DIRECT_MESSAGE_SOURCES.has(sourceType)
+    && isDirectUserMessageSource(sourceType)
     && !event.source?.taskId
     && !event.source?.automationId
     && !event.source?.scheduledTaskId;
