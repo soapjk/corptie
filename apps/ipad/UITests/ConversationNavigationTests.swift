@@ -65,6 +65,8 @@ final class ConversationNavigationTests: XCTestCase {
         XCTAssertTrue(input.isHittable, "Composer must remain visible above the keyboard")
         XCTAssertLessThanOrEqual(input.frame.maxY, app.keyboards.firstMatch.frame.minY)
         XCTAssertFalse(app.buttons["刷新消息"].exists)
+        XCTAssertFalse(app.buttons["workspace-refresh"].exists)
+        XCTAssertFalse(app.buttons["workspace-load-more"].exists)
         XCTAssertFalse(app.buttons["最新消息"].exists)
         XCTAssertFalse(app.buttons["加载更早消息"].exists)
         XCTAssertFalse(app.buttons["workspace-toggle-sidebar"].exists)

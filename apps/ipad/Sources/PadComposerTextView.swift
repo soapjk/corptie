@@ -35,6 +35,7 @@ struct PadComposerTextView: UIViewRepresentable {
     var onSelectionChange: (String, NSRange) -> Void
     /// Returns true when the key was consumed (the text view then swallows it).
     var onKey: (ComposerKeyPolicy.Key, _ shift: Bool, _ hasMarkedText: Bool) -> Bool
+    var onSubmit: () -> Void
     var onPasteImages: () -> Bool
 
     func makeUIView(context: Context) -> SubmitTextView {
@@ -51,6 +52,8 @@ struct PadComposerTextView: UIViewRepresentable {
         textView.autocorrectionType = .default
         textView.smartQuotesType = .no
         textView.smartDashesType = .no
+        textView.returnKeyType = .send
+        textView.enablesReturnKeyAutomatically = true
         textView.placeholder = placeholder
         textView.text = text
         textView.accessibilityIdentifier = "conversation-composer-input"
@@ -95,6 +98,18 @@ struct PadComposerTextView: UIViewRepresentable {
             parent.onSelectionChange(textView.text ?? "", textView.selectedRange)
         }
 
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            if text == "\n" {
+                if textView.markedTextRange != nil { return true }
+                if let submitView = textView as? SubmitTextView, submitView.isHardwareShiftReturn {
+                    return true
+                }
+                parent.onSubmit()
+                return false
+            }
+            return true
+        }
+
         func contentDidChange(_ textView: SubmitTextView) {
             let value = textView.text ?? ""
             if parent.text != value { parent.text = value }
@@ -117,6 +132,7 @@ struct PadComposerTextView: UIViewRepresentable {
         private var lastReportedHeight: CGFloat = 0
         private var lastLayoutWidth: CGFloat = 0
         private var consumedPresses = Set<ObjectIdentifier>()
+        private(set) var isHardwareShiftReturn = false
 
         override init(frame: CGRect, textContainer: NSTextContainer?) {
             super.init(frame: frame, textContainer: textContainer)
@@ -193,6 +209,9 @@ struct PadComposerTextView: UIViewRepresentable {
             for press in presses {
                 guard let key = Self.key(for: press), let onKey else { continue }
                 let shift = press.key?.modifierFlags.contains(.shift) == true
+                if key == .return, shift {
+                    isHardwareShiftReturn = true
+                }
                 if onKey(key, shift, markedTextRange != nil) {
                     consumedPresses.insert(ObjectIdentifier(press))
                     remaining.remove(press)
@@ -202,11 +221,21 @@ struct PadComposerTextView: UIViewRepresentable {
         }
 
         override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            for press in presses {
+                if Self.key(for: press) == .return {
+                    isHardwareShiftReturn = false
+                }
+            }
             let remaining = presses.filter { consumedPresses.remove(ObjectIdentifier($0)) == nil }
             if !remaining.isEmpty { super.pressesEnded(Set(remaining), with: event) }
         }
 
         override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            for press in presses {
+                if Self.key(for: press) == .return {
+                    isHardwareShiftReturn = false
+                }
+            }
             let remaining = presses.filter { consumedPresses.remove(ObjectIdentifier($0)) == nil }
             if !remaining.isEmpty { super.pressesCancelled(Set(remaining), with: event) }
         }

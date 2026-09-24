@@ -76,6 +76,7 @@ struct PadComposer: View {
                         onFocusChange: { next in if isFocused != next { isFocused = next } },
                         onSelectionChange: updateMentionQuery,
                         onKey: handleKey,
+                        onSubmit: submit,
                         onPasteImages: pasteImages
                     )
                     .frame(minWidth: 0, maxWidth: .infinity)
@@ -85,7 +86,7 @@ struct PadComposer: View {
                     .layoutPriority(-1)
 
                     Button {
-                        Task { await workspace.command(connection, stop: false) }
+                        submit()
                     } label: {
                         ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
                                             isBusy: isSubmitting, showsSurface: false)
@@ -205,6 +206,12 @@ struct PadComposer: View {
         if query != mentionQuery { mentionQuery = query }
     }
 
+    private func submit() {
+        mentionQuery = nil
+        guard !isSendDisabled else { return }
+        Task { await workspace.command(connection, stop: false) }
+    }
+
     private func handleKey(_ key: ComposerKeyPolicy.Key, shift: Bool, hasMarkedText: Bool) -> Bool {
         let suggestions = mentionSuggestions
         let active = mentionQuery != nil && !suggestions.isEmpty
@@ -212,9 +219,7 @@ struct PadComposer: View {
         case .passThrough:
             return false
         case .submit:
-            mentionQuery = nil
-            guard !isSendDisabled else { return true }
-            Task { await workspace.command(connection, stop: false) }
+            submit()
             return true
         case .mentionMove(let delta):
             mentionSelectionIndex = (mentionSelectionIndex + delta + suggestions.count) % suggestions.count
