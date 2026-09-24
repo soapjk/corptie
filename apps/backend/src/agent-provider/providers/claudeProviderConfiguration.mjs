@@ -7,6 +7,8 @@ const MIN_API_KEY_LENGTH = 20;
 const MAX_API_KEY_LENGTH = 512;
 
 const ERROR_CLASSIFICATION = Object.freeze([
+  { code: "UPSTREAM_ACCOUNT_UNAVAILABLE", statusCode: 503, retryable: true, httpStatuses: [], pattern: /no eligible upstream account/i },
+  { code: "UPSTREAM_PROVIDER_UNAVAILABLE", statusCode: 503, retryable: true, httpStatuses: [], pattern: /all target providers failed/i },
   { code: "AUTHENTICATION_FAILED", statusCode: 401, retryable: false, httpStatuses: [401], pattern: /authentication|invalid api key|unauthorized|401/i },
   { code: "PERMISSION_DENIED", statusCode: 403, retryable: false, httpStatuses: [403], pattern: /permission|forbidden|organization|oauth_org_not_allowed|403/i },
   { code: "RATE_LIMITED", statusCode: 429, retryable: true, httpStatuses: [429], pattern: /rate.?limit|too many requests|429/i },
@@ -120,7 +122,9 @@ export function normalizeClaudeProviderError(error, options = {}) {
   const classification = ERROR_CLASSIFICATION.find((item) => (
     item.httpStatuses.includes(explicitStatus) || item.pattern.test(rawMessage)
   ));
-  const code = sdkErrorCode(error) ?? classification?.code ?? "CLAUDE_REQUEST_FAILED";
+  const code = classification?.code?.startsWith("UPSTREAM_")
+    ? classification.code
+    : sdkErrorCode(error) ?? classification?.code ?? "CLAUDE_REQUEST_FAILED";
   const statusCode = classification?.statusCode ?? (explicitStatus >= 400 && explicitStatus <= 599 ? explicitStatus : 502);
   const retryable = classification?.retryable ?? statusCode >= 500;
   const message = publicMessageForCode(code);
@@ -171,6 +175,8 @@ function publicMessageForCode(code) {
     REQUEST_TIMEOUT: "Claude request timed out. Retry when the network is stable.",
     NETWORK_ERROR: "Claude could not be reached because of a network error.",
     PROVIDER_SERVICE_ERROR: "Claude service is temporarily unavailable.",
+    UPSTREAM_ACCOUNT_UNAVAILABLE: "Inference gateway has no eligible upstream account. Check gateway account availability.",
+    UPSTREAM_PROVIDER_UNAVAILABLE: "All inference gateway upstream providers failed. Check gateway and upstream account status.",
     CLAUDE_REQUEST_FAILED: "Claude Provider request failed."
   }[code] ?? "Claude Provider request failed.";
 }

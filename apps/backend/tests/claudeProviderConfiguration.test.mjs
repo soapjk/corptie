@@ -107,3 +107,19 @@ test("Claude SDK error results are safe and secrets are redacted from arbitrary 
   assert.equal(error.message.includes(apiKey), false);
   assert.equal(redactClaudeSecrets(`Authorization: Bearer ${apiKey}`, [apiKey]).includes(apiKey), false);
 });
+
+test("Claude gateway availability failures keep an actionable safe classification", () => {
+  const exhausted = claudeSdkResultError({
+    subtype: "error_during_execution", is_error: true,
+    errors: ["API Error: 503 All target providers failed; token=private-value"]
+  });
+  assert.equal(exhausted.code, "UPSTREAM_PROVIDER_UNAVAILABLE");
+  assert.equal(exhausted.statusCode, 503);
+  assert.match(exhausted.message, /gateway upstream providers failed/i);
+  assert.equal(exhausted.message.includes("private-value"), false);
+
+  const noAccount = normalizeClaudeProviderError({
+    status: 503, message: "no eligible upstream account is currently available"
+  });
+  assert.equal(noAccount.code, "UPSTREAM_ACCOUNT_UNAVAILABLE");
+});

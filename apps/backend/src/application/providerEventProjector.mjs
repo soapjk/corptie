@@ -79,6 +79,18 @@ export class ProviderEventProjector {
         }
       }
     }
+    if (event.type === "turn.failed" && event.turnId) {
+      timelineChanged = this.persistItem(sessionId, {
+        id: `turn-failure:${event.bindingId}:${event.turnId}`,
+        turnId: event.turnId,
+        turnStatus: "failed",
+        type: "system",
+        title: "执行失败",
+        text: publicTurnFailureMessage(event.payload?.error),
+        status: "failed",
+        createdAt: event.occurredAt ?? event.receivedAt
+      }, event.bindingId) || timelineChanged;
+    }
     const projectedTurnItems = event.turnId
       ? this.store.getItemsForTurn?.(sessionId, event.turnId, session.external?.provider) ?? []
       : [];
@@ -350,6 +362,43 @@ function normalizeProviderFailure(error) {
   }
   if (typeof error === "string" && error.trim()) return { message: error.trim() };
   return { message: "Provider turn failed." };
+}
+
+// Provider errors may contain host paths, credentials, or gateway internals.
+// Only a small, actionable classification is allowed into the shared client timeline.
+function publicTurnFailureMessage(error) {
+  const failure = normalizeProviderFailure(error);
+  const detail = String(failure.message ?? "");
+  const code = String(failure.code ?? "").toUpperCase();
+  if (code === "UPSTREAM_ACCOUNT_UNAVAILABLE" || /no eligible upstream account/i.test(detail)) {
+    return "推理服务没有可用的上游账号。请检查网关账号状态后重试。";
+  }
+  if (code === "UPSTREAM_PROVIDER_UNAVAILABLE" || /all target providers failed/i.test(detail)) {
+    return "推理网关的所有上游服务均请求失败。请检查网关和上游账号状态后重试。";
+  }
+  if (/model is at capacity|model.*overload|serverOverloaded/i.test(`${detail} ${code}`)) {
+    return "模型服务当前容量不足。请稍后重试或切换模型。";
+  }
+  if (code === "AUTHENTICATION_FAILED" || /authentication failed/i.test(detail)) {
+    return "模型服务认证失败。请检查当前 Provider 的凭据。";
+  }
+  if (code === "PERMISSION_DENIED" || /permission denied/i.test(detail)) {
+    return "模型服务拒绝了请求。请检查账号和模型权限。";
+  }
+  if (code === "RATE_LIMITED" || /rate limit/i.test(detail)) {
+    return "模型服务达到请求限额。请稍后重试。";
+  }
+  if (code === "REQUEST_TIMEOUT" || /timed? out/i.test(detail)) {
+    return "模型服务请求超时。请检查网络后重试。";
+  }
+  if (code === "NETWORK_ERROR" || /network error/i.test(detail)) {
+    return "无法连接模型服务。请检查网络或网关状态后重试。";
+  }
+  if (code === "PROVIDER_SERVICE_ERROR" || failure.statusCode === 503 || /service is temporarily unavailable/i.test(detail)) {
+    const status = Number(failure.statusCode ?? failure.status);
+    return `模型服务暂不可用${status === 503 ? "（HTTP 503）" : ""}。请检查网关及上游账号状态，或稍后重试。`;
+  }
+  return "本次模型执行失败。请检查 Provider 状态后重试。";
 }
 
 function latestAgentItemFromPayload(payload) {

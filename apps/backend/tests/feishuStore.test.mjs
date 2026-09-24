@@ -87,6 +87,31 @@ test("a session can only be assigned to one bot", async () => {
   });
 });
 
+test("Feishu delivery bootstrap skips old replies but preserves later receipts across restart", async () => {
+  await withStore(async (store, directory) => {
+    const bot = createBot(store, "delivery-bot");
+    const binding = createBinding(store, bot, "delivery");
+    const assignment = store.assignFeishuSession({
+      id: randomUUID(), botId: bot.id, bindingId: binding.id,
+      sessionId: "pty:delivery", assignedAt: new Date().toISOString()
+    });
+    assert.deepEqual([...store.initializeFeishuDelivery(assignment.id, ["historical-final"])], ["historical-final"]);
+    assert.deepEqual([...store.initializeFeishuDelivery(assignment.id, ["historical-final", "later-unsent"])], ["historical-final"]);
+    store.markFeishuItemDelivered(assignment.id, "later-sent");
+    const reopened = new CorptieStore({
+      dbPath: join(directory, "corptie.sqlite"),
+      configPath: join(directory, "config.json")
+    });
+    await reopened.initialize();
+    assert.deepEqual(
+      [...reopened.initializeFeishuDelivery(assignment.id, ["historical-final", "later-sent", "later-unsent"])].sort(),
+      ["historical-final", "later-sent"]
+    );
+    store.releaseFeishuSession(bot.id);
+    assert.deepEqual([...reopened.initializeFeishuDelivery(assignment.id, ["later-sent"])], []);
+  });
+});
+
 test("switching a bot releases its previous session", async () => {
   await withStore(async (store) => {
     const bot = createBot(store, "switching-bot");
