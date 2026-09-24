@@ -1270,8 +1270,17 @@ export class CorptieStore {
         session_id TEXT NOT NULL UNIQUE,
         assigned_at TEXT NOT NULL,
         last_event_sequence INTEGER NOT NULL DEFAULT 0,
+        delivery_initialized INTEGER NOT NULL DEFAULT 0,
         FOREIGN KEY (bot_id) REFERENCES feishu_bots(id) ON DELETE CASCADE,
         FOREIGN KEY (binding_id) REFERENCES feishu_bindings(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS feishu_delivered_items (
+        assignment_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        delivered_at TEXT NOT NULL,
+        PRIMARY KEY (assignment_id, item_id),
+        FOREIGN KEY (assignment_id) REFERENCES feishu_session_assignments(id) ON DELETE CASCADE
       );
 
       CREATE INDEX IF NOT EXISTS idx_feishu_pairing_bot
@@ -3583,6 +3592,7 @@ export class CorptieStore {
     this.ensureColumn("feishu_bots", "remote_avatar_url", "TEXT");
     this.ensureColumn("feishu_bots", "remote_open_id", "TEXT");
     this.ensureColumn("feishu_bots", "remote_activate_status", "INTEGER");
+    this.ensureColumn("feishu_session_assignments", "delivery_initialized", "INTEGER NOT NULL DEFAULT 0");
     // --- 会话日志事件溯源（10）：补 session_logs + session_events 语义列 ---
     this.ensureColumn("session_events", "log_id", "TEXT");
     this.ensureColumn("session_events", "producer", "TEXT");
@@ -10851,6 +10861,45 @@ export class CorptieStore {
     return this.selectAll("SELECT * FROM feishu_session_assignments ORDER BY assigned_at ASC").map(feishuAssignmentFromRow);
   }
 
+  initializeFeishuDelivery(assignmentId, seedItemIds = []) {
+    const visibleIds = [...new Set(seedItemIds.filter(Boolean))];
+    const assignment = this.selectOne(
+      "SELECT delivery_initialized FROM feishu_session_assignments WHERE id = ?", [assignmentId]
+    );
+    if (!assignment) return new Set();
+    if (!assignment.delivery_initialized) {
+      this.db.run("BEGIN TRANSACTION");
+      try {
+        const now = new Date().toISOString();
+        for (const itemId of visibleIds) {
+          this.db.run(
+            "INSERT OR IGNORE INTO feishu_delivered_items (assignment_id, item_id, delivered_at) VALUES (?, ?, ?)",
+            [assignmentId, itemId, now]
+          );
+        }
+        this.db.run("UPDATE feishu_session_assignments SET delivery_initialized = 1 WHERE id = ?", [assignmentId]);
+        this.db.run("COMMIT");
+      } catch (error) {
+        this.db.run("ROLLBACK");
+        throw error;
+      }
+      this.scheduleSave();
+    }
+    if (!visibleIds.length) return new Set();
+    return new Set(this.selectAll(
+      `SELECT item_id FROM feishu_delivered_items WHERE assignment_id = ? AND item_id IN (${visibleIds.map(() => "?").join(",")})`,
+      [assignmentId, ...visibleIds]
+    ).map((row) => row.item_id));
+  }
+
+  markFeishuItemDelivered(assignmentId, itemId) {
+    this.db.run(
+      "INSERT OR IGNORE INTO feishu_delivered_items (assignment_id, item_id, delivered_at) VALUES (?, ?, ?)",
+      [assignmentId, itemId, new Date().toISOString()]
+    );
+    this.scheduleSave();
+  }
+
   assignFeishuSession(assignment) {
     const occupied = this.getFeishuAssignmentForSession(assignment.sessionId);
     if (occupied && occupied.botId !== assignment.botId) {
@@ -14963,7 +15012,8 @@ function feishuAssignmentFromRow(row) {
     bindingId: row.binding_id,
     sessionId: row.session_id,
     assignedAt: row.assigned_at,
-    lastEventSequence: Number(row.last_event_sequence ?? 0)
+    lastEventSequence: Number(row.last_event_sequence ?? 0),
+    deliveryInitialized: Boolean(row.delivery_initialized)
   };
 }
 

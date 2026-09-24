@@ -280,12 +280,13 @@ export class FeishuGatewayManager {
     const latestFormalAgentReply = options.replayLatestFormalAgentReply === false
       ? null
       : findLatestFormalAgentReply(snapshot.items);
+    const seedIds = (snapshot.items ?? [])
+      .filter((item) => item.id !== latestFormalAgentReply?.id && shouldSeedFeishuSeenItem(item))
+      .map((item) => item.id)
+      .filter(Boolean);
     this.botRuntime.set(botId, {
       lastStatus: snapshot.status,
-      seenItems: new Set((snapshot.items ?? [])
-        .filter((item) => item.id !== latestFormalAgentReply?.id && shouldSeedFeishuSeenItem(item))
-        .map((item) => item.id)
-        .filter(Boolean))
+      seenItems: this.store.initializeFeishuDelivery?.(assignment.id, seedIds) ?? new Set(seedIds)
     });
     await this.syncBot(botId).catch((error) => {
       console.error(`[feishu] bot=${botId} initial session sync failed: ${error.message}`);
@@ -926,10 +927,14 @@ export class FeishuGatewayManager {
     }
     if (!existingRuntime) {
       runtime.lastStatus = snapshot.status;
-      runtime.seenItems = new Set((snapshot.items ?? [])
+      const seedIds = (snapshot.items ?? [])
         .filter(shouldSeedFeishuSeenItem)
         .map((item) => item.id)
-        .filter(Boolean));
+        .filter(Boolean);
+      // The first migration/bootstrap intentionally does not replay history.
+      // Later restarts restore actual delivery receipts so replies missed while
+      // the gateway was offline remain eligible for delivery.
+      runtime.seenItems = this.store.initializeFeishuDelivery?.(assignment.id, seedIds) ?? new Set(seedIds);
       runtime.collaborationConfirmationCards = [];
       this.botRuntime.set(botId, runtime);
       await this.sendText(botId, chatId, `当前会话：${snapshot.title}\n状态：${displayStatus(snapshot.status)}`, {
@@ -1036,6 +1041,9 @@ export class FeishuGatewayManager {
           sessionStatus: snapshot.status
         }));
       }
+      // Persist only after the remote call succeeds. A restart must not turn
+      // an unsent item into an in-memory-only "seen" item.
+      if (projection !== "hidden") this.store.markFeishuItemDelivered?.(assignment.id, item.id);
       runtime.seenItems.add(item.id);
     }
     for (const request of [...(runtime.pendingFeishuRequests ?? [])].filter((item) => item.finalDelivered)) {
