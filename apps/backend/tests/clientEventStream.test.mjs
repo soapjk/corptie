@@ -70,3 +70,16 @@ test("control invalidations are independently permissioned and reset on reconnec
     assert.equal(data(basic.frames.at(-1)).control, false);
   } finally { hub.close(); }
 });
+
+test("sessionIds batch parameter records all session aliases for device notification", () => {
+  const hub = new ClientEventStream();
+  try {
+    const response = new Response();
+    hub.attach(response, () => identity);
+    hub.invalidate({ sessionIds: ["codex:123", "logical:456", "123"] });
+    hub.flush();
+    assert.equal(response.frames.length, 2);
+    const payload = data(response.frames[1]);
+    assert.deepEqual(payload.sessions.sort(), ["123", "codex:123", "logical:456"].sort());
+  } finally { hub.close(); }
+});

@@ -590,15 +590,15 @@ private struct PadProcessCard: View {
     let laneWidth: CGFloat
     @State private var expanded = false
     private var state: ConversationProcessState { presentation.state }
-    private var cardWidth: CGFloat? {
-        guard laneWidth > 0 else { return nil }
+    private var cardWidth: CGFloat {
+        let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
         let summaryWidth = ceil((presentation.summary as NSString).size(withAttributes: [
             .font: UIFont.systemFont(ofSize: 10.5, weight: .medium)
         ]).width)
         return MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: summaryWidth,
             expanded: expanded,
-            laneWidth: laneWidth)
+            laneWidth: availableLane)
     }
     private var tint: Color {
         switch state {
@@ -680,11 +680,11 @@ private struct MobileMessageBubble: View {
         case .none: return deliveryState
         }
     }
-    private var cardWidth: CGFloat? {
-        guard laneWidth > 0 else { return nil }
+    private var cardWidth: CGFloat {
+        let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
         return MessageBubbleWidthPolicy.cardWidth(
             bodyWidth: PadMessageLayout.bodyWidth(text: displayText, style: fromUser ? .user : .agent),
-            hasAttachments: !attachments.isEmpty, laneWidth: laneWidth)
+            hasAttachments: !attachments.isEmpty, laneWidth: availableLane)
     }
 
     var body: some View {
