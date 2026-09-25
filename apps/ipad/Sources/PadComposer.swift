@@ -387,18 +387,10 @@ private struct PadModelMenu: View {
                     ? ""
                     : ComposerModelLabel.reasoningShort(currentReasoningLevel),
                 isBusy: workspace.configuringComposer,
-                maxWidth: maxWidth,
-                showsSurface: false
-            )
-            .padGlassSurface(
-                in: RoundedRectangle(
-                    cornerRadius: ComposerShellMetrics.modelMenuCornerRadius,
-                    style: .continuous
-                ),
-                interactive: true,
-                fallbackUsesMaterial: false
+                maxWidth: maxWidth
             )
         }
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .disabled(configuration != nil && !ComposerModelLabel.menuEnabled(
             canSwitchModel: configuration?.switchModel.available == true,
