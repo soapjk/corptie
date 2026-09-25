@@ -308,7 +308,7 @@ export class CodexAppServerClient {
       error.code = "PROVIDER_TOOL_APPLICATION_UNCONFIRMED";
       throw error;
     }
-    return { ...confirmed, threadId };
+    return { ...confirmed, providerObservationKind: confirmed.observationKind, threadId };
   }
 
   restoreThreadToolPlanConfirmation(threadId, definitions = [], proof = {}) {
@@ -345,7 +345,7 @@ export class CodexAppServerClient {
       restored: true
     };
     this.confirmedToolSchemasByThread.set(threadId, confirmation);
-    return { ...confirmation, threadId };
+    return { ...confirmation, providerObservationKind: confirmation.observationKind, threadId };
   }
 
   async resumeThread(threadId, options = {}) {
