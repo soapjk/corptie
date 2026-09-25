@@ -1070,7 +1070,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
         providerDefinitionsHash: confirmation.providerDefinitionsHash,
         providerContractHash: confirmation.providerContractHash ?? plan.providerContractHash,
         providerDefinitionsCount: confirmation.providerDefinitionsCount,
-        providerObservationKind: confirmation.observationKind,
+        providerObservationKind: confirmation.providerObservationKind,
         refreshMode: plan.refreshMode,
         providerRevision: confirmation.providerRevision,
         receiptId: `codex-tool-confirmation:${binding.providerBindingId}:${request.requestedVersion}`
@@ -1558,7 +1558,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
           providerDefinitionsHash: confirmed.providerDefinitionsHash,
           providerContractHash: confirmed.providerContractHash,
           providerDefinitionsCount: confirmed.providerDefinitionsCount,
-          providerObservationKind: confirmed.observationKind
+          providerObservationKind: confirmed.providerObservationKind
         };
       }
       return {
@@ -1651,7 +1651,7 @@ sessionRecoveryCoordinator = new SessionRecoveryCoordinator({
           || confirmed.providerRevision !== expected.providerRevision
           || confirmed.providerDefinitionsHash !== expected.providerDefinitionsHash
           || confirmed.providerDefinitionsCount !== expected.providerDefinitionsCount
-          || confirmed.observationKind !== expected.providerObservationKind) {
+          || confirmed.providerObservationKind !== expected.providerObservationKind) {
           const confirmationError = new Error("Replacement Codex Tool schema confirmation changed before recovery validation.");
           confirmationError.code = "RECOVERY_TOOL_CONFIRMATION_MISMATCH";
           throw confirmationError;
