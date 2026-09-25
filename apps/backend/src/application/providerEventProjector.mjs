@@ -1,3 +1,5 @@
+import { executionPlanItem, finishExecutionPlan, patchExecutionPlan, replaceExecutionPlan, sameExecutionPlanContent, uncertainExecutionPlan } from "./executionPlanProjection.mjs";
+
 const TERMINAL_EVENT_STATUS = new Map([
   ["turn.completed", "completed"],
   ["turn.failed", "failed"],
@@ -14,7 +16,10 @@ const ITEM_EVENT_TYPES = new Set([
   "tool.completed",
   "tool.failed",
   "approval.requested",
-  "approval.resolved"
+  "approval.resolved",
+  "interaction.requested",
+  "interaction.submitted",
+  "interaction.resolved"
 ]);
 
 export class ProviderEventProjector {
@@ -58,13 +63,56 @@ export class ProviderEventProjector {
       }
     }
     if (ITEM_EVENT_TYPES.has(event.type) && event.payload?.item) {
+      const settledTurnStatus = event.type.startsWith("interaction.") && event.turnId
+        ? this.store.getSessionTurn?.(sessionId, event.bindingId, event.turnId)?.execution_status
+        : null;
       timelineChanged = this.persistItem(
         sessionId,
-        event.payload.item,
+        ["completed", "failed", "cancelled"].includes(settledTurnStatus)
+          ? { ...event.payload.item, turnStatus: settledTurnStatus,
+            status: event.payload.item.status === "pending" ? "expired" : event.payload.item.status }
+          : event.payload.item,
         event.bindingId,
         correlatedDelivery,
         correlatedWork
       ) || timelineChanged;
+    }
+    if (event.type === "plan.updated" && event.turnId) {
+      const settledTurnStatus = this.store.getSessionTurn?.(sessionId, event.bindingId, event.turnId)?.execution_status;
+      const isSessionTaskList = event.payload?.plan?.planKey === "claude-tasks";
+      const planId = isSessionTaskList
+        ? `execution-plan:${event.bindingId}:${event.turnId}:claude-tasks`
+        : `execution-plan:${event.bindingId}:${event.turnId}`;
+      const existing = this.store.getSessionItem(sessionId, planId);
+      const previous = existing?.executionPlan ?? (isSessionTaskList
+        ? this.store.getExecutionPlanState(sessionId, event.bindingId, "claude-tasks")
+        : null);
+      const context = {
+        planId,
+        updatedAt: event.occurredAt ?? event.receivedAt
+      };
+      const plan = event.payload?.plan?.operation === "replace"
+        ? replaceExecutionPlan(previous, event.payload.plan, context)
+        : patchExecutionPlan(previous, event.payload?.plan, context);
+      const projectedPlan = plan ?? (plan === undefined || event.payload?.plan == null
+        ? uncertainExecutionPlan(previous, context) : null);
+      // A valid late plan notification may fill in missing steps, but it must
+      // never reopen a Turn that has already reached a durable terminal state.
+      const nextPlan = projectedPlan && ["completed", "failed", "cancelled"].includes(settledTurnStatus)
+        ? finishExecutionPlan(projectedPlan, settledTurnStatus, context.updatedAt, { incrementRevision: false })
+          ?? projectedPlan
+        : projectedPlan;
+      if (nextPlan && !sameExecutionPlanContent(previous, nextPlan)) {
+        if (isSessionTaskList && plan) {
+          this.store.upsertExecutionPlanState(sessionId, event.bindingId, "claude-tasks", plan);
+        }
+        timelineChanged = this.persistItem(sessionId, executionPlanItem(nextPlan, {
+          turnId: event.turnId,
+          turnStatus: existing?.turnStatus && ["completed", "failed", "cancelled"].includes(existing.turnStatus)
+            ? existing.turnStatus : "inProgress",
+          createdAt: existing?.createdAt ?? event.occurredAt ?? event.receivedAt
+        }), event.bindingId) || timelineChanged;
+      }
     }
     if (TERMINAL_EVENT_STATUS.has(event.type)) {
       for (const item of event.payload?.items ?? []) {
@@ -76,6 +124,22 @@ export class ProviderEventProjector {
             correlatedDelivery,
             correlatedWork
           ) || timelineChanged;
+        }
+      }
+      if (event.turnId) {
+        for (const planId of [
+          `execution-plan:${event.bindingId}:${event.turnId}`,
+          `execution-plan:${event.bindingId}:${event.turnId}:claude-tasks`
+        ]) {
+          const existing = this.store.getSessionItem(sessionId, planId);
+          const plan = finishExecutionPlan(existing?.executionPlan, TERMINAL_EVENT_STATUS.get(event.type), event.receivedAt);
+          if (plan) {
+            timelineChanged = this.persistItem(sessionId, executionPlanItem(plan, {
+              turnId: event.turnId,
+              turnStatus: TERMINAL_EVENT_STATUS.get(event.type),
+              createdAt: existing.createdAt
+            }), event.bindingId) || timelineChanged;
+          }
         }
       }
     }
@@ -94,12 +158,27 @@ export class ProviderEventProjector {
     const projectedTurnItems = event.turnId
       ? this.store.getItemsForTurn?.(sessionId, event.turnId, session.external?.provider) ?? []
       : [];
+    if (TERMINAL_EVENT_STATUS.has(event.type)) {
+      for (const item of projectedTurnItems) {
+        if (item.type !== "userInput" || item.bindingId !== event.bindingId) continue;
+        if (!["pending", "dispatching", "submitted"].includes(item.status)) continue;
+        timelineChanged = this.persistItem(sessionId, {
+          ...item,
+          turnStatus: TERMINAL_EVENT_STATUS.get(event.type),
+          status: item.status === "pending" ? "expired" : item.status
+        }, event.bindingId) || timelineChanged;
+      }
+    }
     const finalAgentMessage = event.type === "turn.completed"
       ? finalItemForTurn({ items: projectedTurnItems }, event.turnId)
       : null;
     const terminalOutcome = providerTerminalOutcome(event);
 
-    const turnStatus = projectedTurnStatus(event, terminalOutcome);
+    const priorTurnStatus = event.type.startsWith("interaction.") && event.turnId
+      ? this.store.getSessionTurn?.(sessionId, event.bindingId, event.turnId)?.execution_status
+      : null;
+    const turnStatus = ["completed", "failed", "cancelled"].includes(priorTurnStatus)
+      ? null : projectedTurnStatus(event, terminalOutcome);
     if (turnStatus && event.turnId) {
       const finalItem = finalItemForTurn({ items: projectedTurnItems }, event.turnId);
       this.store.upsertSessionTurn({
@@ -210,7 +289,7 @@ export class ProviderEventProjector {
     const status = sessionStatus(event, unsettled, session.status, binding.isCurrentRoute !== false, terminalOutcome);
     const latestAgentItem = latestAgentItemFromPayload(event.payload);
     const activityStatus = status === "blocked"
-      ? "Waiting for approval"
+      ? (event.type.startsWith("interaction.") ? "Waiting for input" : "Waiting for approval")
       : status === "running"
         ? activityForEvent(event)
         : null;
@@ -314,7 +393,11 @@ function projectedTurnStatus(event, terminalOutcome = null) {
   // Configuration notices belong to the timeline, not to an executing Turn.
   // Adapters may deliver them through the item stream while no Turn is active.
   if (ITEM_EVENT_TYPES.has(event.type) && event.payload?.item?.type === "system") return null;
-  if (event.type === "approval.requested") return "blocked";
+  if (event.type === "approval.requested"
+    || (["interaction.requested", "interaction.submitted"].includes(event.type)
+      && event.payload?.item?.userInput?.isBlocking !== false
+      && blockingUserInputMetadata(event.payload?.item?.rawMetadataJSON) !== false)) return "blocked";
+  if (event.type.startsWith("interaction.") && event.turnId) return "running";
   if (event.type === "turn.started" || ITEM_EVENT_TYPES.has(event.type)) return "running";
   return null;
 }
@@ -415,6 +498,15 @@ function activityForEvent(event) {
   if (event.type.startsWith("tool.")) return "Using tool";
   if (event.type.startsWith("assistant.message")) return "Responding";
   return "Working";
+}
+
+function blockingUserInputMetadata(rawMetadataJSON) {
+  if (typeof rawMetadataJSON !== "string") return true;
+  try {
+    return JSON.parse(rawMetadataJSON)?.userInput?.isBlocking !== false;
+  } catch {
+    return true;
+  }
 }
 
 function sameSessionExecutionProjection(left, right) {

@@ -3,6 +3,7 @@ import test from "node:test";
 import { AgentProviderRegistry } from "../src/agent-provider/agentProviderRegistry.mjs";
 import { AGENT_PROVIDER_CAPABILITIES } from "../src/agent-provider/contracts.mjs";
 import { createClaudeAgentSdkProvider } from "../src/agent-provider/providers/claudeAgentSdkProvider.mjs";
+import { createClaudeProviderRuntime } from "../src/agent-provider/bootstrap/claudeProviderBootstrap.mjs";
 import { createAgentProviderRuntimeRegistry } from "../src/agent-provider/bootstrap/agentProviderBootstrap.mjs";
 import { CodexProviderRuntime } from "../src/agent-provider/bootstrap/codexProviderRuntime.mjs";
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
@@ -61,6 +62,50 @@ test("bootstrap does not advertise command execution without an implementation",
     codexOperations: recordingCodexOperations()
   });
   assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_COMMAND), false);
+});
+
+test("structured plan output is declared only by Providers whose adapters enable it", () => {
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: recordingCodexOperations()
+  });
+  assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS), true);
+  assert.equal(registry.supports("claude-sdk", AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS), true);
+  const disabledClaude = createClaudeAgentSdkProvider(recordingManager(), { structuredPlanEvents: false });
+  assert.equal(disabledClaude.descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS), false);
+  const disabledRuntime = createClaudeProviderRuntime({ store: {}, structuredPlanEvents: false });
+  assert.equal(disabledRuntime.manager.structuredPlanEvents, false);
+  assert.equal(disabledRuntime.descriptor.capabilities.includes(AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS), false);
+  assert.throws(() => createClaudeAgentSdkProvider(disabledRuntime.manager, { structuredPlanEvents: true }),
+    /declaration must match/);
+});
+
+test("multi-question input dispatches only through a declared Provider capability", async () => {
+  const calls = [];
+  const registry = createAgentProviderRuntimeRegistry({
+    claudeProvider: createClaudeAgentSdkProvider(recordingManager()),
+    codexOperations: {
+      ...recordingCodexOperations(),
+      respondToUserInput: (reference, input) => {
+        calls.push({ providerSessionId: reference.providerSessionId, input });
+        return { ok: true };
+      }
+    }
+  });
+  assert.equal(registry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_USER_INPUT), true);
+  assert.equal(registry.supports("claude-sdk", AGENT_PROVIDER_CAPABILITIES.CONVERSATION_USER_INPUT), false);
+  const service = new SessionApplicationService({ registry, resolveSessionReference: () => ({
+    sessionId: "session:one", providerId: "codex-app-server", providerSessionId: "thread:one"
+  }) });
+  const input = { itemId: "input:one", answers: { route: ["A"] } };
+  await service.respondToUserInput("session:one", input);
+  assert.deepEqual(calls, [{ providerSessionId: "thread:one", input }]);
+  const unsupported = new SessionApplicationService({ registry, resolveSessionReference: () => ({
+    sessionId: "session:claude", providerId: "claude-sdk", providerSessionId: "claude:one"
+  }) });
+  await assert.rejects(unsupported.respondToUserInput("session:claude", input), {
+    code: "CAPABILITY_UNSUPPORTED"
+  });
 });
 
 function recordingManager(provider = "claude-sdk") {

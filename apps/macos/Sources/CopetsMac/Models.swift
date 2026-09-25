@@ -1478,6 +1478,10 @@ struct CodexThreadItem: Identifiable, Decodable, Equatable, Sendable {
     let createdAt: String?
     var images: [ChatImageReference]? = nil
     var rawMetadataJSON: String? = nil
+    var executionPlan: ConversationExecutionPlan? = nil
+    var toolExecution: ConversationToolExecution? = nil
+    var changeSet: ConversationChangeSet? = nil
+    var userInput: ConversationUserInput? = nil
     /// Presentation-only lifecycle bounds derived from the complete turn.
     /// Process cards contain only execution items, so their own timestamps are
     /// insufficient to measure a single-step turn accurately.

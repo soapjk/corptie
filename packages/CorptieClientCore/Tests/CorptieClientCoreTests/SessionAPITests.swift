@@ -102,6 +102,39 @@ struct SessionAPITests {
         #expect(ClientMessage(id: "local", text: "draft").presentationRole == nil)
     }
 
+    @Test func approvalOptionsAndSubmissionStateDecodeWithoutProviderData() throws {
+        let data = Data(#"{"id":"approval:one","type":"approval","text":"Proceed?","status":"submitted","options":[{"id":"yes","label":"允许","role":"approve","selected":false},{"id":"no","label":"拒绝","role":"deny","selected":false}]}"#.utf8)
+        let message = try JSONDecoder().decode(ClientMessage.self, from: data)
+        #expect(message.status == "submitted")
+        #expect(message.options?.map(\.id) == ["yes", "no"])
+        #expect(message.options?.first?.role == "approve")
+        let legacy = try JSONDecoder().decode(ClientMessage.self,
+            from: Data(#"{"id":"old","type":"agentMessage","text":"hello"}"#.utf8))
+        #expect(legacy.options == nil)
+    }
+
+    @Test func multiQuestionInputDecodesFromTheSharedTimelineAndPostsStructuredAnswers() async throws {
+        let data = Data(#"{"id":"input:one","type":"userInput","text":"Choose route","status":"pending","userInput":{"schemaVersion":1,"isBlocking":true,"questions":[{"id":"route","header":"Route","question":"Choose route","isOther":false,"isSecret":false,"options":[{"label":"A","description":"Fast"}]},{"id":"token","header":"Token","question":"Enter token","isOther":false,"isSecret":true,"options":null}]}}"#.utf8)
+        let message = try JSONDecoder().decode(ClientMessage.self, from: data)
+        #expect(message.userInput?.questions.map(\.id) == ["route", "token"])
+        #expect(message.userInput?.questions[1].isSecret == true)
+        #expect(message.userInput?.questions[1].options == nil)
+        #expect(message.userInput?.isBlocking == true)
+        let legacy = try JSONDecoder().decode(ClientMessage.self,
+            from: Data(#"{"id":"old","type":"agentMessage","text":"hello"}"#.utf8))
+        #expect(legacy.userInput == nil)
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [SessionProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://unit-test.invalid")!),
+            bearerToken: "test-only", configuration: config)
+        let api = ClientSessionAPI(transport: transport)
+        let response = try await api.respondToUserInput(sessionId: "session:test", itemId: "input:one",
+            answers: ["route": ["A"], "token": ["secret-value"]])
+        #expect(response.status == "submitted")
+        #expect(response.itemId == "input:one")
+    }
+
     @Test func attachmentsDecodeAdditivelyAndStreamThroughTheSessionImageRoute() async throws {
         let decoder = JSONDecoder()
         let message = try decoder.decode(ClientMessage.self, from: Data(#"{"id":"m","type":"userMessage","text":"see","images":[{"managedPath":"chat-resources/session/a.png","fileName":"a.png","mimeType":"image/png","byteLength":9},{"managedPath":"chat-resources/session/b.png"}]}"#.utf8))
@@ -265,6 +298,14 @@ private final class SessionProtocol: URLProtocol, @unchecked Sendable {
             #expect(request.httpMethod == "GET")
             #expect(path == "/client/v1/sessions/session:test/usage")
             json = #"{"schemaVersion":1,"sessionId":"session:test","context":{"usedTokens":10,"contextWindow":100,"remainingTokens":90,"usedPercent":10},"account":{"available":true,"provider":"codex","model":"gpt-5","rateLimits":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1700000000},"secondary":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":25,"windowDurationMins":300,"resetsAt":1700000000},"secondary":null}}}}"#
+        } else if path.hasSuffix("/user-input") {
+            #expect(request.httpMethod == "POST")
+            let body = (try? JSONSerialization.jsonObject(with: Self.body(of: request))) as? [String: Any]
+            #expect(body?["itemId"] as? String == "input:one")
+            let answers = body?["answers"] as? [String: [String]]
+            #expect(answers?["route"] == ["A"])
+            #expect(answers?["token"] == ["secret-value"])
+            json = #"{"schemaVersion":1,"sessionId":"session:test","itemId":"input:one","status":"submitted"}"#
         } else if path.hasSuffix("messages") && request.httpMethod == "GET" {
             #expect(URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems?.contains(URLQueryItem(name: "before", value: "item:1")) == true)
             json = #"{"schemaVersion":1,"sessionId":"session:test","items":[],"hasEarlier":false}"#

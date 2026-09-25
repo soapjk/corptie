@@ -5,14 +5,57 @@ import { parseSlashCommand } from "../commands/unifiedCommands.mjs";
 import { createClientTask, clientTaskCreationCatalog } from "./clientTaskCreation.mjs";
 import { clientDiscussionOptions, openClientDiscussion } from "./clientWorkDiscussion.mjs";
 import { clientTaskManagement, clientTaskDeletionPlan, clientWorkManagement, clientTaskCommand, clientWorkCommand } from "./clientEntityCommands.mjs";
+import { publicToolExecution } from "../utils/toolExecutionProjection.mjs";
+import { publicChangeSet } from "../utils/changeSetProjection.mjs";
+import { publicUserInput, validateInteractionAnswers } from "./interactionInput.mjs";
 
 export function requireDevicePermission(identity, permission) {
   if (!identity.permissions?.includes(permission)) throw deviceError("DEVICE_PERMISSION_REQUIRED", 403);
 }
 
+function approvalMetadata(item) {
+  try {
+    const value = JSON.parse(item.rawMetadataJSON ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+
+function approvalSubmission(item) {
+  return approvalMetadata(item).approvalSubmission ?? null;
+}
+
+export function approvalRequestIsCurrent(item, bindingId, input, source) {
+  if (!item || !["choice", "approval"].includes(item.type)
+    || (item.bindingId && bindingId && item.bindingId !== bindingId)) return false;
+  if (source?.type === "remote-client" && typeof source.deviceId === "string") {
+    return item.status === "dispatching" && approvalSubmission(item)?.optionId === input?.optionId;
+  }
+  return item.status === "pending";
+}
+
+function publicExecutionPlan(value) {
+  if (!value || value.schemaVersion !== 1 || typeof value.planId !== "string"
+    || !Number.isSafeInteger(value.revision) || !Array.isArray(value.steps)
+    || value.steps.length > 200) return null;
+  return {
+    schemaVersion: 1,
+    planId: value.planId,
+    revision: value.revision,
+    lifecycle: typeof value.lifecycle === "string" ? value.lifecycle : "unknown",
+    explanation: typeof value.explanation === "string" ? value.explanation.slice(0, 2_000) : null,
+    updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
+    steps: value.steps.map((step, ordinal) => ({
+      stepId: String(step?.stepId ?? "").slice(0, 200),
+      ordinal,
+      text: String(step?.text ?? "").slice(0, 2_000),
+      status: typeof step?.status === "string" ? step.status : "unknown"
+    }))
+  };
+}
+
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null }) {
+  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null }) {
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
     // Optional host projections: Session readiness (desktop ThreadMetaView light) and usage (context / quota).
     this.readiness = readiness;
@@ -23,6 +66,8 @@ export class ClientSessionAPI {
     this.workDiscussion = workDiscussion;
     // Host Work / Task management services (desktop entity routes); absent hosts answer CAPABILITY_UNSUPPORTED.
     this.entityCommands = entityCommands;
+    this.respondToApproval = respondToApproval;
+    this.respondToUserInput = respondToUserInput;
     store.db.run(`CREATE TABLE IF NOT EXISTS client_command_receipts (
       device_id TEXT NOT NULL, request_id TEXT NOT NULL, session_id TEXT NOT NULL,
       kind TEXT NOT NULL, payload_hash TEXT NOT NULL, status TEXT NOT NULL,
@@ -32,6 +77,8 @@ export class ClientSessionAPI {
       store.db.run("ALTER TABLE client_command_receipts ADD COLUMN result_json TEXT");
     }
     this.inFlight = new Set();
+    this.approvalsInFlight = new Set();
+    this.userInputInFlight = new Set();
   }
 
   session(id) {
@@ -96,11 +143,126 @@ export class ClientSessionAPI {
           fileName: typeof image.fileName === "string" ? image.fileName : null,
           mimeType: typeof image.mimeType === "string" ? image.mimeType : null,
           byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null })) : [],
+      executionPlan: item.type === "executionPlan" ? publicExecutionPlan(item.executionPlan) : null,
+      toolExecution: publicToolExecution(item.toolExecution),
+      changeSet: publicChangeSet(item.changeSet),
+      userInput: item.type === "userInput" ? publicUserInput(item.userInput) : null,
+      options: ["choice", "approval"].includes(item.type) && Array.isArray(item.options)
+        ? item.options.slice(0, 12).filter(option => option && typeof option.id === "string" && typeof option.label === "string")
+          .map(option => ({ id: option.id.slice(0, 200), label: option.label.slice(0, 200),
+            role: typeof option.role === "string" ? option.role.slice(0, 40) : null,
+            selected: option.selected === true })) : null,
     }));
     const result = { schemaVersion: 1, sessionId, revision: window.revision, items,
       hasEarlier: window.hasEarlier === true, nextBefore: window.hasEarlier && items.length ? items[0].id : null };
     if (Buffer.byteLength(JSON.stringify(result)) > 8 * 1024 * 1024) throw deviceError("MESSAGE_WINDOW_TOO_LARGE", 413);
     return result;
+  }
+
+  async approval(identity, id, input, revalidateIdentity = null) {
+    requireDevicePermission(identity, "messages.write");
+    if (!input || typeof input !== "object" || Array.isArray(input)
+      || Object.keys(input).some(key => !["itemId", "optionId"].includes(key))
+      || typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 300
+      || typeof input.optionId !== "string" || !input.optionId || input.optionId.length > 200) {
+      throw deviceError("INVALID_APPROVAL", 400);
+    }
+    const { sessionId } = this.session(id);
+    const item = this.store.getSessionItem(sessionId, input.itemId);
+    if (!item || !["choice", "approval"].includes(item.type)) {
+      throw deviceError("APPROVAL_NOT_PENDING", 409);
+    }
+    const previousSubmission = approvalSubmission(item);
+    if (item.status === "submitted" && previousSubmission?.optionId === input.optionId) {
+      return { schemaVersion: 1, sessionId, itemId: item.id, status: "submitted" };
+    }
+    if (item.status === "dispatching" || item.status === "unknown") {
+      throw deviceError("APPROVAL_OUTCOME_UNCERTAIN", 409);
+    }
+    if (item.status !== "pending") throw deviceError("APPROVAL_NOT_PENDING", 409);
+    const option = item.options?.find(candidate => candidate.id === input.optionId);
+    if (!option) throw deviceError("INVALID_APPROVAL_OPTION", 400);
+    if (!this.respondToApproval) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    if (revalidateIdentity) {
+      const current = revalidateIdentity();
+      if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
+      requireDevicePermission(current, "messages.write");
+    }
+    const key = `${sessionId}:${item.id}`;
+    if (this.approvalsInFlight.has(key)) throw deviceError("APPROVAL_IN_PROGRESS", 409);
+    this.approvalsInFlight.add(key);
+    const metadata = approvalMetadata(item);
+    const submissionMetadata = JSON.stringify({ ...metadata, approvalSubmission: { optionId: option.id } });
+    this.store.upsertTimelineItemProjection(sessionId, {
+      ...item, status: "dispatching", rawMetadataJSON: submissionMetadata
+    });
+    try {
+      await this.respondToApproval(sessionId, {
+        itemId: item.id, choiceId: item.id, optionId: option.id,
+        approved: option.role === "approve" || option.role === "approve_always"
+      }, { type: "remote-client", deviceId: identity.deviceId });
+      const current = this.store.getSessionItem(sessionId, item.id);
+      if (current?.status === "dispatching") {
+        this.store.upsertTimelineItemProjection(sessionId, { ...current, status: "submitted" });
+      }
+    } catch (error) {
+      const current = this.store.getSessionItem(sessionId, item.id);
+      if (current?.status === "dispatching") {
+        this.store.upsertTimelineItemProjection(sessionId, { ...current, status: "unknown" });
+      }
+      throw error;
+    } finally { this.approvalsInFlight.delete(key); }
+    return { schemaVersion: 1, sessionId, itemId: item.id, status: "submitted" };
+  }
+
+  async userInput(identity, id, input, revalidateIdentity = null) {
+    requireDevicePermission(identity, "messages.write");
+    if (!input || typeof input !== "object" || Array.isArray(input)
+      || Object.keys(input).some((key) => !["itemId", "answers"].includes(key))
+      || typeof input.itemId !== "string" || !input.itemId || input.itemId.length > 300) {
+      throw deviceError("INVALID_USER_INPUT", 400);
+    }
+    const { sessionId } = this.session(id);
+    const item = this.store.getSessionItem(sessionId, input.itemId);
+    if (!item || item.type !== "userInput") throw deviceError("USER_INPUT_NOT_PENDING", 409);
+    if (item.status === "submitted") {
+      return { schemaVersion: 1, sessionId, itemId: item.id, status: "submitted" };
+    }
+    if (["dispatching", "unknown"].includes(item.status)) {
+      throw deviceError("USER_INPUT_OUTCOME_UNCERTAIN", 409);
+    }
+    if (item.status !== "pending") throw deviceError("USER_INPUT_NOT_PENDING", 409);
+    if (!validateInteractionAnswers(item.userInput, input.answers)) {
+      throw deviceError("INVALID_USER_INPUT_ANSWER", 400);
+    }
+    if (!this.respondToUserInput) throw deviceError("CAPABILITY_UNSUPPORTED", 409);
+    if (revalidateIdentity) {
+      const current = revalidateIdentity();
+      if (current.deviceId !== identity.deviceId) throw deviceError("INVALID_CREDENTIAL", 401);
+      requireDevicePermission(current, "messages.write");
+    }
+    const key = `${sessionId}:${item.id}`;
+    if (this.userInputInFlight.has(key)) throw deviceError("USER_INPUT_IN_PROGRESS", 409);
+    this.userInputInFlight.add(key);
+    this.store.upsertTimelineItemProjection(sessionId, { ...item, status: "dispatching" });
+    try {
+      await this.respondToUserInput(sessionId, {
+        itemId: item.id, answers: input.answers
+      }, { type: "remote-client", deviceId: identity.deviceId });
+      const current = this.store.getSessionItem(sessionId, item.id);
+      if (current?.status === "dispatching") {
+        this.store.upsertTimelineItemProjection(sessionId, { ...current, status: "submitted" });
+      }
+    } catch (error) {
+      const current = this.store.getSessionItem(sessionId, item.id);
+      if (current?.status === "dispatching") {
+        this.store.upsertTimelineItemProjection(sessionId, {
+          ...current, status: error?.code === "USER_INPUT_NOT_PENDING" ? "expired" : "unknown"
+        });
+      }
+      throw error;
+    } finally { this.userInputInFlight.delete(key); }
+    return { schemaVersion: 1, sessionId, itemId: item.id, status: "submitted" };
   }
 
   /** Bytes of one managed attachment of this Session. Same ownership check as the desktop image route. */

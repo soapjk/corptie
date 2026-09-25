@@ -52,6 +52,100 @@ public enum ExecutionTimelineAttributedText {
                     ]
                 ))
             }
+            if let tool = step.tool {
+                for (label, value) in [("INPUT", tool.input), ("RESULT", tool.result)] {
+                    if label == "INPUT" && step.changeSet != nil { continue }
+                    guard let value, !value.isEmpty else { continue }
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.headIndent = 20
+                    paragraph.firstLineHeadIndent = 20
+                    paragraph.paragraphSpacingBefore = 3
+                    paragraph.lineBreakMode = .byCharWrapping
+                    result.append(NSAttributedString(
+                        string: "\n│  \(label)\n│  \(value)",
+                        attributes: [
+                            .font: ExecutionFont.monospacedSystemFont(ofSize: 9.5, weight: .regular),
+                            .foregroundColor: mutedText,
+                            .paragraphStyle: paragraph
+                        ]
+                    ))
+                }
+            }
+            if let changeSet = step.changeSet {
+                for change in changeSet.changes {
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.headIndent = 20
+                    paragraph.firstLineHeadIndent = 20
+                    paragraph.paragraphSpacingBefore = 3
+                    paragraph.lineBreakMode = .byCharWrapping
+                    result.append(NSAttributedString(
+                        string: "\n\(change.marker)  \(change.path)",
+                        attributes: [
+                            .font: ExecutionFont.systemFont(ofSize: 10, weight: .medium),
+                            .foregroundColor: secondaryText,
+                            .paragraphStyle: paragraph
+                        ]
+                    ))
+                    if let diff = change.diffPreview, !diff.isEmpty {
+                        result.append(NSAttributedString(
+                            string: "\n│  \(diff)\(change.diffTruncated ? "\n│  …" : "")",
+                            attributes: [
+                                .font: ExecutionFont.monospacedSystemFont(ofSize: 9, weight: .regular),
+                                .foregroundColor: mutedText,
+                                .paragraphStyle: paragraph
+                            ]
+                        ))
+                    } else if change.diffTruncated {
+                        result.append(NSAttributedString(
+                            string: "\n│  … diff preview truncated",
+                            attributes: [
+                                .font: ExecutionFont.systemFont(ofSize: 9, weight: .regular),
+                                .foregroundColor: secondaryColor,
+                                .paragraphStyle: paragraph
+                            ]
+                        ))
+                    }
+                }
+                if changeSet.truncated {
+                    result.append(NSAttributedString(
+                        string: "\n… additional files",
+                        attributes: [
+                            .font: ExecutionFont.systemFont(ofSize: 9, weight: .regular),
+                            .foregroundColor: secondaryColor
+                        ]
+                    ))
+                }
+            }
+            if let plan = step.plan {
+                if let explanation = plan.explanation, !explanation.isEmpty {
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.headIndent = 20
+                    paragraph.firstLineHeadIndent = 20
+                    paragraph.paragraphSpacingBefore = 3
+                    paragraph.lineBreakMode = .byCharWrapping
+                    result.append(NSAttributedString(
+                        string: "\n│  \(explanation)",
+                        attributes: [
+                            .font: ExecutionFont.systemFont(ofSize: 10, weight: .regular),
+                            .foregroundColor: mutedText,
+                            .paragraphStyle: paragraph
+                        ]
+                    ))
+                }
+                for planStep in plan.steps {
+                    let paragraph = NSMutableParagraphStyle()
+                    paragraph.headIndent = 20
+                    paragraph.firstLineHeadIndent = 20
+                    result.append(NSAttributedString(
+                        string: "\n  \(planStep.marker)  \(planStep.text)",
+                        attributes: [
+                            .font: ExecutionFont.systemFont(ofSize: 10, weight: .regular),
+                            .foregroundColor: planStep.status == "completed" ? secondaryColor : secondaryText,
+                            .paragraphStyle: paragraph
+                        ]
+                    ))
+                }
+            }
             if index < steps.count - 1 {
                 result.append(NSAttributedString(string: "\n\n"))
             }
@@ -65,6 +159,7 @@ public enum ExecutionTimelineAttributedText {
         case .completed: .systemGreen
         case .failed: .systemRed
         case .cancelled: secondaryColor
+        case .unknown: secondaryColor
         }
     }
 
@@ -94,4 +189,3 @@ public enum ExecutionTimelineAttributedText {
     private static let mutedText = ExecutionColor(red: 0.38, green: 0.41, blue: 0.43, alpha: 1)
     #endif
 }
-
