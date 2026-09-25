@@ -1,4 +1,5 @@
 import SwiftUI
+import CorptieConversation
 
 /// Shared by the main chat, workspace card and detached chat header.
 /// Uses the displayed Session, never the globally selected conversation.
@@ -15,14 +16,10 @@ struct SessionHeaderStopButton: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.red)
                     .frame(width: 28, height: 28)
-                    .background(Color.red.opacity(0.22), in: Circle())
-                    .overlay {
-                        Circle().strokeBorder(Color.red.opacity(0.45), lineWidth: 1)
-                            .allowsHitTesting(false)
-                    }
+                    .conversationGlassControl(tint: .red)
                     .contentShape(Circle())
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .disabled(!backendClient.isOnline)
             .help(L10n("Stop current run"))
             .accessibilityLabel(L10n("Stop current run"))

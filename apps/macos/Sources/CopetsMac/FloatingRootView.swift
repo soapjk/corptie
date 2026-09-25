@@ -5892,8 +5892,9 @@ struct DetailHeaderView: View {
                     Image(systemName: "macwindow.on.rectangle")
                         .font(.system(size: 12, weight: .semibold))
                         .frame(width: 28, height: 28)
+                        .conversationGlassControl()
                 }
-                .buttonStyle(IconButtonStyle())
+                .buttonStyle(.plain)
                 .help(L10n("Open chat in floating window"))
                 .accessibilityLabel(L10n("Open chat in floating window"))
                 .accessibilityIdentifier("session.detail.detach")
@@ -10057,14 +10058,16 @@ struct MessageComposer: View {
                         }
                     }
                     .frame(width: 24, height: 24)
-                    .background { ComposerGlassActionBackground(tint: CorptiePalette.softBlue) }
                     .frame(width: 28, height: 28)
+                    .conversationGlassControl(tint: CorptiePalette.softBlue)
                     .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(CorptiePalette.softBlue)
                 .disabled(isSendDisabled)
                 .help(L10n("Send instruction"))
+                .accessibilityLabel(L10n("Send instruction"))
+                .accessibilityIdentifier("conversation-composer-send")
 
                 Menu {
                     Button {
@@ -10092,8 +10095,8 @@ struct MessageComposer: View {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 10, weight: .semibold))
                         .frame(width: 24, height: 24)
-                        .background { ComposerGlassActionBackground(tint: CorptiePalette.secondaryText) }
                         .frame(width: 28, height: 28)
+                        .conversationGlassControl()
                         .contentShape(Circle())
                 }
                 .menuStyle(.borderlessButton)
