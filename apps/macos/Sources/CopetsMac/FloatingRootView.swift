@@ -5049,17 +5049,21 @@ private struct ChatUsageBar: View {
             HStack(alignment: .center, spacing: 10) {
                 if let context = usage.context,
                    let remaining = context.remainingTokens,
-                   let window = context.contextWindow {
-                    let used = context.usedTokens ?? max(0, window - remaining)
-                    let usedPercent = context.usedPercent ?? max(0, min(100, used / window * 100))
-                    usageItem(
+                   let window = context.contextWindow, window > 0 {
+                    let used = SessionUsagePolicy.contextUsed(usedTokens: context.usedTokens,
+                        contextWindow: window, remainingTokens: remaining)
+                    let usedPercent = SessionUsagePolicy.contextUsedPercent(reported: context.usedPercent,
+                        used: used, contextWindow: window)
+                    SessionUsageItem(
                         icon: "text.alignleft",
-                        value: "\(exactTokens(used))/\(exactTokens(window))",
+                        value: "\(SessionUsagePolicy.exactTokens(used))/\(SessionUsagePolicy.exactTokens(window))",
                         progress: usedPercent / 100,
-                        color: contextColor(usedPercent: usedPercent),
-                        help: "\(L10n("Context")): \(exactTokens(used)) / \(exactTokens(window)) · \(formatPercent(usedPercent, maximumFractionDigits: 2))% used",
+                        color: SessionMetaPalette.color(for: SessionUsagePolicy.contextTone(usedPercent: usedPercent)),
                         numericValue: used
                     )
+                    .help("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(window)) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
+                    .accessibilityLabel("\(L10n("Context")): \(SessionUsagePolicy.exactTokens(used)) / \(SessionUsagePolicy.exactTokens(window)) · \(SessionUsagePolicy.percent(usedPercent, maximumFractionDigits: 2))% used")
+                    .accessibilityIdentifier("conversation-usage-context")
                 }
                 if let window = SessionUsagePresentation.preferredRateLimitWindow(usage.account),
                    let remainingPercent = SessionUsagePresentation.remainingRateLimitPercent(window) {
@@ -5067,26 +5071,29 @@ private struct ChatUsageBar: View {
                         Button {
                             isResetNoticePresented.toggle()
                         } label: {
-                            usageItem(
+                            SessionUsageItem(
                                 icon: "bolt.fill",
-                                value: "\(formatPercent(remainingPercent))%",
+                                value: "\(SessionUsagePolicy.percent(remainingPercent))%",
                                 progress: remainingPercent / 100,
-                                color: quotaColor(remainingPercent: remainingPercent),
-                                help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
+                                color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
                             )
                         }
                         .buttonStyle(.plain)
+                        .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
+                        .accessibilityLabel("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
+                        .accessibilityIdentifier("conversation-usage-quota")
                         .popover(isPresented: $isResetNoticePresented, arrowEdge: .bottom) {
                             resetNoticePopover(usage: usage, window: window)
                         }
                     } else {
-                        usageItem(
+                        SessionUsageItem(
                             icon: "bolt.fill",
-                            value: "\(formatPercent(remainingPercent))%",
+                            value: "\(SessionUsagePolicy.percent(remainingPercent))%",
                             progress: remainingPercent / 100,
-                            color: quotaColor(remainingPercent: remainingPercent),
-                            help: "\(providerQuotaLabel(usage.account.provider)): \(formatPercent(remainingPercent, maximumFractionDigits: 2))% remaining"
+                            color: SessionMetaPalette.color(for: SessionUsagePolicy.quotaTone(remainingPercent: remainingPercent))
                         )
+                        .help("\(L10n(SessionUsagePolicy.quotaLabel(provider: usage.account.provider))): \(SessionUsagePolicy.percent(remainingPercent, maximumFractionDigits: 2))% remaining")
+                        .accessibilityIdentifier("conversation-usage-quota")
                     }
                 }
             }
@@ -5151,62 +5158,6 @@ private struct ChatUsageBar: View {
         date.formatted(date: .abbreviated, time: .shortened)
     }
 
-    private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String, numericValue: Double? = nil) -> some View {
-        HStack(spacing: 4) {
-            UsageProgressRing(icon: icon, progress: progress, color: color)
-            Text(value)
-                .foregroundStyle(color)
-                .monospacedDigit()
-                .contentTransition(.numericText(value: numericValue ?? progress))
-                .animation(.snappy(duration: 0.45), value: numericValue ?? progress)
-        }
-        .help(help)
-    }
-
-    private func quotaColor(remainingPercent: Double) -> Color {
-        if remainingPercent < 30 { return .red }
-        if remainingPercent <= 50 { return .yellow }
-        return CorptiePalette.secondaryText
-    }
-
-    private func contextColor(usedPercent: Double) -> Color {
-        if usedPercent > 70 { return .red }
-        if usedPercent > 50 { return .yellow }
-        return CorptiePalette.secondaryText
-    }
-
-    private func providerQuotaLabel(_ provider: String?) -> String {
-        provider == "claude" ? L10n("Claude quota") : L10n("Codex quota")
-    }
-
-    private func exactTokens(_ value: Double) -> String {
-        value.formatted(.number.grouping(.automatic).precision(.fractionLength(0)))
-    }
-
-    private func formatPercent(_ value: Double, maximumFractionDigits: Int = 1) -> String {
-        value.formatted(.number.grouping(.never).precision(.fractionLength(0...maximumFractionDigits)))
-    }
-}
-
-private struct UsageProgressRing: View {
-    let icon: String
-    let progress: Double
-    let color: Color
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(color.opacity(0.18), lineWidth: 1.5)
-            Circle()
-                .trim(from: 0, to: max(0, min(1, progress)))
-                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                .rotationEffect(.degrees(-90))
-            Image(systemName: icon)
-                .font(.system(size: 4.5, weight: .bold))
-                .foregroundStyle(color)
-        }
-        .frame(width: 10, height: 10)
-    }
 }
 
 typealias ChatDisplayEntry = ConversationEntry<CodexThreadItem>
@@ -8358,35 +8309,24 @@ struct ThreadMetaView: View {
                 Button {
                     if !isReady { isShowingNotReadyReason = true }
                 } label: {
-                    ConnectionIndicatorLight(
-                        color: isReady ? CorptiePalette.connectedDot : CorptiePalette.disconnected,
-                        size: 6,
-                        glowSize: 12,
-                        isBreathing: false
-                    )
+                    SessionReadinessLight(isReady: isReady)
+                        .frame(width: 28, height: 28)
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .contentShape(Circle())
+                .disabled(isReady)
                 .help(isReady ? L10n("Ready") : L10n("Not Ready — click for details"))
                 .accessibilityLabel(isReady ? L10n("Session Ready") : L10n("Session Not Ready"))
+                .accessibilityIdentifier("conversation-readiness")
                 .popover(isPresented: $isShowingNotReadyReason, arrowEdge: .top) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(notReadyReason?.presentationTitle ?? L10n("Session Not Ready"))
-                            .font(.system(size: 12, weight: .bold))
-                        Text(notReadyReason?.presentationMessage ?? L10n("This Session cannot accept messages right now."))
-                            .font(.system(size: 11, weight: .medium))
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let code = notReadyReason?.code, !code.isEmpty {
-                            Text(code)
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .padding(12)
-                    .frame(width: 280, alignment: .leading)
+                    SessionNotReadyDetail(
+                        title: notReadyReason?.presentationTitle ?? L10n("Session Not Ready"),
+                        message: notReadyReason?.presentationMessage
+                            ?? L10n("This Session cannot accept messages right now."),
+                        code: notReadyReason?.code
+                    )
                 }
-                SessionExecutionStatusText(state: status.sharedExecutionState,
-                    label: status.label, tint: status.color)
+                SessionExecutionStatusText(state: status.sharedExecutionState, label: status.label)
                 SessionActivityStatusText(
                     sessionID: sessionID,
                     fallbackText: activityStatus,
@@ -9939,7 +9879,6 @@ struct MessageComposer: View {
     @EnvironmentObject private var backendClient: BackendClient
     @ObservedObject private var appState = AppStateStore.shared
     @ObservedObject private var commandState = BackendClient.shared.sessionCommandController
-    @Environment(\.isLiquidGlass) private var isLiquidGlass
     let sessionId: String
     let draftRepository: ComposerDraftRepository
     let allowsModelSwitch: Bool
@@ -10111,24 +10050,7 @@ struct MessageComposer: View {
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .background(
-                isLiquidGlass ? Color.white : Color(nsColor: .textBackgroundColor),
-                in: RoundedRectangle(cornerRadius: 13, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(
-                        isLiquidGlass
-                            ? Color.black.opacity(isFocused ? 0.16 : 0.08)
-                            : Color(nsColor: .separatorColor).opacity(isFocused ? 0.9 : 0.5),
-                        lineWidth: 1
-                    )
-            )
-            .shadow(
-                color: Color.black.opacity(isLiquidGlass ? 0.04 : 0),
-                radius: isLiquidGlass ? 8 : 0,
-                y: isLiquidGlass ? 3 : 0
-            )
+            .modifier(ComposerShellSurface(isFocused: isFocused))
             .onDrop(of: [UTType.fileURL.identifier, UTType.image.identifier], isTargeted: nil) { providers in
                 importDroppedImages(providers)
             }
@@ -10638,29 +10560,12 @@ private struct CodexModelMenu: View {
                 }
             }
         } label: {
-            HStack(spacing: 4) {
-                if backendClient.isSwitchingModel || backendClient.isSwitchingReasoning || backendClient.isLoadingCodexModels {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 16, height: 16)
-                }
-                Text(ModelMenuLabel.compact(currentModelLabel))
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Text(reasoningShortLabel(currentReasoningLevel))
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(CorptiePalette.secondaryText)
-                    .lineLimit(1)
-            }
-            .foregroundStyle(CorptiePalette.primaryText)
-            .frame(maxWidth: maxWidth)
-            .padding(.horizontal, 8)
-            .frame(height: 30)
-            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
+            ComposerModelMenuLabel(
+                modelLabel: currentModelLabel,
+                reasoningShortLabel: reasoningShortLabel(currentReasoningLevel),
+                isBusy: backendClient.isSwitchingModel || backendClient.isSwitchingReasoning
+                    || backendClient.isLoadingCodexModels,
+                maxWidth: maxWidth
             )
         }
         .menuStyle(.borderlessButton)
