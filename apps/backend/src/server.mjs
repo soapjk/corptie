@@ -3613,6 +3613,7 @@ function seedSessions() {
 function emitEvent(type, payload, options = {}) {
   if (/^(Worktree|GitRepository|ScheduledSession|Automation|Agent|Skill)/.test(type)) {
     clientDeviceGateway?.events.invalidate({ control: true });
+    clientDeviceGateway?.events.publishControl();
   }
   // Provider terminal notifications may be replayed after reconnect. A stable
   // event id makes the entire product event idempotent, including global SSE,
@@ -4096,6 +4097,7 @@ function publishStateChangesIfNeeded() {
 
 function scheduleStateSyncPublish() {
   clientDeviceGateway?.events.invalidate({ inventory: true, control: true });
+  clientDeviceGateway?.events.publishState();
   if (stateSyncClients.size === 0 || stateSyncPublishTimer) return;
   // Collapse a burst of Provider item/progress events into one revision-aware
   // delivery. This avoids rebuilding the control-plane projection once per
@@ -4164,6 +4166,7 @@ function resolveTimelineChangeSessionAliases(sessionId) {
 function scheduleTimelineChangePublish(change = {}) {
   const sessionIds = resolveTimelineChangeSessionAliases(change.sessionId);
   clientDeviceGateway?.events.invalidate({ sessionId: change.sessionId, sessionIds });
+  clientDeviceGateway?.events.publishTimeline(sessionIds);
   timelineChangePublisher?.schedule(change);
 }
 
@@ -12051,6 +12054,7 @@ function startBackendRuntime() {
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
       respondToApproval: respondUnifiedSessionApproval,
       respondToUserInput: respondUnifiedSessionUserInput,
+      onReceiptChanged: (deviceId, receipt) => clientDeviceGateway?.events.publishReceipt(deviceId, receipt),
       markRead: (sessionId, throughSequence) => {
         const receipt = store.markSessionMessagesRead(sessionId, throughSequence);
         setImmediate(publishStateChangesIfNeeded);

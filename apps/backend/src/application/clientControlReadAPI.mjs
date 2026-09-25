@@ -62,6 +62,24 @@ export class ClientControlReadAPI {
     this.repositoryFlights.set(id, flight);
     try { return await flight; } finally { this.repositoryFlights.delete(id); }
   }
+
+  /** Complete device-safe control snapshot for server-pushed synchronization. */
+  async realtimeSnapshot() {
+    const result = {};
+    for (const kind of Object.keys(projections)) {
+      const items = [];
+      let cursor = null;
+      do {
+        const params = new URLSearchParams({ limit: "100" });
+        if (cursor) params.set("cursor", cursor);
+        const page = await this.list(kind, params);
+        items.push(...page.items);
+        cursor = page.nextCursor;
+      } while (cursor);
+      result[kind] = items;
+    }
+    return { schemaVersion: 2, ...result };
+  }
   async projectRepository(id) {
     let result;
     try { result = await this.readRepository(id); }

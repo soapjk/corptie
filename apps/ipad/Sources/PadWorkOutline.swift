@@ -266,7 +266,6 @@ struct PadWorkOutline: View {
                     _ = await entityCommands.run(connection, target: .task(task.id), kind: "task_restart", label: "重启 Task") { api, requestID in
                         try await api.taskCommand(taskId: task.id, command: .restart, body: ClientEntityRequest(requestId: requestID))
                     }
-                    await workspace.inventory(connection)
                 }
             } label: {
                 Label("重启 Task", systemImage: "arrow.clockwise")
@@ -279,7 +278,6 @@ struct PadWorkOutline: View {
                     _ = await entityCommands.run(connection, target: .task(task.id), kind: "task_archive", label: willArchive ? "归档 Task" : "恢复 Task") { api, requestID in
                         try await api.taskCommand(taskId: task.id, command: .archive, body: ClientTaskArchive(requestId: requestID, archived: willArchive))
                     }
-                    await workspace.inventory(connection)
                 }
             } label: {
                 Label(task.archived ? "恢复 Task" : "归档 Task", systemImage: "archivebox")
