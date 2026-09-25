@@ -85,7 +85,10 @@ export class ProviderEventProjector {
     const finalAgentMessage = event.type === "turn.completed"
       ? finalItemForTurn({ items: projectedTurnItems }, event.turnId)
       : null;
-    const terminalOutcome = providerTerminalOutcome(event);
+    const existingTurn = event.turnId
+      ? this.store.getSessionTurn?.(sessionId, event.bindingId, event.turnId) ?? null
+      : null;
+    const terminalOutcome = providerTerminalOutcome(event, existingTurn);
 
     const turnStatus = projectedTurnStatus(event, terminalOutcome);
     if (turnStatus && event.turnId) {
@@ -205,10 +208,13 @@ export class ProviderEventProjector {
     const activeTurn = unsettled.findLast?.((turn) => turn.binding_id === binding.bindingId)
       ?? unsettled.at(-1)
       ?? null;
+    const eventProviderFailure = event.type === "provider.error"
+      ? normalizeProviderFailure(event.payload?.error)
+      : null;
     const providerFailure = event.type === "provider.error"
       && event.payload?.willRetry !== true
       && event.payload?.failureScope !== "turn"
-      ? normalizeProviderFailure(event.payload?.error)
+      ? eventProviderFailure
       : null;
     const restoresSendAvailability = binding.isCurrentRoute !== false && (
       event.type === "turn.started"
@@ -219,7 +225,10 @@ export class ProviderEventProjector {
       ...session,
       status,
       progress: status === "running" || status === "blocked" ? 0.5 : 1,
-      summary: latestAgentItem?.text || providerFailure?.message || session.summary,
+      summary: latestAgentItem?.text
+        || terminalOutcome?.failure?.message
+        || eventProviderFailure?.message
+        || session.summary,
       sendUnavailableReason: providerFailure?.message
         ?? (restoresSendAvailability ? null : session.sendUnavailableReason ?? null),
       activityStatus,
@@ -328,9 +337,17 @@ function finalItemForTurn(payload, turnId) {
   ) ?? null;
 }
 
-function providerTerminalOutcome(event) {
+function providerTerminalOutcome(event, existingTurn = null) {
   const status = TERMINAL_EVENT_STATUS.get(event.type);
   if (!status) return null;
+  if (["completed", "failed", "cancelled"].includes(existingTurn?.execution_status)) {
+    return {
+      status: existingTurn.execution_status,
+      failure: existingTurn.execution_status === "failed"
+        ? parsedProviderFailure(existingTurn.failure_json)
+        : null
+    };
+  }
   // Tool failures describe individual attempts, not the outcome of the Turn.
   // A completed Turn may recover from an error or finish with a Channel send
   // and no final text. Preserve the Provider's explicit terminal status.
@@ -338,6 +355,15 @@ function providerTerminalOutcome(event) {
     status,
     failure: status === "failed" ? normalizeProviderFailure(event.payload?.error) : null
   };
+}
+
+function parsedProviderFailure(value) {
+  if (typeof value !== "string" || !value) return normalizeProviderFailure(null);
+  try {
+    return normalizeProviderFailure(JSON.parse(value));
+  } catch {
+    return normalizeProviderFailure(value);
+  }
 }
 
 function normalizeProviderFailure(error) {
@@ -362,7 +388,10 @@ function latestAgentItemFromPayload(payload) {
 }
 
 function activityForEvent(event) {
-  if (event.type === "provider.error") return event.payload?.willRetry ? "Reconnecting" : null;
+  if (event.type === "provider.error") {
+    if (event.payload?.error?.code === "PROVIDER_RESPONSE_DELAYED") return "Waiting for model response";
+    return event.payload?.willRetry ? "Reconnecting" : null;
+  }
   if (event.type.startsWith("tool.")) return "Using tool";
   if (event.type.startsWith("assistant.message")) return "Responding";
   return "Working";
