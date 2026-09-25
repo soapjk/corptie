@@ -61,6 +61,8 @@ public struct MessageTextCard<Content: View>: View {
                 .accessibilityHidden(!actionsAlwaysVisible && !hovering)
             }
         }
+        .frame(idealWidth: cardWidth, maxWidth: cardWidth ?? MessageBubbleWidthPolicy.maximumWidth,
+               alignment: role == .user ? .trailing : .leading)
         .onHover { hovering = $0 }
         .onChange(of: messageID) { hovering = false }
     }
