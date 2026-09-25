@@ -51,7 +51,11 @@ export class ClientDeviceGateway {
     this.readAPI = readAPI;
     this.sessionAPI = sessionAPI;
     this.controlAPI = controlAPI;
-    this.events = new ClientEventStream();
+    this.events = new ClientEventStream({
+      stateSnapshot: async () => this.readAPI?.realtimeSnapshot?.() ?? null,
+      controlSnapshot: async () => this.controlAPI?.realtimeSnapshot?.() ?? null,
+      timeline: async (identity, sessionId, after) => this.sessionAPI?.realtimeTimeline?.(identity, sessionId, after) ?? null
+    });
     this.buckets = new Map();
     this.sockets = new Map();
     this.onRevoke = id => {
@@ -80,6 +84,7 @@ export class ClientDeviceGateway {
       }
       const url = new URL(request.url, "https://client.invalid");
       const path = url.pathname;
+      const eventV2 = path === "/client/v2/events";
       const inventory = /^\/client\/v1\/(works|tasks|sessions)$/.exec(path);
       const discussion = /^\/client\/v1\/works\/([^/]+)\/discussion$/.exec(path);
       const taskEntity = /^\/client\/v1\/tasks\/([^/]+)\/(management|deletion|update|archive|restart|delete)$/.exec(path);
@@ -89,7 +94,10 @@ export class ClientDeviceGateway {
       const repository = /^\/client\/v1\/control\/repositories\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !inventory && !control && !(["messages", "tasks", "images"].includes(conversation?.[2]) && request.method === "GET")) throw deviceError("REQUEST_NOT_ALLOWED", 403);
+      if (url.search && !inventory && !control && !eventV2
+          && !(["messages", "tasks", "images"].includes(conversation?.[2]) && request.method === "GET")) {
+        throw deviceError("REQUEST_NOT_ALLOWED", 403);
+      }
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
         return reply(response, 200, this.authority.claim(await body(request)));
       }
@@ -151,6 +159,18 @@ export class ClientDeviceGateway {
       }
       if (request.method === "GET" && path === "/client/v1/events") {
         return this.events.attach(response, () => this.authority.authenticate(bearer(request)));
+      }
+      if (request.method === "GET" && eventV2) {
+        const sessionId = url.searchParams.get("sessionId");
+        if (sessionId != null && (!sessionId || sessionId.length > 512)) throw deviceError("INVALID_SESSION_ID", 400);
+        const stateRevision = Number(url.searchParams.get("stateRevision") ?? 0);
+        const timelineRevision = Number(url.searchParams.get("timelineRevision") ?? 0);
+        if (![stateRevision, timelineRevision].every(value => Number.isSafeInteger(value) && value >= 0)) {
+          throw deviceError("INVALID_QUERY", 400);
+        }
+        return this.events.attachV2(response, () => this.authority.authenticate(bearer(request)), {
+          sessionId, stateRevision, timelineRevision
+        });
       }
       if (conversation && this.sessionAPI) {
         let sessionId;
@@ -260,7 +280,8 @@ export class ClientDeviceGateway {
           inventoryLists: Boolean(this.readAPI) && identity.permissions.includes("inventory.read"),
           messages: Boolean(this.sessionAPI) && identity.permissions.includes("messages.read"),
           controlRead: Boolean(this.controlAPI) && identity.permissions.includes("control.read"), controlWrite: false,
-          permissions: identity.permissions, eventStream: true, eventRecovery: "snapshot-on-connect", remoteFileAccess: false });
+          permissions: identity.permissions, eventStream: true, eventRecovery: "snapshot-on-connect",
+          realtime: { protocol: "sse-v2", pushPayloads: true, serverSnapshots: true }, remoteFileAccess: false });
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) {

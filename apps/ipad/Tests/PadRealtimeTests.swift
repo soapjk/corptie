@@ -17,6 +17,63 @@ struct PadRealtimeTests {
         return (connection, workspace)
     }
 
+    private func pushFixture() throws -> (PadConnection, PadWorkspace) {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [PushRealtimeProtocol.self]
+        let transport = try BackendTransport(endpoint: BackendEndpoint(URL(string: "https://push-fixture.invalid")!), bearerToken: "fixture", configuration: config)
+        let connection = PadConnection(transportOverride: transport)
+        connection.connected = true
+        let workspace = PadWorkspace()
+        workspace.selection = "session:test"
+        PushRealtimeProtocol.requests = []
+        return (connection, workspace)
+    }
+
+    @Test func v2PushPopulatesWorkspaceWithoutFallbackReads() async throws {
+        let (connection, workspace) = try pushFixture()
+        let live = Task { await workspace.runRealtime(connection) }
+        defer { live.cancel(); PushRealtimeProtocol.stream = nil }
+
+        for _ in 0..<40 {
+            if workspace.messages.first?.text == "pushed response", !workspace.sessions.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        #expect(workspace.messages.first?.text == "pushed response")
+        #expect(workspace.sessions.first?.executionStatus == "running")
+        #expect(workspace.realtimeStateRevision == 7)
+        #expect(workspace.lastTimelineRevision == 3)
+        #expect(workspace.before == "item:1")
+        #expect(workspace.directControlSnapshot != nil)
+        #expect(PushRealtimeProtocol.requests.count == 1)
+        #expect(PushRealtimeProtocol.requests.first?.hasPrefix("/client/v2/events") == true)
+
+        live.cancel()
+        await live.value
+    }
+
+    @Test func v2PushCursorLoadsAndPrependsEarlierHistory() async throws {
+        let (connection, workspace) = try pushFixture()
+        let live = Task { await workspace.runRealtime(connection) }
+        defer { live.cancel(); PushRealtimeProtocol.stream = nil }
+
+        for _ in 0..<40 {
+            if workspace.before == "item:1" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        await workspace.loadEarlierMessagesIfNeeded(connection)
+
+        #expect(workspace.messages.map(\.id) == ["item:0", "item:1"])
+        #expect(workspace.before == nil)
+        #expect(PushRealtimeProtocol.requests.contains {
+            $0.contains("/client/v1/sessions/session:test/messages")
+                && $0.contains("before=item:1")
+        })
+
+        live.cancel()
+        await live.value
+    }
+
     @Test func subscriptionUpdatesTextAndStatusWithoutManualRefreshAndDoesNotNavigate() async throws {
         let (connection, workspace) = try fixture()
         let live = Task { await workspace.runRealtime(connection) }
@@ -102,6 +159,35 @@ struct PadRealtimeTests {
         #expect(workspace.messages.first?.text == "completed response")
         live.cancel(); await live.value
     }
+}
+
+private final class PushRealtimeProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var requests: [String] = []
+    nonisolated(unsafe) static var stream: PushRealtimeProtocol?
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let path = request.url!.path
+        let recorded = path + request.url.map { $0.query.map { "?" + $0 } ?? "" }!
+        Self.requests.append(recorded)
+        #expect(request.httpMethod == "GET")
+        if path.hasSuffix("/messages") {
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"schemaVersion":1,"sessionId":"session:test","items":[{"id":"item:0","type":"userMessage","text":"earlier question"}],"hasEarlier":false,"nextBefore":null,"revision":3}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "text/event-stream"])!, cacheStoragePolicy: .notAllowed)
+        Self.stream = self
+        send("stream-ready", #"{"schemaVersion":2,"pushPayloads":true,"eventRecovery":"snapshot"}"#)
+        send("state-snapshot", #"{"schemaVersion":2,"revision":7,"works":[],"tasks":[],"sessions":[{"id":"session:test","title":"Test","executionStatus":"running","updatedAt":"now"}]}"#)
+        send("control-snapshot", #"{"schemaVersion":2,"automations":[],"repositories":[],"agents":[],"skills":[]}"#)
+        send("timeline-snapshot", #"{"schemaVersion":2,"kind":"snapshot","sessionId":"session:test","revision":3,"messages":{"schemaVersion":1,"sessionId":"session:test","items":[{"id":"item:1","type":"agentMessage","text":"pushed response"}],"hasEarlier":true,"nextBefore":"item:1","revision":3},"capabilities":{"schemaVersion":1,"sessionId":"session:test","readMessages":true,"send":{"available":true},"stop":{"available":true}},"usage":null,"composer":null}"#)
+    }
+    private func send(_ event: String, _ json: String) {
+        client?.urlProtocol(self, didLoad: Data("event: \(event)\ndata: \(json)\n\n".utf8))
+    }
+    override func stopLoading() {}
 }
 
 private final class RealtimeProtocol: URLProtocol, @unchecked Sendable {
