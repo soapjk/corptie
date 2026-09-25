@@ -73,6 +73,8 @@ test("a restarted Codex runtime restores an exact thread-start Tool receipt", ()
   });
   assert.equal(confirmation.restored, true);
   assert.equal(runtime.confirmThreadToolPlan(binding.providerSessionId, definitions).restored, true);
+  assert.equal(runtime.confirmThreadToolPlan(binding.providerSessionId, definitions).providerObservationKind,
+    "thread_start_accepted");
 });
 
 test("startup proof reconstructs a missing contract hash from an exact legacy definition receipt", () => {
