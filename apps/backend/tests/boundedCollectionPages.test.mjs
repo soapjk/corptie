@@ -12,7 +12,8 @@ async function fixture() {
     configPath: join(root, "config.json")
   });
   await store.initialize();
-  const work = store.createWork({ name: "Bounded collections" });
+  const agent = store.createAgent({ name: "BoundedAgent", role: "independentContributor" });
+  const work = store.createWork({ name: "BoundedCollections", contributorAgentIds: [agent.agentId] });
   return { root, store, work };
 }
 
@@ -21,7 +22,7 @@ test("Task pages are stable, active-first, bounded, and expose continuation", as
   try {
     const tasks = Array.from({ length: 8 }, (_, index) => store.createTask({
       workId: work.id,
-      title: `Task ${index}`
+      title: `Task${index}`
     }));
     for (const [index, task] of tasks.slice(0, 3).entries()) {
       const operationId = `completion:${index}`;

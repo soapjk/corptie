@@ -78,6 +78,30 @@ struct PadRealtimeTests {
         #expect(workspace.selection == "session:test")
         live.cancel(); await live.value
     }
+
+    @Test func polymorphicSessionIDMatchesRealtimeNotification() async throws {
+        let (connection, workspace) = try fixture()
+        workspace.selection = "codex:test-session-uuid"
+        let live = Task { await workspace.runRealtime(connection) }
+        defer { live.cancel(); RealtimeProtocol.stream = nil }
+
+        for _ in 0..<50 {
+            if workspace.messages.first?.text == "partial" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(workspace.messages.first?.text == "partial")
+
+        // Server sends unprefixed session UUID or alternate alias
+        RealtimeProtocol.phase = 1
+        RealtimeProtocol.stream?.invalidateSession(sessionID: "test-session-uuid")
+
+        for _ in 0..<50 {
+            if workspace.messages.first?.text == "completed response" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(workspace.messages.first?.text == "completed response")
+        live.cancel(); await live.value
+    }
 }
 
 private final class RealtimeProtocol: URLProtocol, @unchecked Sendable {
@@ -108,6 +132,9 @@ private final class RealtimeProtocol: URLProtocol, @unchecked Sendable {
     }
     func invalidate(name: String = "invalidate") {
         client?.urlProtocol(self, didLoad: Data("event: \(name)\ndata: {\"schemaVersion\":1,\"inventory\":true,\"control\":true,\"sessions\":[],\"allSessions\":true}\n\n".utf8))
+    }
+    func invalidateSession(sessionID: String) {
+        client?.urlProtocol(self, didLoad: Data("event: invalidate\ndata: {\"schemaVersion\":1,\"inventory\":false,\"control\":false,\"sessions\":[\"\(sessionID)\"],\"allSessions\":false}\n\n".utf8))
     }
     func finishFromServer() { client?.urlProtocolDidFinishLoading(self) }
     override func stopLoading() {}

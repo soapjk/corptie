@@ -68,6 +68,46 @@ final class SessionHistoryPageMergerTests: XCTestCase {
         XCTAssertEqual(merged.map(\.id), ["anchor", "overlap", "latest"])
     }
 
+    func testOverlappingHistoryAndAnchorWindowsNeverRollBackAPlanRevision() throws {
+        let older = try planItem(revision: 1)
+        let newer = try planItem(revision: 2)
+        let prepended = try XCTUnwrap(SessionHistoryPageMerger.prepend(
+            pageItems: [item("older"), older],
+            to: [newer, item("latest")],
+            requestedBeforeID: newer.id
+        ))
+        XCTAssertEqual(prepended.map(\.id), ["older", newer.id, "latest"])
+        XCTAssertEqual(prepended[1].executionPlan?.revision, 2)
+
+        let anchored = SessionHistoryPageMerger.mergeAnchorWindow(
+            [item("anchor"), older], with: [newer, item("latest")]
+        )
+        XCTAssertEqual(anchored.map(\.id), ["anchor", newer.id, "latest"])
+        XCTAssertEqual(anchored[1].executionPlan?.revision, 2)
+
+        let newerPage = try XCTUnwrap(SessionHistoryPageMerger.prepend(
+            pageItems: [item("older"), newer],
+            to: [older, item("latest")],
+            requestedBeforeID: older.id
+        ))
+        XCTAssertEqual(newerPage[1].executionPlan?.revision, 2)
+    }
+
+    private func planItem(revision: Int) throws -> CodexThreadItem {
+        let source: [String: Any] = [
+            "id": "plan:one", "turnId": "turn:plan", "turnStatus": "inProgress",
+            "type": "executionPlan", "title": "Execution plan", "text": "Plan update",
+            "executionPlan": [
+                "schemaVersion": 1, "planId": "plan:one", "revision": revision,
+                "lifecycle": "active", "updatedAt": "2026-09-24T00:00:00Z",
+                "steps": [["stepId": "step:one", "ordinal": 0,
+                           "text": "Inspect", "status": revision == 1 ? "pending" : "completed"]]
+            ]
+        ]
+        return try JSONDecoder().decode(CodexThreadItem.self,
+            from: JSONSerialization.data(withJSONObject: source))
+    }
+
     private func item(_ id: String) -> CodexThreadItem {
         CodexThreadItem(
             id: id,

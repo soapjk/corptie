@@ -117,7 +117,8 @@ import { startConfiguredDeviceGateway } from "./application/clientDeviceGateway.
 import { createDeviceSetup } from "./application/clientDeviceSetup.mjs";
 import { ClientReadAPI } from "./application/clientReadAPI.mjs";
 import { ClientControlReadAPI } from "./application/clientControlReadAPI.mjs";
-import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
+import { ClientSessionAPI, approvalRequestIsCurrent } from "./application/clientSessionAPI.mjs";
+import { validateInteractionAnswers } from "./application/interactionInput.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
 import { skillMcpTurnContext } from "./application/skillMcpTurnContext.mjs";
@@ -1028,6 +1029,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     ),
     interrupt: interruptCodexProviderSession,
     respondToApproval: respondCodexProviderApproval,
+    respondToUserInput: respondCodexProviderUserInput,
     manageTurnChanges: manageCodexTurnChanges,
     switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
     switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
@@ -4092,8 +4094,63 @@ function scheduleStateSyncPublish() {
   stateSyncPublishTimer.unref?.();
 }
 
+function resolveTimelineChangeSessionAliases(sessionId) {
+  if (!sessionId || typeof sessionId !== "string") return [];
+  const ids = new Set();
+  ids.add(sessionId);
+
+  const stripPrefix = (id) => id.replace(/^(codex|logical|session|pty):/, "");
+  const stripped = stripPrefix(sessionId);
+  if (stripped && stripped !== sessionId) {
+    ids.add(stripped);
+    ids.add(`session:${stripped}`);
+    ids.add(`codex:${stripped}`);
+    ids.add(`logical:${stripped}`);
+  }
+
+  try {
+    const reference = sessionBindingRepository?.resolve(sessionId);
+    if (reference) {
+      if (reference.sessionId) {
+        ids.add(reference.sessionId);
+        const s = stripPrefix(reference.sessionId);
+        ids.add(s);
+        ids.add(`session:${s}`);
+      }
+      if (reference.logicalSessionId) {
+        ids.add(reference.logicalSessionId);
+        const s = stripPrefix(reference.logicalSessionId);
+        ids.add(s);
+        ids.add(`session:${s}`);
+      }
+      if (reference.requestedSessionId) {
+        ids.add(reference.requestedSessionId);
+      }
+      const session = reference.metadata?.session ?? store?.getSession(reference.sessionId);
+      if (session?.taskId) {
+        ids.add(session.taskId);
+        const s = stripPrefix(session.taskId);
+        ids.add(s);
+      }
+    }
+  } catch {}
+
+  try {
+    const logical = store?.getLogicalSession(sessionId) ?? store?.getLogicalSessionByLegacySessionId(sessionId);
+    if (logical) {
+      if (logical.logicalSessionId) ids.add(logical.logicalSessionId);
+      if (logical.legacySessionId) ids.add(logical.legacySessionId);
+    }
+    const session = store?.getSession(sessionId);
+    if (session?.taskId) ids.add(session.taskId);
+  } catch {}
+
+  return [...ids].filter(Boolean);
+}
+
 function scheduleTimelineChangePublish(change = {}) {
-  clientDeviceGateway?.events.invalidate({ sessionId: change.sessionId });
+  const sessionIds = resolveTimelineChangeSessionAliases(change.sessionId);
+  clientDeviceGateway?.events.invalidate({ sessionId: change.sessionId, sessionIds });
   timelineChangePublisher?.schedule(change);
 }
 
@@ -5011,6 +5068,7 @@ function handleCodexAppServerNotification(message) {
     message,
     binding: envelopeBinding,
     liveItems: codexRuntime.liveItemsForThread(threadId),
+    structuredPlanEvents: agentProviderRegistry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS),
     receivedAt: now()
   });
   if (providerEnvelope) {
@@ -6446,11 +6504,22 @@ async function respondCodexProviderApproval(reference, input = {}, context = {})
   const approved = input.approved === true;
   await codexRuntime.respondToApproval(reference.providerSessionId, {
     approved,
-    optionId: input.optionId
+    optionId: input.optionId,
+    itemId: input.itemId ?? input.choiceId
   });
   store.clearActiveChoicePrompt(reference.sessionId);
   // Do not guess that the Provider resumed. approval.resolved and subsequent
   // turn events own execution state; the command response is transport-only.
+  return store.getSession(reference.sessionId) ?? summary;
+}
+
+async function respondCodexProviderUserInput(reference, input = {}, context = {}) {
+  const summary = context.summary ?? reference.metadata?.session;
+  await codexRuntime.respondToUserInput(reference.providerSessionId, {
+    itemId: input.itemId,
+    answers: input.answers
+  });
+  // The transport acknowledgement is not evidence that the Provider resumed.
   return store.getSession(reference.sessionId) ?? summary;
 }
 
@@ -7899,6 +7968,14 @@ function settleUnavailableProviderSessionInterrupt(reference, activeTurnId, sour
 async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
   const reference = requireSessionReference(sessionId);
   const summary = reference.metadata.session;
+  if (typeof input.itemId === "string" && input.itemId) {
+    const item = store.getSessionItem(reference.sessionId, input.itemId);
+    if (!approvalRequestIsCurrent(item, reference.bindingId, input, source)) {
+      const error = new Error("Approval request is no longer current.");
+      error.code = "APPROVAL_NOT_PENDING";
+      throw error;
+    }
+  }
 
   const approved = input.approved === true;
   const session = await sessionApplicationService.respondToApproval(sessionId, input, { summary, source });
@@ -7911,6 +7988,27 @@ async function respondUnifiedSessionApproval(sessionId, input = {}, source = { t
     source
   }, { sessionId: reference.sessionId, source });
   return session;
+}
+
+async function respondUnifiedSessionUserInput(sessionId, input = {}, source = { type: "desktop" }) {
+  const reference = requireSessionReference(sessionId);
+  const item = store.getSessionItem(reference.sessionId, input.itemId);
+  const expectedStatus = source?.type === "remote-client" ? "dispatching" : "pending";
+  if (!item || item.type !== "userInput" || item.status !== expectedStatus
+    || (item.bindingId && item.bindingId !== reference.bindingId)) {
+    const error = new Error("User-input request is no longer current.");
+    error.code = "USER_INPUT_NOT_PENDING";
+    throw error;
+  }
+  if (!validateInteractionAnswers(item.userInput, input.answers)) {
+    const error = new Error("Every question requires a valid answer.");
+    error.code = "INVALID_USER_INPUT_ANSWER";
+    throw error;
+  }
+  return sessionApplicationService.respondToUserInput(sessionId, input, {
+    summary: reference.metadata.session,
+    source
+  });
 }
 
 async function resolveCollaborationConfirmation(confirmationId, approved, source = { type: "desktop" }) {
@@ -10252,6 +10350,18 @@ function route(request, response) {
     return;
   }
 
+  const sessionUserInputMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/user-input$/);
+  if (request.method === "POST" && sessionUserInputMatch) {
+    const sessionId = decodeURIComponent(sessionUserInputMatch[1]);
+    readJson(request)
+      .then((input) => respondUnifiedSessionUserInput(sessionId, input, { type: "desktop" }))
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message, code: error.code ?? null
+      }));
+    return;
+  }
+
   const sessionModelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/model$/);
   if (request.method === "POST" && sessionModelMatch) {
     const sessionId = decodeURIComponent(sessionModelMatch[1]);
@@ -11836,6 +11946,8 @@ function startBackendRuntime() {
     resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
+      respondToApproval: respondUnifiedSessionApproval,
+      respondToUserInput: respondUnifiedSessionUserInput,
       markRead: (sessionId, throughSequence) => {
         const receipt = store.markSessionMessagesRead(sessionId, throughSequence);
         setImmediate(publishStateChangesIfNeeded);

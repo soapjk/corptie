@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { ProviderEventProjector } from "../src/application/providerEventProjector.mjs";
+import { CodexAppServerClient } from "../src/adapters/codexAppServer.mjs";
 import { SessionProviderSwitchCoordinator } from "../src/application/sessionProviderSwitchCoordinator.mjs";
 import { SessionApplicationService } from "../src/agent-provider/sessionApplicationService.mjs";
 import { SessionBindingRepository } from "../src/agent-provider/sessionBindingRepository.mjs";
@@ -839,6 +840,12 @@ test("Claude to Codex provider switch commits the exact thread proof and applied
     };
     let createdInput = null;
     let preparedInput = null;
+    const codexClient = new CodexAppServerClient();
+    codexClient.initialize = async () => {};
+    codexClient.request = async (method) => {
+      assert.equal(method, "thread/start");
+      return { thread: { id: "thread:codex-target", createdAt: "confirmed" } };
+    };
     const coordinator = new SessionProviderSwitchCoordinator({
       store,
       registry: codexRegistry("claude-sdk"),
@@ -852,6 +859,7 @@ test("Claude to Codex provider switch commits the exact thread proof and applied
       }),
       createTargetSession: async (input) => {
         createdInput = input;
+        await codexClient.startThread({ cwd: "/repo/main", dynamicTools: input.dynamicTools });
         return {
           providerThreadId: "thread:codex-target",
           providerSessionId: "thread:codex-target",
@@ -868,7 +876,7 @@ test("Claude to Codex provider switch commits the exact thread proof and applied
       confirmToolSchema: async (input) => {
         assert.equal(input.providerThreadId, "thread:codex-target");
         assert.deepEqual(input.dynamicTools, PROVIDER_SWITCH_TOOLS);
-        return exactToolProof(input.providerThreadId, input.dynamicTools);
+        return codexClient.confirmThreadToolPlan(input.providerThreadId, input.dynamicTools);
       },
       prepareToolMaterialization: async (input) => {
         preparedInput = input;

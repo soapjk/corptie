@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
-import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
+import { ClientSessionAPI, approvalRequestIsCurrent } from "../src/application/clientSessionAPI.mjs";
 
 const identity = { deviceId: "device:one", permissions: ["inventory.read", "messages.read", "messages.write", "sessions.stop"] };
 
@@ -33,6 +33,201 @@ test("device history preserves typed timeline presentation without leaking provi
     for (const key of ["rawMetadataJSON", "rawEventEnvelope", "providerCredentials"]) {
       assert.equal(Object.hasOwn(items[0], key), false);
     }
+  } finally { await f.close(); }
+});
+
+test("device receives the complete structured plan without private Provider metadata", async () => {
+  const f = await fixture();
+  try {
+    const plan = { schemaVersion: 1, planId: "plan:one", revision: 2, lifecycle: "active",
+      explanation: null, updatedAt: "2026-09-24T00:00:00Z",
+      steps: [{ stepId: "step:1", ordinal: 0, text: "Inspect", status: "completed" }] };
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 2, hasEarlier: false, items: [
+        { id: "plan:one", turnId: "turn:one", type: "executionPlan", text: "Plan 1/1",
+          executionPlan: { ...plan, secret: "private", steps: [{ ...plan.steps[0], secret: "private" }] },
+          rawMetadataJSON: "private" }
+      ] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(page.items[0].executionPlan, plan);
+    assert.equal(Object.hasOwn(page.items[0], "rawMetadataJSON"), false);
+  } finally { await f.close(); }
+});
+
+test("device approval uses a current item and one declared option, without exposing private fields", async () => {
+  const f = await fixture();
+  try {
+    const calls = [];
+    const item = { id: "choice:one", type: "choice", text: "Allow action?", status: "pending",
+      options: [{ id: "allow", label: "Allow Once", role: "approve", secret: "hidden" },
+        { id: "deny", label: "Deny", role: "deny" }] };
+    f.store.upsertTimelineItemProjection("session:test", item);
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      respondToApproval: async (...args) => {
+        const pendingDispatch = f.store.getSessionItem(args[0], args[1].itemId);
+        assert.equal(approvalRequestIsCurrent(pendingDispatch, null, args[1], args[2]), true);
+        calls.push(args);
+      },
+      readWindow: async () => ({ revision: 1, hasEarlier: false, items: [item] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(page.items[0].options, [
+      { id: "allow", label: "Allow Once", role: "approve", selected: false },
+      { id: "deny", label: "Deny", role: "deny", selected: false }
+    ]);
+    await assert.rejects(api.approval({ ...identity, permissions: ["messages.read"] }, "session:test",
+      { itemId: item.id, optionId: "allow" }), { code: "DEVICE_PERMISSION_REQUIRED" });
+    await assert.rejects(api.approval(identity, "session:test", { itemId: item.id, optionId: "other" }),
+      { code: "INVALID_APPROVAL_OPTION" });
+    const result = await api.approval(identity, "session:test", { itemId: item.id, optionId: "allow" });
+    assert.equal(result.status, "submitted");
+    assert.equal(f.store.getSessionItem("session:test", item.id).status, "submitted");
+    assert.deepEqual(calls[0][1], { itemId: item.id, choiceId: item.id, optionId: "allow", approved: true });
+    const afterRestart = new ClientSessionAPI({ store: f.store, ...callbacks,
+      respondToApproval: async (...args) => calls.push(args) });
+    assert.equal((await afterRestart.approval(identity, "session:test", { itemId: item.id, optionId: "allow" })).status, "submitted");
+    assert.equal(calls.length, 1);
+    await assert.rejects(afterRestart.approval(identity, "session:test", { itemId: item.id, optionId: "deny" }),
+      { code: "APPROVAL_NOT_PENDING" });
+    f.store.upsertTimelineItemProjection("session:test", { ...item, status: "selected" });
+    await assert.rejects(api.approval(identity, "session:test", { itemId: item.id, optionId: "deny" }),
+      { code: "APPROVAL_NOT_PENDING" });
+  } finally { await f.close(); }
+});
+
+test("unified approval guard allows only the exact mobile dispatching option", () => {
+  const item = { id: "approval:one", type: "approval", status: "dispatching", bindingId: "binding:new",
+    rawMetadataJSON: JSON.stringify({ approvalSubmission: { optionId: "allow" } }) };
+  const source = { type: "remote-client", deviceId: "device:one" };
+  assert.equal(approvalRequestIsCurrent(item, "binding:new", { optionId: "allow" }, source), true);
+  assert.equal(approvalRequestIsCurrent(item, "binding:new", { optionId: "deny" }, source), false);
+  assert.equal(approvalRequestIsCurrent(item, "binding:old", { optionId: "allow" }, source), false);
+  assert.equal(approvalRequestIsCurrent(item, "binding:new", { optionId: "allow" }, { type: "desktop" }), false);
+  assert.equal(approvalRequestIsCurrent({ ...item, status: "submitted" }, "binding:new", { optionId: "allow" }, source), false);
+  assert.equal(approvalRequestIsCurrent({ ...item, status: "pending" }, "binding:new", { optionId: "allow" }, { type: "desktop" }), true);
+});
+
+test("uncertain approval outcome remains non-replayable after service recreation", async () => {
+  const f = await fixture();
+  try {
+    const item = { id: "approval:unknown", type: "approval", text: "Proceed?", status: "pending",
+      options: [{ id: "yes", label: "Yes", role: "approve" }] };
+    f.store.upsertTimelineItemProjection("session:test", item);
+    let calls = 0;
+    const callback = async () => { calls++; throw new Error("transport outcome unknown"); };
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks, respondToApproval: callback });
+    await assert.rejects(api.approval(identity, "session:test", { itemId: item.id, optionId: "yes" }));
+    assert.equal(f.store.getSessionItem("session:test", item.id).status, "unknown");
+    const restarted = new ClientSessionAPI({ store: f.store, ...callbacks, respondToApproval: callback });
+    await assert.rejects(restarted.approval(identity, "session:test", { itemId: item.id, optionId: "yes" }),
+      { code: "APPROVAL_OUTCOME_UNCERTAIN" });
+    assert.equal(calls, 1);
+  } finally { await f.close(); }
+});
+
+test("device multi-question input submits once without storing secret answers", async () => {
+  const f = await fixture();
+  try {
+    const item = { id: "input:one", turnId: "turn:one", type: "userInput",
+      title: "Input required", text: "Choose route", status: "pending",
+      rawMetadataJSON: JSON.stringify({ userInput: {
+        schemaVersion: 1, isBlocking: true, questions: [
+          { id: "route", header: "Route", question: "Choose route", isOther: false,
+            isSecret: false, options: [{ label: "A", description: "Fast" }] },
+          { id: "token", header: "Token", question: "Enter token", isOther: false,
+            isSecret: true, options: null }
+        ]
+      } }) };
+    f.store.upsertTimelineItemProjection("session:test", item);
+    const calls = [];
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      respondToUserInput: async (...args) => {
+        assert.equal(f.store.getSessionItem(args[0], args[1].itemId).status, "dispatching");
+        calls.push(args);
+      },
+      readWindow: async () => ({ revision: 1, hasEarlier: false, items: [f.store.getSessionItem("session:test", item.id)] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.equal(page.items[0].userInput.questions[1].isSecret, true);
+    assert.equal(Object.hasOwn(page.items[0].userInput, "requestId"), false);
+    assert.equal(Object.hasOwn(page.items[0], "rawMetadataJSON"), false);
+    const answers = { route: ["A"], token: ["secret-value"] };
+    await assert.rejects(api.userInput(identity, "session:test", {
+      itemId: item.id, answers: { route: ["other"], token: ["secret-value"] }
+    }), { code: "INVALID_USER_INPUT_ANSWER" });
+    assert.equal(calls.length, 0);
+    const result = await api.userInput(identity, "session:test", { itemId: item.id, answers });
+    assert.equal(result.status, "submitted");
+    assert.deepEqual(calls[0][1], { itemId: item.id, answers });
+    assert.equal(JSON.stringify(f.store.getSessionItem("session:test", item.id)).includes("secret-value"), false);
+    assert.equal(JSON.stringify(result).includes("secret-value"), false);
+    const restarted = new ClientSessionAPI({ store: f.store, ...callbacks,
+      respondToUserInput: async () => assert.fail("submitted input must not replay") });
+    assert.equal((await restarted.userInput(identity, "session:test", { itemId: item.id, answers })).status, "submitted");
+  } finally { await f.close(); }
+});
+
+test("uncertain user-input transport result is never silently replayed", async () => {
+  const f = await fixture();
+  try {
+    const item = { id: "input:unknown", type: "userInput", text: "Answer", status: "pending",
+      rawMetadataJSON: JSON.stringify({ userInput: { schemaVersion: 1,
+        questions: [{ id: "answer", question: "Answer", options: null }] } }) };
+    f.store.upsertTimelineItemProjection("session:test", item);
+    let calls = 0;
+    const callback = async () => { calls++; throw new Error("transport outcome unknown"); };
+    const input = { itemId: item.id, answers: { answer: ["secret-value"] } };
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks, respondToUserInput: callback });
+    await assert.rejects(api.userInput(identity, "session:test", input));
+    assert.equal(f.store.getSessionItem("session:test", item.id).status, "unknown");
+    const restarted = new ClientSessionAPI({ store: f.store, ...callbacks, respondToUserInput: callback });
+    await assert.rejects(restarted.userInput(identity, "session:test", input),
+      { code: "USER_INPUT_OUTCOME_UNCERTAIN" });
+    assert.equal(calls, 1);
+    assert.equal(JSON.stringify(f.store.getSessionItem("session:test", item.id)).includes("secret-value"), false);
+  } finally { await f.close(); }
+});
+
+test("device receives only bounded common tool fields, not Provider metadata", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 3, hasEarlier: false, items: [
+        { id: "tool:one", type: "commandExecution", text: "$ pwd\n/tmp", toolExecution: {
+          schemaVersion: 1, toolId: "tool:one", name: "Bash", status: "completed",
+          input: "pwd", result: "/tmp", privateToken: "secret"
+        }, rawMetadataJSON: "private" },
+        { id: "tool:two", type: "mcpToolCall", text: "legacy", toolExecution: {
+          schemaVersion: 1, toolId: "tool:two", name: "MCP", status: "running",
+          input: { apiKey: "must-not-leak", query: "safe" }, result: null
+        } }
+      ] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(page.items[0].toolExecution, {
+      schemaVersion: 1, toolId: "tool:one", name: "Bash", status: "completed",
+      input: "pwd", result: "/tmp"
+    });
+    assert.equal(Object.hasOwn(page.items[0], "rawMetadataJSON"), false);
+    assert.match(page.items[1].toolExecution.input, /\[REDACTED\]/);
+    assert.doesNotMatch(page.items[1].toolExecution.input, /must-not-leak/);
+  } finally { await f.close(); }
+});
+
+test("device receives the same bounded file-change summary without Review or Undo actions", async () => {
+  const f = await fixture();
+  try {
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 4, hasEarlier: false, items: [
+        { id: "change:one", type: "fileChange", text: "edited", changeSet: {
+          schemaVersion: 1, truncated: false, changes: [
+            { path: "App.swift", kind: "modify", diffPreview: "+hello", diffTruncated: false,
+              privateToken: "secret" }
+          ], privateToken: "secret"
+        }, rawMetadataJSON: "private" }
+      ] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.deepEqual(page.items[0].changeSet, { schemaVersion: 1, truncated: false,
+      changes: [{ path: "App.swift", kind: "modify", diffPreview: "+hello", diffTruncated: false }] });
+    assert.equal(Object.hasOwn(page.items[0], "fileChanges"), false);
+    assert.equal(Object.hasOwn(page.items[0], "rawMetadataJSON"), false);
   } finally { await f.close(); }
 });
 

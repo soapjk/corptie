@@ -106,6 +106,7 @@ test("gateway is disabled by default and always disabled in preview", async () =
 
 test("real TLS route boundary and authenticated local approval", async () => {
   const f = await fixture();
+  const approvalCalls = [];
   const avatarPath = join(f.dir, "avatar.png");
   await writeFile(avatarPath, Buffer.from("89504e470d0a1a0a", "hex"));
   const gateway = new ClientDeviceGateway(f.authority, { readAPI: {
@@ -128,6 +129,12 @@ test("real TLS route boundary and authenticated local approval", async () => {
       return { schemaVersion: 1, sessionId, requestId: input.requestId, kind: "conversation_command", status: "completed" };
     },
     messages(identity, sessionId) { requireDevicePermission(identity, "messages.read"); return { schemaVersion: 1, sessionId, items: [] }; },
+    approval(identity, sessionId, input, revalidate) {
+      requireDevicePermission(identity, "messages.write");
+      assert.equal(revalidate().deviceId, identity.deviceId);
+      approvalCalls.push({ sessionId, input });
+      return { schemaVersion: 1, sessionId, itemId: input.itemId, status: "submitted" };
+    },
     command(identity, sessionId, kind, input) {
       requireDevicePermission(identity, kind === "send" ? "messages.write" : "sessions.stop");
       return { schemaVersion: 1, sessionId, kind, requestId: input.requestId, status: "dispatching" };
@@ -252,6 +259,14 @@ test("real TLS route boundary and authenticated local approval", async () => {
     assert.equal((await call("/client/v1/control/agents", { token: creds.accessToken })).status, 200);
     assert.equal((await call("/client/v1/capabilities", { token: creds.accessToken })).body.controlRead, true);
     assert.equal((await call(messagesPath, { token: creds.accessToken })).status, 200);
+    const approvalPath = "/client/v1/sessions/session%3Atest/approval";
+    const approvalInput = { itemId: "approval:one", optionId: "allow" };
+    assert.equal((await call(approvalPath, { method: "POST", value: approvalInput })).status, 401);
+    const approvalResult = await call(approvalPath, { method: "POST", token: creds.accessToken, value: approvalInput });
+    assert.equal(approvalResult.status, 202);
+    assert.equal(approvalResult.body.status, "submitted");
+    assert.deepEqual(approvalCalls, [{ sessionId: "session:test", input: approvalInput }]);
+    assert.equal((await call(approvalPath, { token: creds.accessToken })).status, 404);
     for (const kind of ["automations", "repositories", "agents", "skills"]) {
       assert.equal((await call(`/client/v1/control/${kind}?limit=1`, { token: creds.accessToken })).body.items[0].id, `${kind}:one`);
       assert.equal((await call(`/client/v1/control/${kind}`, { method: "POST", token: creds.accessToken, value: {} })).status, 404);

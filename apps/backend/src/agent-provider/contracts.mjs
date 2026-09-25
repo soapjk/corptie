@@ -15,6 +15,8 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   CONVERSATION_CLEAR: "conversation.clear",
   CONVERSATION_INTERRUPT: "conversation.interrupt",
   CONVERSATION_APPROVE: "conversation.approve",
+  CONVERSATION_USER_INPUT: "conversation.userInput",
+  EXECUTION_PLAN_EVENTS: "execution.plan.events",
   MODEL_LIST: "configuration.model.list",
   CONFIGURATION_VALIDATE: "configuration.validate",
   CONNECTION_TEST: "connection.test",
@@ -32,7 +34,8 @@ export const AGENT_PROVIDER_CAPABILITIES = Object.freeze({
   TURN_CHANGES_MANAGE: "turn.changes.manage"
 });
 
-// SESSION_FAILED_BINDING_RECOVERY、SKILL_LAZY_LOAD、SKILL_MCP_DEPENDENCIES 与 TURN_CHANGES_MANAGE
+// EXECUTION_PLAN_EVENTS is an output/projection capability, not a callable
+// Provider method. SESSION_FAILED_BINDING_RECOVERY、SKILL_LAZY_LOAD、SKILL_MCP_DEPENDENCIES 与 TURN_CHANGES_MANAGE
 // 是「会话编排/上下文组装」型能力，
 // 不映射到具体 Provider 方法，因此未出现在下方 METHOD_BY_CAPABILITY 映射中。
 // 懒加载 Skill 的「工具注入」由 TOOL_HOST_ATTACH（attachTools）独立负责，
@@ -53,6 +56,7 @@ export const AGENT_PROVIDER_METHOD_BY_CAPABILITY = Object.freeze({
   [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR]: "clearConversation",
   [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT]: "interrupt",
   [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE]: "respondToApproval",
+  [AGENT_PROVIDER_CAPABILITIES.CONVERSATION_USER_INPUT]: "respondToUserInput",
   [AGENT_PROVIDER_CAPABILITIES.MODEL_LIST]: "listModels",
   [AGENT_PROVIDER_CAPABILITIES.CONFIGURATION_VALIDATE]: "validateConfiguration",
   [AGENT_PROVIDER_CAPABILITIES.CONNECTION_TEST]: "testConnection",

@@ -1,11 +1,14 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { forkSession, query } from "@anthropic-ai/claude-agent-sdk";
 import { createdAtFromOrNow } from "../utils/timestamps.mjs";
-import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
+import { providerRawMetadataJSON, providerSafeToolText } from "../utils/providerRawMetadata.mjs";
+import { toolExecutionForItem, withToolExecutionMetadata } from "../utils/toolExecutionProjection.mjs";
+import { changeSetForClaudeTool, withChangeSetMetadata } from "../utils/changeSetProjection.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 import { providerMessageWithSessionContext } from "../utils/sessionContextMessage.mjs";
 import { recoverClaudeSessionIdentity } from "./claudeSessionIdentity.mjs";
+import { captureClaudePlanCalls, isClaudePlanTool, settledClaudePlanUpdates } from "./claudePlanTools.mjs";
 import {
   claudeConnectionTestOptions,
   claudeRuntimeEnvironment,
@@ -24,6 +27,7 @@ export class ClaudeAgentManager {
     this.resolveRuntimeOptions = options.resolveRuntimeOptions ?? null;
     this.queryFactory = options.query ?? query;
     this.environment = options.environment ?? (() => process.env);
+    this.structuredPlanEvents = options.structuredPlanEvents !== false;
   }
 
   start(input = {}) {
@@ -69,6 +73,7 @@ export class ClaudeAgentManager {
       queryClosed: false,
       interruptRequested: false,
       activeTaskIds: new Set(),
+      hiddenTaskIds: new Set(),
       deferredResult: null,
       lastResult: null,
       turnState: "idle",
@@ -995,7 +1000,30 @@ export class ClaudeAgentManager {
       return;
     }
 
+    if (message?.type === "user") {
+      this.settleToolResults(session, message);
+      if (this.structuredPlanEvents) {
+        for (const update of settledClaudePlanUpdates(message, session.pendingPlanCalls ?? new Map(), (call, reason) => {
+          this.appendPlanToolFallback(session, call, reason);
+        })) {
+          this.emitProviderEvent(session, {
+            type: "plan.updated",
+            providerEventId: `claude-plan:${message.uuid ?? update.sourceCallId}:${update.sourceCallId}`,
+            turnId: update.turnId,
+            plan: update.plan,
+            occurredAt: message.timestamp ?? session.updatedAt
+          });
+        }
+      }
+      return;
+    }
+
     if (message?.type === "assistant") {
+      if (this.structuredPlanEvents) {
+        session.pendingPlanCalls ??= new Map();
+        captureClaudePlanCalls(message, session.pendingPlanCalls, session.currentTurnId,
+          (call) => this.appendPlanToolFallback(session, call, "unavailable"));
+      }
       if (session.lastResult && session.turnState !== "running") {
         // A foreground result is not necessarily the end of the Query. Claude
         // can continue streaming assistant/tool events from a background Agent.
@@ -1004,7 +1032,7 @@ export class ClaudeAgentManager {
         session.status = "running";
         session.phase = "working";
       }
-      const items = claudeAssistantContentItems(message.message);
+      const items = claudeAssistantContentItems(message.message, this.structuredPlanEvents);
       if (items.length > 0) {
         session.lastOutputAt = session.updatedAt;
         const finalText = items.filter((item) => item.type === "agentMessage")
@@ -1019,7 +1047,12 @@ export class ClaudeAgentManager {
           }
         }
         for (const item of items.filter((item) => item.type !== "agentMessage")) {
-          this.appendItem(session, item);
+          const appended = this.appendItem(session, item);
+          if (item.toolUseId) {
+            session.pendingToolCalls ??= new Map();
+            if (session.pendingToolCalls.size >= 256) session.pendingToolCalls.delete(session.pendingToolCalls.keys().next().value);
+            session.pendingToolCalls.set(item.toolUseId, appended.id);
+          }
         }
         if (finalText && message.message?.stop_reason === "tool_use") {
           const lastText = session.items.findLast(item => item.turnId === session.currentTurnId && item.type === "agentMessage");
@@ -1106,15 +1139,11 @@ export class ClaudeAgentManager {
         session.status = "running";
         session.phase = "working";
       }
-      const text = taskMessageText(message);
-      if (text && message?.skip_transcript !== true) {
-        this.appendItem(session, {
-          type: "mcpToolCall",
-          title: message?.label || message?.subagent_type || "Claude task",
-          text,
-          status: terminal ? (message?.status === "failed" ? "failed" : "completed") : "running"
-        });
+      if (taskId && message?.skip_transcript === true) session.hiddenTaskIds.add(taskId);
+      if (taskId && !session.hiddenTaskIds.has(taskId)) {
+        this.upsertTaskProgressItem(session, message, taskId, terminal);
       }
+      if (terminal) session.hiddenTaskIds.delete(taskId);
       if (terminal && session.activeTaskIds.size === 0 && session.deferredResult) {
         this.settleClaudeResult(session, session.deferredResult);
       } else {
@@ -1136,6 +1165,11 @@ export class ClaudeAgentManager {
   }
 
   settleClaudeResult(session, result) {
+    for (const call of session.pendingPlanCalls?.values() ?? []) {
+      if (call.turnId === result.turnId) this.appendPlanToolFallback(session, call, "unavailable");
+    }
+    session.pendingPlanCalls?.clear();
+    session.pendingToolCalls?.clear();
     session.deferredResult = null;
     session.turnState = "idle";
     session.phase = result.succeeded ? "ready" : "failed";
@@ -1346,6 +1380,8 @@ export class ClaudeAgentManager {
       text: item.text,
       options: item.options ?? null,
       status: item.status ?? null,
+      toolUseId: item.toolUseId ?? null,
+      changeSet: item.changeSet ?? null,
       createdAt,
       presentationRole: item.presentationRole ?? null,
       presentationText: item.presentationText ?? null,
@@ -1355,6 +1391,15 @@ export class ClaudeAgentManager {
         { source: item.rawPayload ? "provider_event" : "normalized_item" }
       )
     };
+    if (appendedItem.toolUseId) {
+      appendedItem.rawMetadataJSON = withToolExecutionMetadata(
+        appendedItem.rawMetadataJSON,
+        toolExecutionForItem(appendedItem, { input: appendedItem.text })
+      );
+    }
+    appendedItem.rawMetadataJSON = withChangeSetMetadata(
+      appendedItem.rawMetadataJSON, appendedItem.changeSet
+    );
     session.items.push(appendedItem);
     session.nextItemSeq += 1;
     if (session.items.length > this.maxItems) {
@@ -1368,6 +1413,105 @@ export class ClaudeAgentManager {
       occurredAt: appendedItem.createdAt
     });
     return appendedItem;
+  }
+
+  appendPlanToolFallback(session, call, reason) {
+    const id = `${session.id}:plan-tool:${call.sourceCallId}`;
+    if (session.items.some((item) => item.id === id)) return;
+    this.appendItem(session, {
+      id,
+      turnId: call.turnId,
+      type: "mcpToolCall",
+      title: call.name,
+      text: reason === "failed" ? "Plan tool failed"
+        : reason === "completed" ? "Task updated without a checklist change" : "Plan tool result unavailable",
+      status: reason === "failed" ? "failed" : reason === "completed" ? "completed" : "unknown",
+      toolUseId: call.sourceCallId
+    });
+  }
+
+  upsertTaskProgressItem(session, message, taskId, terminal) {
+    const id = `${session.id}:background-task:${createHash("sha256").update(taskId).digest("hex").slice(0, 24)}`;
+    const index = session.items.findIndex((item) => item.id === id);
+    const previous = index >= 0 ? session.items[index] : null;
+    const text = taskMessageText(message).slice(0, 2_000) || previous?.text || "Background task";
+    const nativeStatus = message?.patch?.status ?? message?.status;
+    const status = terminal
+      ? (["failed"].includes(nativeStatus) ? "failed"
+        : ["killed", "stopped"].includes(nativeStatus) ? "cancelled" : "completed")
+      : "running";
+    // A late progress packet cannot reopen a task already settled by the SDK.
+    if (previous && ["completed", "failed", "cancelled"].includes(previous.status) && !terminal) return;
+    const title = previous?.title ?? String(message?.label || message?.subagent_type || "Claude task").slice(0, 160);
+    if (previous?.text === text && previous?.status === status) return;
+    let originalInput = message?.description ?? null;
+    try { originalInput = JSON.parse(previous?.rawMetadataJSON)?.toolExecution?.input ?? originalInput; }
+    catch { /* The first update can have no previous structured metadata. */ }
+    const rawMetadataJSON = withToolExecutionMetadata(
+      previous?.rawMetadataJSON ?? providerRawMetadataJSON("claude-sdk", { taskId }, { source: "normalized_item" }),
+      toolExecutionForItem({ id, type: "mcpToolCall", title, status }, {
+        input: originalInput,
+        result: terminal ? message?.summary ?? message?.patch?.error ?? text : null
+      })
+    );
+    if (!previous) {
+      this.appendItem(session, { id, type: "mcpToolCall", title, text, status, rawMetadataJSON });
+      return;
+    }
+    const updated = { ...previous, text, status, rawMetadataJSON };
+    session.items[index] = updated;
+    this.emitProviderEvent(session, {
+      type: terminal ? (status === "completed" ? "tool.completed" : "tool.failed") : "tool.progress",
+      providerEventId: message?.uuid ? `claude-task:${message.uuid}` : null,
+      turnId: updated.turnId,
+      itemId: updated.id,
+      item: updated,
+      occurredAt: session.updatedAt
+    });
+  }
+
+  settleToolResults(session, message) {
+    const blocks = Array.isArray(message?.message?.content) ? message.message.content : [];
+    for (const block of blocks) {
+      if (block?.type !== "tool_result" || typeof block.tool_use_id !== "string") continue;
+      const itemId = session.pendingToolCalls?.get(block.tool_use_id);
+      if (!itemId) continue;
+      session.pendingToolCalls.delete(block.tool_use_id);
+      const index = session.items.findIndex((item) => item.id === itemId);
+      if (index < 0) continue;
+      const previous = session.items[index];
+      const preview = claudeToolResultPreview(block.content);
+      const updated = {
+        ...previous,
+        status: block.is_error === true ? "failed" : "completed",
+        text: [previous.text, preview].filter(Boolean).join("\n\n"),
+        rawMetadataJSON: providerRawMetadataJSON("claude-sdk", {
+          toolUseId: block.tool_use_id,
+          inputPreview: previous.text,
+          resultPreview: preview,
+          isError: block.is_error === true
+        }, { source: "tool_result" })
+      };
+      updated.rawMetadataJSON = withToolExecutionMetadata(
+        updated.rawMetadataJSON,
+        toolExecutionForItem(updated, { input: previous.text, result: preview })
+      );
+      const sourcePath = previous.changeSet?.changes?.[0]?.path;
+      updated.changeSet = sourcePath && block.is_error !== true
+        ? changeSetForClaudeTool(previous.title, { file_path: sourcePath },
+          claudeStructuredToolResult(message, block, blocks.length))
+        : null;
+      updated.rawMetadataJSON = withChangeSetMetadata(updated.rawMetadataJSON, updated.changeSet);
+      session.items[index] = updated;
+      this.emitProviderEvent(session, {
+        type: block.is_error === true ? "tool.failed" : "tool.completed",
+        providerEventId: `claude-tool:${message.uuid ?? block.tool_use_id}:${block.tool_use_id}`,
+        turnId: updated.turnId,
+        itemId: updated.id,
+        item: updated,
+        occurredAt: message.timestamp ?? session.updatedAt
+      });
+    }
   }
 
   markPendingChoiceItemsSelected(session, optionId, choiceId = null) {
@@ -1512,7 +1656,7 @@ function claudeImageMediaType(value) {
   throw error;
 }
 
-function claudeAssistantContentItems(message) {
+function claudeAssistantContentItems(message, structuredPlanEvents = true) {
   const blocks = Array.isArray(message?.content) ? message.content : [];
   const items = [];
   for (const block of blocks) {
@@ -1535,11 +1679,17 @@ function claudeAssistantContentItems(message) {
     }
     if (block?.type === "tool_use") {
       const toolName = String(block.name ?? "Claude tool").trim() || "Claude tool";
+      // Only a call captured for result correlation can be replaced by the
+      // structured checklist. Malformed calls must remain visible as tools.
+      if (structuredPlanEvents && isClaudePlanTool(toolName) && typeof block.id === "string" && block.id
+        && block.input != null && typeof block.input === "object" && !Array.isArray(block.input)) continue;
       items.push({
         type: claudeToolItemType(toolName),
         title: toolName,
         text: claudeToolInputText(toolName, block.input),
-        status: "running"
+        status: "running",
+        toolUseId: typeof block.id === "string" ? block.id : null,
+        changeSet: changeSetForClaudeTool(toolName, block.input)
       });
     }
   }
@@ -1562,13 +1712,38 @@ function claudeToolItemType(toolName) {
 
 function claudeToolInputText(toolName, input) {
   const normalized = toolName.toLowerCase();
-  if (normalized === "bash" && typeof input?.command === "string") return input.command.trim();
-  if (normalized.includes("websearch") && typeof input?.query === "string") return input.query.trim();
-  if (normalized.includes("webfetch") && typeof input?.url === "string") return input.url.trim();
-  if (typeof input?.file_path === "string") return input.file_path.trim();
+  if (normalized === "bash" && typeof input?.command === "string") return providerSafeToolText(input.command.trim());
+  if (normalized.includes("websearch") && typeof input?.query === "string") return providerSafeToolText(input.query.trim());
+  if (normalized.includes("webfetch") && typeof input?.url === "string") return providerSafeToolText(input.url.trim());
+  if (typeof input?.file_path === "string") return providerSafeToolText(input.file_path.trim());
   if (!input || typeof input !== "object") return "";
-  const serialized = JSON.stringify(input, null, 2);
+  const serialized = providerSafeToolText(input, { pretty: true });
   return serialized.length > 800 ? `${serialized.slice(0, 797)}...` : serialized;
+}
+
+function claudeToolResultPreview(content) {
+  const text = typeof content === "string"
+    ? content
+    : Array.isArray(content)
+      ? content.filter((part) => part?.type === "text" && typeof part.text === "string")
+        .map((part) => part.text).join("\n")
+      : "";
+  const safe = providerSafeToolText(text.trim());
+  return safe.length > 800 ? `${safe.slice(0, 797)}...` : safe;
+}
+
+function claudeStructuredToolResult(message, block, resultCount) {
+  if (resultCount === 1 && message.tool_use_result
+    && typeof message.tool_use_result === "object" && !Array.isArray(message.tool_use_result)) {
+    return message.tool_use_result;
+  }
+  const text = typeof block.content === "string" ? block.content
+    : Array.isArray(block.content) ? block.content.find((part) => part?.type === "text")?.text : null;
+  if (typeof text !== "string" || text.length > 100_000) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
 }
 
 function finalizeClaudeTurnItems(session, turnId, turnStatus) {
@@ -1821,7 +1996,9 @@ function taskMessageText(message) {
   const segments = [
     message?.label,
     message?.status,
+    message?.patch?.status,
     message?.description,
+    message?.patch?.description,
     message?.summary,
     message?.patch?.error,
     message?.message,

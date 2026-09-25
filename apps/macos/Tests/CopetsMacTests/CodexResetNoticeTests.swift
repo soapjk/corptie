@@ -32,6 +32,12 @@ struct CodexResetNoticeTests {
         #expect(contents.contains(".popover(isPresented: $isResetNoticePresented"))
         #expect(!contents.contains("scheduleResetNoticeIfNeeded"))
         #expect(!contents.contains("automaticPresentationDelay"))
+        let popover = try #require(contents.components(separatedBy: "private func resetNoticePopover(").dropFirst().first?
+            .components(separatedBy: "private func formattedResetDate(").first)
+        #expect(!popover.contains("Tibo forecast"))
+        #expect(!popover.contains("openResetForecast"))
+        #expect(!popover.contains(".frame(width:"))
+        #expect(popover.contains(".fixedSize(horizontal: true, vertical: true)"))
     }
 
     @Test

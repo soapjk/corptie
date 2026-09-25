@@ -1889,6 +1889,24 @@ final class BackendClient: ObservableObject {
         respondToCodexApproval(option: fallback)
     }
 
+    func respondToUserInput(sessionID: String, itemID: String,
+                            answers: [String: [String]]) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "sessions/\(sessionID)/actions/user-input"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "itemId": itemID, "answers": answers
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            throw BackendError.message(Self.errorMessage(from: data) ?? "Unable to submit answers.")
+        }
+        if let session = sessions.first(where: { $0.id == sessionID }) {
+            _ = await fetchDetail(for: session, reportsErrors: false)
+        }
+    }
+
     func respondToPtyChoice(option: CodexApprovalOption, choiceId: String? = nil, in targetSession: TaskSession? = nil) {
         guard let session = targetSession ?? selectedSession else {
             sendStatusMessage = L10n("No terminal choice is active.")

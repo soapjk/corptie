@@ -116,6 +116,115 @@ enum NativeTextKitLayout {
     }
 }
 
+/// Reuses TextKit's paragraph layout when a plan revision changes only a few
+/// checklist lines. The resulting height still comes from the same layout
+/// manager as the cold path; no estimated geometry reaches NSTableView.
+@MainActor
+final class NativeIncrementalPlanLayoutCache {
+    private struct Key: Hashable {
+        let rowID: String
+        let widthBucket: Int
+    }
+
+    private final class Entry {
+        var attributedText: NSAttributedString
+        let storage: NSTextStorage
+        let manager: NSLayoutManager
+        let container: NSTextContainer
+        var access: UInt64
+        var estimatedBytes: Int
+
+        init(attributedText: NSAttributedString, width: CGFloat, access: UInt64) {
+            self.attributedText = attributedText
+            storage = NSTextStorage(attributedString: attributedText)
+            manager = NSLayoutManager()
+            container = NSTextContainer(containerSize: NSSize(
+                width: width, height: CGFloat.greatestFiniteMagnitude
+            ))
+            container.lineFragmentPadding = 0
+            container.lineBreakMode = .byCharWrapping
+            container.widthTracksTextView = false
+            container.heightTracksTextView = false
+            manager.addTextContainer(container)
+            storage.addLayoutManager(manager)
+            self.access = access
+            estimatedBytes = attributedText.length * 32 + 512
+        }
+    }
+
+    static let shared = NativeIncrementalPlanLayoutCache()
+    private var entries: [Key: Entry] = [:]
+    private var sequence: UInt64 = 0
+    private var estimatedBytes = 0
+    private let byteLimit = 8 * 1_024 * 1_024
+
+    func height(of attributedText: NSAttributedString, rowID: String, width: CGFloat) -> CGFloat {
+        let key = Key(rowID: rowID, widthBucket: Int((width * 2).rounded()))
+        sequence &+= 1
+        let entry: Entry
+        if let existing = entries[key] {
+            entry = existing
+            if !entry.attributedText.isEqual(to: attributedText) {
+                replaceChangedLines(in: entry, with: attributedText)
+                estimatedBytes -= entry.estimatedBytes
+                entry.attributedText = attributedText
+                entry.estimatedBytes = attributedText.length * 32 + 512
+                estimatedBytes += entry.estimatedBytes
+            }
+            entry.access = sequence
+        } else {
+            entry = Entry(attributedText: attributedText, width: width, access: sequence)
+            entries[key] = entry
+            estimatedBytes += entry.estimatedBytes
+        }
+        entry.manager.ensureLayout(for: entry.container)
+        let height = ceil(entry.manager.usedRect(for: entry.container).height)
+        while estimatedBytes > byteLimit || entries.count > 128,
+              let oldest = entries.min(by: { $0.value.access < $1.value.access })?.key {
+            if let removed = entries.removeValue(forKey: oldest) {
+                estimatedBytes -= removed.estimatedBytes
+            }
+        }
+        return height
+    }
+
+    private func replaceChangedLines(in entry: Entry, with next: NSAttributedString) {
+        let oldRanges = Self.lineRanges(in: entry.attributedText.string as NSString)
+        let newRanges = Self.lineRanges(in: next.string as NSString)
+        guard oldRanges.count == newRanges.count else {
+            entry.storage.setAttributedString(next)
+            return
+        }
+        let changed = oldRanges.indices.filter { index in
+            !entry.attributedText.attributedSubstring(from: oldRanges[index])
+                .isEqual(to: next.attributedSubstring(from: newRanges[index]))
+        }
+        guard changed.count <= 16 else {
+            entry.storage.setAttributedString(next)
+            return
+        }
+        entry.storage.beginEditing()
+        for index in changed.reversed() {
+            entry.storage.replaceCharacters(
+                in: oldRanges[index],
+                with: next.attributedSubstring(from: newRanges[index])
+            )
+        }
+        entry.storage.endEditing()
+    }
+
+    private static func lineRanges(in string: NSString) -> [NSRange] {
+        var ranges: [NSRange] = []
+        var offset = 0
+        while offset < string.length {
+            let range = string.lineRange(for: NSRange(location: offset, length: 0))
+            ranges.append(range)
+            offset = NSMaxRange(range)
+        }
+        return ranges
+    }
+}
+
 /// Final native row geometry, shared by all retained Session hosts. The cache
 /// key includes every input that can affect wrapping, so a row is never shown
 /// with an estimated height and corrected after the first paint.
@@ -162,6 +271,19 @@ final class NativeTimelineLayoutCache {
         var estimatedTextLength: Int {
             text.utf16.count + rawStatusText.utf16.count + processSteps.reduce(into: 0) { total, step in
                 total += step.title.utf16.count + (step.detail?.utf16.count ?? 0) + 32
+                if let plan = step.plan {
+                    total += plan.explanation?.utf16.count ?? 0
+                    for planStep in plan.steps { total += planStep.text.utf16.count + planStep.stepId.utf16.count }
+                }
+                if let tool = step.tool {
+                    total += tool.name.utf16.count + (tool.input?.utf16.count ?? 0)
+                        + (tool.result?.utf16.count ?? 0)
+                }
+                if let changeSet = step.changeSet {
+                    for change in changeSet.changes {
+                        total += change.path.utf16.count + (change.diffPreview?.utf16.count ?? 0)
+                    }
+                }
             }
         }
     }
@@ -204,12 +326,18 @@ final class NativeTimelineLayoutCache {
             ? NativeExecutionTimelineAttributedText.make(steps: row.processSteps)
             : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
         let cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: normalizedWidth)
-        let textHeight = row.nativeStyle == .process && !row.isExpanded
-            ? 0
-            : NativeTextKitLayout.height(
-                of: attributed,
-                width: max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
+        let textWidth = max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
+        let textHeight: CGFloat
+        if row.nativeStyle == .process && !row.isExpanded {
+            textHeight = 0
+        } else if row.nativeStyle == .process,
+                  row.processSteps.contains(where: { $0.plan != nil }) {
+            textHeight = NativeIncrementalPlanLayoutCache.shared.height(
+                of: attributed, rowID: row.id, width: textWidth
             )
+        } else {
+            textHeight = NativeTextKitLayout.height(of: attributed, width: textWidth)
+        }
         let rawStatusHeight: CGFloat
         if row.nativeStyle == .process,
            row.isExpanded,
@@ -292,6 +420,7 @@ struct AppKitChatTimelineRow: Identifiable {
         enum Kind {
             case codexApproval(CodexApprovalOption)
             case ptyChoice(CodexApprovalOption, choiceID: String)
+            case userInput(itemID: String)
             case sendMessage(String)
             case collaborationConfirmation(id: String, approve: Bool)
             case reviewChanges(turnID: String)

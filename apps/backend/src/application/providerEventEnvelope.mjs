@@ -1,3 +1,7 @@
+import { toolExecutionForItem, withToolExecutionMetadata } from "../utils/toolExecutionProjection.mjs";
+import { changeSetForCodexItem, withChangeSetMetadata } from "../utils/changeSetProjection.mjs";
+import { providerSafeToolText } from "../utils/providerRawMetadata.mjs";
+
 const TOOL_ITEM_TYPES = new Set([
   "commandExecution",
   "dynamicToolCall",
@@ -7,25 +11,39 @@ const TOOL_ITEM_TYPES = new Set([
   "workspaceWrite"
 ]);
 
-export function mapCodexProviderNotification({ message, binding, liveItems = [], receivedAt }) {
+export function mapCodexProviderNotification({ message, binding, liveItems = [], receivedAt,
+  structuredPlanEvents = true }) {
   const method = message?.method;
   const params = message?.params ?? {};
   const turn = params.turn ?? null;
-  const turnId = turn?.id ?? params.turnId ?? params.item?.turnId ?? null;
   const approvalItem = method === "corptie/codexApprovalRequested"
-    ? [...liveItems].reverse().find((candidate) => candidate?.type === "approval") ?? null
+    ? (params.item?.type === "approval"
+      && params.item.id === `${params.threadId}:app-server-approval:${params.requestId}`
+      ? params.item : null) ?? liveItems.find((candidate) => candidate?.type === "approval"
+      && candidate.id === `${params.threadId}:app-server-approval:${params.requestId}`) ?? null
     : null;
-  const itemId = params.item?.id ?? approvalItem?.id ?? null;
+  const isUserInputNotification = [
+    "corptie/codexUserInputRequested",
+    "corptie/codexUserInputSubmitted",
+    "corptie/codexUserInputResolved"
+  ].includes(method);
+  const userInputItem = isUserInputNotification
+    && params.item?.type === "userInput"
+    && params.item.id === `${params.threadId}:app-server-user-input:${params.requestId}`
+    ? params.item : null;
+  if (isUserInputNotification && !userInputItem) return null;
+  const turnId = turn?.id ?? params.turnId ?? params.item?.turnId ?? approvalItem?.turnId ?? null;
+  const itemId = userInputItem?.id ?? params.item?.id ?? approvalItem?.id ?? null;
   // The notification can be delivered before the Adapter's live-item cache is
   // updated. Prefer the normalized cache, but never discard the full native
   // item carried by item/started or item/completed; otherwise the final answer
   // event is committed without a Timeline item and the UI can only show the
   // execution card.
-  const item = normalizeTimelineItem(
-    approvalItem ?? (itemId
+  const item = codexToolFallback(normalizeTimelineItem(
+    userInputItem ?? approvalItem ?? (itemId
       ? liveItems.find((candidate) => candidate?.id === itemId) ?? params.item ?? null
       : params.item ?? null)
-  );
+  ), method);
   const type = codexEventType(method, params.item, turn);
   if (!type) return null;
   return providerEnvelope(binding, {
@@ -45,10 +63,36 @@ export function mapCodexProviderNotification({ message, binding, liveItems = [],
       error: params.error ?? turn?.error,
       failureScope: type === "provider.error" ? providerFailureScope(turnId) : undefined,
       willRetry: params.willRetry,
-      tokenUsage: params.tokenUsage ?? params.usage
+      tokenUsage: params.tokenUsage ?? params.usage,
+      plan: type === "plan.updated" ? (structuredPlanEvents ? normalizedPlanSnapshot(params) : null) : undefined
     }),
     rawPayload: params
   });
+}
+
+function codexToolFallback(item, method) {
+  if (!TOOL_ITEM_TYPES.has(item?.type)) return item;
+  const normalized = {
+    ...item,
+    status: item.status ?? (method === "item/completed" ? "completed" : "inProgress")
+  };
+  try {
+    if (JSON.parse(normalized.rawMetadataJSON)?.toolExecution?.schemaVersion === 1) return normalized;
+  } catch { /* Native event has no normalized metadata yet. */ }
+  const input = normalized.type === "commandExecution" ? normalized.command
+    : normalized.type === "webSearch" ? normalized.query
+      : normalized.arguments ?? normalized.text ?? null;
+  const toolExecution = toolExecutionForItem(normalized, {
+    input, result: normalized.aggregatedOutput ?? normalized.result ?? normalized.output ?? normalized.error ?? null
+  });
+  const result = toolExecution ? {
+    ...normalized,
+    rawMetadataJSON: withToolExecutionMetadata(normalized.rawMetadataJSON, toolExecution)
+  } : normalized;
+  return result.type === "fileChange" ? {
+    ...result,
+    rawMetadataJSON: withChangeSetMetadata(result.rawMetadataJSON, changeSetForCodexItem(result))
+  } : result;
 }
 
 export function mapClaudeTurnSettled({ event, binding, receivedAt }) {
@@ -95,7 +139,8 @@ export function mapClaudeProviderEvent({ event, binding, receivedAt }) {
       error: event.error ?? null,
       failureScope: event.type === "provider.error" ? providerFailureScope(turnId) : undefined,
       willRetry: event.willRetry,
-      connectionStatus: event.connectionStatus
+      connectionStatus: event.connectionStatus,
+      plan: event.type === "plan.updated" ? event.plan : undefined
     }),
     rawPayload: event
   });
@@ -165,6 +210,7 @@ function providerEnvelope(binding, event) {
 }
 
 function codexEventType(method, item, turn) {
+  if (method === "turn/plan/updated") return "plan.updated";
   if (method === "turn/started") return "turn.started";
   if (method === "turn/completed") {
     if (turn?.status === "interrupted" || turn?.status === "cancelled") return "turn.cancelled";
@@ -174,6 +220,9 @@ function codexEventType(method, item, turn) {
   if (method === "error") return "provider.error";
   if (method === "thread/tokenUsage/updated") return "usage.updated";
   if (method === "corptie/codexApprovalRequested") return "approval.requested";
+  if (method === "corptie/codexUserInputRequested") return "interaction.requested";
+  if (method === "corptie/codexUserInputSubmitted") return "interaction.submitted";
+  if (method === "corptie/codexUserInputResolved") return "interaction.resolved";
   if (method !== "item/started" && method !== "item/completed") return null;
   if (item?.type === "agentMessage") {
     return method === "item/completed" ? "assistant.message.completed" : "assistant.message.started";
@@ -186,6 +235,23 @@ function codexEventType(method, item, turn) {
     return method === "item/completed" ? "tool.completed" : "tool.started";
   }
   return method === "item/completed" ? "tool.completed" : "tool.started";
+}
+
+function normalizedPlanSnapshot(params) {
+  if (!Array.isArray(params.plan) || params.plan.length > 200) return null;
+  if (params.explanation != null && typeof params.explanation !== "string") return null;
+  const steps = [];
+  for (const entry of params.plan) {
+    if (typeof entry?.step !== "string") return null;
+    const text = optionalText(entry?.step);
+    if (!text || text.length > 2_000 || !["pending", "inProgress", "completed"].includes(entry?.status)) return null;
+    steps.push({ text, status: entry.status });
+  }
+  return {
+    operation: "replace",
+    explanation: optionalText(params.explanation)?.slice(0, 2_000) ?? null,
+    steps
+  };
 }
 
 function openClackyEventType(type) {
@@ -221,6 +287,10 @@ function openClackyProjectedItem(event) {
     type: type === "user_message" ? "userMessage" : (type === "request_feedback" ? "approval" : "agentMessage"),
     title: type === "user_message" ? "You" : "OpenClacky",
     text,
+    options: type === "request_feedback" ? [
+      { id: "yes", label: "允许", role: "approve", index: 0, selected: false },
+      { id: "no", label: "拒绝", role: "deny", index: 1, selected: false }
+    ] : undefined,
     presentationRole: type === "assistant_message" ? "final_answer" : null,
     status: type === "request_feedback" ? "pending" : "completed",
     createdAt: optionalText(event.created_at)
@@ -241,8 +311,12 @@ function projectedDetailItem(detail, event) {
 function normalizeTimelineItem(item) {
   if (!item || typeof item !== "object" || Array.isArray(item)) return item ?? null;
   const role = normalizedPresentationRole(item.presentationRole ?? item.phase);
+  const tool = TOOL_ITEM_TYPES.has(item.type);
   return {
     ...item,
+    ...(tool && typeof item.text === "string" ? { text: providerSafeToolText(item.text) } : {}),
+    ...(tool && typeof item.presentationText === "string"
+      ? { presentationText: providerSafeToolText(item.presentationText) } : {}),
     ...(role ? { presentationRole: role } : {})
   };
 }
