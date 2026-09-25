@@ -90,8 +90,7 @@ struct PadComposer: View {
                     } label: {
                         ComposerActionGlyph(systemName: "paperplane.fill", tint: ComposerPalette.softBlue,
                                             isBusy: isSubmitting, showsSurface: false)
-                            .padGlassSurface(in: Circle(), interactive: true,
-                                             fallbackUsesMaterial: false)
+                            .conversationGlassControl(tint: ComposerPalette.softBlue)
                             .contentShape(Circle().inset(by: -8))
                     }
                     .buttonStyle(.plain)
@@ -121,10 +120,10 @@ struct PadComposer: View {
                     } label: {
                         ComposerActionGlyph(systemName: "ellipsis", tint: ComposerPalette.secondaryText,
                                             weight: .semibold, showsSurface: false)
-                            .padGlassSurface(in: Circle(), interactive: true,
-                                             fallbackUsesMaterial: false)
+                            .conversationGlassControl()
                             .contentShape(Circle().inset(by: -8))
                     }
+                    .buttonStyle(.plain)
                     .menuIndicator(.hidden)
                     .frame(width: ComposerShellMetrics.actionHitEdge, height: ComposerShellMetrics.actionHitEdge)
                     .fixedSize()
