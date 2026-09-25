@@ -765,7 +765,10 @@ enum ChatBubbleWidthPolicy {
         }
         let fullAvailableWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
         if row.nativeStyle == .process {
-            guard !row.isExpanded else { return fullAvailableWidth }
+            guard !row.isExpanded else {
+                return MessageBubbleWidthPolicy.processCardWidth(
+                    summaryWidth: 0, expanded: true, laneWidth: availableWidth)
+            }
             let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 10.5, weight: .medium)
             ]).width)

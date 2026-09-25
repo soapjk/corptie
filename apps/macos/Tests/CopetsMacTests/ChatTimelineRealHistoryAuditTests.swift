@@ -9,6 +9,15 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
         let sessions: [TaskSession]
     }
 
+    func testFailedCompletionDiagnosticRemainsVisible() throws {
+        let failed = try JSONDecoder().decode(CodexThreadItem.self, from: Data(
+            #"{"id":"failed","turnId":"turn","turnStatus":"failed","type":"taskComplete","title":"Turn failed","text":"Selected model is at capacity","status":"failed"}"#.utf8))
+        let emptySuccess = try JSONDecoder().decode(CodexThreadItem.self, from: Data(
+            #"{"id":"done","turnId":"turn","turnStatus":"completed","type":"taskComplete","title":"Turn completed","text":"","status":"completed"}"#.utf8))
+        XCTAssertFalse(isLowSignalDetailProcessItem(failed))
+        XCTAssertTrue(isLowSignalDetailProcessItem(emptySuccess))
+    }
+
     func testLargestProductionHistoriesProjectWithoutLossOrInvalidNativeRows() async throws {
         guard ProcessInfo.processInfo.environment["CORPTIE_RUN_REAL_HISTORY_AUDIT"] == "1" else {
             throw XCTSkip("Set CORPTIE_RUN_REAL_HISTORY_AUDIT=1 to audit the local Production history read-only.")
@@ -36,11 +45,7 @@ final class ChatTimelineRealHistoryAuditTests: XCTestCase {
             }
             auditedProviderCount += 1
 
-            let sourceItems = largest.1.items.filter { item in
-                !(item.type == "taskComplete"
-                    || item.title.localizedCaseInsensitiveContains("turn completed")
-                    || (item.type == "agentMessage" && item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
-            }
+            let sourceItems = largest.1.items.filter { !isLowSignalDetailProcessItem($0) }
             let entries = makeChatDisplayEntries(from: sourceItems)
             let visibleEntries = visibleDetailEntries(from: entries, limit: 500)
             XCTAssertFalse(entries.isEmpty, "\(provider) \(largest.0.title)")

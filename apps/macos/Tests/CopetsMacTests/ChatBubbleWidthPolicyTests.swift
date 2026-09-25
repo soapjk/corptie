@@ -58,6 +58,14 @@ final class ChatBubbleWidthPolicyTests: XCTestCase {
         XCTAssertEqual(width, 312)
     }
 
+    func testExpandedProcessCardDoesNotFillWideTimeline() {
+        XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
+            summaryWidth: 80, expanded: true, laneWidth: 900),
+            ChatBubbleWidthPolicy.maximumWidth)
+        XCTAssertEqual(MessageBubbleWidthPolicy.processCardWidth(
+            summaryWidth: 80, expanded: true, laneWidth: 320), 316)
+    }
+
     /// The AppKit wrapper only measures; the clamp the iPad applies is the shared one.
     func testSharedPolicyMatchesDesktopClampAndAttachmentFloor() {
         XCTAssertEqual(ChatBubbleWidthPolicy.maximumWidth, MessageBubbleWidthPolicy.maximumWidth)

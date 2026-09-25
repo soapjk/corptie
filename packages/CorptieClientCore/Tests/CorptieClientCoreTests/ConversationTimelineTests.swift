@@ -44,4 +44,28 @@ struct ConversationTimelineTests {
         let undated = try message("unknown", "mcpToolCall")
         #expect(ConversationTimeline.orderedItems([late, undated, early]).map(\.id) == ["late", "unknown", "early"])
     }
+
+    @Test func providerExecutionEventsDoNotBecomeStandaloneChatBubbles() throws {
+        let executionTypes = ["sleep", "imageView", "collabAgentToolCall", "collabToolCall",
+                              "functionCallOutput", "enteredReviewMode", "exitedReviewMode"]
+        let items = try [message("user", "userMessage")]
+            + executionTypes.enumerated().map { index, type in try message("step:\(index)", type) }
+            + [message("answer", "agentMessage", role: "final_answer", status: "completed")]
+        let entries = ConversationTimeline.makeEntries(from: items)
+        #expect(entries.map(\.id) == ["message:user", "process:turn", "message:answer"])
+        guard case let .process(_, process) = entries[1].kind else {
+            Issue.record("Missing process group"); return
+        }
+        #expect(process.map(\.type) == executionTypes)
+    }
+
+    @Test func interactionsErrorsAndUnknownEventsRemainVisible() throws {
+        let standaloneTypes = ["approval", "choice", "userInput", "error", "system",
+                               "automationEvent", "systemEvent", "imageGeneration", "futureProviderEvent"]
+        let items = try standaloneTypes.enumerated().map { index, type in
+            try message("event:\(index)", type)
+        }
+        let entries = ConversationTimeline.makeEntries(from: items)
+        #expect(entries.map(\.id) == items.map { "message:\($0.id)" })
+    }
 }
