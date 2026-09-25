@@ -45,8 +45,14 @@ struct PadMessageText: UIViewRepresentable {
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
-        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
-        let size = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        return CGSize(width: width, height: ceil(size.height))
+        let maxAllowedWidth = MessageBubbleWidthPolicy.maximumWidth - MessageBubbleWidthPolicy.horizontalPadding
+        let targetWidth: CGFloat
+        if let width = proposal.width, width.isFinite, width > 0 {
+            targetWidth = min(width, maxAllowedWidth)
+        } else {
+            targetWidth = maxAllowedWidth
+        }
+        let size = uiView.sizeThatFits(CGSize(width: targetWidth, height: .greatestFiniteMagnitude))
+        return CGSize(width: min(targetWidth, ceil(size.width)), height: ceil(size.height))
     }
 }

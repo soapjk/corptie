@@ -107,15 +107,20 @@ test("tasks expose pending scheduled wake and deletion presentation flags withou
       { id: "task:wake", title: "A", work_id: "w", lifecycle_state: "active", execution_status: "idle", current_session_id: null, updated_at: "1" },
       { id: "task:deleting", title: "B", work_id: "w", lifecycle_state: "active", execution_status: "idle", current_session_id: null, deletion_status: "deleting", updated_at: "1" },
       { id: "task:failed", title: "C", work_id: "w", lifecycle_state: "active", execution_status: "idle", current_session_id: null, deletion_status: "delete_failed", updated_at: "1" },
-      { id: "task:plain", title: "D", work_id: "w", lifecycle_state: "active", execution_status: "idle", current_session_id: null, deletion_status: "bogus", updated_at: "1" }
+      { id: "task:plain", title: "D", work_id: "w", lifecycle_state: "active", execution_status: "idle", current_session_id: null, deletion_status: "bogus", updated_at: "1" },
+      { id: "task:running", title: "E", work_id: "w", lifecycle_state: "active", execution_status: "idle", current_session_id: "session:active", updated_at: "1" }
     ], hasMore: false }),
     listTaskIdsWithPendingScheduledWake: () => { wakeCalls += 1; return ["task:wake"]; },
-    getSession: () => null
+    getSession: id => id === "session:active" ? { id, executionStatus: "running", archived: false } : null
   });
   const items = api.list("tasks", new URLSearchParams()).items;
   assert.equal(wakeCalls, 1);
-  assert.deepEqual(items.map(item => [item.id, item.hasPendingScheduledWake, item.deletionStatus]), [
-    ["task:wake", true, null], ["task:deleting", false, "deleting"], ["task:failed", false, "delete_failed"], ["task:plain", false, null]
+  assert.deepEqual(items.map(item => [item.id, item.hasPendingScheduledWake, item.deletionStatus, item.executionStatus]), [
+    ["task:wake", true, null, "idle"],
+    ["task:deleting", false, "deleting", "idle"],
+    ["task:failed", false, "delete_failed", "idle"],
+    ["task:plain", false, null, "idle"],
+    ["task:running", false, null, "running"]
   ]);
 });
 
