@@ -87,7 +87,7 @@ export class ClientDeviceGateway {
       const workAvatar = /^\/client\/v1\/works\/([^/]+)\/avatar$/.exec(path);
       const control = /^\/client\/v1\/control\/(automations|agents|skills|repositories)$/.exec(path);
       const repository = /^\/client\/v1\/control\/repositories\/([^/]+)$/.exec(path);
-      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage)$/.exec(path);
+      const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
       if (url.search && !inventory && !control && !(["messages", "tasks", "images"].includes(conversation?.[2]) && request.method === "GET")) throw deviceError("REQUEST_NOT_ALLOWED", 403);
       if (request.method === "POST" && path === "/client/v1/pairing/claim") {
@@ -176,6 +176,20 @@ export class ClientDeviceGateway {
           const input = await body(request, 70 * 1024);
           const current = this.authority.authenticate(bearer(request));
           return reply(response, 202, await this.sessionAPI.conversationCommand(current, sessionId, input,
+            () => this.authority.authenticate(bearer(request))));
+        }
+        if (conversation[2] === "approval" && request.method === "POST") {
+          requireDevicePermission(identity, "messages.write");
+          const input = await body(request, 4096);
+          return reply(response, 202, await this.sessionAPI.approval(
+            this.authority.authenticate(bearer(request)), sessionId, input,
+            () => this.authority.authenticate(bearer(request))));
+        }
+        if (conversation[2] === "user-input" && request.method === "POST") {
+          requireDevicePermission(identity, "messages.write");
+          const input = await body(request, 64 * 1024);
+          return reply(response, 202, await this.sessionAPI.userInput(
+            this.authority.authenticate(bearer(request)), sessionId, input,
             () => this.authority.authenticate(bearer(request))));
         }
         if (conversation[2] === "composer" && ["GET", "POST"].includes(request.method)) {

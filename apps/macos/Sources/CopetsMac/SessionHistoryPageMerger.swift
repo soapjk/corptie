@@ -11,17 +11,13 @@ enum SessionHistoryPageMerger {
     ) -> [CodexThreadItem]? {
         guard currentItems.first?.id == requestedBeforeID else { return nil }
 
-        var seen = Set<String>()
-        seen.reserveCapacity(pageItems.count + currentItems.count)
+        var positions: [String: Int] = [:]
+        positions.reserveCapacity(pageItems.count + currentItems.count)
 
         var merged: [CodexThreadItem] = []
         merged.reserveCapacity(pageItems.count + currentItems.count)
-        for item in pageItems where seen.insert(item.id).inserted {
-            merged.append(item)
-        }
-        for item in currentItems where seen.insert(item.id).inserted {
-            merged.append(item)
-        }
+        for item in pageItems { append(item, to: &merged, positions: &positions) }
+        for item in currentItems { append(item, to: &merged, positions: &positions) }
         return merged
     }
 
@@ -33,16 +29,32 @@ enum SessionHistoryPageMerger {
         _ windowItems: [CodexThreadItem],
         with currentItems: [CodexThreadItem]
     ) -> [CodexThreadItem] {
-        var seen = Set<String>()
-        seen.reserveCapacity(windowItems.count + currentItems.count)
+        var positions: [String: Int] = [:]
+        positions.reserveCapacity(windowItems.count + currentItems.count)
         var merged: [CodexThreadItem] = []
         merged.reserveCapacity(windowItems.count + currentItems.count)
-        for item in windowItems where seen.insert(item.id).inserted {
-            merged.append(item)
-        }
-        for item in currentItems where seen.insert(item.id).inserted {
-            merged.append(item)
-        }
+        for item in windowItems { append(item, to: &merged, positions: &positions) }
+        for item in currentItems { append(item, to: &merged, positions: &positions) }
         return merged
+    }
+
+    private static func append(
+        _ item: CodexThreadItem,
+        to merged: inout [CodexThreadItem],
+        positions: inout [String: Int]
+    ) {
+        if let index = positions[item.id] {
+            let current = merged[index]
+            if current.type == "executionPlan", item.type == "executionPlan",
+               let currentPlan = current.executionPlan,
+               let candidatePlan = item.executionPlan,
+               currentPlan.planId == candidatePlan.planId,
+               candidatePlan.revision > currentPlan.revision {
+                merged[index] = item
+            }
+            return
+        }
+        positions[item.id] = merged.count
+        merged.append(item)
     }
 }

@@ -5,6 +5,13 @@ import CorptieClientCore
 
 @MainActor
 struct PadTimelineProjectionTests {
+    @Test func serverUserInputStatusOverridesLocalSubmittedReceipt() {
+        #expect(padUserInputStatusText("pending", submittedLocally: true) == "已提交，等待会话更新")
+        #expect(padUserInputStatusText("submitted", submittedLocally: false) == "已提交，等待会话更新")
+        #expect(padUserInputStatusText("unknown", submittedLocally: true) == "提交结果待同步，请勿重复提交")
+        #expect(padUserInputStatusText("expired", submittedLocally: true) == "此问题已失效")
+    }
+
     @Test func receivedHistoryAndOptimisticMessagesUseSharedGroupingWithoutLosingReplies() throws {
         let name = "pad-projection-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!
@@ -28,5 +35,41 @@ struct PadTimelineProjectionTests {
         #expect(workspace.processSteps.isEmpty)
         workspace.selection = "session:a"
         #expect(workspace.displayEntries.map(\.id) == ["message:u", "process:t", "message:a", "message:pending"])
+    }
+
+    @Test func planRevisionsUpdateOneProcessCardAndOlderWindowsCannotRollItBack() throws {
+        let name = "pad-plan-revision-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:plan"
+
+        func planMessage(revision: Int, status: String) throws -> ClientMessage {
+            let source: [String: Any] = [
+                "id": "plan:one", "turnId": "turn:one", "turnStatus": "inProgress",
+                "type": "executionPlan", "text": "Plan update", "title": "Execution plan",
+                "executionPlan": [
+                    "schemaVersion": 1, "planId": "plan:one", "revision": revision,
+                    "lifecycle": "active", "updatedAt": "2026-09-24T00:00:00Z",
+                    "steps": [["stepId": "step:one", "ordinal": 0,
+                               "text": "Inspect", "status": status]]
+                ]
+            ]
+            return try JSONDecoder().decode(ClientMessage.self,
+                from: JSONSerialization.data(withJSONObject: source))
+        }
+
+        let first = try planMessage(revision: 1, status: "pending")
+        let updated = try planMessage(revision: 2, status: "completed")
+        workspace.applyLatestWindow([first], cursor: nil, revision: 10)
+        #expect(workspace.displayEntries.map(\.id) == ["process:turn:one"])
+        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.steps.first?.status == "pending")
+        workspace.applyLatestWindow([updated], cursor: nil, revision: 11)
+        #expect(workspace.displayEntries.map(\.id) == ["process:turn:one"])
+        #expect(workspace.messages.count == 1)
+        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.revision == 2)
+        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.steps.first?.status == "completed")
+        workspace.applyLatestWindow([first], cursor: nil, revision: 10)
+        #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.revision == 2)
     }
 }

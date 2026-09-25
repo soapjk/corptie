@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
 import { executeCodexSlashCommand } from "./codexSlashCommands.mjs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { codexPermissionsFromThread } from "../utils/codexPermissions.mjs";
 import { createInterface } from "node:readline";
 import { createdAtFrom, nowIso } from "../utils/timestamps.mjs";
 import { providerRawMetadataJSON } from "../utils/providerRawMetadata.mjs";
+import { toolExecutionForItem, withToolExecutionMetadata } from "../utils/toolExecutionProjection.mjs";
+import { changeSetForCodexItem, withChangeSetMetadata } from "../utils/changeSetProjection.mjs";
+import { codexUserInputItem, codexUserInputResponse, normalizeCodexUserInputRequest } from "./codexUserInput.mjs";
 import { defaultWorkspacePath } from "../utils/workspacePaths.mjs";
 import { assertCodexNoToolsRuntime, codexNoToolsConfig } from "./codexNoToolsPolicy.mjs";
 import {
@@ -42,6 +45,10 @@ export class CodexAppServerClient {
     this.nextRequestId = 1;
     this.pending = new Map();
     this.notifications = [];
+    // Codex plan snapshots have no native event ID or revision. Distinguish
+    // physical notifications, including A -> B -> A within the same turn.
+    this.planNotificationRunId = randomUUID();
+    this.planNotificationSequence = 0;
     this.liveItemsByThread = new Map();
     this.turnDiffsByThread = new Map();
     this.tokenUsageByThread = new Map();
@@ -861,6 +868,16 @@ export class CodexAppServerClient {
 
   #clearProcessGeneration(generation, child, error) {
     if (this.activeProcessGeneration !== generation || this.process !== child) return false;
+    // A server request cannot be answered after its app-server generation is
+    // gone. Persist that fact before dropping the in-memory request map so
+    // clients do not keep presenting an answerable card after a reconnect.
+    for (const [threadId, requests] of this.serverRequestsByThread) {
+      for (const request of requests.values()) {
+        if (request.method === "item/tool/requestUserInput") {
+          this.emitUserInputNotification(threadId, request, "corptie/codexUserInputResolved", "expired");
+        }
+      }
+    }
     for (const [id, pending] of this.pending) {
       if (pending.generation !== generation) continue;
       this.pending.delete(id);
@@ -875,6 +892,7 @@ export class CodexAppServerClient {
     this.threadResumePromises.clear();
     this.freshThreadIds.clear();
     this.confirmedToolSchemasByThread.clear();
+    this.serverRequestsByThread.clear();
     return true;
   }
 
@@ -915,6 +933,11 @@ export class CodexAppServerClient {
     if (!request) {
       return Promise.reject(new Error("No active Codex app-server approval request"));
     }
+    if (input.itemId && mapServerRequestToItem(threadId, request)?.id !== input.itemId) {
+      return Promise.reject(Object.assign(new Error("Approval request is no longer current"), {
+        code: "APPROVAL_NOT_PENDING"
+      }));
+    }
 
     const approved = input.approved === true;
     const decision = approved
@@ -932,6 +955,39 @@ export class CodexAppServerClient {
     }
     this.removeServerRequest(threadId, request.requestId);
     return this.respondToServerRequest(request.requestId, { decision });
+  }
+
+  respondToUserInput(threadId, input = {}) {
+    const requests = this.serverRequestsByThread.get(threadId);
+    const request = Array.from(requests?.values() ?? []).find((candidate) =>
+      candidate.method === "item/tool/requestUserInput"
+      && input.itemId === `${threadId}:app-server-user-input:${String(candidate.requestId)}`);
+    if (!request || request.responding || request.responded) {
+      return Promise.reject(Object.assign(new Error("Codex user-input request is no longer pending"), {
+        code: "USER_INPUT_NOT_PENDING"
+      }));
+    }
+    let response;
+    try {
+      response = codexUserInputResponse(request, input.answers);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    request.responding = true;
+    return this.respondToServerRequest(request.requestId, response).then(
+      (result) => {
+        request.responding = false;
+        request.responded = true;
+        if (this.serverRequestsByThread.get(threadId)?.get(request.requestId) === request) {
+          this.emitUserInputNotification(threadId, request, "corptie/codexUserInputSubmitted", "submitted");
+        }
+        return result;
+      },
+      (error) => {
+        request.responding = false;
+        throw error;
+      }
+    );
   }
 
   request(method, params, timeoutMs = this.requestTimeoutMs) {
@@ -1006,6 +1062,20 @@ export class CodexAppServerClient {
       return;
     }
 
+    if (message.method === "turn/plan/updated" && !message.params?.providerEventId) {
+      message = {
+        ...message,
+        params: {
+          ...(message.params ?? {}),
+          providerEventId: `codex-plan:${this.planNotificationRunId}:${++this.planNotificationSequence}`
+        }
+      };
+    }
+    if (message.method === "serverRequest/resolved") {
+      this.notifications.push(message);
+      this.resolveServerRequest(message.params);
+      return;
+    }
     this.notifications.push(message);
     this.captureLiveItem(message);
     this.onNotification?.(message);
@@ -1027,6 +1097,19 @@ export class CodexAppServerClient {
     this.notifications.push(request);
 
     const threadId = request.params.threadId;
+    if (threadId && request.method === "item/tool/requestUserInput"
+      && normalizeCodexUserInputRequest({ ...request, requestId: message.id })) {
+      if (!this.serverRequestsByThread.has(threadId)) {
+        this.serverRequestsByThread.set(threadId, new Map());
+      }
+      const pendingRequest = {
+        ...request,
+        requestId: message.id
+      };
+      this.serverRequestsByThread.get(threadId).set(message.id, pendingRequest);
+      this.emitUserInputNotification(threadId, pendingRequest, "corptie/codexUserInputRequested", "pending");
+      return;
+    }
     if (threadId && isApprovalServerRequest(request)) {
       if (this.autoApproveRequestIfAllowed(threadId, request)) {
         return;
@@ -1049,9 +1132,43 @@ export class CodexAppServerClient {
         params: {
           threadId,
           requestId: message.id,
-          createdAt: request.params.createdAt
+          createdAt: request.params.createdAt,
+          // Keep the request's public item with the notification: ingestion may
+          // run after the pending-request cache has already been cleared.
+          item: mapServerRequestToItem(threadId, request)
         }
       });
+    }
+  }
+
+  emitUserInputNotification(threadId, request, method, status) {
+    const item = codexUserInputItem(threadId, request);
+    if (!item) return;
+    const notification = {
+      method,
+      params: {
+        threadId,
+        requestId: request.requestId,
+        turnId: item.turnId,
+        providerEventId: `codex-user-input:${this.planNotificationRunId}:${++this.planNotificationSequence}`,
+        createdAt: nowIso(),
+        item: { ...item, status,
+          turnStatus: method === "corptie/codexUserInputResolved" ? "inProgress" : item.turnStatus }
+      }
+    };
+    this.notifications.push(notification);
+    this.onNotification?.(notification);
+  }
+
+  resolveServerRequest(params = {}) {
+    const threadId = params.threadId;
+    const requestId = params.requestId;
+    const request = this.serverRequestsByThread.get(threadId)?.get(requestId);
+    if (!request) return;
+    this.removeServerRequest(threadId, requestId);
+    if (request.method === "item/tool/requestUserInput") {
+      this.emitUserInputNotification(threadId, request, "corptie/codexUserInputResolved",
+        request.responding || request.responded ? "submitted" : "expired");
     }
   }
 
@@ -1176,10 +1293,12 @@ export class CodexAppServerClient {
       // Item completion and turn completion are separate lifecycle events. An
       // agent message may finish while the turn continues with more work, so
       // never promote item/completed into a terminal turn status.
-      const item = mapThreadItem({ id: turnId ?? threadId, status: "inProgress" }, params.item);
-      item.id = params.item.id ?? `${threadId}:${items.size}`;
+      const item = mapThreadItem({ id: turnId ?? threadId, status: "inProgress" }, {
+        ...params.item,
+        id: params.item.id ?? `${threadId}:${items.size}`,
+        status: params.item.status ?? (method === "item/completed" ? "completed" : "inProgress")
+      });
       item.turnStatus = "inProgress";
-      item.status = params.item.status ?? (method === "item/completed" ? "completed" : "inProgress");
       items.set(item.id, item);
       return;
     }
@@ -1205,6 +1324,12 @@ export class CodexAppServerClient {
       const terminalStatus = turn.status
         ?? (turn.error ? "failed" : "completed");
       if (completedTurnId) {
+        for (const request of this.serverRequestsByThread.get(threadId)?.values() ?? []) {
+          if (request.method === "item/tool/requestUserInput"
+            && request.params?.turnId === completedTurnId) {
+            this.removeServerRequest(threadId, request.requestId);
+          }
+        }
         for (const [itemId, item] of items) {
           if (item.turnId !== completedTurnId) continue;
           items.set(itemId, { ...item, turnStatus: terminalStatus });
@@ -1550,6 +1675,12 @@ function mapThreadItem(turn, item) {
     createdAt: createdAtFrom(item, turn),
     rawMetadataJSON: providerRawMetadataJSON("codex-app-server", item, { source: "provider_item" })
   };
+  const toolExecution = toolExecutionForItem(mapped, {
+    input: codexToolInput(item),
+    result: item.aggregatedOutput ?? item.result ?? item.output ?? item.error ?? null
+  });
+  mapped.rawMetadataJSON = withToolExecutionMetadata(mapped.rawMetadataJSON, toolExecution);
+  mapped.rawMetadataJSON = withChangeSetMetadata(mapped.rawMetadataJSON, changeSetForCodexItem(item));
   if (item.type === "fileChange") {
     mapped.fileChanges = (item.changes ?? []).map((change) => ({
       path: change.path,
@@ -1561,6 +1692,16 @@ function mapThreadItem(turn, item) {
     mapped.images = item.images;
   }
   return mapped;
+}
+
+function codexToolInput(item) {
+  switch (item.type) {
+  case "commandExecution": return item.command ?? null;
+  case "fileChange": return (item.changes ?? []).map((change) => change.path).filter(Boolean).join("\n");
+  case "mcpToolCall": case "dynamicToolCall": return item.arguments ?? null;
+  case "webSearch": return item.query ?? null;
+  default: return null;
+  }
 }
 
 function normalizedCodexPresentationRole(value) {
