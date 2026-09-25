@@ -243,7 +243,7 @@ public struct ComposerShellSurface: ViewModifier {
                         in: RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: ComposerShellMetrics.cornerRadius, style: .continuous)
-                    .strokeBorder(Color.black.opacity(isFocused ? 0.16 : 0.08), lineWidth: 1)
+                    .strokeBorder(Color.primary.opacity(isFocused ? 0.16 : 0.08), lineWidth: 1)
             )
             .shadow(color: Color.black.opacity(0.04), radius: 8, y: 3)
     }
@@ -302,6 +302,22 @@ public struct ComposerModelMenuLabel: View {
     }
 
     public var body: some View {
+        let shape = RoundedRectangle(cornerRadius: ComposerShellMetrics.modelMenuCornerRadius,
+                                     style: .continuous)
+        if showsSurface {
+            if #available(macOS 26.0, iOS 26.0, *) {
+                labelContent.glassEffect(.regular.interactive(), in: shape)
+            } else {
+                labelContent
+                    .background(.ultraThinMaterial, in: shape)
+                    .overlay(shape.strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.6))
+            }
+        } else {
+            labelContent
+        }
+    }
+
+    private var labelContent: some View {
         HStack(spacing: 4) {
             if isBusy {
                 ProgressView().controlSize(.small).frame(width: 16, height: 16)
@@ -321,18 +337,6 @@ public struct ComposerModelMenuLabel: View {
         .frame(maxWidth: maxWidth)
         .padding(.horizontal, 8)
         .frame(height: ComposerShellMetrics.modelMenuHeight)
-        .background {
-            if showsSurface {
-                RoundedRectangle(cornerRadius: ComposerShellMetrics.modelMenuCornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.12))
-            }
-        }
-        .overlay {
-            if showsSurface {
-                RoundedRectangle(cornerRadius: ComposerShellMetrics.modelMenuCornerRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-            }
-        }
     }
 }
 
