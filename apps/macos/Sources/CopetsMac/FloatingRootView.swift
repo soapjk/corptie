@@ -4111,12 +4111,14 @@ struct SessionConversationContent: View {
         var processDuration: String?
         var processState: AppKitChatTimelineRow.ProcessState = .completed
         var processSteps: [NativeExecutionTimelineStep] = []
+        var processPlan: ConversationExecutionPlan?
         var processCurrentStepTitle: String?
         var showsHeader: Bool
         var hoverTimestamp: String
         let isCollaboration: Bool
         let collaborationRoute: NativeCollaborationRoutePresentation?
         let actions: [AppKitChatTimelineRow.Action]
+        let isPendingInteraction: Bool
         let showsCollaborationSentStatus: Bool
         var images: [ChatTimelineImage] = []
         switch entry.kind {
@@ -4138,11 +4140,13 @@ struct SessionConversationContent: View {
             let specialEvent = nativeAutomationCardPresentation(for: item)
                 ?? nativeSystemEventCardPresentation(for: item)
             style = collaboration == nil && specialEvent == nil && item.type == "userMessage" ? .user : .agent
-            copyText = collaboration?.messageText ?? specialEvent?.messageText ?? nativeTimelineText(for: item)
+            copyText = collaboration?.messageText ?? specialEvent?.messageText
+                ?? ChatTimelineRowRouting.copyText(for: item)
             let supplementalText = nativeTimelineSupplementalText(for: item)
+            let displayedText = nativeTimelineText(for: item)
             let presentedText = collaboration?.bodyMarkdown ?? specialEvent?.bodyMarkdown ?? (supplementalText.isEmpty
-                ? copyText
-                : "\(copyText)\n\n\(supplementalText)")
+                ? displayedText
+                : "\(displayedText)\n\n\(supplementalText)")
             let existingImageURLs = Set(images.compactMap(\.displayURL))
             images.append(contentsOf: MessageMarkdownImageResolver.references(
                 in: presentedText,
@@ -4170,12 +4174,15 @@ struct SessionConversationContent: View {
             processCount = nil
             processDuration = nil
             actions = nativeTimelineActions(for: item)
+            isPendingInteraction = (item.type == "approval" || item.type == "choice" || item.type == "userInput")
+                && item.status == "pending"
             showsCollaborationSentStatus = collaboration != nil
                 && (item.collaborationConfirmationStatus ?? item.status ?? "").lowercased() == "confirmed"
             rawStatusText = ""
             isCollaboration = collaboration != nil
             collaborationRoute = collaboration?.route
         case .process(let turnId, let items):
+            processPlan = items.compactMap(\.executionPlan).last(where: { $0.schemaVersion == 1 })
             images = items.flatMap { item in
                 (item.images ?? []).map { image in
                     ChatTimelineImage(
@@ -4192,10 +4199,10 @@ struct SessionConversationContent: View {
             if expanded {
                 processSteps = NativeExecutionTimelineProjection.steps(for: items)
                 let processStepsText = NativeExecutionTimelineProjection.plainText(for: processSteps)
-                rawStatusText = processRawStatusText(for: items)
-                copyText = rawStatusText.isEmpty
-                    ? processStepsText
-                    : processStepsText + "\n\n" + rawStatusText
+                // Provider metadata is diagnostic data, not conversation content.
+                // Keep the visible and copied process text on the same semantic projection.
+                rawStatusText = ""
+                copyText = processStepsText
                 text = processStepsText
             } else {
                 rawStatusText = ""
@@ -4210,12 +4217,18 @@ struct SessionConversationContent: View {
             processCount = items.count
             processDuration = executionProcessDurationText(for: items)
             processState = projectedProcessState(for: items)
-            processCurrentStepTitle = processState == .running
-                ? items.last.map { L10n(NativeExecutionTimelineProjection.title(for: $0)) }
-                : nil
+            if processState == .running, let last = items.last {
+                if last.type == "executionPlan", let plan = processPlan {
+                    processCurrentStepTitle = plan.steps.first(where: { $0.status == "inProgress" })?.text
+                        ?? plan.steps.first(where: { $0.status == "pending" })?.text
+                } else {
+                    processCurrentStepTitle = L10n(NativeExecutionTimelineProjection.title(for: last))
+                }
+            }
             showsHeader = false
             hoverTimestamp = ""
             actions = []
+            isPendingInteraction = false
             showsCollaborationSentStatus = false
             isCollaboration = false
             collaborationRoute = nil
@@ -4237,10 +4250,12 @@ struct SessionConversationContent: View {
             processDuration: processDuration,
             processState: processState,
             processSteps: processSteps,
+            processPlan: processPlan,
             processCurrentStepTitle: processCurrentStepTitle,
             showsHeader: showsHeader,
             hoverTimestamp: hoverTimestamp,
             actions: actions,
+            isPendingInteraction: isPendingInteraction,
             showsCollaborationSentStatus: showsCollaborationSentStatus,
             images: images
         )
@@ -4337,8 +4352,7 @@ struct SessionConversationContent: View {
                 kind: .userInput(itemID: item.id))]
         }
 
-        if item.status != "selected",
-           item.type == "approval" || item.type == "choice" || item.type == "agentMessage" {
+        if nativeTimelineAllowsChoiceActions(type: item.type, status: item.status) {
             let options = (item.options?.isEmpty == false ? item.options : nil)
                 ?? (item.type == "approval" || item.type == "choice"
                     ? [
@@ -5651,31 +5665,16 @@ private func automationEventLabel(_ type: String) -> String {
     }
 }
 
-@MainActor
-func processRawStatusText(for items: [CodexThreadItem]) -> String {
-    guard let item = items.last else { return "" }
-    let rawMetadata = item.rawMetadataJSON?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let status = item.status?.trimmingCharacters(in: .whitespacesAndNewlines)
-    var lines = [
-        L10n("Raw status"),
-        "item_id: \(item.id)",
-        "turn_id: \(item.turnId)",
-        "item_type: \(item.type)",
-        "turn_status: \(item.turnStatus)"
-    ]
-    if let status, !status.isEmpty {
-        lines.append("item_status: \(status)")
+func nativeTimelineAllowsChoiceActions(type: String, status: String?) -> Bool {
+    switch type {
+    case "approval", "choice":
+        // A historical or uncertain approval must never offer a second submission.
+        return status == "pending"
+    case "agentMessage":
+        return status != "selected"
+    default:
+        return false
     }
-    if let createdAt = item.createdAt, !createdAt.isEmpty {
-        lines.append("created_at: \(createdAt)")
-    }
-    if let rawMetadata, !rawMetadata.isEmpty {
-        lines.append("provider_metadata:")
-        lines.append(rawMetadata)
-    } else {
-        lines.append("provider_metadata: unavailable")
-    }
-    return lines.joined(separator: "\n")
 }
 
 private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {

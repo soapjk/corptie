@@ -29,7 +29,15 @@ public struct ConversationExecutionPlan: Decodable, Sendable, Hashable {
     public let updatedAt: String
 
     public var progressLabel: String {
-        "Plan \(steps.filter { $0.status == "completed" }.count)/\(steps.count)"
+        guard !steps.isEmpty else { return "No plan steps" }
+        return "Plan \(steps.filter { $0.status == "completed" }.count)/\(steps.count)"
+    }
+
+    /// Unknown means the latest update could not be confirmed. Its retained
+    /// steps may be stale, so they must not drive a current progress bar.
+    public var completionFraction: Double? {
+        guard lifecycle != "unknown", !steps.isEmpty else { return nil }
+        return Double(steps.filter { $0.status == "completed" }.count) / Double(steps.count)
     }
 }
 
@@ -220,6 +228,7 @@ public enum ConversationExecutionProjection {
     ) -> ConversationExecutionStep.State {
         let status = normalized(item.status ?? "")
         switch status {
+        case "completed", "complete", "success", "succeeded": return .completed
         case "failed", "error": return .failed
         case "cancelled", "canceled", "interrupted": return .cancelled
         case "unknown", "uncertain": return .unknown

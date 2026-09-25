@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
 import { ProviderEventProjector } from "../src/application/providerEventProjector.mjs";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 
@@ -32,6 +33,38 @@ test("a model change notice cannot create an unsettled Turn before the first mes
     assert.equal(store.listUnsettledSessionTurns(binding.sessionId).length, 0);
     assert.equal(store.getSession(binding.sessionId).status, "complete");
     assert.ok(store.getItems(binding.sessionId).some(item => item.id === "model-change"));
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("streamed chart reply retains one stable item and exact fenced text through the mobile message API", async () => {
+  const { directory, store, projector } = await fixture();
+  const itemId = "agent:chart-reply";
+  const prefix = "Before\n\n```corptie-chart\n";
+  const fullText = `${prefix}{"version":1,"type":"bar","title":"Compare","data":[{"label":"A","value":2}]}\n\`\`\`\n\nAfter`;
+  const item = (text, status) => ({ id: itemId, turnId: "turn:one", type: "agentMessage",
+    title: "Assistant", text, status, turnStatus: status === "completed" ? "completed" : "inProgress" });
+  try {
+    projector.project({ event: event("turn.started"), binding });
+    projector.project({ event: event("assistant.message.delta", {
+      providerEventId: "event:chart-delta", itemId, payload: { item: item(prefix, "streaming") }
+    }), binding });
+    const api = new ClientSessionAPI({ store,
+      readWindow: async () => ({ revision: 1, hasEarlier: false, items: store.getItems(binding.sessionId) }) });
+    const identity = { permissions: ["messages.read"] };
+    const during = await api.messages(identity, binding.sessionId, new URLSearchParams());
+    assert.equal(during.items.find((candidate) => candidate.id === itemId)?.text, prefix);
+
+    projector.project({ event: event("assistant.message.completed", {
+      providerEventId: "event:chart-final", itemId, payload: { item: item(fullText, "completed") }
+    }), binding });
+    projector.project({ event: event("turn.completed", { providerEventId: "event:chart-turn-complete" }), binding });
+    const after = await api.messages(identity, binding.sessionId, new URLSearchParams());
+    assert.deepEqual(after.items.filter((candidate) => candidate.type === "agentMessage").map((candidate) => candidate.id), [itemId]);
+    assert.equal(after.items.find((candidate) => candidate.id === itemId)?.text, fullText);
+    assert.equal((after.items.find((candidate) => candidate.id === itemId)?.text.match(/```corptie-chart/g) ?? []).length, 1);
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
@@ -435,6 +468,8 @@ test("Claude task create and update patches use stable task IDs", async () => {
     projector.project({ binding, event: event("turn.completed") });
     const settled = store.getSessionItem(binding.sessionId, item.id);
     assert.equal(settled.turnStatus, "completed");
+    assert.equal(store.getExecutionPlanState(binding.sessionId, binding.bindingId, "claude-tasks").lifecycle,
+      "completed", "the cross-turn seed must settle with the visible checklist");
     projector.project({ binding, event: event("plan.updated", { turnId: "turn:two", payload: { plan: {
       operation: "upsert", planKey: "claude-tasks", step: { stepId: "task:7", status: "completed" }
     } } }) });
@@ -450,6 +485,45 @@ test("Claude task create and update patches use stable task IDs", async () => {
       operation: "remove", planKey: "claude-tasks", step: { stepId: "task:7" }
     } } }) });
     assert.deepEqual(store.getSessionItem(binding.sessionId, updated.id).executionPlan.steps, []);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Claude task state stays terminal after failure and late updates, then reopens in a new Turn", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const planUpdate = (turnId, stepId, text, status) => event("plan.updated", { turnId, payload: { plan: {
+      operation: "upsert", planKey: "claude-tasks",
+      step: { stepId, text, status }
+    } } });
+    projector.project({ binding, event: planUpdate("turn:one", "task:7", "Build UI", "inProgress") });
+    const first = store.getItemsForTurn(binding.sessionId, "turn:one")
+      .find((item) => item.type === "executionPlan");
+    const staleSeed = store.getExecutionPlanState(binding.sessionId, binding.bindingId, "claude-tasks");
+    projector.project({ binding, event: event("turn.failed") });
+    assert.equal(store.getSessionItem(binding.sessionId, first.id).executionPlan.lifecycle, "failed");
+    assert.equal(store.getExecutionPlanState(binding.sessionId, binding.bindingId, "claude-tasks").lifecycle,
+      "failed");
+
+    projector.project({ binding, event: planUpdate("turn:one", "task:7", "Build UI", "completed") });
+    assert.equal(store.getSessionItem(binding.sessionId, first.id).executionPlan.lifecycle, "failed");
+    assert.equal(store.getExecutionPlanState(binding.sessionId, binding.bindingId, "claude-tasks").lifecycle,
+      "failed", "a late update must not reopen the failed Turn in the materialized seed");
+
+    // Simulate a database produced by the older projector: the timeline was
+    // settled at a newer revision, but the materialized seed stayed active.
+    store.upsertExecutionPlanState(binding.sessionId, binding.bindingId, "claude-tasks", staleSeed);
+    projector.project({ binding, event: planUpdate("turn:two", "task:8", "Review", "pending") });
+    const second = store.getItemsForTurn(binding.sessionId, "turn:two")
+      .find((item) => item.type === "executionPlan");
+    assert.equal(second.executionPlan.lifecycle, "active");
+    assert.equal(second.executionPlan.steps.find((step) => step.stepId === "task:7")?.status,
+      "completed", "the new Turn must inherit the newer settled item, not stale active state");
+    assert.equal(store.getExecutionPlanState(binding.sessionId, binding.bindingId, "claude-tasks").lifecycle,
+      "active");
+    assert.equal(store.getSessionItem(binding.sessionId, first.id).executionPlan.lifecycle, "failed");
   } finally {
     await store.close();
     await rm(directory, { recursive: true, force: true });
