@@ -37,12 +37,14 @@ enum ChatTimelineRowRouting {
     }
 
     static func displayText(for item: CodexThreadItem) -> String {
-        let presentation = item.presentationText?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let fallback = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if presentation?.isEmpty == false { return presentation ?? fallback }
-        if !fallback.isEmpty { return fallback }
-        if !item.title.isEmpty { return item.title }
-        return item.type
+        ConversationMessageDisplayText.resolve(text: item.text,
+            presentationText: item.presentationText, title: item.title, type: item.type)
+    }
+
+    static func copyText(for item: CodexThreadItem) -> String {
+        ConversationMessageDisplayText.copyText(type: item.type,
+            authoritativeText: item.text, presentationText: item.presentationText,
+            displayedText: displayText(for: item))
     }
 }
 
@@ -225,6 +227,50 @@ final class NativeIncrementalPlanLayoutCache {
     }
 }
 
+/// SwiftUI owns the checklist geometry. Status-only revisions preserve the
+/// same measured height, so their frequent updates do not remeasure text.
+@MainActor
+final class NativePlanChecklistHeightCache {
+    private struct Key: Hashable {
+        let widthBucket: Int
+        let lifecycle: String
+        let explanation: String?
+        let totalCount: Int
+        let visibleTexts: [String]
+    }
+    private struct Entry {
+        let height: CGFloat
+        var access: UInt64
+    }
+    static let shared = NativePlanChecklistHeightCache()
+    private var entries: [Key: Entry] = [:]
+    private var sequence: UInt64 = 0
+    private(set) var measurementCount = 0
+
+    func height(of plan: ConversationExecutionPlan, width: CGFloat) -> CGFloat {
+        let key = Key(widthBucket: Int((width * 2).rounded()), lifecycle: plan.lifecycle,
+            explanation: plan.explanation, totalCount: plan.steps.count,
+            visibleTexts: plan.steps.map(\.text))
+        sequence &+= 1
+        if var entry = entries[key] {
+            entry.access = sequence
+            entries[key] = entry
+            return entry.height
+        }
+        let host = NSHostingView(rootView: ExecutionPlanChecklist(plan: plan)
+            .frame(width: width, alignment: .leading))
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 1)
+        host.layoutSubtreeIfNeeded()
+        let height = ceil(host.fittingSize.height)
+        measurementCount += 1
+        entries[key] = Entry(height: height, access: sequence)
+        if entries.count > 64, let oldest = entries.min(by: { $0.value.access < $1.value.access })?.key {
+            entries.removeValue(forKey: oldest)
+        }
+        return height
+    }
+}
+
 /// Final native row geometry, shared by all retained Session hosts. The cache
 /// key includes every input that can affect wrapping, so a row is never shown
 /// with an estimated height and corrected after the first paint.
@@ -240,8 +286,35 @@ enum NativeExecutionTimelineAttributedText {
 
 @MainActor
 final class NativeTimelineLayoutCache {
+    private struct ChartHeightKey: Hashable {
+        let kind: ConversationChartSpec.Kind
+        let title: String
+        let unit: String?
+        let sourceNote: String?
+        let width: CGFloat
+    }
+
     struct Layout {
+        enum RichBlock {
+            case markdown(id: String, NSAttributedString, CGFloat)
+            case chart(id: String, ConversationChartSpec, CGFloat)
+
+            var id: String {
+                switch self {
+                case .markdown(let id, _, _), .chart(let id, _, _): id
+                }
+            }
+        }
+        struct ProcessBlock {
+            let step: NativeExecutionTimelineStep
+            let attributedText: NSAttributedString
+            let textHeight: CGFloat
+            let hasOverflow: Bool
+            var height: CGFloat { textHeight + 14 + (hasOverflow ? 20 : 0) }
+        }
         let attributedText: NSAttributedString
+        let richBlocks: [RichBlock]
+        let processBlocks: [ProcessBlock]
         let cardWidth: CGFloat
         let textHeight: CGFloat
         let rawStatusHeight: CGFloat
@@ -259,7 +332,9 @@ final class NativeTimelineLayoutCache {
         let processCount: Int?
         let processDuration: String?
         let processState: AppKitChatTimelineRow.ProcessState
+        let processCurrentStepTitle: String?
         let processSteps: [NativeExecutionTimelineStep]
+        let processPlan: ConversationExecutionPlan?
         let isExpanded: Bool
         let showsHeader: Bool
         let actionCount: Int
@@ -292,8 +367,11 @@ final class NativeTimelineLayoutCache {
     private var values: [Key: Layout] = [:]
     private var accessByKey: [Key: UInt64] = [:]
     private var accessSequence: UInt64 = 0
+    private var chartHeights: [ChartHeightKey: (height: CGFloat, access: UInt64)] = [:]
+    private(set) var chartMeasurementCount = 0
     private var estimatedBytes = 0
     private let byteLimit = 64 * 1_024 * 1_024
+    private let chartHeightLimit = 128
 
     func layout(for row: AppKitChatTimelineRow, columnWidth: CGFloat) -> Layout {
         let normalizedWidth = max(120, columnWidth)
@@ -308,7 +386,9 @@ final class NativeTimelineLayoutCache {
             processCount: row.processCount,
             processDuration: row.processDuration,
             processState: row.processState,
+            processCurrentStepTitle: row.processCurrentStepTitle,
             processSteps: row.isExpanded ? row.processSteps : [],
+            processPlan: row.processPlan,
             isExpanded: row.isExpanded,
             showsHeader: row.showsHeader,
             actionCount: row.actions.count,
@@ -322,19 +402,68 @@ final class NativeTimelineLayoutCache {
             return cached
         }
 
-        let attributed = row.nativeStyle == .process && row.isExpanded && !row.processSteps.isEmpty
-            ? NativeExecutionTimelineAttributedText.make(steps: row.processSteps)
-            : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
+        let chartCandidates = row.nativeStyle == .agent && MacSharedMessageTextCard.supports(row)
+            && row.nativeText.contains("```corptie-chart")
+            ? ConversationChartBlockCache.shared.locatedBlocks(
+                messageID: row.id, authoritativeText: row.nativeText) : []
+        let hasRichBlock = chartCandidates.contains { block in
+            switch block.content {
+            case .chart, .invalidChart: true
+            case .markdown: false
+            }
+        }
         let cardWidth = ChatBubbleWidthPolicy.cardWidth(for: row, availableWidth: normalizedWidth)
         let textWidth = max(20, cardWidth - ChatBubbleWidthPolicy.horizontalPadding)
+        let processBlocks: [Layout.ProcessBlock] = row.nativeStyle == .process && row.isExpanded
+            ? row.processSteps.map { step in
+                let structured = step.tool != nil || step.changeSet != nil
+                    ? ExecutionStructuredStepPresentation(step: step) : nil
+                let presentation = step.plan == nil && structured == nil
+                    ? ExecutionStepDetailPresentation(step: step) : nil
+                let value = step.plan == nil && structured == nil
+                    ? NativeExecutionTimelineAttributedText.make(steps: [presentation!.displayedStep])
+                    : NSAttributedString(string: "")
+                let blockWidth = max(20, textWidth - 16)
+                let height: CGFloat
+                if let plan = step.plan {
+                    height = plan.steps.count > 8 ? 300
+                        : NativePlanChecklistHeightCache.shared.height(of: plan, width: blockWidth)
+                } else if let structured {
+                    height = structured.height
+                } else {
+                    height = NativeTextKitLayout.height(of: value, width: blockWidth)
+                }
+                return Layout.ProcessBlock(step: step, attributedText: value,
+                    textHeight: height, hasOverflow: structured?.hasOverflow ?? presentation?.hasOverflow ?? false)
+            } : []
+        let attributed = !processBlocks.isEmpty || hasRichBlock ? NSAttributedString(string: "")
+            : NativeMarkdownTextCache.shared.value(text: row.nativeText, style: row.nativeStyle)
+        let richBlocks: [Layout.RichBlock] = hasRichBlock ? chartCandidates.map { block in
+            switch block.content {
+            case .markdown(let text):
+                let value = NativeMarkdownTextCache.shared.value(text: text, style: row.nativeStyle)
+                return .markdown(id: block.id, value, NativeTextKitLayout.height(of: value, width: textWidth))
+            case .chart(let spec, _):
+                return .chart(id: block.id, spec, chartHeight(spec, width: textWidth))
+            case .invalidChart(let original, let reason):
+                let value = NativeMarkdownTextCache.shared.value(
+                    text: "> \(reason)\n\n\(original)", style: row.nativeStyle)
+                return .markdown(id: block.id, value, NativeTextKitLayout.height(of: value, width: textWidth))
+            }
+        } : []
         let textHeight: CGFloat
         if row.nativeStyle == .process && !row.isExpanded {
             textHeight = 0
-        } else if row.nativeStyle == .process,
-                  row.processSteps.contains(where: { $0.plan != nil }) {
-            textHeight = NativeIncrementalPlanLayoutCache.shared.height(
-                of: attributed, rowID: row.id, width: textWidth
-            )
+        } else if hasRichBlock {
+            textHeight = richBlocks.reduce(0) { height, block in
+                switch block {
+                case .markdown(_, _, let blockHeight): height + blockHeight
+                case .chart(_, _, let chartHeight): height + chartHeight
+                }
+            }
+        } else if !processBlocks.isEmpty {
+            textHeight = processBlocks.reduce(0) { $0 + $1.height }
+                + CGFloat(max(0, processBlocks.count - 1)) * 6
         } else {
             textHeight = NativeTextKitLayout.height(of: attributed, width: textWidth)
         }
@@ -356,12 +485,14 @@ final class NativeTimelineLayoutCache {
         }
         let rowHeight: CGFloat
         if row.nativeStyle == .process && !row.isExpanded {
-            rowHeight = 32
+            rowHeight = row.processCurrentStepTitle == nil ? 32 : 48
         } else {
             // This exactly matches the native cell's 10pt leading/trailing
             // constraints and the NativeTimelineTextView's TextKit container.
             if row.nativeStyle == .process {
-                rowHeight = max(54, textHeight + 48 + (rawStatusHeight > 0 ? rawStatusHeight + 8 : 0))
+                rowHeight = max(54, textHeight + 48
+                    + (row.processCurrentStepTitle == nil ? 0 : 16)
+                    + (rawStatusHeight > 0 ? rawStatusHeight + 8 : 0))
             } else {
                 let footerHeight: CGFloat = row.processCount == nil ? 0 : 24
                 let actionHeight: CGFloat = row.actions.isEmpty ? 0 : 34
@@ -379,6 +510,8 @@ final class NativeTimelineLayoutCache {
         }
         let layout = Layout(
             attributedText: attributed,
+            richBlocks: richBlocks,
+            processBlocks: processBlocks,
             cardWidth: cardWidth,
             textHeight: textHeight,
             rawStatusHeight: rawStatusHeight,
@@ -386,9 +519,34 @@ final class NativeTimelineLayoutCache {
         )
         values[key] = layout
         touch(key)
-        estimatedBytes += (key.estimatedTextLength * 8) + attributed.length * 8 + 192
+        estimatedBytes += (key.estimatedTextLength * 8) + attributed.length * 8
+            + processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 } + 192
         evictIfNeeded()
         return layout
+    }
+
+    private func chartHeight(_ spec: ConversationChartSpec, width: CGFloat) -> CGFloat {
+        // Measure the actual SwiftUI chrome without constructing a Charts plot.
+        // A completed chart remains identical while trailing text streams, so
+        // cache its height separately from the whole-message layout.
+        // The plot and data-table regions have the same fixed height. Data
+        // values affect drawing, not the title/note chrome that is measured.
+        let key = ChartHeightKey(kind: spec.kind, title: spec.title, unit: spec.unit,
+                                 sourceNote: spec.sourceNote, width: width)
+        accessSequence &+= 1
+        if var cached = chartHeights[key] {
+            cached.access = accessSequence
+            chartHeights[key] = cached
+            return cached.height
+        }
+        let height = ConversationChartView.measuredHeight(spec: spec, width: width)
+        chartMeasurementCount += 1
+        chartHeights[key] = (height, accessSequence)
+        if chartHeights.count > chartHeightLimit,
+           let oldest = chartHeights.min(by: { $0.value.access < $1.value.access })?.key {
+            chartHeights.removeValue(forKey: oldest)
+        }
+        return height
     }
 
     private func touch(_ key: Key) {
@@ -406,6 +564,7 @@ final class NativeTimelineLayoutCache {
                 estimatedBytes
                     - (oldest.estimatedTextLength * 8)
                     - removed.attributedText.length * 8
+                    - removed.processBlocks.reduce(0) { $0 + $1.attributedText.length * 8 }
                     - 192
             )
         }
@@ -449,10 +608,12 @@ struct AppKitChatTimelineRow: Identifiable {
     let processDuration: String?
     let processState: ProcessState
     let processSteps: [NativeExecutionTimelineStep]
+    let processPlan: ConversationExecutionPlan?
     let processCurrentStepTitle: String?
     let showsHeader: Bool
     let hoverTimestamp: String
     let actions: [Action]
+    let isPendingInteraction: Bool
     let showsCollaborationSentStatus: Bool
     let images: [ChatTimelineImage]
 
@@ -479,10 +640,12 @@ struct AppKitChatTimelineRow: Identifiable {
         processDuration: String? = nil,
         processState: ProcessState = .completed,
         processSteps: [NativeExecutionTimelineStep] = [],
+        processPlan: ConversationExecutionPlan? = nil,
         processCurrentStepTitle: String? = nil,
         showsHeader: Bool = true,
         hoverTimestamp: String = "",
         actions: [Action] = [],
+        isPendingInteraction: Bool = false,
         showsCollaborationSentStatus: Bool = false,
         images: [ChatTimelineImage] = []
     ) {
@@ -502,10 +665,12 @@ struct AppKitChatTimelineRow: Identifiable {
         self.processDuration = processDuration
         self.processState = processState
         self.processSteps = processSteps
+        self.processPlan = processPlan
         self.processCurrentStepTitle = processCurrentStepTitle
         self.showsHeader = showsHeader
         self.hoverTimestamp = hoverTimestamp
         self.actions = actions
+        self.isPendingInteraction = isPendingInteraction
         self.showsCollaborationSentStatus = showsCollaborationSentStatus
         self.images = images
     }
@@ -519,6 +684,20 @@ struct AppKitChatTimelineRow: Identifiable {
     var processSummary: String {
         ConversationProcessPresentation(state: processState, count: processCount ?? 0,
             duration: processDuration, currentStepTitle: processCurrentStepTitle).summary
+    }
+
+    var processPrimarySummary: String {
+        ConversationProcessPresentation(state: processState, count: processCount ?? 0,
+            duration: processDuration).summary
+    }
+
+    var processPlanProgressLabel: String? {
+        guard let processPlan, processPlan.completionFraction != nil else { return nil }
+        return "计划 \(processPlan.steps.filter { $0.status == "completed" }.count)/\(processPlan.steps.count)"
+    }
+
+    var processPlanProgress: Double? {
+        processPlan?.completionFraction
     }
 }
 
@@ -587,10 +766,16 @@ enum ChatBubbleWidthPolicy {
         let fullAvailableWidth = MessageBubbleWidthPolicy.fullAvailableWidth(laneWidth: availableWidth)
         if row.nativeStyle == .process {
             guard !row.isExpanded else { return fullAvailableWidth }
-            let summaryWidth = ceil((row.processSummary as NSString).size(withAttributes: [
+            let summaryWidth = ceil((row.processPrimarySummary as NSString).size(withAttributes: [
                 .font: NSFont.systemFont(ofSize: 10.5, weight: .medium)
             ]).width)
-            return min(fullAvailableWidth, max(collapsedProcessWidth, summaryWidth + 58))
+            let secondaryWidth = row.processCurrentStepTitle.map {
+                ceil(($0 as NSString).size(withAttributes: [
+                    .font: NSFont.systemFont(ofSize: 9.5)
+                ]).width) + 20
+            } ?? 0
+            return min(fullAvailableWidth, max(collapsedProcessWidth,
+                max(summaryWidth + (row.processPlanProgressLabel == nil ? 0 : 64), secondaryWidth) + 58))
         }
         if row.collaborationRoute != nil {
             return min(fullAvailableWidth, maximumWidth)
@@ -2528,7 +2713,12 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
                 ]
             )
         }
-        if row.isCollaboration {
+        if row.isPendingInteraction {
+            let tint = NSColor.systemOrange
+            cardView.layer?.backgroundColor = tint.withAlphaComponent(0.065).cgColor
+            cardView.layer?.borderColor = tint.withAlphaComponent(0.36).cgColor
+            titleLabel.textColor = tint
+        } else if row.isCollaboration {
             cardView.layer?.backgroundColor = NSColor(
                 calibratedRed: 0.945,
                 green: 0.955,
@@ -2757,7 +2947,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
 }
 
 @MainActor
-private final class ChatTimelineImageLoader {
+final class ChatTimelineImageLoader {
     static let shared = ChatTimelineImageLoader()
     private let cache = NSCache<NSURL, NSImage>()
 

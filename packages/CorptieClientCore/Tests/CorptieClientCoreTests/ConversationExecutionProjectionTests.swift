@@ -40,6 +40,29 @@ struct ConversationExecutionProjectionTests {
             .contains("Check the current build before editing"))
     }
 
+    @Test func failedClaudePlanFromPersistedTimelineNeverAppearsActiveOnEitherClient() throws {
+        let source: [String: Any] = [
+            "id": "execution-plan:binding:test:turn:test:claude-tasks",
+            "turnId": "turn:test", "turnStatus": "failed", "status": "failed",
+            "type": "executionPlan", "title": "Execution plan", "text": "Plan 0/1",
+            "executionPlan": [
+                "schemaVersion": 1, "planId": "execution-plan:binding:test:turn:test:claude-tasks",
+                "revision": 3, "lifecycle": "failed", "updatedAt": "2026-09-25T05:05:33Z",
+                "steps": [["stepId": "task:7", "ordinal": 0,
+                           "text": "Inspect", "status": "unknown"]]
+            ]
+        ]
+        let item = try JSONDecoder().decode(ClientMessage.self,
+            from: JSONSerialization.data(withJSONObject: source))
+        #expect(ConversationTimeline.makeEntries(from: [item]).map(\.id) == ["process:turn:test"])
+        let step = try #require(ConversationExecutionProjection.steps(for: [item]).first)
+        #expect(step.state == .failed)
+        #expect(step.plan?.lifecycle == "failed")
+        #expect(step.plan?.revision == 3)
+        #expect(step.plan?.steps.first?.status == "unknown")
+        #expect(!ConversationExecutionProjection.plainText(for: [step]).contains("● Inspect"))
+    }
+
     @Test func planRevisionKeepsTheSameProcessAnchorAndDoesNotAddAMessage() throws {
         func item(revision: Int, status: String) throws -> ClientMessage {
             let source: [String: Any] = [
@@ -92,6 +115,7 @@ struct ConversationExecutionProjectionTests {
         #expect(ConversationTimeline.makeEntries(from: [running]).map(\.id)
             == ConversationTimeline.makeEntries(from: [completed]).map(\.id))
         let step = try #require(ConversationExecutionProjection.steps(for: [completed]).first)
+        #expect(step.state == .completed)
         #expect(step.detail == nil)
         #expect(step.tool?.input == "pwd")
         #expect(step.tool?.result == "/tmp")
@@ -107,6 +131,25 @@ struct ConversationExecutionProjectionTests {
         let step = try #require(ConversationExecutionProjection.steps(for: [item]).first)
         #expect(step.tool == nil)
         #expect(step.detail?.contains("/tmp") == true)
+    }
+
+    @Test func emptyChecklistIsAReadableUpdateRatherThanZeroOverZero() throws {
+        let item = try JSONDecoder().decode(ClientMessage.self, from: Data(
+            #"{"id":"plan:empty","turnId":"turn:one","turnStatus":"inProgress","type":"executionPlan","title":"Execution plan","text":"Plan 0/0","status":"running","executionPlan":{"schemaVersion":1,"planId":"plan:empty","revision":2,"lifecycle":"active","updatedAt":"2026-09-25T00:00:00Z","steps":[]}}"#.utf8))
+        let step = try #require(ConversationExecutionProjection.steps(for: [item]).first)
+        #expect(step.plan?.steps.isEmpty == true)
+        #expect(step.plan?.completionFraction == nil)
+        #expect(step.title == "No plan steps")
+        #expect(!step.title.contains("0/0"))
+    }
+
+    @Test func uncertainChecklistDoesNotTurnStaleStepsIntoCurrentProgress() throws {
+        let item = try JSONDecoder().decode(ClientMessage.self, from: Data(
+            #"{"id":"plan:uncertain","type":"executionPlan","text":"Plan update unavailable","status":"unknown","executionPlan":{"schemaVersion":1,"planId":"plan:uncertain","revision":3,"lifecycle":"unknown","updatedAt":"2026-09-25T00:00:00Z","steps":[{"stepId":"step:1","ordinal":0,"text":"Inspect","status":"completed"},{"stepId":"step:2","ordinal":1,"text":"Build","status":"pending"}]}}"#.utf8))
+        let step = try #require(ConversationExecutionProjection.steps(for: [item]).first)
+        #expect(step.plan?.steps.count == 2)
+        #expect(step.plan?.completionFraction == nil)
+        #expect(step.title == "Plan update unavailable")
     }
 
     @Test func unresolvedToolResultDoesNotAppearCompletedOnEitherClient() throws {

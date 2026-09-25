@@ -111,10 +111,20 @@ final class PadWorkspace {
         })
         processPresentations = Dictionary(uniqueKeysWithValues: displayEntries.compactMap { entry in
             guard case let .process(_, items) = entry.kind else { return nil }
+            let state = ConversationProcessPresentation.state(for: items)
+            let currentStepTitle: String? = if state == .running,
+                                               let lastStep = processSteps[entry.id]?.last {
+                if let plan = lastStep.plan {
+                    plan.steps.first(where: { $0.status == "inProgress" })?.text
+                        ?? plan.steps.first(where: { $0.status == "pending" })?.text
+                } else {
+                    lastStep.title
+                }
+            } else { nil }
             return (entry.id, ConversationProcessPresentation(
-                state: ConversationProcessPresentation.state(for: items), count: items.count,
+                state: state, count: items.count,
                 duration: ConversationProcessPresentation.durationText(for: items, now: now),
-                currentStepTitle: processSteps[entry.id]?.last?.title))
+                currentStepTitle: currentStepTitle))
         })
     }
 
@@ -527,7 +537,7 @@ final class PadWorkspace {
     }
 
     func command(_ connection: PadConnection, stop: Bool, schedule: ClientMessageSchedule? = nil,
-                 confirmation: CommandConfirmation? = nil) async {
+                 confirmation: CommandConfirmation? = nil, suggestedReply: String? = nil) async {
         if let confirmation, !confirmationMatches(confirmation, connection: connection) {
             commandConfirmation = nil
             status = "命令、草稿或连接已变化，请重新发送并确认。"
@@ -535,10 +545,11 @@ final class PadWorkspace {
         }
         guard let id = selection, pending == nil, importingImagesForSession != id else { return }
         let routedID = capabilities?.sessionId ?? id
-        let text = drafts[id] ?? ""
-        let images = draftImages[id] ?? []
-        let mentions = (draftMentions[id] ?? []).filter { text.contains("@\($0.displayName)") }
-        let slashCommand = stop ? nil : ClientConversationCommand.parse(text)
+        let text = suggestedReply ?? (drafts[id] ?? "")
+        let images = suggestedReply == nil ? (draftImages[id] ?? []) : []
+        let mentions = suggestedReply == nil
+            ? (draftMentions[id] ?? []).filter { text.contains("@\($0.displayName)") } : []
+        let slashCommand = stop || suggestedReply != nil ? nil : ClientConversationCommand.parse(text)
         if slashCommand != nil, !images.isEmpty || !mentions.isEmpty || schedule != nil {
             status = "请单独发送斜杠命令，不要附带图片、引用或定时设置。"
             return
@@ -563,7 +574,10 @@ final class PadWorkspace {
             // Persist the identity before any mutation. Never persist message text in preferences.
             defaults.set(try JSONEncoder().encode(command), forKey: "pendingCommand")
             pending = command
-            if !stop { submissions[command.requestID] = snapshot }
+            // Suggested replies are independent of the user's current draft.
+            // They still use the same idempotent send/receipt path, but a later
+            // acknowledgement must never clear text or images being composed.
+            if !stop && suggestedReply == nil { submissions[command.requestID] = snapshot }
             status = ""
             if !stop, slashCommand == nil, schedule == nil, let deviceID = connection.deviceID {
                 let messageID = ClientSessionAPI.messageID(deviceID: deviceID, requestID: command.requestID)
@@ -614,6 +628,11 @@ final class PadWorkspace {
             inventoryDirty = true; messagesDirty = true
             scheduleRefresh(connection)
         }
+    }
+
+    func sendSuggestedReply(_ connection: PadConnection, sessionID: String, text: String) async {
+        guard selection == sessionID else { return }
+        await command(connection, stop: false, suggestedReply: text)
     }
 
     private func confirmationMatches(_ proposal: CommandConfirmation, connection: PadConnection) -> Bool {

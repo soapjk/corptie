@@ -180,12 +180,12 @@ public enum ExecutionTimelineAttributedText {
     #if canImport(AppKit)
     private static let accentColor = ExecutionColor.controlAccentColor
     private static let secondaryColor = ExecutionColor.secondaryLabelColor
-    private static let secondaryText = ExecutionColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
-    private static let mutedText = ExecutionColor(calibratedRed: 0.38, green: 0.41, blue: 0.43, alpha: 1)
+    private static let secondaryText = ExecutionColor.labelColor
+    private static let mutedText = ExecutionColor.secondaryLabelColor
     #else
     private static let accentColor = ExecutionColor.tintColor
     private static let secondaryColor = ExecutionColor.secondaryLabel
-    private static let secondaryText = ExecutionColor(red: 0.24, green: 0.27, blue: 0.29, alpha: 1)
-    private static let mutedText = ExecutionColor(red: 0.38, green: 0.41, blue: 0.43, alpha: 1)
+    private static let secondaryText = ExecutionColor.label
+    private static let mutedText = ExecutionColor.secondaryLabel
     #endif
 }

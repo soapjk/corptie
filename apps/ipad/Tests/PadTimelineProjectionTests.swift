@@ -72,4 +72,22 @@ struct PadTimelineProjectionTests {
         workspace.applyLatestWindow([first], cursor: nil, revision: 10)
         #expect(workspace.processSteps["process:turn:one"]?.first?.plan?.revision == 2)
     }
+
+    @Test func settledProcessDoesNotKeepCurrentStepSubtitle() throws {
+        let name = "pad-settled-process-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        let workspace = PadWorkspace(defaults: defaults)
+        workspace.selection = "session:settled"
+        let running = try JSONDecoder().decode([ClientMessage].self, from: Data(
+            #"[{"id":"tool","turnId":"turn","type":"mcpToolCall","title":"Fetch records","text":"Fetching","turnStatus":"running","status":"running"}]"#.utf8))
+        workspace.messages = running
+        #expect(workspace.processPresentations["process:turn"]?.currentStepTitle == "Fetch records")
+
+        let completed = try JSONDecoder().decode([ClientMessage].self, from: Data(
+            #"[{"id":"tool","turnId":"turn","type":"mcpToolCall","title":"Fetch records","text":"Fetched","turnStatus":"completed","status":"completed"}]"#.utf8))
+        workspace.messages = completed
+        #expect(workspace.processPresentations["process:turn"]?.state == .completed)
+        #expect(workspace.processPresentations["process:turn"]?.currentStepTitle == nil)
+    }
 }

@@ -1,4 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Shared visual body for ordinary text messages. TextKit, Markdown parsing,
 /// measurement, link handling and clipboard access are injected platform leaves.
@@ -66,9 +71,14 @@ public struct MessageTextCard<Content: View>: View {
     }
 
     private var background: Color {
-        role == .user ? Color(red: 0.945, green: 0.965, blue: 0.988) : .white
+        #if canImport(AppKit)
+        let surface = Color(nsColor: .controlBackgroundColor)
+        #else
+        let surface = Color(uiColor: .secondarySystemBackground)
+        #endif
+        return role == .user ? Color.accentColor.opacity(0.1) : surface
     }
     private var border: Color {
-        role == .user ? Color(red: 0.45, green: 0.58, blue: 0.76).opacity(0.22) : .black.opacity(0.08)
+        role == .user ? Color.accentColor.opacity(0.3) : Color.primary.opacity(0.08)
     }
 }
