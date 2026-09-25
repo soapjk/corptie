@@ -189,6 +189,12 @@ public enum ConversationExecutionProjection {
         if item.type == "contextCompaction" {
             return "Context compacted"
         }
+        if item.type == "sleep" {
+            return "Waited"
+        }
+        if item.type == "imageView" {
+            return "Viewed image"
+        }
         let title = item.executionTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         return title.isEmpty ? typeTitle(item.type) : title
     }
@@ -282,6 +288,10 @@ public enum ConversationExecutionProjection {
         case "fileChange": "Changed files"
         case "webSearch": "Searched the web"
         case "mcpToolCall", "dynamicToolCall": "Used tool"
+        case "collabAgentToolCall", "collabToolCall": "Collaborated with agent"
+        case "functionCallOutput": "Received tool result"
+        case "enteredReviewMode": "Entered review mode"
+        case "exitedReviewMode": "Exited review mode"
         case "reasoning": "Reasoned"
         case "plan", "executionPlan": "Updated plan"
         case "warning": "Warning"

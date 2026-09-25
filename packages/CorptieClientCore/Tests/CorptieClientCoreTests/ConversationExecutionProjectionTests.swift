@@ -14,6 +14,20 @@ struct ConversationExecutionProjectionTests {
         #expect(step.detail == "Plan update unavailable")
     }
 
+    @Test func sleepAndProviderSpecificActionsHaveReadableSharedTitles() throws {
+        let source = [
+            ["id": "wait", "type": "sleep", "title": "sleep", "text": "", "status": "completed"],
+            ["id": "view", "type": "imageView", "title": "imageView", "text": "/tmp/image.png"],
+            ["id": "collab", "type": "collabAgentToolCall", "title": "", "text": ""],
+            ["id": "result", "type": "functionCallOutput", "title": "", "text": "done"]
+        ]
+        let items = try JSONDecoder().decode([ClientMessage].self,
+            from: JSONSerialization.data(withJSONObject: source))
+        let steps = ConversationExecutionProjection.steps(for: items)
+        #expect(steps.map(\.title) == ["Waited", "Viewed image", "Collaborated with agent", "Received tool result"])
+        #expect(steps[0].state == .completed)
+    }
+
     @Test func structuredPlanKeepsEveryStepInSharedDesktopMobileProjection() throws {
         let source: [String: Any] = [
             "id": "plan:one", "turnId": "turn:one", "turnStatus": "inProgress",

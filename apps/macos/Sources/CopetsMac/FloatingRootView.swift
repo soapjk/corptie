@@ -5628,8 +5628,15 @@ func nativeTimelineAllowsChoiceActions(type: String, status: String?) -> Bool {
     }
 }
 
-private func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
-    if item.type == "taskComplete" || item.title.localizedCaseInsensitiveContains("turn completed") {
+func isLowSignalDetailProcessItem(_ item: CodexThreadItem) -> Bool {
+    // A completion event can carry the only explanation for a failed turn.
+    // Hide the empty success marker, never the failure diagnostic.
+    if item.type == "taskComplete" {
+        let failed = item.status == "failed" || item.turnStatus == "failed"
+        return !failed && item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+    if item.title.localizedCaseInsensitiveContains("turn completed")
+        && item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         return true
     }
     if item.type == "agentMessage" && item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

@@ -288,7 +288,13 @@ private static func isTerminalTurnStatus(_ status: String) -> Bool {
 }
 private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: Item) -> Bool {
     switch item.type {
-    case "reasoning", "plan", "executionPlan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction":
+    // These are provider execution events, not authored conversation replies.
+    // Keep the mapping explicit: an unfamiliar event (or an interaction/error)
+    // must remain visible until its presentation semantics are understood.
+    case "reasoning", "plan", "executionPlan", "commandExecution", "fileChange",
+         "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction",
+         "sleep", "imageView", "collabAgentToolCall", "collabToolCall",
+         "functionCallOutput", "enteredReviewMode", "exitedReviewMode":
         return true
     default:
         return false
