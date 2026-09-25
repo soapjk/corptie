@@ -820,6 +820,7 @@ function normalizeDynamicToolConfirmation(value) {
     providerDefinitionsCount: value.providerDefinitionsCount == null
       ? null
       : Number(value.providerDefinitionsCount),
+    // Read legacy transition payloads, but emit only the canonical Provider proof field.
     providerObservationKind: typeof value.providerObservationKind === "string"
       ? value.providerObservationKind.trim()
       : (typeof value.observationKind === "string" ? value.observationKind.trim() : "")

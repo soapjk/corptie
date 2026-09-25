@@ -373,6 +373,15 @@ test("prospective replacement materialization is exact, applied, and remains unp
       desiredDomains: ["artifacts", "memory"],
       providerConfirmation: { ...confirmation, providerDefinitionsHash: "0".repeat(64) }
     }), { code: "PROVIDER_TOOL_RECEIPT_INVALID" });
+    await assert.rejects(() => value.coordinator.prepareAppliedReplacement({
+      binding: { ...prospectiveBinding, providerBindingId: "binding:legacy-field" },
+      desiredDomains: ["artifacts", "memory"],
+      providerConfirmation: {
+        ...confirmation,
+        providerObservationKind: undefined,
+        observationKind: confirmation.providerObservationKind
+      }
+    }), { code: "PROVIDER_TOOL_RECEIPT_INVALID" });
   } finally {
     value.store.close();
     await rm(value.directory, { recursive: true, force: true });

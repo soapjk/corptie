@@ -142,8 +142,8 @@ export class ToolHostMaterializationCoordinator {
       || (confirmation.providerContractHash != null
         && confirmation.providerContractHash !== plan.providerContractHash)
       || !Number.isSafeInteger(confirmation.providerDefinitionsCount)
-      || typeof (confirmation.providerObservationKind ?? confirmation.observationKind) !== "string"
-      || !(confirmation.providerObservationKind ?? confirmation.observationKind).trim()) {
+      || typeof confirmation.providerObservationKind !== "string"
+      || !confirmation.providerObservationKind.trim()) {
       throw toolError(
         "PROVIDER_TOOL_RECEIPT_INVALID",
         "Replacement Tool materialization requires an exact Provider definition hash, count, and observation proof.",
@@ -160,7 +160,7 @@ export class ToolHostMaterializationCoordinator {
       providerDefinitionsHash: confirmation.providerDefinitionsHash,
       providerContractHash: confirmation.providerContractHash ?? plan.providerContractHash,
       providerDefinitionsCount: confirmation.providerDefinitionsCount,
-      providerObservationKind: confirmation.providerObservationKind ?? confirmation.observationKind,
+      providerObservationKind: confirmation.providerObservationKind,
       refreshMode: plan.refreshMode,
       providerRevision: confirmation.providerRevision,
       receiptId: confirmation.receiptId

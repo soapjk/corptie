@@ -41,6 +41,8 @@ test("Codex materialization confirmation is impossible before a successful real 
   assert.deepEqual(request.params.dynamicTools, toolDefinitions);
   const confirmation = client.confirmThreadToolPlan("thread:confirmed", toolDefinitions);
   assert.match(confirmation.providerRevision, /^thread-start:thread:confirmed:/);
+  assert.equal(confirmation.providerObservationKind, "thread_start_accepted");
+  assert.equal(Object.hasOwn(confirmation, "observationKind"), false);
   assert.throws(() => client.confirmThreadToolPlan("thread:confirmed", []), {
     code: "PROVIDER_TOOL_APPLICATION_UNCONFIRMED"
   });
@@ -82,7 +84,7 @@ test("Codex restores only an exact inherited-fork schema proof", () => {
     toolDefinitions,
     persistedProof("thread:inherited", toolDefinitions, "thread_fork_inherited")
   );
-  assert.equal(restored.observationKind, "thread_fork_inherited");
+  assert.equal(restored.providerObservationKind, "thread_fork_inherited");
   assert.equal(restored.providerDefinitionsCount, toolDefinitions.length);
 });
 
