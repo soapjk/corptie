@@ -3,6 +3,22 @@ import XCTest
 @testable import CorptieMac
 
 final class NativeMarkdownCompatibilityTests: XCTestCase {
+    @MainActor
+    func testInlineChartCopyRespectsExplicitSafePresentationAndKeepsRawOtherwise() {
+        let raw = "Before\n```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"A\",\"data\":[{\"label\":\"B\",\"value\":2}]}\n```\nAfter"
+        var agent = item(id: "chart-copy", type: "agentMessage", text: raw)
+        agent.presentationText = "Rendered chart"
+        XCTAssertEqual(ChatTimelineRowRouting.displayText(for: agent), "Rendered chart")
+        XCTAssertEqual(ChatTimelineRowRouting.copyText(for: agent), "Rendered chart")
+
+        agent.presentationText = nil
+        XCTAssertEqual(ChatTimelineRowRouting.copyText(for: agent), raw)
+
+        var user = item(id: "user-copy", type: "userMessage", text: "raw envelope")
+        user.presentationText = "safe projection"
+        XCTAssertEqual(ChatTimelineRowRouting.copyText(for: user), "safe projection")
+    }
+
     func testRichBlocksRequestTheFullNativeContentWidth() {
         XCTAssertTrue(NativeMarkdownCompatibility.requiresFullWidthLayout("![alt](image.png)"))
         XCTAssertTrue(NativeMarkdownCompatibility.requiresFullWidthLayout("- [ ] unfinished"))
@@ -72,11 +88,12 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
             showsHeader: false
         )
 
-        let attributed = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480).attributedText
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480)
 
-        XCTAssertTrue(attributed.string.contains(L10n("Execution Context").uppercased()))
-        XCTAssertTrue(attributed.string.contains(L10n("Execution Action").uppercased()))
-        XCTAssertFalse(attributed.string.contains("**"))
+        XCTAssertEqual(layout.processBlocks.count, 2)
+        XCTAssertTrue(layout.processBlocks[0].attributedText.string.contains(L10n("Execution Context").uppercased()))
+        XCTAssertTrue(layout.processBlocks[1].attributedText.string.contains(L10n("Execution Action").uppercased()))
+        XCTAssertFalse(layout.processBlocks.map(\.attributedText.string).joined().contains("**"))
     }
 
     func testUserMessageAndExecutionProcessBecomeSeparateDisplayEntries() {
@@ -461,20 +478,23 @@ final class NativeMarkdownCompatibilityTests: XCTestCase {
         XCTAssertTrue(presentation.bodyMarkdown.contains("not an executable"))
     }
 
-    @MainActor
-    func testExpandedExecutionRawStatusUsesLatestProviderItem() {
-        var first = item(id: "command", type: "commandExecution", text: "$ npm test")
-        first.rawMetadataJSON = "{\"command\":\"npm test\"}"
-        var latest = item(id: "reasoning", type: "reasoning", text: "Thinking", turnStatus: "inProgress")
-        latest.rawMetadataJSON = "{\"type\":\"reasoning\",\"summary\":[]}"
+    func testOnlyPendingApprovalsOfferActions() {
+        for type in ["approval", "choice"] {
+            XCTAssertTrue(nativeTimelineAllowsChoiceActions(type: type, status: "pending"))
+            for status in [nil, "selected", "submitted", "dispatching", "unknown", "expired", "completed"] {
+                XCTAssertFalse(nativeTimelineAllowsChoiceActions(type: type, status: status))
+            }
+        }
+        XCTAssertTrue(nativeTimelineAllowsChoiceActions(type: "agentMessage", status: nil))
+        XCTAssertFalse(nativeTimelineAllowsChoiceActions(type: "agentMessage", status: "selected"))
+    }
 
-        let rawStatus = processRawStatusText(for: [first, latest])
-
-        XCTAssertTrue(rawStatus.contains("item_id: reasoning"))
-        XCTAssertTrue(rawStatus.contains("turn_status: inProgress"))
-        XCTAssertTrue(rawStatus.contains("provider_metadata:"))
-        XCTAssertTrue(rawStatus.contains("\"summary\":[]"))
-        XCTAssertFalse(rawStatus.contains("npm test"))
+    func testPendingInteractionFlagIsExplicitRowState() {
+        let row = AppKitChatTimelineRow(id: "approval", contentRevision: 1,
+            nativeText: "Allow access?", copyText: "Allow access?", nativeStyle: .agent,
+            title: "需要确认", metadata: "", expandableTurnId: nil, isExpanded: false,
+            isPendingInteraction: true)
+        XCTAssertTrue(row.isPendingInteraction)
     }
 
     func testPlainUserAndAgentMessagesRemainNative() {

@@ -1,5 +1,6 @@
 import SwiftUI
 import CorptieConversation
+import CorptieClientCore
 
 /// Production adapter. It deliberately keeps the
 /// existing attributed-text cache, measured sizes and custom TextKit view.
@@ -9,12 +10,17 @@ struct MacSharedMessageTextCard: View {
     var baseDirectory: String?
     var copy: () -> Void = {}
     var toggle: () -> Void = {}
+    var performAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
 
     static func supports(_ row: AppKitChatTimelineRow) -> Bool {
         supportsProcess(row) || (row.nativeStyle != .process && !row.showsHeader && !row.isCollaboration
             && row.collaborationRoute == nil && row.processCount == nil && row.expandableTurnId == nil
-            && row.actions.isEmpty && !row.showsCollaborationSentStatus
-            && row.images.isEmpty && row.rawStatusText.isEmpty)
+            && (row.actions.isEmpty || (row.nativeStyle == .agent
+                && row.nativeText.contains("```corptie-chart")))
+            && !row.showsCollaborationSentStatus
+            && (row.images.isEmpty || (row.nativeStyle == .agent
+                && row.nativeText.contains("```corptie-chart")))
+            && row.rawStatusText.isEmpty)
     }
 
     static func supportsProcess(_ row: AppKitChatTimelineRow) -> Bool {
@@ -35,13 +41,28 @@ struct MacSharedMessageTextCard: View {
     }
 
     private var processCard: some View {
-        ProcessCard(summary: row.processSummary, symbol: row.processState.symbolName,
-                    tint: Color(nsColor: row.processState.color), expanded: row.isExpanded, toggle: toggle) {
+        ProcessCard(summary: row.processPrimarySummary, secondary: row.processCurrentStepTitle,
+                    symbol: row.processState.symbolName,
+                    tint: Color(nsColor: row.processState.color), expanded: row.isExpanded,
+                    progress: row.processPlanProgress, progressLabel: row.processPlanProgressLabel,
+                    toggle: toggle) {
             VStack(alignment: .leading, spacing: 8) {
-                MeasuredMessageText(text: layout.attributedText,
-                    size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
-                    baseDirectory: baseDirectory)
-                    .frame(width: layout.cardWidth - 20, height: layout.textHeight)
+                if layout.processBlocks.isEmpty {
+                    MeasuredMessageText(text: layout.attributedText,
+                        size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
+                        baseDirectory: baseDirectory)
+                        .frame(width: layout.cardWidth - 20, height: layout.textHeight)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(layout.processBlocks.indices, id: \.self) { index in
+                            let block = layout.processBlocks[index]
+                            MacProcessBlockView(block: block, cardWidth: layout.cardWidth,
+                                                baseDirectory: baseDirectory)
+                        }
+                    }
+                    .frame(width: layout.cardWidth - 20, height: layout.textHeight,
+                           alignment: .topLeading)
+                }
                 if layout.rawStatusHeight > 0 {
                     ProcessRawStatusText(text: row.rawStatusText)
                         .frame(width: layout.cardWidth - 20, height: layout.rawStatusHeight)
@@ -56,11 +77,196 @@ struct MacSharedMessageTextCard: View {
             timestamp: row.hoverTimestamp, showsActions: row.showsMessageActionBar,
             actionsAlwaysVisible: false, cardWidth: layout.cardWidth,
             cardHeight: layout.rowHeight - (row.showsMessageActionBar ? 28 : 2), copy: copy) {
-                MeasuredMessageText(text: layout.attributedText,
-                    size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
-                    baseDirectory: baseDirectory)
-                    .frame(width: layout.cardWidth - 20, height: layout.textHeight)
+            VStack(alignment: .leading, spacing: 0) {
+                if row.nativeStyle == .user && !row.images.isEmpty {
+                    attachmentStrip.padding(.bottom, 8)
+                }
+                if layout.richBlocks.isEmpty {
+                    MeasuredMessageText(text: layout.attributedText,
+                        size: CGSize(width: layout.cardWidth - 20, height: layout.textHeight),
+                        baseDirectory: baseDirectory)
+                        .frame(width: layout.cardWidth - 20, height: layout.textHeight)
+                } else {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(layout.richBlocks, id: \.id) { block in
+                            switch block {
+                            case .markdown(_, let text, let height):
+                                MeasuredMessageText(text: text,
+                                    size: CGSize(width: layout.cardWidth - 20, height: height),
+                                    baseDirectory: baseDirectory)
+                                    .frame(width: layout.cardWidth - 20, height: height)
+                            case .chart(_, let spec, let height):
+                                ConversationChartView(spec: spec)
+                                    .frame(width: layout.cardWidth - 20,
+                                           height: height)
+                            }
+                        }
+                    }
+                    .frame(width: layout.cardWidth - 20, height: layout.textHeight,
+                           alignment: .topLeading)
+                }
+                if row.nativeStyle != .user && !row.images.isEmpty {
+                    attachmentStrip.padding(.top, 8)
+                }
+                if !row.actions.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: 6) {
+                            ForEach(row.actions, id: \.id) { action in
+                                Button(action.label) { performAction(action) }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                    .tint(action.isDestructive ? .red : .accentColor)
+                                    .accessibilityIdentifier("chat.timeline.action.\(action.id)")
+                            }
+                        }
+                    }
+                    .scrollIndicators(.hidden)
+                    .frame(width: layout.cardWidth - 20, height: 30, alignment: .leading)
+                    .padding(.top, 4)
+                }
             }
+        }
+    }
+
+    private var attachmentStrip: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 7) {
+                ForEach(Array(row.images.prefix(4).enumerated()), id: \.offset) { index, attachment in
+                    MacMessageImageThumbnail(attachment: attachment, index: index)
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .frame(width: layout.cardWidth - 20, height: 88, alignment: .leading)
+    }
+}
+
+private struct MacMessageImageThumbnail: View {
+    let attachment: ChatTimelineImage
+    let index: Int
+    @State private var loadedImage: NSImage?
+    @State private var loadFailed = false
+
+    var body: some View {
+        Button(action: openImage) {
+            Group {
+                if let loadedImage {
+                    Image(nsImage: loadedImage)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: loadFailed ? "exclamationmark.triangle" : "photo")
+                        .resizable()
+                        .scaledToFit()
+                        .padding(22)
+                }
+            }
+            .frame(width: 88, height: 88)
+            .clipped()
+            .background(Color(nsColor: .quaternaryLabelColor).opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+        }
+        .buttonStyle(.plain)
+        .help(attachment.originalPath == nil ? "打开图片" : "在 Finder 中显示原始图片")
+        .accessibilityLabel("附加图片 \(index + 1)")
+        .task(id: attachment.displayURL) {
+            loadedImage = nil
+            loadFailed = false
+            guard let url = attachment.displayURL else {
+                loadFailed = true
+                return
+            }
+            ChatTimelineImageLoader.shared.load(url) { image in
+                guard !Task.isCancelled else { return }
+                loadedImage = image
+                loadFailed = image == nil
+            }
+        }
+    }
+
+    private func openImage() {
+        if let originalPath = attachment.originalPath,
+           FileManager.default.fileExists(atPath: originalPath) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: originalPath)])
+        } else if attachment.originalPath != nil, let url = attachment.displayURL {
+            let alert = NSAlert()
+            alert.messageText = "Original image is missing"
+            alert.informativeText = "Corptie kept a managed copy for this conversation."
+            alert.addButton(withTitle: "View managed copy")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+        } else if let url = attachment.displayURL {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+private struct MacProcessBlockView: View {
+    let block: NativeTimelineLayoutCache.Layout.ProcessBlock
+    let cardWidth: CGFloat
+    let baseDirectory: String?
+    @State private var showsFull = false
+
+    private var tint: Color {
+        switch block.step.state {
+        case .running: .accentColor
+        case .completed: .green
+        case .failed: .red
+        case .cancelled, .unknown: .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let plan = block.step.plan {
+                if plan.steps.count > 8 {
+                    ScrollView {
+                        ExecutionPlanChecklist(plan: plan)
+                            .frame(width: cardWidth - 36, alignment: .leading)
+                    }
+                    .scrollIndicators(.automatic)
+                    .frame(width: cardWidth - 36, height: block.textHeight)
+                } else {
+                    ExecutionPlanChecklist(plan: plan)
+                        .frame(width: cardWidth - 36, height: block.textHeight,
+                               alignment: .topLeading)
+                }
+            } else if block.step.tool != nil || block.step.changeSet != nil {
+                ExecutionStructuredStepView(presentation: .init(step: block.step))
+                    .frame(width: cardWidth - 36, height: block.textHeight,
+                           alignment: .topLeading)
+            } else {
+                MeasuredMessageText(text: block.attributedText,
+                    size: CGSize(width: cardWidth - 36, height: block.textHeight),
+                    baseDirectory: baseDirectory)
+                    .frame(width: cardWidth - 36, height: block.textHeight)
+            }
+            if block.hasOverflow {
+                Button("查看完整内容") { showsFull = true }
+                    .font(.system(size: 9.5))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.tint)
+                    .accessibilityIdentifier("execution-step-full-details")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(tint.opacity(0.16), lineWidth: 1)
+        }
+        .frame(width: cardWidth - 20, height: block.height)
+        .popover(isPresented: $showsFull) {
+            ScrollView {
+                Text(ExecutionStepDetailPresentation.fullText(block.step))
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .frame(width: 420, height: 320)
+        }
     }
 }
 
@@ -83,6 +289,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     private var baseDirectory: String?
     private var measuredWidth: CGFloat?
     private var onToggleExpansion: (String) -> Void = { _ in }
+    private var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
     private(set) var contentConfigurationCount = 0
     private(set) var widthLayoutUpdateCount = 0
 
@@ -95,6 +302,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
     func updateCallbacks(onToggleExpansion: @escaping (String) -> Void,
                          onAction: @escaping (AppKitChatTimelineRow.Action) -> Void) {
         self.onToggleExpansion = onToggleExpansion
+        self.onAction = onAction
     }
 
     func updateLinkContext(baseDirectory: String?) {
@@ -109,6 +317,7 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         precondition(MacSharedMessageTextCard.supports(row))
         self.row = row; self.baseDirectory = baseDirectory
         self.onToggleExpansion = onToggleExpansion
+        self.onAction = onAction
         measuredLayout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
         measuredWidth = availableWidth
         contentConfigurationCount += 1
@@ -131,7 +340,8 @@ final class AppKitSharedMessageTextCell: NSTableCellView, AppKitChatRowRendering
         guard let row, let measuredLayout else { return }
         let root = MacSharedMessageTextCard(row: row, layout: measuredLayout, baseDirectory: baseDirectory,
             copy: { [weak self] in self?.copyRepresentedMessage() },
-            toggle: { [weak self] in self?.toggleRepresentedProcess() })
+            toggle: { [weak self] in self?.toggleRepresentedProcess() },
+            performAction: { [weak self] action in self?.onAction(action) })
         if let host { host.rootView = root }
         else {
             let host = NSHostingView(rootView: root)

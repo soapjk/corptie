@@ -1078,6 +1078,33 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertTrue(visibleRows.contains(updated.count - 1))
     }
 
+    func testInlineChartTailGrowthKeepsLatestVisibleWithoutRemeasuringChart() async {
+        let harness = makeHarness(followsLatest: true, height: 180)
+        let history = (0..<30).map { row(id: "chart-history-\($0)", text: "Message \($0)") }
+        let chart = """
+        ```corptie-chart
+        {"version":1,"type":"bar","title":"Progress","data":[{"label":"Done","value":2}]}
+        ```
+        """
+        let first = row(id: "chart-tail", revision: 1, text: chart, showsHeader: false)
+        harness.coordinator.apply(rows: history + [first])
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(harness))
+
+        let measurements = NativeTimelineLayoutCache.shared.chartMeasurementCount
+        let updated = row(id: "chart-tail", revision: 2,
+            text: chart + "\n" + String(repeating: "Streaming explanation follows. ", count: 60),
+            showsHeader: false)
+        harness.coordinator.apply(rows: history + [updated])
+        harness.coordinator.viewportDidScroll(userInitiated: false)
+        await settleMainQueue()
+
+        XCTAssertTrue(isNearBottom(harness))
+        XCTAssertTrue(harness.followState.value)
+        XCTAssertTrue(harness.tableView.visibleRect.intersects(harness.tableView.rect(ofRow: history.count)))
+        XCTAssertEqual(NativeTimelineLayoutCache.shared.chartMeasurementCount, measurements)
+    }
+
     func testClampedWheelAtBottomKeepsFollowingForUserMessageAppend() async {
         let harness = makeHarness(followsLatest: true, height: 180)
         let rows = (0..<30).map { row(id: "send-follow-\($0)", text: "Message \($0)") }
