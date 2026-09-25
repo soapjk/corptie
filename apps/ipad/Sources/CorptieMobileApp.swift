@@ -473,7 +473,7 @@ struct ConversationView: View {
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.red)
                         .frame(width: 28, height: 28)
-                        .padGlassSurface(in: Circle(), interactive: true)
+                        .conversationGlassControl(tint: .red)
                         .frame(minWidth: 44, minHeight: 44)
                         .contentShape(Rectangle())
                 }

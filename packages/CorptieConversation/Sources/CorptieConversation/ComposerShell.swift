@@ -195,6 +195,42 @@ public enum ComposerPalette {
 
 // MARK: - Views
 
+/// Shared circular control surface for the conversation composer and header.
+/// The system owns the Liquid Glass rendering on macOS/iOS 26; older systems
+/// retain a lightweight material surface without adding a separate backdrop.
+public struct ConversationGlassControlSurface: ViewModifier {
+    private let tint: Color?
+
+    public init(tint: Color? = nil) { self.tint = tint }
+
+    @ViewBuilder
+    public func body(content: Content) -> some View {
+        if #available(macOS 26.0, iOS 26.0, *) {
+            if let tint {
+                content.glassEffect(.regular.tint(tint.opacity(0.18)).interactive(), in: .circle)
+            } else {
+                content.glassEffect(.regular.interactive(), in: .circle)
+            }
+        } else {
+            content
+                .background {
+                    Circle().fill(.ultraThinMaterial)
+                    if let tint { Circle().fill(tint.opacity(0.10)) }
+                }
+                .overlay {
+                    Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.6)
+                        .allowsHitTesting(false)
+                }
+        }
+    }
+}
+
+public extension View {
+    func conversationGlassControl(tint: Color? = nil) -> some View {
+        modifier(ConversationGlassControlSurface(tint: tint))
+    }
+}
+
 /// Rounded composer surface: white / text background, 13pt corners, focus-aware
 /// hairline, soft drop shadow.
 public struct ComposerShellSurface: ViewModifier {
