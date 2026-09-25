@@ -327,7 +327,12 @@ struct ConversationView: View {
                                 MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
                                     laneWidth: laneWidth, connection: connection, sessionID: sessionID,
                                     images: messageImages,
-                                    openAttachment: { attachmentPreview = PadAttachmentPreview(sessionID: sessionID, image: $0) })
+                                    openAttachment: { attachmentPreview = PadAttachmentPreview(sessionID: sessionID, image: $0) },
+                                    canSendSuggestedReply: !connection.busy && workspace.pending == nil
+                                        && workspace.capabilities?.send.available == true,
+                                    sendSuggestedReply: { text in
+                                        Task { await workspace.sendSuggestedReply(connection, sessionID: sessionID, text: text) }
+                                    })
                                     .id(message.id)
                             }
                         case .process:
@@ -339,9 +344,11 @@ struct ConversationView: View {
                         }
                     }
                     Color.clear.frame(height: 1).id("latest")
-                        .onAppear { followLatest = true }
+                        .onAppear {
+                            if #unavailable(iOS 18.0) { followLatest = true }
+                        }
                         .onDisappear {
-                            followLatest = false
+                            if #unavailable(iOS 18.0) { followLatest = false }
                             requestEarlierHistoryIfNeeded()
                         }
                 }
@@ -356,6 +363,7 @@ struct ConversationView: View {
                 }
             }
             .coordinateSpace(name: timelineCoordinateSpace)
+            .modifier(TimelineFollowLatestModifier(followLatest: $followLatest))
             .scrollDismissesKeyboard(.interactively)
             .background {
                 GeometryReader { proxy in
@@ -597,7 +605,7 @@ private struct PadProcessCard: View {
     let presentation: ConversationProcessPresentation
     let laneWidth: CGFloat
     @State private var expanded = false
-    private var segments: [PadExecutionSegment] { PadExecutionSegment.make(from: steps) }
+    private var latestPlan: ConversationExecutionPlan? { steps.compactMap(\.plan).last }
     private var state: ConversationProcessState { presentation.state }
     private var cardWidth: CGFloat {
         let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
@@ -618,18 +626,20 @@ private struct PadProcessCard: View {
         }
     }
     var body: some View {
-        ProcessCard(summary: presentation.summary,
+        ProcessCard(summary: ConversationProcessPresentation(
+                        state: presentation.state, count: presentation.count,
+                        duration: presentation.duration).summary,
+                    secondary: presentation.currentStepTitle,
                     symbol: state.symbolName, tint: tint, expanded: expanded,
+                    progress: latestPlan?.completionFraction,
+                    progressLabel: latestPlan.flatMap { plan in
+                        plan.completionFraction == nil ? nil
+                            : "计划 \(plan.steps.filter { $0.status == "completed" }.count)/\(plan.steps.count)"
+                    },
                     toggle: { expanded.toggle() }) {
             LazyVStack(alignment: .leading, spacing: 10) {
-                ForEach(segments) { segment in
-                    switch segment.content {
-                    case .plan(let plan):
-                        ExecutionPlanChecklist(plan: plan)
-                    case .text(let textSteps):
-                        PadMessageText(text: "", fromUser: false, steps: textSteps)
-                            .frame(maxWidth: .infinity)
-                    }
+                ForEach(steps) { step in
+                    PadExecutionStepCard(step: step)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -653,33 +663,87 @@ private struct TimelineNearTopKey: PreferenceKey {
     }
 }
 
-private struct PadExecutionSegment: Identifiable {
-    enum Content {
-        case text([ConversationExecutionStep])
-        case plan(ConversationExecutionPlan)
+private struct PadExecutionStepCard: View {
+    let step: ConversationExecutionStep
+    let presentation: ExecutionStepDetailPresentation
+    let structuredPresentation: ExecutionStructuredStepPresentation?
+    @State private var showsFull = false
+
+    init(step: ConversationExecutionStep) {
+        self.step = step
+        self.presentation = ExecutionStepDetailPresentation(step: step)
+        self.structuredPresentation = step.tool != nil || step.changeSet != nil
+            ? ExecutionStructuredStepPresentation(step: step) : nil
     }
 
-    let id: String
-    let content: Content
-
-    static func make(from steps: [ConversationExecutionStep]) -> [Self] {
-        var segments: [Self] = []
-        var textSteps: [ConversationExecutionStep] = []
-        func flushText() {
-            guard let first = textSteps.first else { return }
-            segments.append(Self(id: first.id, content: .text(textSteps)))
-            textSteps.removeAll(keepingCapacity: true)
+    var tint: Color {
+        switch step.state {
+        case .running: .accentColor
+        case .completed: .green
+        case .failed: .red
+        case .cancelled, .unknown: .secondary
         }
-        for step in steps {
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
             if let plan = step.plan {
-                flushText()
-                segments.append(Self(id: plan.planId, content: .plan(plan)))
+                if plan.steps.count > 8 {
+                    ScrollView {
+                        ExecutionPlanChecklist(plan: plan)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(height: 300)
+                } else {
+                    ExecutionPlanChecklist(plan: plan)
+                }
+            } else if let structuredPresentation {
+                ExecutionStructuredStepView(presentation: structuredPresentation)
             } else {
-                textSteps.append(step)
+                PadMessageText(text: "", fromUser: false,
+                               steps: [presentation.displayedStep])
+                    .frame(maxWidth: .infinity)
+            }
+            if structuredPresentation?.hasOverflow ?? presentation.hasOverflow {
+                Button("查看完整内容") { showsFull = true }
+                    .font(.caption2)
+                    .accessibilityIdentifier("execution-step-full-details")
             }
         }
-        flushText()
-        return segments
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(tint.opacity(0.16), lineWidth: 1)
+        }
+        .sheet(isPresented: $showsFull) {
+            PadExecutionFullDetails(step: step)
+        }
+    }
+}
+
+private struct PadExecutionFullDetails: View {
+    let step: ConversationExecutionStep
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                Text(ExecutionStepDetailPresentation.fullText(step))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+            .navigationTitle("执行详情")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 
@@ -694,6 +758,40 @@ private struct TimelineViewportSizeKey: PreferenceKey {
     static let defaultValue: CGSize = .zero
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
         value = nextValue()
+    }
+}
+
+private struct TimelineFollowLatestModifier: ViewModifier {
+    @Binding var followLatest: Bool
+    @State private var isUserScrolling = false
+
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *) {
+            content
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    Self.isNearBottom(geometry)
+                } action: { _, nearBottom in
+                    // Content growth can move the bottom without any user scroll.
+                    // Only a user-driven phase may change the follow preference.
+                    if isUserScrolling { followLatest = nearBottom }
+                }
+                .onScrollPhaseChange { _, newPhase, context in
+                    if newPhase == .interacting {
+                        isUserScrolling = true
+                        followLatest = Self.isNearBottom(context.geometry)
+                    } else if newPhase == .idle && isUserScrolling {
+                        followLatest = Self.isNearBottom(context.geometry)
+                        isUserScrolling = false
+                    }
+                }
+        } else {
+            content
+        }
+    }
+
+    @available(iOS 18.0, *)
+    private static func isNearBottom(_ geometry: ScrollGeometry) -> Bool {
+        geometry.visibleRect.maxY >= geometry.contentSize.height - 40
     }
 }
 
@@ -715,10 +813,36 @@ private struct PadApprovalCard: View {
     @State private var submitted = false
     @State private var errorText: String?
 
+    private var displayText: String {
+        ConversationMessageDisplayText.resolve(text: message.text,
+            presentationText: message.presentationText, title: message.title, type: message.type)
+    }
+
+    private var requiresAttention: Bool { message.status == "pending" && !submitted }
+    private var statusSymbol: String {
+        if requiresAttention { return "exclamationmark.circle.fill" }
+        if submitted || ["submitted", "dispatching", "unknown"].contains(message.status ?? "") {
+            return "clock"
+        }
+        if ["selected", "completed", "resolved"].contains(message.status ?? "") {
+            return "checkmark.circle"
+        }
+        return "circle.dashed"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(message.title ?? "需要你的选择").font(.headline)
-            Text(message.text).font(.subheadline).textSelection(.enabled)
+            HStack(spacing: 7) {
+                Image(systemName: statusSymbol)
+                    .foregroundStyle(requiresAttention ? .orange : .secondary)
+                    .accessibilityHidden(true)
+                Text(message.title ?? "需要你的选择").font(.headline)
+            }
+            Text(displayText).font(.subheadline).textSelection(.enabled)
+            if submitting {
+                Text("正在提交，等待确认")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if message.status == "pending" && !submitted, !(message.options ?? []).isEmpty {
                 ForEach(message.options ?? []) { option in
                     Button(option.label) { Task { await respond(option) } }
@@ -735,7 +859,13 @@ private struct PadApprovalCard: View {
         }
         .frame(maxWidth: 560, alignment: .leading)
         .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .background(requiresAttention ? Color.orange.opacity(0.065) : Color.secondary.opacity(0.04),
+                    in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(requiresAttention ? Color.orange.opacity(0.36) : Color.secondary.opacity(0.12),
+                              lineWidth: 1)
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation-approval")
@@ -835,7 +965,9 @@ private struct PadUserInputCard: View {
                     Text(statusText).font(.caption).foregroundStyle(.secondary)
                 }
             } else {
-                Text(message.text).font(.subheadline)
+                Text(ConversationMessageDisplayText.resolve(text: message.text,
+                    presentationText: message.presentationText, title: message.title, type: message.type))
+                    .font(.subheadline)
                 Text("当前客户端无法处理这种问题，请更新客户端。")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -899,10 +1031,25 @@ private struct MobileMessageBubble: View {
     let sessionID: String
     let images: PadMessageImageStore
     let openAttachment: (ClientMessageImage) -> Void
+    let canSendSuggestedReply: Bool
+    let sendSuggestedReply: (String) -> Void
 
     private var fromUser: Bool { message.type == "userMessage" }
-    private var displayText: String { message.text.isEmpty && message.images.isEmpty ? "此消息类型暂不支持展示" : message.text }
+    private var displayText: String {
+        ConversationMessageDisplayText.resolve(text: message.text,
+            presentationText: message.presentationText, title: message.title, type: message.type)
+    }
+    private var contentBlocks: [ConversationLocatedContentBlock] {
+        guard message.type == "agentMessage", displayText.contains("```corptie-chart")
+        else { return [.init(messageID: message.id, startUTF16: 0, content: .markdown(displayText))] }
+        return ConversationChartBlockCache.shared.locatedBlocks(
+            messageID: message.id, authoritativeText: displayText)
+    }
     private var attachments: ArraySlice<ClientMessageImage> { message.images.prefix(MessageImageStripMetrics.maximumCount) }
+    private var suggestedReplies: [ClientApprovalOption] {
+        guard message.type == "agentMessage", message.status != "selected" else { return [] }
+        return message.options ?? []
+    }
     private var processingLabel: String? {
         guard fromUser else { return nil }
         switch UserMessageProcessingState(authoritativeValue: message.userMessageStatus, legacyStatus: message.status) {
@@ -918,7 +1065,8 @@ private struct MobileMessageBubble: View {
         let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
         return MessageBubbleWidthPolicy.cardWidth(
             bodyWidth: PadMessageLayout.bodyWidth(text: displayText, style: fromUser ? .user : .agent),
-            hasAttachments: !attachments.isEmpty, laneWidth: availableLane)
+            hasAttachments: !attachments.isEmpty || !suggestedReplies.isEmpty,
+            laneWidth: availableLane)
     }
 
     var body: some View {
@@ -932,12 +1080,44 @@ private struct MobileMessageBubble: View {
                 MessageTextCard(messageID: message.id, role: fromUser ? .user : .agent,
                     timestamp: ConversationTimestampText.messageLabel(createdAt: message.createdAt),
                     showsActions: true, actionsAlwaysVisible: true, cardWidth: cardWidth,
-                    copy: { UIPasteboard.general.string = message.text }) {
+                    copy: { UIPasteboard.general.string = ConversationMessageDisplayText.copyText(
+                        type: message.type, authoritativeText: message.text,
+                        presentationText: message.presentationText, displayedText: displayText) }) {
                         VStack(alignment: .leading, spacing: MessageImageStripMetrics.bottomSpacing) {
-                            if !attachments.isEmpty { attachmentStrip }
-                            if !displayText.isEmpty {
-                                PadMessageText(text: displayText, fromUser: fromUser)
+                            if fromUser && !attachments.isEmpty { attachmentStrip }
+                            ForEach(contentBlocks) { block in
+                                switch block.content {
+                                case .markdown(let text):
+                                    if !text.isEmpty {
+                                        PadMessageText(text: text, fromUser: fromUser)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                case .chart(let spec, _):
+                                    ConversationChartView(spec: spec)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                case .invalidChart(let original, let reason):
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(reason).font(.caption2).foregroundStyle(.secondary)
+                                        PadMessageText(text: original, fromUser: false)
+                                    }
                                     .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                            if !fromUser && !attachments.isEmpty { attachmentStrip }
+                            if !suggestedReplies.isEmpty {
+                                ScrollView(.horizontal) {
+                                    HStack(spacing: 6) {
+                                        ForEach(suggestedReplies) { option in
+                                            Button(option.label) { sendSuggestedReply(option.label) }
+                                                .buttonStyle(.bordered)
+                                                .controlSize(.small)
+                                                .frame(minHeight: 44)
+                                                .disabled(!canSendSuggestedReply)
+                                                .accessibilityIdentifier("message-suggested-reply-\(option.id)")
+                                        }
+                                    }
+                                }
+                                .scrollIndicators(.hidden)
                             }
                         }
                     }
@@ -950,16 +1130,20 @@ private struct MobileMessageBubble: View {
     }
 
     private var attachmentStrip: some View {
-        HStack(spacing: MessageImageStripMetrics.spacing) {
-            ForEach(Array(attachments.enumerated()), id: \.element.id) { index, attachment in
-                Button { openAttachment(attachment) } label: {
-                    MessageImageThumbnail(state: thumbnailState(attachment), index: index)
+        ScrollView(.horizontal) {
+            HStack(spacing: MessageImageStripMetrics.spacing) {
+                ForEach(Array(attachments.enumerated()), id: \.element.id) { index, attachment in
+                    Button { openAttachment(attachment) } label: {
+                        MessageImageThumbnail(state: thumbnailState(attachment), index: index)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("message-attachment-\(index)")
+                    .onAppear { images.ensure(sessionID: sessionID, managedPath: attachment.managedPath, connection: connection) }
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("message-attachment-\(index)")
-                .onAppear { images.ensure(sessionID: sessionID, managedPath: attachment.managedPath, connection: connection) }
             }
         }
+        .scrollIndicators(.hidden)
+        .frame(height: MessageImageStripMetrics.thumbnailEdge)
     }
 
     private func thumbnailState(_ attachment: ClientMessageImage) -> MessageImageThumbnail.State {

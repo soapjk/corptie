@@ -133,7 +133,8 @@ export function executionPlanItem(plan, { turnId, turnStatus, createdAt }) {
     turnStatus,
     type: "executionPlan",
     title: "Execution plan",
-    text: plan.lifecycle === "unknown" ? "Plan update unavailable" : `Plan ${completed}/${plan.steps.length}`,
+    text: plan.lifecycle === "unknown" ? "Plan update unavailable"
+      : plan.steps.length === 0 ? "No plan steps" : `Plan ${completed}/${plan.steps.length}`,
     status: plan.lifecycle === "active"
       ? (["completed", "failed", "cancelled"].includes(turnStatus) ? turnStatus : "running")
       : plan.lifecycle,

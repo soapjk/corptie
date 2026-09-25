@@ -1,9 +1,402 @@
 import AppKit
+import SwiftUI
 import XCTest
+import CorptieConversation
+import CorptieClientCore
 @testable import CorptieMac
 
 @MainActor
 final class SharedExecutionTextTests: XCTestCase {
+    func testNativeChecklistUsesExactShortHeightAndBoundsLongPlans() throws {
+        func plan(count: Int, completed: Int, revision: Int) throws -> ConversationExecutionPlan {
+            let source: [String: Any] = [
+                "schemaVersion": 1, "planId": "plan:height-probe", "revision": revision,
+                "lifecycle": "active", "updatedAt": "2026-09-25T00:00:00Z",
+                "steps": (0..<count).map { index in [
+                    "stepId": "step:\(index)", "ordinal": index,
+                    "text": "检查第 \(index) 项及其较长的说明，确保窄卡片会正确换行",
+                    "status": index < completed ? "completed" : "pending"
+                ] as [String: Any] }
+            ]
+            return try JSONDecoder().decode(ConversationExecutionPlan.self,
+                from: JSONSerialization.data(withJSONObject: source))
+        }
+        func layout(for plan: ConversationExecutionPlan, revision: Int) -> NativeTimelineLayoutCache.Layout {
+            let step = NativeExecutionTimelineStep(id: "item:plan", kind: .action,
+                state: .running, title: "Plan", detail: nil, plan: plan)
+            let row = AppKitChatTimelineRow(id: "process:plan-layout", contentRevision: revision,
+                nativeText: "", copyText: "", nativeStyle: .process,
+                title: "", metadata: "", expandableTurnId: "turn:plan", isExpanded: true,
+                processCount: 1, processSteps: [step], showsHeader: false)
+            return NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 360)
+        }
+        let short = try plan(count: 3, completed: 1, revision: 1)
+        let first = layout(for: short, revision: 1)
+        let block = try XCTUnwrap(first.processBlocks.first)
+        let width = first.cardWidth - 36
+        let host = NSHostingView(rootView: ExecutionPlanChecklist(plan: short)
+            .frame(width: width, alignment: .leading))
+        host.frame = NSRect(x: 0, y: 0, width: width, height: 1)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(block.textHeight, ceil(host.fittingSize.height), accuracy: 1)
+        XCTAssertEqual(block.attributedText.length, 0)
+
+        let measuredBefore = NativePlanChecklistHeightCache.shared.measurementCount
+        let statusUpdate = try plan(count: 3, completed: 2, revision: 2)
+        let second = layout(for: statusUpdate, revision: 2)
+        XCTAssertEqual(second.processBlocks[0].textHeight, block.textHeight)
+        XCTAssertEqual(NativePlanChecklistHeightCache.shared.measurementCount, measuredBefore,
+            "Changing only completion status must not remeasure checklist text")
+
+        let long = layout(for: try plan(count: 200, completed: 5, revision: 3), revision: 3)
+        XCTAssertEqual(long.processBlocks[0].textHeight, 300)
+        XCTAssertLessThan(long.rowHeight, 400)
+    }
+
+    func testNativeChecklistRevisionLayoutBenchmark() throws {
+        guard ProcessInfo.processInfo.environment["CORPTIE_PLAN_BENCHMARK"] == "1" else {
+            throw XCTSkip("Set CORPTIE_PLAN_BENCHMARK=1 for 1/20/200-step native checklist layout measurements")
+        }
+        for stepCount in [1, 20, 200] {
+            let rows: [AppKitChatTimelineRow] = try (0..<120).map { revision in
+                let planSource: [String: Any] = [
+                    "schemaVersion": 1, "planId": "plan:ui-benchmark:\(stepCount)",
+                    "revision": revision + 1, "lifecycle": "active",
+                    "updatedAt": "2026-09-25T00:00:00Z",
+                    "steps": (0..<stepCount).map { index in [
+                        "stepId": "step:\(index)", "ordinal": index,
+                        "text": "Benchmark step \(index) with stable wording across revisions",
+                        "status": index <= revision % stepCount ? "completed" : "pending"
+                    ] as [String: Any] }
+                ]
+                let plan = try JSONDecoder().decode(ConversationExecutionPlan.self,
+                    from: JSONSerialization.data(withJSONObject: planSource))
+                let step = NativeExecutionTimelineStep(id: "item:ui-benchmark:\(stepCount)",
+                    kind: .action, state: .running, title: "Plan", detail: nil, plan: plan)
+                return AppKitChatTimelineRow(id: "process:ui-benchmark:\(stepCount)",
+                    contentRevision: revision + 1, nativeText: "", copyText: "",
+                    nativeStyle: .process, title: "", metadata: "",
+                    expandableTurnId: "turn:ui-benchmark:\(stepCount)", isExpanded: true,
+                    processCount: 1, processSteps: [step], showsHeader: false)
+            }
+            let measurementBefore = NativePlanChecklistHeightCache.shared.measurementCount
+            var samples: [Double] = []
+            for (index, row) in rows.enumerated() {
+                let start = ProcessInfo.processInfo.systemUptime
+                let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 360)
+                let elapsed = (ProcessInfo.processInfo.systemUptime - start) * 1_000
+                XCTAssertEqual(layout.processBlocks.count, 1)
+                XCTAssertLessThan(layout.rowHeight, 400)
+                if index >= 20 { samples.append(elapsed) }
+            }
+            let newMeasurements = NativePlanChecklistHeightCache.shared.measurementCount - measurementBefore
+            XCTAssertLessThanOrEqual(newMeasurements, stepCount == 1 ? 1 : 0)
+            samples.sort()
+            print("PLAN_UI_LAYOUT steps=\(stepCount) n=100 p50_ms=\(samples[50]) p95_ms=\(samples[95]) measured_short_checklists=\(newMeasurements)")
+        }
+    }
+
+    func testChartAndImageShareOneMeasuredMessageRow() {
+        let text = "Before\n```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"Compare\",\"data\":[{\"label\":\"A\",\"value\":2}]}\n```\nAfter"
+        let image = ChatTimelineImage(managedPath: "/tmp/chart-image.png",
+            displayURL: URL(fileURLWithPath: "/tmp/chart-image.png"), originalPath: nil)
+        let plain = AppKitChatTimelineRow(id: "message:chart-image", contentRevision: 1,
+            nativeText: text, copyText: text, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false)
+        let mixed = AppKitChatTimelineRow(id: "message:chart-image", contentRevision: 2,
+            nativeText: text, copyText: text, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false, images: [image])
+        XCTAssertTrue(MacSharedMessageTextCard.supports(mixed))
+        let plainLayout = NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 520)
+        let mixedLayout = NativeTimelineLayoutCache.shared.layout(for: mixed, columnWidth: 520)
+        XCTAssertEqual(mixedLayout.richBlocks.count, 3)
+        XCTAssertEqual(mixedLayout.rowHeight, plainLayout.rowHeight + 96, accuracy: 0.5)
+    }
+
+    func testChartMessageWithActionsKeepsRichBlocksAndActionSpace() {
+        let text = "Before\n```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"Compare\",\"data\":[{\"label\":\"A\",\"value\":2}]}\n```\nAfter"
+        let plain = AppKitChatTimelineRow(id: "message:chart-actions", contentRevision: 1,
+            nativeText: text, copyText: text, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false)
+        let action = AppKitChatTimelineRow.Action(id: "choose", label: "Continue",
+            isDestructive: false, kind: .sendMessage("Continue"))
+        let actionable = AppKitChatTimelineRow(id: "message:chart-actions", contentRevision: 2,
+            nativeText: text, copyText: text, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false, actions: [action])
+        XCTAssertTrue(MacSharedMessageTextCard.supports(actionable))
+        let plainLayout = NativeTimelineLayoutCache.shared.layout(for: plain, columnWidth: 520)
+        let actionLayout = NativeTimelineLayoutCache.shared.layout(for: actionable, columnWidth: 520)
+        XCTAssertEqual(actionLayout.richBlocks.count, 3)
+        XCTAssertEqual(actionLayout.rowHeight, plainLayout.rowHeight + 34, accuracy: 0.5)
+    }
+
+    func testBarLineAndPieRemainOrderedInsideOneMessageCard() {
+        let text = """
+        Overview
+        ```corptie-chart
+        {"version":1,"type":"bar","title":"Bar","data":[{"label":"A","value":2}]}
+        ```
+        Then the trend
+        ```corptie-chart
+        {"version":1,"type":"line","title":"Line","data":[{"x":1,"value":2},{"x":2,"value":3}]}
+        ```
+        Finally the split
+        ```corptie-chart
+        {"version":1,"type":"pie","title":"Pie","data":[{"label":"A","value":2},{"label":"B","value":3}]}
+        ```
+        Conclusion
+        """
+        let row = AppKitChatTimelineRow(id: "message:three-chart-kinds", contentRevision: 1,
+            nativeText: text, copyText: text, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false)
+        XCTAssertTrue(MacSharedMessageTextCard.supports(row))
+
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320)
+        XCTAssertEqual(layout.richBlocks.count, 7)
+        let kinds = layout.richBlocks.compactMap { block -> ConversationChartSpec.Kind? in
+            guard case .chart(_, let spec, _) = block else { return nil }
+            return spec.kind
+        }
+        XCTAssertEqual(kinds, [.bar, .line, .pie])
+        XCTAssertEqual(layout.rowHeight,
+            NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 320).rowHeight)
+        XCTAssertGreaterThan(layout.rowHeight, 3 * ConversationChartView.contentHeight)
+    }
+
+    func testInlineChartKeepsOneNativeMessageRowAndExactCachedHeight() {
+        let text = "Before\n```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"Compare\",\"data\":[{\"label\":\"A\",\"value\":2}]}\n```\nAfter"
+        let row = AppKitChatTimelineRow(id: "message:chart", contentRevision: 1,
+            nativeText: text, copyText: text, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false)
+        XCTAssertTrue(MacSharedMessageTextCard.supports(row))
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 520)
+        XCTAssertEqual(layout.richBlocks.count, 3)
+        XCTAssertGreaterThan(layout.textHeight, 150)
+        XCTAssertEqual(layout.rowHeight, NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 520).rowHeight)
+        if case .chart(_, let shortSpec, let shortHeight) = layout.richBlocks[1] {
+            let shortHost = NSHostingView(rootView: ConversationChartView(spec: shortSpec)
+                .frame(width: layout.cardWidth - 20))
+            shortHost.frame = NSRect(x: 0, y: 0, width: layout.cardWidth - 20, height: 1)
+            shortHost.layoutSubtreeIfNeeded()
+            XCTAssertEqual(shortHost.fittingSize.height, shortHeight, accuracy: 1,
+                "Short chart should fit its native row without extra empty height")
+        }
+        let longNote = String(repeating: "可核查来源说明。", count: 25)
+        let withNote = text.replacingOccurrences(of: "\"data\":", with: "\"sourceNote\":\"\(longNote)\",\"data\":")
+        let noteRow = AppKitChatTimelineRow(id: "message:chart-note", contentRevision: 1,
+            nativeText: withNote, copyText: withNote, nativeStyle: .agent,
+            title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+            showsHeader: false)
+        let noteLayout = NativeTimelineLayoutCache.shared.layout(for: noteRow, columnWidth: 300)
+        XCTAssertGreaterThan(noteLayout.rowHeight, layout.rowHeight)
+        guard case .chart(_, let spec, let measuredHeight) = noteLayout.richBlocks.first(where: {
+            if case .chart = $0 { return true }
+            return false
+        }) else {
+            XCTFail("Expected measured chart block")
+            return
+        }
+        let host = NSHostingView(rootView: ConversationChartView(spec: spec)
+            .frame(width: noteLayout.cardWidth - 20))
+        host.frame = NSRect(x: 0, y: 0, width: noteLayout.cardWidth - 20, height: 1)
+        host.layoutSubtreeIfNeeded()
+        let fitted = host.fittingSize.height
+        XCTAssertEqual(fitted, measuredHeight, accuracy: 1,
+            "Chart with a long source note should fit the native row exactly")
+    }
+
+    func testChartBlockFitsNarrowAndWideCardsWithMaximumMetadata() throws {
+        let json = try JSONSerialization.data(withJSONObject: [
+            "version": 1, "type": "bar",
+            "title": String(repeating: "长标题", count: 30),
+            "unit": String(repeating: "单位", count: 20),
+            "sourceNote": String(repeating: "模型提供的来源说明。", count: 25),
+            "data": [["label": "A", "value": 2]]
+        ])
+        let text = "```corptie-chart\n\(String(decoding: json, as: UTF8.self))\n```"
+        for columnWidth: CGFloat in [220, 300, 520] {
+            let row = AppKitChatTimelineRow(id: "message:chart-width-\(Int(columnWidth))",
+                contentRevision: 1, nativeText: text, copyText: text,
+                nativeStyle: .agent, title: "", metadata: "", expandableTurnId: nil,
+                isExpanded: false, showsHeader: false)
+            let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: columnWidth)
+            guard case .chart(_, let spec, let allocated) = layout.richBlocks.first else {
+                XCTFail("Expected a chart at width \(columnWidth)")
+                continue
+            }
+            let contentWidth = layout.cardWidth - 20
+            let host = NSHostingView(rootView: ConversationChartView(spec: spec)
+                .frame(width: contentWidth))
+            host.frame = NSRect(x: 0, y: 0, width: contentWidth, height: 1)
+            host.layoutSubtreeIfNeeded()
+            let fitted = host.fittingSize.height
+            XCTAssertGreaterThanOrEqual(allocated + 1, fitted,
+                "Chart content must not clip at width \(columnWidth)")
+            XCTAssertLessThanOrEqual(allocated - fitted, 8,
+                "Chart block must not add large empty space at width \(columnWidth)")
+        }
+    }
+
+    func testCompletedChartHeightIsReusedWhileTrailingTextStreams() {
+        let chart = "```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"Height-cache-append-20260925\",\"data\":[{\"label\":\"A\",\"value\":2}]}\n```"
+        let cache = NativeTimelineLayoutCache.shared
+        let before = cache.chartMeasurementCount
+        func row(_ suffix: String) -> AppKitChatTimelineRow {
+            let text = chart + suffix
+            return AppKitChatTimelineRow(id: "message:chart-stream", contentRevision: text.count,
+                nativeText: text, copyText: text, nativeStyle: .agent, title: "", metadata: "",
+                expandableTurnId: nil, isExpanded: false, showsHeader: false)
+        }
+        let first = cache.layout(for: row("\nA"), columnWidth: 480)
+        let appended = cache.layout(for: row("\nA longer explanation"), columnWidth: 480)
+        XCTAssertEqual(cache.chartMeasurementCount - before, 1,
+            "Appending ordinary text must not remeasure an unchanged chart")
+        XCTAssertEqual(first.richBlocks.first(where: { if case .chart = $0 { true } else { false } })?.id,
+            appended.richBlocks.first(where: { if case .chart = $0 { true } else { false } })?.id)
+        _ = cache.layout(for: row("\nA longer explanation"), columnWidth: 300)
+        XCTAssertEqual(cache.chartMeasurementCount - before, 2,
+            "A genuinely different card width must be measured separately")
+    }
+
+    func testChangingOnlyChartValuesDoesNotRemeasureItsUnchangedChrome() {
+        let cache = NativeTimelineLayoutCache.shared
+        let baseline = cache.chartMeasurementCount
+        func row(value: Int, title: String = "Value-cache-20260925") -> AppKitChatTimelineRow {
+            let text = "```corptie-chart\n{\"version\":1,\"type\":\"bar\",\"title\":\"\(title)\",\"data\":[{\"label\":\"A\",\"value\":\(value)}]}\n```"
+            return AppKitChatTimelineRow(id: "message:chart-values", contentRevision: value,
+                nativeText: text, copyText: text, nativeStyle: .agent, title: "", metadata: "",
+                expandableTurnId: nil, isExpanded: false, showsHeader: false)
+        }
+        let first = cache.layout(for: row(value: 1), columnWidth: 360)
+        for value in 2...100 {
+            _ = cache.layout(for: row(value: value), columnWidth: 360)
+        }
+        let changed = cache.layout(for: row(value: 200), columnWidth: 360)
+        XCTAssertEqual(cache.chartMeasurementCount - baseline, 1)
+        XCTAssertEqual(first.rowHeight, changed.rowHeight)
+        guard case .chart(_, let revisedSpec, let allocatedHeight) = changed.richBlocks[0] else {
+            XCTFail("Expected the revised chart to remain a chart")
+            return
+        }
+        XCTAssertEqual(revisedSpec.data[0].value, 200)
+        let host = NSHostingView(rootView: ConversationChartView(spec: revisedSpec)
+            .frame(width: changed.cardWidth - 20))
+        host.frame = NSRect(x: 0, y: 0, width: changed.cardWidth - 20, height: 1)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(host.fittingSize.height, allocatedHeight, accuracy: 1)
+        _ = cache.layout(for: row(value: 300, title: "Value-cache-new-title-20260925"), columnWidth: 360)
+        XCTAssertEqual(cache.chartMeasurementCount - baseline, 2,
+            "Changing the measured title still requires a new height")
+    }
+
+    func testMultiChartHistoryLayoutBenchmark() throws {
+        guard ProcessInfo.processInfo.environment["CORPTIE_CHART_BENCHMARK"] == "1" else {
+            throw XCTSkip("Set CORPTIE_CHART_BENCHMARK=1 for 1/20/200-row chart layout measurements")
+        }
+        let cache = NativeTimelineLayoutCache.shared
+        for count in [1, 20, 200] {
+            let rows: [AppKitChatTimelineRow] = (0..<count).map { index in
+                let title = "Benchmark-\(count)-\(index)"
+                let text = """
+                Before \(title)
+                ```corptie-chart
+                {"version":1,"type":"bar","title":"Bar \(title)","data":[{"label":"A","value":2}]}
+                ```
+                Between
+                ```corptie-chart
+                {"version":1,"type":"line","title":"Line \(title)","data":[{"x":1,"value":2},{"x":2,"value":3}]}
+                ```
+                Between again
+                ```corptie-chart
+                {"version":1,"type":"pie","title":"Pie \(title)","data":[{"label":"A","value":2},{"label":"B","value":3}]}
+                ```
+                After
+                """
+                return AppKitChatTimelineRow(id: "message:chart-benchmark:\(count):\(index)",
+                    contentRevision: 1, nativeText: text, copyText: text, nativeStyle: .agent,
+                    title: "", metadata: "", expandableTurnId: nil, isExpanded: false,
+                    showsHeader: false)
+            }
+            func measure() -> [Double] {
+                rows.map { row in
+                    let start = ProcessInfo.processInfo.systemUptime
+                    let layout = cache.layout(for: row, columnWidth: 360)
+                    XCTAssertEqual(layout.richBlocks.count, 7)
+                    return (ProcessInfo.processInfo.systemUptime - start) * 1_000
+                }
+            }
+            let chartMeasurementsBefore = cache.chartMeasurementCount
+            let cold = measure().sorted()
+            let newChartMeasurements = cache.chartMeasurementCount - chartMeasurementsBefore
+            let warm = measure().sorted()
+            XCTAssertEqual(newChartMeasurements, count * 3)
+            XCTAssertEqual(cache.chartMeasurementCount - chartMeasurementsBefore, count * 3,
+                "Revisiting cached rows must not rebuild chart hosts")
+            let p95Index = Int(Double(count - 1) * 0.95)
+            print("CHART_LAYOUT rows=\(count) charts_per_row=3 cold_p95_ms=\(cold[p95Index]) "
+                + "warm_p95_ms=\(warm[p95Index]) measured_chart_hosts=\(newChartMeasurements)")
+        }
+    }
+
+    func testExpandedProcessUsesMeasuredSemanticSubcardsInOneRow() {
+        let steps: [NativeExecutionTimelineStep] = [
+            .init(id: "tool:one", kind: .action, state: .completed,
+                  title: "Read source", detail: "Read two files"),
+            .init(id: "change:one", kind: .result, state: .completed,
+                  title: "Files changed", detail: "One file updated")
+        ]
+        let row = AppKitChatTimelineRow(id: "process:one", contentRevision: 1,
+            nativeText: "", copyText: "", nativeStyle: .process,
+            title: "", metadata: "", expandableTurnId: "turn:one", isExpanded: true,
+            processCount: 2, processSteps: steps, showsHeader: false)
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480)
+        XCTAssertEqual(layout.processBlocks.count, 2)
+        XCTAssertEqual(layout.textHeight,
+            layout.processBlocks[0].height + 6 + layout.processBlocks[1].height,
+            accuracy: 0.5)
+        XCTAssertEqual(layout.rowHeight, layout.textHeight + 48, accuracy: 0.5)
+        XCTAssertEqual(layout.processBlocks.map(\.step.id), steps.map(\.id))
+    }
+
+    func testCollapsedCurrentStepGetsASecondLineWithoutChangingRowIdentity() throws {
+        let collapsed = AppKitChatTimelineRow(id: "process:current", contentRevision: 1,
+            nativeText: "", copyText: "", nativeStyle: .process,
+            title: "", metadata: "", expandableTurnId: "turn:current", isExpanded: false,
+            processCount: 2, processState: .running,
+            processCurrentStepTitle: "Verify the result", showsHeader: false)
+        let layout = NativeTimelineLayoutCache.shared.layout(for: collapsed, columnWidth: 480)
+        XCTAssertEqual(layout.rowHeight, 48)
+        XCTAssertEqual(collapsed.id, "process:current")
+        XCTAssertFalse(collapsed.processPrimarySummary.contains("Verify the result"))
+    }
+
+    func testLongToolResultKeepsTheNativeRowBounded() throws {
+        let toolJSON: [String: Any] = ["schemaVersion": 1, "toolId": "tool:long",
+            "name": "terminal", "status": "completed", "result": String(repeating: "line\n", count: 300)]
+        let tool = try JSONDecoder().decode(ConversationToolExecution.self,
+            from: JSONSerialization.data(withJSONObject: toolJSON))
+        let step = NativeExecutionTimelineStep(id: "step:long", kind: .action,
+            state: .completed, title: "Run command", detail: nil, tool: tool)
+        let row = AppKitChatTimelineRow(id: "process:long", contentRevision: 1,
+            nativeText: "", copyText: "", nativeStyle: .process,
+            title: "", metadata: "", expandableTurnId: "turn:long", isExpanded: true,
+            processCount: 1, processSteps: [step], showsHeader: false)
+        let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: 480)
+        XCTAssertEqual(layout.processBlocks.count, 1)
+        XCTAssertTrue(layout.processBlocks[0].hasOverflow)
+        XCTAssertEqual(layout.processBlocks[0].attributedText.length, 0,
+            "Structured tool content must not be flattened into the legacy text leaf")
+        XCTAssertEqual(layout.processBlocks[0].textHeight,
+            ExecutionStructuredStepPresentation(step: step).height)
+        XCTAssertLessThan(layout.rowHeight, 200)
+    }
+
     func testCollapsedPlanRevisionUpdatesTheSameProcessRow() throws {
         func planItem(revision: Int, status: String) throws -> CodexThreadItem {
             let source: [String: Any] = [
@@ -322,7 +715,7 @@ private enum FrozenExecutionText {
                 string: L10n(step.title),
                 attributes: [
                     .font: NSFont.systemFont(ofSize: 10.5, weight: .semibold),
-                    .foregroundColor: NSColor(calibratedRed: 0.24, green: 0.27, blue: 0.29, alpha: 1)
+                    .foregroundColor: NSColor.labelColor
                 ]
             ))
             if let detail = step.detail {
@@ -335,7 +728,7 @@ private enum FrozenExecutionText {
                     string: "\n│  \(detail)",
                     attributes: [
                         .font: detailFont(step.kind),
-                        .foregroundColor: NSColor(calibratedRed: 0.38, green: 0.41, blue: 0.43, alpha: 1),
+                        .foregroundColor: NSColor.secondaryLabelColor,
                         .paragraphStyle: paragraph
                     ]
                 ))
