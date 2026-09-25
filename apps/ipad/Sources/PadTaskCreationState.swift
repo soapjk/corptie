@@ -168,6 +168,11 @@ final class PadTaskCreationState {
         }
     }
 
+    func acceptPushed(_ receipt: ClientCommandReceipt) {
+        guard pending?.input.requestId == receipt.requestId else { return }
+        accept(receipt)
+    }
+
     private func accept(_ receipt: ClientCommandReceipt) {
         guard result == nil else { return }
         guard let pending, receipt.requestId == pending.input.requestId, receipt.kind == "create_task",

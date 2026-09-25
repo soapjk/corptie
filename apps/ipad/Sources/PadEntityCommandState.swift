@@ -123,6 +123,11 @@ final class PadEntityCommandState {
         }
     }
 
+    func acceptPushed(_ receipt: ClientCommandReceipt) {
+        guard pending?.requestID == receipt.requestId else { return }
+        accept(receipt)
+    }
+
     private func accept(_ receipt: ClientCommandReceipt) {
         guard let pending, receipt.requestId == pending.requestID, receipt.kind == pending.kind else {
             notice = "操作回执不匹配，已保留原请求。"; return

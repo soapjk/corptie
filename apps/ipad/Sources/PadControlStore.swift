@@ -34,22 +34,39 @@ final class PadControlStore {
     var repositoryError = ""
     var loading: Set<ClientControlKind> = []
     var visibleTab = PadTab.workspace
-    private(set) var dirty = Set(ClientControlKind.allCases)
+    private(set) var dirty: Set<ClientControlKind> = []
     private var revision = 0
     private var repositoryRevision = 0
     private var worker: Task<Void, Never>?
     private var generation = UUID()
     private var active = false
     private var lastRefresh: [ClientControlKind: ContinuousClock.Instant] = [:]
+    private var pushSynchronized = false
+
+    func apply(_ snapshot: ClientControlSnapshot) {
+        guard snapshot.schemaVersion == 2 else { return }
+        let next: [ClientControlKind: [ClientControlItem]] = [
+            .automations: snapshot.automations,
+            .repositories: snapshot.repositories,
+            .agents: snapshot.agents,
+            .skills: snapshot.skills
+        ]
+        for (kind, values) in next where items[kind] != values { items[kind] = values }
+        cursors = [:]
+        errors = [:]
+        dirty.subtract(next.keys)
+        pushSynchronized = true
+    }
 
     func activate(_ tab: PadTab, connection: PadConnection) {
         visibleTab = tab
         active = true
-        // Refresh on entering a page too: Git may change outside Corptie events.
-        dirty.formUnion(tab.resources)
+        // Normal synchronization is server-pushed. A read is scheduled only
+        // after a legacy invalidation has explicitly marked data dirty.
         schedule(connection)
     }
     func invalidate(_ connection: PadConnection) {
+        guard !pushSynchronized else { return }
         revision += 1
         dirty.formUnion(ClientControlKind.allCases)
         schedule(connection)

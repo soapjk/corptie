@@ -70,7 +70,6 @@ struct PadTaskCreationSheet: View {
                         Button("打开新会话") {
                             guard state.matches(connection) else { return }
                             workspace.selection = result.sessionId
-                            Task { await workspace.inventory(connection) }
                             dismiss()
                         }.disabled(!state.matches(connection))
                         Button("再创建一个 Task") { state.startAnother() }
@@ -100,12 +99,13 @@ struct PadTaskCreationSheet: View {
         .task(id: state.draft.providerID) { await state.loadOptions(connection) }
         .task(id: "\(state.pending?.input.requestId ?? ""):active=\(scenePhase == .active)") {
             guard scenePhase == .active else { return }
-            for seconds in [0, 1, 2, 4, 8, 16, 30] {
-                do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
-                guard !Task.isCancelled, state.matches(connection), state.pending != nil,
-                      state.result == nil, !state.reconciliationDenied else { return }
-                await state.reconcile(connection)
-            }
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            guard !Task.isCancelled, state.matches(connection), state.pending != nil,
+                  state.result == nil, !state.reconciliationDenied else { return }
+            await state.reconcile(connection)
+        }
+        .onChange(of: workspace.pushedReceiptRevision) {
+            if let receipt = workspace.pushedReceipt { state.acceptPushed(receipt) }
         }
         .onChange(of: state.draft.model) { state.draft.reasoning = "" }
         .onDisappear { state.flush() }

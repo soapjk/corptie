@@ -50,23 +50,30 @@ struct CommandConfirmation: Identifiable {
     let deviceID: String?
 }
 
-/// Deduplicates automatic history requests emitted by scroll geometry. Near-top
-/// requests rearm only after the reader leaves the threshold; underfilled
+/// Deduplicates automatic history requests emitted by scroll geometry. A new
+/// pagination cursor rearms a reader that remains near the top; underfilled
 /// timelines may bootstrap a bounded number of pages, matching the Mac client.
 struct PadHistoryAutoLoadGate: Equatable {
-    private(set) var nearTopTriggered = false
+    private(set) var scope: String?
+    private(set) var lastNearTopCursor: String?
     private(set) var underfilledRequestCount = 0
     private(set) var lastUnderfilledCursor: String?
 
     mutating func requestCursor(
+        scope: String,
         before: String?,
         nearTop: Bool,
         underfilled: Bool,
-        allowsNearTopRequest: Bool,
         isLoading: Bool,
         connectionBusy: Bool
     ) -> String? {
-        if !nearTop { nearTopTriggered = false }
+        if self.scope != scope {
+            self.scope = scope
+            lastNearTopCursor = nil
+            underfilledRequestCount = 0
+            lastUnderfilledCursor = nil
+        }
+        if !nearTop { lastNearTopCursor = nil }
         guard let before, !isLoading, !connectionBusy else { return nil }
 
         if underfilled {
@@ -77,8 +84,8 @@ struct PadHistoryAutoLoadGate: Equatable {
             return before
         }
 
-        guard nearTop, allowsNearTopRequest, !nearTopTriggered else { return nil }
-        nearTopTriggered = true
+        guard nearTop, lastNearTopCursor != before else { return nil }
+        lastNearTopCursor = before
         return before
     }
 }
@@ -170,6 +177,9 @@ final class PadWorkspace {
         let previous = messages
         if let first = items.first?.id, let overlap = messages.firstIndex(where: { $0.id == first }) {
             messages = Array(messages.prefix(overlap)) + items
+            // With no retained prefix this is a replacement of the latest page,
+            // so recover its history cursor after reconnect/snapshot repair.
+            if overlap == 0 { before = cursor }
         } else {
             messages = items
             before = cursor
@@ -285,6 +295,8 @@ final class PadWorkspace {
     var liveStatus = "正在连接实时更新"
     var messageRevision = 0
     var controlRevision = 0
+    var directControlSnapshot: ClientControlSnapshot?
+    var realtimeStateRevision = 0
     var scrollRequest = 0
     var timelineGeneration = 0
     var inventoryGeneration = 0
@@ -293,6 +305,8 @@ final class PadWorkspace {
     var messagesDirty = false
     var refreshWorker: Task<Void, Never>?
     var pending: PendingCommand?
+    var pushedReceipt: ClientCommandReceipt?
+    var pushedReceiptRevision = 0
     var commandConfirmation: CommandConfirmation?
     var automaticReconciliationActive = false
     @ObservationIgnored private var reconciliationRun: UUID?
@@ -302,6 +316,55 @@ final class PadWorkspace {
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         pending = defaults.data(forKey: "pendingCommand").flatMap { try? JSONDecoder().decode(PendingCommand.self, from: $0) }
+    }
+
+    func applyRealtimeState(_ snapshot: ClientStateSnapshot) {
+        guard snapshot.schemaVersion == 2, snapshot.revision >= realtimeStateRevision else { return }
+        realtimeStateRevision = snapshot.revision
+        if works != snapshot.works { works = snapshot.works }
+        if tasks != snapshot.tasks { tasks = snapshot.tasks }
+        if sessions != snapshot.sessions { sessions = snapshot.sessions }
+        workCursor = nil; taskCursor = nil; sessionCursor = nil
+        rebuildGroups()
+    }
+
+    func applyRealtimeTimeline(_ snapshot: ClientTimelineSnapshot) {
+        guard snapshot.schemaVersion == 2, selection != nil else { return }
+        capabilities = snapshot.capabilities
+        usage = snapshot.usage
+        composerConfiguration = snapshot.composer
+        applyLatestWindow(snapshot.messages.items, cursor: snapshot.messages.nextBefore, revision: snapshot.revision)
+        isLoadingDetail = false
+        liveStatus = "实时连接正常"
+    }
+
+    @discardableResult
+    func applyRealtimeTimeline(_ delta: ClientTimelineDelta) -> Bool {
+        guard delta.schemaVersion == 2, delta.snapshotRequired == false,
+              delta.baseRevision == (lastTimelineRevision ?? 0) else { return false }
+        var expected = delta.baseRevision
+        var byID = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+        for change in delta.changes {
+            expected += 1
+            guard change.revision == expected else { return false }
+            switch change.operation {
+            case "upsert":
+                guard let item = change.item, item.id == change.itemId else { return false }
+                byID[item.id] = item
+            case "delete": byID[change.itemId] = nil
+            default: return false
+            }
+        }
+        guard expected == delta.revision else { return false }
+        let next = byID.values.sorted {
+            let left = $0.createdAt ?? "", right = $1.createdAt ?? ""
+            return left == right ? $0.id < $1.id : left < right
+        }
+        let previous = messages
+        messages = next
+        lastTimelineRevision = delta.revision
+        if previous != next { messageRevision += 1 }
+        return true
     }
 
     func inventory(_ connection: PadConnection, more: Bool = false) async {
@@ -702,7 +765,7 @@ final class PadWorkspace {
 
     /// Foreground-owned, finite backoff. Queries only: never replays the POST.
     func reconcileAutomatically(_ connection: PadConnection,
-                                delays: [Duration] = [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16), .seconds(30)]) async {
+                                delays: [Duration] = [.seconds(3)]) async {
         guard let key = reconciliationKey(connection) else { return }
         let run = UUID()
         reconciliationRun = run

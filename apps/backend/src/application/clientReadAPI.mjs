@@ -85,6 +85,30 @@ export class ClientReadAPI {
       nextCursor: page.nextCursor ? Buffer.from(JSON.stringify({ version: 1, kind, position: page.nextCursor })).toString("base64url") : null };
   }
 
+  /** Complete device-safe resident state for the push stream. Pagination remains
+   * an HTTP concern; the stream owns initial and recovery snapshots. */
+  realtimeSnapshot() {
+    const collect = (kind) => {
+      const items = [];
+      let cursor = null;
+      do {
+        const params = new URLSearchParams({ limit: "100" });
+        if (cursor) params.set("cursor", cursor);
+        const page = this.list(kind, params);
+        items.push(...page.items);
+        cursor = page.nextCursor;
+      } while (cursor);
+      return items;
+    };
+    return {
+      schemaVersion: 2,
+      revision: this.store.stateRevision(),
+      works: collect("works"),
+      tasks: collect("tasks"),
+      sessions: collect("sessions")
+    };
+  }
+
   /**
    * Resolves the managed avatar file of an active Work for streaming by the gateway.
    * Only files beneath `<avatarsRoot>/works/` qualify; anything else is reported as absent so a

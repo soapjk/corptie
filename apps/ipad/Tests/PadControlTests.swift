@@ -27,6 +27,10 @@ struct PadControlTests {
         defer { store.pause() }
         store.routes[.agents] = PadControlSelection(kind: .agents, id: "agent:1")
         store.activate(.agents, connection: connection)
+        try await Task.sleep(for: .milliseconds(600))
+        #expect(ControlProtocol.calls.isEmpty)
+        // Legacy hosts send invalidations; only that compatibility path reads.
+        store.invalidate(connection)
         for _ in 0..<40 {
             if store.items[.skills] != nil { break }
             try await Task.sleep(for: .milliseconds(50))

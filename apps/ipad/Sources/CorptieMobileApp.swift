@@ -186,24 +186,17 @@ struct WorkspaceView: View {
         .sheet(item: $entityRoute) { route in
             switch route {
             case .editWork(let work):
-                PadEditWorkSheet(connection: connection, commands: commands, work: work) {
-                    Task { await workspace.inventory(connection) }
-                }
+                PadEditWorkSheet(connection: connection, commands: commands, work: work) { }
             case .renameTask(let task):
-                PadRenameTaskSheet(connection: connection, commands: commands, task: task) {
-                    Task { await workspace.inventory(connection) }
-                }
+                PadRenameTaskSheet(connection: connection, commands: commands, task: task) { }
             case .editTask(let task):
-                PadEditTaskSheet(connection: connection, commands: commands, task: task) {
-                    Task { await workspace.inventory(connection) }
-                }
+                PadEditTaskSheet(connection: connection, commands: commands, task: task) { }
             case .deleteTask(let task):
                 PadDeleteTaskSheet(connection: connection, commands: commands, task: task) {
                     if let selected = workspace.selection,
                        workspace.sessionsByID[selected]?.taskId == task.id {
                         workspace.selection = nil
                     }
-                    Task { await workspace.inventory(connection) }
                 }
             case .deleteWork(let work):
                 PadDeleteWorkSheet(connection: connection, commands: commands, work: work) {
@@ -211,7 +204,6 @@ struct WorkspaceView: View {
                        workspace.sessionsByID[selected]?.workId == work.id {
                         workspace.selection = nil
                     }
-                    Task { await workspace.inventory(connection) }
                 }
             }
         }
@@ -223,11 +215,12 @@ struct WorkspaceView: View {
         }
         .task(id: "\(commands.pending?.requestID ?? ""):active=\(scenePhase == .active)") {
             guard scenePhase == .active, commands.pending != nil else { return }
-            for seconds in [0, 1, 2, 4, 8, 16, 30] {
-                do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
-                guard !Task.isCancelled, commands.pending != nil else { return }
-                await commands.reconcile(connection)
-            }
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            guard !Task.isCancelled, commands.pending != nil else { return }
+            await commands.reconcile(connection)
+        }
+        .onChange(of: workspace.pushedReceiptRevision) {
+            if let receipt = workspace.pushedReceipt { commands.acceptPushed(receipt) }
         }
     }
 
@@ -319,10 +312,16 @@ struct ConversationView: View {
                         case .message(let message):
                             if message.type == "userInput" {
                                 PadUserInputCard(message: message, connection: connection, sessionID: sessionID,
-                                    onSubmitted: { await workspace.load(connection) }).id(message.id)
+                                    onSubmitted: {
+                                        let revision = workspace.lastTimelineRevision
+                                        await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
+                                    }).id(message.id)
                             } else if message.type == "choice" || message.type == "approval" {
                                 PadApprovalCard(message: message, connection: connection, sessionID: sessionID,
-                                    onSubmitted: { await workspace.load(connection) }).id(message.id)
+                                    onSubmitted: {
+                                        let revision = workspace.lastTimelineRevision
+                                        await workspace.waitForRealtimeTimelineOrFallback(connection, after: revision)
+                                    }).id(message.id)
                             } else {
                                 MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
                                     laneWidth: laneWidth, connection: connection, sessionID: sessionID,
@@ -391,7 +390,7 @@ struct ConversationView: View {
             .accessibilityIdentifier("conversation-timeline")
             .task {
                 let hadCachedCapabilities = workspace.capabilities != nil
-                await workspace.load(connection)
+                await workspace.waitForRealtimeTimelineOrFallback(connection)
                 guard !Task.isCancelled else { return }
                 if !hadCachedCapabilities || followLatest {
                     reader.scrollTo("latest", anchor: .bottom)
@@ -446,10 +445,10 @@ struct ConversationView: View {
         let underfilled = viewportReady
             && historyViewport.contentHeight <= historyViewport.viewportHeight + 0.5
         guard historyAutoLoadGate.requestCursor(
+            scope: sessionID,
             before: workspace.before,
             nearTop: historyViewport.nearTop,
             underfilled: underfilled,
-            allowsNearTopRequest: !followLatest,
             isLoading: workspace.isLoadingEarlier,
             connectionBusy: connection.busy
         ) != nil else { return }
@@ -702,7 +701,7 @@ private struct PadExecutionStepCard: View {
             } else {
                 PadMessageText(text: "", fromUser: false,
                                steps: [presentation.displayedStep])
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             if structuredPresentation?.hasOverflow ?? presentation.hasOverflow {
                 Button("查看完整内容") { showsFull = true }
