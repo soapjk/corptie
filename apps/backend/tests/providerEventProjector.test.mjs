@@ -362,6 +362,71 @@ test("a turn-scoped Provider error fails only the Turn and keeps the Session ret
   }
 });
 
+test("a delayed first response replaces generic Working with an honest waiting state", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ event: event("turn.started"), binding });
+    const message = "模型服务暂未返回任何执行信息，仍在等待；如果持续无响应，本次执行会自动结束。";
+    const projected = projector.project({
+      event: event("provider.error", {
+        providerEventId: "watchdog:delayed",
+        payload: {
+          error: { code: "PROVIDER_RESPONSE_DELAYED", message, retryable: true },
+          failureScope: "turn",
+          willRetry: true
+        }
+      }),
+      binding
+    });
+
+    assert.equal(projected.session.status, "running");
+    assert.equal(projected.session.activityStatus, "Waiting for model response");
+    assert.equal(projected.session.summary, message);
+    assert.equal(projected.session.capabilities.canInterrupt, true);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a response timeout remains failed when the Provider later reports cancellation", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ event: event("turn.started"), binding });
+    const message = "模型服务长时间未返回任何执行信息。本次执行已自动结束；您可以重试或切换模型。";
+    const failed = projector.project({
+      event: event("turn.failed", {
+        providerEventId: "watchdog:timeout",
+        payload: {
+          error: { code: "PROVIDER_RESPONSE_TIMEOUT", message, retryable: true },
+          items: [{
+            id: "timeout:one", turnId: "turn:one", type: "system",
+            title: "模型响应超时", text: message, status: "failed"
+          }]
+        }
+      }),
+      binding
+    });
+    const late = projector.project({
+      event: event("turn.cancelled", { providerEventId: "provider:late-cancel" }),
+      binding
+    });
+
+    const turn = store.getSessionTurn("session:one", binding.bindingId, "turn:one");
+    assert.equal(failed.terminalStatus, "failed");
+    assert.equal(late.terminalStatus, "failed");
+    assert.equal(turn.execution_status, "failed");
+    assert.equal(JSON.parse(turn.failure_json).code, "PROVIDER_RESPONSE_TIMEOUT");
+    assert.equal(late.session.status, "failed");
+    assert.equal(late.session.summary, message);
+    assert.equal(late.session.capabilities.canInterrupt, false);
+    assert.equal(store.getSessionItem("session:one", "timeout:one").text, message);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("a new Turn clears a stale Session-level send failure from an earlier Provider error", async () => {
   const { directory, store, projector } = await fixture();
   try {
