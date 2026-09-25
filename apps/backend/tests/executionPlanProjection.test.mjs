@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { finishExecutionPlan, replaceExecutionPlan } from "../src/application/executionPlanProjection.mjs";
+import { executionPlanItem, finishExecutionPlan, replaceExecutionPlan } from "../src/application/executionPlanProjection.mjs";
 
 const context = { planId: "plan:one", updatedAt: "2026-09-24T00:00:00Z" };
+
+test("a cleared checklist stays in history without an empty 0/0 summary", () => {
+  const plan = replaceExecutionPlan(null, { operation: "replace", steps: [] }, context);
+  const item = executionPlanItem(plan, { turnId: "turn:one", turnStatus: "inProgress",
+    createdAt: context.updatedAt });
+  assert.equal(item.text, "No plan steps");
+  assert.equal(item.status, "running");
+  assert.deepEqual(JSON.parse(item.rawMetadataJSON).executionPlan.steps, []);
+});
 
 test("a 200-step plan with duplicate labels preserves every distinct identity", () => {
   const steps = Array.from({ length: 200 }, () => ({ text: "Inspect", status: "pending" }));

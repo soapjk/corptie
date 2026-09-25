@@ -84,9 +84,16 @@ export class ProviderEventProjector {
         ? `execution-plan:${event.bindingId}:${event.turnId}:claude-tasks`
         : `execution-plan:${event.bindingId}:${event.turnId}`;
       const existing = this.store.getSessionItem(sessionId, planId);
-      const previous = existing?.executionPlan ?? (isSessionTaskList
-        ? this.store.getExecutionPlanState(sessionId, event.bindingId, "claude-tasks")
-        : null);
+      const savedTaskList = isSessionTaskList
+        ? this.store.getExecutionPlanState(sessionId, event.bindingId, "claude-tasks") : null;
+      // Older projections settled the timeline item but left this cross-turn
+      // seed active. Prefer the newer authoritative item when the next Turn
+      // inherits that list, without mutating historical production records.
+      const savedItem = savedTaskList?.planId
+        ? this.store.getSessionItem(sessionId, savedTaskList.planId) : null;
+      const previous = existing?.executionPlan ?? (savedItem?.bindingId === event.bindingId
+        && (savedItem.executionPlan?.revision ?? 0) > (savedTaskList?.revision ?? 0)
+          ? savedItem.executionPlan : savedTaskList);
       const context = {
         planId,
         updatedAt: event.occurredAt ?? event.receivedAt
@@ -103,8 +110,11 @@ export class ProviderEventProjector {
           ?? projectedPlan
         : projectedPlan;
       if (nextPlan && !sameExecutionPlanContent(previous, nextPlan)) {
-        if (isSessionTaskList && plan) {
-          this.store.upsertExecutionPlanState(sessionId, event.bindingId, "claude-tasks", plan);
+        if (isSessionTaskList) {
+          // The cross-turn seed must carry the same terminal lifecycle as the
+          // visible timeline item. Persisting the pre-finish patch here leaves
+          // a failed Turn with a stale "active" materialized plan.
+          this.store.upsertExecutionPlanState(sessionId, event.bindingId, "claude-tasks", nextPlan);
         }
         timelineChanged = this.persistItem(sessionId, executionPlanItem(nextPlan, {
           turnId: event.turnId,
@@ -134,6 +144,9 @@ export class ProviderEventProjector {
           const existing = this.store.getSessionItem(sessionId, planId);
           const plan = finishExecutionPlan(existing?.executionPlan, TERMINAL_EVENT_STATUS.get(event.type), event.receivedAt);
           if (plan) {
+            if (planId.endsWith(":claude-tasks")) {
+              this.store.upsertExecutionPlanState(sessionId, event.bindingId, "claude-tasks", plan);
+            }
             timelineChanged = this.persistItem(sessionId, executionPlanItem(plan, {
               turnId: event.turnId,
               turnStatus: TERMINAL_EVENT_STATUS.get(event.type),
