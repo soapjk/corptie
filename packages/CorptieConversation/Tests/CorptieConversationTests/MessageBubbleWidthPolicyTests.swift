@@ -12,13 +12,18 @@ struct MessageBubbleWidthPolicyTests {
         ) == 218)
     }
 
-    @Test("Expanded process cards use the bounded timeline lane")
+    @Test("Expanded process cards use the ordinary message width ceiling")
     func expandedProcessCard() {
         #expect(MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: 80,
             expanded: true,
             laneWidth: 700
-        ) == 696)
+        ) == MessageBubbleWidthPolicy.maximumWidth)
+        #expect(MessageBubbleWidthPolicy.processCardWidth(
+            summaryWidth: 80,
+            expanded: true,
+            laneWidth: 320
+        ) == 316)
     }
 
     @Test("Process cards clamp to narrow lanes")

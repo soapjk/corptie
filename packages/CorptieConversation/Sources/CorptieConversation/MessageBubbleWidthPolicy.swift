@@ -54,11 +54,12 @@ public enum MessageBubbleWidthPolicy {
         return hasAttachments ? min(fullAvailable, max(attachmentMinimumWidth, preferred)) : preferred
     }
 
-    /// Process cards expand to the whole bounded lane; collapsed cards retain a
-    /// compact summary width, matching the desktop timeline.
+    /// Expanded process cards share the ordinary message width ceiling; a wide
+    /// timeline lane should not stretch the execution detail across the window.
+    /// Collapsed cards retain a compact summary width.
     public static func processCardWidth(summaryWidth: CGFloat, expanded: Bool, laneWidth: CGFloat) -> CGFloat {
         let fullAvailable = fullAvailableWidth(laneWidth: laneWidth)
-        guard !expanded else { return fullAvailable }
+        guard !expanded else { return min(fullAvailable, maximumWidth) }
         return min(fullAvailable, max(collapsedProcessWidth, summaryWidth + 58))
     }
 }
