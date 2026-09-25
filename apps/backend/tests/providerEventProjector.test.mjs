@@ -148,6 +148,314 @@ const binding = {
   isCurrentRoute: true
 };
 
+test("a structured input request persists as one pending interaction and blocks only its turn", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ binding, event: event("turn.started") });
+    const item = {
+      id: "thread:current:app-server-user-input:request:one",
+      turnId: "turn:one", turnStatus: "blocked", type: "userInput",
+      title: "需要输入", text: "Which route?", status: "pending",
+      rawMetadataJSON: JSON.stringify({ userInput: {
+        schemaVersion: 1, isBlocking: true, questions: [{ id: "route", question: "Which route?" }]
+      } })
+    };
+    projector.project({ binding, event: event("interaction.requested", {
+      itemId: item.id, payload: { item }
+    }) });
+    assert.equal(store.getSession(binding.sessionId).status, "blocked");
+    assert.equal(store.getSession(binding.sessionId).activityStatus, "Waiting for input");
+    const projected = store.getSessionItem(binding.sessionId, item.id);
+    assert.equal(projected.status, "pending");
+    assert.equal(projected.userInput.questions[0].id, "route");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a nonblocking structured question leaves its turn running", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("interaction.requested", {
+      itemId: "input:nonblocking",
+      payload: { item: {
+        id: "input:nonblocking", turnId: "turn:one", type: "userInput",
+        status: "pending", text: "Optional question",
+        rawMetadataJSON: JSON.stringify({ userInput: {
+          schemaVersion: 1, isBlocking: false, questions: [{ id: "optional", question: "Optional question" }]
+        } })
+      } }
+    }) });
+    assert.equal(store.getSession(binding.sessionId).status, "running");
+    assert.equal(store.getSessionItem(binding.sessionId, "input:nonblocking").status, "pending");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("input submission and native resolution update one item without reviving a settled turn", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const item = { id: "input:one", turnId: "turn:one", turnStatus: "blocked",
+      type: "userInput", text: "Choose route", status: "pending",
+      rawMetadataJSON: JSON.stringify({ userInput: {
+        schemaVersion: 1, isBlocking: true, questions: [{ id: "route", question: "Choose route" }]
+      } }) };
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("interaction.requested", { itemId: item.id,
+      payload: { item } }) });
+    projector.project({ binding, event: event("interaction.submitted", { itemId: item.id,
+      payload: { item: { ...item, status: "submitted" } } }) });
+    assert.equal(store.getSession(binding.sessionId).status, "blocked");
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).status, "submitted");
+    projector.project({ binding, event: event("interaction.resolved", { itemId: item.id,
+      payload: { item: { ...item, status: "submitted", turnStatus: "inProgress" } } }) });
+    assert.equal(store.getSession(binding.sessionId).status, "running");
+    assert.equal(store.getItems(binding.sessionId).filter((candidate) => candidate.id === item.id).length, 1);
+    projector.project({ binding, event: event("turn.completed") });
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).turnStatus, "completed");
+    projector.project({ binding, event: event("interaction.resolved", { itemId: item.id,
+      payload: { item: { ...item, status: "submitted", turnStatus: "inProgress" } } }) });
+    assert.equal(store.getSessionTurn(binding.sessionId, binding.bindingId, "turn:one").execution_status, "completed");
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).turnStatus, "completed");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("turn completion expires a still-pending question without inventing an answer", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const item = { id: "input:unanswered", turnId: "turn:one", turnStatus: "blocked",
+      type: "userInput", text: "Choose route", status: "pending",
+      rawMetadataJSON: JSON.stringify({ userInput: {
+        schemaVersion: 1, isBlocking: true, questions: [{ id: "route", question: "Choose route" }]
+      } }) };
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("interaction.requested", { itemId: item.id,
+      payload: { item } }) });
+    projector.project({ binding, event: event("turn.completed") });
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).status, "expired");
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).turnStatus, "completed");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("plan snapshots update one stable timeline item and preserve step identities", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "replace", explanation: null,
+      steps: [{ text: "Inspect", status: "inProgress" }, { text: "Fix", status: "pending" }]
+    } } }) });
+    const first = store.getItems(binding.sessionId).find((item) => item.type === "executionPlan");
+    assert.equal(first.executionPlan.revision, 1);
+    assert.equal(first.executionPlan.steps[0].stepId, "step:1");
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "replace", explanation: null,
+      steps: [{ text: "Inspect", status: "completed" }, { text: "Fix", status: "inProgress" }]
+    } } }) });
+    const plans = store.getItems(binding.sessionId).filter((item) => item.type === "executionPlan");
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].id, first.id);
+    assert.equal(plans[0].executionPlan.revision, 2);
+    assert.equal(plans[0].executionPlan.steps[0].stepId, "step:1");
+    assert.equal(plans[0].executionPlan.steps[0].status, "completed");
+    projector.project({ binding, event: event("turn.completed") });
+    assert.equal(store.getSessionItem(binding.sessionId, first.id).executionPlan.lifecycle, "completed");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a historical plan remains readable after the Session changes Provider Binding", async () => {
+  const { directory, store, projector } = await fixture();
+  const nextBinding = {
+    ...binding,
+    bindingId: "binding:claude",
+    providerId: "claude-sdk",
+    providerSessionId: "claude:next",
+    routingVersion: binding.routingVersion + 1
+  };
+  try {
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "replace", explanation: null,
+      steps: [{ text: "Inspect", status: "completed" }]
+    } } }) });
+    projector.project({ binding, event: event("turn.completed") });
+    const historical = store.getItems(binding.sessionId).find((item) => item.type === "executionPlan");
+    assert.equal(historical.executionPlan.lifecycle, "completed");
+
+    projector.project({ binding: nextBinding, event: event("turn.started", {
+      providerId: nextBinding.providerId,
+      providerSessionId: nextBinding.providerSessionId,
+      bindingId: nextBinding.bindingId,
+      routingVersion: nextBinding.routingVersion,
+      turnId: "turn:next"
+    }) });
+    const afterSwitch = store.getSessionItem(binding.sessionId, historical.id);
+    assert.equal(afterSwitch.executionPlan.planId, historical.executionPlan.planId);
+    assert.deepEqual(afterSwitch.executionPlan.steps, historical.executionPlan.steps);
+    assert.equal(afterSwitch.executionPlan.lifecycle, "completed");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("late plan updates retain the settled Turn state while revising its existing checklist", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "replace", explanation: null,
+      steps: [{ text: "Inspect", status: "inProgress" }]
+    } } }) });
+    projector.project({ binding, event: event("turn.completed") });
+    const before = store.getItems(binding.sessionId).find((item) => item.type === "executionPlan");
+    assert.equal(before.executionPlan.lifecycle, "completed");
+
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "replace", explanation: null,
+      steps: [{ text: "Inspect", status: "completed" }]
+    } } }) });
+    const plans = store.getItems(binding.sessionId).filter((item) => item.type === "executionPlan");
+    assert.equal(plans.length, 1);
+    assert.equal(plans[0].id, before.id);
+    assert.equal(plans[0].executionPlan.revision, before.executionPlan.revision + 1);
+    assert.equal(plans[0].executionPlan.lifecycle, "completed");
+    assert.equal(plans[0].executionPlan.steps[0].status, "completed");
+    assert.equal(plans[0].status, "completed");
+    assert.equal(store.getSessionTurn(binding.sessionId, binding.bindingId, "turn:one").execution_status, "completed");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed Turn and its late plan updates never revive a running checklist step", async () => {
+  const { directory, store, projector } = await fixture();
+  const snapshot = { operation: "replace", explanation: null,
+    steps: [{ text: "Inspect", status: "completed" }, { text: "Fix", status: "inProgress" }] };
+  try {
+    projector.project({ binding, event: event("turn.started") });
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: snapshot } }) });
+    projector.project({ binding, event: event("turn.failed") });
+    const first = store.getItems(binding.sessionId).find((item) => item.type === "executionPlan");
+    assert.equal(first.executionPlan.lifecycle, "failed");
+    assert.deepEqual(first.executionPlan.steps.map((step) => step.status), ["completed", "unknown"]);
+
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: snapshot } }) });
+    const late = store.getSessionItem(binding.sessionId, first.id);
+    assert.equal(late.executionPlan.lifecycle, "failed");
+    assert.deepEqual(late.executionPlan.steps.map((step) => step.status), ["completed", "unknown"]);
+    assert.equal(late.executionPlan.revision, first.executionPlan.revision,
+      "a redundant late snapshot must not publish a new revision");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("unsupported plan snapshot keeps a visible uncertain state instead of disappearing", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: null } }) });
+    const item = store.getItems(binding.sessionId).find((candidate) => candidate.type === "executionPlan");
+    assert.equal(item.text, "Plan update unavailable");
+    assert.equal(item.executionPlan.lifecycle, "unknown");
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "replace", explanation: null, steps: [{ text: "Recover", status: "pending" }]
+    } } }) });
+    const recovered = store.getSessionItem(binding.sessionId, item.id);
+    assert.equal(recovered.executionPlan.lifecycle, "active");
+    assert.equal(recovered.executionPlan.steps[0].text, "Recover");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("malformed plan updates mark prior steps uncertain while valid no-ops keep their revision", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    const valid = { operation: "replace", explanation: null,
+      steps: [{ text: "Inspect", status: "pending" }] };
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: valid } }) });
+    const initial = store.getItems(binding.sessionId).find((item) => item.type === "executionPlan");
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: valid } }) });
+    assert.equal(store.getSessionItem(binding.sessionId, initial.id).executionPlan.revision, 1);
+
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "replace", explanation: null,
+      steps: [{ text: "Inspect", status: "not-a-status" }]
+    } } }) });
+    const uncertain = store.getSessionItem(binding.sessionId, initial.id);
+    assert.equal(uncertain.executionPlan.lifecycle, "unknown");
+    assert.equal(uncertain.executionPlan.revision, 2);
+    assert.equal(uncertain.executionPlan.steps[0].text, "Inspect");
+    assert.equal(uncertain.text, "Plan update unavailable");
+
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: valid } }) });
+    const recovered = store.getSessionItem(binding.sessionId, initial.id);
+    assert.equal(recovered.executionPlan.lifecycle, "active");
+    assert.equal(recovered.executionPlan.revision, 3);
+    assert.equal(store.getItems(binding.sessionId).filter((item) => item.type === "executionPlan").length, 1);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Claude task create and update patches use stable task IDs", async () => {
+  const { directory, store, projector } = await fixture();
+  try {
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "upsert", planKey: "claude-tasks",
+      step: { stepId: "task:7", text: "Build UI", status: "pending" }
+    } } }) });
+    projector.project({ binding, event: event("plan.updated", { payload: { plan: {
+      operation: "upsert", planKey: "claude-tasks",
+      step: { stepId: "task:7", status: "inProgress" }
+    } } }) });
+    const item = store.getItems(binding.sessionId).find((candidate) => candidate.type === "executionPlan");
+    assert.equal(item.executionPlan.steps.length, 1);
+    assert.equal(item.executionPlan.steps[0].text, "Build UI");
+    assert.equal(item.executionPlan.steps[0].status, "inProgress");
+    assert.equal(item.executionPlan.revision, 2);
+    projector.project({ binding, event: event("turn.completed") });
+    const settled = store.getSessionItem(binding.sessionId, item.id);
+    assert.equal(settled.turnStatus, "completed");
+    projector.project({ binding, event: event("plan.updated", { turnId: "turn:two", payload: { plan: {
+      operation: "upsert", planKey: "claude-tasks", step: { stepId: "task:7", status: "completed" }
+    } } }) });
+    const updated = store.getItemsForTurn(binding.sessionId, "turn:two").find((candidate) => candidate.type === "executionPlan");
+    assert.ok(updated);
+    assert.notEqual(updated.id, item.id);
+    assert.equal(updated.turnId, "turn:two");
+    assert.equal(updated.executionPlan.steps[0].text, "Build UI");
+    assert.equal(updated.executionPlan.steps[0].status, "completed");
+    assert.equal(store.getSessionItem(binding.sessionId, item.id).executionPlan.steps[0].status, "unknown",
+      "the prior turn remains historical without implying its unfinished step is still running");
+    projector.project({ binding, event: event("plan.updated", { turnId: "turn:two", payload: { plan: {
+      operation: "remove", planKey: "claude-tasks", step: { stepId: "task:7" }
+    } } }) });
+    assert.deepEqual(store.getSessionItem(binding.sessionId, updated.id).executionPlan.steps, []);
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 function event(type, overrides = {}) {
   return {
     providerId: binding.providerId,

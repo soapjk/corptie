@@ -20,6 +20,10 @@ const CORPTIE_OWNED_CLAUDE_WORKSPACE_TOOLS = Object.freeze([
 
 export function createClaudeAgentSdkProvider(manager, options = {}) {
   if (!manager) throw new TypeError("Claude Agent SDK Provider requires a manager.");
+  if (typeof manager.structuredPlanEvents === "boolean"
+    && manager.structuredPlanEvents !== (options.structuredPlanEvents !== false)) {
+    throw new TypeError("Claude plan-event declaration must match its Adapter configuration.");
+  }
   return new CallbackAgentProvider({
     id: CLAUDE_AGENT_SDK_PROVIDER_ID,
     displayName: "Claude Code",
@@ -66,6 +70,8 @@ export function createClaudeAgentSdkProvider(manager, options = {}) {
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_CLEAR,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_INTERRUPT,
       AGENT_PROVIDER_CAPABILITIES.CONVERSATION_APPROVE,
+      ...(options.structuredPlanEvents !== false
+        ? [AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS] : []),
       AGENT_PROVIDER_CAPABILITIES.CONFIGURATION_VALIDATE,
       AGENT_PROVIDER_CAPABILITIES.CONNECTION_TEST,
       ...(typeof options.listModels === "function" ? [AGENT_PROVIDER_CAPABILITIES.MODEL_LIST] : []),

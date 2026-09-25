@@ -117,7 +117,8 @@ import { startConfiguredDeviceGateway } from "./application/clientDeviceGateway.
 import { createDeviceSetup } from "./application/clientDeviceSetup.mjs";
 import { ClientReadAPI } from "./application/clientReadAPI.mjs";
 import { ClientControlReadAPI } from "./application/clientControlReadAPI.mjs";
-import { ClientSessionAPI } from "./application/clientSessionAPI.mjs";
+import { ClientSessionAPI, approvalRequestIsCurrent } from "./application/clientSessionAPI.mjs";
+import { validateInteractionAnswers } from "./application/interactionInput.mjs";
 import { ToolHostService } from "./application/toolHostService.mjs";
 import { SkillMcpGateway } from "./application/skillMcpGateway.mjs";
 import { skillMcpTurnContext } from "./application/skillMcpTurnContext.mjs";
@@ -1028,6 +1029,7 @@ const agentProviderRegistry = createAgentProviderRuntimeRegistry({
     ),
     interrupt: interruptCodexProviderSession,
     respondToApproval: respondCodexProviderApproval,
+    respondToUserInput: respondCodexProviderUserInput,
     manageTurnChanges: manageCodexTurnChanges,
     switchModel: (reference, model) => updateCodexProviderConfiguration(reference, { currentModel: model }),
     switchReasoning: (reference, reasoningLevel) => updateCodexProviderConfiguration(reference, { currentReasoningLevel: reasoningLevel }),
@@ -4994,6 +4996,7 @@ function handleCodexAppServerNotification(message) {
     message,
     binding: envelopeBinding,
     liveItems: codexRuntime.liveItemsForThread(threadId),
+    structuredPlanEvents: agentProviderRegistry.supports("codex-app-server", AGENT_PROVIDER_CAPABILITIES.EXECUTION_PLAN_EVENTS),
     receivedAt: now()
   });
   if (providerEnvelope) {
@@ -6429,11 +6432,22 @@ async function respondCodexProviderApproval(reference, input = {}, context = {})
   const approved = input.approved === true;
   await codexRuntime.respondToApproval(reference.providerSessionId, {
     approved,
-    optionId: input.optionId
+    optionId: input.optionId,
+    itemId: input.itemId ?? input.choiceId
   });
   store.clearActiveChoicePrompt(reference.sessionId);
   // Do not guess that the Provider resumed. approval.resolved and subsequent
   // turn events own execution state; the command response is transport-only.
+  return store.getSession(reference.sessionId) ?? summary;
+}
+
+async function respondCodexProviderUserInput(reference, input = {}, context = {}) {
+  const summary = context.summary ?? reference.metadata?.session;
+  await codexRuntime.respondToUserInput(reference.providerSessionId, {
+    itemId: input.itemId,
+    answers: input.answers
+  });
+  // The transport acknowledgement is not evidence that the Provider resumed.
   return store.getSession(reference.sessionId) ?? summary;
 }
 
@@ -7882,6 +7896,14 @@ function settleUnavailableProviderSessionInterrupt(reference, activeTurnId, sour
 async function respondUnifiedSessionApproval(sessionId, input = {}, source = { type: "desktop" }) {
   const reference = requireSessionReference(sessionId);
   const summary = reference.metadata.session;
+  if (typeof input.itemId === "string" && input.itemId) {
+    const item = store.getSessionItem(reference.sessionId, input.itemId);
+    if (!approvalRequestIsCurrent(item, reference.bindingId, input, source)) {
+      const error = new Error("Approval request is no longer current.");
+      error.code = "APPROVAL_NOT_PENDING";
+      throw error;
+    }
+  }
 
   const approved = input.approved === true;
   const session = await sessionApplicationService.respondToApproval(sessionId, input, { summary, source });
@@ -7894,6 +7916,27 @@ async function respondUnifiedSessionApproval(sessionId, input = {}, source = { t
     source
   }, { sessionId: reference.sessionId, source });
   return session;
+}
+
+async function respondUnifiedSessionUserInput(sessionId, input = {}, source = { type: "desktop" }) {
+  const reference = requireSessionReference(sessionId);
+  const item = store.getSessionItem(reference.sessionId, input.itemId);
+  const expectedStatus = source?.type === "remote-client" ? "dispatching" : "pending";
+  if (!item || item.type !== "userInput" || item.status !== expectedStatus
+    || (item.bindingId && item.bindingId !== reference.bindingId)) {
+    const error = new Error("User-input request is no longer current.");
+    error.code = "USER_INPUT_NOT_PENDING";
+    throw error;
+  }
+  if (!validateInteractionAnswers(item.userInput, input.answers)) {
+    const error = new Error("Every question requires a valid answer.");
+    error.code = "INVALID_USER_INPUT_ANSWER";
+    throw error;
+  }
+  return sessionApplicationService.respondToUserInput(sessionId, input, {
+    summary: reference.metadata.session,
+    source
+  });
 }
 
 async function resolveCollaborationConfirmation(confirmationId, approved, source = { type: "desktop" }) {
@@ -10213,6 +10256,18 @@ function route(request, response) {
     return;
   }
 
+  const sessionUserInputMatch = url.pathname.match(/^\/sessions\/([^/]+)\/actions\/user-input$/);
+  if (request.method === "POST" && sessionUserInputMatch) {
+    const sessionId = decodeURIComponent(sessionUserInputMatch[1]);
+    readJson(request)
+      .then((input) => respondUnifiedSessionUserInput(sessionId, input, { type: "desktop" }))
+      .then((session) => sendJson(response, 200, { session }))
+      .catch((error) => sendJson(response, unifiedErrorStatus(error), {
+        error: error.message, code: error.code ?? null
+      }));
+    return;
+  }
+
   const sessionModelMatch = url.pathname.match(/^\/sessions\/([^/]+)\/model$/);
   if (request.method === "POST" && sessionModelMatch) {
     const sessionId = decodeURIComponent(sessionModelMatch[1]);
@@ -11797,6 +11852,8 @@ function startBackendRuntime() {
     resolveSession: id => store.getLogicalSession(id)?.legacySessionId ?? null }),
     sessionAPIFactory: () => new ClientSessionAPI({ store, readWindow: readSessionTimelineWindow,
       send: sendUnifiedSessionMessage, stop: interruptUnifiedSession,
+      respondToApproval: respondUnifiedSessionApproval,
+      respondToUserInput: respondUnifiedSessionUserInput,
       markRead: (sessionId, throughSequence) => {
         const receipt = store.markSessionMessagesRead(sessionId, throughSequence);
         setImmediate(publishStateChangesIfNeeded);

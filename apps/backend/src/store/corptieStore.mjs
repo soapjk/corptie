@@ -1149,6 +1149,18 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_session_items_turn_window
       ON session_items(session_id, turn_id, created_at, id);
 
+      -- Provider task lists can outlive one turn. Keep their current state
+      -- separate from immutable per-turn Timeline placement.
+      CREATE TABLE IF NOT EXISTS session_execution_plan_state (
+        session_id TEXT NOT NULL,
+        binding_id TEXT NOT NULL,
+        plan_key TEXT NOT NULL,
+        plan_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, binding_id, plan_key),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS session_context_references (
         reference_id TEXT PRIMARY KEY,
         owner_session_id TEXT NOT NULL,
@@ -8227,6 +8239,26 @@ export class CorptieStore {
       this.notifyTimelineDirty(sessionId);
     }
     return changed;
+  }
+
+  getExecutionPlanState(sessionId, bindingId, planKey) {
+    const row = this.selectOne(
+      `SELECT plan_json FROM session_execution_plan_state
+       WHERE session_id = ? AND binding_id = ? AND plan_key = ?`,
+      [sessionId, bindingId, planKey]
+    );
+    return row ? parseJson(row.plan_json, null) : null;
+  }
+
+  upsertExecutionPlanState(sessionId, bindingId, planKey, plan) {
+    this.db.run(
+      `INSERT INTO session_execution_plan_state
+       (session_id, binding_id, plan_key, plan_json, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, binding_id, plan_key) DO UPDATE SET
+         plan_json = excluded.plan_json, updated_at = excluded.updated_at`,
+      [sessionId, bindingId, planKey, JSON.stringify(plan), plan.updatedAt]
+    );
   }
 
   listLegacyHistoryRepairCandidates({ createdBefore, limit = 200 } = {}) {

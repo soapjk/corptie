@@ -98,6 +98,38 @@ test("Provider event normalization generates a deterministic ID independent of r
   assert.equal(first.providerEventId, deterministicProviderEventId(first));
 });
 
+test("native diagnostic payload is redacted before an event can be persisted or quarantined", () => {
+  const event = normalizeProviderEvent(providerEvent({
+    rawPayload: {
+      credentials: { apiKey: "must-not-leak" },
+      toolResult: '{"accessToken":"also-secret","status":"ok"}',
+      command: "Authorization: Bearer third-secret"
+    }
+  }));
+  assert.doesNotMatch(JSON.stringify(event.rawPayload), /must-not-leak|also-secret|third-secret/);
+  assert.match(event.rawPayload.toolResult, /"status":"ok"/);
+  assert.equal(event.rawPayload.credentials.apiKey, "[REDACTED]");
+});
+
+test("quarantined Inbox keeps only the redacted native diagnostic payload", async () => {
+  const { directory, store, service } = await fixture();
+  try {
+    const result = service.ingest(providerEvent({
+      bindingId: "binding:stale",
+      rawPayload: { apiKey: "must-not-leak", result: '{"password":"also-secret","ok":true}' }
+    }));
+    assert.equal(result.status, "quarantined");
+    const inbox = store.providerInboxEvent(binding.providerId, binding.providerSessionId, "event:one");
+    assert.ok(inbox);
+    assert.doesNotMatch(inbox.raw_payload_json, /must-not-leak|also-secret/);
+    assert.doesNotMatch(inbox.normalized_event_json, /must-not-leak|also-secret/);
+    assert.equal(JSON.parse(inbox.raw_payload_json).apiKey, "[REDACTED]");
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("generated IDs distinguish native lifecycle phases that share one product event type", () => {
   const started = normalizeProviderEvent({
     ...providerEvent({

@@ -266,6 +266,181 @@ test("Claude emits stable incremental timeline items for SDK partial text", asyn
   assert.equal(events.at(-1).type, "assistant.message.completed");
 });
 
+test("Claude emits a structured plan only after its TodoWrite tool result succeeds", async () => {
+  const events = [];
+  const manager = new ClaudeAgentManager({ onProviderEvent: (event) => events.push(event) });
+  manager.start({ id: "claude-plan" });
+  const session = manager.get("claude-plan");
+  session.currentTurnId = "turn:plan";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "tool:todo",
+    name: "TodoWrite", input: { todos: [{ content: "Implement", status: "in_progress", activeForm: "Implementing" }] } }]));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.some((event) => event.type === "plan.updated"), false);
+  manager.handleSdkMessage(session, { type: "user", uuid: "result:todo", tool_use_result: {
+    newTodos: [{ content: "Implement", status: "in_progress", activeForm: "Implementing" }]
+  }, message: { content: [
+    { type: "tool_result", tool_use_id: "tool:todo", content: "ok" }
+  ] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const planEvents = events.filter((event) => event.type === "plan.updated");
+  assert.equal(planEvents.length, 1);
+  assert.equal(planEvents[0].turnId, "turn:plan");
+  assert.deepEqual(planEvents[0].plan.steps, [{ text: "Implement", status: "inProgress" }]);
+});
+
+test("Claude without declared plan support keeps TodoWrite as an ordinary settled tool", async () => {
+  const events = [];
+  const manager = new ClaudeAgentManager({ structuredPlanEvents: false,
+    onProviderEvent: (event) => events.push(event) });
+  manager.start({ id: "claude-plan-disabled" });
+  const session = manager.get("claude-plan-disabled");
+  session.currentTurnId = "turn:disabled";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "tool:todo-disabled",
+    name: "TodoWrite", input: { todos: [{ content: "Inspect", status: "pending" }] } }]));
+  manager.handleSdkMessage(session, { type: "user", uuid: "result:disabled", tool_use_result: {
+    newTodos: [{ content: "Inspect", status: "completed" }]
+  }, message: { content: [{ type: "tool_result", tool_use_id: "tool:todo-disabled", content: "ok" }] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(session.items.length, 1);
+  assert.equal(session.items[0].title, "TodoWrite");
+  assert.equal(session.items[0].status, "completed");
+  assert.equal(events.some((event) => event.type === "plan.updated"), false);
+});
+
+test("failed Claude plan tool remains visible without changing the checklist", async () => {
+  const events = [];
+  const manager = new ClaudeAgentManager({ onProviderEvent: (event) => events.push(event) });
+  manager.start({ id: "claude-plan-failed" });
+  const session = manager.get("claude-plan-failed");
+  session.currentTurnId = "turn:failed-plan";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "tool:failed",
+    name: "TodoWrite", input: { todos: [{ content: "Inspect", status: "pending", activeForm: "Inspecting" }] } }]));
+  manager.handleSdkMessage(session, { type: "user", message: { content: [
+    { type: "tool_result", tool_use_id: "tool:failed", is_error: true, content: "failed" }
+  ] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(events.some((event) => event.type === "plan.updated"), false);
+  assert.ok(events.some((event) => event.type === "tool.failed" && event.item?.title === "TodoWrite"));
+});
+
+test("Claude plan calls without a result remain visible as uncertain after the Turn settles", async () => {
+  const events = [];
+  const manager = new ClaudeAgentManager({ onProviderEvent: (event) => events.push(event) });
+  manager.start({ id: "claude-plan-no-result" });
+  const session = manager.get("claude-plan-no-result");
+  session.currentTurnId = "turn:no-result";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "tool:missing",
+    name: "TodoWrite", input: { todos: [{ content: "Inspect", status: "pending" }] } }]));
+  assert.equal(session.items.filter((item) => item.title === "TodoWrite").length, 0);
+  manager.handleSdkMessage(session, { type: "result", subtype: "success", is_error: false, result: "" });
+  await new Promise((resolve) => setImmediate(resolve));
+  const fallback = session.items.find((item) => item.title === "TodoWrite");
+  assert.ok(fallback);
+  assert.equal(fallback.id, "claude-plan-no-result:plan-tool:tool:missing");
+  assert.equal(fallback.status, "unknown");
+  assert.equal(fallback.turnId, "turn:no-result");
+  assert.equal(events.some((event) => event.type === "plan.updated"), false);
+  assert.equal(events.filter((event) => event.item?.id === fallback.id).length, 1);
+});
+
+test("Claude TaskUpdate without confirmed checklist fields remains a completed tool card", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-task-no-plan-change" });
+  const session = manager.get("claude-task-no-plan-change");
+  session.currentTurnId = "turn:no-plan-change";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "tool:description",
+    name: "TaskUpdate", input: { taskId: "7", description: "More detail", status: "completed" } }]));
+  manager.handleSdkMessage(session, { type: "user", uuid: "result:description", tool_use_result: {
+    success: true, taskId: "7", updatedFields: ["description"]
+  }, message: { content: [{ type: "tool_result", tool_use_id: "tool:description", content: "ok" }] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(session.items.length, 1);
+  assert.equal(session.items[0].type, "mcpToolCall");
+  assert.equal(session.items[0].status, "completed");
+  assert.equal(session.items.some((item) => item.type === "executionPlan"), false);
+});
+
+test("malformed Claude plan tool calls retain their ordinary tool card", () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-plan-malformed" });
+  const session = manager.get("claude-plan-malformed");
+  session.currentTurnId = "turn:malformed";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "tool:malformed",
+    name: "TodoWrite", input: "not an object" }]));
+  assert.equal(session.items.filter((item) => item.title === "TodoWrite").length, 1);
+  assert.equal(session.pendingPlanCalls?.size, 0);
+});
+
+test("Claude tool results settle the original call instead of adding another item", async () => {
+  const events = [];
+  const manager = new ClaudeAgentManager({ onProviderEvent: (event) => events.push(event) });
+  manager.start({ id: "claude-tool-result" });
+  const session = manager.get("claude-tool-result");
+  session.currentTurnId = "turn:tool";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "use:bash",
+    name: "Bash", input: { command: "pwd" } }]));
+  const original = session.items.find((item) => item.toolUseId === "use:bash");
+  assert.equal(original.status, "running");
+  assert.deepEqual(JSON.parse(original.rawMetadataJSON).toolExecution, {
+    schemaVersion: 1, toolId: original.id, name: "Bash", status: "running",
+    input: "pwd", result: null
+  });
+  manager.handleSdkMessage(session, { type: "user", uuid: "result:bash", message: { content: [
+    { type: "tool_result", tool_use_id: "use:bash", content: "/tmp/project" }
+  ] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const settled = session.items.find((item) => item.id === original.id);
+  assert.equal(session.items.length, 1);
+  assert.equal(settled.status, "completed");
+  assert.match(settled.text, /\/tmp\/project/);
+  assert.deepEqual(JSON.parse(settled.rawMetadataJSON).toolExecution, {
+    schemaVersion: 1, toolId: original.id, name: "Bash", status: "completed",
+    input: "pwd", result: "/tmp/project"
+  });
+  assert.deepEqual(events.filter((event) => event.type.startsWith("tool.")).map((event) => event.itemId),
+    [original.id, original.id]);
+});
+
+test("Claude generic tool input and result never expose named credentials in client-visible fields", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-secret-tool" });
+  const session = manager.get("claude-secret-tool");
+  session.currentTurnId = "turn:secret-tool";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "use:secret",
+    name: "McpSecretTool", input: { apiKey: "must-not-leak", query: "safe" } }]));
+  const original = session.items.find((item) => item.toolUseId === "use:secret");
+  assert.ok(original);
+  assert.doesNotMatch(original.text, /must-not-leak/);
+  assert.match(original.text, /\[REDACTED\]/);
+  assert.doesNotMatch(original.rawMetadataJSON, /must-not-leak/);
+  manager.handleSdkMessage(session, { type: "user", uuid: "result:secret", message: { content: [
+    { type: "tool_result", tool_use_id: "use:secret",
+      content: '{"accessToken":"also-secret","status":"ok"}' }
+  ] } });
+  await new Promise((resolve) => setImmediate(resolve));
+  const settled = session.items.find((item) => item.id === original.id);
+  assert.equal(settled.status, "completed");
+  assert.doesNotMatch(JSON.stringify(settled), /must-not-leak|also-secret/);
+  assert.match(settled.text, /"status":"ok"/);
+  assert.match(JSON.parse(settled.rawMetadataJSON).toolExecution.result, /\[REDACTED\]/);
+});
+
+test("a failed Claude Edit does not report a committed file change", async () => {
+  const manager = new ClaudeAgentManager();
+  manager.start({ id: "claude-edit-failed" });
+  const session = manager.get("claude-edit-failed");
+  session.currentTurnId = "turn:edit";
+  manager.handleSdkMessage(session, sdkAssistant([{ type: "tool_use", id: "use:edit",
+    name: "Edit", input: { file_path: "/tmp/App.swift", old_string: "old", new_string: "new" } }]));
+  assert.equal(session.items[0].changeSet.changes[0].path, "/tmp/App.swift");
+  manager.handleSdkMessage(session, { type: "user", uuid: "result:edit", message: { content: [
+    { type: "tool_result", tool_use_id: "use:edit", is_error: true, content: "not found" }
+  ] } });
+  assert.equal(session.items[0].status, "failed");
+  assert.equal(session.items[0].changeSet, null);
+  assert.equal(JSON.parse(session.items[0].rawMetadataJSON).changeSet, undefined);
+});
+
 test("Claude starts ordinary queries with partial messages and the isolated runtime environment", async () => {
   let received = null;
   const query = { async *[Symbol.asyncIterator]() {} };
@@ -620,6 +795,41 @@ test("Claude remains working and interruptible while a background task outlives 
   assert.equal(detail.capabilities.canInterrupt, false);
   await Promise.resolve();
   assert.equal(settled.length, 1);
+});
+
+test("Claude background task progress updates one stable timeline item and hides ambient tasks", async () => {
+  const events = [];
+  const manager = new ClaudeAgentManager({ onProviderEvent: event => events.push(event) });
+  manager.start({ id: "claude-task-progress", cwd: "/tmp", prompt: "" });
+  const session = manager.get("claude-task-progress");
+  session.currentTurnId = "turn:one";
+  session.status = "running";
+  session.turnState = "running";
+  const task = (subtype, extra = {}) => ({ type: "system", subtype, task_id: "task:one", ...extra });
+  manager.handleSdkMessage(session, task("task_started", { uuid: "event:start", description: "Inspect", subagent_type: "general-purpose" }));
+  const first = session.items.find(item => item.type === "mcpToolCall");
+  manager.handleSdkMessage(session, task("task_progress", { uuid: "event:progress", description: "Inspecting files", summary: "3 files" }));
+  manager.handleSdkMessage(session, task("task_updated", { uuid: "event:update", patch: { description: "Review results", status: "running" } }));
+  manager.handleSdkMessage(session, task("task_notification", { uuid: "event:done", status: "completed", summary: "Reviewed" }));
+  manager.handleSdkMessage(session, task("task_progress", { uuid: "event:late", description: "stale progress" }));
+  const taskItems = session.items.filter(item => item.type === "mcpToolCall");
+  assert.equal(taskItems.length, 1);
+  assert.equal(taskItems[0].id, first.id);
+  assert.equal(taskItems[0].turnId, "turn:one");
+  assert.equal(taskItems[0].status, "completed");
+  assert.match(taskItems[0].text, /Reviewed/);
+  assert.equal(JSON.parse(taskItems[0].rawMetadataJSON).toolExecution.status, "completed");
+  await Promise.resolve();
+  assert.deepEqual(events.filter(event => event.itemId === first.id).map(event => event.type),
+    ["tool.started", "tool.progress", "tool.progress", "tool.completed"]);
+
+  manager.handleSdkMessage(session, { type: "system", subtype: "task_started", task_id: "ambient:one",
+    description: "Housekeeping", skip_transcript: true, subagent_type: "general-purpose" });
+  manager.handleSdkMessage(session, { type: "system", subtype: "task_progress", task_id: "ambient:one",
+    description: "Still housekeeping" });
+  manager.handleSdkMessage(session, { type: "system", subtype: "task_notification", task_id: "ambient:one",
+    status: "completed", summary: "Done" });
+  assert.equal(session.items.filter(item => item.type === "mcpToolCall").length, 1);
 });
 
 test("Claude settles after its result while a background Bash service keeps running", async () => {

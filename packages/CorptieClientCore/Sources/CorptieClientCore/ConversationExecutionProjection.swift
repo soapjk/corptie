@@ -1,8 +1,105 @@
 import Foundation
 
+/// Provider-neutral, versioned checklist delivered with a timeline item.
+public struct ConversationExecutionPlan: Decodable, Sendable, Hashable {
+    public struct Step: Decodable, Sendable, Hashable, Identifiable {
+        public let stepId: String
+        public let ordinal: Int
+        public let text: String
+        public let status: String
+        public var id: String { stepId }
+
+        public var marker: String {
+            switch status {
+            case "completed": "✓"
+            case "inProgress": "●"
+            case "failed": "!"
+            case "cancelled": "■"
+            default: "○"
+            }
+        }
+    }
+
+    public let schemaVersion: Int
+    public let planId: String
+    public let revision: Int
+    public let lifecycle: String
+    public let explanation: String?
+    public let steps: [Step]
+    public let updatedAt: String
+
+    public var progressLabel: String {
+        "Plan \(steps.filter { $0.status == "completed" }.count)/\(steps.count)"
+    }
+}
+
+/// Provider-neutral, bounded input/result summary for one stable tool item.
+public struct ConversationToolExecution: Decodable, Sendable, Hashable {
+    public let schemaVersion: Int
+    public let toolId: String
+    public let name: String
+    public let status: String
+    public let input: String?
+    public let result: String?
+}
+
+/// Read-only file-change summary; actions remain separate Provider capabilities.
+public struct ConversationChangeSet: Decodable, Sendable, Hashable {
+    public struct Change: Decodable, Sendable, Hashable, Identifiable {
+        public let path: String
+        public let kind: String
+        public let diffPreview: String?
+        public let diffTruncated: Bool
+        public var id: String { path }
+
+        public var marker: String {
+            switch kind {
+            case "add": "+"
+            case "delete": "−"
+            default: "•"
+            }
+        }
+    }
+
+    public let schemaVersion: Int
+    public let truncated: Bool
+    public let changes: [Change]
+}
+
+/// Provider-neutral pending questions. Answers are intentionally never part of
+/// the timeline model; they exist only in the submission request.
+public struct ConversationUserInput: Decodable, Sendable, Hashable {
+    public struct Option: Decodable, Sendable, Hashable {
+        public let label: String
+        public let description: String
+    }
+
+    public struct Question: Decodable, Sendable, Hashable, Identifiable {
+        public let id: String
+        public let header: String
+        public let question: String
+        public let isOther: Bool
+        public let isSecret: Bool
+        public let options: [Option]?
+    }
+
+    public let schemaVersion: Int
+    public let isBlocking: Bool
+    public let questions: [Question]
+}
+
 public protocol ConversationExecutionItem: ConversationTimelineItem {
     var executionTitle: String { get }
     var status: String? { get }
+    var executionPlan: ConversationExecutionPlan? { get }
+    var toolExecution: ConversationToolExecution? { get }
+    var changeSet: ConversationChangeSet? { get }
+}
+
+public extension ConversationExecutionItem {
+    var executionPlan: ConversationExecutionPlan? { nil }
+    var toolExecution: ConversationToolExecution? { nil }
+    var changeSet: ConversationChangeSet? { nil }
 }
 
 public struct ConversationExecutionStep: Identifiable, Hashable, Sendable {
@@ -25,6 +122,7 @@ public struct ConversationExecutionStep: Identifiable, Hashable, Sendable {
         case completed
         case failed
         case cancelled
+        case unknown
 
         public var marker: String {
             switch self {
@@ -32,6 +130,7 @@ public struct ConversationExecutionStep: Identifiable, Hashable, Sendable {
             case .completed: "✓"
             case .failed: "!"
             case .cancelled: "■"
+            case .unknown: "?"
             }
         }
     }
@@ -41,8 +140,14 @@ public struct ConversationExecutionStep: Identifiable, Hashable, Sendable {
     public let state: State
     public let title: String
     public let detail: String?
-    public init(id: String, kind: Kind, state: State, title: String, detail: String?) {
-        self.id = id; self.kind = kind; self.state = state; self.title = title; self.detail = detail
+    public let plan: ConversationExecutionPlan?
+    public let tool: ConversationToolExecution?
+    public let changeSet: ConversationChangeSet?
+    public init(id: String, kind: Kind, state: State, title: String, detail: String?,
+                plan: ConversationExecutionPlan? = nil, tool: ConversationToolExecution? = nil,
+                changeSet: ConversationChangeSet? = nil) {
+        self.id = id; self.kind = kind; self.state = state; self.title = title
+        self.detail = detail; self.plan = plan; self.tool = tool; self.changeSet = changeSet
     }
 }
 
@@ -59,12 +164,20 @@ public enum ConversationExecutionProjection {
                 kind: kind(item.type),
                 state: state(item, isLatest: index == items.indices.last, runningTurn: runningTurn),
                 title: title(for: item),
-                detail: detailPreview(item.text, excludingTitle: sourceTitle)
+                detail: item.executionPlan?.schemaVersion == 1 || item.toolExecution?.schemaVersion == 1
+                    ? nil : detailPreview(item.text, excludingTitle: sourceTitle),
+                plan: item.executionPlan?.schemaVersion == 1 ? item.executionPlan : nil,
+                tool: item.toolExecution?.schemaVersion == 1 ? item.toolExecution : nil,
+                changeSet: item.changeSet?.schemaVersion == 1 ? item.changeSet : nil
             )
         }
     }
 
     public static func title<Item: ConversationExecutionItem>(for item: Item) -> String {
+        if item.type == "executionPlan", let plan = item.executionPlan, plan.schemaVersion == 1 {
+            if plan.lifecycle == "unknown" { return "Plan update unavailable" }
+            return plan.progressLabel
+        }
         if item.type == "contextCompaction" {
             return "Context compacted"
         }
@@ -74,7 +187,18 @@ public enum ConversationExecutionProjection {
 
     public static func plainText(for steps: [ConversationExecutionStep]) -> String {
         steps.map { step in
-            ["\(step.state.marker) [\(step.kind.label)] \(step.title)", step.detail]
+            ["\(step.state.marker) [\(step.kind.label)] \(step.title)", step.detail,
+             step.tool.map { tool in
+                 [tool.input.map { "Input: \($0)" }, tool.result.map { "Result: \($0)" }]
+                     .compactMap { $0 }.joined(separator: "\n")
+             },
+             step.changeSet.map { changeSet in
+                 changeSet.changes.map { "\($0.marker) \($0.path)" }.joined(separator: "\n")
+             },
+             step.plan.map { plan in
+                 ([plan.explanation].compactMap { $0 }
+                     + plan.steps.map { "\($0.marker) \($0.text)" }).joined(separator: "\n")
+             }]
                 .compactMap { $0 }
                 .joined(separator: "\n")
         }
@@ -83,7 +207,7 @@ public enum ConversationExecutionProjection {
 
     private static func kind(_ type: String) -> ConversationExecutionStep.Kind {
         switch type {
-        case "reasoning", "plan", "agentMessage", "contextCompaction": .context
+        case "reasoning", "plan", "executionPlan", "agentMessage", "contextCompaction": .context
         case "warning": .result
         default: .action
         }
@@ -98,7 +222,17 @@ public enum ConversationExecutionProjection {
         switch status {
         case "failed", "error": return .failed
         case "cancelled", "canceled", "interrupted": return .cancelled
-        case "running", "inprogress", "in_progress", "started": return .running
+        case "unknown", "uncertain": return .unknown
+        case "running", "inprogress", "in_progress", "started":
+            // An unfinished item left by a settled Turn must not keep the
+            // execution card animating indefinitely. Completion of the Turn
+            // alone does not prove this individual tool succeeded.
+            switch normalized(item.timelineTurnStatus) {
+            case "completed", "complete": return .unknown
+            case "failed", "error": return .failed
+            case "cancelled", "canceled", "interrupted": return .cancelled
+            default: return .running
+            }
         default: break
         }
         if item.type == "warning" { return .failed }
@@ -140,7 +274,7 @@ public enum ConversationExecutionProjection {
         case "webSearch": "Searched the web"
         case "mcpToolCall", "dynamicToolCall": "Used tool"
         case "reasoning": "Reasoned"
-        case "plan": "Updated plan"
+        case "plan", "executionPlan": "Updated plan"
         case "warning": "Warning"
         case "agentMessage": "Progress update"
         case "contextCompaction": "Context compacted"
@@ -159,4 +293,3 @@ public enum ConversationExecutionProjection {
         }
     }
 }
-
