@@ -25,6 +25,7 @@ export class CodexProviderRuntime {
   readAccountRateLimits(...args) { return this.client.readAccountRateLimits(...args); }
   readThreadForLegacyHistoryRepair(...args) { return this.client.readThreadForLegacyHistoryRepair(...args); }
   respondToApproval(...args) { return this.client.respondToApproval(...args); }
+  respondToUserInput(...args) { return this.client.respondToUserInput(...args); }
   resumeThread(...args) { return this.client.resumeThread(...args); }
   runEphemeralPrompt(...args) { return this.client.runEphemeralPrompt(...args); }
   setThreadName(...args) { return this.client.setThreadName(...args); }

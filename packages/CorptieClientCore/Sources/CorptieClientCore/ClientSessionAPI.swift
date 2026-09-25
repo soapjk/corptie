@@ -22,11 +22,16 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
     public var processEndedAt: String?
     /// Managed attachments (additive; older backends omit them). Bytes come from `ClientSessionAPI.image`.
     public let images: [ClientMessageImage]
+    public let executionPlan: ConversationExecutionPlan?
+    public let toolExecution: ConversationToolExecution?
+    public let changeSet: ConversationChangeSet?
+    public let userInput: ConversationUserInput?
+    public let options: [ClientApprovalOption]?
 
     enum CodingKeys: String, CodingKey {
         case id, turnId, type, text, status, createdAt, userMessageStatus, queuePosition
         case turnStatus, title, presentationRole, presentationText, sourceType, localVisibility, processingError
-        case processStartedAt, processEndedAt, images
+        case processStartedAt, processEndedAt, images, executionPlan, toolExecution, changeSet, userInput, options
     }
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -48,6 +53,11 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         processStartedAt = try container.decodeIfPresent(String.self, forKey: .processStartedAt)
         processEndedAt = try container.decodeIfPresent(String.self, forKey: .processEndedAt)
         images = try container.decodeIfPresent([ClientMessageImage].self, forKey: .images) ?? []
+        executionPlan = try? container.decodeIfPresent(ConversationExecutionPlan.self, forKey: .executionPlan)
+        toolExecution = try? container.decodeIfPresent(ConversationToolExecution.self, forKey: .toolExecution)
+        changeSet = try? container.decodeIfPresent(ConversationChangeSet.self, forKey: .changeSet)
+        userInput = try? container.decodeIfPresent(ConversationUserInput.self, forKey: .userInput)
+        options = try? container.decodeIfPresent([ClientApprovalOption].self, forKey: .options)
     }
 
     public init(id: String, text: String) {
@@ -55,7 +65,7 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         turnId = nil; status = nil; createdAt = nil; userMessageStatus = nil; queuePosition = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
-        processStartedAt = nil; processEndedAt = nil; images = []
+        processStartedAt = nil; processEndedAt = nil; images = []; executionPlan = nil; toolExecution = nil; changeSet = nil; userInput = nil; options = nil
     }
     public init(commandMessageID: String, result: ClientConversationCommandResult) {
         id = commandMessageID; text = result.text; type = "commandExecution"
@@ -63,8 +73,28 @@ public struct ClientMessage: Decodable, Sendable, Identifiable, Equatable {
         userMessageStatus = nil; queuePosition = nil
         turnStatus = nil; title = nil; presentationRole = nil; presentationText = nil
         sourceType = nil; localVisibility = nil; processingError = nil
-        processStartedAt = nil; processEndedAt = nil; images = []
+        processStartedAt = nil; processEndedAt = nil; images = []; executionPlan = nil; toolExecution = nil; changeSet = nil; userInput = nil; options = nil
     }
+}
+public struct ClientApprovalOption: Decodable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let label: String
+    public let role: String?
+    public let selected: Bool?
+}
+
+public struct ClientApprovalResponse: Decodable, Sendable {
+    public let schemaVersion: Int
+    public let sessionId: String
+    public let itemId: String
+    public let status: String
+}
+public struct ClientUserInputResponse: Decodable, Sendable {
+    public let schemaVersion: Int
+    public let sessionId: String
+    public let itemId: String
+    /// Submitted means transport acknowledgement, not Provider execution.
+    public let status: String
 }
 /// One managed attachment of a message. `managedPath` is an opaque host token, never a device path.
 public struct ClientMessageImage: Decodable, Sendable, Equatable, Identifiable {
@@ -309,6 +339,23 @@ public struct ClientSessionAPI: Sendable {
     }
     public func stop(sessionId: String, requestId: String) async throws -> ClientCommandReceipt {
         try await command(sessionId: sessionId, route: "stop", body: ["requestId": requestId])
+    }
+    public func respondToApproval(sessionId: String, itemId: String, optionId: String) async throws -> ClientApprovalResponse {
+        struct Body: Encodable { let itemId: String; let optionId: String }
+        var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "approval"])
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Body(itemId: itemId, optionId: optionId))
+        return try await read(request)
+    }
+    public func respondToUserInput(sessionId: String, itemId: String,
+                                   answers: [String: [String]]) async throws -> ClientUserInputResponse {
+        struct Body: Encodable { let itemId: String; let answers: [String: [String]] }
+        var request = try transport.endpoint.request(path: ["client", "v1", "sessions", sessionId, "user-input"])
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(Body(itemId: itemId, answers: answers))
+        return try await read(request)
     }
     /// Acknowledges agent messages through `throughSequence` (same host receipt macOS submits on open).
     public func readReceipt(sessionId: String, throughSequence: Int) async throws -> ClientReadReceipt {

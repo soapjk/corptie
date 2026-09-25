@@ -317,11 +317,19 @@ struct ConversationView: View {
                     ForEach(workspace.displayEntries) { entry in
                         switch entry.kind {
                         case .message(let message):
-                            MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
-                                laneWidth: laneWidth, connection: connection, sessionID: sessionID,
-                                images: messageImages,
-                                openAttachment: { attachmentPreview = PadAttachmentPreview(sessionID: sessionID, image: $0) })
-                                .id(message.id)
+                            if message.type == "userInput" {
+                                PadUserInputCard(message: message, connection: connection, sessionID: sessionID,
+                                    onSubmitted: { await workspace.load(connection) }).id(message.id)
+                            } else if message.type == "choice" || message.type == "approval" {
+                                PadApprovalCard(message: message, connection: connection, sessionID: sessionID,
+                                    onSubmitted: { await workspace.load(connection) }).id(message.id)
+                            } else {
+                                MobileMessageBubble(message: message, deliveryState: workspace.outgoingStates[message.id],
+                                    laneWidth: laneWidth, connection: connection, sessionID: sessionID,
+                                    images: messageImages,
+                                    openAttachment: { attachmentPreview = PadAttachmentPreview(sessionID: sessionID, image: $0) })
+                                    .id(message.id)
+                            }
                         case .process:
                             if let presentation = workspace.processPresentations[entry.id] {
                                 PadProcessCard(steps: workspace.processSteps[entry.id] ?? [], presentation: presentation,
@@ -589,16 +597,17 @@ private struct PadProcessCard: View {
     let presentation: ConversationProcessPresentation
     let laneWidth: CGFloat
     @State private var expanded = false
+    private var segments: [PadExecutionSegment] { PadExecutionSegment.make(from: steps) }
     private var state: ConversationProcessState { presentation.state }
-    private var cardWidth: CGFloat? {
-        guard laneWidth > 0 else { return nil }
+    private var cardWidth: CGFloat {
+        let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
         let summaryWidth = ceil((presentation.summary as NSString).size(withAttributes: [
             .font: UIFont.systemFont(ofSize: 10.5, weight: .medium)
         ]).width)
         return MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: summaryWidth,
             expanded: expanded,
-            laneWidth: laneWidth)
+            laneWidth: availableLane)
     }
     private var tint: Color {
         switch state {
@@ -612,8 +621,18 @@ private struct PadProcessCard: View {
         ProcessCard(summary: presentation.summary,
                     symbol: state.symbolName, tint: tint, expanded: expanded,
                     toggle: { expanded.toggle() }) {
-            PadMessageText(text: "", fromUser: false, steps: steps)
-                .frame(maxWidth: .infinity)
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(segments) { segment in
+                    switch segment.content {
+                    case .plan(let plan):
+                        ExecutionPlanChecklist(plan: plan)
+                    case .text(let textSteps):
+                        PadMessageText(text: "", fromUser: false, steps: textSteps)
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(width: cardWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -631,6 +650,36 @@ private struct TimelineNearTopKey: PreferenceKey {
     static let defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) {
         value = value || nextValue()
+    }
+}
+
+private struct PadExecutionSegment: Identifiable {
+    enum Content {
+        case text([ConversationExecutionStep])
+        case plan(ConversationExecutionPlan)
+    }
+
+    let id: String
+    let content: Content
+
+    static func make(from steps: [ConversationExecutionStep]) -> [Self] {
+        var segments: [Self] = []
+        var textSteps: [ConversationExecutionStep] = []
+        func flushText() {
+            guard let first = textSteps.first else { return }
+            segments.append(Self(id: first.id, content: .text(textSteps)))
+            textSteps.removeAll(keepingCapacity: true)
+        }
+        for step in steps {
+            if let plan = step.plan {
+                flushText()
+                segments.append(Self(id: plan.planId, content: .plan(plan)))
+            } else {
+                textSteps.append(step)
+            }
+        }
+        flushText()
+        return segments
     }
 }
 
@@ -657,6 +706,191 @@ struct PadAttachmentPreview: Identifiable {
 /// Ordinary text message. Card geometry (`MessageBubbleWidthPolicy`), the attachment
 /// strip and the timestamp + copy action bar are the macOS row; only text
 /// measurement (UIKit) and the always-visible action bar (no hover) differ.
+private struct PadApprovalCard: View {
+    let message: ClientMessage
+    let connection: PadConnection
+    let sessionID: String
+    let onSubmitted: () async -> Void
+    @State private var submitting = false
+    @State private var submitted = false
+    @State private var errorText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(message.title ?? "需要你的选择").font(.headline)
+            Text(message.text).font(.subheadline).textSelection(.enabled)
+            if message.status == "pending" && !submitted, !(message.options ?? []).isEmpty {
+                ForEach(message.options ?? []) { option in
+                    Button(option.label) { Task { await respond(option) } }
+                        .disabled(submitting)
+                        .accessibilityIdentifier("approval-option-\(option.id)")
+                }
+            } else {
+                Text(statusText)
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let errorText {
+                Text(errorText).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation-approval")
+    }
+
+    private var statusText: String {
+        if ["selected", "completed", "resolved"].contains(message.status ?? "") { return "已处理" }
+        if submitted || message.status == "submitted" { return "已提交，等待会话更新" }
+        switch message.status {
+        case "dispatching": return "正在提交，等待确认"
+        case "unknown": return "提交结果待同步，请勿重复选择"
+        case "pending": return "暂无可用选项"
+        default: return "已处理"
+        }
+    }
+
+    private func respond(_ option: ClientApprovalOption) async {
+        guard !submitting, !submitted else { return }
+        submitting = true
+        errorText = nil
+        defer { submitting = false }
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let response = try await api.respondToApproval(sessionId: sessionID, itemId: message.id, optionId: option.id)
+            guard response.status == "submitted" else { return }
+            submitted = true
+            await onSubmitted()
+        } catch {
+            errorText = PadConnection.explain(error)
+        }
+    }
+}
+
+private struct PadUserInputCard: View {
+    let message: ClientMessage
+    let connection: PadConnection
+    let sessionID: String
+    let onSubmitted: () async -> Void
+    @State private var selected: [String: Set<String>] = [:]
+    @State private var typed: [String: String] = [:]
+    @State private var submitting = false
+    @State private var submitted = false
+    @State private var errorText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("需要你的输入").font(.headline)
+            if let request = message.userInput, request.schemaVersion == 1 {
+                if message.status == "pending" && !submitted {
+                    ForEach(request.questions) { question in
+                        VStack(alignment: .leading, spacing: 6) {
+                            if !question.header.isEmpty {
+                                Text(question.header).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text(question.question).font(.subheadline)
+                            if let options = question.options {
+                                ForEach(options, id: \.label) { option in
+                                    Button {
+                                        var values = selected[question.id, default: []]
+                                        if !values.insert(option.label).inserted { values.remove(option.label) }
+                                        selected[question.id] = values
+                                    } label: {
+                                        HStack(alignment: .top, spacing: 8) {
+                                            Image(systemName: selected[question.id, default: []].contains(option.label)
+                                                ? "checkmark.circle.fill" : "circle")
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(option.label)
+                                                if !option.description.isEmpty {
+                                                    Text(option.description).font(.caption).foregroundStyle(.secondary)
+                                                }
+                                            }
+                                            Spacer(minLength: 0)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("user-input-option-\(question.id)-\(option.label)")
+                                }
+                                if question.isOther {
+                                    TextField("其他答案", text: textBinding(question.id))
+                                        .textFieldStyle(.roundedBorder)
+                                }
+                            } else if question.isSecret {
+                                SecureField("输入答案", text: textBinding(question.id))
+                                    .textFieldStyle(.roundedBorder)
+                            } else {
+                                TextField("输入答案", text: textBinding(question.id), axis: .vertical)
+                                    .lineLimit(1...4)
+                                    .textFieldStyle(.roundedBorder)
+                            }
+                        }
+                    }
+                    Button("提交答案") { Task { await submit(request) } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(submitting || answers(for: request) == nil)
+                        .accessibilityIdentifier("user-input-submit")
+                } else {
+                    Text(statusText).font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Text(message.text).font(.subheadline)
+                Text("当前客户端无法处理这种问题，请更新客户端。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation-user-input")
+    }
+
+    private var statusText: String {
+        padUserInputStatusText(message.status, submittedLocally: submitted)
+    }
+
+    private func textBinding(_ id: String) -> Binding<String> {
+        Binding(get: { typed[id] ?? "" }, set: { typed[id] = $0 })
+    }
+
+    private func answers(for request: ConversationUserInput) -> [String: [String]]? {
+        var result: [String: [String]] = [:]
+        for question in request.questions {
+            let entered = (typed[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            var values = question.options?.compactMap { option in
+                selected[question.id, default: []].contains(option.label) ? option.label : nil
+            } ?? []
+            if !entered.isEmpty { values.append(entered) }
+            guard !values.isEmpty, values.count <= 12,
+                  values.allSatisfy({ $0.count <= 4_000 }) else { return nil }
+            result[question.id] = values
+        }
+        return result
+    }
+
+    private func submit(_ request: ConversationUserInput) async {
+        guard !submitting, !submitted, let answers = answers(for: request) else { return }
+        submitting = true
+        errorText = nil
+        defer { submitting = false }
+        do {
+            let api = ClientSessionAPI(transport: try await connection.transport())
+            let response = try await api.respondToUserInput(sessionId: sessionID, itemId: message.id, answers: answers)
+            guard response.status == "submitted" else { return }
+            submitted = true
+            typed.removeAll()
+            selected.removeAll()
+            await onSubmitted()
+        } catch {
+            errorText = PadConnection.explain(error)
+        }
+    }
+}
+
 private struct MobileMessageBubble: View {
     let message: ClientMessage
     var deliveryState: String? = nil
@@ -680,11 +914,11 @@ private struct MobileMessageBubble: View {
         case .none: return deliveryState
         }
     }
-    private var cardWidth: CGFloat? {
-        guard laneWidth > 0 else { return nil }
+    private var cardWidth: CGFloat {
+        let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
         return MessageBubbleWidthPolicy.cardWidth(
             bodyWidth: PadMessageLayout.bodyWidth(text: displayText, style: fromUser ? .user : .agent),
-            hasAttachments: !attachments.isEmpty, laneWidth: laneWidth)
+            hasAttachments: !attachments.isEmpty, laneWidth: availableLane)
     }
 
     var body: some View {

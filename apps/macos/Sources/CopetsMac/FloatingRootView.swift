@@ -3491,6 +3491,116 @@ func nativeTimelineTimestampText(createdAt: String?) -> String {
 
 typealias DetailView = SessionConversationContent
 
+private struct ConversationUserInputSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let item: CodexThreadItem
+    let submit: ([String: [String]]) async throws -> Void
+    @State private var selected: [String: Set<String>] = [:]
+    @State private var typed: [String: String] = [:]
+    @State private var submitting = false
+    @State private var errorText: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("需要你的输入").font(.title3.weight(.semibold))
+            if let request = item.userInput, request.schemaVersion == 1 {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ForEach(request.questions) { question in
+                            VStack(alignment: .leading, spacing: 8) {
+                                if !question.header.isEmpty {
+                                    Text(question.header).font(.caption).foregroundStyle(.secondary)
+                                }
+                                Text(question.question).font(.body)
+                                if let options = question.options {
+                                    ForEach(options, id: \.label) { option in
+                                        Toggle(isOn: optionBinding(question.id, label: option.label)) {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(option.label)
+                                                if !option.description.isEmpty {
+                                                    Text(option.description).font(.caption).foregroundStyle(.secondary)
+                                                }
+                                            }
+                                        }
+                                        .toggleStyle(.checkbox)
+                                    }
+                                    if question.isOther {
+                                        TextField("其他答案", text: textBinding(question.id))
+                                    }
+                                } else if question.isSecret {
+                                    SecureField("输入答案", text: textBinding(question.id))
+                                } else {
+                                    TextField("输入答案", text: textBinding(question.id))
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(.trailing, 8)
+                }
+                if let errorText { Text(errorText).font(.caption).foregroundStyle(.red) }
+                HStack {
+                    Button("取消") { dismiss() }.disabled(submitting)
+                    Spacer()
+                    Button("提交答案") { Task { await send(request) } }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(submitting || answers(for: request) == nil)
+                        .accessibilityIdentifier("user-input-submit")
+                }
+            } else {
+                Text("当前客户端无法处理这种问题，请更新客户端。")
+                    .foregroundStyle(.secondary)
+                Button("关闭") { dismiss() }
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 460, minHeight: 280)
+        .accessibilityIdentifier("conversation-user-input")
+    }
+
+    private func textBinding(_ id: String) -> Binding<String> {
+        Binding(get: { typed[id] ?? "" }, set: { typed[id] = $0 })
+    }
+
+    private func optionBinding(_ id: String, label: String) -> Binding<Bool> {
+        Binding(get: { selected[id, default: []].contains(label) }, set: { enabled in
+            var values = selected[id, default: []]
+            if enabled { values.insert(label) } else { values.remove(label) }
+            selected[id] = values
+        })
+    }
+
+    private func answers(for request: ConversationUserInput) -> [String: [String]]? {
+        var result: [String: [String]] = [:]
+        for question in request.questions {
+            let entered = (typed[question.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            var values = question.options?.compactMap { option in
+                selected[question.id, default: []].contains(option.label) ? option.label : nil
+            } ?? []
+            if !entered.isEmpty { values.append(entered) }
+            guard !values.isEmpty, values.count <= 12,
+                  values.allSatisfy({ $0.count <= 4_000 }) else { return nil }
+            result[question.id] = values
+        }
+        return result
+    }
+
+    private func send(_ request: ConversationUserInput) async {
+        guard !submitting, let answers = answers(for: request) else { return }
+        submitting = true
+        errorText = nil
+        defer { submitting = false }
+        do {
+            try await submit(answers)
+            typed.removeAll()
+            selected.removeAll()
+            dismiss()
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+}
+
 struct SessionConversationContent: View {
     @ObservedObject private var backendClient: BackendClient
     @ObservedObject private var selectionController: SessionSelectionController
@@ -3528,6 +3638,7 @@ struct SessionConversationContent: View {
     @State private var displayedWorkspaceRecoveryStatus: WorkspaceRecoveryStatus?
     @State private var scrollTargetTurnID: String?
     @State private var scrollTargetTurnRevision = 0
+    @State private var pendingUserInput: CodexThreadItem?
     let sessionId: String
     let composerDraftRepository: ComposerDraftRepository
     let initialTimelinePosition: AppKitChatTimelinePosition?
@@ -3890,6 +4001,13 @@ struct SessionConversationContent: View {
                 scrollToTurnRevision: scrollTargetTurnRevision,
                 historyRequestEpoch: historyRequestEpoch
             )
+            .sheet(item: $pendingUserInput) { item in
+                ConversationUserInputSheet(item: item) { answers in
+                    try await backendClient.respondToUserInput(
+                        sessionID: sessionId, itemID: item.id, answers: answers
+                    )
+                }
+            }
             .onAppear {
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
@@ -3898,6 +4016,10 @@ struct SessionConversationContent: View {
             .onChange(of: appKitDetailRevision) { _, _ in
                 if let currentDetail = displayedDetail {
                     updateCachedDisplayEntries(for: currentDetail)
+                }
+                if let pendingUserInput,
+                   displayedDetail?.items.first(where: { $0.id == pendingUserInput.id })?.status != "pending" {
+                    self.pendingUserInput = nil
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .sessionTimelineSubmissionAccepted)) { notification in
@@ -4160,6 +4282,15 @@ struct SessionConversationContent: View {
         case .cancelled: sections.append("Cancelled before processing")
         case .consumed, .none: break
         }
+        if item.type == "userInput" {
+            switch item.status {
+            case "submitted": sections.append("已提交，等待会话更新")
+            case "dispatching": sections.append("正在提交，等待确认")
+            case "unknown": sections.append("提交结果待同步，请勿重复提交")
+            case "expired": sections.append("此问题已失效")
+            default: break
+            }
+        }
         if item.type == "choice",
            item.status == "selected",
            let selected = item.options?.first(where: { $0.selected == true }) {
@@ -4198,6 +4329,12 @@ struct SessionConversationContent: View {
                     kind: .collaborationConfirmation(id: confirmationID, approve: false)
                 )
             ]
+        }
+
+        if item.type == "userInput", item.status == "pending",
+           item.userInput?.schemaVersion == 1 {
+            return [.init(id: "\(item.id):answer", label: "回答", isDestructive: false,
+                kind: .userInput(itemID: item.id))]
         }
 
         if item.status != "selected",
@@ -4249,6 +4386,8 @@ struct SessionConversationContent: View {
             backendClient.respondToCodexApproval(option: option)
         case .ptyChoice(let option, let choiceID):
             backendClient.respondToPtyChoice(option: option, choiceId: choiceID)
+        case .userInput(let itemID):
+            pendingUserInput = displayedDetail?.items.first(where: { $0.id == itemID && $0.status == "pending" })
         case .sendMessage(let message):
             backendClient.sendMessage(message)
         case .collaborationConfirmation(let id, let approve):
@@ -4260,7 +4399,7 @@ struct SessionConversationContent: View {
         }
     }
 
-    private func appKitContentRevision(
+    func appKitContentRevision(
         _ entry: ChatDisplayEntry,
         expandedTurnIds: Set<String>
     ) -> Int {
@@ -4280,6 +4419,10 @@ struct SessionConversationContent: View {
                 hasher.combine(last.status)
                 hasher.combine(last.id)
                 hasher.combine(last.title)
+                // A collapsed plan keeps the same row and title while its
+                // progress changes. Invalidate that one row so the compact
+                // current-step summary does not remain on the old revision.
+                hasher.combine(last.executionPlan?.revision)
             }
             if expandedTurnIds.contains(turnId) {
                 items.forEach { hasher.combine(itemSignature($0)) }
@@ -4786,6 +4929,9 @@ struct SessionConversationContent: View {
             item.userMessageStatus ?? "",
             item.queuePosition.map(String.init) ?? "",
             item.turnStatus,
+            item.executionPlan.map { "plan:\($0.revision)" } ?? "",
+            item.toolExecution.map { "tool:\($0.hashValue)" } ?? "",
+            item.changeSet.map { "changes:\($0.hashValue)" } ?? "",
             item.presentationRole ?? "",
             collaborationSignature,
             "\(text.count)",
@@ -4972,31 +5118,11 @@ private struct ChatUsageBar: View {
                     }
                 }
             }
-
-            if let forecast = usage.resetForecast?.forecast {
-                Button {
-                    openResetForecast(forecast)
-                } label: {
-                    Label(
-                        L10nFormat("Tibo forecast: %@", forecast.estimateLabel),
-                        systemImage: "bubble.left"
-                    )
-                    .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .help(forecast.text)
-            } else {
-                Label(
-                    L10n("Tibo forecast: No upcoming reset announcement"),
-                    systemImage: "bubble.left"
-                )
-                .lineLimit(1)
-            }
         }
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(CorptiePalette.primaryText)
         .padding(10)
-        .frame(width: 340)
+        .fixedSize(horizontal: true, vertical: true)
     }
 
     private func formattedResetDate(_ epochSeconds: Double?) -> String {
@@ -5009,11 +5135,6 @@ private struct ChatUsageBar: View {
 
     private func formattedBankedResetDate(_ date: Date) -> String {
         date.formatted(date: .abbreviated, time: .shortened)
-    }
-
-    private func openResetForecast(_ forecast: CodexResetForecast) {
-        guard let value = forecast.url, let url = URL(string: value) else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private func usageItem(icon: String, value: String, progress: Double, color: Color, help: String, numericValue: Double? = nil) -> some View {

@@ -1001,6 +1001,58 @@ final class AppKitChatTimelineControlTests: XCTestCase {
         XCTAssertEqual(historyHarness.scrollView.contentView.bounds.minY, yBefore, accuracy: 1)
     }
 
+    func testExpandedPlanGrowthPreservesReaderAnchorAndLatestIntent() async throws {
+        func planRow(revision: Int, stepCount: Int) throws -> AppKitChatTimelineRow {
+            let source: [String: Any] = [
+                "id": "plan:one", "turnId": "turn:plan", "turnStatus": "inProgress",
+                "type": "executionPlan", "title": "Execution plan", "text": "Plan update", "status": "running",
+                "executionPlan": [
+                    "schemaVersion": 1, "planId": "plan:one", "revision": revision,
+                    "lifecycle": "active", "updatedAt": "2026-09-24T00:00:00Z",
+                    "steps": (0..<stepCount).map { index in [
+                        "stepId": "step:\(index)", "ordinal": index,
+                        "text": "Inspect source file \(index)", "status": index == 0 ? "completed" : "pending"
+                    ] as [String: Any] }
+                ]
+            ]
+            let item = try JSONDecoder().decode(CodexThreadItem.self,
+                from: JSONSerialization.data(withJSONObject: source))
+            return AppKitChatTimelineRow(
+                id: "process:turn:plan", contentRevision: revision,
+                nativeText: "", copyText: "", nativeStyle: .process,
+                title: "", metadata: "", expandableTurnId: "turn:plan",
+                isExpanded: true, processCount: 1, processState: .running,
+                processSteps: NativeExecutionTimelineProjection.steps(for: [item]),
+                showsHeader: false
+            )
+        }
+        let ordinary = (0..<30).map { row(id: "plan-neighbor-\($0)", text: "Message \($0)") }
+        let initial = Array(ordinary.prefix(10)) + [try planRow(revision: 1, stepCount: 1)]
+            + Array(ordinary.dropFirst(10))
+        let updated = Array(ordinary.prefix(10)) + [try planRow(revision: 2, stepCount: 120)]
+            + Array(ordinary.dropFirst(10))
+
+        let historyHarness = makeHarness(followsLatest: false, height: 180)
+        historyHarness.coordinator.apply(rows: initial)
+        historyHarness.tableView.layoutSubtreeIfNeeded()
+        historyHarness.tableView.scrollRowToVisible(23)
+        await settleMainQueue()
+        let before = visibleAnchor(in: historyHarness.tableView, rows: initial)
+        historyHarness.coordinator.apply(rows: updated)
+        await settleMainQueue()
+        let after = visibleAnchor(in: historyHarness.tableView, rows: updated)
+        XCTAssertEqual(after.id, before.id)
+        XCTAssertEqual(after.offset, before.offset, accuracy: 4)
+
+        let followHarness = makeHarness(followsLatest: true, height: 180)
+        followHarness.coordinator.apply(rows: initial)
+        await settleMainQueue()
+        followHarness.coordinator.apply(rows: updated)
+        await settleMainQueue()
+        XCTAssertTrue(isNearBottom(followHarness))
+        XCTAssertTrue(followHarness.followState.value)
+    }
+
     func testGrowingStreamingTailCannotLoseLatestFollowToLayoutBoundsFeedback() async {
         let harness = makeHarness(followsLatest: true, height: 180)
         let rows = (0..<30).map { row(id: "growing-tail-\($0)", revision: 0, text: "Row \($0)") }
