@@ -5,6 +5,75 @@ import { join } from "node:path";
 import test from "node:test";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { TimelineReadPool } from "../src/store/timelineReadPool.mjs";
+import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
+
+test("persisted approval options and submission status reach the mobile window", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-approval-read-pool-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const store = new CorptieStore({ dbPath, configPath, dataRoot: directory });
+  let pool;
+  try {
+    await store.initialize();
+    store.upsertSession({ id: "approval-session", title: "Approval", agent: "Agent", provider: "openclacky", status: "blocked" });
+    const item = { id: "approval:one", turnId: "turn:one", turnStatus: "waiting_approval",
+      type: "approval", title: "Confirm", text: "Proceed?", status: "pending",
+      options: [{ id: "yes", label: "允许", role: "approve" }, { id: "no", label: "拒绝", role: "deny" }] };
+    store.upsertTimelineItemProjection("approval-session", item);
+    pool = new TimelineReadPool({ dbPath, configPath, dataRoot: directory, size: 1 });
+    const api = new ClientSessionAPI({ store,
+      readWindow: async (sessionId, options) => {
+        const result = await pool.readTimelineWindow({ sessionId, ...options, provider: "openclacky" });
+        return { ...result.window, revision: result.timelineRevision };
+      },
+      send: async () => {}, stop: async () => {}, actions: () => ({}) });
+    const identity = { deviceId: "device:one", permissions: ["messages.read"] };
+    const first = await api.messages(identity, "approval-session", new URLSearchParams());
+    assert.deepEqual(first.items[0].options.map(option => [option.id, option.label, option.role]),
+      [["yes", "允许", "approve"], ["no", "拒绝", "deny"]]);
+    store.upsertTimelineItemProjection("approval-session", { ...item, status: "submitted" });
+    const second = await api.messages(identity, "approval-session", new URLSearchParams());
+    assert.equal(second.items.length, 1);
+    assert.equal(second.items[0].status, "submitted");
+    assert.ok(second.revision > first.revision);
+  } finally {
+    await pool?.close();
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("read-only timeline Worker returns the structured plan after an in-place revision", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "corptie-plan-read-pool-"));
+  const dbPath = join(directory, "corptie.sqlite");
+  const configPath = join(directory, "config.json");
+  const store = new CorptieStore({ dbPath, configPath, dataRoot: directory });
+  let pool;
+  try {
+    await store.initialize();
+    store.upsertSession({ id: "plan-session", title: "Plan", agent: "Agent", provider: "codex-app-server", status: "running" });
+    const write = (revision, status) => store.upsertTimelineItemProjection("plan-session", {
+      id: "plan:one", turnId: "turn:one", turnStatus: "inProgress", type: "executionPlan",
+      title: "Execution plan", text: `Plan ${status === "completed" ? 1 : 0}/1`,
+      rawMetadataJSON: JSON.stringify({ executionPlan: { schemaVersion: 1, planId: "plan:one",
+        revision, lifecycle: "active", updatedAt: "2026-09-24T00:00:00Z",
+        steps: [{ stepId: "step:1", ordinal: 0, text: "Inspect", status }] } })
+    });
+    write(1, "pending");
+    pool = new TimelineReadPool({ dbPath, configPath, dataRoot: directory, size: 1 });
+    const first = await pool.readTimelineWindow({ sessionId: "plan-session", limit: 20, provider: "codex-app-server" });
+    assert.equal(first.window.items[0].executionPlan.revision, 1);
+    write(2, "completed");
+    const second = await pool.readTimelineWindow({ sessionId: "plan-session", limit: 20, provider: "codex-app-server" });
+    assert.equal(second.window.items.length, 1);
+    assert.equal(second.window.items[0].executionPlan.revision, 2);
+    assert.equal(second.window.items[0].executionPlan.steps[0].status, "completed");
+  } finally {
+    await pool?.close();
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test("Timeline read pool returns a bounded, revision-consistent snapshot from read-only Workers", async () => {
   const directory = await mkdtemp(join(tmpdir(), "corptie-timeline-read-pool-"));
@@ -145,4 +214,3 @@ test("Timeline read pool single-flights duplicate snapshots and rejects work aft
     await rm(directory, { recursive: true, force: true });
   }
 });
-

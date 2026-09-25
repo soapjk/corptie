@@ -288,7 +288,7 @@ private static func isTerminalTurnStatus(_ status: String) -> Bool {
 }
 private static func isDetailProcessItem<Item: ConversationTimelineItem>(_ item: Item) -> Bool {
     switch item.type {
-    case "reasoning", "plan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction":
+    case "reasoning", "plan", "executionPlan", "commandExecution", "fileChange", "mcpToolCall", "dynamicToolCall", "webSearch", "warning", "contextCompaction":
         return true
     default:
         return false

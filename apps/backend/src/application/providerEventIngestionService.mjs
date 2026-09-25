@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { providerSafeDiagnosticPayload } from "../utils/providerRawMetadata.mjs";
 
 export const PROVIDER_EVENT_TYPES = new Set([
   "turn.started",
   "turn.completed",
   "turn.failed",
   "turn.cancelled",
+  "plan.updated",
   "user.message.accepted",
   "assistant.message.started",
   "assistant.message.delta",
@@ -15,6 +17,9 @@ export const PROVIDER_EVENT_TYPES = new Set([
   "tool.failed",
   "approval.requested",
   "approval.resolved",
+  "interaction.requested",
+  "interaction.submitted",
+  "interaction.resolved",
   "usage.updated",
   "provider.error",
   "provider.connection.changed"
@@ -208,7 +213,10 @@ const PROJECTED_ITEM_EVENT_TYPES = new Set([
   "tool.completed",
   "tool.failed",
   "approval.requested",
-  "approval.resolved"
+  "approval.resolved",
+  "interaction.requested",
+  "interaction.submitted",
+  "interaction.resolved"
 ]);
 
 const TERMINAL_TURN_EVENT_TYPES = new Set([
@@ -294,7 +302,9 @@ export function normalizeProviderEvent(input, now = () => new Date().toISOString
     occurredAt: optionalText(input.occurredAt),
     receivedAt: optionalText(input.receivedAt) ?? now(),
     payload: normalizedPayload(input.payload),
-    rawPayload: input.rawPayload ?? input.payload ?? {}
+    // Inbox and pending Outbox rows can retain quarantined native events.
+    // Keep diagnostic shape while removing credentials before persistence.
+    rawPayload: providerSafeDiagnosticPayload(input.rawPayload ?? input.payload ?? {})
   };
   if (event.schemaVersion !== 1) {
     throw providerEventError("PROVIDER_EVENT_SCHEMA_UNSUPPORTED", `Unsupported Provider event schema ${event.schemaVersion}.`);
@@ -323,6 +333,7 @@ export function deterministicProviderEventId(event) {
     "assistant.message.delta",
     "tool.progress",
     "usage.updated",
+    "plan.updated",
     "provider.error",
     "provider.connection.changed"
   ].includes(event.type);

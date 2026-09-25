@@ -734,6 +734,17 @@ export class SessionApplicationService {
     );
   }
 
+  async respondToUserInput(sessionId, input, context = {}) {
+    const reference = await this.referenceFor(sessionId);
+    return this.registry.invoke(
+      reference.providerId,
+      AGENT_PROVIDER_CAPABILITIES.CONVERSATION_USER_INPUT,
+      reference,
+      input,
+      context
+    );
+  }
+
   async manageTurnChanges(sessionId, turnId, action, context = {}) {
     const reference = await this.referenceFor(sessionId);
     return this.registry.invoke(
