@@ -2,6 +2,23 @@ import Foundation
 import CorptieClientCore
 
 extension PadWorkspace {
+    func waitForRealtimeTimelineOrFallback(
+        _ connection: PadConnection,
+        after revision: Int? = nil
+    ) async {
+        for _ in 0..<30 {
+            if Task.isCancelled { return }
+            if let revision {
+                if (lastTimelineRevision ?? 0) > revision { return }
+            } else if capabilities != nil {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard !Task.isCancelled else { return }
+        await load(connection)
+    }
+
     /// Owned by the foreground scene. Cancellation closes the stream and pending refreshes.
     func runRealtime(_ connection: PadConnection) async {
         let generation = UUID()
@@ -15,26 +32,79 @@ extension PadWorkspace {
             }
         }
         var failures = 0
+        var receivedV2Ready = false
         while !Task.isCancelled && connection.connected {
             do {
                 liveStatus = "正在连接实时更新"
+                let api = ClientEvents(transport: try await connection.transport())
+                for try await update in api.subscribeRealtime(
+                    sessionId: selection,
+                    stateRevision: realtimeStateRevision,
+                    timelineRevision: lastTimelineRevision ?? 0
+                ) {
+                    try Task.checkCancellation()
+                    guard realtimeGeneration == generation else { return }
+                    failures = 0
+                    switch update {
+                    case .ready:
+                        receivedV2Ready = true
+                        liveStatus = "实时连接正常"
+                    case .state(let snapshot):
+                        applyRealtimeState(snapshot)
+                    case .control(let snapshot):
+                        directControlSnapshot = snapshot
+                        controlRevision += 1
+                    case .timelineSnapshot(let snapshot):
+                        applyRealtimeTimeline(snapshot)
+                    case .timelineDelta(let delta):
+                        if !applyRealtimeTimeline(delta) {
+                            // A verified revision gap is one of the few allowed
+                            // fallback reads; normal updates never reach this path.
+                            messagesDirty = true
+                            scheduleRefresh(connection)
+                        }
+                    case .receipt(let receipt):
+                        pushedReceipt = receipt
+                        pushedReceiptRevision += 1
+                        if pending?.requestID == receipt.requestId { settle(receipt) }
+                    case .heartbeat:
+                        liveStatus = "实时连接正常"
+                    }
+                }
+            } catch {
+                if Task.isCancelled { return }
+                if !receivedV2Ready {
+                    await runLegacyRealtime(connection, generation: generation)
+                    return
+                }
+            }
+            failures = min(failures + 1, 5)
+            liveStatus = "连接中断，正在自动重连"
+            do { try await Task.sleep(for: .seconds(min(30, 1 << failures))) } catch { return }
+        }
+    }
+
+    private func runLegacyRealtime(_ connection: PadConnection, generation: UUID) async {
+        var failures = 0
+        while !Task.isCancelled && connection.connected && realtimeGeneration == generation {
+            do {
+                liveStatus = "正在连接兼容模式实时更新"
                 let api = ClientEvents(transport: try await connection.transport())
                 for try await update in api.subscribe() {
                     try Task.checkCancellation()
                     guard realtimeGeneration == generation else { return }
                     failures = 0
-                    liveStatus = "实时连接正常"
+                    liveStatus = "兼容模式实时连接正常"
                     if update.control == true { controlRevision += 1 }
                     inventoryDirty = inventoryDirty || update.inventory
-                    let matchesCurrentSession = sessionMatchesUpdate(update)
-                    messagesDirty = messagesDirty || matchesCurrentSession
+                    messagesDirty = messagesDirty || sessionMatchesUpdate(update)
                     scheduleRefresh(connection)
                 }
             } catch {
                 if Task.isCancelled { return }
             }
             failures = min(failures + 1, 5)
-            liveStatus = "连接中断，正在自动重连"
+            liveStatus = "兼容模式连接中断，正在自动重连"
             do { try await Task.sleep(for: .seconds(min(30, 1 << failures))) } catch { return }
         }
     }

@@ -53,9 +53,39 @@ function publicExecutionPlan(value) {
   };
 }
 
+function publicClientMessage(item) {
+  return {
+    id: item.id, turnId: item.turnId ?? null, type: item.type,
+    text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
+    createdAt: item.createdAt ?? null,
+    userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
+    ...Object.fromEntries([
+      "turnStatus", "title", "presentationRole", "presentationText",
+      "sourceType", "localVisibility", "processingError",
+      "processStartedAt", "processEndedAt",
+    ].map(key => [key, typeof item[key] === "string" ? item[key] : null])),
+    images: Array.isArray(item.images) ? item.images
+      .filter(image => image && typeof image.managedPath === "string" && image.managedPath)
+      .slice(0, 8)
+      .map(image => ({ managedPath: image.managedPath,
+        fileName: typeof image.fileName === "string" ? image.fileName : null,
+        mimeType: typeof image.mimeType === "string" ? image.mimeType : null,
+        byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null })) : [],
+    executionPlan: item.type === "executionPlan" ? publicExecutionPlan(item.executionPlan) : null,
+    toolExecution: publicToolExecution(item.toolExecution),
+    changeSet: publicChangeSet(item.changeSet),
+    userInput: item.type === "userInput" ? publicUserInput(item.userInput) : null,
+    options: ["choice", "approval"].includes(item.type) && Array.isArray(item.options)
+      ? item.options.slice(0, 12).filter(option => option && typeof option.id === "string" && typeof option.label === "string")
+        .map(option => ({ id: option.id.slice(0, 200), label: option.label.slice(0, 200),
+          role: typeof option.role === "string" ? option.role.slice(0, 40) : null,
+          selected: option.selected === true })) : null,
+  };
+}
+
 /** v1 text messaging + stop commands. Provider-neutral callbacks, durable at-most-once dispatch. */
 export class ClientSessionAPI {
-  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null }) {
+  constructor({ store, readWindow, send, stop, actions, resolveSession = id => id, composer = null, images = null, schedule = null, conversationCommands = null, taskCreation = null, workDiscussion = null, markRead = null, readiness = null, usage = null, entityCommands = null, respondToApproval = null, respondToUserInput = null, onReceiptChanged = null }) {
     Object.assign(this, { store, readWindow, send, stop, actions, resolveSession, composer, images, schedule, conversationCommands });
     // Optional host projections: Session readiness (desktop ThreadMetaView light) and usage (context / quota).
     this.readiness = readiness;
@@ -68,6 +98,7 @@ export class ClientSessionAPI {
     this.entityCommands = entityCommands;
     this.respondToApproval = respondToApproval;
     this.respondToUserInput = respondToUserInput;
+    this.onReceiptChanged = onReceiptChanged;
     store.db.run(`CREATE TABLE IF NOT EXISTS client_command_receipts (
       device_id TEXT NOT NULL, request_id TEXT NOT NULL, session_id TEXT NOT NULL,
       kind TEXT NOT NULL, payload_hash TEXT NOT NULL, status TEXT NOT NULL,
@@ -123,40 +154,44 @@ export class ClientSessionAPI {
     // The shared timeline window may include newer rows even for after=0.
     // v1 history pagination is strictly before the anchor, never a mixed window.
     const candidates = anchor ? window.items.slice(0, window.items.findIndex(item => item.id === anchor)) : window.items;
-    const items = candidates.slice(-limit).map(item => ({
-      id: item.id, turnId: item.turnId ?? null, type: item.type,
-      text: typeof item.text === "string" ? item.text : "", status: item.status ?? null,
-      createdAt: item.createdAt ?? null,
-      userMessageStatus: item.userMessageStatus ?? null, queuePosition: item.queuePosition ?? null,
-      // Additive presentation contract, shared with the desktop timeline.
-      // Never spread provider items: raw envelopes and credentials stay private.
-      ...Object.fromEntries([
-        "turnStatus", "title", "presentationRole", "presentationText",
-        "sourceType", "localVisibility", "processingError",
-        "processStartedAt", "processEndedAt",
-      ].map(key => [key, typeof item[key] === "string" ? item[key] : null])),
-      // Managed attachments only (never original host paths); bytes stream via `image()`.
-      images: Array.isArray(item.images) ? item.images
-        .filter(image => image && typeof image.managedPath === "string" && image.managedPath)
-        .slice(0, 8)
-        .map(image => ({ managedPath: image.managedPath,
-          fileName: typeof image.fileName === "string" ? image.fileName : null,
-          mimeType: typeof image.mimeType === "string" ? image.mimeType : null,
-          byteLength: Number.isSafeInteger(image.byteLength) ? image.byteLength : null })) : [],
-      executionPlan: item.type === "executionPlan" ? publicExecutionPlan(item.executionPlan) : null,
-      toolExecution: publicToolExecution(item.toolExecution),
-      changeSet: publicChangeSet(item.changeSet),
-      userInput: item.type === "userInput" ? publicUserInput(item.userInput) : null,
-      options: ["choice", "approval"].includes(item.type) && Array.isArray(item.options)
-        ? item.options.slice(0, 12).filter(option => option && typeof option.id === "string" && typeof option.label === "string")
-          .map(option => ({ id: option.id.slice(0, 200), label: option.label.slice(0, 200),
-            role: typeof option.role === "string" ? option.role.slice(0, 40) : null,
-            selected: option.selected === true })) : null,
-    }));
+    const items = candidates.slice(-limit).map(publicClientMessage);
     const result = { schemaVersion: 1, sessionId, revision: window.revision, items,
       hasEarlier: window.hasEarlier === true, nextBefore: window.hasEarlier && items.length ? items[0].id : null };
     if (Buffer.byteLength(JSON.stringify(result)) > 8 * 1024 * 1024) throw deviceError("MESSAGE_WINDOW_TOO_LARGE", 413);
     return result;
+  }
+
+  async realtimeTimeline(identity, id, after = null) {
+    requireDevicePermission(identity, "messages.read");
+    const { sessionId } = this.session(id);
+    const localRevision = Number(after);
+    if (Number.isSafeInteger(localRevision) && localRevision > 0) {
+      const envelope = this.store.sessionTimelineChangesAfter(sessionId, localRevision, 200);
+      if (!envelope.snapshotRequired) {
+        return {
+          schemaVersion: 2,
+          kind: "delta",
+          sessionId,
+          ...envelope,
+          changes: envelope.changes.map(change => ({
+            ...change,
+            item: change.item ? publicClientMessage(change.item) : null
+          }))
+        };
+      }
+    }
+    const query = new URLSearchParams({ limit: "50" });
+    const messages = await this.messages(identity, sessionId, query);
+    const capabilities = this.capabilities(identity, sessionId);
+    let usage = null;
+    try { usage = await this.usage(identity, sessionId); } catch {}
+    let composer = null;
+    if (identity.permissions.includes("messages.write")) {
+      try { composer = await this.configuration(identity, sessionId); } catch {}
+    }
+    return { schemaVersion: 2, kind: "snapshot", sessionId,
+      revision: messages.revision ?? this.store.sessionTimelineRevision(sessionId),
+      messages, capabilities, usage, composer };
   }
 
   async approval(identity, id, input, revalidateIdentity = null) {
@@ -557,5 +592,6 @@ export class ClientSessionAPI {
   update(deviceId, requestId, status, errorCode, result = null) {
     this.store.db.run("UPDATE client_command_receipts SET status = ?, error_code = ?, updated_at = ?, result_json = ? WHERE device_id = ? AND request_id = ?",
       [status, errorCode, new Date().toISOString(), result ? JSON.stringify(result) : null, deviceId, requestId]);
+    try { this.onReceiptChanged?.(deviceId, this.receipt({ deviceId }, requestId)); } catch {}
   }
 }

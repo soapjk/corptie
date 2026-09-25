@@ -72,19 +72,21 @@ struct PadAppShell: View {
             guard !usesNavigationRail else { return }
             withAnimation(.easeInOut(duration: 0.2)) { isKeyboardVisible = false }
         }
-        .task { await workspace.inventory(connection) }
         .task(id: scenePhase == .active ? workspace.reconciliationKey(connection) : nil) {
             guard scenePhase == .active else { return }
             await workspace.reconcileAutomatically(connection)
         }
-        .task(id: scenePhase) {
+        .task(id: "\(scenePhase):\(workspace.selection ?? "")") {
             guard scenePhase == .active else { controls.pause(); return }
             controls.activate(tab, connection: connection)
             await workspace.runRealtime(connection)
         }
         .onChange(of: scenePhase) { if scenePhase != .active { controls.pause() } }
         .onChange(of: tab) { if scenePhase == .active { controls.activate(tab, connection: connection) } }
-        .onChange(of: workspace.controlRevision) { controls.invalidate(connection) }
+        .onChange(of: workspace.controlRevision) {
+            if let snapshot = workspace.directControlSnapshot { controls.apply(snapshot) }
+            else { controls.invalidate(connection) }
+        }
         .onDisappear { controls.pause() }
     }
 }

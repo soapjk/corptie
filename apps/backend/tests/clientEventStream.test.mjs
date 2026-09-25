@@ -83,3 +83,41 @@ test("sessionIds batch parameter records all session aliases for device notifica
     assert.deepEqual(payload.sessions.sort(), ["123", "codex:123", "logical:456"].sort());
   } finally { hub.close(); }
 });
+
+test("v2 pushes authoritative payloads and receipts without legacy invalidations", async () => {
+  let stateRevision = 7, timelineRevision = 3;
+  const hub = new ClientEventStream({
+    stateSnapshot: async (_identity, after) => ({ schemaVersion: 2, revision: stateRevision, after, works: [], tasks: [], sessions: [] }),
+    controlSnapshot: async () => ({ schemaVersion: 2, automations: [], repositories: [], agents: [], skills: [] }),
+    timeline: async (_identity, sessionId, after) => ({ schemaVersion: 2, kind: after === 0 ? "snapshot" : "delta",
+      sessionId, revision: timelineRevision, baseRevision: after, currentRevision: timelineRevision,
+      snapshotRequired: false, hasMore: false, changes: [] })
+  });
+  const response = new Response();
+  try {
+    hub.attachV2(response, () => ({ ...identity, permissions: [...identity.permissions, "control.read"] }),
+      { sessionId: "session:one", stateRevision: 6, timelineRevision: 2 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(response.frames.map(frame => frame.match(/event: ([^\n]+)/)?.[1]),
+      ["stream-ready", "state-snapshot", "control-snapshot", "timeline-snapshot"]);
+    assert.equal(data(response.frames[1]).after, 0);
+
+    hub.invalidate({ inventory: true, control: true, sessionId: "session:one" });
+    hub.flush();
+    assert.equal(response.frames.length, 4);
+
+    stateRevision = 8; timelineRevision = 4;
+    hub.publishState();
+    hub.publishControl();
+    hub.publishTimeline(["session:one"]);
+    hub.publishReceipt("one", { schemaVersion: 1, requestId: "request:one", status: "completed" });
+    await new Promise(resolve => setTimeout(resolve, 40));
+    await new Promise(resolve => setImmediate(resolve));
+    const events = response.frames.map(frame => frame.match(/event: ([^\n]+)/)?.[1]);
+    assert.ok(events.includes("timeline-delta"));
+    assert.ok(events.includes("state-snapshot"));
+    assert.ok(events.includes("control-snapshot"));
+    assert.ok(events.includes("command-receipt"));
+    assert.equal(data(response.frames.find(frame => frame.includes("event: timeline-delta"))).baseRevision, 3);
+  } finally { hub.close(); }
+});
