@@ -12,19 +12,30 @@ const projectors = {
   // `hasAvatar` is the only avatar signal; bytes travel through `workAvatar()` and the path never leaves the host.
   works: row => ({ id: row.id, name: row.name, status: row.status, hasAvatar: typeof row.avatar_path === "string" && row.avatar_path.length > 0,
     updatedAt: row.updated_at }),
-  tasks: (row, store, context) => ({ id: row.id, title: row.title, workId: row.work_id,
-    lifecycleState: row.lifecycle_state, executionStatus: row.execution_status,
-    currentSessionId: (() => {
-      if (!row.current_session_id) return null;
+  tasks: (row, store, context) => {
+    let boundSession = null;
+    if (row.current_session_id) {
       const session = store.getSession(row.current_session_id);
-      return session && session.archived !== true ? row.current_session_id : null;
-    })(),
-    // Presentation-only flags mirrored from the macOS outline (ConsoleScheduledWakeIcon / deleting spinner).
-    hasPendingScheduledWake: context.pendingWakeTaskIds.has(row.id),
-    deletionStatus: ["deleting", "delete_failed"].includes(row.deletion_status) ? row.deletion_status : null,
-    // The desktop outline hides archived Tasks; the device needs the flag to apply the same filter.
-    archived: Boolean(row.archived),
-    updatedAt: row.updated_at }),
+      if (session && session.archived !== true) {
+        boundSession = session;
+      }
+    }
+    const executionStatus = boundSession?.executionStatus ?? row.execution_status;
+    return {
+      id: row.id,
+      title: row.title,
+      workId: row.work_id,
+      lifecycleState: row.lifecycle_state,
+      executionStatus,
+      currentSessionId: boundSession ? row.current_session_id : null,
+      // Presentation-only flags mirrored from the macOS outline (ConsoleScheduledWakeIcon / deleting spinner).
+      hasPendingScheduledWake: context.pendingWakeTaskIds.has(row.id),
+      deletionStatus: ["deleting", "delete_failed"].includes(row.deletion_status) ? row.deletion_status : null,
+      // The desktop outline hides archived Tasks; the device needs the flag to apply the same filter.
+      archived: Boolean(row.archived),
+      updatedAt: row.updated_at
+    };
+  },
   sessions: (row, _store, context) => ({ id: row.id, title: row.title, workId: row.workId ?? null,
     taskId: row.taskId ?? null, sessionKind: row.sessionKind, executionStatus: row.executionStatus ?? row.status,
     activityStatus: typeof row.activityStatus === "string" ? row.activityStatus : null,

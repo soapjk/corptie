@@ -14,11 +14,16 @@ export class ClientEventStream {
     this.sessions = new Set();
     this.allSessions = false;
   }
-  invalidate({ inventory = false, control = false, sessionId = null } = {}) {
+  invalidate({ inventory = false, control = false, sessionId = null, sessionIds = null } = {}) {
     if (!this.clients.size) return;
     this.inventory ||= inventory;
     this.control ||= control;
     if (sessionId) this.sessions.add(sessionId);
+    if (Array.isArray(sessionIds) || sessionIds instanceof Set) {
+      for (const id of sessionIds) {
+        if (typeof id === "string" && id) this.sessions.add(id);
+      }
+    }
     if (this.sessions.size > 128) { this.sessions.clear(); this.allSessions = true; }
     if (!this.timer) {
       this.timer = setTimeout(() => this.flush(), this.coalesceMs);

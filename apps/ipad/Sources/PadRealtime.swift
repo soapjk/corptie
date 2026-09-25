@@ -26,9 +26,8 @@ extension PadWorkspace {
                     liveStatus = "实时连接正常"
                     if update.control == true { controlRevision += 1 }
                     inventoryDirty = inventoryDirty || update.inventory
-                    let routedSelection = capabilities?.sessionId ?? selection
-                    messagesDirty = messagesDirty || update.allSessions
-                        || (routedSelection.map { update.sessions.contains($0) } ?? false)
+                    let matchesCurrentSession = sessionMatchesUpdate(update)
+                    messagesDirty = messagesDirty || matchesCurrentSession
                     scheduleRefresh(connection)
                 }
             } catch {
@@ -40,6 +39,42 @@ extension PadWorkspace {
         }
     }
 
+    private func sessionMatchesUpdate(_ update: ClientInvalidation) -> Bool {
+        if update.allSessions { return true }
+        guard !update.sessions.isEmpty else { return false }
+
+        var targetSet: Set<String> = []
+        func addCandidate(_ id: String?) {
+            guard let raw = id?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return }
+            targetSet.insert(raw)
+            let stripped = stripSessionPrefix(raw)
+            targetSet.insert(stripped)
+            targetSet.insert("session:\(stripped)")
+            targetSet.insert("codex:\(stripped)")
+            targetSet.insert("logical:\(stripped)")
+        }
+
+        addCandidate(selection)
+        addCandidate(capabilities?.sessionId)
+        guard !targetSet.isEmpty else { return false }
+
+        for eventSession in update.sessions {
+            if targetSet.contains(eventSession) { return true }
+            let strippedEvent = stripSessionPrefix(eventSession)
+            if targetSet.contains(strippedEvent) { return true }
+        }
+        return false
+    }
+
+    private func stripSessionPrefix(_ id: String) -> String {
+        for prefix in ["codex:", "logical:", "session:", "pty:", "task:"] {
+            if id.hasPrefix(prefix) {
+                return String(id.dropFirst(prefix.count))
+            }
+        }
+        return id
+    }
+
     func scheduleRefresh(_ connection: PadConnection) {
         guard refreshWorker == nil, inventoryDirty || messagesDirty else { return }
         let generation = realtimeGeneration
@@ -47,9 +82,15 @@ extension PadWorkspace {
             defer { if realtimeGeneration == generation { refreshWorker = nil } }
             while !Task.isCancelled && connection.connected && (inventoryDirty || messagesDirty) {
                 do {
-                    // Collapse event bursts; no polling or reads when nothing changed.
-                    let pages = max(1, (works.count + 49) / 50) + max(1, (tasks.count + 49) / 50) + max(1, (sessions.count + 49) / 50)
-                    try await Task.sleep(for: .milliseconds(max(500, (pages + 2) * 150)))
+                    // Collapse event bursts; inventory pages wait for pagination, timeline-only refreshes respond promptly.
+                    let delayMs: Int
+                    if inventoryDirty {
+                        let pages = max(1, (works.count + 49) / 50) + max(1, (tasks.count + 49) / 50) + max(1, (sessions.count + 49) / 50)
+                        delayMs = max(500, (pages + 2) * 150)
+                    } else {
+                        delayMs = 60
+                    }
+                    try await Task.sleep(for: .milliseconds(delayMs))
                     if connection.busy { continue }
                     let inventory = inventoryDirty, timeline = messagesDirty
                     inventoryDirty = false; messagesDirty = false
