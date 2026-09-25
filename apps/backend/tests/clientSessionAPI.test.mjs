@@ -36,6 +36,33 @@ test("device history preserves typed timeline presentation without leaking provi
   } finally { await f.close(); }
 });
 
+test("device message history preserves three inline chart fences and the managed image on one item", async () => {
+  const f = await fixture();
+  try {
+    const fence = (spec) => `\`\`\`corptie-chart\n${JSON.stringify(spec)}\n\`\`\``;
+    const text = [
+      "前文", fence({ version: 1, type: "bar", title: "比较", data: [{ label: "甲", value: 2 }] }),
+      "中段", fence({ version: 1, type: "line", title: "趋势", data: [{ x: 1, value: 2 }] }),
+      "继续", fence({ version: 1, type: "pie", title: "占比", data: [{ label: "甲", value: 2 }] }),
+      "后文"
+    ].join("\n\n");
+    const api = new ClientSessionAPI({ store: f.store, ...callbacks,
+      readWindow: async () => ({ revision: 1, hasEarlier: false, items: [
+        { id: "agent:charts", type: "agentMessage", text, images: [
+          { managedPath: "managed:chart-image", fileName: "image.png", mimeType: "image/png",
+            originalPath: "/private/provider/path" }
+        ], rawEventEnvelope: { token: "private" } }
+      ] }) });
+    const page = await api.messages(identity, "session:test", new URLSearchParams());
+    assert.equal(page.items.length, 1);
+    assert.equal(page.items[0].text, text);
+    assert.equal((page.items[0].text.match(/```corptie-chart/g) ?? []).length, 3);
+    assert.deepEqual(page.items[0].images, [{ managedPath: "managed:chart-image",
+      fileName: "image.png", mimeType: "image/png", byteLength: null }]);
+    assert.equal(Object.hasOwn(page.items[0], "rawEventEnvelope"), false);
+  } finally { await f.close(); }
+});
+
 test("device receives the complete structured plan without private Provider metadata", async () => {
   const f = await fixture();
   try {
