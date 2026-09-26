@@ -261,9 +261,12 @@ struct ConversationView: View {
     let sessionID: String
     let messageImages: PadMessageImageStore
     @State private var confirmForget = false
-    @State private var followLatest = true
+    @State private var viewportState = ConversationViewportState()
     @State private var historyViewport = TimelineHistoryViewportState()
     @State private var historyAutoLoadGate = PadHistoryAutoLoadGate()
+    @State private var timelineScrollView: UIScrollView?
+    @State private var pendingHistoryViewport: PendingHistoryViewport?
+    @State private var isUserInteractingWithTimeline = false
     /// Rounded whole-point lane width prevents sub-pixel geometry changes from
     /// invalidating every realized message row during keyboard/split resizing.
     @State private var laneWidth: CGFloat = 0
@@ -301,7 +304,8 @@ struct ConversationView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 8)
-                    } else if workspace.before == nil, !workspace.messages.isEmpty {
+                    } else if workspace.before == nil, !workspace.hasHiddenDisplayHistory,
+                              !workspace.messages.isEmpty {
                         Text("已显示全部历史消息")
                             .font(.caption2)
                             .foregroundStyle(.tertiary)
@@ -351,10 +355,10 @@ struct ConversationView: View {
                     }
                     Color.clear.frame(height: 1).id("latest")
                         .onAppear {
-                            if #unavailable(iOS 18.0) { followLatest = true }
+                            if #unavailable(iOS 18.0) { viewportState.setFollowsLatest(true) }
                         }
                         .onDisappear {
-                            if #unavailable(iOS 18.0) { followLatest = false }
+                            if #unavailable(iOS 18.0) { viewportState.setFollowsLatest(false) }
                             requestEarlierHistoryIfNeeded()
                         }
                 }
@@ -368,8 +372,21 @@ struct ConversationView: View {
                     }
                 }
             }
+            .defaultScrollAnchor(.bottom)
             .coordinateSpace(name: timelineCoordinateSpace)
-            .modifier(TimelineFollowLatestModifier(followLatest: $followLatest))
+            .background(TimelineScrollViewResolver { scrollView in
+                if timelineScrollView !== scrollView { timelineScrollView = scrollView }
+            })
+            .modifier(TimelineFollowLatestModifier(
+                followLatest: followsLatestBinding,
+                onUserInteractionChange: { interacting in
+                    isUserInteractingWithTimeline = interacting
+                    if interacting {
+                        pendingHistoryViewport = nil
+                        requestEarlierHistoryIfNeeded(userInitiated: true)
+                    }
+                }
+            ))
             .scrollDismissesKeyboard(.interactively)
             .background {
                 GeometryReader { proxy in
@@ -384,6 +401,11 @@ struct ConversationView: View {
             .onPreferenceChange(TimelineContentHeightKey.self) { height in
                 guard height != historyViewport.contentHeight else { return }
                 historyViewport.contentHeight = height
+                if pendingHistoryViewport != nil {
+                    restoreHistoryViewportIfReady()
+                } else if viewportState.followsLatest {
+                    pinTimelineToLatestIfReady()
+                }
                 requestEarlierHistoryIfNeeded()
             }
             .onPreferenceChange(TimelineViewportSizeKey.self) { size in
@@ -392,6 +414,15 @@ struct ConversationView: View {
                 let roundedHeight = size.height.rounded(.down)
                 guard roundedHeight != historyViewport.viewportHeight else { return }
                 historyViewport.viewportHeight = roundedHeight
+                // Keyboard safe-area changes resize the timeline and composer
+                // in the same animation. Pin a followed conversation to its
+                // bottom on every distinct viewport step so the last message
+                // travels with the composer instead of catching up afterward.
+                if viewportState.followsLatest {
+                    if !pinTimelineToLatestIfReady() {
+                        reader.scrollTo("latest", anchor: .bottom)
+                    }
+                }
                 requestEarlierHistoryIfNeeded()
             }
             .accessibilityIdentifier("conversation-timeline")
@@ -399,30 +430,69 @@ struct ConversationView: View {
                 let hadCachedCapabilities = workspace.capabilities != nil
                 await workspace.waitForRealtimeTimelineOrFallback(connection)
                 guard !Task.isCancelled else { return }
-                if !hadCachedCapabilities || followLatest {
+                if !hadCachedCapabilities || viewportState.followsLatest {
                     reader.scrollTo("latest", anchor: .bottom)
                 }
             }
-            .onChange(of: workspace.historyRestorationAnchor) { _, anchor in
-                if let anchor {
-                    reader.scrollTo(anchor, anchor: .top)
+            .onChange(of: workspace.messageRevision) {
+                if viewportState.timelineTailDidChange() {
+                    reader.scrollTo("latest", anchor: .bottom)
                 }
             }
-            .onChange(of: workspace.messageRevision) {
-                if followLatest { reader.scrollTo("latest", anchor: .bottom) }
-            }
             .onChange(of: workspace.scrollRequest) {
-                followLatest = true
+                viewportState.jumpToLatest()
                 reader.scrollTo("latest", anchor: .bottom)
             }
             .onChange(of: workspace.before) {
                 requestEarlierHistoryIfNeeded()
             }
             .onChange(of: workspace.isLoadingEarlier) { _, isLoading in
-                if !isLoading { requestEarlierHistoryIfNeeded() }
+                if !isLoading {
+                    if pendingHistoryViewport != nil {
+                        restoreHistoryViewportIfReady()
+                    } else if viewportState.followsLatest {
+                        if !pinTimelineToLatestIfReady() {
+                            reader.scrollTo("latest", anchor: .bottom)
+                        }
+                    }
+                    requestEarlierHistoryIfNeeded()
+                }
             }
             .onChange(of: connection.busy) { _, isBusy in
                 if !isBusy { requestEarlierHistoryIfNeeded() }
+            }
+            .onChange(of: sessionID) { _, _ in
+                viewportState.reset()
+                pendingHistoryViewport = nil
+                isUserInteractingWithTimeline = false
+                timelineScrollView = nil
+                historyViewport = TimelineHistoryViewportState()
+                historyAutoLoadGate = PadHistoryAutoLoadGate()
+            }
+            .overlay(alignment: .bottomTrailing) {
+                if viewportState.showsJumpToLatest {
+                    Button {
+                        pendingHistoryViewport = nil
+                        viewportState.jumpToLatest()
+                        reader.scrollTo("latest", anchor: .bottom)
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(width: 36, height: 36)
+                            .contentShape(Circle())
+                            .padGlassSurface(in: Circle(), interactive: true)
+                            .overlay(alignment: .topTrailing) {
+                                if viewportState.hasNewMessagesBelow {
+                                    Circle().fill(Color.accentColor).frame(width: 8, height: 8)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("跳到最新消息")
+                    .accessibilityIdentifier("conversation-jump-to-latest")
+                    .padding(.trailing, 14)
+                    .padding(.bottom, 12)
+                }
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) { conversationHeader }
@@ -447,19 +517,78 @@ struct ConversationView: View {
         "conversation-timeline-\(sessionID)"
     }
 
-    private func requestEarlierHistoryIfNeeded() {
+    private var followsLatestBinding: Binding<Bool> {
+        Binding(
+            get: { viewportState.followsLatest },
+            set: { viewportState.setFollowsLatest($0) }
+        )
+    }
+
+    private func requestEarlierHistoryIfNeeded(userInitiated: Bool = false) {
         let viewportReady = historyViewport.contentHeight > 0 && historyViewport.viewportHeight > 1
         let underfilled = viewportReady
             && historyViewport.contentHeight <= historyViewport.viewportHeight + 0.5
         guard historyAutoLoadGate.requestCursor(
             scope: sessionID,
-            before: workspace.before,
+            before: workspace.historyRequestCursor,
             nearTop: historyViewport.nearTop,
+            userInitiated: userInitiated || isUserInteractingWithTimeline,
             underfilled: underfilled,
             isLoading: workspace.isLoadingEarlier,
             connectionBusy: connection.busy
         ) != nil else { return }
-        Task { await workspace.loadEarlierMessagesIfNeeded(connection) }
+        viewportState.prepareForHistoryPrepend(preservingLatestFollow: underfilled)
+        if !viewportState.followsLatest, let timelineScrollView {
+            pendingHistoryViewport = PendingHistoryViewport(
+                contentHeight: timelineScrollView.contentSize.height,
+                contentOffsetY: timelineScrollView.contentOffset.y
+            )
+        }
+        Task {
+            await workspace.loadEarlierMessagesIfNeeded(connection)
+            restoreHistoryViewportIfReady()
+        }
+    }
+
+    /// The native scroll view owns physical geometry just as AppKit does on
+    /// macOS. Correcting its bottom offset synchronously avoids queueing a
+    /// second SwiftUI `scrollTo` transaction during keyboard and row reflow.
+    @discardableResult
+    private func pinTimelineToLatestIfReady() -> Bool {
+        guard let timelineScrollView else { return false }
+        timelineScrollView.layoutIfNeeded()
+        let minimumY = -timelineScrollView.adjustedContentInset.top
+        let maximumY = max(
+            minimumY,
+            timelineScrollView.contentSize.height - timelineScrollView.bounds.height
+                + timelineScrollView.adjustedContentInset.bottom
+        )
+        if abs(timelineScrollView.contentOffset.y - maximumY) >= 0.5 {
+            timelineScrollView.setContentOffset(
+                CGPoint(x: timelineScrollView.contentOffset.x, y: maximumY), animated: false
+            )
+        }
+        return true
+    }
+
+    private func restoreHistoryViewportIfReady() {
+        guard !workspace.isLoadingEarlier,
+              let pendingHistoryViewport,
+              let timelineScrollView else { return }
+        timelineScrollView.layoutIfNeeded()
+        let heightDelta = timelineScrollView.contentSize.height - pendingHistoryViewport.contentHeight
+        guard abs(heightDelta) >= 0.5 else { return }
+        let minimumY = -timelineScrollView.adjustedContentInset.top
+        let maximumY = max(
+            minimumY,
+            timelineScrollView.contentSize.height - timelineScrollView.bounds.height
+                + timelineScrollView.adjustedContentInset.bottom
+        )
+        let restoredY = min(maximumY, max(minimumY, pendingHistoryViewport.contentOffsetY + heightDelta))
+        timelineScrollView.setContentOffset(
+            CGPoint(x: timelineScrollView.contentOffset.x, y: restoredY), animated: false
+        )
+        self.pendingHistoryViewport = nil
     }
 
     private var conversationHeader: some View {
@@ -558,6 +687,19 @@ struct ConversationView: View {
         .padding(.horizontal, 12)
         .padding(.top, 10)
         .padding(.bottom, 8)
+        .background {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .mask {
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.72), .black],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .ignoresSafeArea(edges: .bottom)
+                .allowsHitTesting(false)
+        }
     }
 
     private func slashCommandPrefix(_ text: String) -> String? {
@@ -617,13 +759,38 @@ private struct PadProcessCard: View {
     @State private var expanded = false
     private var latestPlan: ConversationExecutionPlan? { steps.compactMap(\.plan).last }
     private var state: ConversationProcessState { presentation.state }
+    private var summary: String {
+        ConversationProcessPresentation(
+            state: presentation.state,
+            count: presentation.count,
+            duration: presentation.duration
+        ).summary
+    }
+    private var progressLabel: String? {
+        latestPlan.flatMap { plan in
+            plan.completionFraction == nil ? nil
+                : "计划 \(plan.steps.filter { $0.status == "completed" }.count)/\(plan.steps.count)"
+        }
+    }
     private var cardWidth: CGFloat {
         let availableLane = laneWidth > 0 ? laneWidth : MessageBubbleWidthPolicy.maximumWidth
-        let summaryWidth = ceil((presentation.summary as NSString).size(withAttributes: [
+        let summaryWidth = ceil((summary as NSString).size(withAttributes: [
             .font: UIFont.systemFont(ofSize: 10.5, weight: .medium)
         ]).width)
+        let secondaryWidth = presentation.currentStepTitle.map {
+            ceil(($0 as NSString).size(withAttributes: [
+                .font: UIFont.systemFont(ofSize: 9.5)
+            ]).width)
+        } ?? 0
+        let progressWidth = progressLabel.map {
+            ceil(($0 as NSString).size(withAttributes: [
+                .font: UIFont.systemFont(ofSize: 9, weight: .semibold)
+            ]).width)
+        } ?? 0
         return MessageBubbleWidthPolicy.processCardWidth(
             summaryWidth: summaryWidth,
+            secondaryWidth: secondaryWidth,
+            progressLabelWidth: progressWidth,
             expanded: expanded,
             laneWidth: availableLane)
     }
@@ -680,10 +847,7 @@ private struct PadProcessCard: View {
                     secondary: presentation.currentStepTitle,
                     symbol: state.symbolName, tint: tint, expanded: expanded,
                     progress: latestPlan?.completionFraction,
-                    progressLabel: latestPlan.flatMap { plan in
-                        plan.completionFraction == nil ? nil
-                            : "计划 \(plan.steps.filter { $0.status == "completed" }.count)/\(plan.steps.count)"
-                    },
+                    progressLabel: progressLabel,
                     toggle: { expanded.toggle() }) {
             LazyVStack(alignment: .leading, spacing: 10) {
                 ForEach(steps) { step in
@@ -699,6 +863,11 @@ private struct TimelineHistoryViewportState: Equatable {
     var nearTop = false
     var contentHeight: CGFloat = 0
     var viewportHeight: CGFloat = 0
+}
+
+private struct PendingHistoryViewport: Equatable {
+    let contentHeight: CGFloat
+    let contentOffsetY: CGFloat
 }
 
 private struct TimelineNearTopKey: PreferenceKey {
@@ -808,6 +977,7 @@ private struct TimelineViewportSizeKey: PreferenceKey {
 
 private struct TimelineFollowLatestModifier: ViewModifier {
     @Binding var followLatest: Bool
+    let onUserInteractionChange: (Bool) -> Void
     @State private var isUserScrolling = false
 
     func body(content: Content) -> some View {
@@ -822,21 +992,86 @@ private struct TimelineFollowLatestModifier: ViewModifier {
                 }
                 .onScrollPhaseChange { _, newPhase, context in
                     if newPhase == .interacting {
-                        isUserScrolling = true
+                        if !isUserScrolling {
+                            isUserScrolling = true
+                            onUserInteractionChange(true)
+                        }
                         followLatest = Self.isNearBottom(context.geometry)
                     } else if newPhase == .idle && isUserScrolling {
                         followLatest = Self.isNearBottom(context.geometry)
                         isUserScrolling = false
+                        onUserInteractionChange(false)
                     }
                 }
         } else {
-            content
+            content.simultaneousGesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in
+                        if !isUserScrolling {
+                            isUserScrolling = true
+                            onUserInteractionChange(true)
+                        }
+                    }
+                    .onEnded { _ in
+                        isUserScrolling = false
+                        onUserInteractionChange(false)
+                    }
+            )
         }
     }
 
     @available(iOS 18.0, *)
     private static func isNearBottom(_ geometry: ScrollGeometry) -> Bool {
         geometry.visibleRect.maxY >= geometry.contentSize.height - 40
+    }
+}
+
+/// Resolves SwiftUI's native scroll view once. History prepends then compensate
+/// the exact content-height delta, which is the UIKit equivalent of macOS
+/// restoring a stable row plus its intra-row offset.
+private struct TimelineScrollViewResolver: UIViewRepresentable {
+    let onResolve: (UIScrollView) -> Void
+
+    func makeUIView(context: Context) -> ResolverView {
+        let view = ResolverView()
+        view.onResolve = onResolve
+        return view
+    }
+
+    func updateUIView(_ uiView: ResolverView, context: Context) {
+        uiView.onResolve = onResolve
+        uiView.resolve()
+    }
+
+    final class ResolverView: UIView {
+        var onResolve: ((UIScrollView) -> Void)?
+        private weak var resolvedScrollView: UIScrollView?
+        private var resolutionAttempts = 0
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            resolutionAttempts = 0
+            resolve()
+        }
+
+        func resolve() {
+            if let resolvedScrollView {
+                onResolve?(resolvedScrollView)
+                return
+            }
+            var candidate = superview
+            while let view = candidate {
+                if let scrollView = view as? UIScrollView {
+                    resolvedScrollView = scrollView
+                    onResolve?(scrollView)
+                    return
+                }
+                candidate = view.superview
+            }
+            guard resolutionAttempts < 4 else { return }
+            resolutionAttempts += 1
+            DispatchQueue.main.async { [weak self] in self?.resolve() }
+        }
     }
 }
 

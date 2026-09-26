@@ -2,7 +2,6 @@ import https from "node:https";
 import { readFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { ClientDeviceAuthority, deviceError } from "./clientDeviceAuthority.mjs";
-import { requireDevicePermission } from "./clientSessionAPI.mjs";
 import { ClientEventStream } from "./clientEventStream.mjs";
 
 export const reply = (response, status, body) => {
@@ -46,15 +45,17 @@ function streamFile(response, { path, contentType, size, etag }) {
 
 /** Separate TLS listener with a closed route list; never forwards to the legacy router. */
 export class ClientDeviceGateway {
-  constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null } = {}) {
+  constructor(authority, { readAPI = null, sessionAPI = null, controlAPI = null, worktreeAPI = null } = {}) {
     this.authority = authority;
     this.readAPI = readAPI;
     this.sessionAPI = sessionAPI;
     this.controlAPI = controlAPI;
+    this.worktreeAPI = worktreeAPI;
     this.events = new ClientEventStream({
       stateSnapshot: async () => this.readAPI?.realtimeSnapshot?.() ?? null,
       controlSnapshot: async () => this.controlAPI?.realtimeSnapshot?.() ?? null,
-      timeline: async (identity, sessionId, after) => this.sessionAPI?.realtimeTimeline?.(identity, sessionId, after) ?? null
+      timeline: async (identity, sessionId, after, options) =>
+        this.sessionAPI?.realtimeTimeline?.(identity, sessionId, after, options) ?? null
     });
     this.buckets = new Map();
     this.sockets = new Map();
@@ -66,7 +67,7 @@ export class ClientDeviceGateway {
   limit(request) {
     const now = Date.now();
     for (const [key, value] of this.buckets) if (value.until <= now) this.buckets.delete(key);
-    const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control)(\/|\?|$)/.test(request.url);
+    const read = request.method === "GET" && /^\/client\/v1\/(works|tasks|sessions|commands|control|worktrees)(\/|\?|$)/.test(request.url);
     const key = `${request.socket.remoteAddress}:${read ? "read" : "command"}`;
     let bucket = this.buckets.get(key);
     if (!bucket) {
@@ -92,9 +93,18 @@ export class ClientDeviceGateway {
       const workAvatar = /^\/client\/v1\/works\/([^/]+)\/avatar$/.exec(path);
       const control = /^\/client\/v1\/control\/(automations|agents|skills|repositories)$/.exec(path);
       const repository = /^\/client\/v1\/control\/repositories\/([^/]+)$/.exec(path);
+      const worktreeRepository = /^\/client\/v1\/worktrees\/repositories\/([^/]+)$/.exec(path);
+      const worktreePushStatus = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/worktrees\/([^/]+)\/github-push-status$/.exec(path);
+      const worktreeDelete = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/worktrees\/([^/]+)\/delete$/.exec(path);
+      const worktreeWorkspaceAction = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/workspaces\/([^/]+)\/actions\/([^/]+)$/.exec(path);
+      const worktreeService = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/development-service$/.exec(path);
+      const worktreeServiceAction = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/development-service\/actions\/([^/]+)$/.exec(path);
+      const worktreePlan = /^\/client\/v1\/worktrees\/repositories\/([^/]+)\/integration-plans$/.exec(path);
+      const worktreeJob = /^\/client\/v1\/worktrees\/jobs\/([^/]+)$/.exec(path);
+      const worktreeJobAction = /^\/client\/v1\/worktrees\/jobs\/([^/]+)\/actions\/([^/]+)$/.exec(path);
       const conversation = /^\/client\/v1\/sessions\/([^/]+)\/(messages|stop|capabilities|composer|conversation-commands|tasks|read-receipt|images|usage|approval|user-input)$/.exec(path);
       const commandReceipt = /^\/client\/v1\/commands\/([A-Za-z0-9_-]{8,128})$/.exec(path);
-      if (url.search && !inventory && !control && !eventV2
+      if (url.search && !inventory && !control && !eventV2 && !worktreeRepository
           && !(["messages", "tasks", "images"].includes(conversation?.[2]) && request.method === "GET")) {
         throw deviceError("REQUEST_NOT_ALLOWED", 403);
       }
@@ -110,12 +120,11 @@ export class ClientDeviceGateway {
       const identity = this.authority.authenticate(bearer(request));
       this.sockets.set(request.socket, identity.deviceId);
       if (discussion && this.sessionAPI && ["GET", "POST"].includes(request.method)) {
-        requireDevicePermission(identity, "works.discuss");
         let workId;
         try { workId = decodeURIComponent(discussion[1]); } catch { throw deviceError("INVALID_WORK_ID", 400); }
         if (request.method === "GET") {
           const result = await this.sessionAPI.discussionOptions(identity, workId);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), "works.discuss");
+          this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }
         const input = await body(request);
@@ -123,8 +132,6 @@ export class ClientDeviceGateway {
           input, () => this.authority.authenticate(bearer(request))));
       }
       if ((taskEntity || workEntity) && this.sessionAPI) {
-        const permission = taskEntity ? "tasks.manage" : "works.manage";
-        requireDevicePermission(identity, permission);
         let entityId;
         try { entityId = decodeURIComponent((taskEntity ?? workEntity)[1]); } catch { throw deviceError(taskEntity ? "INVALID_TASK_ID" : "INVALID_WORK_ID", 400); }
         const route = (taskEntity ?? workEntity)[2];
@@ -132,7 +139,7 @@ export class ClientDeviceGateway {
         if (request.method === "GET" && isRead) {
           const result = route === "deletion" ? await this.sessionAPI.taskDeletionPlan(identity, entityId)
             : taskEntity ? this.sessionAPI.taskManagement(identity, entityId) : this.sessionAPI.workManagement(identity, entityId);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), permission);
+          this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }
         if (request.method === "POST" && !isRead) {
@@ -146,7 +153,6 @@ export class ClientDeviceGateway {
         throw deviceError("ROUTE_NOT_AVAILABLE", 404);
       }
       if (request.method === "GET" && (control || repository) && this.controlAPI) {
-        requireDevicePermission(identity, "control.read");
         let result;
         if (control) result = await this.controlAPI.list(control[1], url.searchParams);
         else {
@@ -154,7 +160,60 @@ export class ClientDeviceGateway {
           try { id = decodeURIComponent(repository[1]); } catch { throw deviceError("INVALID_REPOSITORY_ID", 400); }
           result = await this.controlAPI.repository(id);
         }
-        requireDevicePermission(this.authority.authenticate(bearer(request)), "control.read");
+        this.authority.authenticate(bearer(request));
+        return reply(response, 200, result);
+      }
+      if (this.worktreeAPI && (worktreeRepository || worktreePushStatus || worktreeDelete
+          || worktreeWorkspaceAction || worktreeService || worktreeServiceAction || worktreePlan
+          || worktreeJob || worktreeJobAction)) {
+        const decode = (value, code) => {
+          try { return decodeURIComponent(value); } catch { throw deviceError(code, 400); }
+        };
+        let result;
+        if (request.method === "GET" && worktreeRepository) {
+          const forceFreshValues = url.searchParams.getAll("forceFresh");
+          if ([...url.searchParams.keys()].some(key => key !== "forceFresh") || forceFreshValues.length > 1
+              || forceFreshValues.some(value => !["true", "false"].includes(value))) {
+            throw deviceError("INVALID_QUERY", 400);
+          }
+          result = await this.worktreeAPI.repository(
+            decode(worktreeRepository[1], "INVALID_REPOSITORY_ID"),
+            { forceFresh: url.searchParams.get("forceFresh") === "true" }
+          );
+        } else if (request.method === "GET" && worktreePushStatus) {
+          result = await this.worktreeAPI.gitHubPushStatus(
+            decode(worktreePushStatus[1], "INVALID_REPOSITORY_ID"),
+            decode(worktreePushStatus[2], "INVALID_WORKTREE_ID")
+          );
+        } else if (request.method === "GET" && worktreeService) {
+          result = await this.worktreeAPI.developmentService(decode(worktreeService[1], "INVALID_REPOSITORY_ID"));
+        } else if (request.method === "GET" && worktreeJob) {
+          result = this.worktreeAPI.job(decode(worktreeJob[1], "INVALID_JOB_ID"));
+        } else if (request.method === "POST") {
+          const input = await body(request, 64 * 1024);
+          this.authority.authenticate(bearer(request));
+          if (worktreeDelete) result = await this.worktreeAPI.deleteWorktree(
+            decode(worktreeDelete[1], "INVALID_REPOSITORY_ID"), decode(worktreeDelete[2], "INVALID_WORKTREE_ID")
+          );
+          else if (worktreeWorkspaceAction) result = await this.worktreeAPI.workspaceAction(
+            decode(worktreeWorkspaceAction[1], "INVALID_REPOSITORY_ID"),
+            decode(worktreeWorkspaceAction[2], "INVALID_WORKTREE_ID"),
+            decode(worktreeWorkspaceAction[3], "INVALID_ACTION"), input
+          );
+          else if (worktreeServiceAction) result = await this.worktreeAPI.developmentServiceAction(
+            decode(worktreeServiceAction[1], "INVALID_REPOSITORY_ID"),
+            decode(worktreeServiceAction[2], "INVALID_ACTION"), input
+          );
+          else if (worktreePlan) result = await this.worktreeAPI.createPlan(
+            decode(worktreePlan[1], "INVALID_REPOSITORY_ID"), input
+          );
+          else if (worktreeJobAction) result = await this.worktreeAPI.jobAction(
+            decode(worktreeJobAction[1], "INVALID_JOB_ID"),
+            decode(worktreeJobAction[2], "INVALID_ACTION"), input
+          );
+          else throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+        } else throw deviceError("ROUTE_NOT_AVAILABLE", 404);
+        this.authority.authenticate(bearer(request));
         return reply(response, 200, result);
       }
       if (request.method === "GET" && path === "/client/v1/events") {
@@ -176,20 +235,18 @@ export class ClientDeviceGateway {
         let sessionId;
         try { sessionId = decodeURIComponent(conversation[1]); } catch { throw deviceError("INVALID_SESSION_ID", 400); }
         if (conversation[2] === "tasks" && request.method === "GET") {
-          requireDevicePermission(identity, "tasks.create");
           const result = await this.sessionAPI.taskCreationOptions(identity, sessionId, url.searchParams);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), "tasks.create");
+          this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }
         if (conversation[2] === "tasks" && request.method === "POST") {
           const input = await body(request, 160 * 1024);
-          requireDevicePermission(identity, "tasks.create");
           return reply(response, 202, await this.sessionAPI.createTask(this.authority.authenticate(bearer(request)),
             sessionId, input, () => this.authority.authenticate(bearer(request))));
         }
         if (conversation[2] === "conversation-commands" && request.method === "GET") {
           const result = await this.sessionAPI.commandCatalog(identity, sessionId);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
+          this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }
         if (conversation[2] === "conversation-commands" && request.method === "POST") {
@@ -199,14 +256,12 @@ export class ClientDeviceGateway {
             () => this.authority.authenticate(bearer(request))));
         }
         if (conversation[2] === "approval" && request.method === "POST") {
-          requireDevicePermission(identity, "messages.write");
           const input = await body(request, 4096);
           return reply(response, 202, await this.sessionAPI.approval(
             this.authority.authenticate(bearer(request)), sessionId, input,
             () => this.authority.authenticate(bearer(request))));
         }
         if (conversation[2] === "user-input" && request.method === "POST") {
-          requireDevicePermission(identity, "messages.write");
           const input = await body(request, 64 * 1024);
           return reply(response, 202, await this.sessionAPI.userInput(
             this.authority.authenticate(bearer(request)), sessionId, input,
@@ -215,17 +270,17 @@ export class ClientDeviceGateway {
         if (conversation[2] === "composer" && ["GET", "POST"].includes(request.method)) {
           const input = request.method === "POST" ? await body(request, 4096) : null;
           const result = await this.sessionAPI.configuration(this.authority.authenticate(bearer(request)), sessionId, input);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.write");
+          this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }
         if (request.method === "GET" && conversation[2] === "messages") {
           const result = await this.sessionAPI.messages(identity, sessionId, url.searchParams);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
+          this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }
         if (request.method === "GET" && conversation[2] === "images") {
           const image = await this.sessionAPI.image(identity, sessionId, url.searchParams);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
+          this.authority.authenticate(bearer(request));
           response.writeHead(200, { "content-type": image.contentType, "content-length": image.byteLength,
             "cache-control": "private, max-age=31536000, immutable", "x-content-type-options": "nosniff" });
           return response.end(image.data);
@@ -240,14 +295,13 @@ export class ClientDeviceGateway {
         }
         if (request.method === "GET" && conversation[2] === "usage") {
           const result = await this.sessionAPI.usage(identity, sessionId);
-          requireDevicePermission(this.authority.authenticate(bearer(request)), "messages.read");
+          this.authority.authenticate(bearer(request));
           return reply(response, 200, result);
         }
         if (conversation[2] === "usage") throw deviceError("ROUTE_NOT_AVAILABLE", 404);
         if (request.method === "POST" && ["messages", "stop"].includes(conversation[2])) {
-          requireDevicePermission(identity, conversation[2] === "messages" ? "messages.write" : "sessions.stop");
           const input = await body(request, conversation[2] === "messages" ? 29 * 1024 * 1024 : 4096);
-          // Recheck after reading the body: permission may have been revoked meanwhile.
+          // Recheck after reading the body: the device may have been revoked meanwhile.
           const current = this.authority.authenticate(bearer(request));
           return reply(response, 202, await this.sessionAPI.command(current, sessionId,
             conversation[2] === "messages" ? "send" : "stop", input));
@@ -257,15 +311,13 @@ export class ClientDeviceGateway {
         return reply(response, 200, this.sessionAPI.receipt(identity, commandReceipt[1]));
       }
       if (request.method === "GET" && inventory && this.readAPI) {
-        requireDevicePermission(identity, "inventory.read");
         return reply(response, 200, this.readAPI.list(inventory[1], url.searchParams));
       }
       if (request.method === "GET" && workAvatar && this.readAPI?.workAvatar) {
-        requireDevicePermission(identity, "inventory.read");
         let workId;
         try { workId = decodeURIComponent(workAvatar[1]); } catch { throw deviceError("INVALID_WORK_ID", 400); }
         const avatar = await this.readAPI.workAvatar(workId);
-        requireDevicePermission(this.authority.authenticate(bearer(request)), "inventory.read");
+        this.authority.authenticate(bearer(request));
         if (request.headers["if-none-match"] === avatar.etag) { response.writeHead(304, { etag: avatar.etag }); return response.end(); }
         return streamFile(response, avatar);
       }
@@ -273,14 +325,13 @@ export class ClientDeviceGateway {
       // Pairing readiness is deliberately distinct from business API readiness.
       if (request.method === "GET" && path === "/client/v1/capabilities") {
         return reply(response, 200, { schemaVersion: 1, service: "corptie", deviceAuthentication: true,
-          businessAPI: Boolean(this.readAPI), readOnly: !identity.permissions.some(p => ["messages.write", "sessions.stop", "sessions.commands", "sessions.clear", "tasks.create", "works.discuss", "tasks.manage", "works.manage"].includes(p)),
-          workDiscussion: Boolean(this.sessionAPI?.workDiscussion) && identity.permissions.includes("works.discuss"),
-          taskManagement: Boolean(this.sessionAPI?.entityCommands) && identity.permissions.includes("tasks.manage"),
-          workManagement: Boolean(this.sessionAPI?.entityCommands) && identity.permissions.includes("works.manage"),
-          inventoryLists: Boolean(this.readAPI) && identity.permissions.includes("inventory.read"),
-          messages: Boolean(this.sessionAPI) && identity.permissions.includes("messages.read"),
-          controlRead: Boolean(this.controlAPI) && identity.permissions.includes("control.read"), controlWrite: false,
-          permissions: identity.permissions, eventStream: true, eventRecovery: "snapshot-on-connect",
+          businessAPI: Boolean(this.readAPI), readOnly: !this.sessionAPI && !this.worktreeAPI,
+          workDiscussion: Boolean(this.sessionAPI?.workDiscussion),
+          taskManagement: Boolean(this.sessionAPI?.entityCommands),
+          workManagement: Boolean(this.sessionAPI?.entityCommands),
+          inventoryLists: Boolean(this.readAPI), messages: Boolean(this.sessionAPI),
+          controlRead: Boolean(this.controlAPI), controlWrite: Boolean(this.worktreeAPI),
+          eventStream: true, eventRecovery: "snapshot-on-connect",
           realtime: { protocol: "sse-v2", pushPayloads: true, serverSnapshots: true }, remoteFileAccess: false });
       }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
@@ -334,16 +385,13 @@ export class ClientDeviceGateway {
         await this.authority.revoke((await body(request)).deviceId);
         return reply(response, 200, { revoked: true });
       }
-      if (request.method === "POST" && request.url === "/internal/client-devices/permissions") {
-        const input = await body(request);
-        return reply(response, 200, await this.authority.setPermissions(input.deviceId, input.permissions, input.expectedPermissions));
-      }
       throw deviceError("ROUTE_NOT_AVAILABLE", 404);
     } catch (error) { reply(response, error.status ?? 500, { code: error.code ?? "DEVICE_SERVICE_ERROR" }); }
   }
 }
 
-export async function startConfiguredDeviceGateway({ directory, preview, readAPI = null, controlAPI = null, sessionAPIFactory = null, environment = process.env }) {
+export async function startConfiguredDeviceGateway({ directory, preview, readAPI = null, controlAPI = null,
+  worktreeAPI = null, sessionAPIFactory = null, environment = process.env }) {
   if (preview || environment.CORPTIE_REMOTE_ACCESS !== "1") return null;
   const host = environment.CORPTIE_REMOTE_HOST;
   const port = Number(environment.CORPTIE_REMOTE_PORT);
@@ -356,7 +404,9 @@ export async function startConfiguredDeviceGateway({ directory, preview, readAPI
   ]);
   const authority = new ClientDeviceAuthority(directory);
   await authority.initialize();
-  const gateway = new ClientDeviceGateway(authority, { readAPI, controlAPI, sessionAPI: sessionAPIFactory?.() ?? null });
+  const gateway = new ClientDeviceGateway(authority, {
+    readAPI, controlAPI, worktreeAPI, sessionAPI: sessionAPIFactory?.() ?? null
+  });
   try { await gateway.start({ host, port, key, cert }); }
   catch (error) { await gateway.close(); throw error; }
   return gateway;

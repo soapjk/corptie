@@ -6,9 +6,8 @@ import { join } from "node:path";
 import { CorptieStore } from "../src/store/corptieStore.mjs";
 import { ClientSessionAPI } from "../src/application/clientSessionAPI.mjs";
 
-const tasks = { deviceId: "device:test", permissions: ["tasks.manage"] };
-const works = { deviceId: "device:test", permissions: ["works.manage"] };
-const weaker = { deviceId: "device:test", permissions: ["messages.write", "tasks.create", "works.discuss"] };
+const tasks = { deviceId: "device:test" };
+const works = tasks;
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), "corptie-device-entity-"));
@@ -43,16 +42,10 @@ async function fixture() {
     close: async () => { await store.close(); await rm(dir, { recursive: true, force: true }); } };
 }
 
-test("management projections require the explicit permission and mirror the desktop menu gates", async () => {
+test("management projections are available to every paired device and mirror the desktop menu gates", async () => {
   const f = await fixture();
   try {
     const api = f.make();
-    for (const call of [async () => api.taskManagement(weaker, f.task.id), async () => api.workManagement(weaker, "work:test"),
-      async () => api.taskDeletionPlan(weaker, f.task.id), async () => api.taskCommand(weaker, f.task.id, "archive", { requestId: "req_00000001", archived: true }),
-      async () => api.workCommand(weaker, "work:test", "delete", { requestId: "req_00000002" })]) {
-      await assert.rejects(call, { code: "DEVICE_PERMISSION_REQUIRED", status: 403 });
-    }
-    assert.equal(f.calls.length, 0);
     await assert.rejects(async () => f.make({ entityCommands: null }).taskManagement(tasks, f.task.id), { code: "CAPABILITY_UNSUPPORTED", status: 409 });
     await assert.rejects(async () => api.taskManagement(tasks, "task:missing"), { code: "TASK_NOT_FOUND", status: 404 });
     await assert.rejects(async () => api.workManagement(works, "work:missing"), { code: "WORK_NOT_FOUND", status: 404 });
@@ -201,14 +194,12 @@ test("commands dispatch through shared services once, replay receipts and classi
   } finally { await f.close(); }
 });
 
-test("revalidation catches revoked grants before dispatch and concurrent requests dispatch once", async () => {
+test("revalidation catches a changed device identity before dispatch and concurrent requests dispatch once", async () => {
   const f = await fixture();
   try {
     const api = f.make();
     await assert.rejects(async () => api.taskCommand(tasks, f.task.id, "archive", { requestId: "req_revoked_1", archived: true },
-      () => ({ deviceId: "device:test", permissions: ["tasks.create"] })), { code: "DEVICE_PERMISSION_REQUIRED", status: 403 });
-    await assert.rejects(async () => api.taskCommand(tasks, f.task.id, "archive", { requestId: "req_revoked_1", archived: true },
-      () => ({ deviceId: "device:other", permissions: ["tasks.manage"] })), { code: "INVALID_CREDENTIAL", status: 401 });
+      () => ({ deviceId: "device:other" })), { code: "INVALID_CREDENTIAL", status: 401 });
     assert.equal(f.calls.length, 0);
     assert.equal(f.store.selectOne("SELECT COUNT(*) AS count FROM client_command_receipts").count, 0);
     const results = await Promise.all([

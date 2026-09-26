@@ -157,7 +157,7 @@ private final class CreationProtocol: URLProtocol, @unchecked Sendable {
             Self.lock.withLock { Self.postCount += 1; Self.requestID = body?["requestId"] as? String ?? "" }
         } else { Self.lock.withLock { Self.readCount += 1 } }
         let mode = Self.mode
-        if mode == "rejected" { respond(403, ["code": "DEVICE_PERMISSION_REQUIRED"]); return }
+        if mode == "rejected" { respond(401, ["code": "INVALID_CREDENTIAL"]); return }
         let reply: @Sendable () -> Void = { [self] in
             let id = mode == "mismatch" ? "other-request" : Self.lock.withLock { Self.requestID }
             respond(200, ["schemaVersion": 1, "requestId": id, "sessionId": "session:a", "kind": "create_task",

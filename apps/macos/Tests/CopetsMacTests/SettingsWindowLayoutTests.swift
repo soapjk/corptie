@@ -10,7 +10,7 @@ struct SettingsWindowLayoutTests {
         let minimumUsableTabWidth: CGFloat = 120
         let horizontalPadding: CGFloat = 40
 
-        #expect(SettingsTab.allCases.count == 6)
+        #expect(SettingsTab.allCases.count == 7)
         #expect(
             SettingsWindowLayout.contentSize.width
                 >= CGFloat(SettingsTab.allCases.count) * minimumUsableTabWidth + horizontalPadding
@@ -33,6 +33,7 @@ struct SettingsWindowLayoutTests {
             .memory,
             .proxy,
             .gateway,
+            .devices,
             .archivedSessions,
         ])
 
@@ -43,7 +44,7 @@ struct SettingsWindowLayoutTests {
             .appendingPathComponent("Sources/CopetsMac/CopetsMacApp.swift")
         let contents = try String(contentsOf: source, encoding: .utf8)
 
-        for route in ["general", "notifications", "memory", "proxy", "gateway", "archivedSessions"] {
+        for route in ["general", "notifications", "memory", "proxy", "gateway", "devices", "archivedSessions"] {
             #expect(contents.contains("case .\(route):"))
         }
         #expect(contents.contains("ForEach(SettingsTab.allCases"))
