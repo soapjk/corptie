@@ -17,6 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import {
   cp,
+  lstat,
   mkdir,
   readFile,
   realpath,
@@ -89,6 +90,8 @@ export class SkillRegistryService {
     this.skillsDirs = skillsDirs;
     // git 源克隆缓存的根目录（全局共享，跨 Provider）。
     this.cacheRoot = resolve(cacheRoot ?? join(process.env.CORPTIE_HOME ?? join(homedirFallback(), ".corptie"), "skill-cache"));
+    this.mcpRuntimeRoot = join(this.cacheRoot, "mcp-runtime");
+    this.mcpRuntimeFlights = new Map();
     this.exec = exec;
     this.removePath = removePath;
     // 可选的 Provider 中立后台 Agent。它只提出结构化候选计划，所有路径、清单和资源
@@ -365,7 +368,7 @@ export class SkillRegistryService {
   async materialize(skill) {
     try {
       const installation = await this.#resolveInstallation(skill);
-      await this.#inspectPackage(installation.packageRoot, installation);
+      const sourceComposition = await this.#inspectPackage(installation.packageRoot, installation);
       const results = [];
       for (const [providerId, skillsRoot] of Object.entries(this.skillsDirs)) {
         const targetDir = join(skillsRoot, skill.skillId);
@@ -391,6 +394,9 @@ export class SkillRegistryService {
           details: { compound: Boolean(composition.mcp) }
         });
       }
+      if (sourceComposition.mcp) await this.#ensureMcpRuntime(skill, installation, { refresh: true });
+      else await this.#removeManagedPath(join(this.mcpRuntimeRoot, skill.skillId),
+        this.mcpRuntimeRoot, "MCP runtime materialization");
       return results;
     } catch (error) {
       error.stage ??= "materialization";
@@ -405,22 +411,70 @@ export class SkillRegistryService {
     }
   }
 
+  // A bundled MCP Server belongs to the Skill installation, not to one
+  // Provider's skills directory. Legacy installations gain this copy on their
+  // first MCP resolution; concurrent Sessions share the same materialization.
+  async #ensureMcpRuntime(skill, installation = null, { refresh = false } = {}) {
+    const targetDir = join(this.mcpRuntimeRoot, skill.skillId);
+    const pending = this.mcpRuntimeFlights.get(skill.skillId);
+    if (pending) {
+      await pending;
+      if (!refresh) return targetDir;
+    }
+    if (!refresh && await isDirectory(targetDir)) return targetDir;
+    let source = installation;
+    if (!source) {
+      // Older installations have no shared MCP copy. Migrate from an already
+      // materialized, previously verified runtime, never from the mutable
+      // original local/Git source during a Session tool resolution.
+      for (const skillsRoot of Object.values(this.skillsDirs)) {
+        const candidatePath = join(skillsRoot, skill.skillId);
+        if (!await isDirectory(candidatePath)) continue;
+        if ((await lstat(candidatePath)).isSymbolicLink()) continue;
+        const candidate = await realpath(candidatePath);
+        if (!isPathWithin(candidate, await realpath(skillsRoot))) continue;
+        const definition = skill.mcpDescriptorSubpath
+          ? { descriptorPath: await resolvePackagePath(candidate, skill.mcpDescriptorSubpath,
+            "stored MCP descriptor", { missingCode: "MCP_DESCRIPTOR_MISSING" }),
+            discoveryMethod: skill.packageDiscoveryMethod }
+          : await this.#packageDefinition(candidate, candidate,
+            { allowMissingManifestSkill: true });
+        if (!definition.descriptorPath) continue;
+        source = { packageRoot: candidate, skillRoot: candidate, ...definition };
+        break;
+      }
+      if (!source) return null;
+    }
+    const promise = this.#mirrorPackage(source.packageRoot, source.skillRoot, targetDir, {
+      descriptorRelativePath: source.descriptorPath
+        ? normalizeSubpath(relative(source.packageRoot, source.descriptorPath)) : null,
+      manifestRelativePath: source.manifestPath
+        ? normalizeSubpath(relative(source.packageRoot, source.manifestPath)) : null,
+      discoveryMethod: source.discoveryMethod,
+      assistance: source.assistance
+    }).then(() => targetDir);
+    this.mcpRuntimeFlights.set(skill.skillId, promise);
+    try { return await promise; }
+    finally {
+      if (this.mcpRuntimeFlights.get(skill.skillId) === promise) this.mcpRuntimeFlights.delete(skill.skillId);
+    }
+  }
+
   // 返回某个 Agent 在指定 Provider 运行时中需要启用的 MCP server 配置。
   // 配置从已物化目录读取并解析，因此 command/args/cwd 指向安装结果，而不是易失的来源目录。
-  async mcpServersForAgent(agentId, providerId) {
+  async mcpServersForAgent(agentId, providerId, options = {}) {
     if (!agentId || !this.store.getAgent(agentId)) {
       throw skillError("AGENT_NOT_FOUND", `Agent not found: ${agentId}`);
     }
     const assigned = this.store.listRegistrySkillsForAgent(agentId);
     if (assigned.length === 0) return {};
-    const skillsRoot = this.skillsDirs[providerId];
-    const result = {};
+    const result = new Map();
     const configuredPackages = new Set();
+    const collidingServerNames = new Set();
+    const firstServerKeys = new Map();
     for (const skill of assigned) {
       try {
-      const installation = await this.#resolveInstallation(skill);
-      const sourceComposition = await this.#inspectPackage(installation.packageRoot, installation);
-      if (!sourceComposition.mcp) continue;
+      if (!skill.mcpDescriptorSubpath && skill.packageDiscoveryMethod === "plain") continue;
       const packageKey = [
         skill.sourceType,
         skill.source,
@@ -429,29 +483,39 @@ export class SkillRegistryService {
         skill.mcpDescriptorSubpath ?? ""
       ].join("\u0000");
       if (configuredPackages.has(packageKey)) continue;
-      if (!skillsRoot) {
-        throw skillError(
-          "MCP_PROVIDER_UNSUPPORTED",
-          `Provider ${providerId} 未配置复合 Skill 运行时目录，无法加载 Skill ${skill.name} 的 MCP 依赖。`
-        );
-      }
-      const installedRoot = join(skillsRoot, skill.skillId);
-      const installedDescriptor = installation.descriptorPath
-        ? join(installedRoot, normalizeSubpath(relative(installation.packageRoot, installation.descriptorPath)))
-        : null;
+      const runtimeRoot = await this.#ensureMcpRuntime(skill);
+      if (!runtimeRoot) continue;
+      const installedRoot = await realpath(runtimeRoot);
+      const installedDescriptor = skill.mcpDescriptorSubpath
+        ? await resolvePackagePath(installedRoot, skill.mcpDescriptorSubpath,
+          "stored MCP descriptor", { missingCode: "MCP_DESCRIPTOR_MISSING" })
+        : (await this.#packageDefinition(installedRoot, installedRoot,
+          { allowMissingManifestSkill: true })).descriptorPath;
       const installed = await this.#inspectPackage(installedRoot, {
         skillRoot: installedRoot,
         descriptorPath: installedDescriptor,
         resolveServers: true
       });
       for (const [serverName, server] of Object.entries(installed.mcp?.servers ?? {})) {
-        if (Object.prototype.hasOwnProperty.call(result, serverName)) {
-          throw skillError(
-            "MCP_SERVER_NAME_CONFLICT",
-            `Agent ${agentId} 分配的 Skill 存在重复 MCP server 名称：${serverName}`
-          );
+        const stableServerKey = `skill_${createHash("sha256")
+          .update(`${packageKey}\u0000${serverName}`).digest("hex").slice(0, 20)}`;
+        if (result.has(serverName)) {
+          const previous = result.get(serverName);
+          const previousKey = firstServerKeys.get(serverName);
+          if (result.has(previousKey)) {
+            throw skillError("MCP_SERVER_NAME_CONFLICT", "Skill MCP Server identity conflicts with another Server.");
+          }
+          result.delete(serverName);
+          result.set(previousKey, { ...previous, displayName: serverName });
+          collidingServerNames.add(serverName);
         }
-        result[serverName] = server;
+        if (!firstServerKeys.has(serverName)) firstServerKeys.set(serverName, stableServerKey);
+        const key = collidingServerNames.has(serverName) ? stableServerKey : serverName;
+        if (result.has(key)) {
+          throw skillError("MCP_SERVER_NAME_CONFLICT", "Skill MCP Server identity conflicts with another Server.");
+        }
+        result.set(key, collidingServerNames.has(serverName)
+          ? { ...server, displayName: serverName } : server);
       }
       configuredPackages.add(packageKey);
       this.#recordRuntimeEvent({
@@ -474,10 +538,18 @@ export class SkillRegistryService {
           errorCode: error?.code ?? "MCP_LOADING_FAILED",
           reason: error?.message ?? String(error)
         });
+        if (options.isolateFailures) {
+          const errorKey = `skill_error_${skill.skillId.replaceAll(/[^a-zA-Z0-9]/g, "_")}`;
+          result.set(errorKey, {
+            displayName: skill.name,
+            unavailableCode: typeof error?.code === "string" ? error.code : "MCP_LOADING_FAILED"
+          });
+          continue;
+        }
         throw error;
       }
     }
-    return result;
+    return Object.fromEntries(result);
   }
 
   mcpAssignmentRevisionForAgent(agentId) {
@@ -512,6 +584,8 @@ export class SkillRegistryService {
       const targetDir = join(skillsRoot, skill.skillId);
       await this.#removeManagedPath(targetDir, skillsRoot, "runtime materialization");
     }
+    await this.#removeManagedPath(join(this.mcpRuntimeRoot, skill.skillId),
+      this.mcpRuntimeRoot, "MCP runtime materialization");
   }
 
   deletionImpact(skillId) {
@@ -546,6 +620,8 @@ export class SkillRegistryService {
         root: resolve(skillsRoot),
         status: "pending"
       })),
+      { kind: "runtime", providerId: null, path: join(this.mcpRuntimeRoot, id),
+        root: this.mcpRuntimeRoot, status: "pending" },
       ...(skill.sourceType === "git" && skill.cachePath ? [{
         kind: "gitCache",
         providerId: null,
@@ -1041,13 +1117,16 @@ export class SkillRegistryService {
       }
       resources.add(await validatePackageResource(rootDir, resource, "resources"));
     }
-    const servers = {};
+    const servers = new Map();
     for (const [serverName, rawServer] of Object.entries(declared)) {
       const name = String(serverName ?? "").trim();
       if (!name || !isRecord(rawServer)) {
         throw skillError("MCP_CONFIG_INCOMPLETE", `MCP 描述 ${basename(descriptorPath)} 包含无效 server：${serverName}`);
       }
-      servers[name] = await normalizeMcpServer(rootDir, name, rawServer, resources, options.resolveServers === true);
+      if (servers.has(name)) {
+        throw skillError("MCP_SERVER_NAME_CONFLICT", `MCP 描述 ${basename(descriptorPath)} 包含重复的 server：${name}`);
+      }
+      servers.set(name, await normalizeMcpServer(rootDir, name, rawServer, resources, options.resolveServers === true));
     }
     return {
       kind: "mcp",
@@ -1055,9 +1134,9 @@ export class SkillRegistryService {
       package: packageMetadata,
       mcp: {
         descriptor: normalizeSubpath(relative(rootDir, descriptorPath)),
-        serverNames: Object.keys(servers),
+        serverNames: [...servers.keys()],
         resources: [...resources].sort((a, b) => a.localeCompare(b)),
-        ...(options.resolveServers ? { servers } : {})
+        ...(options.resolveServers ? { servers: Object.fromEntries(servers) } : {})
       }
     };
   }
