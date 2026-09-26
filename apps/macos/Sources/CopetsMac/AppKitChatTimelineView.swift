@@ -606,6 +606,7 @@ struct AppKitChatTimelineRow: Identifiable {
     let isExpanded: Bool
     let processCount: Int?
     let processDuration: String?
+    let processStartedAt: Date?
     let processState: ProcessState
     let processSteps: [NativeExecutionTimelineStep]
     let processPlan: ConversationExecutionPlan?
@@ -615,11 +616,12 @@ struct AppKitChatTimelineRow: Identifiable {
     let actions: [Action]
     let isPendingInteraction: Bool
     let showsCollaborationSentStatus: Bool
+    let messageStatus: UserMessageStatusPresentation?
     let images: [ChatTimelineImage]
 
     var showsMessageActionBar: Bool {
         !showsHeader
-            && !copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!copyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || messageStatus != nil)
             && (nativeStyle == .user || nativeStyle == .agent)
     }
 
@@ -638,6 +640,7 @@ struct AppKitChatTimelineRow: Identifiable {
         isExpanded: Bool,
         processCount: Int? = nil,
         processDuration: String? = nil,
+        processStartedAt: Date? = nil,
         processState: ProcessState = .completed,
         processSteps: [NativeExecutionTimelineStep] = [],
         processPlan: ConversationExecutionPlan? = nil,
@@ -647,6 +650,7 @@ struct AppKitChatTimelineRow: Identifiable {
         actions: [Action] = [],
         isPendingInteraction: Bool = false,
         showsCollaborationSentStatus: Bool = false,
+        messageStatus: UserMessageStatusPresentation? = nil,
         images: [ChatTimelineImage] = []
     ) {
         self.id = id
@@ -663,6 +667,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.isExpanded = isExpanded
         self.processCount = processCount
         self.processDuration = processDuration
+        self.processStartedAt = processStartedAt
         self.processState = processState
         self.processSteps = processSteps
         self.processPlan = processPlan
@@ -672,6 +677,7 @@ struct AppKitChatTimelineRow: Identifiable {
         self.actions = actions
         self.isPendingInteraction = isPendingInteraction
         self.showsCollaborationSentStatus = showsCollaborationSentStatus
+        self.messageStatus = messageStatus
         self.images = images
     }
 
@@ -681,14 +687,20 @@ struct AppKitChatTimelineRow: Identifiable {
         case process
     }
 
-    var processSummary: String {
-        ConversationProcessPresentation(state: processState, count: processCount ?? 0,
-            duration: processDuration, currentStepTitle: processCurrentStepTitle).summary
+    func processSummaryText(now: Date = Date(), advancing: Bool = false, includesCurrentStep: Bool = true) -> String {
+        let duration = advancing && processState == .running
+            ? processStartedAt.flatMap { ConversationProcessPresentation.durationText(
+                startedAt: $0, endingAt: now, showSeconds: true) }
+                ?? processDuration
+            : processDuration
+        return ConversationProcessPresentation(state: processState, count: processCount ?? 0,
+            duration: duration, currentStepTitle: includesCurrentStep ? processCurrentStepTitle : nil).summary
     }
 
+    var processSummary: String { processSummaryText() }
+
     var processPrimarySummary: String {
-        ConversationProcessPresentation(state: processState, count: processCount ?? 0,
-            duration: processDuration).summary
+        processSummaryText(includesCurrentStep: false)
     }
 
     var processPlanProgressLabel: String? {
@@ -854,6 +866,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
     let rows: [AppKitChatTimelineRow]
     let scrollToBottomRevision: Int
     var baseDirectory: String? = nil
+    var canAdvanceProcessClock = false
     @Binding var followsLatest: Bool
     let onToggleExpansion: (String) -> Void
     var onAction: (AppKitChatTimelineRow.Action) -> Void = { _ in }
@@ -876,6 +889,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         Coordinator(
             sessionID: sessionID,
             baseDirectory: baseDirectory,
+            canAdvanceProcessClock: canAdvanceProcessClock,
             followsLatest: $followsLatest,
             onToggleExpansion: onToggleExpansion,
             onAction: onAction,
@@ -903,6 +917,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         let scrollView = Self.makeScrollView(tableView: tableView)
 
         context.coordinator.attach(tableView: tableView, scrollView: scrollView)
+        context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         if let initialPosition, !initialPosition.followsLatest {
             context.coordinator.prepareInitialPosition(initialPosition)
         } else {
@@ -971,6 +986,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             initialPosition: initialPosition
         )
         context.coordinator.updateBaseDirectory(baseDirectory)
+        context.coordinator.setProcessClockEnabled(canAdvanceProcessClock)
         context.coordinator.onToggleExpansion = onToggleExpansion
         context.coordinator.onAction = onAction
         context.coordinator.onNearTop = onNearTop
@@ -1014,6 +1030,8 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         private weak var tableView: NSTableView?
         private weak var scrollView: NSScrollView?
         private var rows: [AppKitChatTimelineRow] = []
+        private var canAdvanceProcessClock: Bool
+        private var processClockTimer: Timer?
         private var revisionsByID: [String: Int] = [:]
         private var heightCache: [HeightCacheKey: CGFloat] = [:]
         private var cellsByKey: [CellCacheKey: NSTableCellView & AppKitChatRowRendering] = [:]
@@ -1102,6 +1120,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         init(
             sessionID: String = "test-session",
             baseDirectory: String? = nil,
+            canAdvanceProcessClock: Bool = false,
             followsLatest: Binding<Bool>,
             useSharedTextCards: Bool = true,
             useSharedProcessCards: Bool = true,
@@ -1114,6 +1133,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
         ) {
             self.representedSessionID = sessionID
             self.baseDirectory = Self.normalizedBaseDirectory(baseDirectory)
+            self.canAdvanceProcessClock = canAdvanceProcessClock
             self.followsLatestBinding = followsLatest
             self.useSharedTextCards = useSharedTextCards
             self.useSharedProcessCards = useSharedProcessCards
@@ -1143,6 +1163,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             suppressesNearTopTrigger = false
             representedSessionID = sessionID
             rows.removeAll(keepingCapacity: true)
+            synchronizeProcessClock()
             revisionsByID.removeAll(keepingCapacity: true)
             lastPublishedPosition = nil
             lastRequestedRestorePosition = nil
@@ -1175,8 +1196,52 @@ struct AppKitChatTimelineView: NSViewRepresentable {
             restore(position: position)
         }
 
-        deinit {
+        isolated deinit {
+            processClockTimer?.invalidate()
             NotificationCenter.default.removeObserver(self)
+        }
+
+        func setProcessClockEnabled(_ enabled: Bool) {
+            guard canAdvanceProcessClock != enabled else { return }
+            canAdvanceProcessClock = enabled
+            synchronizeProcessClock()
+        }
+
+        private func synchronizeProcessClock() {
+            let shouldTick = canAdvanceProcessClock && activeProcessClockRowID != nil
+            guard shouldTick else {
+                processClockTimer?.invalidate()
+                processClockTimer = nil
+                return
+            }
+            guard processClockTimer == nil else { return }
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshVisibleProcessElapsed() }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            processClockTimer = timer
+        }
+
+        private var activeProcessClockRowID: String? {
+            rows.last(where: {
+                $0.nativeStyle == .process && $0.processState == .running && $0.processStartedAt != nil
+            })?.id
+        }
+
+        var isProcessClockScheduled: Bool { processClockTimer != nil }
+
+        private func refreshVisibleProcessElapsed(now: Date = Date()) {
+            guard canAdvanceProcessClock, let tableView,
+                  tableView.window != nil, !tableView.isHiddenOrHasHiddenAncestor else { return }
+            let visible = tableView.rows(in: tableView.visibleRect)
+            guard visible.location != NSNotFound, visible.location < rows.count,
+                  let activeID = activeProcessClockRowID else { return }
+            for index in visible.location..<min(rows.count, visible.location + visible.length) {
+                let row = rows[index]
+                guard row.id == activeID else { continue }
+                (tableView.view(atColumn: 0, row: index, makeIfNecessary: false)
+                    as? AppKitChatRowRendering)?.refreshProcessElapsed(now: now)
+            }
         }
 
         func attach(tableView: NSTableView, scrollView: NSScrollView) {
@@ -1348,6 +1413,7 @@ struct AppKitChatTimelineView: NSViewRepresentable {
 
         func apply(rows nextRows: [AppKitChatTimelineRow], animated: Bool = false) {
             let nextRows = Self.uniquedRows(nextRows)
+            defer { synchronizeProcessClock() }
             suppressNearTopDuringLayout()
             guard let tableView else {
                 rows = nextRows
@@ -2306,6 +2372,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private let titleLabel = NSTextField(labelWithString: "")
     private let metadataLabel = NSTextField(labelWithString: "")
     private let hoverTimestampLabel = NSTextField(labelWithString: "")
+    private let messageStatusButton = NSButton()
     private let label = NativeTimelineTextView()
     private let imageStack = NSStackView()
     private let rawStatusScrollView = NSScrollView()
@@ -2357,8 +2424,11 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     private var timelineActions: [AppKitChatTimelineRow.Action] = []
     private var onAction: ((AppKitChatTimelineRow.Action) -> Void)?
     private var copiedText = ""
+    private var hasVisibleMessageStatus = false
+    private var messageStatusDetail = ""
     private var representedRowID: String?
     private var representedContentRevision: Int?
+    private var representedProcessRow: AppKitChatTimelineRow?
     private var representedImages: [ChatTimelineImage] = []
     private(set) var contentConfigurationCount = 0
     private(set) var widthLayoutUpdateCount = 0
@@ -2454,9 +2524,17 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         copyButton.action = #selector(copyText)
         copyButton.toolTip = "复制消息"
         copyButton.setAccessibilityLabel("复制消息")
+        messageStatusButton.isBordered = false
+        messageStatusButton.imagePosition = .imageLeading
+        messageStatusButton.imageHugsTitle = true
+        messageStatusButton.font = .systemFont(ofSize: 10, weight: .medium)
+        messageStatusButton.target = self
+        messageStatusButton.action = #selector(showMessageStatusDetail)
+        messageStatusButton.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-status")
         messageActionBar.identifier = NSUserInterfaceItemIdentifier("chat.timeline.message-actions")
         messageActionBar.alphaValue = 0
         messageActionBar.addArrangedSubview(hoverTimestampLabel)
+        messageActionBar.addArrangedSubview(messageStatusButton)
         messageActionBar.addArrangedSubview(copyButton)
         processButton.isBordered = false
         processButton.alignment = .left
@@ -2586,6 +2664,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         let layout = NativeTimelineLayoutCache.shared.layout(for: row, columnWidth: availableWidth)
         representedRowID = row.id
         representedContentRevision = row.contentRevision
+        representedProcessRow = row.nativeStyle == .process ? row : nil
         contentConfigurationCount += 1
         updateLinkContext(baseDirectory: baseDirectory)
         label.textStorage?.setAttributedString(layout.attributedText)
@@ -2613,6 +2692,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         configureCollaborationSentStatus(row.showsCollaborationSentStatus)
         configureImages(row.images, rowID: row.id)
         copiedText = row.copyText
+        configureMessageStatus(row.messageStatus, cardWidth: layout.cardWidth)
         let showsMessageActions = row.showsMessageActionBar
         NSLayoutConstraint.deactivate([
             cardBottomStandardConstraint,
@@ -2631,7 +2711,9 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             cardBottomStandardConstraint.isActive = true
         }
         messageActionBar.isHidden = !showsMessageActions
-        messageActionBar.alphaValue = 0
+        messageActionBar.alphaValue = hasVisibleMessageStatus ? 1 : 0
+        copyButton.isHidden = copiedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        copyButton.alphaValue = 1
         cardLeadingConstraint.isActive = row.nativeStyle != .user
         cardTrailingConstraint.isActive = row.nativeStyle == .user
         let hasProcess = row.processCount != nil
@@ -2692,7 +2774,7 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
             processButtonBottomConstraint.isActive = true
         }
         hoverTimestampLabel.stringValue = row.hoverTimestamp
-        hoverTimestampLabel.isHidden = row.hoverTimestamp.isEmpty || isStandaloneProcess
+        hoverTimestampLabel.isHidden = row.hoverTimestamp.isEmpty || isStandaloneProcess || hasVisibleMessageStatus
         hoverTimestampLabel.alphaValue = 1
         label.isHidden = isStandaloneProcess && !row.isExpanded
         processSeparator.isHidden = !hasProcess || isStandaloneProcess
@@ -2700,21 +2782,13 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         processSeparatorHeight.constant = hasProcess && !isStandaloneProcess ? 1 : 0
         processButtonHeight.constant = hasProcess ? 22 : 0
         if row.processCount != nil {
-            let chevron = row.isExpanded ? "⌄" : "›"
             processButton.image = NSImage(
                 systemSymbolName: row.processState.symbolName,
                 accessibilityDescription: row.processSummary
             )
             processButton.contentTintColor = row.processState.color
             processButton.toolTip = row.isExpanded ? "Collapse execution details" : "Expand execution details"
-            processButton.setAccessibilityLabel(row.processSummary)
-            processButton.attributedTitle = NSAttributedString(
-                string: "  \(row.processSummary)    \(chevron)",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
-                    .foregroundColor: NativeTimelineCardPalette.secondaryText
-                ]
-            )
+            setProcessSummary(row.processSummary, expanded: row.isExpanded)
         }
         if row.isPendingInteraction {
             let tint = NSColor.systemOrange
@@ -2752,6 +2826,25 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
         if row.nativeStyle != .process { cardView.layer?.cornerRadius = 14 }
         processSeparator.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.045).cgColor
         needsLayout = true
+    }
+
+    func refreshProcessElapsed(now: Date) {
+        guard let row = representedProcessRow, row.processState == .running,
+              row.processStartedAt != nil else { return }
+        let summary = row.processSummaryText(now: now, advancing: true)
+        guard processButton.accessibilityLabel() != summary else { return }
+        setProcessSummary(summary, expanded: row.isExpanded)
+    }
+
+    private func setProcessSummary(_ summary: String, expanded: Bool) {
+        processButton.setAccessibilityLabel(summary)
+        processButton.attributedTitle = NSAttributedString(
+            string: "  \(summary)    \(expanded ? "⌄" : "›")",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 10.5, weight: .medium),
+                .foregroundColor: NativeTimelineCardPalette.secondaryText
+            ]
+        )
     }
 
     func updateLinkContext(baseDirectory: String?) {
@@ -2922,15 +3015,70 @@ final class AppKitChatNativeTextCell: NSTableCellView, AppKitChatRowRendering {
     override func mouseEntered(with event: NSEvent) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
-            messageActionBar.animator().alphaValue = messageActionBar.isHidden ? 0 : 1
+            if !hasVisibleMessageStatus {
+                messageActionBar.animator().alphaValue = messageActionBar.isHidden ? 0 : 1
+            }
         }
     }
 
     override func mouseExited(with event: NSEvent) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
-            messageActionBar.animator().alphaValue = 0
+            if !hasVisibleMessageStatus {
+                messageActionBar.animator().alphaValue = 0
+            }
         }
+    }
+
+    private func configureMessageStatus(_ status: UserMessageStatusPresentation?, cardWidth: CGFloat) {
+        hasVisibleMessageStatus = status != nil
+        guard let status else {
+            messageStatusButton.isHidden = true
+            messageStatusDetail = ""
+            return
+        }
+        let language = Locale.current.language.languageCode?.identifier ?? "en"
+        messageStatusDetail = status.detail(languageCode: language)
+        messageStatusButton.isHidden = false
+        messageStatusButton.title = cardWidth >= 120 ? status.shortLabel(languageCode: language) : ""
+        messageStatusButton.image = NSImage(
+            systemSymbolName: status.symbolName,
+            accessibilityDescription: messageStatusDetail
+        )
+        messageStatusButton.contentTintColor = switch status.tone {
+        case .neutral: NativeTimelineCardPalette.secondaryText
+        case .amber: NSColor.systemOrange
+        case .green: NSColor.systemGreen
+        case .red: NSColor.systemRed
+        }
+        messageStatusButton.toolTip = messageStatusDetail
+        messageStatusButton.setAccessibilityLabel(messageStatusDetail)
+    }
+
+    @objc private func showMessageStatusDetail() {
+        guard !messageStatusDetail.isEmpty else { return }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        let controller = NSViewController()
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 90))
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        let detail = NSTextView(frame: scroll.bounds)
+        detail.string = messageStatusDetail
+        detail.font = .systemFont(ofSize: 12)
+        detail.isEditable = false
+        detail.isSelectable = true
+        detail.drawsBackground = false
+        detail.textContainerInset = NSSize(width: 10, height: 10)
+        detail.isHorizontallyResizable = false
+        detail.autoresizingMask = [.width]
+        detail.textContainer?.widthTracksTextView = true
+        scroll.documentView = detail
+        controller.view = scroll
+        popover.contentViewController = controller
+        popover.contentSize = NSSize(width: 300, height: 90)
+        popover.show(relativeTo: messageStatusButton.bounds, of: messageStatusButton, preferredEdge: .maxY)
     }
 
     @objc private func toggleDisclosure() {

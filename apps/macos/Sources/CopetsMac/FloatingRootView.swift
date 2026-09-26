@@ -3982,6 +3982,8 @@ struct SessionConversationContent: View {
                 rows: rows,
                 scrollToBottomRevision: appKitScrollToBottomRevision,
                 baseDirectory: displayedDetail?.cwd,
+                canAdvanceProcessClock: backendClient.isOnline
+                    && selectedSession?.executionTaskStatus == .running,
                 followsLatest: $isFollowingLatest,
                 onToggleExpansion: toggleNativeProcessExpansion,
                 onAction: performNativeTimelineAction,
@@ -4109,6 +4111,7 @@ struct SessionConversationContent: View {
         let isExpanded: Bool
         var processCount: Int?
         var processDuration: String?
+        var processStartedAt: Date?
         var processState: AppKitChatTimelineRow.ProcessState = .completed
         var processSteps: [NativeExecutionTimelineStep] = []
         var processPlan: ConversationExecutionPlan?
@@ -4120,9 +4123,16 @@ struct SessionConversationContent: View {
         let actions: [AppKitChatTimelineRow.Action]
         let isPendingInteraction: Bool
         let showsCollaborationSentStatus: Bool
+        let messageStatus: UserMessageStatusPresentation?
         var images: [ChatTimelineImage] = []
         switch entry.kind {
         case .message(let item):
+            messageStatus = item.type == "userMessage" ? UserMessageStatusPresentation(
+                authoritativeStatus: item.userMessageStatus,
+                legacyStatus: item.status,
+                queuePosition: item.queuePosition,
+                processingError: item.processingError
+            ) : nil
             images = (item.images ?? []).map { image in
                 ChatTimelineImage(
                     managedPath: image.managedPath,
@@ -4173,6 +4183,7 @@ struct SessionConversationContent: View {
             isExpanded = false
             processCount = nil
             processDuration = nil
+            processStartedAt = nil
             actions = nativeTimelineActions(for: item)
             isPendingInteraction = (item.type == "approval" || item.type == "choice" || item.type == "userInput")
                 && item.status == "pending"
@@ -4182,6 +4193,7 @@ struct SessionConversationContent: View {
             isCollaboration = collaboration != nil
             collaborationRoute = collaboration?.route
         case .process(let turnId, let items):
+            messageStatus = nil
             processPlan = items.compactMap(\.executionPlan).last(where: { $0.schemaVersion == 1 })
             images = items.flatMap { item in
                 (item.images ?? []).map { image in
@@ -4216,6 +4228,8 @@ struct SessionConversationContent: View {
             isExpanded = expanded
             processCount = items.count
             processDuration = executionProcessDurationText(for: items)
+            processStartedAt = items.contains(where: { $0.processEndedAt != nil })
+                ? nil : ConversationProcessPresentation.startedAt(for: items)
             processState = projectedProcessState(for: items)
             if processState == .running, let last = items.last {
                 if last.type == "executionPlan", let plan = processPlan {
@@ -4248,6 +4262,7 @@ struct SessionConversationContent: View {
             isExpanded: isExpanded,
             processCount: processCount,
             processDuration: processDuration,
+            processStartedAt: processStartedAt,
             processState: processState,
             processSteps: processSteps,
             processPlan: processPlan,
@@ -4257,6 +4272,7 @@ struct SessionConversationContent: View {
             actions: actions,
             isPendingInteraction: isPendingInteraction,
             showsCollaborationSentStatus: showsCollaborationSentStatus,
+            messageStatus: messageStatus,
             images: images
         )
     }
@@ -4289,14 +4305,6 @@ struct SessionConversationContent: View {
 
     private func nativeTimelineSupplementalText(for item: CodexThreadItem) -> String {
         var sections: [String] = []
-        switch item.authoritativeUserMessageState {
-        case .queued:
-            sections.append(item.queuePosition.map { "Queued · position \($0)" } ?? "Queued for processing")
-        case .processing: sections.append("Processing")
-        case .failed: sections.append("Processing failed")
-        case .cancelled: sections.append("Cancelled before processing")
-        case .consumed, .none: break
-        }
         if item.type == "userInput" {
             switch item.status {
             case "submitted": sections.append("已提交，等待会话更新")
@@ -5684,6 +5692,7 @@ private func detailItemSignature(_ item: CodexThreadItem) -> String {
         item.status ?? "",
         item.userMessageStatus ?? "",
         item.queuePosition.map(String.init) ?? "",
+        item.processingError ?? "",
         item.turnStatus,
         item.processStartedAt ?? "",
         item.processEndedAt ?? "",
