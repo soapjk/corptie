@@ -162,3 +162,39 @@ test("commands are idempotent, optimistic, atomic, and auditable", async () => {
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("Session-bound previews are read-only, exact, expiring, and single-use", async () => {
+  const { directory, store, service } = await fixture();
+  try {
+    store.upsertSession({
+      id: "session:scene", title: "Scene", agent: "Codex",
+      provider: "codex-app-server", status: "complete"
+    });
+    service.createScene({
+      instanceId: "scene:preview", templateId: "daily-checklist", name: "Preview", timezone: "UTC"
+    });
+    service.bindSession("scene:preview", "session:scene");
+    assert.equal(service.sessionCanAccess("scene:preview", "session:scene"), true);
+
+    const preview = service.previewCommand({
+      instanceId: "scene:preview", command: "createRecord",
+      sourceKind: "session", sourceSessionId: "session:scene",
+      payload: { recordType: "List", data: { title: "Preview", archived: false } }
+    });
+    const previewRecordId = preview.changes[0].after.recordId;
+    assert.equal(service.getRecord("scene:preview", previewRecordId), null);
+    assert.equal(preview.instanceRevision, 0);
+    const committed = service.commitPreview(preview.previewToken, {
+      sessionId: "session:scene", idempotencyKey: "commit-preview"
+    });
+    assert.equal(committed.instanceRevision, 1);
+    assert.equal(committed.changes[0].after.recordId, previewRecordId);
+    assert.equal(service.getRecord("scene:preview", previewRecordId).data.title, "Preview");
+    assert.throws(() => service.commitPreview(preview.previewToken, {
+      sessionId: "session:scene", idempotencyKey: "commit-preview"
+    }), { code: "SCENE_PREVIEW_CONSUMED" });
+  } finally {
+    await store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
