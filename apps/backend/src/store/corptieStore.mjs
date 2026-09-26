@@ -4589,6 +4589,32 @@ export class CorptieStore {
   // 与旧「晋升技能」的 skills 表彻底分离，避免 schema 与方法名冲突。
   ensureSkillTables() {
     this.db.run(`
+      CREATE TABLE IF NOT EXISTS mcp_server_registry (
+        server_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        transport TEXT NOT NULL CHECK (transport IN ('http', 'sse', 'stdio')),
+        command TEXT,
+        args_json TEXT NOT NULL DEFAULT '[]',
+        cwd TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+        tool_count INTEGER NOT NULL,
+        verified_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_mcp_assignments (
+        agent_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        added_at TEXT NOT NULL,
+        PRIMARY KEY (agent_id, server_id),
+        FOREIGN KEY (agent_id) REFERENCES agents(agent_id) ON DELETE CASCADE,
+        FOREIGN KEY (server_id) REFERENCES mcp_server_registry(server_id) ON DELETE RESTRICT
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_mcp_assignments_server
+        ON agent_mcp_assignments(server_id);
+
       CREATE TABLE IF NOT EXISTS skill_registry (
         skill_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -4664,6 +4690,41 @@ export class CorptieStore {
       CREATE INDEX IF NOT EXISTS idx_skill_runtime_events_session
       ON skill_runtime_events(session_id, created_at DESC);
     `);
+    // Development databases created by the first standalone-HTTP slice have
+    // a narrower CHECK constraint. Rebuild only this new registry table so
+    // existing remote registrations and Agent links survive the stdio upgrade.
+    const mcpSchema = this.selectOne(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='mcp_server_registry'"
+    )?.sql ?? "";
+    if (!mcpSchema.includes("'stdio'")) {
+      this.db.run("PRAGMA foreign_keys = OFF");
+      this.db.run("BEGIN IMMEDIATE");
+      try {
+        this.db.run(`CREATE TABLE mcp_server_registry_stdio_v1 (
+          server_id TEXT PRIMARY KEY, name TEXT NOT NULL, url TEXT NOT NULL,
+          transport TEXT NOT NULL CHECK (transport IN ('http', 'sse', 'stdio')),
+          command TEXT, args_json TEXT NOT NULL DEFAULT '[]', cwd TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+          tool_count INTEGER NOT NULL, verified_at TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        )`);
+        this.db.run(`INSERT INTO mcp_server_registry_stdio_v1
+          (server_id, name, url, transport, enabled, tool_count, verified_at, created_at, updated_at)
+          SELECT server_id, name, url, transport, enabled, tool_count, verified_at, created_at, updated_at
+          FROM mcp_server_registry`);
+        this.db.run("DROP TABLE mcp_server_registry");
+        this.db.run("ALTER TABLE mcp_server_registry_stdio_v1 RENAME TO mcp_server_registry");
+        if (this.selectAll("PRAGMA foreign_key_check").length > 0) {
+          throw new Error("MCP_REGISTRY_MIGRATION_FOREIGN_KEY_FAILURE");
+        }
+        this.db.run("COMMIT");
+      } catch (error) {
+        this.db.run("ROLLBACK");
+        throw error;
+      } finally {
+        this.db.run("PRAGMA foreign_keys = ON");
+      }
+    }
 
     this.ensureColumn("skill_registry", "source_subpath", "TEXT NOT NULL DEFAULT ''");
     this.ensureColumn("skill_registry", "package_subpath", "TEXT NOT NULL DEFAULT ''");
