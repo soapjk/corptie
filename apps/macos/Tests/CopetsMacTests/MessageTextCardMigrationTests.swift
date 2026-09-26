@@ -1,5 +1,7 @@
 import SwiftUI
 import XCTest
+import CorptieClientCore
+import CorptieConversation
 @testable import CorptieMac
 
 @MainActor
@@ -18,6 +20,21 @@ final class MessageTextCardMigrationTests: XCTestCase {
             copyText: "tool", nativeStyle: .process, title: "", metadata: "",
             expandableTurnId: nil, isExpanded: false, showsHeader: false)
         XCTAssertFalse(MacSharedMessageTextCard.supports(process))
+    }
+
+    func testShortMessageFooterCanBeWiderThanItsBubble() throws {
+        _ = NSApplication.shared
+        let status = try XCTUnwrap(UserMessageStatusPresentation(
+            authoritativeStatus: "processing", legacyStatus: nil
+        ))
+        let card = MessageTextCard(messageID: "short-user", role: .user,
+            timestamp: "", showsActions: true, actionsAlwaysVisible: true,
+            cardWidth: 40, status: status, copy: {}) {
+                Text("好")
+            }
+        let host = NSHostingView(rootView: card)
+        XCTAssertGreaterThan(host.fittingSize.width, 70,
+            "The status footer must not be constrained to the 40-point text bubble")
     }
 
     func testRealCoordinatorUsesSharedRowsAndSwitchesRendererOnContentChanges() throws {
